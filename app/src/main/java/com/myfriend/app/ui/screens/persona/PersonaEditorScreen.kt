@@ -88,6 +88,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.domain.PersonaCard
@@ -133,7 +134,7 @@ fun PersonaEditorScreen(
                     .onSuccess { viewModel.setAvatarUri(it) }
                     .onFailure {
                         snackbar.showSnackbar(
-                            it.message ?: context.getString(R.string.persona_editor_avatar_save_failed)
+                            ErrorText.of(context, it, R.string.persona_editor_avatar_save_failed)
                         )
                     }
             }

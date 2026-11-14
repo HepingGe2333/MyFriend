@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.repo.PresetDraft
 import com.myfriend.app.data.repo.PresetRepository
@@ -109,7 +110,7 @@ class PresetEditorViewModel @Inject constructor(
             )
             _state.update { it.copy(saving = false) }
             result.onSuccess { events.send(PresetEditorEvent.Saved(it)) }
-                .onFailure { events.send(PresetEditorEvent.Message(it.message ?: context.getString(R.string.preset_editor_save_failed))) }
+                .onFailure { events.send(PresetEditorEvent.Message(ErrorText.of(context, it, R.string.preset_editor_save_failed))) }
         }
     }
 }

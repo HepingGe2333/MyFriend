@@ -86,6 +86,9 @@ struct PersonaEditorScreen: View {
             }
         }
         .onAppear(perform: loadIfNeeded)
+        // 选了新头像又取消 / 保存失败：落盘的那张新图没人引用，离开页面时删掉。
+        // 保存成功的路径会把 `originalAvatarUri` 同步成新值，这里不会误删。
+        .onDisappear(perform: discardUnsavedAvatar)
         .mfAlert($banner)
     }
 
@@ -185,6 +188,13 @@ struct PersonaEditorScreen: View {
                 banner = MFAlert(title: L("这张图用不了"), message: message)
             }
         }
+    }
+
+    /// 离开编辑页时，把「选了但没保存」的头像文件清掉（只删我们自己目录里的）。
+    private func discardUnsavedAvatar() {
+        guard avatarUri != originalAvatarUri else { return }
+        MediaStorage.shared.deleteFileIfOwned(avatarUri)
+        avatarUri = originalAvatarUri
     }
 
     private func removeAvatar() {
@@ -588,7 +598,7 @@ struct PersonaEditorScreen: View {
         MFCard {
             LevelSliderRow(
                 title: L("主动程度"),
-                hint: Self.proactiveLevelText(proactiveLevel),
+                hint: ProactiveLevel.description(proactiveLevel),
                 value: Binding(
                     get: { Double(proactiveLevel) },
                     set: { proactiveLevel = Int($0.rounded()) }
@@ -911,16 +921,6 @@ struct PersonaEditorScreen: View {
 
     private func clock(_ minutes: Int) -> String {
         ServiceTime.clockText(minutes)
-    }
-
-    private static func proactiveLevelText(_ level: Int) -> String {
-        switch min(max(level, 1), 5) {
-        case 1: return L("很少主动。他会等你来找他。")
-        case 2: return L("偶尔主动，大部分时候安静待着。")
-        case 3: return L("普通朋友的分寸：想起你的时候会来找你。")
-        case 4: return L("比较黏，一天会主动找你几次。")
-        default: return L("很黏。他几乎一有空就想跟你说话。")
-        }
     }
 
     private static func memoryRetentionText(_ level: Int) -> String {

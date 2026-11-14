@@ -666,9 +666,10 @@ public enum MemoryRepositoryError: Error, LocalizedError, CustomStringConvertibl
 
     public var description: String {
         switch self {
-        case .emptyContent: return "记忆内容不能为空"
-        case .contentTooLong: return "单条记忆请控制在 \(MemoryRepository.maxContentChars) 字以内"
-        case .memoryMissing: return "记忆已不存在"
+        case .emptyContent: return String(localized: "记忆内容不能为空")
+        case .contentTooLong:
+            return PluralText.format("单条记忆请控制在 %d 字以内", MemoryRepository.maxContentChars)
+        case .memoryMissing: return String(localized: "记忆已不存在")
         }
     }
 }

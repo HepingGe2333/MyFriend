@@ -3,6 +3,7 @@ package com.myfriend.app.ui.screens.preset
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaPresetEntity
 import com.myfriend.app.data.repo.PresetRepository
@@ -78,9 +79,9 @@ class PresetListViewModel @Inject constructor(
     fun duplicate(presetId: String) {
         viewModelScope.launch {
             busy.value = true
-            presetRepository.duplicate(presetId)
+            presetRepository.duplicate(presetId, context.getString(R.string.common_copy_suffix))
                 .onSuccess { message.value = context.getString(R.string.preset_duplicated) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.preset_duplicate_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.preset_duplicate_failed) }
             busy.value = false
         }
     }
@@ -102,7 +103,7 @@ class PresetListViewModel @Inject constructor(
                 }
                 .onFailure {
                     busy.value = false
-                    message.value = it.message ?: context.getString(R.string.preset_create_persona_failed)
+                    message.value = ErrorText.of(context, it, R.string.preset_create_persona_failed)
                 }
         }
     }
@@ -111,7 +112,7 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             presetRepository.exportOne(presetId)
                 .onSuccess { events.send(PresetListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.preset_export_error) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.preset_export_error) }
         }
     }
 
@@ -119,7 +120,7 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             presetRepository.exportAll()
                 .onSuccess { events.send(PresetListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.preset_export_error) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.preset_export_error) }
         }
     }
 
@@ -127,9 +128,16 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             presetRepository.import(raw)
-                .onSuccess { message.value = it.message }
-                .onFailure { message.value = it.message ?: context.getString(R.string.preset_import_failed) }
+                .onSuccess { message.value = presetImportText(it) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.preset_import_failed) }
             busy.value = false
         }
+    }
+
+    /** 预设导入结果：数量在数据层，句子在这里。 */
+    private fun presetImportText(result: com.myfriend.app.data.repo.PresetImportResult): String = when {
+        result.imported <= 0 -> context.getString(R.string.preset_import_result_none)
+        result.skipped <= 0 -> context.getString(R.string.preset_import_result_ok, result.imported)
+        else -> context.getString(R.string.preset_import_result_partial, result.imported, result.skipped)
     }
 }

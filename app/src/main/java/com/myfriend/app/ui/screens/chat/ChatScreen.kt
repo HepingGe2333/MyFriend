@@ -134,6 +134,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.myfriend.app.R
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MessageEntity
@@ -236,7 +237,10 @@ fun ChatScreen(
                 }
             }.onFailure {
                 coroutineScope.launch {
-                    snackbarHostState.showSnackbar(context.getString(R.string.chat_export_failed_reason, it.message.orEmpty()), duration = SnackbarDuration.Long)
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.chat_export_failed_reason, ErrorText.of(context, it)),
+                        duration = SnackbarDuration.Long
+                    )
                 }
             }
         }
@@ -304,6 +308,7 @@ fun ChatScreen(
                 } else {
                     ChatMessageList(
                         state = state,
+                        onLoadOlder = viewModel::loadOlder,
                         onLongPress = { message ->
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             selectedMessage = message
@@ -763,10 +768,14 @@ private fun NoConfigBanner(
     }
 }
 
+/** 加载更早之前的视口锚点。 */
+private data class Anchor(val key: String, val offset: Int, val displayCount: Int)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatMessageList(
     state: ChatUiState,
+    onLoadOlder: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
     onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
@@ -793,6 +802,15 @@ private fun ChatMessageList(
     }
     val extraItems = if (state.isGenerating) 1 else 0
     val totalItems = displayItems.size + extraItems
+
+    // 列表顶部这一行：还有更早的消息 / 正在加载更早。它是 LazyColumn 的第 0 项，
+    // 所以下面算「消息在列表里的绝对下标」时要带上这个偏移。
+    val showLoadEarlier = state.hasMoreOlder || state.loadingOlder
+    val loadEarlierKey = "load-earlier"
+    fun itemKey(item: ChatDisplayItem): String = when (item) {
+        is ChatDisplayItem.Date -> "date-${item.key}"
+        is ChatDisplayItem.Message -> item.message.id
+    }
 
     val isAtBottom by remember {
         androidx.compose.runtime.derivedStateOf {
@@ -821,6 +839,53 @@ private fun ChatMessageList(
         }
     }
 
+    // 上滑加载更早：滚到顶部附近就触发一次。是否真的发查询由 ViewModel 的状态机决定
+    // （加载中 / 已到底都会直接忽略），所以这里只负责「该不该问」。
+    LaunchedEffect(state.hasMoreOlder, state.loadingOlder, state.messages.size) {
+        if (!state.hasMoreOlder || state.loadingOlder || state.messages.isEmpty()) return@LaunchedEffect
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, _) ->
+            // 只在第 0 项（「加载更早」那一行）真正露出来时触发：加载后我们按 key 把视口
+            // 恢复到原来那条消息（下标必然 ≥1），所以不会「一加载完又立刻触发下一頁」地连锁加载。
+            if (index == 0) onLoadOlder()
+        }
+    }
+
+    // 往前面插入旧消息之后，LazyColumn 的「第几项」会整体后移，视口会跳。
+    // 这里记住加载前「第一条可见消息的 key + 偏移」，等列表更新后按 key 找回它，
+    // 视觉上就是「停在原地、上面悄悄多出一段」。
+    var restoreAnchor by remember { mutableStateOf<Anchor?>(null) }
+    LaunchedEffect(state.loadingOlder) {
+        if (state.loadingOlder) {
+            val info = listState.layoutInfo.visibleItemsInfo.firstOrNull()
+            val key = info?.key as? String
+            if (key != null && key != loadEarlierKey) {
+                // 记下「第一条可见消息 + 它相对视口的偏移 + 当时列表长度」。
+                restoreAnchor = Anchor(key, info.offset, displayItems.size)
+            }
+        }
+    }
+    LaunchedEffect(state.messages.size) {
+        val anchor = restoreAnchor ?: return@LaunchedEffect
+        // 条数没变说明这一页是空的（已经到底）：丢掉锚点，别等到下一条新消息时乱跳。
+        if (displayItems.size <= anchor.displayCount) {
+            restoreAnchor = null
+            return@LaunchedEffect
+        }
+        restoreAnchor = null
+        // 旧消息插在前面之后，按 key 找回原来那条消息的绝对下标，停在原来的位置。
+        val index = run {
+            var absolute = if (showLoadEarlier) 1 else 0
+            for (item in displayItems) {
+                if (itemKey(item) == anchor.key) return@run absolute
+                absolute++
+            }
+            -1
+        }
+        if (index >= 0) listState.scrollToItem(index, anchor.offset)
+    }
+
     Box(Modifier.fillMaxSize()) {
         if (state.messages.isEmpty() && !state.isGenerating) {
             EmptyConversation(state, onSuggestion)
@@ -831,12 +896,12 @@ private fun ChatMessageList(
                 contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(2.dp)
             ) {
-                items(displayItems, key = {
-                    when (it) {
-                        is ChatDisplayItem.Date -> "date-${it.key}"
-                        is ChatDisplayItem.Message -> it.message.id
+                if (showLoadEarlier) {
+                    item(key = loadEarlierKey) {
+                        LoadEarlierRow(loading = state.loadingOlder)
                     }
-                }) { item ->
+                }
+                items(displayItems, key = { itemKey(it) }) { item ->
                     when (item) {
                         is ChatDisplayItem.Date -> DateDivider(item.label)
                         is ChatDisplayItem.Message -> {
@@ -966,6 +1031,38 @@ private fun EmptyConversation(state: ChatUiState, onSuggestion: (String) -> Unit
     }
 }
 
+/** 列表顶部那一行：「还有更早的消息」/「正在加载更早」。 */
+@Composable
+private fun LoadEarlierRow(loading: Boolean) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(13.dp),
+                strokeWidth = 2.dp,
+                color = LocalAccentColor.current
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                stringResource(R.string.chat_loading_earlier),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                stringResource(R.string.chat_load_earlier),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+            )
+        }
+    }
+}
+
 @Composable
 private fun DateDivider(label: String) {
     Row(
@@ -1010,6 +1107,7 @@ private fun MessageBubble(
     // 展开状态跟着消息 id 走，滚动收起再回来时保持；不跨消息串味。
     var traceExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
     val outgoing = message.role == MessageRole.USER
+    val context = LocalContext.current
     // 纯图片消息（无正文）用更小的内边距，让照片几乎贴着气泡边缘，
     // 否则会像被一圈底色装裱起来，观感偏重。
     val imageOnly = attachments.isNotEmpty() &&
@@ -1131,7 +1229,9 @@ private fun MessageBubble(
                             else MaterialTheme.colorScheme.onErrorContainer).copy(alpha = 0.85f)
                             // 报错里偶尔带着地址（比如某个服务给的提示），同样点得开
                             InlineText(
-                                raw = message.errorMessage ?: stringResource(R.string.chat_unknown_error),
+                                // 落库的是错误令牌：按当前语言翻译；老数据（中文原文）原样显示。
+                                raw = ErrorText.stored(context, message.errorMessage)
+                                    ?: stringResource(R.string.chat_unknown_error),
                                 color = errorTint,
                                 codeBackground = Color.Transparent,
                                 isOutgoing = outgoing && !isOutlined,
@@ -1384,6 +1484,7 @@ private fun ToolTraceDetail(
     modifier: Modifier = Modifier
 ) {
     val errorColor = MaterialTheme.colorScheme.error
+    val context = LocalContext.current
     Column(
         modifier = modifier
             .widthIn(max = 440.dp)
@@ -1407,10 +1508,11 @@ private fun ToolTraceDetail(
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                if (item.detail.isNotBlank()) {
+                val detail = ErrorText.stored(context, item.detail) ?: item.detail
+                if (detail.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        text = item.detail,
+                        text = detail,
                         style = MaterialTheme.typography.bodySmall,
                         color = itemColor.copy(alpha = 0.85f),
                         maxLines = 3,
@@ -2011,7 +2113,10 @@ private fun MessageActionSheet(
                 else stringResource(R.string.chat_reply)
             )
             Text(
-                message.content.take(160).ifBlank { message.errorMessage ?: stringResource(R.string.chat_empty_message) },
+                message.content.take(160).ifBlank {
+                    ErrorText.stored(LocalContext.current, message.errorMessage)
+                        ?: stringResource(R.string.chat_empty_message)
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,

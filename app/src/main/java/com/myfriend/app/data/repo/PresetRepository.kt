@@ -2,8 +2,10 @@ package com.myfriend.app.data.repo
 
 import com.myfriend.app.data.local.PersonaPresetDao
 import com.myfriend.app.data.local.PersonaPresetEntity
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.domain.PersonaDraft
+import com.myfriend.app.network.userError
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -38,11 +40,15 @@ private data class PresetExportBundle(
     val presets: List<PresetExportItem>
 )
 
-@Serializable
+/**
+ * 预设导入的结果。
+ *
+ * 不再带现成的中文句子：界面用 [imported] / [skipped] 自己拼资源文案
+ * （`preset_import_result_*`），这样英文界面不会看到中文。
+ */
 data class PresetImportResult(
     val imported: Int,
-    val skipped: Int,
-    val message: String
+    val skipped: Int
 )
 
 /** 自定义预设库：可复用的提示词模板，能直接生成人格，也能把现有人格存成预设。 */
@@ -61,10 +67,10 @@ class PresetRepository @Inject constructor(
 
     suspend fun save(draft: PresetDraft): Result<String> = runCatching {
         val name = draft.name.trim()
-        require(name.isNotBlank()) { "请填写预设名称" }
-        require(name.length <= 60) { "预设名称过长" }
-        require(draft.prompt.isNotBlank()) { "预设需要包含提示词" }
-        require(draft.prompt.length <= MAX_PROMPT_CHARS) { "提示词超出安全上限" }
+        if (name.isBlank()) userError(DomainErrorCode.PRESET_NAME_REQUIRED)
+        if (name.length > 60) userError(DomainErrorCode.PRESET_NAME_TOO_LONG)
+        if (draft.prompt.isBlank()) userError(DomainErrorCode.PRESET_PROMPT_REQUIRED)
+        if (draft.prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PRESET_PROMPT_TOO_LONG)
         val now = System.currentTimeMillis()
         val existing = draft.id?.let { presetDao.getById(it) }
         val entity = PersonaPresetEntity(
@@ -82,12 +88,12 @@ class PresetRepository @Inject constructor(
         entity.id
     }
 
-    suspend fun duplicate(id: String): Result<String> = runCatching {
-        val source = presetDao.getById(id) ?: error("预设不存在")
+    suspend fun duplicate(id: String, copySuffix: String): Result<String> = runCatching {
+        val source = presetDao.getById(id) ?: userError(DomainErrorCode.PRESET_NOT_FOUND)
         val now = System.currentTimeMillis()
         val copy = source.copy(
             id = UUID.randomUUID().toString(),
-            name = "${source.name} 副本".take(60),
+            name = (source.name + copySuffix).take(60),
             createdAt = now,
             updatedAt = now
         )
@@ -101,7 +107,7 @@ class PresetRepository @Inject constructor(
 
     /** 把现有人格保存为预设（提示词、简介、分类、头像一起带走）。 */
     suspend fun savePersonaAsPreset(personaId: String): Result<String> = runCatching {
-        val persona = personaRepository.getById(personaId) ?: error("人格不存在")
+        val persona = personaRepository.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         save(
             PresetDraft(
                 name = persona.name,
@@ -120,7 +126,7 @@ class PresetRepository @Inject constructor(
         name: String? = null,
         defaultApiConfigId: String? = null
     ): Result<String> = runCatching {
-        val preset = presetDao.getById(presetId) ?: error("预设不存在")
+        val preset = presetDao.getById(presetId) ?: userError(DomainErrorCode.PRESET_NOT_FOUND)
         val existingNames = personaRepository.getAll().map { it.name }.toSet()
         val resolvedName = (name?.trim()?.takeIf { it.isNotBlank() } ?: preset.name).take(60)
             .let { if (it in existingNames) "$it · ${System.currentTimeMillis() % 1000}" else it }
@@ -154,7 +160,7 @@ class PresetRepository @Inject constructor(
                 avatarSeed = it.avatarSeed
             )
         }
-        require(items.isNotEmpty()) { "预设库还是空的，先保存一个预设再导出" }
+        if (items.isEmpty()) userError(DomainErrorCode.PRESET_LIBRARY_EMPTY)
         ExportFile(
             fileName = "myfriend-presets-${System.currentTimeMillis()}.json",
             content = encoder.encodeToString(
@@ -165,7 +171,7 @@ class PresetRepository @Inject constructor(
     }
 
     suspend fun exportOne(id: String): Result<ExportFile> = runCatching {
-        val preset = presetDao.getById(id) ?: error("预设不存在")
+        val preset = presetDao.getById(id) ?: userError(DomainErrorCode.PRESET_NOT_FOUND)
         val item = PresetExportItem(
             name = preset.name,
             description = preset.description,
@@ -183,11 +189,11 @@ class PresetRepository @Inject constructor(
     }
 
     suspend fun import(raw: String): Result<PresetImportResult> = runCatching {
-        require(raw.length <= 6_000_000) { "导入文件过大" }
-        val root = runCatching { json.parseToJsonElement(raw) }.getOrElse { error("文件不是有效的 JSON") }
+        if (raw.length > 6_000_000) userError(DomainErrorCode.IMPORT_FILE_TOO_LARGE)
+        val root = runCatching { json.parseToJsonElement(raw) }.getOrElse { userError(DomainErrorCode.IMPORT_INVALID_JSON) }
         val bundle = runCatching {
             json.decodeFromJsonElement(PresetExportBundle.serializer(), root)
-        }.getOrElse { error("这不是 MyFriend 的预设文件") }
+        }.getOrElse { userError(DomainErrorCode.IMPORT_NOT_PRESET_FILE) }
         var imported = 0
         var skipped = 0
         val now = System.currentTimeMillis()
@@ -212,15 +218,7 @@ class PresetRepository @Inject constructor(
                 imported++
             }
         }
-        PresetImportResult(
-            imported = imported,
-            skipped = skipped,
-            message = when {
-                imported == 0 -> "没有可导入的预设"
-                skipped == 0 -> "已导入 $imported 个预设"
-                else -> "已导入 $imported 个预设，跳过 $skipped 个无效条目"
-            }
-        )
+        PresetImportResult(imported = imported, skipped = skipped)
     }
 
     suspend fun wipeAll() {

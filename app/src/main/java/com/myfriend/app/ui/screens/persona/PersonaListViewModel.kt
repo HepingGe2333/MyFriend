@@ -3,6 +3,7 @@ package com.myfriend.app.ui.screens.persona
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.PersonaEntity
@@ -76,7 +77,7 @@ class PersonaListViewModel @Inject constructor(
         viewModelScope.launch {
             presetRepository.savePersonaAsPreset(personaId)
                 .onSuccess { message.value = context.getString(R.string.persona_list_preset_saved) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_preset_save_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_preset_save_failed) }
         }
     }
 
@@ -85,7 +86,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.setDefault(personaId)
                 .onSuccess { message.value = context.getString(R.string.persona_list_default_set) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_default_set_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_default_set_failed) }
             busy.value = false
         }
     }
@@ -93,9 +94,9 @@ class PersonaListViewModel @Inject constructor(
     fun duplicate(personaId: String) {
         viewModelScope.launch {
             busy.value = true
-            personaRepository.duplicate(personaId)
+            personaRepository.duplicate(personaId, context.getString(R.string.common_copy_suffix))
                 .onSuccess { message.value = context.getString(R.string.persona_list_duplicated) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_duplicate_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_duplicate_failed) }
             busy.value = false
         }
     }
@@ -105,7 +106,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             runCatching { personaRepository.delete(personaId) }
                 .onSuccess { message.value = context.getString(R.string.persona_list_deleted) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_delete_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_delete_failed) }
             busy.value = false
         }
     }
@@ -115,7 +116,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.exportPersonas()
                 .onSuccess { events.send(PersonaListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_export_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_export_failed) }
             busy.value = false
         }
     }
@@ -125,7 +126,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.exportPersonas(listOf(personaId))
                 .onSuccess { events.send(PersonaListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_export_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.persona_list_export_failed) }
             busy.value = false
         }
     }
@@ -133,15 +134,23 @@ class PersonaListViewModel @Inject constructor(
     fun import(raw: String) {
         viewModelScope.launch {
             busy.value = true
-            personaRepository.importPersonas(raw)
-                .onSuccess { message.value = it.message }
+            personaRepository.importPersonas(raw, context.getString(R.string.persona_import_suffix))
+                .onSuccess { message.value = personaImportText(it) }
                 .onFailure {
                     message.value = context.getString(
                         R.string.persona_list_import_failed,
-                        it.message ?: context.getString(R.string.persona_list_import_bad_format)
+                        ErrorText.of(context, it, R.string.persona_list_import_bad_format)
                     )
                 }
             busy.value = false
         }
     }
+
+    /** 人格导入结果：数量在数据层，句子在这里。 */
+    private fun personaImportText(result: com.myfriend.app.domain.ImportResult): String =
+        if (result.skipped > 0) {
+            context.getString(R.string.persona_import_result_partial, result.imported, result.skipped)
+        } else {
+            context.getString(R.string.persona_import_result_ok, result.imported)
+        }
 }

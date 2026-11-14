@@ -31,9 +31,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.repo.ImportMode
 import com.myfriend.app.domain.BackupPreview
+import com.myfriend.app.domain.BackupWarning
+import com.myfriend.app.ui.common.BackupText
 import com.myfriend.app.ui.components.SectionLabel
 import com.myfriend.app.ui.components.SettingCard
 import com.myfriend.app.ui.components.SettingRow
@@ -163,7 +166,7 @@ fun rememberBackupTransfer(
         scope.launch {
             viewModel.buildBackupJson()
                 .onFailure {
-                    onMessage(it.message ?: context.getString(R.string.backup_error_pack))
+                    onMessage(ErrorText.of(context, it, R.string.backup_error_pack))
                 }
                 .onSuccess { content ->
                     val written = runCatching {
@@ -179,7 +182,7 @@ fun rememberBackupTransfer(
                                 if (fileName.isNullOrBlank()) context.getString(R.string.backup_success)
                                 else context.getString(R.string.backup_success_named, fileName)
                             },
-                            { context.getString(R.string.backup_error_write, it.message.orEmpty()) }
+                            { context.getString(R.string.backup_error_write, ErrorText.of(context, it)) }
                         )
                     )
                 }
@@ -228,10 +231,11 @@ fun rememberBackupTransfer(
 @Composable
 private fun ImportPreviewDialog(
     preview: BackupPreview,
-    warnings: List<String>,
+    warnings: List<BackupWarning>,
     onConfirm: (ImportMode) -> Unit,
     onDismiss: () -> Unit
 ) {
+    val context = LocalContext.current
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -244,7 +248,7 @@ private fun ImportPreviewDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    preview.describe(),
+                    BackupText.preview(context, preview),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Medium
                 )
@@ -252,18 +256,18 @@ private fun ImportPreviewDialog(
                     if (preview.appVersion.isNotBlank()) {
                         stringResource(
                             R.string.backup_dialog_meta,
-                            preview.exportedAtText(),
+                            BackupText.exportedAt(context, preview),
                             preview.appVersion
                         )
                     } else {
-                        preview.exportedAtText()
+                        BackupText.exportedAt(context, preview)
                     },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 warnings.forEach { warning ->
                     Text(
-                        warning,
+                        BackupText.warning(context, warning),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

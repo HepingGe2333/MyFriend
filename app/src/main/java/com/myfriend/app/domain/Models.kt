@@ -52,8 +52,16 @@ data class ResolvedApiConfig(
 data class PersonaSwitchResult(
     val success: Boolean,
     val session: ChatSessionEntity?,
-    val message: String? = null
+    /** 需要顺口提示一句时的结构化原因；界面自己映射资源，数据层不拼句子。 */
+    val notice: PersonaSwitchNotice? = null
 )
+
+/** 切人格时可能要说的一声（成功但没绑定 API / 失败原因）。 */
+enum class PersonaSwitchNotice {
+    PERSONA_NOT_FOUND,
+    SESSION_CREATE_FAILED,
+    API_NOT_BOUND
+}
 
 /** AI 在回复中提议的主动唤醒规则，需要用户确认后才会真正生效。 */
 data class ProactiveProposal(
@@ -74,7 +82,8 @@ sealed class GenerationEvent {
     ) : GenerationEvent()
     /** 他中途用了工具：界面在「正在输入」下方显示动作卡片。 */
     data class ToolCall(val traces: List<ToolTraceItem>) : GenerationEvent()
-    data class Failed(val message: String, val errorMessage: MessageEntity?) : GenerationEvent()
+    /** 生成失败。界面用 [error] 映射资源；[errorMessage] 是已经落库的失败气泡。 */
+    data class Failed(val error: UserError, val errorMessage: MessageEntity?) : GenerationEvent()
     data object Stopped : GenerationEvent()
 
     /**
@@ -91,10 +100,10 @@ data class EvolutionProposal(
     val prompt: String
 )
 
+/** 人格导入结果：只有数量，句子由 UI 按当前语言拼。 */
 data class ImportResult(
     val imported: Int,
-    val skipped: Int,
-    val message: String
+    val skipped: Int
 )
 
 data class ExportFile(

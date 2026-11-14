@@ -25,6 +25,9 @@ import com.myfriend.app.domain.BackupCodec
 import com.myfriend.app.domain.BackupDecodeResult
 import com.myfriend.app.domain.BackupPreview
 import com.myfriend.app.domain.BackupSettings
+import com.myfriend.app.domain.BackupFailure
+import com.myfriend.app.domain.BackupWarning
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ChineseTerms
 import com.myfriend.app.domain.backupFileName
 import com.myfriend.app.domain.mergeInto
@@ -40,6 +43,8 @@ import com.myfriend.app.domain.toBackupRule
 import com.myfriend.app.domain.toBackupSession
 import com.myfriend.app.domain.toBackupSettings
 import com.myfriend.app.domain.toEntity
+import com.myfriend.app.network.userError
+import com.myfriend.app.util.MediaStorage
 import com.myfriend.app.domain.toNewEntity
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
@@ -64,26 +69,19 @@ data class ImportSummary(
     val messages: Int = 0,
     val rules: Int = 0,
     val skipped: Int = 0,
-    val warnings: List<String> = emptyList(),
+    /** 结构化提醒：界面按当前语言拼句子（`BackupText`），数据层不拼中文。 */
+    val warnings: List<BackupWarning> = emptyList(),
     val mode: ImportMode = ImportMode.MERGE,
     val presets: Int = 0
-) {
-    /** 「把他接回来了：3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话」。 */
-    fun describe(): String = buildString {
-        append(if (mode == ImportMode.REPLACE) "照备份重新接回了他" else "把他接回来了")
-        append("：$personas 个人格 · $memories 条记忆 · $sessions 段对话 · $messages 句话")
-        if (rules > 0) append(" · $rules 条主动节奏")
-        if (presets > 0) append(" · $presets 个预设")
-        if (skipped > 0) append("；有 $skipped 条没接回来")
-        if (warnings.isNotEmpty()) {
-            append("；")
-            append(warnings.joinToString("；"))
-        }
-    }
-}
+)
 
-/** 备份读不懂 / 写不进去时抛出的一句话；界面上直接显示 [message]。 */
-class BackupImportException(message: String) : Exception(message)
+/**
+ * 备份读不懂 / 写不进去时抛出。
+ *
+ * 只带结构化 [failure]（外加一句给日志看的中文）；界面用 `BackupText` 映射资源，
+ * 不再显示 `throwable.message`。
+ */
+class BackupImportException(val failure: BackupFailure) : Exception(failure.toString())
 
 /**
  * 「把他带走」与「从备份里接他回来」。
@@ -179,7 +177,7 @@ class BackupRepository @Inject constructor(
 
         val encoded = BackupCodec.encode(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
-        check(!BackupCodec.containsSecretField(encoded)) { "备份里出现了密钥字段，已中止导出" }
+        if (BackupCodec.containsSecretField(encoded)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
         return encoded
     }
 
@@ -213,10 +211,16 @@ class BackupRepository @Inject constructor(
      * 只提示「设置没接回来」，绝不把已经写好的他回滚掉。
      */
     suspend fun importBundle(bundle: BackupBundle, mode: ImportMode): ImportSummary {
-        val warnings = mutableListOf<String>()
+        val warnings = mutableListOf<BackupWarning>()
         var skipped = 0
 
-        val personas = bundle.personas.map { it.toEntity() }
+        // 备份里的头像只是一条路径：换手机之后文件已经不在了。清空这类失效路径，
+        // 别让界面拿到一个「点了没反应」的地址；同时记一条导入提醒。
+        val personas = bundle.personas.map { backup ->
+            val missing = MediaStorage.isMissingLocalFile(backup.avatarUri)
+            if (missing) warnings += BackupWarning.AvatarMissing(backup.name)
+            if (missing) backup.copy(avatarUri = null).toEntity() else backup.toEntity()
+        }
         val memories = bundle.memories.map { it.toEntity() }
         val sessions = bundle.sessions.map { it.toEntity() }
         val presets = bundle.presets.map { it.toEntity() }
@@ -230,7 +234,7 @@ class BackupRepository @Inject constructor(
             .groupBy { it.personaId }
             .mapNotNull { (_, list) -> list.maxByOrNull { (it.lastMessageAt ?: it.updatedAt) } }
         if (latestSessions.size != bundle.sessions.size) {
-            warnings += "备份里有 ${bundle.sessions.size - latestSessions.size} 段多余会话，已按「一人一段」保留最新那段"
+            warnings += BackupWarning.ExtraSessions(bundle.sessions.size - latestSessions.size)
         }
 
         // 合并模式下，如果本机已经有这个人的会话，就把备份里的那段落回本机那一段（保留本机 sessionId），
@@ -264,7 +268,7 @@ class BackupRepository @Inject constructor(
 
         val messagesWithAttachments = bundle.messages.count { !it.attachmentsJson.isNullOrBlank() }
         if (messagesWithAttachments > 0) {
-            warnings += "有 $messagesWithAttachments 句话原本带着图片，图片没有跟着备份走，现在只剩文字"
+            warnings += BackupWarning.AttachmentsDropped(messagesWithAttachments)
         }
         database.withTransaction {
             if (mode == ImportMode.REPLACE) {
@@ -313,15 +317,15 @@ class BackupRepository @Inject constructor(
             apiConfigDao.getById(config.id)?.let { it.apiKeyCipher.isNullOrBlank() } ?: true
         }
         if (configsMissingKey > 0) {
-            warnings += "有 $configsMissingKey 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好"
+            warnings += BackupWarning.ConfigsMissingKey(configsMissingKey)
         }
 
         val settings = bundle.settings
         if (settings == null) {
-            warnings += "这份备份里没有设置，设置页保持你现在的样子"
+            warnings += BackupWarning.NoSettings
         } else {
             runCatching { restoreSettings(settings, warnings) }
-                .onFailure { warnings += "设置没能完全接回来：${it.message ?: "保存失败"}（他本身已经接回来了）" }
+                .onFailure { warnings += BackupWarning.SettingsPartiallyRestored }
         }
 
         return ImportSummary(
@@ -342,12 +346,12 @@ class BackupRepository @Inject constructor(
      *
      * 只写备份里真的带来的那几项；聊天背景图片（设备路径）与本地引导状态一律不碰。
      */
-    private suspend fun restoreSettings(backup: BackupSettings, warnings: MutableList<String>) {
+    private suspend fun restoreSettings(backup: BackupSettings, warnings: MutableList<BackupWarning>) {
         val restored = backup.toAppSettings()
         // 「正在聊的人」必须真的存在：备份里选中的那个人格可能没在这一次接回来的内容里。
         val active = restored.activePersonaId?.takeIf { personaDao.getById(it) != null }
         if (restored.activePersonaId != null && active == null) {
-            warnings += "备份里选中的那个人格不在这份备份里，已把「正在聊的人」交还给默认人格"
+            warnings += BackupWarning.ActivePersonaMissing
         }
 
         settingsRepository.setThemeMode(restored.themeMode)

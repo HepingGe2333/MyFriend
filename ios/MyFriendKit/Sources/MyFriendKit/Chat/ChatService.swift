@@ -100,9 +100,9 @@ public final class UnavailableToolRunner: ToolRunning {
         return ToolResult(
             invocation: invocation,
             ok: false,
-            summary: "这个工具还没接上",
+            summary: String(localized: "这个工具还没接上"),
             contentForModel: "工具「\(name)」在当前版本里还用不了。不要假装做过，直接用自己的话回答。",
-            errorMessage: "iOS 端还没有接入工具：\(name)"
+            errorMessage: String(format: String(localized: "iOS 端还没有接入工具：%@"), name)
         )
     }
 }
@@ -264,7 +264,7 @@ public final class ChatService {
     public func regenerate(sessionId: String) -> AsyncThrowingStream<ChatEvent, Error> {
         do {
             guard try stores.sessions.byId(sessionId) != nil else {
-                throw ApiException(statusCode: nil, message: "会话不存在")
+                throw ApiException(statusCode: nil, message: String(localized: "会话不存在"))
             }
             if let latest = try stores.messages.latest(sessionId: sessionId), latest.role == .assistant {
                 try stores.messages.delete(id: latest.id)
@@ -275,7 +275,7 @@ public final class ChatService {
                        orderBy: "createdAt DESC", limit: 1)
                 .isEmpty == false
             guard hasUser else {
-                throw ApiException(statusCode: nil, message: "没有可以重新生成的消息")
+                throw ApiException(statusCode: nil, message: String(localized: "没有可以重新生成的消息"))
             }
         } catch {
             return Self.failedStream(error)
@@ -337,19 +337,19 @@ public final class ChatService {
         // 与 Android 一致：正文可以为空，只要至少有图。
         let images = attachments.filter { $0.isImage }.prefix(AttachmentsCodec.maxImagesPerMessage)
         guard !content.isEmpty || !images.isEmpty else {
-            throw ApiException(statusCode: nil, message: "消息不能为空")
+            throw ApiException(statusCode: nil, message: String(localized: "消息不能为空"))
         }
         guard content.count <= Self.maxMessageLength else {
-            throw ApiException(statusCode: nil, message: "消息过长")
+            throw ApiException(statusCode: nil, message: String(localized: "消息过长"))
         }
         guard let session = try stores.sessions.byId(sessionId) else {
-            throw ApiException(statusCode: nil, message: "会话不存在")
+            throw ApiException(statusCode: nil, message: String(localized: "会话不存在"))
         }
         guard let configId = session.apiConfigId, !configId.isEmpty else {
-            throw ApiException(statusCode: nil, message: "请先为该会话选择 API 配置")
+            throw ApiException(statusCode: nil, message: String(localized: "请先为该会话选择 API 配置"))
         }
         guard try stores.apiConfigs.byId(configId) != nil else {
-            throw ApiException(statusCode: nil, message: "API 配置已不存在")
+            throw ApiException(statusCode: nil, message: String(localized: "API 配置已不存在"))
         }
         let persona = try stores.personas.byId(session.personaId)
         let timestamp = try nextTimestamp(sessionId: sessionId)
@@ -372,7 +372,7 @@ public final class ChatService {
         // 首页那一行预览：只有图的时候写「图片」，与 Android 的 `ifBlank { "图片" }` 一致。
         let flattened = content.replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = flattened.isEmpty ? "图片" : flattened
+        let preview = flattened.isEmpty ? String(localized: "图片") : flattened
         try stores.database.inTransaction {
             try stores.messages.upsert(message)
             var updated = session
@@ -381,7 +381,7 @@ public final class ChatService {
             updated.unreadCount = 0
             updated.updatedAt = timestamp
             if isFirstUserMessage {
-                updated.title = Self.autoTitle(content.isEmpty ? "图片" : content)
+                updated.title = Self.autoTitle(content.isEmpty ? String(localized: "图片") : content)
             }
             _ = persona
             try stores.sessions.upsert(updated)
@@ -430,7 +430,7 @@ public final class ChatService {
             let all = try stores.messages.bySession(sessionId)
             let recent = Array(all.suffix(PromptBuilder.contextRecentLimit))
             guard recent.contains(where: { $0.role == .user }) else {
-                throw ApiException(statusCode: nil, message: "还没有可以回复的消息")
+                throw ApiException(statusCode: nil, message: String(localized: "还没有可以回复的消息"))
             }
 
             // 睡眠/免打扰/唤醒阈值（§六）。判定放在「模型看到消息」之后、真正生成之前：
@@ -611,7 +611,9 @@ public final class ChatService {
             if finalText.isEmpty && proposalJson == nil {
                 throw ApiException(
                     statusCode: nil,
-                    message: traces.isEmpty ? "模型没有返回任何文字" : "他查完了东西，怕是走神了，再发一条试试"
+                    message: traces.isEmpty
+                    ? String(localized: "模型没有返回任何文字")
+                    : String(localized: "他查完了东西，怕是走神了，再发一条试试")
                 )
             }
             // 最终正文可能和流里那一份不一样（去掉代码块、trim）：补一次，界面才对得上库里的内容。
@@ -629,7 +631,7 @@ public final class ChatService {
                 model: model,
                 traces: traces
             ) else {
-                throw ApiException(statusCode: nil, message: "回复没有保存成功，请重试")
+                throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
             }
             completed = true
 
@@ -735,23 +737,26 @@ public final class ChatService {
 
     private func resolveSession(sessionId: String) throws -> ResolvedSession {
         guard let session = try stores.sessions.byId(sessionId) else {
-            throw ApiException(statusCode: nil, message: "会话不存在")
+            throw ApiException(statusCode: nil, message: String(localized: "会话不存在"))
         }
         guard let persona = try stores.personas.byId(session.personaId) else {
-            throw ApiException(statusCode: nil, message: "人格不存在")
+            throw ApiException(statusCode: nil, message: String(localized: "人格不存在"))
         }
         guard let configId = session.apiConfigId, !configId.isEmpty else {
-            throw ApiException(statusCode: nil, message: "请先为该会话选择 API 配置")
+            throw ApiException(statusCode: nil, message: String(localized: "请先为该会话选择 API 配置"))
         }
         guard let config = try stores.apiConfigs.byId(configId) else {
-            throw ApiException(statusCode: nil, message: "API 配置已不存在")
+            throw ApiException(statusCode: nil, message: String(localized: "API 配置已不存在"))
         }
         let key = apiKeys.apiKey(for: config.id)
         // 没有 Key 也不让请求白跑一趟：Android 会照发然后拿 401，
         // 但用户看到的同样是一句「API Key 无效」，不如在本地就把话说清楚（少一次往返、少一次计费）。
         let trimmedKey = key?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmedKey.isEmpty && !Self.hasCustomAuthorization(config) {
-            throw ApiException(statusCode: nil, message: "还没有填 API Key：请在设置里为这个 API 配置补上密钥")
+            throw ApiException(
+                    statusCode: nil,
+                    message: String(localized: "还没有填 API Key：请在设置里为这个 API 配置补上密钥")
+                )
         }
         return ResolvedSession(
             session: session,
@@ -805,7 +810,7 @@ public final class ChatService {
             let preview = String(content.replacingOccurrences(of: "\n", with: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
             session.lastMessagePreview = preview.isEmpty
-                ? (status == .error ? "回复失败" : nil)
+                ? (status == .error ? String(localized: "回复失败") : nil)
                 : preview
             session.lastMessageAt = timestamp
             session.updatedAt = timestamp
@@ -825,7 +830,7 @@ public final class ChatService {
         let preview = String((latest?.content ?? "").replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
         session.lastMessagePreview = preview.isEmpty
-            ? (latest?.status == .error ? "回复失败" : nil)
+            ? (latest?.status == .error ? String(localized: "回复失败") : nil)
             : preview
         session.lastMessageAt = latest?.createdAt
         session.updatedAt = now()

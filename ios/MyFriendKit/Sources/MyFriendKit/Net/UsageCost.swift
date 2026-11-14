@@ -67,17 +67,17 @@ public enum UsageKind {
         return displayOrder.contains(key) ? key : unknown
     }
 
-    /// 中文标签。刻意写成「他在做什么」而不是「计费科目」。
+    /// 展示标签（跟随界面语言）。刻意写成「他在做什么」而不是「计费科目」。
     public static func label(_ kind: String?) -> String {
         switch normalize(kind) {
-        case chat: return "聊天"
-        case consolidation: return "整理记忆"
-        case scoring: return "判断值不值得记"
-        case agent: return "自己待着时想事情"
-        case recall: return "回忆你说过的事"
-        case extraction: return "从聊天里记东西"
-        case reconsolidation: return "想起旧事"
-        default: return "其他"
+        case chat: return String(localized: "聊天")
+        case consolidation: return String(localized: "整理记忆")
+        case scoring: return String(localized: "判断值不值得记")
+        case agent: return String(localized: "自己待着时想事情")
+        case recall: return String(localized: "回忆你说过的事")
+        case extraction: return String(localized: "从聊天里记东西")
+        case reconsolidation: return String(localized: "想起旧事")
+        default: return String(localized: "其他")
         }
     }
 

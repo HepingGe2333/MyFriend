@@ -154,7 +154,7 @@ API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串�
 
 | 0.9.1：图片消息、头像、内存上限、工具执行器、主动唤醒页面、人设卡、压缩编排、通知与后台调度 | ✅ | iOS **810 条**单测全绿、`xcodebuild` BUILD SUCCEEDED；模拟器实测发图 / 工具调用 / 规则落库与开关 / 重启后回声仍在 |
 
-iOS 侧合计 **810 条单测**（`swift test --disable-sandbox`），Android 侧 **619 条**（`:app:testDebugUnitTest`），
+iOS 侧合计 **872 条单测**（`swift test --disable-sandbox`），Android 侧 **683 条**（`:app:testDebugUnitTest`），
 两端都绿；两端 App 都能编译（Android `assembleDebug`、iOS `xcodebuild … build`）。
 
 ### 1.9 里两端必须一致的三个取舍（规格没写死，已对齐）
@@ -167,15 +167,15 @@ iOS 侧合计 **810 条单测**（`swift test --disable-sandbox`），Android �
 
 ### 还没接上的（显式缺口，不是静默空实现）
 
-> 0.9.1 已经补掉：图片附件、聊天侧工具执行器、主动唤醒规则落库 + 界面、历史压缩编排、人设卡编辑器、通知与 BGTask 注册。
+> 0.9.1 补掉了：图片附件、聊天侧工具执行器、主动唤醒规则落库 + 界面、历史压缩编排、人设卡编辑器、通知与 BGTask 注册。
+> 0.10.1 补掉了：聊天分页（两端）、iOS 的 `web_search` 后打分、记忆回声清理、「现在试一次」+ 失败原因、编译警告清零。
 > 下面这张表是**现在**还差的。
 
 | 缺口 | 现状 |
 | --- | --- |
-| 聊天页分页 | 两端都一次性加载整段消息列表（长会话下最大的一块内存），0.9.1 只在后台路径做了窗口化 |
-| `web_search` 之后的重要性打分 | Android 有 `WebSearchScorer`（搜完顺手写记忆）；iOS 搜索本身与回灌完整，少了「值不值得记」那一步 |
-| 主动唤醒的「现在试一次」/ `lastError` 展示 | Android 有；iOS 能落库、能调度、能开关，但没有「立刻触发一次」按钮，也不回显上次失败原因 |
-| 记忆回声的清理 | promote 之后 iOS 不删旧回声（Android 会清空），行为无害但表会慢慢变大 |
+| 工具痕迹标题的本地化 | 两端仍显示中文标题（「联网搜索」「记住了」等，来自 `ToolProtocol`）；失败原因已本地化 |
+| 历史消息定位 | 分页后没有「跳到某条历史消息」的 UI；搜索/通知只打开会话并停在最新窗口（`messagesBefore` 可复用） |
 | `persona_revisions` / `persona_pending_patches` | iOS 不做人格版本历史、不做 pending patch（既定取舍，与备份互通无关） |
 | 回忆后的心情漂移 | 留了 `afterRecallDrift` 回调，不接就是「只回忆不改写」 |
 | 真机后台调度 | `BGAppRefreshTask` / `BGProcessingTask` 只有真机能验证；模拟器上走「回到前台补算一次」 |
+| 相册选择器的人工点验 | 模拟器无法注入触控，`PhotosPicker` 只验证了「拿到 Data 之后」的整条链路 |

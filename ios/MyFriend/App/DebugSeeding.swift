@@ -47,6 +47,8 @@ enum DebugSeeding {
         }
         DebugMemoryLog.scheduleBootSnapshot()
         seedApiConfigIfNeeded(env)
+        seedLongConversationIfNeeded(env)
+        applyPersonaDebugAction(env)
         applyProactiveDebugAction(env)
         applyScenarioIfNeeded(env)
         importDebugMediaIfNeeded(env)
@@ -73,7 +75,6 @@ enum DebugSeeding {
         case "chat":
             return nil // 会话页需要具体 id，单独处理
         case "settings", "settings-avatar", "settings-proactive": return .settings
-        case "settings-avatar": return .settings
         case "memory": return .memories
         case "proactive": return .proactive
         case "backup": return .backups
@@ -125,8 +126,10 @@ enum DebugSeeding {
         let model = ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_MODEL"] ?? "myfriend-reference"
         let now = Int64(Date().timeIntervalSince1970 * 1000)
 
+        // 名字跟随界面语言（仅 Debug 用）；查找同时认地址，切换语言后不会又建一条。
+        let configName = String(localized: "本地参考服务")
         let existing = (try? env.stores.apiConfigs.all()) ?? []
-        if let found = existing.first(where: { $0.name == "本地参考服务" }) {
+        if let found = existing.first(where: { $0.name == configName || $0.baseUrl == base }) {
             var updated = found
             updated.baseUrl = base
             updated.model = model
@@ -141,7 +144,7 @@ enum DebugSeeding {
         } else {
             let config = ApiConfigEntity(
                 id: UUID().uuidString,
-                name: "本地参考服务",
+                name: configName,
                 provider: .openai,
                 baseUrl: base,
                 model: model,
@@ -207,6 +210,75 @@ enum DebugSeeding {
             log("[debug] scenario defer：等模拟服务端回 defer_reply")
         default:
             break
+        }
+    }
+
+    /// 长会话验收：`MYFRIEND_DEBUG_SEED_MESSAGES=130` 往最近那段会话里补 N 条消息。
+    ///
+    /// 为什么要有它：聊天页的窗口化分页（首屏 60、上滑再 60）只有长会话才看得出效果，
+    /// 而模拟器里没人能连续打 130 句话。这里直接写库，走的是和真实消息一样的 `MessageStore`。
+    @MainActor
+    static func seedLongConversationIfNeeded(_ env: AppEnvironment) {
+        let raw = ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEED_MESSAGES"] ?? ""
+        guard let count = Int(raw), count > 0 else { return }
+        let sessions = (try? env.stores.sessions.allOrderedByRecency()) ?? []
+        guard let session = sessions.first else {
+            log("[debug] seed messages：没有会话")
+            return
+        }
+        let existing = (try? env.stores.messages.count(sessionId: session.id)) ?? 0
+        guard existing < count else {
+            log("[debug] seed messages：已有 \(existing) 条，不再补")
+            return
+        }
+        let now = Int64(Date().timeIntervalSince1970 * 1000)
+        let start = now - Int64(count - existing) * 60_000
+        let messages = (existing..<count).map { index -> MessageEntity in
+            let stamp = start + Int64(index - existing) * 60_000
+            return MessageEntity(
+                id: "debug-msg-\(index)",
+                sessionId: session.id,
+                personaId: session.personaId,
+                role: index % 2 == 0 ? .user : .assistant,
+                content: index % 4 == 0
+                    ? "第 \(index) 句：今天还是有点忙，晚点再细说。"
+                    : "第 \(index) 句：我在，慢慢说。",
+                createdAt: stamp,
+                updatedAt: stamp,
+                status: .complete
+            )
+        }
+        try? env.stores.messages.upsert(messages)
+        if var fresh = (try? env.stores.sessions.byId(session.id)) ?? nil {
+            fresh.lastMessagePreview = messages.last?.content
+            fresh.lastMessageAt = messages.last?.createdAt
+            fresh.updatedAt = now
+            try? env.stores.sessions.upsert(fresh)
+        }
+        log("[debug] seed messages \(messages.count) 条 → 会话 \(session.id)，全表 \(count) 条")
+    }
+
+    /// 人格删除验收：`MYFRIEND_DEBUG_PERSONA_ACTION=delete-avatar` 删掉第一个带头像的人格，
+    /// 并在日志里写出「删除前文件存在 / 删除后文件不在」——截图之外再留一份可核对的事实。
+    @MainActor
+    static func applyPersonaDebugAction(_ env: AppEnvironment) {
+        guard ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_PERSONA_ACTION"] == "delete-avatar" else {
+            return
+        }
+        let personas = (try? env.stores.personas.allOrderedByUpdatedAt()) ?? []
+        guard let target = personas.first(where: { ($0.avatarUri ?? "").isEmpty == false }) else {
+            log("[debug] persona delete：没有带头像的人格")
+            return
+        }
+        let uri = target.avatarUri ?? ""
+        let before = MediaStorage.shared.exists(uriString: uri)
+        log("[debug] persona delete 前：\(uri) exists=\(before)")
+        do {
+            try env.deletePersona(target)
+            let after = MediaStorage.shared.exists(uriString: uri)
+            log("[debug] persona delete 后：\(target.name) 已删，头像 exists=\(after)")
+        } catch {
+            log("[debug] persona delete 失败：\(error.localizedDescription)")
         }
     }
 

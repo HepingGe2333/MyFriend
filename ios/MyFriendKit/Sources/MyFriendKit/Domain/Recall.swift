@@ -328,22 +328,52 @@ public enum Recall {
     // MARK: 聊天 / 浏览 → 命中
 
     /// 一条聊天记录。`role` 传 "USER" / "ASSISTANT" 时会补上「谁说的」。
+    ///
+    /// 这里加的前缀是**提示词版本**（保持中文，`rendered` 也用它），
+    /// 界面显示要用 `displayChatText(_:)` 换成跟随语言的版本。
     public static func chatHit(text: String, sessionTitle: String, at: Int64, role: String? = nil) -> RecallHit {
         let body = String(text.trimmed.prefix(MAX_HIT_TEXT_CHARS))
-        let prefix: String
-        switch (role ?? "").trimmed.uppercased() {
-        case "USER": prefix = "对方说："
-        case "ASSISTANT": prefix = "我说过："
-        default: prefix = ""
-        }
         let title = String(sessionTitle.trimmed.prefix(30))
         return RecallHit(
             kind: .chat,
-            text: prefix + body,
+            text: chatHitPrefix(role) + body,
             at: at,
             weight: 0.45,
             source: title.trimmed.isEmpty ? "" : "《\(title)》"
         )
+    }
+
+    /// 聊天命中的「谁说的」前缀（提示词版本，保持中文）。
+    public static func chatHitPrefix(_ role: String?) -> String {
+        switch (role ?? "").trimmed.uppercased() {
+        case "USER": return "对方说："
+        case "ASSISTANT": return "我说过："
+        default: return ""
+        }
+    }
+
+    /// 同一个前缀的界面版本（跟随界面语言）。
+    public static func displayChatHitPrefix(_ role: String?) -> String {
+        switch (role ?? "").trimmed.uppercased() {
+        case "USER": return String(localized: "对方说：")
+        case "ASSISTANT": return String(localized: "我说过：")
+        default: return ""
+        }
+    }
+
+    /// 一条命中在界面上要显示的正文：聊天命中把中文前缀换成当前语言的前缀，其余原样。
+    ///
+    /// 为什么不在 `chatHit` 里直接写本地化前缀：`RecallHit.text` 还会被
+    /// `rendered` 拼进提示词，提示词脚手架必须两端一致地保持中文。
+    public static func displayChatText(_ hit: RecallHit) -> String {
+        guard hit.kind == .chat else { return hit.text }
+        for role in ["USER", "ASSISTANT"] {
+            let promptPrefix = chatHitPrefix(role)
+            if !promptPrefix.isEmpty, hit.text.hasPrefix(promptPrefix) {
+                return displayChatHitPrefix(role) + hit.text.dropFirst(promptPrefix.count)
+            }
+        }
+        return hit.text
     }
 
     /// 他独自上网看到的摘要；缓存里没有时间戳，只能按调用方给的「刚刚」算。
@@ -500,15 +530,15 @@ public enum Recall {
         let delta = Swift.max(now - at, 0)
         let minutes = delta / 60_000
         if minutes < 1 { return String(localized: "刚刚") }
-        if minutes < 60 { return String(format: String(localized: "%d 分钟前"), minutes) }
+        if minutes < 60 { return PluralText.format("%d 分钟前", Int(minutes)) }
         let days = delta / DAY_MILLIS
         if days <= 0 { return String(localized: "今天") }
         if days == 1 { return String(localized: "昨天") }
         if days == 2 { return String(localized: "前天") }
-        if days < 7 { return String(format: String(localized: "%d 天前"), days) }
-        if days < 30 { return String(format: String(localized: "%d 周前"), days / 7) }
-        if days < 365 { return String(format: String(localized: "%d 个月前"), days / 30) }
-        return String(format: String(localized: "%d 年前"), days / 365)
+        if days < 7 { return PluralText.format("%d 天前", Int(days)) }
+        if days < 30 { return PluralText.format("%d 周前", Int(days / 7)) }
+        if days < 365 { return PluralText.format("%d 个月前", Int(days / 30)) }
+        return PluralText.format("%d 年前", Int(days / 365))
     }
 
     /// 中文相对日期：刚刚 / N 分钟前 / 今天 / 昨天 / 前天 / N 天前 / N 周前 / N 个月前 / N 年前。

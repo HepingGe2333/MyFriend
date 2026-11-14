@@ -167,7 +167,9 @@ class ApiUsageRepository @Inject constructor(
                 val name = row.personaName?.takeIf { it.isNotBlank() }
                 SessionUsage(
                     sessionId = row.sessionId,
-                    label = name ?: if (row.sessionId.isNullOrBlank()) "其他" else "未知联系人",
+                    // 名字为空时界面按 `nameless` / `sessionId` 取资源，不显示这里的中文；
+                    // 这里只保留一个空串，避免数据层再拼用户可见文案。
+                    label = name.orEmpty(),
                     calls = row.calls,
                     promptTokens = row.promptTokens,
                     completionTokens = row.completionTokens,

@@ -224,6 +224,13 @@ final class AppEnvironment: ObservableObject {
             resolveConfig: resolveCompressionConfig,
             log: { DebugSeeding.log($0) }
         )
+        // 联网打分的「用完即弃」调用：与聊天/抽取共用同一个 completion 与并发闸。
+        let webSearchScorer = WebSearchScorer(
+            stores: fallbackStores,
+            memory: memoryRepository,
+            completion: completion,
+            log: { DebugSeeding.log($0) }
+        )
         let toolExecutor = ToolExecutor(
             stores: fallbackStores,
             apiKeys: apiKeys,
@@ -233,6 +240,7 @@ final class AppEnvironment: ObservableObject {
             personaCards: personaCards,
             intents: intents,
             webTools: webTools,
+            scorer: webSearchScorer,
             log: { DebugSeeding.log($0) }
         )
         let chatBackground = ChatBackgroundService(
@@ -319,6 +327,19 @@ final class AppEnvironment: ObservableObject {
     /// 返回 nil 表示「还没配 API」，界面据此显示引导而不是发一个注定失败的请求。
     func resolvedChatConfig() -> ResolvedConfig? {
         Self.resolveConfig(stores: stores, settings: settings, apiKeys: apiKeys)
+    }
+
+    /// 主动唤醒的「现在试一次」：走心跳平时那条开口路径（同一套人格提示词、同一个落库与通知回调），
+    /// 只生成一条消息、**不改规则的排期**；失败原因由 `AgentLoop` 写回规则的 `lastError`。
+    func triggerProactiveRule(_ ruleId: String) async -> AgentLoop.ProactiveFireOutcome {
+        guard let resolved = resolvedChatConfig() else {
+            return .failure(L("还没有可用的 API 配置"))
+        }
+        return await agentLoop.fireProactiveRule(
+            ruleId: ruleId,
+            config: CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey),
+            model: resolved.model
+        )
     }
 
     struct ResolvedConfig {
@@ -431,6 +452,8 @@ final class AppEnvironment: ObservableObject {
     /// 为什么装配层要有这个方法：首页（长按删除）与人格列表（卡片删除）都要做同一串动作，
     /// 而「删记忆必须先删倒排索引与向量索引」这种顺序一旦两处各写一份，迟早漏一个。
     func deletePersona(_ persona: PersonaEntity) throws {
+        // 头像文件不跟着备份走，也不属于数据库；人删了，文件也该删（只删我们自己的目录）。
+        MediaStorage.shared.deleteFileIfOwned(persona.avatarUri)
         let memories = (try? stores.memories.byPersona(persona.id)) ?? []
         for memory in memories {
             memoryRepository.delete(memory)

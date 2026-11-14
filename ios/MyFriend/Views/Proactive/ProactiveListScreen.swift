@@ -25,8 +25,14 @@ struct ProactiveListScreen: View {
     @State private var pendingDelete: ProactiveRulePresentation?
     @State private var banner: MFAlert?
     @State private var showingCreate = false
+    /// 正在「现在试一次」的规则 id：非空时按钮禁用，避免连点跑两次。
+    @State private var triggeringId: String?
 
     private var accent: Color { Color(argb: env.currentSettings.accentColor) }
+    #if DEBUG
+    /// 调试触发只点一次，避免每次回到这一页都重发一条消息。
+    @State private var didDebugTrigger = false
+    #endif
     private var enabledCount: Int { rules.filter(\.enabled).count }
 
     var body: some View {
@@ -90,6 +96,12 @@ struct ProactiveListScreen: View {
             // 截图验收：`simctl` 点不了「+」，用它把新建表单直接打开。
             if ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_PROACTIVE_CREATE_SHEET"] == "1" {
                 showingCreate = true
+            }
+            // 截图验收：`simctl` 也点不了「现在试一次」，用它替第一行点一下。
+            if ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_PROACTIVE_TRIGGER"] == "1",
+               !didDebugTrigger, let first = rules.first {
+                didDebugTrigger = true
+                trigger(first)
             }
             #endif
         }
@@ -173,6 +185,33 @@ struct ProactiveListScreen: View {
                 .labelsHidden()
                 .tint(accent)
             }
+            // 「现在试一次」：与 Android `ProactiveScreen` 的按钮同一件事——
+            // 立刻真实开口一次（会落消息、会发通知），失败把原因显示在这一行。
+            HStack(spacing: 10) {
+                Button {
+                    trigger(rule)
+                } label: {
+                    HStack(spacing: 4) {
+                        if triggeringId == rule.id {
+                            ProgressView().controlSize(.mini)
+                        } else {
+                            Image(systemName: "paperplane")
+                        }
+                        Text(triggeringId == rule.id ? L("正在试…") : L("现在试一次"))
+                    }
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(accent)
+                }
+                .buttonStyle(.plain)
+                .disabled(triggeringId != nil)
+                Spacer(minLength: 0)
+            }
+            if let error = rule.lastError {
+                Text(Lf("上次没试成：%@", error))
+                    .font(.caption2)
+                    .foregroundStyle(Color.red.opacity(0.9))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
@@ -234,6 +273,20 @@ struct ProactiveListScreen: View {
             reload()
         case .failure(let error):
             banner = MFAlert(title: L("没建成"), message: error.localizedDescription)
+        }
+    }
+
+    /// 现在试一次：走真实的主动开口，成功/失败都给一句提示；失败原因已经由 Kit 写回 `lastError`。
+    private func trigger(_ rule: ProactiveRulePresentation) {
+        guard triggeringId == nil else { return }
+        triggeringId = rule.id
+        Task { @MainActor in
+            let outcome = await env.triggerProactiveRule(rule.id)
+            triggeringId = nil
+            banner = outcome.succeeded
+                ? MFAlert(title: L("已经发出去了"), message: L("他去说了一句；回到首页就能看到这条消息。"))
+                : MFAlert(title: L("这次没能开口"), message: outcome.error ?? L("再试一次看看。"))
+            reload()
         }
     }
 

@@ -677,6 +677,46 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
         try fetch(where: "sessionId = ?", [.text(sessionId)], orderBy: "createdAt ASC")
     }
 
+    /// 最近 `limit` 条（按时间升序返回）。
+    ///
+    /// 聊天页首屏与主动开口读历史都走这里：长会话下不该为了看最后 60 条把整段读进内存。
+    public func recent(sessionId: String, limit: Int) throws -> [MessageEntity] {
+        guard limit > 0 else { return [] }
+        let rows = try fetch(
+            where: "sessionId = ?", [.text(sessionId)],
+            orderBy: "createdAt DESC, id DESC", limit: limit
+        )
+        return Array(rows.reversed())
+    }
+
+    /// 游标分页：取「严格早于 `(createdAt, id)`」的最近 `limit` 条，仍按时间升序返回。
+    ///
+    /// 为什么游标是两个字段：`createdAt` 是毫秒时间戳，同一毫秒里可能落下两条消息
+    ///（主动开口与用户发送撞在一起时），只按时间取会漏掉或重复一条。`id` 是稳定的第二排序键。
+    public func pageBefore(
+        sessionId: String,
+        createdAt: Int64,
+        id: String,
+        limit: Int
+    ) throws -> [MessageEntity] {
+        guard limit > 0 else { return [] }
+        let rows = try fetch(
+            where: "sessionId = ? AND (createdAt < ? OR (createdAt = ? AND id < ?))",
+            [.text(sessionId), .int(createdAt), .int(createdAt), .text(id)],
+            orderBy: "createdAt DESC, id DESC",
+            limit: limit
+        )
+        return Array(rows.reversed())
+    }
+
+    /// 游标之前还有没有更早的消息（聊天页的「加载更早」只在这里判断到底）。
+    public func countBefore(sessionId: String, createdAt: Int64, id: String) throws -> Int {
+        try count(
+            where: "sessionId = ? AND (createdAt < ? OR (createdAt = ? AND id < ?))",
+            [.text(sessionId), .int(createdAt), .int(createdAt), .text(id)]
+        )
+    }
+
     public func count(sessionId: String) throws -> Int {
         try count(where: "sessionId = ?", [.text(sessionId)])
     }

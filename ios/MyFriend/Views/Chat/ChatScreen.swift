@@ -291,6 +291,20 @@ struct ChatScreen: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
+                    Color.clear.frame(height: 1).id("chat-top")
+                    // 上滑到顶就取更早的一页（首屏 60 条，每次再 60 条）；加载中/到头了不显示。
+                    if model.hasMoreHistory || model.isLoadingEarlier {
+                        loadEarlierRow
+                            // id 带上已加载条数：这一页插进来之后视图会重建、`onAppear` 再触发一次，
+                            // 于是「停在顶部」时能一页页接着取到最早，而不是卡在 120 条。
+                            .id("chat-load-earlier-\(model.messages.count)")
+                            // 只有「用户在往上翻」时才自动取：冷启动时列表在自动滚到底之前
+                            // 会短暂停在顶部，若这里无条件触发，一进来就白白多读 60 条。
+                            .onAppear {
+                                if !autoFollow { model.loadEarlierMessages() }
+                            }
+                            .onTapGesture { model.loadEarlierMessages() }
+                    }
                     ForEach(model.rows) { row in
                         switch row.content {
                         case .day(let label):
@@ -339,7 +353,9 @@ struct ChatScreen: View {
             .simultaneousGesture(
                 DragGesture(minimumDistance: 12).onChanged { _ in autoFollow = false }
             )
-            .onChange(of: model.messages.count) { _ in
+            // 只在「最后一条变了」时滚到底：上滑加载更早的消息是在数组**前面**插，
+            // 若按条数变化触发，会把刚翻到的历史位置一脚踹回最新消息。
+            .onChange(of: model.messages.last?.id) { _ in
                 scrollToBottom(proxy, animated: true)
             }
             .onChange(of: model.isGenerating) { _ in
@@ -351,6 +367,23 @@ struct ChatScreen: View {
             .overlay(alignment: .bottomTrailing) {
                 jumpToLatest(proxy)
             }
+            #if DEBUG
+            // 分页验收：`simctl` 不能上滑，用它把列表滚到「加载更早」那一行。
+            .onAppear {
+                guard ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_CHAT_TOP"] == "1" else { return }
+                Task { @MainActor in
+                    // 等页面真的挂载出来（冷启动要几秒），再连滚几次：
+                    // 第一次露出「加载更早」那一行，随后内容在前面插进来，后面的滚稳定停在顶部。
+                    for index in 0..<4 {
+                        try? await Task.sleep(nanoseconds: index == 0 ? 3_000_000_000 : 1_500_000_000)
+                        autoFollow = false   // 模拟「用户往上翻」
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo("chat-top", anchor: .top)
+                        }
+                    }
+                }
+            }
+            #endif
         }
     }
 
@@ -431,6 +464,25 @@ struct ChatScreen: View {
         }
         .padding(.horizontal, 32)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - 分页
+
+    /// 列表顶部的「加载更早」：既是状态（转圈），也是触发器（滚到它就会取下一页）。
+    private var loadEarlierRow: some View {
+        HStack(spacing: 6) {
+            if model.isLoadingEarlier {
+                ProgressView().controlSize(.mini)
+                Text(L("正在加载更早的消息…"))
+            } else {
+                Image(systemName: "arrow.up.circle")
+                Text(L("加载更早"))
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
     }
 
     // MARK: - 滚动

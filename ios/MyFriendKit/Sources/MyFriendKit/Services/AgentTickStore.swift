@@ -318,6 +318,10 @@ public struct MemoryEcho: Equatable, Sendable {
 public protocol MemoryEchoStoring {
     func byPersona(_ personaId: String) -> [MemoryEcho]
     func insertAll(_ echoes: [MemoryEcho])
+    /// 删掉一条回声（已经升级成正式记忆的那条）。
+    func delete(id: String)
+    /// 删掉一个人格的全部回声：`remember` 升级成功后与 Android 的 `deleteByPersona` 同语义。
+    func deleteAll(personaId: String)
     func deleteAll()
 }
 
@@ -342,6 +346,18 @@ public final class InMemoryMemoryEchoStore: MemoryEchoStoring {
                 echoes.append(echo)
             }
         }
+        lock.unlock()
+    }
+
+    public func delete(id: String) {
+        lock.lock()
+        echoes.removeAll { $0.id == id }
+        lock.unlock()
+    }
+
+    public func deleteAll(personaId: String) {
+        lock.lock()
+        echoes.removeAll { $0.personaId == personaId }
         lock.unlock()
     }
 
@@ -425,6 +441,24 @@ public final class MemoryEchoStore: MemoryEchoStoring {
             ])
             _ = try? statement.step()
         }
+    }
+
+    public func delete(id: String) {
+        fallback.delete(id: id)
+        guard available() else { return }
+        guard let statement = try? database.prepare("DELETE FROM memory_echoes WHERE id = ?") else { return }
+        try? statement.bind([.text(id)])
+        _ = try? statement.step()
+    }
+
+    public func deleteAll(personaId: String) {
+        fallback.deleteAll(personaId: personaId)
+        guard available() else { return }
+        guard let statement = try? database.prepare("DELETE FROM memory_echoes WHERE personaId = ?") else {
+            return
+        }
+        try? statement.bind([.text(personaId)])
+        _ = try? statement.step()
     }
 
     public func deleteAll() {

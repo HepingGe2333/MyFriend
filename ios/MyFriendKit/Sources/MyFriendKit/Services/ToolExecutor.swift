@@ -44,6 +44,8 @@ public final class ToolExecutor: ToolRunning {
     private let intents: AgentIntentSupport
     private let echoes: MemoryEchoStoring
     private let webTools: WebToolsClient
+    /// 搜完顺手判断「值不值得记」；没接（或没配置）就是「只搜不记」，搜索本身不受影响。
+    private let scorer: WebSearchScoring?
     private let now: () -> Int64
     private let log: (String) -> Void
 
@@ -60,6 +62,7 @@ public final class ToolExecutor: ToolRunning {
         intents: AgentIntentSupport,
         echoes: MemoryEchoStoring? = nil,
         webTools: WebToolsClient = WebToolsClient(),
+        scorer: WebSearchScoring? = nil,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -72,6 +75,7 @@ public final class ToolExecutor: ToolRunning {
         self.intents = intents
         self.echoes = echoes ?? MemoryEchoStore(database: stores.database)
         self.webTools = webTools
+        self.scorer = scorer
         self.now = now
         self.log = log
     }
@@ -196,6 +200,8 @@ public final class ToolExecutor: ToolRunning {
                     traceDetail: String(localized: "没有搜到结果")
                 )
             }
+            // 搜完顺手判断「值不值得记」：在后台跑，不挡这次工具的结果，也不改它的成败。
+            scheduleScoring(persona: persona, sessionId: sessionId, query: query, hits: hits)
             return ToolResult(
                 invocation: invocation,
                 ok: true,
@@ -268,6 +274,57 @@ public final class ToolExecutor: ToolRunning {
                 .flatMap { $0.isEmpty ? nil : $0 }
         guard let key else { return nil }
         return WebToolsAccess(baseUrl: baseUrl, apiKey: key, allowInsecureHttp: config.allowInsecureHttp)
+    }
+
+    /// 搜索打分：把结果压成一段摘要交给打分器，失败 / 没配置都安静跳过。
+    ///
+    /// 与 Android `WebSearchScorer.scoreInBackground` 一致：工具调用不等它，打分的成败与
+    /// 「这次搜索有没有结果」无关。**不抛**任何错误。
+    private func scheduleScoring(
+        persona: PersonaEntity,
+        sessionId: String,
+        query: String,
+        hits: [WebSearchHit]
+    ) {
+        guard let scorer, let (config, model) = chatConfig(persona: persona, sessionId: sessionId) else {
+            return
+        }
+        scorer.scoreInBackground(
+            personaId: persona.id,
+            query: query,
+            hitsSummary: Self.scoringSummary(hits),
+            config: config,
+            model: model
+        )
+    }
+
+    /// 打分只需要的摘要（一两行一条）：标题 + 链接 + 摘要，最长 2000 字。
+    static func scoringSummary(_ hits: [WebSearchHit]) -> String {
+        var lines: [String] = []
+        for hit in hits.prefix(6) {
+            let title = hit.title.isEmpty ? hit.url : hit.title
+            var line = "- \(title)\n  \(hit.url)"
+            let body = hit.summary.isEmpty ? hit.snippet : hit.summary
+            if !body.isEmpty { line += "\n  " + String(body.prefix(240)) }
+            lines.append(line)
+        }
+        return String(lines.joined(separator: "\n").prefix(WebSearchScorer.maxHitsSummaryChars))
+    }
+
+    /// 打分用哪份 API 配置：本会话绑定的优先，其次人格默认（与聊天一致的口径）。
+    ///
+    /// 没 Key 就没有可用的请求，直接返回 nil —— 打分不值得为它报一次错。
+    private func chatConfig(persona: PersonaEntity, sessionId: String) -> (CompletionConfig, String)? {
+        let sessionConfigId = (try? stores.sessions.byId(sessionId))??.apiConfigId
+        let configId = (sessionConfigId?.isEmpty == false ? sessionConfigId : nil)
+            ?? persona.defaultApiConfigId
+        guard let configId, let config = (try? stores.apiConfigs.byId(configId)) ?? nil else {
+            return nil
+        }
+        let key = (apiKeys.apiKey(for: config.id)?.trimmingCharacters(in: .whitespacesAndNewlines))
+            .flatMap { $0.isEmpty ? nil : $0 }
+        guard let key else { return nil }
+        return (CompletionConfig(entity: config, apiKey: key), config.model)
     }
 
     /// 回灌给模型的搜索结果。形状与 Android 的 `renderHits` 一致（编号 + 标题 + 链接 + 摘要 + 来源提示）。
@@ -383,6 +440,10 @@ public final class ToolExecutor: ToolRunning {
                 return failure(invocation, String(format: String(localized: "这次没记下来：%@"), Self.userFacing(error)))
             case .success:
                 if let mergeIntoId { memory.deleteById(mergeIntoId) }
+                // 已经升级成正式记忆：旧回声没有用了，留着只会让 `memory_echoes` 慢慢变大。
+                // 与 Android `ToolExecutor` 的 `memoryEchoDao.deleteByPersona(persona.id)` 同语义：
+                // 清的是**这个人的**回声，别人格的一律不动；`.reinforce` 分支不清（那条还在「确认中」）。
+                echoes.deleteAll(personaId: persona.id)
                 return success(
                     invocation,
                     title: String(localized: "记住了"),
@@ -445,7 +506,7 @@ public final class ToolExecutor: ToolRunning {
             detail = String(format: String(localized: "（%@）翻了一遍，没有找到"), depth.displayLabel)
         } else {
             detail = outcome.hits.map { hit in
-                "（\(Recall.displaySourceLabel(hit, now: now))）\(String(hit.text.prefix(80)))"
+                "（\(Recall.displaySourceLabel(hit, now: now))）\(String(Recall.displayChatText(hit).prefix(80)))"
             }.joined(separator: "\n")
         }
         return success(
@@ -453,7 +514,7 @@ public final class ToolExecutor: ToolRunning {
             title: String(localized: "回想了一下"),
             subtitle: outcome.isEmpty
                 ? String(localized: "翻了翻，没想起什么")
-                : String(format: String(localized: "翻了翻记忆 · %d 条"), outcome.hits.count),
+                : PluralText.format("翻了翻记忆 · %d 条", outcome.hits.count),
             detail: String(detail.prefix(600)),
             modelText: outcome.rendered
         )
@@ -608,7 +669,7 @@ public final class ToolExecutor: ToolRunning {
             title: String(localized: "决定先不回"),
             subtitle: nil,
             detail: String(
-                format: String(localized: "过 %d 分钟再想这件事%@"),
+                format: PluralText.template("过 %d 分钟再想这件事%@", plan.minutes),
                 plan.minutes,
                 plan.reason.isEmpty ? "" : String(format: String(localized: "（%@）"), plan.reason)
             ),

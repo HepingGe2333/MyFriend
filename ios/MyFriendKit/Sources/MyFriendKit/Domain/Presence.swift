@@ -154,15 +154,15 @@ public enum PresenceRules {
         let delta = now - ms
         let minutes = delta / 60_000
         if minutes < 1 { return String(localized: "刚刚") }
-        if minutes < 60 { return String(format: String(localized: "%d 分钟前"), minutes) }
+        if minutes < 60 { return PluralText.format("%d 分钟前", Int(minutes)) }
         let hours = delta / 3_600_000
-        if hours < 24 { return String(format: String(localized: "%d 小时前"), hours) }
+        if hours < 24 { return PluralText.format("%d 小时前", Int(hours)) }
         let days = delta / 86_400_000
         if days <= 1 { return String(localized: "昨天") }
-        if days < 7 { return String(format: String(localized: "%d 天前"), days) }
+        if days < 7 { return PluralText.format("%d 天前", Int(days)) }
         if days < 14 { return String(localized: "上周") }
-        if days < 30 { return String(format: String(localized: "%d 周前"), days / 7) }
-        if days < 365 { return String(format: String(localized: "%d 个月前"), days / 30) }
+        if days < 30 { return PluralText.format("%d 周前", Int(days / 7)) }
+        if days < 365 { return PluralText.format("%d 个月前", Int(days / 30)) }
         return String(localized: "很久以前")
     }
 }

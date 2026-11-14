@@ -3,6 +3,7 @@ package com.myfriend.app.ui.screens.apiconfig
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
@@ -50,9 +51,9 @@ class ApiListViewModel @Inject constructor(
         viewModelScope.launch {
             testingId.value = configId
             repository.testConnection(configId)
-                .onSuccess { message.value = it.message }
+                .onSuccess { message.value = ErrorText.connectionSuccess(context, it.modelCount) }
                 .onFailure {
-                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    val reason = ErrorText.of(context, it, R.string.api_error_unknown)
                     message.value = context.getString(R.string.api_error_connect_failed, reason)
                 }
             testingId.value = null
@@ -62,9 +63,9 @@ class ApiListViewModel @Inject constructor(
     fun duplicate(configId: String) {
         viewModelScope.launch {
             busy.value = true
-            repository.duplicate(configId)
+            repository.duplicate(configId, context.getString(R.string.common_copy_suffix))
                 .onSuccess { message.value = context.getString(R.string.api_list_duplicated) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.api_list_duplicate_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.api_list_duplicate_failed) }
             busy.value = false
         }
     }
@@ -74,7 +75,7 @@ class ApiListViewModel @Inject constructor(
             busy.value = true
             runCatching { repository.delete(configId) }
                 .onSuccess { message.value = context.getString(R.string.api_list_deleted) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.api_list_delete_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.api_list_delete_failed) }
             busy.value = false
         }
     }

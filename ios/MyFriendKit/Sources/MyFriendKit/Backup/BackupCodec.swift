@@ -175,7 +175,9 @@ public enum BackupCodec {
             }
         }
         if dropped > 0 {
-            warnings.append(String(format: String(localized: "%@ 里有 %d 条读不出来，已跳过"), label, dropped))
+            warnings.append(String(
+                format: PluralText.template("%@ 里有 %d 条读不出来，已跳过", dropped), label, dropped
+            ))
         }
 
         let valid = decoded.filter {
@@ -183,7 +185,9 @@ public enum BackupCodec {
         }
         let blank = decoded.count - valid.count
         if blank > 0 {
-            warnings.append(String(format: String(localized: "%@ 里有 %d 条没写 id，已跳过"), label, blank))
+            warnings.append(String(
+                format: PluralText.template("%@ 里有 %d 条没写 id，已跳过", blank), label, blank
+            ))
         }
         return valid
     }

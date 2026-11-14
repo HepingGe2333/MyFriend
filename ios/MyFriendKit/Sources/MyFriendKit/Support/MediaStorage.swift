@@ -468,6 +468,17 @@ public final class MediaStorage {
         for attachment in attachments { delete(attachment) }
     }
 
+    /// 这条 `uri` 现在还能不能指向一个真实文件（备份导入时判断头像是否失效）。
+    ///
+    /// 与 `resolve` 同一套规则：容器路径变了但同名文件还在附件目录里，也算「还在」。
+    public func exists(uriString: String?) -> Bool {
+        guard let uriString, !uriString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return false
+        }
+        guard let url = AttachmentLocation.resolve(uriString, directory: directory) else { return false }
+        return fileManager.fileExists(atPath: url.path)
+    }
+
     /// 只删「自己目录里」的文件。
     ///
     /// 为什么要有这条：`avatarUri` 可能来自备份/旧版本（指向别的目录），

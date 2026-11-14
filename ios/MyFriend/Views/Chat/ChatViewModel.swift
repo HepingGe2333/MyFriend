@@ -24,6 +24,10 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var presence = Presence()
     /// 首屏读完之前不画空会话引导，免得「先闪一下空状态再出现历史」。
     @Published private(set) var loaded = false
+    /// 窗口前面还有没有更早的消息（聊天页的「加载更早」）。
+    @Published private(set) var hasMoreHistory = false
+    /// 正在取更早的一页：加载中不重复触发（滚到顶部时 `onAppear` 会反复喊）。
+    @Published private(set) var isLoadingEarlier = false
     /// 有没有可用的 API 配置：没有就禁用输入栏并提示去设置。
     @Published private(set) var hasApiConfig = false
 
@@ -52,9 +56,16 @@ final class ChatViewModel: ObservableObject {
     /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
     @Published private(set) var lastNoReply: ChatNoReplyReason?
 
+    // MARK: - 分页
+
+    /// 首屏与每一页的条数。语义与 Android 侧的窗口化一致（见 `MessagePaging`）。
+    static let pageSize = MessagePaging.pageSize
+
     // MARK: - 内部
 
     private var env: AppEnvironment?
+    /// 这张会话在库里一共多少条（不是窗口里多少条）：用来判断「有没有新消息进来」。
+    private var totalMessageCount = 0
     private var sessionId = ""
     private var generationTask: Task<Void, Never>?
     private var pulseTask: Task<Void, Never>?
@@ -116,7 +127,70 @@ final class ChatViewModel: ObservableObject {
         if let personaId = session?.personaId {
             persona = ((try? env.stores.personas.byId(personaId)) ?? nil) ?? persona
         }
-        messages = ((try? env.stores.messages.bySession(sessionId)) ?? []) 
+        // **窗口化**：只读最近一屏（首屏 60 条；已经上滑加载过的页也保住，不把人拽回顶上）。
+        // `messages.bySession` 是整段全量读取，长会话下是这一页最大的一块内存。
+        let window = max(Self.pageSize, messages.count)
+        messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
+        totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] window loaded=\(messages.count) total=\(totalMessageCount) hasMore=\(hasMoreHistory)")
+        #endif
+    }
+
+    /// 窗口前面还有没有更早的消息。
+    ///
+    /// 用 `countBefore` 而不是「这一页满 60 就算还有」：恰好 60 条时后者会多显示一次
+    /// 「加载更早」，点下去发现没有——那是把边界判断推给用户。
+    private func refreshHasMore() {
+        guard let env, let first = messages.first else {
+            hasMoreHistory = false
+            return
+        }
+        let older = (try? env.stores.messages.countBefore(
+            sessionId: sessionId, createdAt: first.createdAt, id: first.id
+        )) ?? 0
+        hasMoreHistory = older > 0
+    }
+
+    /// 往上翻到顶：再取 60 条更早的，接在窗口前面。
+    ///
+    /// 三条保护：已经没有更早的了、正在取（滚到顶时 `onAppear` 会连喊几次）、
+    /// 取回来的 id 与窗口里已有的重复（同一毫秒落了两条消息时的兜底）。
+    func loadEarlierMessages() {
+        guard let env, hasMoreHistory, !isLoadingEarlier, messages.first != nil else { return }
+        isLoadingEarlier = true
+        #if DEBUG
+        // 分页验收：让「正在加载更早…」这一帧停留得久一点，好让 simctl 截到图。
+        if ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SLOW_PAGING"] == "1" {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 30_000_000_000)
+                self.appendEarlierPage(env: env)
+            }
+            return
+        }
+        #endif
+        appendEarlierPage(env: env)
+    }
+
+    /// 取一页更早的接在窗口前面（调试慢速路径也复用它，逻辑只有一份）。
+    private func appendEarlierPage(env: AppEnvironment) {
+        guard let first = messages.first else {
+            isLoadingEarlier = false
+            return
+        }
+        let older = ((try? env.stores.messages.pageBefore(
+            sessionId: sessionId,
+            createdAt: first.createdAt,
+            id: first.id,
+            limit: Self.pageSize
+        )) ?? [])
+        messages = MessagePaging.prepend(older, to: messages)
+        isLoadingEarlier = false
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] load earlier +\(older.count) loaded=\(messages.count) hasMore=\(hasMoreHistory)")
+        #endif
     }
 
     /// 心情与「他此刻」都是**只读推导**：心情会让时间冲淡（`MoodRepository` 顺手落库），
@@ -171,10 +245,11 @@ final class ChatViewModel: ObservableObject {
     /// 库里的消息变了就重读一次（否则不动，避免把滚动位置与展开状态抖坏）。
     private func reloadMessagesIfChanged() {
         guard let env else { return }
-        let count = (try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count
+        // 比的是**全表**条数与最后一条 id：窗口里只有 60 条，拿窗口条数去比会永远「不相等」。
+        let count = (try? env.stores.messages.count(sessionId: sessionId)) ?? totalMessageCount
         let latestId = ((try? env.stores.messages.latest(sessionId: sessionId)) ?? nil)?.id
         let currentLatestId = messages.last?.id
-        if count != messages.count || latestId != currentLatestId {
+        if count != totalMessageCount || latestId != currentLatestId {
             reloadMessages()
         }
     }

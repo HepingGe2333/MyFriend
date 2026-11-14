@@ -23,6 +23,79 @@ Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the 
 
 ---
 
+## 0.10.1
+
+A small release that closes the "not done yet" items each track admitted to during 0.10.0, and fixes the
+inconsistencies that parallel work introduced. Version `0.10.1`, build numbers **13**, schema stays **v10**,
+backup format stays **v2**.
+
+### Android: error copy is no longer hard-coded Chinese
+
+- Added `domain/UserError.kt`: `UserError` (`Domain(code, arg, number)` / `Network(kind)` / `Unknown`),
+  **74** `DomainErrorCode` values and `NetworkErrorKind` (including `Http(status)` and `ResponseTooLong(limit)`).
+- The data and network layers only throw structured errors; the UI maps them through `ui/common/ErrorText.kt`,
+  `BackupText.kt` and `RevisionReasonText.kt`. **216 new keys × 2 languages.**
+- **Persisted errors are localised too**: `messages.errorMessage`, `ToolTraceItem.detail` and
+  `proactive_rules.lastError` now store ASCII tokens (`@mf-err:...` / `@rev:...`) that are rendered per language;
+  Chinese values already in old databases keep displaying as-is (no rewrite, no migration).
+- `ChineseLiteralGuardTest` now also scans `data/` and `network/`: 378 Chinese literals surfaced at once, every
+  user-visible one is structured, and the 18 remaining prompt/persistence files are whitelisted with per-file reasons.
+- Backup summaries, import warnings, persona revision reasons, connection tests, HTTP status codes, web-tool errors
+  and chat error bubbles all go through resources.
+
+### Both platforms: chat pagination
+
+- The first screen loads the latest **60** messages; scrolling to the top fetches another 60 (`createdAt` + `id`
+  composite cursor) until the oldest, with a "load earlier" row.
+- **Unread counts, read receipts, DND and the wake threshold still query the full table**, unaffected by the window;
+  search, export, history compression and backup keep their full-table paths.
+- Both platforms have contract tests pinning these properties (Android `ChatPagingContractTest` /
+  `MessagePagingTest`, iOS `ChatPagingTests`) so nobody windowises them later.
+- Known cost: once the entire history has been paged through, the observed range equals the full history —
+  pagination lowers the peak when entering and browsing a conversation.
+
+### iOS: the three real gaps left from the 0.10.0 report
+
+| Gap | Now |
+| --- | --- |
+| Importance scoring after `web_search` | Ported from Android `WebSearchScorer` (same criteria, floor 3, temperature 0.2, usage kind `SCORING`, failures degrade to "don't remember"), plus a similarity de-duplication pass before writing (stricter than Android) |
+| Memory echo cleanup | After a successful `promote`, echoes for that persona are deleted (matching Android's `deleteByPersona`); `reinforce` is untouched |
+| Proactive "try now" and failure reason | Each rule can be fired once from the list (success writes a message + notification and clears `lastError`; failure stores `lastError` and shows it; scheduling is unchanged; refused while asleep) |
+
+- `ProactiveLevel` copy in the editor now calls the domain implementation instead of duplicating it.
+- Usage semantics: autonomous heartbeat openings record `AGENT`; "try now" records `CHAT` (matching Android's
+  `ProactiveRepository.triggerNow`).
+
+### Both platforms: media and stale paths
+
+- Changing/removing an avatar, or deleting a persona, deletes the avatar file; "clear all data" removes the avatar directory.
+- On backup import, an `avatarUri` pointing at a missing file is cleared and reported in import warnings (both languages).
+- iOS: an avatar picked in the editor but not saved is cleaned up; Android: attachments are deleted together with
+  their message, cleared context or deleted session.
+
+### Other fixes
+
+- Android background paths now use precise queries (`lastUserMessage` / `lastUserMessageAt` / `recentUserMessages`)
+  instead of scanning a window, removing the "no user message in the last 40 rows" edge case.
+- Android SSE enforces an **8 MB** per-line limit (aborts as "reply too long" instead of buffering one huge line).
+- iOS compiler warnings **9 → 0**: `LlmConcurrencyGate` locks inside a synchronous critical section;
+  `AgentLoop` / `MemoryConsolidator` / `MemoryExtraction` use an `AsyncMutex` whose waiters suspend instead of
+  blocking a thread. Gate semantics and timeouts are preserved item by tool.
+- iOS English plurals completed (backup/reset summaries, rules, times), fixing "1 personas" style edges;
+  `Recall` tool-detail prefixes are localised display variants (the prompt version stays Chinese).
+- Chinese still visible in tool trace titles (e.g. "联网搜索", "记住了") is not handled in this release; see Known limitations.
+
+### Tests
+
+| Target | Result |
+| --- | --- |
+| Android | **683 tests / 0 failures** (639 baseline + 44) |
+| iOS | **872 tests / 0 failures** (827 baseline + 45) |
+| agentd | **19 tests / 0 failures** |
+| Builds | `:app:assembleDebug`, `xcodebuild build`, `:agentd:build` all succeed; iOS clean build has zero Swift warnings |
+
+---
+
 ## 0.10.0
 
 Version `0.10.0` (a large change: internationalisation plus a cross-platform agent contract). Build numbers `versionCode` / `CURRENT_PROJECT_VERSION` are both **12**; database schema stays **v10** and backup format stays **v2**.

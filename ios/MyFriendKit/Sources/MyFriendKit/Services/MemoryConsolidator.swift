@@ -107,7 +107,8 @@ public final class MemoryConsolidator {
     private let completion: CompletionClient
     private let browsingDigest: (String) -> String?
     private let now: () -> Int64
-    private let lock = NSLock()
+    /// 同一人格的整理串行化：两次整理叠在一起会把同一批记忆算两遍。
+    private let gate = AsyncMutex()
 
     /// - Parameter browsingDigest: 「他最近自己上网看到的」摘要；App 层接到 IdleBrowsing 的缓存上。
     ///   传 nil 表示还没有这条链路（提示词里会写「这几天没上网看东西」）。
@@ -135,8 +136,8 @@ public final class MemoryConsolidator {
         model: String,
         now: Int64? = nil
     ) async -> ConsolidationResult {
-        lock.lock()
-        defer { lock.unlock() }
+        await gate.acquire()
+        defer { gate.release() }
         let at = now ?? self.now()
         do {
             return try await consolidateLocked(personaId: personaId, config: config, model: model, now: at)

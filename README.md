@@ -6,17 +6,17 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-639%20Android%20%7C%20827%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#构建与测试)
+[![Tests](https://img.shields.io/badge/tests-683%20Android%20%7C%20872%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#构建与测试)
 
 ## 项目状态
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.10.0`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
+| 版本 | `0.10.1`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
 | 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
 | 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 639 条（`:app:testDebugUnitTest`）、iOS 827 条（`swift test`）、agentd 19 条（`:agentd:test`） |
+| 单元测试 | Android 683 条（`:app:testDebugUnitTest`）、iOS 872 条（`swift test`）、agentd 19 条（`:agentd:test`） |
 | 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
 
 ## 特性概览
@@ -142,15 +142,16 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 ## 已知限制
 
 - **没有 CI**：两端测试、构建与迁移测试都靠本地命令；PR 评审以本地运行结果为准。
-- **聊天页未分页**：两端都一次性加载整段消息列表，长会话下这是最大的一块内存开销（后台路径已窗口化）。
+- **聊天页分页有代价**：两端首屏只读最近 60 条、上滑再取（未读/已读/DND 仍走全表），
+  但把整个历史翻完之后可观察区间等价于全量；「跳到某条历史消息」的定位 UI 仍未做。
 - **iOS 后台不保证实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；回到前台时按错过的时间补算。
 - **图片与头像不进备份**：备份只保留路径与元数据，换机后需要重新选择图片。
 - **只有 token 统计**：没有金额、额度与拦截，`costMicroUsd` 仅保留列，不展示。
 - **agentd 尚未接线**：只有独立服务与契约用例，Android / iOS 客户端还没有调用它。
 - **仓库不含产物**：`.gitignore` 排除了 `dist/`、`docs/screenshots/`、APK / IPA 与构建缓存，因此文档中不放截图，也不提供预编译包。
-- **英文尚未覆盖「数据层错误」与「模型产出」**：UI 层与 iOS Kit 的用户可见文案已英文化，但 Android 的
-  `data/` 与 `network/` 里仍有中文错误信息会经 `Result` 上屏（连接测试、超时、429 等）；模型写出的文本
-  （心情理由、记忆正文、人格名/简介）与升级前已有数据不翻译；代码注释、日志与提示词脚手架保持中文（见 [docs/I18N.md](docs/I18N.md)）。
+- **英文仍有几处中文**：数据层与网络层错误已改为结构化错误 + 资源映射（含落库令牌），但**工具痕迹标题**
+  （「联网搜索」「记住了」）、**升级前已落库的中文值**、**模型写出的文本**（心情理由、记忆正文、人格名/简介）
+  以及代码注释/日志/提示词脚手架仍是中文；英文长句未逐条走查（见 [docs/I18N.md](docs/I18N.md)）。
 - **模拟器 Keychain 限制**：未签名模拟器构建没有 Keychain entitlement，调试时走 UserDefaults 兜底并写入 `debug.log`；真机不受影响。
 
 ## 贡献与许可

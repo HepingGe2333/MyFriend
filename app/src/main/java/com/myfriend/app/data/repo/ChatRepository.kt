@@ -28,10 +28,16 @@ import com.myfriend.app.domain.LanguageDirective
 import com.myfriend.app.domain.LlmLane
 import com.myfriend.app.domain.MoodRecovery
 import com.myfriend.app.domain.MessageAttachment
+import com.myfriend.app.domain.MessagePaging
 import com.myfriend.app.domain.MoodBehavior
 import com.myfriend.app.domain.MoodPrompt
 import com.myfriend.app.domain.OpenSessionTracker
+import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.PersonaSwitchResult
+import com.myfriend.app.domain.DomainErrorCode
+import com.myfriend.app.domain.NetworkErrorKind
+import com.myfriend.app.domain.UserError
+import com.myfriend.app.domain.UserErrorTokens
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.ToolCatalog
 import com.myfriend.app.domain.ToolProtocol
@@ -39,6 +45,8 @@ import com.myfriend.app.domain.ToolResult
 import com.myfriend.app.domain.ToolTraceCodec
 import com.myfriend.app.domain.ToolTraceItem
 import com.myfriend.app.network.ApiException
+import com.myfriend.app.network.toUserError
+import com.myfriend.app.network.userError
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.StreamEvent
 import com.myfriend.app.network.WireMessage
@@ -49,6 +57,7 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.withContext
@@ -145,7 +154,32 @@ class ChatRepository @Inject constructor(
 ) {
     fun observeSessions(): Flow<List<ChatSessionEntity>> = sessionDao.observeAll()
     fun observeSession(id: String): Flow<ChatSessionEntity?> = sessionDao.observeById(id)
-    fun observeMessages(sessionId: String): Flow<List<MessageEntity>> = messageDao.observeBySession(sessionId)
+    /**
+     * 聊天页首屏：最近 [limit] 条，时间正序。
+     *
+     * 不再一次性读整段会话（长会话内存最大的一块）。更早的部分由
+     * [messagesBefore] + [observeMessagesFrom] 一段一段往回要。
+     */
+    fun observeLatestMessages(
+        sessionId: String,
+        limit: Int = MessagePaging.PAGE_SIZE
+    ): Flow<List<MessageEntity>> =
+        messageDao.observeRecentBySession(sessionId, limit).map { rows -> rows.asReversed() }
+
+    /** 已经加载到的最早一条之后：整个已加载区间（可观察，编辑/删除都会跟着更新）。 */
+    fun observeMessagesFrom(
+        sessionId: String,
+        cursor: MessagePaging.Cursor
+    ): Flow<List<MessageEntity>> =
+        messageDao.observeSince(sessionId, cursor.createdAt, cursor.id)
+
+    /** 往前翻一页（时间正序返回）；返回不足一页说明到底了。 */
+    suspend fun messagesBefore(
+        sessionId: String,
+        cursor: MessagePaging.Cursor,
+        limit: Int = MessagePaging.PAGE_SIZE
+    ): List<MessageEntity> =
+        messageDao.pageBefore(sessionId, cursor.createdAt, cursor.id, limit).asReversed()
 
     suspend fun getSession(id: String): ChatSessionEntity? = sessionDao.getById(id)
     suspend fun getPersona(id: String): PersonaEntity? = personaDao.getById(id)
@@ -164,7 +198,7 @@ class ChatRepository @Inject constructor(
         title: String? = null
     ): Result<ChatSessionEntity> = runCatching {
         sessionDao.latestForPersona(personaId)?.let { return@runCatching it }
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val configId = apiConfigId ?: persona.defaultApiConfigId
         val config = configId?.let { apiConfigDao.getById(it) }
         val model = persona.modelOverride?.takeIf { it.isNotBlank() } ?: config?.model.orEmpty()
@@ -193,14 +227,14 @@ class ChatRepository @Inject constructor(
 
     suspend fun switchToPersona(personaId: String): PersonaSwitchResult {
         val persona = personaDao.getById(personaId)
-            ?: return PersonaSwitchResult(false, null, "人格不存在")
+            ?: return PersonaSwitchResult(false, null, PersonaSwitchNotice.PERSONA_NOT_FOUND)
         val session = runCatching { getOrCreateForPersona(personaId) }.getOrElse {
-            return PersonaSwitchResult(false, null, it.message ?: "无法创建会话")
+            return PersonaSwitchResult(false, null, PersonaSwitchNotice.SESSION_CREATE_FAILED)
         }
         settingsRepository.setActivePersonaId(personaId)
         val config = getConfig(session.apiConfigId)
         return if (config == null) {
-            PersonaSwitchResult(true, session, "尚未绑定 API，请在会话中完成配置")
+            PersonaSwitchResult(true, session, PersonaSwitchNotice.API_NOT_BOUND)
         } else {
             PersonaSwitchResult(true, session)
         }
@@ -213,11 +247,11 @@ class ChatRepository @Inject constructor(
     ): Result<Unit> = runCatching {
         val content = text.trim()
         val images = attachments.filter { it.isImage }.take(MAX_IMAGES_PER_MESSAGE)
-        require(content.isNotBlank() || images.isNotEmpty()) { "消息不能为空" }
-        require(content.length <= 32_000) { "消息过长" }
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
-        require(session.apiConfigId != null) { "请先为该会话选择 API 配置" }
-        apiConfigDao.getById(session.apiConfigId) ?: error("API 配置已不存在")
+        if (content.isBlank() && images.isEmpty()) userError(DomainErrorCode.MESSAGE_EMPTY)
+        if (content.length > 32_000) userError(DomainErrorCode.MESSAGE_TOO_LONG)
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
+        if (session.apiConfigId == null) userError(DomainErrorCode.API_CONFIG_REQUIRED)
+        apiConfigDao.getById(session.apiConfigId) ?: userError(DomainErrorCode.API_CONFIG_GONE)
         val now = nextTimestamp(sessionId)
         val isFirstUserMessage = messageDao.countUserMessages(sessionId) == 0
         val message = MessageEntity(
@@ -254,29 +288,29 @@ class ChatRepository @Inject constructor(
     fun generateAssistant(sessionId: String): Flow<GenerationEvent> = flow {
         val session = sessionDao.getById(sessionId)
             ?: run {
-                emit(GenerationEvent.Failed("会话不存在", null))
+                emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.SESSION_NOT_FOUND), null))
                 return@flow
             }
         val persona = personaDao.getById(session.personaId)
             ?: run {
-                emit(GenerationEvent.Failed("人格不存在", null))
+                emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.PERSONA_NOT_FOUND), null))
                 return@flow
             }
         val configId = session.apiConfigId
             ?: run {
-                emit(GenerationEvent.Failed("请先为该会话选择 API 配置", null))
+                emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_REQUIRED), null))
                 return@flow
             }
         val resolved = apiConfigRepository.resolve(configId)
             ?: run {
-                emit(GenerationEvent.Failed("API 配置已不存在", null))
+                emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_GONE), null))
                 return@flow
             }
         val config = resolved.config
         // 只读最近 N 条：长会话不再每次把整段历史读进内存（更早的部分已经收成摘要了）。
         val recentHistory = messageDao.recentBySession(sessionId, CONTEXT_RECENT_LIMIT)
         if (recentHistory.none { it.role == MessageRole.USER }) {
-            emit(GenerationEvent.Failed("还没有可以回复的消息", null))
+            emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.NOTHING_TO_REPLY), null))
             return@flow
         }
         val now0 = System.currentTimeMillis()
@@ -411,10 +445,7 @@ class ChatRepository @Inject constructor(
             val rawFinalText = finalBody.trim()
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
             if (finalText.isBlank() && proposal == null) {
-                throw ApiException(
-                    null,
-                    if (traces.isEmpty()) "模型没有返回任何文字" else "他查完了东西，怕是走神了，再发一条试试"
-                )
+                throw ApiException(NetworkErrorKind.EmptyStream)
             }
             val saved = withContext(NonCancellable) {
                 val now = nextTimestamp(sessionId)
@@ -485,21 +516,18 @@ class ChatRepository @Inject constructor(
             throw cancel
         } catch (error: Exception) {
             if (!completed) {
-                val message = when (error) {
-                    is ApiException -> error.message
-                    else -> error.message ?: "生成失败"
-                }.take(800)
+                val userFacing = error.toUserError()
                 val saved = withContext(NonCancellable) {
                     saveFailed(
                         sessionId = sessionId,
                         personaId = persona.id,
                         partial = shownText,
-                        errorText = message,
+                        errorText = UserErrorTokens.encode(userFacing),
                         model = session.model.ifBlank { config.model },
                         toolTraceJson = ToolTraceCodec.encode(traces)
                     )
                 }
-                emit(GenerationEvent.Failed(message, saved))
+                emit(GenerationEvent.Failed(userFacing, saved))
             }
         }
     }
@@ -580,24 +608,25 @@ class ChatRepository @Inject constructor(
     }
 
     suspend fun prepareRegeneration(sessionId: String): Result<Unit> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         val latest = messageDao.latestInSession(sessionId)
         if (latest?.role == MessageRole.ASSISTANT) {
             messageDao.deleteById(latest.id)
             refreshPreview(session)
         }
-        val hasUser = messageDao.latestUser(sessionId) != null
-        require(hasUser) { "没有可以重新生成的消息" }
+        if (messageDao.latestUser(sessionId) == null) userError(DomainErrorCode.NOTHING_TO_REGENERATE)
     }
 
     suspend fun editUserMessage(sessionId: String, messageId: String, newContent: String): Result<Unit> = runCatching {
         val content = newContent.trim()
-        require(content.isNotBlank()) { "消息不能为空" }
-        require(content.length <= 32_000) { "消息过长" }
-        val message = messageDao.getById(messageId) ?: error("消息不存在")
-        require(message.role == MessageRole.USER && message.sessionId == sessionId) { "只能编辑用户消息" }
+        if (content.isBlank()) userError(DomainErrorCode.MESSAGE_EMPTY)
+        if (content.length > 32_000) userError(DomainErrorCode.MESSAGE_TOO_LONG)
+        val message = messageDao.getById(messageId) ?: userError(DomainErrorCode.MESSAGE_NOT_FOUND)
+        if (message.role != MessageRole.USER || message.sessionId != sessionId) {
+            userError(DomainErrorCode.ONLY_USER_MESSAGE_EDITABLE)
+        }
         val now = System.currentTimeMillis()
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         database.withTransaction {
             messageDao.updateContent(messageId, content, now)
             messageDao.deleteAfter(sessionId, message.createdAt)
@@ -616,13 +645,17 @@ class ChatRepository @Inject constructor(
     suspend fun deleteMessage(messageId: String): Result<Unit> = runCatching {
         val message = messageDao.getById(messageId) ?: return@runCatching
         messageDao.deleteById(messageId)
+        // 消息没了，它带着的图片文件也不该继续占地方。
+        deleteAttachmentFiles(listOf(message))
         val session = sessionDao.getById(message.sessionId) ?: return@runCatching
         refreshPreview(session)
     }
 
     suspend fun clearContext(sessionId: String): Result<Unit> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         val now = System.currentTimeMillis()
+        // 先取一遍要删的消息，事务提交后把它们的图片文件一并清掉（事务里不做文件 IO）。
+        val doomed = messageDao.getBySession(sessionId)
         database.withTransaction {
             messageDao.deleteBySession(sessionId)
             sessionDao.update(
@@ -639,11 +672,12 @@ class ChatRepository @Inject constructor(
                 )
             )
         }
+        deleteAttachmentFiles(doomed)
     }
 
     suspend fun renameSession(sessionId: String, title: String): Result<Unit> = runCatching {
         val value = title.trim()
-        require(value.isNotBlank()) { "标题不能为空" }
+        if (value.isBlank()) userError(DomainErrorCode.TITLE_EMPTY)
         sessionDao.rename(sessionId, value.take(120), System.currentTimeMillis())
     }
 
@@ -662,16 +696,29 @@ class ChatRepository @Inject constructor(
     fun isSessionOpen(sessionId: String): Boolean = openSessionTracker.openSessionId == sessionId
 
     suspend fun deleteSession(sessionId: String) {
+        val doomed = messageDao.getBySession(sessionId)
         database.withTransaction {
             messageDao.deleteBySession(sessionId)
             sessionDao.deleteById(sessionId)
         }
+        deleteAttachmentFiles(doomed)
+    }
+
+    /** 删掉这些消息带在身上的图片文件（只删 App 自己媒体目录里的）。 */
+    private fun deleteAttachmentFiles(messages: List<MessageEntity>) {
+        if (messages.isEmpty()) return
+        runCatching {
+            messages.forEach { message ->
+                val items = AttachmentsCodec.decode(message.attachmentsJson)
+                if (items.isNotEmpty()) MediaStorage.deleteFiles(items)
+            }
+        }
     }
 
     suspend fun bindSessionConfig(sessionId: String, configId: String): Result<ChatSessionEntity> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
-        val config = apiConfigDao.getById(configId) ?: error("API 配置不存在")
-        val persona = personaDao.getById(session.personaId) ?: error("人格不存在")
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
+        val config = apiConfigDao.getById(configId) ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
+        val persona = personaDao.getById(session.personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val model = persona.modelOverride?.takeIf { it.isNotBlank() } ?: config.model
         val now = System.currentTimeMillis()
         database.withTransaction {
@@ -685,7 +732,7 @@ class ChatRepository @Inject constructor(
                 )
             }
         }
-        sessionDao.getById(sessionId) ?: error("会话不存在")
+        sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
     }
 
     suspend fun search(query: String): SearchResults {
@@ -705,7 +752,7 @@ class ChatRepository @Inject constructor(
                 SessionSearchHit(
                     sessionId = session.id,
                     title = session.title,
-                    personaName = persona?.name ?: "未知人格",
+                    personaName = persona?.name ?: "",
                     personaAvatarUri = persona?.avatarUri,
                     personaAvatarSeed = persona?.avatarSeed ?: 0,
                     preview = session.lastMessagePreview,
@@ -730,8 +777,8 @@ class ChatRepository @Inject constructor(
     }
 
     suspend fun exportSession(sessionId: String): Result<ExportFile> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: error("会话不存在")
-        val persona = personaDao.getById(session.personaId) ?: error("人格不存在")
+        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
+        val persona = personaDao.getById(session.personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val config = session.apiConfigId?.let { apiConfigDao.getById(it) }
         val messages = messageDao.getBySession(sessionId)
         val dto = ExportSession(
@@ -771,7 +818,7 @@ class ChatRepository @Inject constructor(
             ExportSession(
                 sessionId = session.id,
                 title = session.title,
-                personaName = persona?.name ?: "未知人格",
+                personaName = persona?.name ?: "",
                 personaCategory = persona?.category ?: "",
                 personaVersion = persona?.version ?: 0,
                 apiConfigName = session.apiConfigId?.let { configs[it]?.name },

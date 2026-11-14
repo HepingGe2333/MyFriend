@@ -62,6 +62,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.PersonaEntity
@@ -106,7 +107,7 @@ fun PersonaListScreen(
                 snackbar.showSnackbar(
                     result.fold(
                         { context.getString(R.string.persona_list_exported) },
-                        { context.getString(R.string.persona_list_export_failed_detail, it.message) }
+                        { context.getString(R.string.persona_list_export_failed_detail, ErrorText.of(context, it)) }
                     )
                 )
             }
@@ -124,7 +125,7 @@ fun PersonaListScreen(
                 }
                 result.onSuccess { viewModel.import(it) }
                     .onFailure {
-                        snackbar.showSnackbar(context.getString(R.string.persona_list_read_failed, it.message))
+                        snackbar.showSnackbar(context.getString(R.string.persona_list_read_failed, ErrorText.of(context, it)))
                     }
             }
         }

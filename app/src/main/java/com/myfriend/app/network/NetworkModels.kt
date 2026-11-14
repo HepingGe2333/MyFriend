@@ -1,6 +1,9 @@
 package com.myfriend.app.network
 
 import com.myfriend.app.data.local.ApiConfigEntity
+import com.myfriend.app.domain.NetworkErrorKind
+import com.myfriend.app.domain.UserError
+import com.myfriend.app.domain.debugText
 import com.myfriend.app.data.local.ProviderType
 
 data class WireMessage(
@@ -40,24 +43,35 @@ sealed class StreamEvent {
     data object Done : StreamEvent()
 }
 
+/**
+ * 连接测试的结果。
+ *
+ * 0.10.1 起不再带一句现成的中文：成功时只给「发现几个模型」，失败由调用方从
+ * [ApiException.kind] 映射资源；界面上不会再读到数据层拼的句子。
+ */
 data class ConnectionTestResult(
-    val success: Boolean,
-    val message: String,
+    val success: Boolean = true,
+    val modelCount: Int = 0,
     val models: List<String> = emptyList()
 )
 
+/**
+ * 网络层错误。
+ *
+ * 只装结构化原因 [kind]（见 `domain/UserError.kt`）与服务端原始 [detail]；
+ * [message] 是给日志/调试看的中文，**界面不得直接显示**（UI 走 `ErrorText` 映射资源）。
+ */
 class ApiException(
-    val statusCode: Int?,
-    override val message: String,
+    val kind: NetworkErrorKind,
     val detail: String? = null
-) : Exception(message)
+) : Exception(UserError.Network(kind).debugText())
 
+/** 服务商适配还没做（Gemini / Claude 预留）：等价于一个网络层错误。 */
 class ProviderUnavailableException(
-    override val message: String
-) : Exception(message)
+    val provider: String? = null
+) : Exception(UserError.Network(NetworkErrorKind.ProviderUnavailable(provider)).debugText())
 
 data class ProviderUiInfo(
     val type: ProviderType,
-    val label: String,
     val capabilities: ProviderCapabilities
 )

@@ -61,6 +61,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaPresetEntity
 import com.myfriend.app.domain.ExportFile
@@ -103,7 +104,7 @@ fun PresetListScreen(
                 snackbar.showSnackbar(
                     result.fold(
                         { context.getString(R.string.preset_export_done) },
-                        { context.getString(R.string.preset_export_error_detail, it.message.orEmpty()) }
+                        { context.getString(R.string.preset_export_error_detail, ErrorText.of(context, it)) }
                     )
                 )
             }
@@ -122,7 +123,7 @@ fun PresetListScreen(
                 text.onSuccess { viewModel.import(it) }
                     .onFailure {
                         snackbar.showSnackbar(
-                            context.getString(R.string.preset_read_error_detail, it.message.orEmpty())
+                            context.getString(R.string.preset_read_error_detail, ErrorText.of(context, it))
                         )
                     }
             }

@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.BuildConfig
 import com.myfriend.app.R
 import com.myfriend.app.data.prefs.BubbleStyle
@@ -155,7 +156,7 @@ fun SettingsScreen(
                     .onSuccess { viewModel.setChatBackgroundImage(it) }
                     .onFailure {
                         snackbar.showSnackbar(
-                            it.message ?: context.getString(R.string.settings_error_background_image)
+                            ErrorText.of(context, it, R.string.settings_error_background_image)
                         )
                     }
             }
@@ -169,7 +170,7 @@ fun SettingsScreen(
                     .onSuccess { viewModel.setUserAvatar(it) }
                     .onFailure {
                         snackbar.showSnackbar(
-                            it.message ?: context.getString(R.string.settings_error_avatar)
+                            ErrorText.of(context, it, R.string.settings_error_avatar)
                         )
                     }
             }
@@ -188,7 +189,7 @@ fun SettingsScreen(
                 snackbar.showSnackbar(
                     result.fold(
                         { context.getString(R.string.settings_export_success) },
-                        { context.getString(R.string.settings_export_failed, it.message.orEmpty()) }
+                        { context.getString(R.string.settings_export_failed, ErrorText.of(context, it)) }
                     )
                 )
             }

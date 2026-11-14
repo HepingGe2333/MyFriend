@@ -1,5 +1,6 @@
 package com.myfriend.app.ui.screens.memory
 
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.util.androidStringLookup
 import android.content.Context
 import androidx.annotation.StringRes
@@ -263,7 +264,7 @@ class MemoryViewModel @Inject constructor(
         viewModelScope.launch {
             memoryRepository.add(personaId, content, category, importance)
                 .onSuccess { message.value = context.getString(R.string.memory_added) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.memory_add_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.memory_add_failed) }
         }
     }
 
@@ -271,7 +272,7 @@ class MemoryViewModel @Inject constructor(
         viewModelScope.launch {
             memoryRepository.update(memory, content, category, importance)
                 .onSuccess { message.value = context.getString(R.string.memory_updated) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.memory_update_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.memory_update_failed) }
         }
     }
 
@@ -293,9 +294,9 @@ class MemoryViewModel @Inject constructor(
         viewModelScope.launch {
             extracting.value = true
             memoryRepository.extractFromLatestSession(personaId)
-                .onSuccess { message.value = it.message }
+                .onSuccess { message.value = extractionMessage(it) }
                 .onFailure {
-                    val detail = it.message ?: context.getString(R.string.memory_extract_failed_detail)
+                    val detail = ErrorText.of(context, it, R.string.memory_extract_failed_detail)
                     message.value = context.getString(R.string.memory_extract_failed, detail)
                 }
             extracting.value = false
@@ -419,4 +420,21 @@ class MemoryViewModel @Inject constructor(
         /** 排上多久还没开跑就认为「没跑起来」：给系统排队留足余量，又不至于让人一直等。 */
         const val QUEUE_WATCHDOG_MILLIS = 60_000L
     }
+
+    /** 「记忆已更新（+2）」这类结果句：数量在数据层，说法在资源里。 */
+    private fun extractionMessage(result: com.myfriend.app.data.repo.MemoryExtractionResult): String =
+        when (result.outcome) {
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.ADDED ->
+                context.getString(R.string.memory_extract_result_added, result.added)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.REINFORCED ->
+                context.getString(R.string.memory_extract_result_reinforced)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.ECHOED ->
+                context.getString(R.string.memory_extract_result_echoed)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.NONE ->
+                context.getString(R.string.memory_extract_result_none)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.NOT_ENOUGH_CHAT ->
+                context.getString(R.string.memory_extract_result_not_enough)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.INTERVAL_NOT_REACHED ->
+                context.getString(R.string.memory_extract_result_interval, result.every ?: 0)
+        }
 }

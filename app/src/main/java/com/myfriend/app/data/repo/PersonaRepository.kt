@@ -1,5 +1,6 @@
 package com.myfriend.app.data.repo
 
+import android.content.Context
 import androidx.room.withTransaction
 import com.myfriend.app.data.local.ApiConfigDao
 import com.myfriend.app.data.local.ChatSessionDao
@@ -19,11 +20,16 @@ import com.myfriend.app.data.local.AgentTickDao
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryEchoDao
 import com.myfriend.app.data.local.MemoryVectorDao
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.PersonaProfile
+import com.myfriend.app.domain.PersonaRevisionReason
 import com.myfriend.app.domain.ProactiveLevel
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.PersonaDraft
 import com.myfriend.app.network.NetworkGuard
+import com.myfriend.app.network.userError
+import com.myfriend.app.util.MediaStorage
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.Serializable
@@ -74,6 +80,7 @@ class PersonaRepository @Inject constructor(
     private val proactiveScheduler: ProactiveScheduler,
     private val database: MyFriendDatabase,
     private val settingsRepository: SettingsRepository,
+    @ApplicationContext private val appContext: Context,
     private val json: Json
 ) {
     fun observeAll(): Flow<List<PersonaEntity>> = personaDao.observeAll()
@@ -84,10 +91,10 @@ class PersonaRepository @Inject constructor(
 
     suspend fun save(draft: PersonaDraft): Result<String> = runCatching {
         val name = draft.name.trim()
-        require(name.isNotBlank()) { "请填写人格名称" }
-        require(name.length <= 80) { "人格名称过长" }
-        require(draft.description.length <= 600) { "简介过长" }
-        require(draft.prompt.length <= MAX_PROMPT_CHARS) { "人格提示词超出安全上限" }
+        if (name.isBlank()) userError(DomainErrorCode.PERSONA_NAME_REQUIRED)
+        if (name.length > 80) userError(DomainErrorCode.PERSONA_NAME_TOO_LONG)
+        if (draft.description.length > 600) userError(DomainErrorCode.PERSONA_DESCRIPTION_TOO_LONG)
+        if (draft.prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PERSONA_PROMPT_TOO_LONG)
         val category = draft.category.trim().ifBlank { "未分类" }.take(30)
         val now = System.currentTimeMillis()
         val existing = draft.id?.let { personaDao.getById(it) }
@@ -144,13 +151,13 @@ class PersonaRepository @Inject constructor(
         database.withTransaction {
             if (existing == null) {
                 personaDao.insert(entity)
-                insertRevision(entity, reason = "创建人格", now = now)
+                insertRevision(entity, reason = PersonaRevisionReason.CREATED, now = now)
                 // 一人一段：新人格当场就有他的那一段会话，首页点进去就是聊天，不再有「新建对话」。
                 ensureSessionFor(entity, now)
             } else {
                 if (promptChanged) {
-                    insertRevision(existing, reason = "编辑前版本", now = now)
-                    insertRevision(entity, reason = "编辑人格", now = now)
+                    insertRevision(existing, reason = PersonaRevisionReason.BEFORE_EDIT, now = now)
+                    insertRevision(entity, reason = PersonaRevisionReason.EDITED, now = now)
                 }
                 personaDao.update(entity)
             }
@@ -158,6 +165,10 @@ class PersonaRepository @Inject constructor(
                 personaDao.clearDefaults()
                 personaDao.markDefault(id, now)
             }
+        }
+        // 头像换了一张（或恢复成默认头像）：旧文件不再被任何一行引用，得删掉，否则越攒越多。
+        if (existing?.avatarUri != entity.avatarUri) {
+            MediaStorage.deleteAvatar(appContext, existing?.avatarUri)
         }
         if (existing == null) {
             val active = settingsRepository.settings.first().activePersonaId
@@ -169,18 +180,18 @@ class PersonaRepository @Inject constructor(
     suspend fun setDefault(personaId: String): Result<Unit> = runCatching {
         val now = System.currentTimeMillis()
         database.withTransaction {
-            if (personaDao.getById(personaId) == null) error("人格不存在")
+            if (personaDao.getById(personaId) == null) userError(DomainErrorCode.PERSONA_NOT_FOUND)
             personaDao.clearDefaults()
             personaDao.markDefault(personaId, now)
         }
     }
 
-    suspend fun duplicate(personaId: String): Result<String> = runCatching {
-        val source = personaDao.getById(personaId) ?: error("人格不存在")
+    suspend fun duplicate(personaId: String, copySuffix: String): Result<String> = runCatching {
+        val source = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
         val copy = source.copy(
             id = UUID.randomUUID().toString(),
-            name = "${source.name} 副本".take(80),
+            name = (source.name + copySuffix).take(80),
             isDefault = false,
             version = 1,
             createdAt = now,
@@ -188,7 +199,7 @@ class PersonaRepository @Inject constructor(
         )
         database.withTransaction {
             personaDao.insert(copy)
-            insertRevision(copy, "复制人格", now)
+            insertRevision(copy, PersonaRevisionReason.COPIED, now)
             // 一人一段：复制出来的人立刻也有自己的那一段。
             ensureSessionFor(copy, now)
         }
@@ -223,6 +234,7 @@ class PersonaRepository @Inject constructor(
      */
     suspend fun delete(personaId: String) {
         val wasActive = settingsRepository.settings.first().activePersonaId == personaId
+        val avatarUri = personaDao.getById(personaId)?.avatarUri
         database.withTransaction {
             val wasDefault = personaDao.getById(personaId)?.isDefault == true
             messageDao.deleteByPersona(personaId)
@@ -245,6 +257,8 @@ class PersonaRepository @Inject constructor(
                 }
             }
         }
+        // 人格没了，他头像的那张文件也不该留在这台手机上（只删 App 自己 avatars 目录里的）。
+        MediaStorage.deleteAvatar(appContext, avatarUri)
         proactiveScheduler.ensureScheduled()
         if (wasActive) {
             settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
@@ -275,7 +289,7 @@ class PersonaRepository @Inject constructor(
     }
 
     suspend fun updateAvatar(personaId: String, uri: String?): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
         save(
             PersonaDraft(
@@ -305,15 +319,18 @@ class PersonaRepository @Inject constructor(
     }
 
     suspend fun restoreRevision(personaId: String, revisionId: String): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
-        val revision = revisionDao.getById(revisionId) ?: error("历史版本不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
+        val revision = revisionDao.getById(revisionId) ?: userError(DomainErrorCode.REVISION_NOT_FOUND)
         val now = System.currentTimeMillis()
+        // 旧版本里的头像路径可能已经被删掉了（换头像时删旧文件是 0.10.1 的行为）：
+        // 恢复一个不存在的文件等于给界面一个点了没反应的地址，这里直接当成「没有头像」。
+        val restoredAvatar = revision.avatarUri?.takeUnless { MediaStorage.isMissingLocalFile(it) }
         database.withTransaction {
-            insertRevision(persona, "恢复前版本", now)
+            insertRevision(persona, PersonaRevisionReason.BEFORE_RESTORE, now)
             val restored = persona.copy(
                 name = revision.name,
                 description = revision.description,
-                avatarUri = revision.avatarUri,
+                avatarUri = restoredAvatar,
                 avatarSeed = revision.avatarSeed,
                 prompt = revision.prompt,
                 category = revision.category,
@@ -321,24 +338,26 @@ class PersonaRepository @Inject constructor(
                 updatedAt = now
             )
             personaDao.update(restored)
-            insertRevision(restored, "恢复至 v${revision.version}", now)
+            insertRevision(restored, PersonaRevisionReason.restored(revision.version), now)
         }
+        // 换了一张（或恢复成默认）：当前头像文件不再被引用，删掉。
+        if (persona.avatarUri != restoredAvatar) MediaStorage.deleteAvatar(appContext, persona.avatarUri)
     }
 
     suspend fun acceptEvolution(personaId: String, newPrompt: String, summary: String): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
-        require(newPrompt.isNotBlank()) { "进化后的人格提示词为空" }
-        require(newPrompt.length <= MAX_PROMPT_CHARS) { "人格提示词超出安全上限" }
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
+        if (newPrompt.isBlank()) userError(DomainErrorCode.EVOLVED_PROMPT_EMPTY)
+        if (newPrompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PERSONA_PROMPT_TOO_LONG)
         val now = System.currentTimeMillis()
         database.withTransaction {
-            insertRevision(persona, "进化前版本", now)
+            insertRevision(persona, PersonaRevisionReason.BEFORE_EVOLUTION, now)
             val evolved = persona.copy(
                 prompt = newPrompt,
                 version = persona.version + 1,
                 updatedAt = now
             )
             personaDao.update(evolved)
-            insertRevision(evolved, "人格进化：${summary.take(80)}", now)
+            insertRevision(evolved, PersonaRevisionReason.evolved(summary), now)
         }
     }
 
@@ -375,7 +394,7 @@ class PersonaRepository @Inject constructor(
         database.withTransaction {
             personaDao.getAll().forEach { persona ->
                 if (revisionDao.countByPersona(persona.id) == 0) {
-                    insertRevision(persona, "初始版本", now)
+                    insertRevision(persona, PersonaRevisionReason.BASELINE, now)
                     created++
                 }
             }
@@ -383,22 +402,22 @@ class PersonaRepository @Inject constructor(
         created
     }.getOrDefault(0)
 
-    suspend fun importPersonas(raw: String): Result<ImportResult> = runCatching {
-        require(raw.length <= 8_000_000) { "导入文件过大" }
-        val root = runCatching { json.parseToJsonElement(raw) }.getOrElse { error("文件不是有效的 JSON") }
+    suspend fun importPersonas(raw: String, importedSuffix: String = ""): Result<ImportResult> = runCatching {
+        if (raw.length > 8_000_000) userError(DomainErrorCode.IMPORT_FILE_TOO_LARGE)
+        val root = runCatching { json.parseToJsonElement(raw) }.getOrElse { userError(DomainErrorCode.IMPORT_INVALID_JSON) }
         val items: List<PersonaExportItem> = when (root) {
             is JsonArray -> root.mapNotNull { decodeItem(it) }
             is JsonObject -> {
                 when {
                     root["personas"] is JsonArray -> (root["personas"] as JsonArray).mapNotNull { decodeItem(it) }
                     root.containsKey("prompt") && root.containsKey("name") -> listOfNotNull(decodeItem(root))
-                    else -> error("未找到可导入的人格数据")
+                    else -> userError(DomainErrorCode.IMPORT_NO_PERSONA_DATA)
                 }
             }
-            else -> error("未找到可导入的人格数据")
+            else -> userError(DomainErrorCode.IMPORT_NO_PERSONA_DATA)
         }
-        require(items.isNotEmpty()) { "没有可导入的有效人格" }
-        require(items.size <= 200) { "一次最多导入 200 个人格" }
+        if (items.isEmpty()) userError(DomainErrorCode.IMPORT_NO_VALID_PERSONA)
+        if (items.size > 200) userError(DomainErrorCode.IMPORT_TOO_MANY_PERSONAS)
         var imported = 0
         var skipped = 0
         val now = System.currentTimeMillis()
@@ -412,7 +431,7 @@ class PersonaRepository @Inject constructor(
                     skipped++
                     continue
                 }
-                val uniqueName = if (existingNames.contains(name)) "$name（导入）" else name
+                val uniqueName = if (existingNames.contains(name)) (name + importedSuffix).take(80) else name
                 existingNames.add(uniqueName)
                 val persona = PersonaEntity(
                     id = UUID.randomUUID().toString(),
@@ -430,7 +449,7 @@ class PersonaRepository @Inject constructor(
                     updatedAt = now + imported
                 )
                 personaDao.insert(persona)
-                insertRevision(persona, "导入人格", now + imported)
+                insertRevision(persona, PersonaRevisionReason.IMPORTED, now + imported)
                 ensureSessionFor(persona, now + imported)
                 if (first) first = false
                 imported++
@@ -440,11 +459,7 @@ class PersonaRepository @Inject constructor(
             val active = settingsRepository.settings.first().activePersonaId
             if (active.isNullOrBlank()) settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
         }
-        ImportResult(
-            imported = imported,
-            skipped = skipped,
-            message = if (skipped > 0) "成功导入 $imported 个人格，跳过 $skipped 个格式不完整项" else "成功导入 $imported 个人格"
-        )
+        ImportResult(imported = imported, skipped = skipped)
     }
 
     private fun decodeItem(element: kotlinx.serialization.json.JsonElement): PersonaExportItem? =

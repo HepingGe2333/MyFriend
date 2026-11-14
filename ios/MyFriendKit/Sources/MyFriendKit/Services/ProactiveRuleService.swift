@@ -154,7 +154,7 @@ public enum ProactiveProtocol {
                 timeOfDayMinutes: nil,
                 intervalMinutes: hours * 60,
                 note: note.isEmpty
-                    ? String(format: String(localized: "每 %d 小时主动关心一次"), hours)
+                    ? PluralText.format("每 %d 小时主动关心一次", hours)
                     : note,
                 hint: hint.isEmpty ? defaultNote : hint
             )
@@ -527,11 +527,14 @@ public struct ProactiveRulePresentation: Equatable, Sendable {
     public var sourceLabel: String
     public var enabled: Bool
     public var nextTriggerAt: Int64
+    /// 上一次触发失败的原因（成功之后会被清空）；有值就显示在列表行里。
+    public var lastError: String?
 
     public init(
         id: String, personaName: String, note: String, hint: String,
         kindLabel: String, scheduleLabel: String, nextLabel: String,
-        sourceLabel: String, enabled: Bool, nextTriggerAt: Int64
+        sourceLabel: String, enabled: Bool, nextTriggerAt: Int64,
+        lastError: String? = nil
     ) {
         self.id = id
         self.personaName = personaName
@@ -543,6 +546,7 @@ public struct ProactiveRulePresentation: Equatable, Sendable {
         self.sourceLabel = sourceLabel
         self.enabled = enabled
         self.nextTriggerAt = nextTriggerAt
+        self.lastError = lastError
     }
 }
 
@@ -571,7 +575,11 @@ public enum ProactiveRulePresenter {
             nextLabel: nextLabel(rule, now: now, calendar: calendar),
             sourceLabel: rule.source == .ai ? String(localized: "他自己安排的") : String(localized: "你设的"),
             enabled: rule.enabled,
-            nextTriggerAt: rule.nextTriggerAt
+            nextTriggerAt: rule.nextTriggerAt,
+            lastError: {
+                let text = (rule.lastError ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                return text.isEmpty ? nil : text
+            }()
         )
     }
 
@@ -609,9 +617,9 @@ public enum ProactiveRulePresenter {
         case .interval:
             let minutes = rule.intervalMinutes ?? 0
             if minutes > 0, minutes % 60 == 0 {
-                return String(format: String(localized: "每 %d 小时"), minutes / 60)
+                return PluralText.format("每 %d 小时", minutes / 60)
             }
-            return String(format: String(localized: "每 %d 分钟"), minutes)
+            return PluralText.format("每 %d 分钟", minutes)
         }
     }
 

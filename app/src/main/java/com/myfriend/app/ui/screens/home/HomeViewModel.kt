@@ -3,6 +3,7 @@ package com.myfriend.app.ui.screens.home
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.PersonaEntity
@@ -92,7 +93,7 @@ class HomeViewModel @Inject constructor(
                 chatRepository.markRead(session.id)
                 eventsChannel.send(HomeEvent.OpenChat(session.id))
             } catch (error: Exception) {
-                eventsChannel.send(HomeEvent.Message(error.message ?: context.getString(R.string.home_open_failed)))
+                eventsChannel.send(HomeEvent.Message(ErrorText.of(context, error, R.string.home_open_failed)))
             } finally {
                 switchingId.value = null
             }
@@ -104,7 +105,7 @@ class HomeViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { personaRepository.delete(personaId) }
                 .onSuccess { localMessage.value = context.getString(R.string.home_deleted) }
-                .onFailure { localMessage.value = it.message ?: context.getString(R.string.home_delete_failed) }
+                .onFailure { localMessage.value = ErrorText.of(context, it, R.string.home_delete_failed) }
         }
     }
 

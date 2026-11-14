@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaRevisionEntity
@@ -77,7 +78,7 @@ class EvolutionViewModel @Inject constructor(
             proposal.value = null
             evolutionRepository.generateProposal(personaId)
                 .onSuccess { proposal.value = it }
-                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_generate_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.evolution_generate_failed) }
             generating.value = false
         }
     }
@@ -101,7 +102,7 @@ class EvolutionViewModel @Inject constructor(
                     this@EvolutionViewModel.proposal.value = null
                     message.value = context.getString(R.string.evolution_applied)
                 }
-                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_accept_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.evolution_accept_failed) }
             accepting.value = false
         }
     }
@@ -112,7 +113,7 @@ class EvolutionViewModel @Inject constructor(
             restoringId.value = revision.id
             personaRepository.restoreRevision(personaId, revision.id)
                 .onSuccess { message.value = context.getString(R.string.evolution_restored, revision.version) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_restore_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.evolution_restore_failed) }
             restoringId.value = null
         }
     }

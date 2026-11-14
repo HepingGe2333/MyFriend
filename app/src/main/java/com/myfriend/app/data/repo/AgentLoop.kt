@@ -465,8 +465,11 @@ class AgentLoop @Inject constructor(
                 messageDao.recentBySession(session.id, MessageWindows.WORKER_RECENT_ROWS)
             }.getOrDefault(emptyList())
             val messages = MessageWindows.lastN(recentRows, MessageWindows.WORKER_RECENT_ROWS)
-            val lastUser = messages.lastOrNull { it.role == MessageRole.USER && it.content.isNotBlank() }
-            val lastAssistant = messages.lastOrNull { it.role == MessageRole.ASSISTANT && it.content.isNotBlank() }
+            // 「上次说话」走精确查询，不从窗口里挑：最近 40 条可能一条用户消息都没有，
+            // 那样会误判成「对方还没说话」。窗口只负责下面「最近几句」。
+            val lastUser = runCatching { messageDao.lastUserMessage(session.id) }.getOrNull()
+            val lastAssistant = runCatching { messageDao.latestAssistant(session.id) }.getOrNull()
+                ?.takeIf { it.content.isNotBlank() }
             lastUser?.let {
                 sb.appendLine("对方上次说话：${"${timeAgo(it.createdAt, now)}".plus("，")}「${it.content.replace('\n', ' ').take(60)}」")
             }

@@ -392,7 +392,7 @@ class BackupCodecTest {
     fun malformedJsonReturnsFailure() {
         val decoded = BackupCodec.decode("{这不是 JSON")
         assertTrue(decoded is BackupDecodeResult.Failure)
-        assertTrue((decoded as BackupDecodeResult.Failure).reason.isNotBlank())
+        assertEquals(BackupFailure.InvalidJson, (decoded as BackupDecodeResult.Failure).reason)
     }
 
     @Test
@@ -412,16 +412,21 @@ class BackupCodecTest {
     fun foreignFormatIsRejected() {
         val decoded = BackupCodec.decode("""{"format":"other.app.chats","personas":[]}""")
         assertTrue(decoded is BackupDecodeResult.Failure)
-        assertTrue((decoded as BackupDecodeResult.Failure).reason.contains("不是 MyFriend"))
+        // 结构化原因：界面自己翻成当前语言，数据层不拼句子。
+        assertEquals(
+            BackupFailure.WrongFormat("other.app.chats"),
+            (decoded as BackupDecodeResult.Failure).reason
+        )
     }
 
     @Test
-    fun higherFormatVersionIsRejectedInChinese() {
+    fun higherFormatVersionIsRejected() {
         val decoded = BackupCodec.decode("""{"format":"myfriend.backup","formatVersion":99,"personas":[]}""")
         assertTrue(decoded is BackupDecodeResult.Failure)
-        val reason = (decoded as BackupDecodeResult.Failure).reason
-        assertTrue(reason.contains("v99"))
-        assertTrue(reason.contains("升级"))
+        assertEquals(
+            BackupFailure.NewerFormat(99, BACKUP_FORMAT_VERSION),
+            (decoded as BackupDecodeResult.Failure).reason
+        )
     }
 
     @Test
@@ -429,7 +434,7 @@ class BackupCodecTest {
         val decoded = decodeSuccess("{}")
         assertTrue(decoded.bundle.personas.isEmpty())
         assertEquals(0, decoded.bundle.messages.size)
-        assertTrue(decoded.warnings.any { it.contains("没有他") })
+        assertTrue(decoded.warnings.contains(BackupWarning.NoContent))
         assertNull("没写设置就不该覆盖本机设置", decoded.bundle.settings)
     }
 
@@ -497,7 +502,7 @@ class BackupCodecTest {
 
         val decoded = decodeSuccess(raw)
         assertEquals(2, decoded.bundle.memories.size)
-        assertTrue(decoded.warnings.any { it.contains("读不出来") })
+        assertTrue(decoded.warnings.contains(BackupWarning.DroppedRows(BackupSection.MEMORY, 1)))
     }
 
     @Test
@@ -505,7 +510,7 @@ class BackupCodecTest {
         val raw = """{"format":"myfriend.backup","memories":[{"content":"没有 id 的记忆"}]}"""
         val decoded = decodeSuccess(raw)
         assertTrue(decoded.bundle.memories.isEmpty())
-        assertTrue(decoded.warnings.any { it.contains("id") })
+        assertTrue(decoded.warnings.contains(BackupWarning.BlankIds(BackupSection.MEMORY, 1)))
     }
 
     // ------------------------------------------------------------------
@@ -555,26 +560,23 @@ class BackupCodecTest {
     // ------------------------------------------------------------------
 
     @Test
-    fun previewCountsAndDescribes() {
+    fun previewCountsAreStructured() {
+        // 0.10.1 起 preview 只给计数（句子在 UI 层按语言拼），所以这里只钉计数与「有没有内容」。
         val preview = BackupPreview.from(sampleBundle())
         assertEquals(1, preview.personas)
         assertEquals(1, preview.memories)
         assertEquals(1, preview.messages)
         assertEquals(1, preview.rules)
         assertFalse(preview.isEmpty)
-
-        val text = preview.describe()
-        assertTrue(text.contains("1 个人格"))
-        assertTrue(text.contains("1 条记忆"))
-        assertTrue(text.contains("1 句话"))
-        assertTrue(preview.exportedAtText().contains("带走"))
+        assertTrue(preview.hasAnyContent)
+        assertTrue(preview.exportedAt > 0L)
     }
 
     @Test
-    fun emptyPreviewSaysThereIsNobody() {
+    fun emptyPreviewIsEmpty() {
         val preview = BackupPreview.from(BackupBundle())
         assertTrue(preview.isEmpty)
-        assertEquals("这份备份里什么也没有", preview.describe())
+        assertFalse(preview.hasAnyContent)
     }
 
     @Test
@@ -585,7 +587,8 @@ class BackupCodecTest {
     }
 
     @Test
-    fun importSummaryDescribeMentionsCounts() {
+    fun importSummaryKeepsCountsAndStructuredWarnings() {
+        // 句子由 UI（BackupText）按当前语言拼，这里只验证数据层给的东西够拼出那句话。
         val summary = ImportSummary(
             personas = 2,
             memories = 10,
@@ -593,23 +596,22 @@ class BackupCodecTest {
             messages = 99,
             rules = 1,
             skipped = 2,
-            warnings = listOf("有 1 个 API 配置还缺 Key"),
+            warnings = listOf(BackupWarning.ConfigsMissingKey(1)),
             mode = ImportMode.REPLACE
         )
-
-        val text = summary.describe()
-        assertTrue(text.contains("2 个人格"))
-        assertTrue(text.contains("99 句话"))
-        assertTrue(text.contains("有 2 条没接回来"))
-        assertTrue(text.contains("缺 Key"))
-        assertTrue(text.contains("重新接回"))
+        assertEquals(2, summary.personas)
+        assertEquals(99, summary.messages)
+        assertEquals(2, summary.skipped)
+        assertEquals(ImportMode.REPLACE, summary.mode)
+        assertEquals(listOf(BackupWarning.ConfigsMissingKey(1)), summary.warnings)
     }
 
     @Test
-    fun mergeSummarySaysMerged() {
-        val text = ImportSummary(personas = 1, memories = 1, sessions = 1, messages = 1, mode = ImportMode.MERGE).describe()
-        assertTrue(text.startsWith("把他接回来了"))
-        assertFalse(text.contains("没接回来"))
+    fun mergeSummaryKeepsMode() {
+        val summary = ImportSummary(personas = 1, memories = 1, sessions = 1, messages = 1)
+        assertEquals(ImportMode.MERGE, summary.mode)
+        assertEquals(0, summary.skipped)
+        assertTrue(summary.warnings.isEmpty())
     }
 
     @Test

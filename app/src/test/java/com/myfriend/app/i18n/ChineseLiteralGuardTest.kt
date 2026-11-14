@@ -8,27 +8,38 @@ import java.io.File
 /**
  * 「界面文案不许再硬编码中文」守卫。
  *
- * 扫 `ui/` 与 `util/` 下所有 `.kt`，把每一处**字符串字面量**里的中文找出来。
- * 允许出现中文的只有三类，且都写在这里，改规则必须改这个文件：
+ * 0.10.0 只扫 `ui/` 与 `util/`；0.10.1 起**扩到 `data/` 与 `network/`**：
+ * 那两层以前的 `error("人格不存在")` / `ApiException(401, "API Key 无效")` 会经 `Result` 直接上屏，
+ * 英文界面因此在设置页、聊天错误气泡、备份导入结果里看到中文。
+ *
+ * 现在数据层与网络层只说「哪一种错误」（`domain/UserError.kt`），句子由 `ui/common/ErrorText.kt`
+ * 映射资源。守卫扩到这里，是为了让中文错误**不再回流**。
+ *
+ * 允许出现中文的只有下面几类，改规则必须改这个文件：
  *
  * 1. 注释：`//`、`/* */`、KDoc —— 给开发者看的，保持中文（扫描时先剥掉）；
  * 2. 日志：`Log.d/w/i/e`、`println`、`Timber.*` —— 不进界面；
- * 3. 落库值：内置人格分类、版本记录里的一句话。这些是**存进数据库的数据**，
- *    不是某次渲染时的界面文案，翻译它们会让老库里的值和新写的值对不上。
- *    见 [STORED_VALUES]，只放行这几个精确的字符串。
+ * 3. 落库值：内置分类、会话默认标题这些**存进数据库的数据**；翻译它们会让老库里的值与新写的值对不上。
+ *    见 [storedValues]，只放行精确匹配的字符串；
+ * 4. 面向模型的提示词 / 工具结果 / 思考留痕：按 I18N 文档的约定，提示词脚手架不翻译。
+ *    这类文件整份放行，但**每条必须写清为什么**（见 [fileWhitelist]）。
  *
  * 另外放行 `@Deprecated(...)` / `@Suppress(...)` 这类注解参数：那是给开发者的编译期说明。
  *
- * 其它任何 `Text("中文")`、`contentDescription = "中文"`、`placeholder = "中文"` 都会红。
+ * 其它任何 `Text("中文")`、`contentDescription = "中文"`、`placeholder = "中文"`，
+ * 以及数据层新出现的 `error("中文")`，都会红。
  */
 class ChineseLiteralGuardTest {
 
     /** 数据库里存着、并会被当成值再读回来的中文；翻译它们等于改数据。 */
     private val storedValues = setOf(
         // 人格/预设的内置分类（PresetRepository、PersonaRepository 的默认值与筛选都按这个字符串比对）
-        "日常聊天", "角色扮演", "学习", "编程", "创意写作", "通用", "工作",
-        // 版本历史里的 reason，写入 persona_revisions 后由「成长」页原样显示
+        "日常聊天", "角色扮演", "学习", "编程", "创意写作", "通用", "工作", "未分类",
+        // 版本历史里的 reason：0.10.1 起新数据存 `@rev:` 令牌，老库里的中文原样显示；
+        // 这两个是编辑器里仍会写入的旧值（历史兼容），不翻译。
         "创建人格卡", "编辑人格卡",
+        // 新建会话的默认标题模板：落库成数据，历史值不改写（搜索/导出会原样显示）。
+        "与 ${'$'}{persona.name} 的对话",
         // 心情词表（domain/MoodLexicon）里的词：落库的标签，界面只是按它挑一条资源显示，
         // 模型也可能自己造一个新词（那种就原样显示，不翻）。
         "平静", "放松", "温柔", "雀跃", "开心", "兴奋", "期待", "想念", "有点累",
@@ -36,13 +47,55 @@ class ChineseLiteralGuardTest {
     )
 
     /**
-     * 整份文件级别的白名单：**目前为空**。
-     * 若以后必须新增，这里要写清楚为什么这个文件里的中文不算界面文案（例如「模型面向的提示词」）。
+     * 整份文件级别的白名单：**只允许「面向模型的提示词 / 工具协议 / 落库留痕」**。
+     *
+     * 这些文件里的中文不会被界面直接渲染：它们要么进 system prompt、要么进工具结果回灌给模型、
+     * 要么是存进库里的「他自己想过什么」的留痕。按 `docs/I18N.md` 的约定，提示词脚手架不翻译
+     * （翻译会改变模型行为）。除此之外的 data/network 文件仍然逐字面量扫描。
      */
-    private val fileWhitelist = emptyMap<String, String>()
+    private val fileWhitelist = mapOf(
+        // ---- 数据层：系统提示词 / 模型上下文 / 落库留痕 ----
+        "src/main/java/com/myfriend/app/data/repo/AgentLoop.kt" to
+            "常驻 agent 的处境描述与思考留痕：进 system prompt，或落库成「他最近在想什么」的原始记录",
+        "src/main/java/com/myfriend/app/data/repo/AgentIntentRepository.kt" to
+            "念头的提示词与落库说明：念头的 note 是模型给的原文",
+        "src/main/java/com/myfriend/app/data/repo/ChatRepository.kt" to
+            "system 提示词脚手架、工具回灌说明，以及落库的会话预览（图片/回复失败等数据值）",
+        "src/main/java/com/myfriend/app/data/repo/EvolutionRepository.kt" to
+            "人格进化提示词与模型给的默认摘要",
+        "src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt" to
+            "心跳留痕（他自己的一举一动）与模型上下文说明",
+        "src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt" to
+            "长对话压缩提示词与内部状态说明（只进日志/摘要）",
+        "src/main/java/com/myfriend/app/data/repo/IdleBrowsing.kt" to
+            "中文停用词表（分词逻辑本身依赖这些词）+ 他自己上网看的提示词",
+        "src/main/java/com/myfriend/app/data/repo/MemoryConsolidator.kt" to
+            "记忆整理提示词：进模型上下文，界面只读整理结果里的数字",
+        "src/main/java/com/myfriend/app/data/repo/MemoryReconsolidator.kt" to
+            "记忆重构提示词（想起旧事时的措辞）",
+        "src/main/java/com/myfriend/app/data/repo/MemoryRepository.kt" to
+            "记忆抽取提示词与「你记得的事」上下文块",
+        "src/main/java/com/myfriend/app/data/repo/PersonaCardRepository.kt" to
+            "人设卡里的作息措辞：写进卡 JSON、渲染进提示词，模型也按它说话",
+        "src/main/java/com/myfriend/app/data/repo/PresenceRepository.kt" to
+            "「他正在…」给模型看的解释句；界面按 PresenceKind 取资源，不显示这句",
+        "src/main/java/com/myfriend/app/data/repo/ProactiveProtocol.kt" to
+            "主动开口协议的提示词与模型动作说明",
+        "src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt" to
+            "主动开口的 system 提示词",
+        "src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt" to
+            "工具调用结果与痕迹文案：回灌给模型的工具协议脚手架（失败原因已改成错误令牌）",
+        "src/main/java/com/myfriend/app/data/repo/WebSearchScorer.kt" to
+            "网页打分/记笔记提示词与留痕",
+        // ---- 网络层：回灌给模型的内容 / 日志 ----
+        "src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt" to
+            "抓回来的网页正文的截断标记：属于回灌给模型的正文，不是界面文案",
+        "src/main/java/com/myfriend/app/network/LlmGatekeeper.kt" to
+            "两处 Log.w 的多行参数（并发位等待超时），只进日志"
+    )
 
     @Test
-    fun `ui 与 util 里不再有硬编码的中文界面文案`() {
+    fun `ui、util、data 与 network 里不再有硬编码的中文界面文案`() {
         val files = scanRoots()
         assertTrue("没扫到源文件，路径判断有问题（找到 ${files.size} 个）", files.size > 20)
 
@@ -95,7 +148,12 @@ class ChineseLiteralGuardTest {
 
     private fun scanRoots(): List<File> {
         val root = projectRoot()
-        return listOf("src/main/java/com/myfriend/app/ui", "src/main/java/com/myfriend/app/util")
+        return listOf(
+            "src/main/java/com/myfriend/app/ui",
+            "src/main/java/com/myfriend/app/util",
+            "src/main/java/com/myfriend/app/data",
+            "src/main/java/com/myfriend/app/network"
+        )
             .map { File(root, it) }
             .flatMap { dir ->
                 dir.walkTopDown()

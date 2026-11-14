@@ -15,12 +15,18 @@ import com.myfriend.app.data.local.ProactiveKind
 import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.data.local.ProactiveRuleEntity
 import com.myfriend.app.data.local.ProactiveSource
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.MessageWindows
+import com.myfriend.app.domain.UserError
+import com.myfriend.app.domain.UserErrorTokens
+import com.myfriend.app.domain.debugText
 import com.myfriend.app.domain.LlmLane
 import com.myfriend.app.domain.ProactiveProposal
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.WireMessage
 import com.myfriend.app.network.inferenceParams
+import com.myfriend.app.network.toUserError
+import com.myfriend.app.network.userError
 import com.myfriend.app.util.ProactiveNotifier
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -86,13 +92,13 @@ class ProactiveRepository @Inject constructor(
         hint: String,
         note: String
     ): Result<Unit> = runCatching {
-        require(personaId.isNotBlank()) { "人格不存在" }
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        if (personaId.isBlank()) userError(DomainErrorCode.PERSONA_NOT_FOUND)
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         if (kind == ProactiveKind.DAILY) {
-            requireNotNull(timeOfDayMinutes) { "请选择每天的时间" }
+            if (timeOfDayMinutes == null) userError(DomainErrorCode.PROACTIVE_TIME_REQUIRED)
         } else {
-            requireNotNull(intervalMinutes) { "请设置间隔小时数" }
-            require(intervalMinutes in 15..(24 * 60)) { "间隔需在 1 到 24 小时之间" }
+            if (intervalMinutes == null) userError(DomainErrorCode.PROACTIVE_INTERVAL_REQUIRED)
+            if (intervalMinutes !in 15..(24 * 60)) userError(DomainErrorCode.PROACTIVE_INTERVAL_RANGE)
         }
         val now = System.currentTimeMillis()
         val next = computeNextTrigger(kind, timeOfDayMinutes, intervalMinutes, now)
@@ -105,7 +111,9 @@ class ProactiveRepository @Inject constructor(
                 timeOfDayMinutes = timeOfDayMinutes,
                 intervalMinutes = intervalMinutes,
                 hint = hint.trim().take(600),
-                note = note.trim().ifBlank { defaultNote(kind, timeOfDayMinutes, intervalMinutes) },
+                // 默认说明由 UI 按当前语言写好传进来：这一行会落库、也会进提示词，
+                // 数据层不该替用户决定用哪种语言描述他安排的节奏。
+                note = note.trim(),
                 enabled = true,
                 pending = false,
                 source = ProactiveSource.MANUAL,
@@ -125,7 +133,7 @@ class ProactiveRepository @Inject constructor(
         sessionId: String?,
         proposal: ProactiveProposal
     ): Result<String> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
         // 同样的节奏他已经安排过一次了：更新那条，别再堆一条一模一样的。
         val duplicate = runCatching { ruleDao.enabledRules() }.getOrDefault(emptyList()).firstOrNull {
@@ -187,7 +195,7 @@ class ProactiveRepository @Inject constructor(
     }
 
     suspend fun confirm(id: String): Result<Unit> = runCatching {
-        val rule = ruleDao.getById(id) ?: error("规则不存在")
+        val rule = ruleDao.getById(id) ?: userError(DomainErrorCode.RULE_NOT_FOUND)
         val now = System.currentTimeMillis()
         val next = computeNextTrigger(rule.kind, rule.timeOfDayMinutes, rule.intervalMinutes, now)
         ruleDao.setEnabled(id, true, next, now)
@@ -195,7 +203,7 @@ class ProactiveRepository @Inject constructor(
     }
 
     suspend fun setEnabled(id: String, enabled: Boolean): Result<Unit> = runCatching {
-        val rule = ruleDao.getById(id) ?: error("规则不存在")
+        val rule = ruleDao.getById(id) ?: userError(DomainErrorCode.RULE_NOT_FOUND)
         val now = System.currentTimeMillis()
         val next = if (enabled) {
             computeNextTrigger(rule.kind, rule.timeOfDayMinutes, rule.intervalMinutes, now)
@@ -226,7 +234,7 @@ class ProactiveRepository @Inject constructor(
 
     /** 立即触发一次（只生成消息，不改变规则的排期），用于「试一次」与排期前的确认。 */
     suspend fun triggerNow(ruleId: String): Result<String> = runCatching {
-        val rule = ruleDao.getById(ruleId) ?: error("规则不存在")
+        val rule = ruleDao.getById(ruleId) ?: userError(DomainErrorCode.RULE_NOT_FOUND)
         fire(rule, System.currentTimeMillis())
         rule.note
     }
@@ -247,7 +255,8 @@ class ProactiveRepository @Inject constructor(
                 id = rule.id,
                 nextTriggerAt = next,
                 at = now,
-                error = if (asleep) null else error?.message?.take(300),
+                // 落库的是错误令牌而不是中文句子：界面按当前语言翻译，老数据（非令牌）原样显示。
+                error = if (asleep) null else error?.toUserError()?.let(UserErrorTokens::encode),
                 now = System.currentTimeMillis()
             )
             if (error == null) fired++
@@ -276,12 +285,13 @@ class ProactiveRepository @Inject constructor(
     }
 
     private suspend fun fire(rule: ProactiveRuleEntity, now: Long) {
-        val persona = personaDao.getById(rule.personaId) ?: error("人格已不存在")
+        val persona = personaDao.getById(rule.personaId) ?: userError(DomainErrorCode.PERSONA_GONE)
         if (personaCardRepository.isAsleep(persona, minuteOfDay(now))) throw AsleepException()
         val session = rule.sessionId?.let { sessionDao.getById(it) }
             ?: chatRepository.getOrCreateForPersona(persona.id)
-        val configId = session.apiConfigId ?: persona.defaultApiConfigId ?: error("这个会话还没有 API 配置")
-        val resolved = apiConfigRepository.resolve(configId) ?: error("API 配置已不存在")
+        val configId = session.apiConfigId ?: persona.defaultApiConfigId
+            ?: userError(DomainErrorCode.API_CONFIG_NOT_BOUND)
+        val resolved = apiConfigRepository.resolve(configId) ?: userError(DomainErrorCode.API_CONFIG_GONE)
 
         // 这一轮模型会读到会话里的历史，所以用户消息此刻算「已读」。
         runCatching { messageDao.markUserMessagesRead(session.id, now) }
@@ -299,7 +309,7 @@ class ProactiveRepository @Inject constructor(
             personaId = persona.id
         )
         val text = ProactiveProtocol.extract(raw).first.trim()
-        if (text.isBlank()) error("模型没有返回内容")
+        if (text.isBlank()) userError(DomainErrorCode.MODEL_EMPTY_REPLY)
 
         val created = System.currentTimeMillis()
         val stamp = if (created <= now) now + 1 else created
@@ -383,17 +393,13 @@ class ProactiveRepository @Inject constructor(
         }
     }
 
-    private fun defaultNote(kind: ProactiveKind, timeOfDayMinutes: Int?, intervalMinutes: Int?): String = when (kind) {
-        ProactiveKind.DAILY -> "每天 ${ProactiveProtocol.formatTimeOfDay(timeOfDayMinutes ?: 0)} 主动问候"
-        ProactiveKind.INTERVAL -> "每 ${(intervalMinutes ?: 120) / 60} 小时主动关心一次"
-    }
-
     private fun minuteOfDay(now: Long): Int {
         val time = ZonedDateTime.ofInstant(java.time.Instant.ofEpochMilli(now), java.time.ZoneId.systemDefault())
         return time.hour * 60 + time.minute
     }
 
-    private class AsleepException : Exception("这个点他在睡觉")
+    /** 他按自己的作息在睡觉：不是失败，照常排下一次。 */
+    private class AsleepException : Exception(UserError.Domain(DomainErrorCode.ASLEEP).debugText())
 
     private companion object {
         const val RETRY_DELAY_MS = 30 * 60 * 1000L

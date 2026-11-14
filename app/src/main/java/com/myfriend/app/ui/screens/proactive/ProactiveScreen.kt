@@ -66,6 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.ProactiveKind
@@ -409,7 +410,7 @@ private fun RuleCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                 )
             }
-            rule.lastError?.let { error ->
+            ErrorText.stored(LocalContext.current, rule.lastError)?.let { error ->
                 Spacer(Modifier.height(4.dp))
                 Text(
                     stringResource(R.string.proactive_last_error, error),

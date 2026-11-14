@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.repo.ApiConfigRepository
@@ -155,7 +156,9 @@ class ApiEditorViewModel @Inject constructor(
             )
             _state.update { it.copy(saving = false) }
             result.onSuccess { events.send(ApiEditorEvent.Saved(it)) }
-                .onFailure { events.send(ApiEditorEvent.Message(it.message ?: context.getString(R.string.api_error_save_failed))) }
+                .onFailure {
+                    events.send(ApiEditorEvent.Message(ErrorText.of(context, it, R.string.api_error_save_failed)))
+                }
         }
     }
 
@@ -170,9 +173,9 @@ class ApiEditorViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { it.copy(testing = true) }
             repository.testDraft(current.toDraft())
-                .onSuccess { events.send(ApiEditorEvent.Message(it.message)) }
+                .onSuccess { events.send(ApiEditorEvent.Message(ErrorText.connectionSuccess(context, it.modelCount))) }
                 .onFailure {
-                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    val reason = ErrorText.of(context, it, R.string.api_error_unknown)
                     events.send(ApiEditorEvent.Message(context.getString(R.string.api_error_connect_failed, reason)))
                 }
             _state.update { it.copy(testing = false) }
@@ -193,7 +196,7 @@ class ApiEditorViewModel @Inject constructor(
                     }
                 }
                 .onFailure {
-                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    val reason = ErrorText.of(context, it, R.string.api_error_unknown)
                     events.send(ApiEditorEvent.Message(context.getString(R.string.api_error_fetch_models_failed, reason)))
                 }
             _state.update { it.copy(fetchingModels = false) }

@@ -1,5 +1,6 @@
 package com.myfriend.app.network
 
+import com.myfriend.app.domain.NetworkErrorKind
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -71,7 +72,7 @@ class DeepSeekWebTools @Inject constructor(
         allowInsecureHttp: Boolean = false
     ): List<WebSearchHit> {
         val keyword = query.trim()
-        if (keyword.isEmpty()) throw ApiException(null, "搜索关键词不能为空")
+        if (keyword.isEmpty()) throw ApiException(NetworkErrorKind.WebQueryMissing)
         val key = requireApiKey(apiKey)
         val url = resolveEndpoint(baseUrl, TOOL_SEARCH, allowInsecureHttp)
         val payload = buildJsonObject {
@@ -91,7 +92,7 @@ class DeepSeekWebTools @Inject constructor(
         allowInsecureHttp: Boolean = false
     ): WebPage {
         val target = url.trim()
-        if (target.isEmpty()) throw ApiException(null, "要抓取的网页地址不能为空")
+        if (target.isEmpty()) throw ApiException(NetworkErrorKind.WebUrlMissing)
         val key = requireApiKey(apiKey)
         val endpoint = resolveEndpoint(baseUrl, TOOL_FETCH, allowInsecureHttp)
         val payload = buildJsonObject { put("url", target) }
@@ -113,7 +114,7 @@ class DeepSeekWebTools @Inject constructor(
             .removeSuffix("/tools/search")
             .removeSuffix("/tools/fetch")
             .trimEnd('/')
-        if (base.isEmpty()) throw ApiException(null, "DeepSeek 地址不能为空")
+        if (base.isEmpty()) throw ApiException(NetworkErrorKind.WebBaseMissing)
         val root = if (base.endsWith("/v1")) base else "$base/v1"
         val path = tool.trim().trimStart('/').ifBlank { TOOL_SEARCH }
         return if (path.contains('/')) "$root/$path" else "$root/tools/$path"
@@ -122,7 +123,7 @@ class DeepSeekWebTools @Inject constructor(
     /** 容错解析搜索响应：缺字段走默认值，results 缺失/非数组返回 emptyList。 */
     internal fun parseSearch(body: String): List<WebSearchHit> {
         val element = runCatching { json.parseToJsonElement(body) }.getOrNull()
-            ?: throw ApiException(null, "搜索服务返回了无法解析的内容")
+            ?: throw ApiException(NetworkErrorKind.WebUnparsable)
         val results: JsonArray = when (element) {
             is JsonArray -> element
             is JsonObject -> (element["results"] as? JsonArray)
@@ -137,11 +138,11 @@ class DeepSeekWebTools @Inject constructor(
     /** 容错解析抓取响应：兼容 content / markdown 两种字段名，标题为空时回退成 url。 */
     internal fun parseFetch(body: String): WebPage {
         val element = runCatching { json.parseToJsonElement(body) }.getOrNull()
-            ?: throw ApiException(null, "抓取服务返回了无法解析的内容")
+            ?: throw ApiException(NetworkErrorKind.WebUnparsable)
         val root = when (element) {
             is JsonObject -> (element["data"] as? JsonObject) ?: element
             is JsonPrimitive -> return WebPage(markdown = truncateMarkdown(element.contentOrNull.orEmpty()))
-            else -> throw ApiException(null, "抓取服务返回了无法解析的内容")
+            else -> throw ApiException(NetworkErrorKind.WebUnparsable)
         }
         val url = root.text("url", "link")
         val title = root.text("title", "name").ifBlank { url }
@@ -154,7 +155,7 @@ class DeepSeekWebTools @Inject constructor(
 
     private fun requireApiKey(apiKey: String): String {
         val key = apiKey.trim()
-        if (key.isEmpty()) throw ApiException(null, "DeepSeek 密钥为空，请先在 API 配置中填写")
+        if (key.isEmpty()) throw ApiException(NetworkErrorKind.WebKeyMissing)
         return key
     }
 
@@ -189,21 +190,10 @@ class DeepSeekWebTools @Inject constructor(
 
     private fun Response.toApiException(tool: String, body: String): ApiException {
         if (code == 404 && tool == TOOL_FETCH) {
-            return ApiException(code, "这个页面抓不到内容", body.take(1200))
+            return ApiException(NetworkErrorKind.WebPageUnreachable, body.take(1200))
         }
-        val friendly = when (code) {
-            401 -> "DeepSeek 密钥无效或已过期"
-            402 -> "DeepSeek 账户余额不足"
-            403 -> "抓取被目标站点或安全策略拒绝"
-            408 -> "读取超时，稍后再试"
-            429 -> "请求太频繁，被限流了（每分钟有 QPS 上限）"
-            in 500..599 -> "DeepSeek 服务暂时不可用"
-            else -> null
-        }
-        if (friendly != null) return ApiException(code, friendly, body.take(1200))
         val detail = extractErrorMessage(body)
-        val message = if (detail.isBlank()) "请求失败（HTTP $code）" else "请求失败（HTTP $code）：$detail"
-        return ApiException(code, message, body.take(1200))
+        return ApiException(NetworkErrorKind.WebStatus(code), body.take(1200).ifBlank { detail })
     }
 
     private fun extractErrorMessage(body: String): String {
@@ -216,9 +206,9 @@ class DeepSeekWebTools @Inject constructor(
 
     private fun mapNetworkError(error: Exception): Exception = when (error) {
         is ApiException -> error
-        is SocketTimeoutException -> ApiException(null, "读取超时，稍后再试")
-        is UnknownHostException -> ApiException(null, "无法解析 DeepSeek 地址，请检查网络连接")
-        is IOException -> ApiException(null, "网络连接中断：${error.message ?: "请检查网络"}")
+        is SocketTimeoutException -> ApiException(NetworkErrorKind.Timeout)
+        is UnknownHostException -> ApiException(NetworkErrorKind.UnknownHost)
+        is IOException -> ApiException(NetworkErrorKind.NetworkInterrupted, error.message)
         else -> error
     }
 

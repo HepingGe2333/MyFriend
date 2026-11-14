@@ -118,39 +118,49 @@ public final class LlmConcurrencyGate: @unchecked Sendable {
         let timeout = max(timeoutMillis ?? Self.defaultTimeout(lane), 0)
 
         // 快速路径：名额够就直接给，连 continuation 都不用挂。
-        lock.lock()
-        if let ticket = tryAcquireLocked(lane) {
-            lock.unlock()
-            return .acquired(ticket)
+        //
+        // 锁只出现在同步的 `mfWithLock` 里：加解锁不跨 await，等待名额靠挂起 continuation
+        // 而不是阻塞线程（这些语义与原实现逐条一致，见 LlmConcurrencyGateTests）。
+        let quick = lock.mfWithLock { tryAcquireLocked(lane) }
+        if let quick { return .acquired(quick) }
+        let waiterId = lock.mfWithLock { () -> UInt64 in
+            nextId += 1
+            return nextId
         }
-        nextId += 1
-        let waiterId = nextId
-        lock.unlock()
 
         // 名额不够：登记成等待者（登记时再查一次，避免这中间有人还了名额）。
         return await withCheckedContinuation { continuation in
-            lock.lock()
-            if let ticket = tryAcquireLocked(lane) {
-                lock.unlock()
+            // 登记与「再查一次名额」在同一段同步临界区里完成，避免这中间有人还了名额又被别人抢走。
+            enum Registration {
+                case acquired(LlmGateTicket)
+                case registered
+            }
+            let registration: Registration = lock.mfWithLock {
+                if let ticket = tryAcquireLocked(lane) { return .acquired(ticket) }
+                waiters.append(
+                    Waiter(id: waiterId, lane: lane, timeoutMillis: timeout,
+                           continuation: continuation)
+                )
+                return .registered
+            }
+            if case .acquired(let ticket) = registration {
                 continuation.resume(returning: .acquired(ticket))
                 return
             }
-            let waiter = Waiter(id: waiterId, lane: lane, timeoutMillis: timeout,
-                                continuation: continuation)
-            waiters.append(waiter)
-            lock.unlock()
 
             let timeoutTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
                 self?.expireWaiter(id: waiterId)
             }
-            lock.lock()
-            if let index = waiters.firstIndex(where: { $0.id == waiterId }) {
-                waiters[index].timeoutTask = timeoutTask
-                lock.unlock()
-            } else {
+            let installed = lock.mfWithLock { () -> Bool in
+                if let index = waiters.firstIndex(where: { $0.id == waiterId }) {
+                    waiters[index].timeoutTask = timeoutTask
+                    return true
+                }
+                return false
+            }
+            if !installed {
                 // 已经拿到名额 / 已经过期：这个定时器没用了。
-                lock.unlock()
                 timeoutTask.cancel()
             }
         }

@@ -83,18 +83,22 @@ public struct ImportSummary: Equatable, Sendable {
         var text = mode == .replace
             ? String(localized: "照备份重新接回了他")
             : String(localized: "把他接回来了")
-        text += String(
-            format: String(localized: "：%d 个人格 · %d 条记忆 · %d 段对话 · %d 句话"),
-            personas, memories, sessions, messages
-        )
+        // 每个计数单独成句再由 `·` 拼起来：中英的单复数各自有 `%d …` / `%d ….one` 两条资源，
+        // 一整句塞四个 `%d` 就没法让英文只把「1」说对。
+        text += String(localized: "：") + PluralText.list([
+            PluralText.format("%d 个人格", personas),
+            PluralText.format("%d 条记忆", memories),
+            PluralText.format("%d 段对话", sessions),
+            PluralText.format("%d 句话", messages)
+        ])
         if rules > 0 {
-            text += String(format: String(localized: " · %d 条主动节奏"), rules)
+            text += " · " + PluralText.format("%d 条主动节奏", rules)
         }
         if presets > 0 {
-            text += String(format: String(localized: " · %d 个预设"), presets)
+            text += " · " + PluralText.format("%d 个预设", presets)
         }
         if skipped > 0 {
-            text += String(format: String(localized: "；有 %d 条没接回来"), skipped)
+            text += "；" + PluralText.format("有 %d 条没接回来", skipped)
         }
         if !warnings.isEmpty {
             let separator = String(localized: "；")
@@ -128,18 +132,22 @@ public final class BackupService {
     private let vectorIndex: MemoryVectorIndex
     private let appVersion: String
     private let now: () -> Int64
+    /// 备份里的头像路径还能不能落到一个真实文件上（测试可注入临时目录）。
+    private let avatarFileExists: (String) -> Bool
 
     public init(
         stores: DatabaseStores,
         settings: SettingsProviding,
         vectorIndex: MemoryVectorIndex? = nil,
         appVersion: String = "",
+        avatarFileExists: @escaping (String) -> Bool = { MediaStorage.shared.exists(uriString: $0) },
         now: @escaping () -> Int64 = { DomainClock.nowMillis }
     ) {
         self.stores = stores
         self.settings = settings
         self.vectorIndex = vectorIndex ?? MemoryVectorIndex(stores: stores, now: now)
         self.appVersion = appVersion
+        self.avatarFileExists = avatarFileExists
         self.now = now
     }
 
@@ -240,13 +248,27 @@ public final class BackupService {
         var warnings: [String] = []
         var skipped = 0
 
-        let personas = bundle.personas.map(Self.toEntity)
+        // 备份里带着 `avatarUri`，但图片二进制从来不进备份（换台手机路径必然失效）。
+        // 指向不存在文件的头像直接清空：留着它，界面会画一个永远加载不出来的头像，
+        // 用户也看不出「这是备份带来的坏路径」——把它算进 warnings 才诚实。
+        var staleAvatars = 0
+        let personas = bundle.personas.map(Self.toEntity).map { persona -> PersonaEntity in
+            let uri = persona.avatarUri?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !uri.isEmpty, !avatarFileExists(uri) else { return persona }
+            var fixed = persona
+            fixed.avatarUri = nil
+            staleAvatars += 1
+            return fixed
+        }
+        if staleAvatars > 0 {
+            warnings.append(PluralText.format("有 %d 个人格的头像文件找不到，头像已经清空", staleAvatars))
+        }
         let memories = bundle.memories.map(Self.toEntity)
         // 一人一段（§八）：备份里同一人格有多段时只留最新那条，其余连同其消息一起不进库。
         // 这不是「优化」：`chat_sessions.personaId` 上有唯一索引，不合并就会直接写失败。
         let (keptSessions, droppedSessions) = Self.oneSessionPerPersona(bundle.sessions)
         if droppedSessions > 0 {
-            warnings.append(String(format: String(localized: "备份里有 %d 段多余的对话：一人只留最新的一段，其余没有接回来"), droppedSessions))
+            warnings.append(PluralText.format("备份里有 %d 段多余的对话：一人只留最新的一段，其余没有接回来", droppedSessions))
         }
 
         // 合并模式下还要处理「同一个人在本机已经有另一段对话」：唯一索引不允许两段，
@@ -272,8 +294,8 @@ public final class BackupService {
             sessions.append(entity)
         }
         if mergedSessions > 0 {
-            warnings.append(String(
-                format: String(localized: "有 %d 段对话和本机已有的对话属于同一个人：已经并进本机那段里，接回来以后还是同一段"),
+            warnings.append(PluralText.format(
+                "有 %d 段对话和本机已有的对话属于同一个人：已经并进本机那段里，接回来以后还是同一段",
                 mergedSessions
             ))
         }
@@ -303,7 +325,7 @@ public final class BackupService {
             !($0.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
         if messagesWithAttachments > 0 {
-            warnings.append(String(format: String(localized: "有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字"), messagesWithAttachments))
+            warnings.append(PluralText.format("有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字", messagesWithAttachments))
         }
 
         try stores.database.inTransaction {
@@ -363,8 +385,8 @@ public final class BackupService {
             return true
         }.count
         if configsMissingKey > 0 {
-            warnings.append(String(
-                format: String(localized: "有 %d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好"),
+            warnings.append(PluralText.format(
+                "有 %d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好",
                 configsMissingKey
             ))
         }

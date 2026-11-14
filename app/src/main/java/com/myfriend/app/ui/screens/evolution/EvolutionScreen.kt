@@ -65,6 +65,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.ui.common.RevisionReasonText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaRevisionEntity
 import com.myfriend.app.domain.EvolutionProposal
@@ -391,7 +392,7 @@ private fun RevisionCard(
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                revision.reason,
+                RevisionReasonText.of(LocalContext.current, revision.reason),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -79,7 +79,8 @@ public final class AgentLoop {
     private let browseOnce: ((String, Int64) -> BrowseOutcome?)?
     private let browsingDigest: (String) -> String?
     private let onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)?
-    private let lock = NSLock()
+    /// 一次只让他「想一下」：并发 tick 会重复读同一份处境、也可能发两条一样的消息。
+    private let tickGate = AsyncMutex()
 
     public init(
         stores: DatabaseStores,
@@ -122,8 +123,9 @@ public final class AgentLoop {
 
     /// 想一次。
     public func tick(config: CompletionConfig?, model: String, now: Int64? = nil) async -> Outcome {
-        lock.lock()
-        defer { lock.unlock() }
+        // 串行化用 `AsyncMutex`：等待的 tick 挂起而不是占住线程，系统锁也不会被带过 await。
+        await tickGate.acquire()
+        defer { tickGate.release() }
         let at = now ?? self.now()
         let settings = settings.load()
         if !settings.agentLoopEnabled {
@@ -223,6 +225,179 @@ public final class AgentLoop {
             acted: execution.acted,
             summary: summary
         )
+    }
+
+    // MARK: - 主动唤醒：「现在试一次」
+
+    /// 一次「立刻开口」的结果。与 Android `triggerNow` 一致：只生成并落一条消息，**不改排期**。
+    public struct ProactiveFireOutcome: Equatable, Sendable {
+        public var succeeded: Bool
+        public var messageId: String?
+        /// 失败原因（已本地化，可以直接上屏，也写进规则的 `lastError`）。
+        public var error: String?
+
+        public init(succeeded: Bool, messageId: String? = nil, error: String? = nil) {
+            self.succeeded = succeeded
+            self.messageId = messageId
+            self.error = error
+        }
+
+        public static func failure(_ message: String) -> ProactiveFireOutcome {
+            ProactiveFireOutcome(succeeded: false, messageId: nil, error: message)
+        }
+    }
+
+    /// 立刻按某条规则开口一次（列表页的「现在试一次」）。
+    ///
+    /// 这就是心跳平时走的那条路：同样的工具、同样的记账、同样的会话与通知回调
+    /// （`deliver` → `onMessageDelivered`）。区别只有两点：
+    /// 1. 不经过「今天还愿不愿意主动」的判断——用户亲手点了，他要说；
+    /// 2. 不改变规则的 `nextTriggerAt`/`lastTriggeredAt`，只把失败原因写进 `lastError`。
+    ///
+    /// 失败不抛：把原因返回给界面，同时落库，列表行会一直显示到下一次成功为止。
+    public func fireProactiveRule(
+        ruleId: String,
+        config: CompletionConfig?,
+        model: String,
+        now: Int64? = nil
+    ) async -> ProactiveFireOutcome {
+        // 与 `tick` 共用同一把异步互斥：手动触发和心跳同时开口会写两条几乎一样的消息。
+        await tickGate.acquire()
+        defer { tickGate.release() }
+        let at = now ?? self.now()
+        guard let rule = (try? stores.proactiveRules.byId(ruleId)) ?? nil else {
+            return .failure(String(localized: "这条规则已经不在了"))
+        }
+        do {
+            let outcome = try await fireProactiveLocked(rule: rule, config: config, model: model, now: at)
+            // 成功就把上一次的失败原因清掉：列表上不该留着一条已经过期的红字。
+            recordRuleError(ruleId: rule.id, message: nil, at: at)
+            return outcome
+        } catch {
+            let message = Self.describeFireError(error)
+            recordRuleError(ruleId: rule.id, message: message, at: at)
+            return .failure(message)
+        }
+    }
+
+    private func fireProactiveLocked(
+        rule: ProactiveRuleEntity,
+        config: CompletionConfig?,
+        model: String,
+        now: Int64
+    ) async throws -> ProactiveFireOutcome {
+        guard let persona = (try? stores.personas.byId(rule.personaId)) ?? nil else {
+            throw CompletionFailure(String(localized: "人格已不存在"))
+        }
+        // 与 Android 的 AsleepException 同义：这个点他在睡觉，手动试也一样（不硬叫醒他）。
+        let minute = ServiceTime.minuteOfDay(now)
+        if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
+            throw CompletionFailure(String(localized: "这个点他在睡觉"))
+        }
+        guard let config else {
+            throw CompletionFailure(String(localized: "还没有可用的 API 配置"))
+        }
+        let session: ChatSessionEntity
+        if let ruleSessionId = rule.sessionId,
+           let existing = (try? stores.sessions.byId(ruleSessionId)) ?? nil {
+            session = existing
+        } else if let existing = (try? stores.sessions.session(forPersona: persona.id)) ?? nil {
+            session = existing
+        } else {
+            throw CompletionFailure(String(localized: "还没有可以落话的会话"))
+        }
+
+        // 这一轮模型会读到会话里的历史，所以用户消息此刻算「已读」（与 Android 一致）。
+        _ = try? stores.messages.markUserMessagesRead(sessionId: session.id, at: now)
+        let messages = proactiveMessages(rule: rule, persona: persona, session: session, now: now)
+        let sessionModel = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let response: CompletionResult
+        do {
+            response = try await completion.complete(
+                config: config,
+                model: sessionModel.isEmpty ? model : sessionModel,
+                messages: messages,
+                params: CompletionParams(temperature: config.temperature ?? 0.85),
+                // 用量类目与 Android 的 `ProactiveRepository.triggerNow` 一致：用户亲手点出来的
+                // 一次面向对话的生成，记 **CHAT**（用量页计入聊天）；AgentLoop 自主开口才记 AGENT。
+                // 注：iOS 的并发道由类目推导（`LlmCallLane(kind:)`），所以这条会走聊天道——
+                // 这是用户主动触发、且只有一两秒的动作，可以接受；它不会再从心跳里被调用。
+                kind: .chat,
+                context: UsageContext(personaId: persona.id, sessionId: session.id)
+            )
+        } catch {
+            throw CompletionFailure(Self.describeFireError(error))
+        }
+        // 模型偶尔会把主动唤醒的代码块也带回来：剥掉，只留那句人话。
+        let text = ProactiveProtocol.extract(response.text).body
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else {
+            throw CompletionFailure(String(localized: "模型没有返回内容"))
+        }
+        guard let saved = deliver(persona: persona, session: session, text: text, now: now) else {
+            throw CompletionFailure(String(localized: "消息没写进库"))
+        }
+        return ProactiveFireOutcome(succeeded: true, messageId: saved.id, error: nil)
+    }
+
+    /// 拼这一轮主动开口的提示词（照 Android `buildProactiveMessages`）。
+    ///
+    /// 与聊天不同的是：这次没有「对方刚说了一句话」这个上下文，只有规则本身的背景与指引；
+    /// 历史只取最近 10 句——主动开口不需要整段会话。
+    func proactiveMessages(
+        rule: ProactiveRuleEntity,
+        persona: PersonaEntity,
+        session: ChatSessionEntity,
+        now: Int64
+    ) -> [CompletionMessage] {
+        let memories = memoryRepository.getRelevant(personaId: persona.id)
+        var instruction = "现在是 \(ServiceTime.formatted(now))，按之前和对方的约定，到了你主动开口的时间。\n"
+        instruction += "这件事的背景：\(rule.note.isEmpty ? "你希望主动关心对方" : rule.note)\n"
+        instruction += "开口时的指引：\(rule.hint.isEmpty ? "用你的方式自然地关心对方此刻的状态" : rule.hint)\n"
+        instruction += "要求：只写这一条消息本身，像平时发消息一样，1-3 句，不要解释你在执行规则，不要使用列表，不要提及「主动唤醒」这个功能。"
+
+        var system = personaTextForPrompt(persona) + mood.promptLine(personaId: persona.id, now: now)
+        if let hint = PersonaSleep.hint(persona) {
+            system += "\n（\(hint)）"
+        }
+        if !memories.isEmpty {
+            system += memoryRepository.formatForPrompt(memories)
+        }
+        system += "\n\n---\n" + instruction
+
+        // 只有会话绑了 API 配置才带历史（Android 同一口径）：没绑说明这段会话还没真正聊起来。
+        let hasConfig = !(session.apiConfigId ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasConfig else { return [.system(system)] }
+        let recent = (try? stores.messages.recent(sessionId: session.id, limit: 40)) ?? []
+        let history = recent
+            .filter {
+                ($0.role == .user || $0.role == .assistant)
+                    && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && $0.status != .error
+            }
+            .suffix(10)
+            .map { message in
+                CompletionMessage(role: message.role == .user ? "user" : "assistant", content: message.content)
+            }
+        return [.system(system)] + history
+    }
+
+    private func recordRuleError(ruleId: String, message: String?, at: Int64) {
+        guard var rule = (try? stores.proactiveRules.byId(ruleId)) ?? nil else { return }
+        let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        rule.lastError = trimmed.isEmpty ? nil : String(trimmed.prefix(300))
+        rule.updatedAt = at
+        _ = try? stores.proactiveRules.upsert(rule)
+    }
+
+    static func describeFireError(_ error: Error) -> String {
+        if let failure = error as? CompletionFailure { return failure.message }
+        if let api = error as? ApiException { return api.message }
+        if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
+            return localized
+        }
+        let text = (error as NSError).localizedDescription
+        return text.isEmpty ? String(localized: "这次没能开口") : text
     }
 
     /// 给界面/服务显示的一句话：他刚刚在想什么。

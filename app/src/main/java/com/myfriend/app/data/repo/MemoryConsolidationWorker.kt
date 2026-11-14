@@ -46,7 +46,7 @@ class MemoryConsolidationWorker @AssistedInject constructor(
             withTimeoutOrNull(WORK_TIMEOUT_MILLIS) { consolidator.consolidateAll() }
         }.getOrNull() ?: return Result.success(
             // 整理失败/超时不该让 WorkManager 一直重试烧额度：标记 success，等明天的周期任务。
-            workDataOf(KEY_STATUS to STATUS_FAILED, KEY_MESSAGE to "整理超时或出错了，明天再试")
+            workDataOf(KEY_STATUS to STATUS_FAILED)
         )
         val done = results.count { it.didAnything }
         val total = results.fold(

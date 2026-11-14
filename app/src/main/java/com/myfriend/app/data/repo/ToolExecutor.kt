@@ -13,6 +13,7 @@ import com.myfriend.app.data.local.PersonaPendingPatchEntity
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.AgentWindow
 import com.myfriend.app.domain.DeferReply
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ToolArgClamp
 import com.myfriend.app.domain.MemoryCandidate
 import com.myfriend.app.domain.MemoryDecision
@@ -29,7 +30,11 @@ import com.myfriend.app.domain.ToolInvocation
 import com.myfriend.app.domain.ToolProtocol
 import com.myfriend.app.domain.ToolResult
 import com.myfriend.app.domain.ToolTraceItem
+import com.myfriend.app.domain.UserError
+import com.myfriend.app.domain.UserErrorTokens
+import com.myfriend.app.domain.debugText
 import com.myfriend.app.network.ApiException
+import com.myfriend.app.network.toUserError
 import com.myfriend.app.network.DeepSeekWebTools
 import com.myfriend.app.network.WebSearchHit
 import java.util.UUID
@@ -84,7 +89,7 @@ class ToolExecutor @Inject constructor(
             "recall" -> recall(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
             "think" -> think(invocation)
-            else -> failure(invocation, "不认识这个工具：$name")
+            else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_UNKNOWN, arg = name))
         }
     }
 
@@ -102,7 +107,7 @@ class ToolExecutor @Inject constructor(
         now: Long
     ): ToolExecution {
         val raw = invocation.argument("mood")?.trim().orEmpty()
-        if (raw.isBlank()) return failure(invocation, "没有写是什么心情")
+        if (raw.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_MOOD_MISSING))
         val intensity = invocation.intArgument("intensity", 0).takeIf { it in 1..5 }
         val reason = invocation.argument("reason")?.trim()?.take(60).orEmpty()
         val state = moodRepository.setMood(
@@ -111,7 +116,7 @@ class ToolExecutor @Inject constructor(
             intensity = intensity,
             reason = reason,
             now = now
-        ) ?: return failure(invocation, "找不到这个人格")
+        ) ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_PERSONA_NOT_FOUND))
         val tail = when {
             MoodLexicon.isNegative(state.label) -> "接下来会说得慢一点、少一点，但不用解释自己为什么低落。"
             MoodLexicon.isLowEnergy(state.label) -> "接下来会懒一点、回得短一点，不用硬撑。"
@@ -159,8 +164,8 @@ class ToolExecutor @Inject constructor(
         configId: String?
     ): ToolExecution {
         val query = invocation.argument("query")?.trim().orEmpty()
-        if (query.isBlank()) return failure(invocation, "没有给出要查的内容")
-        val access = webAccess(persona, configId) ?: return failure(invocation, "这个人格还没有开启联网")
+        if (query.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_QUERY_MISSING))
+        val access = webAccess(persona, configId) ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_WEB_DISABLED))
         return runCatching {
             val hits = webTools.search(
                 baseUrl = access.baseUrl,
@@ -222,7 +227,7 @@ class ToolExecutor @Inject constructor(
                     )
                 )
             }
-        }.getOrElse { error -> failure(invocation, error.userFacing()) }
+        }.getOrElse { error -> failure(invocation, error.toUserError()) }
     }
 
     private suspend fun webFetch(
@@ -231,8 +236,8 @@ class ToolExecutor @Inject constructor(
         configId: String?
     ): ToolExecution {
         val url = invocation.argument("url")?.trim().orEmpty()
-        if (url.isBlank()) return failure(invocation, "没有给出要读的链接")
-        val access = webAccess(persona, configId) ?: return failure(invocation, "这个人格还没有开启联网")
+        if (url.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_URL_MISSING))
+        val access = webAccess(persona, configId) ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_WEB_DISABLED))
         return runCatching {
             val page = webTools.fetch(
                 baseUrl = access.baseUrl,
@@ -256,7 +261,7 @@ class ToolExecutor @Inject constructor(
                     ok = true
                 )
             )
-        }.getOrElse { error -> failure(invocation, error.userFacing()) }
+        }.getOrElse { error -> failure(invocation, error.toUserError()) }
     }
 
     /** 只有开了联网、并且拿得到 Key，工具才可用。 */
@@ -299,7 +304,7 @@ class ToolExecutor @Inject constructor(
         now: Long
     ): ToolExecution {
         val content = invocation.argument("content")?.trim().orEmpty()
-        if (content.isBlank()) return failure(invocation, "没有给出要记住的内容")
+        if (content.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_CONTENT_MISSING))
         val drawer = when (invocation.argument("drawer")?.uppercase()) {
             "SELF" -> MemoryDrawer.SELF
             "EVENT" -> MemoryDrawer.EVENT
@@ -444,7 +449,7 @@ class ToolExecutor @Inject constructor(
         now: Long
     ): ToolExecution {
         val query = invocation.argument("query")?.trim().orEmpty()
-        if (query.isBlank()) return failure(invocation, "没说要回忆什么")
+        if (query.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_RECALL_MISSING))
         // depth 宽松解析：字符串（1/2/3、quick/normal/deep、中文别名）和数字都认，缺省认真回忆。
         val depthText = invocation.argument("depth")
         val depth = when {
@@ -485,10 +490,10 @@ class ToolExecutor @Inject constructor(
         val effectivePatch = (patchObject ?: runCatching {
             kotlinx.serialization.json.Json.parseToJsonElement(patchJson)
         }.getOrNull())?.toString()
-        if (effectivePatch.isNullOrBlank()) return failure(invocation, "没有给出要改的内容")
+        if (effectivePatch.isNullOrBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_PATCH_MISSING))
         // 旧人格只有一整段提示词：readCard 会临时拆出一张卡，不落库也不报错。
         val card = personaCardRepository.readCard(persona)
-        if (card.isEmpty()) return failure(invocation, "这个人格还没有人设，先别改")
+        if (card.isEmpty()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_CARD_EMPTY))
         val updated = PersonaCardPatch.apply(card, effectivePatch)
         if (updated == card) {
             // 本来就是这样：不算错，也别让他一直重试。
@@ -504,7 +509,7 @@ class ToolExecutor @Inject constructor(
         val reason = invocation.argument("reason")?.take(200).orEmpty()
         // 1.3 起不再等人点头：他自己想改就改，改动照旧进版本历史，随时能回滚。
         personaCardRepository.applyPatch(persona.id, effectivePatch, reason)
-            .getOrElse { return failure(invocation, it.message ?: "这次没改成功") }
+            .getOrElse { return failure(invocation, it.toUserError()) }
         return success(
             invocation,
             title = "调整了自己的人设",
@@ -526,9 +531,9 @@ class ToolExecutor @Inject constructor(
         now: Long
     ): ToolExecution {
         val sleep = ProactiveProtocol.parseTimeOfDay(invocation.argument("sleep_at").orEmpty())
-            ?: return failure(invocation, "睡觉时间要写成 HH:mm")
+            ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_SLEEP_TIME_INVALID))
         val wake = ProactiveProtocol.parseTimeOfDay(invocation.argument("wake_at").orEmpty())
-            ?: return failure(invocation, "起床时间要写成 HH:mm")
+            ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_WAKE_TIME_INVALID))
         val reason = invocation.argument("reason")?.take(160).orEmpty()
         personaCardRepository.setQuietHours(persona.id, sleep, wake, reason)
         // 1.9：睡前免打扰是模型的决定，不是用户的设置；写了就落库，没写就不动。
@@ -622,28 +627,32 @@ class ToolExecutor @Inject constructor(
         )
     )
 
-    private fun failure(invocation: ToolInvocation, message: String): ToolExecution = ToolExecution(
-        result = ToolResult(
-            invocation = invocation,
-            ok = false,
-            summary = message,
-            contentForModel = "这次调用没成功：$message。用你已经知道的东西继续，不要向对方解释工具细节。",
-            errorMessage = message
-        ),
-        trace = ToolTraceItem(
-            name = invocation.name,
-            title = ToolProtocol.describe(
-                ToolResult(invocation, false, message, "", message)
-            ).first,
-            subtitle = null,
-            detail = message,
-            ok = false
+    /**
+     * 工具失败。
+     *
+     * 回灌给模型的文本保持中文（提示词脚手架不翻译）；落进 [ToolTraceItem.detail] 的
+     * 则是**错误令牌**，界面展开痕迹时按当前语言翻译（老数据原样显示）。
+     */
+    private fun failure(invocation: ToolInvocation, error: UserError): ToolExecution {
+        val text = error.debugText()
+        return ToolExecution(
+            result = ToolResult(
+                invocation = invocation,
+                ok = false,
+                summary = text,
+                contentForModel = "这次调用没成功：$text。用你已经知道的东西继续，不要向对方解释工具细节。",
+                errorMessage = text
+            ),
+            trace = ToolTraceItem(
+                name = invocation.name,
+                title = ToolProtocol.describe(
+                    ToolResult(invocation, false, text, "", text)
+                ).first,
+                subtitle = null,
+                detail = UserErrorTokens.encode(error),
+                ok = false
+            )
         )
-    )
-
-    private fun Throwable.userFacing(): String = when (this) {
-        is ApiException -> message
-        else -> message ?: "工具调用失败"
     }
 
     private data class WebAccess(val baseUrl: String, val apiKey: String, val allowInsecureHttp: Boolean)

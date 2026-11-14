@@ -6,8 +6,10 @@ import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MessageRole
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.network.AiProviderRegistry
+import com.myfriend.app.network.userError
 import com.myfriend.app.network.InferenceParams
 import com.myfriend.app.network.WireMessage
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.EvolutionProposal
 import com.myfriend.app.domain.MessageWindows
 import kotlinx.serialization.json.Json
@@ -29,10 +31,11 @@ class EvolutionRepository @Inject constructor(
     private val json: Json
 ) {
     suspend fun generateProposal(personaId: String): Result<EvolutionProposal> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val configId = persona.defaultApiConfigId
-            ?: error("请先在人格设置中绑定 API，才能生成进化提案")
-        val resolved = apiConfigRepository.resolve(configId) ?: error("API 配置不存在")
+            ?: userError(DomainErrorCode.API_CONFIG_NOT_BOUND_FOR_PERSONA)
+        val resolved = apiConfigRepository.resolve(configId)
+            ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         val memories = memoryDao.getForPersona(personaId, 40)
         val sessions = sessionDao.getByPersona(personaId).sortedByDescending { it.lastMessageAt ?: it.createdAt }
         val recentTranscripts = buildString {
@@ -125,6 +128,6 @@ class EvolutionRepository @Inject constructor(
                 }
             }
         }
-        throw IllegalStateException("未能解析进化提案，请重试或检查模型是否支持 JSON 输出")
+        userError(DomainErrorCode.MODEL_UNPARSABLE)
     }
 }

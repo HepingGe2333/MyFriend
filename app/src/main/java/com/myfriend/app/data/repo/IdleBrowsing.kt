@@ -302,14 +302,11 @@ class IdleBrowsing @Inject constructor(
     private suspend fun recentUserTexts(personaId: String): List<String> = runCatching<List<String>> {
         val session = runCatching { sessionDao.latestForPersona(personaId) }.getOrNull()
             ?: return@runCatching emptyList()
-        // 只查最近 120 条再挑用户消息：这里只需要最后 6 条用户原话，
-        // 没有理由把整段历史读进内存（后台 worker 一次醒来的临时峰值也在这里省掉）。
-        val recentRows = runCatching {
-            messageDao.recentBySession(session.id, MessageWindows.IDLE_LOOKBACK_ROWS)
-        }.getOrDefault(emptyList())
-        MessageWindows.lastN(recentRows, RECENT_TEXT_LIMIT) {
-            it.role == MessageRole.USER && it.content.isNotBlank()
-        }.map { it.content }
+        // 精确查询「最近 6 条用户原话」：以前是查最近 120 行再筛，
+        // 行情不好的时候（连续长回复、主动消息）可能一条用户消息都筛不出来。
+        runCatching { messageDao.recentUserMessages(session.id, RECENT_TEXT_LIMIT) }
+            .getOrDefault(emptyList())
+            .map { it.content }
     }.getOrDefault(emptyList())
 
     // ---------------------------------------------------------------- 辅助

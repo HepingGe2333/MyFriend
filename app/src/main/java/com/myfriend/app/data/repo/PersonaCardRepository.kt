@@ -11,9 +11,12 @@ import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaCardCodec
 import com.myfriend.app.domain.PersonaCardPatch
 import com.myfriend.app.domain.PersonaCardPrompt
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.PersonaProfile
+import com.myfriend.app.domain.PersonaRevisionReason
 import com.myfriend.app.domain.PromptBudget
 import com.myfriend.app.domain.SleepPolicy
+import com.myfriend.app.network.userError
 import kotlinx.coroutines.flow.Flow
 import java.util.UUID
 import javax.inject.Inject
@@ -38,7 +41,6 @@ class PersonaCardRepository @Inject constructor(
 
     private companion object {
         const val MIRROR_MAX = 8000
-        const val REASON_PREFIX = "他自己想调整"
     }
 
     // ------------------------------------------------------------ 读
@@ -103,7 +105,7 @@ class PersonaCardRepository @Inject constructor(
         reason: String,
         bumpVersion: Boolean = true
     ): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
         val json = PersonaCardCodec.encode(card)
         val mirrored = mirrorOf(card).take(MIRROR_MAX)
@@ -117,8 +119,8 @@ class PersonaCardRepository @Inject constructor(
         )
         database.withTransaction {
             if (changed) {
-                insertRevision(persona, "调整前版本", now)
-                insertRevision(updated, reason.ifBlank { "调整人设" }, now)
+                insertRevision(persona, PersonaRevisionReason.CARD_BEFORE_ADJUST, now)
+                insertRevision(updated, reason.ifBlank { PersonaRevisionReason.CARD_EDITED }, now)
             }
             personaDao.update(updated)
         }
@@ -130,10 +132,10 @@ class PersonaCardRepository @Inject constructor(
         patchJson: String,
         summary: String
     ): Result<PersonaCard> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val before = readCard(persona)
         val after = PersonaCardPatch.apply(before, patchJson)
-        saveCard(personaId, after, "自我调整：${summary.take(60)}").getOrThrow()
+        saveCard(personaId, after, PersonaRevisionReason.selfAdjusted(summary)).getOrThrow()
         after
     }
 
@@ -147,7 +149,7 @@ class PersonaCardRepository @Inject constructor(
         wakeMinutes: Int?,
         reason: String
     ): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
         val card = readCard(persona).let { card ->
             val schedule = when {
@@ -200,7 +202,7 @@ class PersonaCardRepository @Inject constructor(
 
     /** 「他会不会主动睡觉」由用户的编辑页决定；这里只给后台一处便捷入口。 */
     suspend fun setSleepEnabled(personaId: String, enabled: Boolean): Result<Unit> = runCatching {
-        val persona = personaDao.getById(personaId) ?: error("人格不存在")
+        val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         personaDao.update(persona.copy(sleepEnabled = enabled, updatedAt = System.currentTimeMillis()))
     }
 
@@ -235,7 +237,7 @@ class PersonaCardRepository @Inject constructor(
 
     /** 用户点了「确认」：把补丁真的写进人设卡，并归档版本。 */
     suspend fun approvePatch(patchId: String): Result<PersonaCard> = runCatching {
-        val patch = pendingPatchDao.getById(patchId) ?: error("这条调整已经不存在了")
+        val patch = pendingPatchDao.getById(patchId) ?: userError(DomainErrorCode.PENDING_PATCH_NOT_FOUND)
         val result = applyPatch(patch.personaId, patch.patchJson, patch.summary).getOrThrow()
         pendingPatchDao.deleteById(patchId)
         result
@@ -324,6 +326,4 @@ class PersonaCardRepository @Inject constructor(
         val (sleep, wake) = SleepPolicy.window(persona.quietSleepMinutes, persona.quietWakeMinutes)
         return "你给自己定的作息是 ${formatMinutes(sleep)} 睡觉、${formatMinutes(wake)} 醒来"
     }
-
-    val reasonPrefix: String get() = REASON_PREFIX
 }

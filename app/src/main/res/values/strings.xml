@@ -221,6 +221,8 @@
     <string name="chat_title">对话</string>
     <string name="chat_typing">正在输入</string>
     <string name="chat_latest">最新</string>
+    <string name="chat_load_earlier">上滑加载更早的消息</string>
+    <string name="chat_loading_earlier">正在加载更早的消息…</string>
     <string name="chat_scroll_to_bottom">回到底部</string>
 
     <!-- 聊天页：更多菜单 -->
@@ -1116,4 +1118,210 @@
     <string name="usage_kind_unknown">其他</string>
     <string name="usage_session_other">其他</string>
     <string name="usage_session_unknown">未知联系人</string>
+
+    <!-- 0.10.1：数据层/网络层的错误改成结构化错误码，这里是从错误码到人话的唯一映射表。 -->
+    <string name="error_unknown">未知错误</string>
+    <string name="error_persona_not_found">人格不存在</string>
+    <string name="error_persona_gone">人格已不存在</string>
+    <string name="error_persona_unknown">未知人格</string>
+    <string name="error_session_not_found">会话不存在</string>
+    <string name="error_message_not_found">消息不存在</string>
+    <string name="error_memory_not_found">记忆已不存在</string>
+    <string name="error_api_config_not_found">API 配置不存在</string>
+    <string name="error_api_config_gone">API 配置已不存在</string>
+    <string name="error_api_config_required">请先为该会话选择 API 配置</string>
+    <string name="error_api_config_not_bound">这个会话还没有 API 配置</string>
+    <string name="error_api_config_not_bound_for_persona">请先在人格设置中绑定 API，才能生成进化提案</string>
+    <string name="error_rule_not_found">规则不存在</string>
+    <string name="error_rule_gone">规则已不存在</string>
+    <string name="error_preset_not_found">预设不存在</string>
+    <string name="error_revision_not_found">历史版本不存在</string>
+    <string name="error_pending_patch_not_found">这条调整已经不存在了</string>
+    <string name="error_message_empty">消息不能为空</string>
+    <string name="error_message_too_long">消息过长</string>
+    <string name="error_title_empty">标题不能为空</string>
+    <string name="error_nothing_to_regenerate">没有可以重新生成的消息</string>
+    <string name="error_only_user_message_editable">只能编辑用户消息</string>
+    <string name="error_nothing_to_reply">还没有可以回复的消息</string>
+    <string name="error_no_conversation_yet">该人格还没有对话</string>
+    <string name="error_memory_empty">记忆内容不能为空</string>
+    <string name="error_memory_too_long">单条记忆请控制在 2000 字以内</string>
+    <string name="error_persona_name_required">请填写人格名称</string>
+    <string name="error_persona_name_too_long">人格名称过长</string>
+    <string name="error_persona_description_too_long">简介过长</string>
+    <string name="error_persona_prompt_too_long">人格提示词超出安全上限</string>
+    <string name="error_evolved_prompt_empty">进化后的人格提示词为空</string>
+    <string name="error_preset_name_required">请填写预设名称</string>
+    <string name="error_preset_name_too_long">预设名称过长</string>
+    <string name="error_preset_prompt_required">预设需要包含提示词</string>
+    <string name="error_preset_prompt_too_long">提示词超出安全上限</string>
+    <string name="error_preset_library_empty">预设库还是空的，先保存一个预设再导出</string>
+    <string name="error_import_file_too_large">导入文件过大</string>
+    <string name="error_import_invalid_json">文件不是有效的 JSON</string>
+    <string name="error_import_not_preset_file">这不是 MyFriend 的预设文件</string>
+    <string name="error_import_no_persona_data">未找到可导入的人格数据</string>
+    <string name="error_import_no_valid_persona">没有可导入的有效人格</string>
+    <string name="error_import_too_many_personas">一次最多导入 200 个人格</string>
+    <string name="error_backup_secret_field">备份里出现了密钥字段，已中止导出</string>
+    <string name="error_model_empty_reply">模型没有返回内容</string>
+    <string name="error_model_unparsable">模型返回的内容看不懂，请重试或检查模型是否支持 JSON 输出</string>
+    <string name="error_proactive_time_required">请选择每天的时间</string>
+    <string name="error_proactive_interval_required">请设置间隔小时数</string>
+    <string name="error_proactive_interval_range">间隔需在 1 到 24 小时之间</string>
+    <string name="error_api_config_name_required">请填写配置名称</string>
+    <string name="error_api_config_name_too_long">配置名称过长</string>
+    <string name="error_model_id_required">请填写模型 ID</string>
+    <string name="error_model_id_too_long">模型 ID 过长</string>
+    <string name="error_provider_reserved">该服务商适配仍在预留中，请选择 OpenAI 兼容</string>
+    <string name="error_headers_invalid_json">自定义 Headers 必须是合法的 JSON 对象</string>
+    <string name="error_header_name_required">Header 名称不能为空</string>
+    <string name="error_header_value_not_string">Header %1$s 的值必须是字符串</string>
+    <string name="error_temperature_range">Temperature 应在 0 到 2 之间</string>
+    <string name="error_top_p_range">Top P 应在 0 到 1 之间</string>
+    <string name="error_max_output_tokens_range">Max Output Tokens 必须大于 0</string>
+    <string name="error_frequency_penalty_range">Frequency Penalty 应在 -2 到 2 之间</string>
+    <string name="error_presence_penalty_range">Presence Penalty 应在 -2 到 2 之间</string>
+    <string name="error_asleep">这个点他在睡觉</string>
+    <string name="error_tool_unknown">不认识这个工具：%1$s</string>
+    <string name="error_tool_mood_missing">没有写是什么心情</string>
+    <string name="error_tool_persona_not_found">找不到这个人格</string>
+    <string name="error_tool_query_missing">没有给出要查的内容</string>
+    <string name="error_tool_web_disabled">这个人格还没有开启联网</string>
+    <string name="error_tool_url_missing">没有给出要读的链接</string>
+    <string name="error_tool_content_missing">没有给出要记住的内容</string>
+    <string name="error_tool_recall_missing">没说要回忆什么</string>
+    <string name="error_tool_patch_missing">没有给出要改的内容</string>
+    <string name="error_tool_card_empty">这个人格还没有人设，先别改</string>
+    <string name="error_tool_sleep_time_invalid">睡觉时间要写成 HH:mm</string>
+    <string name="error_tool_wake_time_invalid">起床时间要写成 HH:mm</string>
+    <string name="error_tool_edit_failed">这次没改成功</string>
+    <string name="error_tool_failed">工具调用失败</string>
+
+    <!-- 网络层：地址、HTTP 状态、流式响应 -->
+    <string name="error_network_empty_url">地址不能为空</string>
+    <string name="error_network_invalid_url">地址格式不正确，请填写完整的 http(s) 地址</string>
+    <string name="error_network_https_required">出于安全要求，仅允许 HTTPS。若使用本地服务，请在 API 配置中显式开启“允许不安全 HTTP”。</string>
+    <string name="error_network_unsupported_scheme">仅支持 HTTP(S) 地址</string>
+    <string name="error_network_invalid_base_url">API 地址无效，请检查 Base URL</string>
+    <string name="error_http_400">请求被服务拒绝（400），请检查模型名称与推理参数</string>
+    <string name="error_http_401">API Key 无效或未授权（401）</string>
+    <string name="error_http_403">没有访问该模型的权限（403）</string>
+    <string name="error_http_404">接口或模型不存在（404），请检查 Base URL 与模型 ID</string>
+    <string name="error_http_408">服务请求超时（408）</string>
+    <string name="error_http_413">请求内容过长（413），请缩短上下文或输出长度</string>
+    <string name="error_http_429">请求过于频繁或额度不足（429）</string>
+    <string name="error_http_5xx">服务端暂时不可用（%1$d）</string>
+    <string name="error_http_other">请求失败（HTTP %1$d）</string>
+    <string name="error_network_unparsable_models">服务返回了无法解析的模型列表</string>
+    <string name="error_network_empty_reply">服务返回了空回复</string>
+    <string name="error_network_unparsable_reply">服务返回了无法识别的回复内容</string>
+    <string name="error_network_empty_stream">模型没有返回任何文字，请检查模型名称或服务配置</string>
+    <string name="error_network_stream_error">服务返回了错误</string>
+    <string name="error_network_response_too_long">这次的回复太长了（单行超过 %1$dMB），已中止</string>
+    <string name="error_network_no_content">服务未返回响应内容</string>
+    <string name="error_network_timeout">连接超时，请检查网络或服务地址</string>
+    <string name="error_network_unknown_host">无法解析服务器地址，请检查网络连接</string>
+    <string name="error_network_interrupted">网络连接中断，请检查网络</string>
+    <string name="error_network_chat_queue_busy">刚才那条还没说完，稍等一下再发一次</string>
+    <string name="error_network_background_queue_busy">后台任务排队太久，这次先放弃</string>
+    <string name="error_network_provider_unavailable">该服务商适配仍在预留中，请选择 OpenAI 兼容</string>
+    <string name="error_web_key_missing">DeepSeek 密钥为空，请先在 API 配置中填写</string>
+    <string name="error_web_query_missing">搜索关键词不能为空</string>
+    <string name="error_web_url_missing">要抓取的网页地址不能为空</string>
+    <string name="error_web_base_missing">DeepSeek 地址不能为空</string>
+    <string name="error_web_unparsable">联网服务返回了无法解析的内容</string>
+    <string name="error_web_page_unreachable">这个页面抓不到内容</string>
+    <string name="error_web_status_401">DeepSeek 密钥无效或已过期</string>
+    <string name="error_web_status_402">DeepSeek 账户余额不足</string>
+    <string name="error_web_status_403">抓取被目标站点或安全策略拒绝</string>
+    <string name="error_web_status_408">读取超时，稍后再试</string>
+    <string name="error_web_status_429">请求太频繁，被限流了（每分钟有 QPS 上限）</string>
+    <string name="error_web_status_5xx">DeepSeek 服务暂时不可用</string>
+    <string name="error_web_status_other">请求失败（HTTP %1$d）</string>
+
+    <string name="api_connect_success">连接成功</string>
+    <string name="api_connect_success_models">连接成功，发现 %1$d 个模型</string>
+
+    <!-- 版本历史里的「为什么有这个版本」：落库的是令牌，这里是说法 -->
+    <string name="reason_revision_card_created">创建人格卡</string>
+    <string name="reason_revision_card_edited">编辑人格卡</string>
+    <string name="reason_revision_card_before_adjust">调整前版本</string>
+    <string name="reason_revision_created">创建人格</string>
+    <string name="reason_revision_before_edit">编辑前版本</string>
+    <string name="reason_revision_edited">编辑人格</string>
+    <string name="reason_revision_copied">复制人格</string>
+    <string name="reason_revision_before_restore">恢复前版本</string>
+    <string name="reason_revision_restored">恢复至 v%1$d</string>
+    <string name="reason_revision_before_evolution">进化前版本</string>
+    <string name="reason_revision_evolved">人格进化：%1$s</string>
+    <string name="reason_revision_baseline">初始版本</string>
+    <string name="reason_revision_imported">导入人格</string>
+    <string name="reason_revision_self_adjusted">自我调整：%1$s</string>
+
+    <!-- 备份：预览、导入总结、warnings、失败原因 -->
+    <string name="backup_preview_empty">这份备份里什么也没有</string>
+    <string name="backup_preview_personas">%1$d 个人格</string>
+    <string name="backup_preview_memories">%1$d 条记忆</string>
+    <string name="backup_preview_sessions">%1$d 段对话</string>
+    <string name="backup_preview_messages">%1$d 句话</string>
+    <string name="backup_preview_rules">%1$d 条主动节奏</string>
+    <string name="backup_preview_presets">%1$d 个预设</string>
+    <string name="backup_exported_at">%1$s 带走</string>
+    <string name="backup_exported_unknown">带走的时间不详</string>
+    <string name="backup_moment_pattern">yyyy年M月d日 HH:mm</string>
+    <string name="backup_import_done">把他接回来了：%1$s</string>
+    <string name="backup_import_restored">照备份重新接回了他：%1$s</string>
+    <string name="backup_import_skipped">；有 %1$d 条没接回来</string>
+    <string name="backup_warn_separator">；</string>
+    <string name="backup_warn_older_format">备份格式是 v%1$d，已按 v%2$d 尽力读出来</string>
+    <string name="backup_warn_section_not_list">备份里的「%1$s」不是列表，这一段已跳过</string>
+    <string name="backup_warn_dropped_rows">%1$s 里有 %2$d 条读不出来，已跳过</string>
+    <string name="backup_warn_blank_ids">%1$s 里有 %2$d 条没写 id，已跳过</string>
+    <string name="backup_warn_settings_unreadable">设置这一段读不出来，接回来时设置页保持原样</string>
+    <string name="backup_warn_no_content">这份备份里没有他：既没有人格也没有记忆和对话</string>
+    <string name="backup_warn_extra_sessions">备份里有 %1$d 段多余会话，已按「一人一段」保留最新那段</string>
+    <string name="backup_warn_attachments">有 %1$d 句话原本带着图片，图片没有跟着备份走，现在只剩文字</string>
+    <string name="backup_warn_configs_missing_key">有 %1$d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好</string>
+    <string name="backup_warn_no_settings">这份备份里没有设置，设置页保持你现在的样子</string>
+    <string name="backup_warn_settings_partial">设置没能完全接回来（他本身已经接回来了）</string>
+    <string name="backup_warn_active_persona_missing">备份里选中的那个人格不在这份备份里，已把「正在聊的人」交还给默认人格</string>
+    <string name="backup_warn_avatar_missing">「%1$s」的头像文件已经不在这台手机上，已清空这个头像</string>
+    <string name="backup_section_persona">人格</string>
+    <string name="backup_section_memory">记忆</string>
+    <string name="backup_section_session">对话</string>
+    <string name="backup_section_message">消息</string>
+    <string name="backup_section_preset">预设</string>
+    <string name="backup_section_rule">主动节奏</string>
+    <string name="backup_section_intent">念头</string>
+    <string name="backup_section_consolidation">整理记录</string>
+    <string name="backup_section_api_config">API 配置</string>
+    <string name="backup_fail_empty">这个文件是空的，里面没有他。</string>
+    <string name="backup_fail_invalid_json">这个文件读不出来：不是一份有效的备份 JSON。</string>
+    <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
+    <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
+
+    <!-- 导入结果：人格 / 预设 -->
+    <string name="persona_import_result_ok">成功导入 %1$d 个人格</string>
+    <string name="persona_import_result_partial">成功导入 %1$d 个人格，跳过 %2$d 个格式不完整项</string>
+    <string name="preset_import_result_none">没有可导入的预设</string>
+    <string name="preset_import_result_ok">已导入 %1$d 个预设</string>
+    <string name="preset_import_result_partial">已导入 %1$d 个预设，跳过 %2$d 个无效条目</string>
+
+    <!-- 记忆抽取结果（数量由代码给，说法在这里） -->
+    <string name="memory_extract_result_added">记忆已更新（+%1$d）</string>
+    <string name="memory_extract_result_reinforced">又聊到了旧事，记忆更牢了</string>
+    <string name="memory_extract_result_echoed">记下了，还想再确认一次</string>
+    <string name="memory_extract_result_not_enough">对话还不够多，先聊几句</string>
+    <string name="memory_extract_result_interval">还没到记忆整理间隔（每 %1$d 条）</string>
+    <string name="memory_extract_result_none">没有发现需要新增的长期记忆</string>
+
+    <!-- 主动节奏的默认说明：落库前由界面按当前语言写好 -->
+    <string name="proactive_default_note_daily">每天 %1$s 主动问候</string>
+    <string name="proactive_default_note_interval">每 %1$d 小时主动关心一次</string>
+
+    <!-- 落库的名字后缀：复制/导入时由界面传进去，跟着当时的语言走 -->
+    <string name="common_copy_suffix"> 副本</string>
+    <string name="persona_import_suffix">（导入）</string>
+    <string name="chat_persona_switch_no_session">无法创建会话</string>
+    <string name="chat_persona_switch_api_not_bound">尚未绑定 API，请在会话中完成配置</string>
 </resources>

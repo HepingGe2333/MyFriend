@@ -24,6 +24,70 @@
 
 ---
 
+## 0.10.1
+
+小改动：把 0.10.0 并行开发里各条线自己承认的「没做完」补齐，并修掉并行带来的口径不一致。
+版本 `0.10.1`，两端构建号 **13**，schema 仍 **v10**、备份仍 **v2**。
+
+### Android：错误文案不再是硬编码中文
+
+- 新增 `domain/UserError.kt`：`UserError`（`Domain(code, arg, number)` / `Network(kind)` / `Unknown`）、
+  **74 个** `DomainErrorCode`、`NetworkErrorKind`（含 `Http(status)`、`ResponseTooLong(limit)` 等）。
+- 数据层与网络层只抛结构化错误；UI 通过 `ui/common/ErrorText.kt`、`BackupText.kt`、`RevisionReasonText.kt`
+  映射到资源。新增 **216 个 key × 中英两份**。
+- **落库的错误也本地化**：`messages.errorMessage`、`ToolTraceItem.detail`、`proactive_rules.lastError`
+  改存 ASCII 令牌 `@mf-err:...` / `@rev:...`，渲染时按语言翻译；老库里的中文值原样显示（不改写、不加迁移）。
+- `ChineseLiteralGuardTest` 扫描范围扩到 `data/` + `network/`：一次性扫出 378 处中文，上屏的已全部结构化，
+  剩下 18 个面向模型/落库的提示词文件进白名单并逐条写明理由。
+- 备份摘要、导入 warnings、人格版本 reason、连接测试、HTTP 状态码、联网工具错误、聊天错误气泡全部走资源。
+
+### 两端：聊天页分页
+
+- 首屏只读最近 **60** 条，滚到顶部再取 60 条（`createdAt` + `id` 复合游标），直到最早；顶部有「加载更早」。
+- **未读计数、已读回执、DND 与唤醒阈值仍走全表查询**，不受窗口影响；搜索、导出、历史压缩、备份仍是全量路径。
+- 两端各加契约测试钉住这些性质（Android `ChatPagingContractTest` / `MessagePagingTest`，
+  iOS `ChatPagingTests`），防止以后被顺手窗口化。
+- 已知代价：把整个历史翻完之后，可观察区间等价于全量——分页降低的是「进会话与日常浏览」的峰值。
+
+### iOS：补上 0.10.0 报告里剩下的三条真缺口
+
+| 缺口 | 现在 |
+| --- | --- |
+| `web_search` 之后的重要性打分 | 移植 Android `WebSearchScorer`（同一套判定标准、阈值 3、温度 0.2、用量类目 `SCORING`、失败降级不记），写入前多做一次相似度去重（这一点比 Android 严） |
+| 记忆回声清理 | `promote` 成功后按人格清理 `memory_echoes`（对齐 Android `deleteByPersona`），`reinforce` 不动 |
+| 主动唤醒「现在试一次」+ 失败原因 | 列表每行可触发一次（成功落消息 + 通知并清 `lastError`，失败写 `lastError` 并显示；不改变排期；睡着时拒绝） |
+
+- 顺带：`ProactiveLevel` 编辑页文案改为调用 domain 的实现（不再各写一份）。
+- 用量口径：自主思考/心跳开口记 `AGENT`，「现在试一次」记 `CHAT`（与 Android `ProactiveRepository.triggerNow` 一致）。
+
+### 两端：媒体与失效路径
+
+- 换头像/恢复默认/删人格时删除对应的头像文件；「清空全部数据」删头像目录。
+- 备份导入时 `avatarUri` 指向不存在的文件 → 清空字段并计入导入 warnings（中英文案）。
+- iOS：编辑器里选了新头像又取消时删除孤儿文件；Android：删除消息/清空上下文/删会话时删除附件文件。
+
+### 其它修复
+
+- Android 后台路径的窗口查询换成精确查询（`lastUserMessage` / `lastUserMessageAt` / `recentUserMessages`），
+  不再出现「最近 40 条里没有用户消息就取不到上次说话」的边界。
+- Android SSE 单行加 **8MB** 上限（超限按「回复太长」中止，不把一行吃进内存）。
+- iOS 编译警告 **9 → 0**：`LlmConcurrencyGate` 把加解锁收进同步临界区；`AgentLoop` /
+  `MemoryConsolidator` / `MemoryExtraction` 改用 `AsyncMutex`（等待者挂起而不是占住线程），门控语义与超时逐条保留。
+- iOS 英文单复数补齐（备份/清空摘要、规则、时间等，`1 personas` 这类边界修正），
+  `Recall` 的工具详情前缀改为本地化的显示版本（提示词版本仍是中文）。
+- `Recall` / 工具痕迹标题里仍会露出的中文（如「联网搜索」「记住了」）本轮未处理，见「已知限制」。
+
+### 测试
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **683 条 / 0 失败**（基线 639 + 44） |
+| iOS | **872 条 / 0 失败**（基线 827 + 45） |
+| agentd | **19 条 / 0 失败** |
+| 构建 | `:app:assembleDebug`、`xcodebuild build`、`:agentd:build` 均成功；iOS clean build 零 Swift 警告 |
+
+---
+
 ## 0.10.0
 
 版本号 `0.10.0`（大改动：新增国际化能力与跨端 agent 契约），构建号 `versionCode` / `CURRENT_PROJECT_VERSION` 同步为 **12**，数据库 schema 仍是 **v10**，备份格式仍是 **v2**。

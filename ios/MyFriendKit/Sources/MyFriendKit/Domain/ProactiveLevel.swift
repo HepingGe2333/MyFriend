@@ -45,14 +45,18 @@ public enum ProactiveLevel {
         }
     }
 
-    /// 编辑页滑杆下面那句人话。
+    /// 编辑页滑杆下面那句人话（跟随界面语言）。
+    ///
+    /// 中文原文就是资源 key：`spec/agent-core` 的 `proactive-cap` 用例钉的是这段中文，
+    /// 而 `swift test` 没有资源包时会回落成 key 本身，所以契约两端都还看得见同一句中文；
+    /// App 里则按系统语言取对应译文。
     public static func description(_ level: Int) -> String {
         switch normalize(level) {
-        case 1: return "很少主动。你不找他，他基本不会来打扰。"
-        case 2: return "偶尔想起你。忙起来就顾不上了。"
-        case 3: return "会主动，但有分寸。大多数日子会来找你说一句话。"
-        case 4: return "比较黏人。隔一阵子就想知道你在做什么。"
-        default: return "很黏你。一天里会好几次想找你说话。"
+        case 1: return String(localized: "很少主动。你不找他，他基本不会来打扰。")
+        case 2: return String(localized: "偶尔想起你。忙起来就顾不上了。")
+        case 3: return String(localized: "会主动，但有分寸。大多数日子会来找你说一句话。")
+        case 4: return String(localized: "比较黏人。隔一阵子就想知道你在做什么。")
+        default: return String(localized: "很黏你。一天里会好几次想找你说话。")
         }
     }
 }

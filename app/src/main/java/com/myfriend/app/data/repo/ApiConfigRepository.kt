@@ -9,10 +9,12 @@ import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.ApiConfigDraft
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.network.ConnectionTestResult
 import com.myfriend.app.domain.ResolvedApiConfig
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.NetworkGuard
+import com.myfriend.app.network.userError
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -36,28 +38,15 @@ class ApiConfigRepository @Inject constructor(
     suspend fun getById(id: String?): ApiConfigEntity? = id?.let { apiConfigDao.getById(it) }
     suspend fun getAll(): List<ApiConfigEntity> = apiConfigDao.getAll()
 
-    fun providerInfos(): List<com.myfriend.app.network.ProviderUiInfo> = listOf(
+    /**
+     * 可选服务商只给「能不能用」的能力表，不再带展示名——
+     * 展示名由 UI 按 [ProviderType] 映射资源（见 `ProviderLabels`），数据层不拼中文。
+     */
+    fun providerInfos(): List<com.myfriend.app.network.ProviderUiInfo> = ProviderType.entries.map {
         com.myfriend.app.network.ProviderUiInfo(
-            type = ProviderType.OPENAI,
-            label = "OpenAI 兼容",
-            capabilities = registry.capabilities(ProviderType.OPENAI)
-        ),
-        com.myfriend.app.network.ProviderUiInfo(
-            type = ProviderType.GEMINI,
-            label = "Gemini（预留）",
-            capabilities = registry.capabilities(ProviderType.GEMINI)
-        ),
-        com.myfriend.app.network.ProviderUiInfo(
-            type = ProviderType.CLAUDE,
-            label = "Claude（预留）",
-            capabilities = registry.capabilities(ProviderType.CLAUDE)
+            type = it,
+            capabilities = registry.capabilities(it)
         )
-    )
-
-    fun providerLabel(type: ProviderType): String = when (type) {
-        ProviderType.OPENAI -> "OpenAI 兼容"
-        ProviderType.GEMINI -> "Gemini（预留）"
-        ProviderType.CLAUDE -> "Claude（预留）"
     }
 
     fun hasApiKey(config: ApiConfigEntity): Boolean = secretCipher.hasKey(config.apiKeyCipher)
@@ -82,16 +71,16 @@ class ApiConfigRepository @Inject constructor(
         clearWebToolsApiKey: Boolean = false
     ): Result<String> = runCatching {
         val existing = draft.id?.let { apiConfigDao.getById(it) }
-        if (existing != null && existing.id != draft.id) error("配置不存在")
+        if (existing != null && existing.id != draft.id) userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         val name = draft.name.trim()
-        require(name.isNotBlank()) { "请填写配置名称" }
-        require(name.length <= 60) { "配置名称过长" }
+        if (name.isBlank()) userError(DomainErrorCode.API_CONFIG_NAME_REQUIRED)
+        if (name.length > 60) userError(DomainErrorCode.API_CONFIG_NAME_TOO_LONG)
         val baseUrl = NetworkGuard.normalizeBaseUrl(draft.baseUrl)
         NetworkGuard.parseHttpUrl(baseUrl, draft.allowInsecureHttp)
-        require(draft.model.trim().isNotBlank()) { "请填写模型 ID" }
-        require(draft.model.trim().length <= 160) { "模型 ID 过长" }
+        if (draft.model.trim().isBlank()) userError(DomainErrorCode.MODEL_ID_REQUIRED)
+        if (draft.model.trim().length > 160) userError(DomainErrorCode.MODEL_ID_TOO_LONG)
         val capabilities = registry.capabilities(draft.provider)
-        require(capabilities.available) { "该服务商适配仍在预留中，请选择 OpenAI 兼容" }
+        if (!capabilities.available) userError(DomainErrorCode.PROVIDER_RESERVED)
         validateHeaders(draft.customHeadersJson)
         validateParams(draft)
         val now = System.currentTimeMillis()
@@ -131,12 +120,18 @@ class ApiConfigRepository @Inject constructor(
         id
     }
 
-    suspend fun duplicate(configId: String): Result<String> = runCatching {
-        val source = apiConfigDao.getById(configId) ?: error("配置不存在")
+    /**
+     * 复制一份配置。
+     *
+     * 名字后缀由 UI 传进来（[copySuffix] 是当前语言的说法）：这一行会落库、之后原样显示，
+     * 数据层不该替用户决定用哪种语言写他的名字。
+     */
+    suspend fun duplicate(configId: String, copySuffix: String): Result<String> = runCatching {
+        val source = apiConfigDao.getById(configId) ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         val now = System.currentTimeMillis()
         val copy = source.copy(
             id = UUID.randomUUID().toString(),
-            name = "${source.name} 副本".take(60),
+            name = (source.name + copySuffix).take(60),
             createdAt = now,
             updatedAt = now
         )
@@ -153,18 +148,14 @@ class ApiConfigRepository @Inject constructor(
     }
 
     suspend fun testConnection(configId: String): Result<ConnectionTestResult> = runCatching {
-        val resolved = resolve(configId) ?: error("配置不存在")
+        val resolved = resolve(configId) ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         val models = registry.adapterFor(resolved.config.provider)
             .fetchModels(resolved.config, resolved.apiKey)
-        ConnectionTestResult(
-            success = true,
-            message = if (models.isEmpty()) "连接成功" else "连接成功，发现 ${models.size} 个模型",
-            models = models
-        )
+        ConnectionTestResult(modelCount = models.size, models = models)
     }
 
     suspend fun fetchModels(configId: String): Result<List<String>> = runCatching {
-        val resolved = resolve(configId) ?: error("配置不存在")
+        val resolved = resolve(configId) ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         registry.adapterFor(resolved.config.provider).fetchModels(resolved.config, resolved.apiKey)
     }
 
@@ -190,11 +181,7 @@ class ApiConfigRepository @Inject constructor(
             updatedAt = 0
         )
         val models = registry.adapterFor(config.provider).fetchModels(config, key)
-        ConnectionTestResult(
-            success = true,
-            message = if (models.isEmpty()) "连接成功" else "连接成功，发现 ${models.size} 个模型",
-            models = models
-        )
+        ConnectionTestResult(modelCount = models.size, models = models)
     }
 
     suspend fun fetchModelsForDraft(draft: ApiConfigDraft): Result<List<String>> = runCatching {
@@ -223,19 +210,21 @@ class ApiConfigRepository @Inject constructor(
     private fun validateHeaders(raw: String) {
         if (raw.isBlank()) return
         val parsed = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrElse {
-            throw IllegalArgumentException("自定义 Headers 必须是合法的 JSON 对象")
+            userError(DomainErrorCode.HEADERS_INVALID_JSON)
         }
         parsed.forEach { (key, value) ->
-            require(key.isNotBlank()) { "Header 名称不能为空" }
-            require(value is JsonPrimitive && value.isString) { "Header $key 的值必须是字符串" }
+            if (key.isBlank()) userError(DomainErrorCode.HEADER_NAME_REQUIRED)
+            if (value !is JsonPrimitive || !value.isString) {
+                userError(DomainErrorCode.HEADER_VALUE_NOT_STRING, arg = key)
+            }
         }
     }
 
     private fun validateParams(draft: ApiConfigDraft) {
-        draft.temperature?.let { require(it in 0.0..2.0) { "Temperature 应在 0 到 2 之间" } }
-        draft.topP?.let { require(it in 0.0..1.0) { "Top P 应在 0 到 1 之间" } }
-        draft.maxOutputTokens?.let { require(it in 1..1_000_000) { "Max Output Tokens 必须大于 0" } }
-        draft.frequencyPenalty?.let { require(it in -2.0..2.0) { "Frequency Penalty 应在 -2 到 2 之间" } }
-        draft.presencePenalty?.let { require(it in -2.0..2.0) { "Presence Penalty 应在 -2 到 2 之间" } }
+        draft.temperature?.let { if (it !in 0.0..2.0) userError(DomainErrorCode.TEMPERATURE_RANGE) }
+        draft.topP?.let { if (it !in 0.0..1.0) userError(DomainErrorCode.TOP_P_RANGE) }
+        draft.maxOutputTokens?.let { if (it !in 1..1_000_000) userError(DomainErrorCode.MAX_OUTPUT_TOKENS_RANGE) }
+        draft.frequencyPenalty?.let { if (it !in -2.0..2.0) userError(DomainErrorCode.FREQUENCY_PENALTY_RANGE) }
+        draft.presencePenalty?.let { if (it !in -2.0..2.0) userError(DomainErrorCode.PRESENCE_PENALTY_RANGE) }
     }
 }

@@ -210,6 +210,54 @@ interface MessageDao {
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     fun observeBySession(sessionId: String): Flow<List<MessageEntity>>
 
+    /**
+     * 聊天页首屏：只观察最近 [limit] 条（新的在前，调用方翻正序）。
+     *
+     * Room 的可观察查询会跟着 `messages` 表的变化重跑，所以「新消息追加 / 单条编辑 / 单条删除」
+     * 都会自动反映到这个窗口里，不需要界面自己拼。
+     */
+    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>>
+
+    /**
+     * 聊天页「已经加载到的最早一条之后」的整个区间。
+     *
+     * 上滑加载更早时，游标往前挪，这个查询自然就多带回一段；因为它是可观察的，
+     * 窗口内任何一条消息被编辑/删除都会跟着更新，不会留下过期的旧行。
+     */
+    @Query(
+        """
+        SELECT * FROM messages WHERE sessionId = :sessionId
+        AND (createdAt > :sinceCreatedAt OR (createdAt = :sinceCreatedAt AND id >= :sinceId))
+        ORDER BY createdAt ASC, id ASC
+        """
+    )
+    fun observeSince(
+        sessionId: String,
+        sinceCreatedAt: Long,
+        sinceId: String
+    ): Flow<List<MessageEntity>>
+
+    /**
+     * 往前翻一页：比 `(beforeCreatedAt, beforeId)` 更早的最近 [limit] 条（新的在前）。
+     *
+     * 用 `(createdAt, id)` 双列游标而不是只看时间：导入的备份、极端情况下同一毫秒写入的
+     * 两条消息不会因为时间相等而被跳过或重复。
+     */
+    @Query(
+        """
+        SELECT * FROM messages WHERE sessionId = :sessionId
+        AND (createdAt < :beforeCreatedAt OR (createdAt = :beforeCreatedAt AND id < :beforeId))
+        ORDER BY createdAt DESC, id DESC LIMIT :limit
+        """
+    )
+    suspend fun pageBefore(
+        sessionId: String,
+        beforeCreatedAt: Long,
+        beforeId: String,
+        limit: Int
+    ): List<MessageEntity>
+
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     suspend fun getBySession(sessionId: String): List<MessageEntity>
 
@@ -267,6 +315,30 @@ interface MessageDao {
 
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER' ORDER BY createdAt DESC LIMIT 1")
     suspend fun latestUser(sessionId: String): MessageEntity?
+
+    /**
+     * 「对方上次说的话」——精确查询，不靠窗口。
+     *
+     * 后台处境里的这句以前是从「最近 40 条」里挑最后一个 USER 推出来的：只要最近 40 条
+     * 恰好全是助手消息（长回复、连续主动消息），就会出现「明明说过话却显示没说过」。
+     * 这里直接从全表按时间倒序取第一条用户消息，结果与历史长度无关。
+     */
+    @Query("""
+        SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
+        AND content != '' ORDER BY createdAt DESC LIMIT 1
+    """)
+    suspend fun lastUserMessage(sessionId: String): MessageEntity?
+
+    /** 「对方上次说话」的时间戳；没有说过话时返回 null。 */
+    @Query("SELECT MAX(createdAt) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
+    suspend fun lastUserMessageAt(sessionId: String): Long?
+
+    /** 最近几条用户原话（闲逛找话题用）：按时间倒序，只要用户消息，不扫整段历史。 */
+    @Query("""
+        SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
+        AND content != '' ORDER BY createdAt DESC LIMIT :limit
+    """)
+    suspend fun recentUserMessages(sessionId: String, limit: Int): List<MessageEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(message: MessageEntity)

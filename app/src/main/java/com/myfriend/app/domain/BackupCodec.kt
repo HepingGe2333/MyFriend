@@ -344,14 +344,14 @@ data class BackupSettings(
 
 /** [decode] 的返回值：坏数据也只在这里说话，不往上抛。 */
 sealed interface BackupDecodeResult {
-    /** 读懂了。[warnings] 是「有东西没读出来 / 有东西带不回来」的中文说明，可以直接给用户看。 */
+    /** 读懂了。[warnings] 是结构化的「有东西没读出来 / 有东西带不回来」，由 UI 翻成句子。 */
     data class Success(
         val bundle: BackupBundle,
-        val warnings: List<String> = emptyList()
+        val warnings: List<BackupWarning> = emptyList()
     ) : BackupDecodeResult
 
-    /** 读不懂。[reason] 是一句中文，说明为什么接不回来。 */
-    data class Failure(val reason: String) : BackupDecodeResult
+    /** 读不懂：[reason] 是结构化原因，由 UI 翻成句子。 */
+    data class Failure(val reason: BackupFailure) : BackupDecodeResult
 }
 
 /** 选好文件、还没决定怎么接回来时，先给用户看的一句话摘要。 */
@@ -369,23 +369,12 @@ data class BackupPreview(
     val isEmpty: Boolean
         get() = personas == 0 && memories == 0 && sessions == 0 && messages == 0
 
-    /** 「3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话」。 */
-    fun describe(): String {
-        if (isEmpty) return "这份备份里什么也没有"
-        return buildString {
-            append("$personas 个人格")
-            append(" · $memories 条记忆")
-            append(" · $sessions 段对话")
-            append(" · $messages 句话")
-            if (rules > 0) append(" · $rules 条主动节奏")
-        }
-    }
-
-    /** 「2026年11月14日 01:40 带走」。 */
-    fun exportedAtText(): String = when {
-        exportedAt <= 0L -> "带走的时间不详"
-        else -> "${formatBackupMoment(exportedAt)} 带走"
-    }
+    /**
+     * 摘要不再自己拼句子：计数原样给 UI，由它按当前语言拼
+     * （`backup_preview_*`）；[isEmpty] 也由 UI 判断要不要显示「这份备份里什么也没有」。
+     */
+    val hasAnyContent: Boolean
+        get() = !isEmpty
 
     companion object {
         fun from(bundle: BackupBundle): BackupPreview = BackupPreview(
@@ -446,44 +435,50 @@ object BackupCodec {
 
     /** 坏 JSON、坏条目、版本过高都在这里被接住，返回中文原因而不是抛异常。 */
     fun decode(raw: String?): BackupDecodeResult {
-        if (raw.isNullOrBlank()) return BackupDecodeResult.Failure("这个文件是空的，里面没有他。")
+        if (raw.isNullOrBlank()) return BackupDecodeResult.Failure(BackupFailure.EmptyFile)
 
         val root = runCatching { readJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
-            ?: return BackupDecodeResult.Failure("这个文件读不出来：不是一份有效的备份 JSON。")
+            ?: return BackupDecodeResult.Failure(BackupFailure.InvalidJson)
 
-        val warnings = mutableListOf<String>()
+        val warnings = mutableListOf<BackupWarning>()
 
         val format = root.textOrNull("format")
         if (format != null && format != BACKUP_FORMAT_NAME) {
-            return BackupDecodeResult.Failure("这不是 MyFriend 的备份文件（format：$format）。")
+            return BackupDecodeResult.Failure(BackupFailure.WrongFormat(format))
         }
 
         val version = root.intOrNull("formatVersion") ?: BACKUP_FORMAT_VERSION
         if (version > BACKUP_FORMAT_VERSION) {
-            return BackupDecodeResult.Failure(
-                "这份备份来自更新版本的 MyFriend（格式 v$version），当前只认到 v$BACKUP_FORMAT_VERSION。" +
-                    "先升级 App，再把他接回来；旧版本硬读会把记忆读歪。"
-            )
+            return BackupDecodeResult.Failure(BackupFailure.NewerFormat(version, BACKUP_FORMAT_VERSION))
         }
         if (version < BACKUP_FORMAT_VERSION) {
-            warnings += "备份格式是 v$version，已按 v$BACKUP_FORMAT_VERSION 尽力读出来"
+            warnings += BackupWarning.OlderFormat(version, BACKUP_FORMAT_VERSION)
         }
 
-        val personas = decodeList(root, "personas", "人格", warnings, BackupPersona.serializer()) { it.id }
-        val memories = decodeList(root, "memories", "记忆", warnings, BackupMemory.serializer()) { it.id }
-        val sessions = decodeList(root, "sessions", "对话", warnings, BackupSession.serializer()) { it.id }
-        val messages = decodeList(root, "messages", "消息", warnings, BackupMessage.serializer()) { it.id }
-        val presets = decodeList(root, "presets", "预设", warnings, BackupPreset.serializer()) { it.id }
-        val rules = decodeList(root, "proactiveRules", "主动节奏", warnings, BackupProactiveRule.serializer()) { it.id }
-        val intents = decodeList(root, "agentIntents", "念头", warnings, BackupAgentIntent.serializer()) { it.id }
+        val personas = decodeList(root, "personas", BackupSection.PERSONA, warnings, BackupPersona.serializer()) { it.id }
+        val memories = decodeList(root, "memories", BackupSection.MEMORY, warnings, BackupMemory.serializer()) { it.id }
+        val sessions = decodeList(root, "sessions", BackupSection.SESSION, warnings, BackupSession.serializer()) { it.id }
+        val messages = decodeList(root, "messages", BackupSection.MESSAGE, warnings, BackupMessage.serializer()) { it.id }
+        val presets = decodeList(root, "presets", BackupSection.PRESET, warnings, BackupPreset.serializer()) { it.id }
+        val rules =
+            decodeList(root, "proactiveRules", BackupSection.PROACTIVE_RULE, warnings, BackupProactiveRule.serializer()) { it.id }
+        val intents =
+            decodeList(root, "agentIntents", BackupSection.AGENT_INTENT, warnings, BackupAgentIntent.serializer()) { it.id }
         val consolidations =
-            decodeList(root, "memoryConsolidations", "整理记录", warnings, BackupMemoryConsolidation.serializer()) { it.id }
-        val configs = decodeList(root, "apiConfigs", "API 配置", warnings, BackupApiConfig.serializer()) { it.id }
+            decodeList(
+                root,
+                "memoryConsolidations",
+                BackupSection.CONSOLIDATION,
+                warnings,
+                BackupMemoryConsolidation.serializer()
+            ) { it.id }
+        val configs =
+            decodeList(root, "apiConfigs", BackupSection.API_CONFIG, warnings, BackupApiConfig.serializer()) { it.id }
 
         val settings = root["settings"]?.takeIf { it !is JsonNull }?.let { element ->
             runCatching { readJson.decodeFromJsonElement(BackupSettings.serializer(), element) }
                 .getOrElse {
-                    warnings += "设置这一段读不出来，接回来时设置页保持原样"
+                    warnings += BackupWarning.SettingsUnreadable
                     null
                 }
         }
@@ -507,7 +502,7 @@ object BackupCodec {
         )
 
         if (BackupPreview.from(bundle).isEmpty) {
-            warnings += "这份备份里没有他：既没有人格也没有记忆和对话"
+            warnings += BackupWarning.NoContent
         }
         return BackupDecodeResult.Success(bundle, warnings)
     }
@@ -518,15 +513,15 @@ object BackupCodec {
     private fun <T> decodeList(
         root: JsonObject,
         key: String,
-        label: String,
-        warnings: MutableList<String>,
+        section: BackupSection,
+        warnings: MutableList<BackupWarning>,
         serializer: KSerializer<T>,
         idOf: (T) -> String
     ): List<T> {
         val element = root[key] ?: return emptyList()
         if (element is JsonNull) return emptyList()
         val array = element as? JsonArray ?: run {
-            warnings += "备份里的「$key」不是列表，这一段已跳过"
+            warnings += BackupWarning.SectionNotList(section)
             return emptyList()
         }
 
@@ -539,13 +534,13 @@ object BackupCodec {
                     .onFailure { dropped++ }
                     .getOrNull()
             }
-            if (dropped > 0) warnings += "$label 里有 $dropped 条读不出来，已跳过"
+            if (dropped > 0) warnings += BackupWarning.DroppedRows(section, dropped)
             kept
         }
 
         val valid = decoded.filter { idOf(it).isNotBlank() }
         val blank = decoded.size - valid.size
-        if (blank > 0) warnings += "$label 里有 $blank 条没写 id，已跳过"
+        if (blank > 0) warnings += BackupWarning.BlankIds(section, blank)
         return valid
     }
 }
@@ -557,9 +552,9 @@ fun backupFileName(now: Long = System.currentTimeMillis()): String {
 }
 
 /** 「2026年11月14日 01:40」，给界面和摘要共用。 */
-fun formatBackupMoment(at: Long): String {
-    if (at <= 0L) return "时间不详"
-    return SimpleDateFormat("yyyy年M月d日 HH:mm", Locale.CHINA).format(Date(at))
+fun formatBackupMoment(at: Long, pattern: String = "yyyy-M-d HH:mm"): String {
+    if (at <= 0L) return ""
+    return SimpleDateFormat(pattern, Locale.getDefault()).format(Date(at))
 }
 
 // ---------------------------------------------------------------------------

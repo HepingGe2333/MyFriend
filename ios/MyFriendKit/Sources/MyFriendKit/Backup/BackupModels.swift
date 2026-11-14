@@ -1081,18 +1081,22 @@ public struct BackupPreview: Equatable, Sendable {
 
     /// 「3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话 · 1 条主动节奏」。
     public func describe() -> String {
-        if isEmpty { return "这份备份里什么也没有" }
-        var text = "\(personas) 个人格"
-        text += " · \(memories) 条记忆"
-        text += " · \(sessions) 段对话"
-        text += " · \(messages) 句话"
-        if rules > 0 { text += " · \(rules) 条主动节奏" }
-        return text
+        if isEmpty { return String(localized: "这份备份里什么也没有") }
+        var parts = [
+            PluralText.format("%d 个人格", personas),
+            PluralText.format("%d 条记忆", memories),
+            PluralText.format("%d 段对话", sessions),
+            PluralText.format("%d 句话", messages)
+        ]
+        if rules > 0 { parts.append(PluralText.format("%d 条主动节奏", rules)) }
+        return PluralText.list(parts)
     }
 
     /// 「2026年11月14日 01:40 带走」。
     public func exportedAtText() -> String {
-        exportedAt <= 0 ? "带走的时间不详" : "\(formatBackupMoment(exportedAt)) 带走"
+        exportedAt <= 0
+            ? String(localized: "带走的时间不详")
+            : String(format: String(localized: "%@ 带走"), formatBackupMoment(exportedAt))
     }
 
     public static func from(_ bundle: BackupBundle) -> BackupPreview {

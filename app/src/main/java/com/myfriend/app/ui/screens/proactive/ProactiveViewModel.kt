@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.AgentIntentEntity
 import com.myfriend.app.data.local.AgentTickEntity
@@ -136,6 +137,21 @@ class ProactiveViewModel @Inject constructor(
         notificationPermissionGranted: Boolean
     ) {
         viewModelScope.launch {
+            // 「每天 09:00 主动问候」这类默认说明会落库、也会进提示词，
+            // 所以由界面按当前语言写好再传下去，数据层不再拼中文。
+            val resolvedNote = note.trim().ifBlank {
+                if (kind == ProactiveKind.DAILY) {
+                    context.getString(
+                        R.string.proactive_default_note_daily,
+                        com.myfriend.app.data.repo.ProactiveProtocol.formatTimeOfDay(timeOfDayMinutes ?: 0)
+                    )
+                } else {
+                    context.getString(
+                        R.string.proactive_default_note_interval,
+                        (intervalMinutes ?: 120) / 60
+                    )
+                }
+            }
             val result = proactiveRepository.createManual(
                 personaId = personaId,
                 sessionId = null,
@@ -143,7 +159,7 @@ class ProactiveViewModel @Inject constructor(
                 timeOfDayMinutes = timeOfDayMinutes,
                 intervalMinutes = intervalMinutes,
                 hint = hint,
-                note = note
+                note = resolvedNote
             )
             result.onSuccess {
                 message.value = if (notificationPermissionGranted) {
@@ -152,7 +168,7 @@ class ProactiveViewModel @Inject constructor(
                     context.getString(R.string.proactive_created_permission_needed)
                 }
             }.onFailure { error ->
-                message.value = error.message ?: context.getString(R.string.proactive_create_failed)
+                message.value = ErrorText.of(context, error, R.string.proactive_create_failed)
             }
         }
     }
@@ -161,7 +177,7 @@ class ProactiveViewModel @Inject constructor(
         viewModelScope.launch {
             proactiveRepository.confirm(ruleId)
                 .onSuccess { message.value = context.getString(R.string.proactive_created_on) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_enable_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.proactive_enable_failed) }
         }
     }
 
@@ -185,7 +201,7 @@ class ProactiveViewModel @Inject constructor(
                         if (enabled) R.string.proactive_enabled else R.string.proactive_paused
                     )
                 }
-                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_toggle_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.proactive_toggle_failed) }
         }
     }
 
@@ -194,7 +210,7 @@ class ProactiveViewModel @Inject constructor(
             message.value = context.getString(R.string.proactive_trigger_running)
             proactiveRepository.triggerNow(ruleId)
                 .onSuccess { message.value = context.getString(R.string.proactive_trigger_sent) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_trigger_failed) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.proactive_trigger_failed) }
         }
     }
 

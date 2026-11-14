@@ -175,6 +175,36 @@ object MediaStorage {
         items.forEach { attachment -> fileOf(attachment.uri)?.delete() }
     }
 
+    /**
+     * 删掉一张 App 自己管的头像文件。
+     *
+     * 只删 `files/avatars/` 里的文件：用户选的 `content://` 原图、或别处借来的路径一律不碰，
+     * 免得「换头像」把人相册里的照片删了。传 null / 非 file:// 路径时什么都不做。
+     */
+    fun deleteAvatar(context: Context, uriString: String?) {
+        val raw = uriString?.trim().orEmpty()
+        if (raw.isEmpty()) return
+        val file = fileOf(raw) ?: return
+        val dir = File(context.filesDir, AVATAR_DIR)
+        val parent = runCatching { file.canonicalFile.parentFile }.getOrNull() ?: return
+        val canonicalDir = runCatching { dir.canonicalFile }.getOrNull() ?: return
+        if (parent != canonicalDir) return
+        runCatching { file.delete() }
+    }
+
+    /**
+     * `file://` 指向的文件是否已经不在了。
+     *
+     * 备份导入用它判断「这行头像路径失效了没有」：`content://` 与空值一律当作「无法判断」，
+     * 返回 false，不动它。
+     */
+    fun isMissingLocalFile(uriString: String?): Boolean {
+        val raw = uriString?.trim().orEmpty()
+        if (raw.isEmpty() || !raw.startsWith("file://")) return false
+        val file = fileOf(raw) ?: return false
+        return !file.exists()
+    }
+
     private fun decodeScaled(context: Context, source: Uri): Bitmap {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             return ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, source)) { decoder, info, _ ->

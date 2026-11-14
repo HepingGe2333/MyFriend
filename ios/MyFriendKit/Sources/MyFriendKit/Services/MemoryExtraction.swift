@@ -51,7 +51,8 @@ public final class MemoryExtraction {
     private let completion: CompletionClient
     private let echoStore: MemoryEchoStoring
     private let now: () -> Int64
-    private let lock = NSLock()
+    /// 抽取串行化：并发的两次抽取会各自把同一件事当成「第一次提到」。
+    private let gate = AsyncMutex()
 
     public init(
         stores: DatabaseStores,
@@ -74,8 +75,8 @@ public final class MemoryExtraction {
         model: String,
         force: Bool = false
     ) async -> Result<MemoryExtractionResult, Error> {
-        lock.lock()
-        defer { lock.unlock() }
+        await gate.acquire()
+        defer { gate.release() }
 
         // 1.9：记忆一律内置开启，抽不抽只看「间隔到了没」，没有开关要读（§一）。
         guard let session = (try? stores.sessions.byId(sessionId)) ?? nil else {

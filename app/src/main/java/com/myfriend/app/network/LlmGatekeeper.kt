@@ -2,6 +2,7 @@ package com.myfriend.app.network
 
 import android.util.Log
 import com.myfriend.app.domain.LlmConcurrencyGate
+import com.myfriend.app.domain.NetworkErrorKind
 import com.myfriend.app.domain.LlmLane
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -40,12 +41,7 @@ class LlmGatekeeper @Inject constructor() {
                 }
             )
             throw ApiException(
-                null,
-                if (lane == LlmLane.CHAT) {
-                    "刚才那条还没说完，稍等一下再发一次"
-                } else {
-                    "后台任务排队太久，这次先放弃"
-                }
+                if (lane == LlmLane.CHAT) NetworkErrorKind.ChatQueueBusy else NetworkErrorKind.BackgroundQueueBusy
             )
         }
         return try {

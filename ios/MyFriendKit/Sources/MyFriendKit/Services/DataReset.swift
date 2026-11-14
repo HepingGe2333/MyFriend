@@ -58,22 +58,25 @@ public struct ClearSummary: Equatable, Sendable {
     }
 
     public func describeChats() -> String {
-        String(
-            format: String(localized: "所有聊天与记忆已清空（%d 段对话 · %d 句话 · %d 条记忆）"),
-            sessions, messages, memories
-        )
+        let counts = PluralText.list([
+            PluralText.format("%d 段对话", sessions),
+            PluralText.format("%d 句话", messages),
+            PluralText.format("%d 条记忆", memories)
+        ])
+        return String(format: String(localized: "所有聊天与记忆已清空（%@）"), counts)
     }
 
     public func describeAll() -> String {
-        if apiConfigs > 0 {
-            return String(
-                format: String(localized: "所有本地数据已删除（%d 个人格 · %d 条记忆 · %d 段对话 · %d 句话 · %d 个 API 配置）"),
-                personas, memories, sessions, messages, apiConfigs
-            )
-        }
+        var parts = [
+            PluralText.format("%d 个人格", personas),
+            PluralText.format("%d 条记忆", memories),
+            PluralText.format("%d 段对话", sessions),
+            PluralText.format("%d 句话", messages)
+        ]
+        if apiConfigs > 0 { parts.append(PluralText.format("%d 个 API 配置", apiConfigs)) }
         return String(
-            format: String(localized: "所有本地数据已删除（%d 个人格 · %d 条记忆 · %d 段对话 · %d 句话）"),
-            personas, memories, sessions, messages
+            format: String(localized: "所有本地数据已删除（%@）"),
+            PluralText.list(parts)
         )
     }
 }

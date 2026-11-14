@@ -268,7 +268,7 @@ public final class WebToolsClient: @unchecked Sendable {
     private func post(endpoint: URL, apiKey: String, payload: [String: Any]) async throws -> String {
         guard JSONSerialization.isValidJSONObject(payload),
               let data = try? JSONSerialization.data(withJSONObject: payload) else {
-            throw WebToolsFailure.network("联网工具请求构造失败，请稍后再试")
+            throw WebToolsFailure.network(String(localized: "联网工具请求构造失败，请稍后再试"))
         }
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
@@ -292,7 +292,7 @@ public final class WebToolsClient: @unchecked Sendable {
             // 用户点了停止 / 上层取消 Task：这不是「网络坏了」，别报吓人的中文。
             throw CancellationError()
         } catch {
-            throw WebToolsFailure.network("联网工具请求失败，请检查网络后重试")
+            throw WebToolsFailure.network(String(localized: "联网工具请求失败，请检查网络后重试"))
         }
 
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -445,15 +445,15 @@ public final class WebToolsClient: @unchecked Sendable {
         case .cancelled:
             return CancellationError()
         case .timedOut:
-            return WebToolsFailure.network("联网工具请求超时，稍后再试")
+            return WebToolsFailure.network(String(localized: "联网工具请求超时，稍后再试"))
         case .cannotFindHost, .dnsLookupFailed:
-            return WebToolsFailure.network("无法解析联网工具地址，请检查网络连接")
+            return WebToolsFailure.network(String(localized: "无法解析联网工具地址，请检查网络连接"))
         case .notConnectedToInternet, .networkConnectionLost,
              .cannotConnectToHost, .secureConnectionFailed,
              .internationalRoamingOff, .dataNotAllowed:
-            return WebToolsFailure.network("网络连接中断，请检查网络后重试")
+            return WebToolsFailure.network(String(localized: "网络连接中断，请检查网络后重试"))
         default:
-            return WebToolsFailure.network("联网工具请求失败，请检查网络后重试")
+            return WebToolsFailure.network(String(localized: "联网工具请求失败，请检查网络后重试"))
         }
     }
 

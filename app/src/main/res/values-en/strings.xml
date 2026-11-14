@@ -224,6 +224,8 @@
     <string name="chat_title">Chat</string>
     <string name="chat_typing">Typing</string>
     <string name="chat_latest">Latest</string>
+    <string name="chat_load_earlier">Scroll up to load earlier messages</string>
+    <string name="chat_loading_earlier">Loading earlier messages…</string>
     <string name="chat_scroll_to_bottom">Back to the latest</string>
 
     <!-- Chat: overflow menu -->
@@ -1138,4 +1140,210 @@
     <string name="usage_kind_unknown">Other</string>
     <string name="usage_session_other">Other</string>
     <string name="usage_session_unknown">Unknown contact</string>
+
+    <!-- 0.10.1: data/network errors are structured codes now; this is the only code→sentence map. -->
+    <string name="error_unknown">Unknown error</string>
+    <string name="error_persona_not_found">That persona doesn\'t exist</string>
+    <string name="error_persona_gone">That persona is gone</string>
+    <string name="error_persona_unknown">Unknown persona</string>
+    <string name="error_session_not_found">That conversation doesn\'t exist</string>
+    <string name="error_message_not_found">That message doesn\'t exist</string>
+    <string name="error_memory_not_found">That memory is gone</string>
+    <string name="error_api_config_not_found">That API setup doesn\'t exist</string>
+    <string name="error_api_config_gone">That API setup is gone</string>
+    <string name="error_api_config_required">Pick an API setup for this conversation first</string>
+    <string name="error_api_config_not_bound">This conversation has no API setup yet</string>
+    <string name="error_api_config_not_bound_for_persona">Bind an API in his persona settings before growing him</string>
+    <string name="error_rule_not_found">That rule doesn\'t exist</string>
+    <string name="error_rule_gone">That rule is gone</string>
+    <string name="error_preset_not_found">That preset doesn\'t exist</string>
+    <string name="error_revision_not_found">That version doesn\'t exist</string>
+    <string name="error_pending_patch_not_found">That adjustment is gone</string>
+    <string name="error_message_empty">The message can\'t be empty</string>
+    <string name="error_message_too_long">The message is too long</string>
+    <string name="error_title_empty">The title can\'t be empty</string>
+    <string name="error_nothing_to_regenerate">Nothing to regenerate</string>
+    <string name="error_only_user_message_editable">Only your own messages can be edited</string>
+    <string name="error_nothing_to_reply">No message for him to reply to yet</string>
+    <string name="error_no_conversation_yet">This persona has no conversation yet</string>
+    <string name="error_memory_empty">A memory can\'t be empty</string>
+    <string name="error_memory_too_long">Keep one memory under 2000 characters</string>
+    <string name="error_persona_name_required">Give him a name</string>
+    <string name="error_persona_name_too_long">That name is too long</string>
+    <string name="error_persona_description_too_long">That description is too long</string>
+    <string name="error_persona_prompt_too_long">His prompt is over the safe limit</string>
+    <string name="error_evolved_prompt_empty">The evolved prompt came out empty</string>
+    <string name="error_preset_name_required">Give the preset a name</string>
+    <string name="error_preset_name_too_long">That preset name is too long</string>
+    <string name="error_preset_prompt_required">A preset needs a prompt</string>
+    <string name="error_preset_prompt_too_long">The prompt is over the safe limit</string>
+    <string name="error_preset_library_empty">The preset library is empty; save one before exporting</string>
+    <string name="error_import_file_too_large">That file is too large</string>
+    <string name="error_import_invalid_json">That file isn\'t valid JSON</string>
+    <string name="error_import_not_preset_file">That isn\'t a MyFriend preset file</string>
+    <string name="error_import_no_persona_data">No importable persona data was found</string>
+    <string name="error_import_no_valid_persona">None of the personas could be imported</string>
+    <string name="error_import_too_many_personas">At most 200 personas per import</string>
+    <string name="error_backup_secret_field">A key field turned up in the backup, so export was stopped</string>
+    <string name="error_model_empty_reply">The model returned nothing</string>
+    <string name="error_model_unparsable">The model\'s answer couldn\'t be read; try again or check that it supports JSON output</string>
+    <string name="error_proactive_time_required">Pick a time of day</string>
+    <string name="error_proactive_interval_required">Set the interval in hours</string>
+    <string name="error_proactive_interval_range">The interval must be between 1 and 24 hours</string>
+    <string name="error_api_config_name_required">Give the setup a name</string>
+    <string name="error_api_config_name_too_long">That setup name is too long</string>
+    <string name="error_model_id_required">Enter a model ID</string>
+    <string name="error_model_id_too_long">That model ID is too long</string>
+    <string name="error_provider_reserved">That provider is still on the way; choose OpenAI-compatible</string>
+    <string name="error_headers_invalid_json">Custom headers must be a valid JSON object</string>
+    <string name="error_header_name_required">A header name can\'t be empty</string>
+    <string name="error_header_value_not_string">The value of header %1$s must be a string</string>
+    <string name="error_temperature_range">Temperature must be between 0 and 2</string>
+    <string name="error_top_p_range">Top P must be between 0 and 1</string>
+    <string name="error_max_output_tokens_range">Max output tokens must be greater than 0</string>
+    <string name="error_frequency_penalty_range">Frequency penalty must be between -2 and 2</string>
+    <string name="error_presence_penalty_range">Presence penalty must be between -2 and 2</string>
+    <string name="error_asleep">He\'s asleep at this hour</string>
+    <string name="error_tool_unknown">Unknown tool: %1$s</string>
+    <string name="error_tool_mood_missing">No mood was given</string>
+    <string name="error_tool_persona_not_found">Couldn\'t find that persona</string>
+    <string name="error_tool_query_missing">Nothing was given to look up</string>
+    <string name="error_tool_web_disabled">This persona doesn\'t have web access turned on</string>
+    <string name="error_tool_url_missing">No link was given to read</string>
+    <string name="error_tool_content_missing">Nothing was given to remember</string>
+    <string name="error_tool_recall_missing">Nothing was named to recall</string>
+    <string name="error_tool_patch_missing">Nothing was given to change</string>
+    <string name="error_tool_card_empty">This persona has no persona card yet</string>
+    <string name="error_tool_sleep_time_invalid">Bedtime must look like HH:mm</string>
+    <string name="error_tool_wake_time_invalid">Wake time must look like HH:mm</string>
+    <string name="error_tool_edit_failed">That change didn\'t go through</string>
+    <string name="error_tool_failed">The tool call failed</string>
+
+    <!-- Network: address, HTTP status, streaming response -->
+    <string name="error_network_empty_url">The address can\'t be empty</string>
+    <string name="error_network_invalid_url">That address looks wrong; enter a full http(s) URL</string>
+    <string name="error_network_https_required">For safety only HTTPS is allowed. If you run a local service, turn on “Allow insecure HTTP” in the API setup.</string>
+    <string name="error_network_unsupported_scheme">Only HTTP(S) addresses are supported</string>
+    <string name="error_network_invalid_base_url">That API address is invalid; check the base URL</string>
+    <string name="error_http_400">The service rejected the request (400); check the model name and parameters</string>
+    <string name="error_http_401">The API key is invalid or not authorized (401)</string>
+    <string name="error_http_403">No permission to use that model (403)</string>
+    <string name="error_http_404">The endpoint or model doesn\'t exist (404); check the base URL and model ID</string>
+    <string name="error_http_408">The service timed out (408)</string>
+    <string name="error_http_413">The request is too large (413); shorten the context or the reply</string>
+    <string name="error_http_429">Too many requests or out of quota (429)</string>
+    <string name="error_http_5xx">The service is temporarily unavailable (%1$d)</string>
+    <string name="error_http_other">Request failed (HTTP %1$d)</string>
+    <string name="error_network_unparsable_models">The service returned a model list that couldn\'t be read</string>
+    <string name="error_network_empty_reply">The service returned an empty reply</string>
+    <string name="error_network_unparsable_reply">The service returned a reply that couldn\'t be read</string>
+    <string name="error_network_empty_stream">The model returned no text at all; check the model name or the service setup</string>
+    <string name="error_network_stream_error">The service returned an error</string>
+    <string name="error_network_response_too_long">This reply was too long (one line over %1$dMB), so it was stopped</string>
+    <string name="error_network_no_content">The service returned no content</string>
+    <string name="error_network_timeout">Connection timed out; check the network or the service address</string>
+    <string name="error_network_unknown_host">Couldn\'t resolve the server address; check your connection</string>
+    <string name="error_network_interrupted">The connection dropped; check your network</string>
+    <string name="error_network_chat_queue_busy">The last one is still going; try again in a moment</string>
+    <string name="error_network_background_queue_busy">A background task waited too long, so it was dropped</string>
+    <string name="error_network_provider_unavailable">That provider is still on the way; choose OpenAI-compatible</string>
+    <string name="error_web_key_missing">The DeepSeek key is empty; fill it in under API settings</string>
+    <string name="error_web_query_missing">The search query can\'t be empty</string>
+    <string name="error_web_url_missing">The page address can\'t be empty</string>
+    <string name="error_web_base_missing">The DeepSeek address can\'t be empty</string>
+    <string name="error_web_unparsable">The web service returned something that couldn\'t be read</string>
+    <string name="error_web_page_unreachable">That page couldn\'t be fetched</string>
+    <string name="error_web_status_401">The DeepSeek key is invalid or expired</string>
+    <string name="error_web_status_402">The DeepSeek account is out of credit</string>
+    <string name="error_web_status_403">The fetch was refused by the site or a security policy</string>
+    <string name="error_web_status_408">The read timed out; try again later</string>
+    <string name="error_web_status_429">Too many requests; there\'s a QPS limit per minute</string>
+    <string name="error_web_status_5xx">DeepSeek is temporarily unavailable</string>
+    <string name="error_web_status_other">Request failed (HTTP %1$d)</string>
+
+    <string name="api_connect_success">Connected</string>
+    <string name="api_connect_success_models">Connected — found %1$d models</string>
+
+    <!-- Why this version exists: a token is stored, this is the wording -->
+    <string name="reason_revision_card_created">Persona card created</string>
+    <string name="reason_revision_card_edited">Persona card edited</string>
+    <string name="reason_revision_card_before_adjust">Before the card change</string>
+    <string name="reason_revision_created">Persona created</string>
+    <string name="reason_revision_before_edit">Before the edit</string>
+    <string name="reason_revision_edited">Persona edited</string>
+    <string name="reason_revision_copied">Persona copied</string>
+    <string name="reason_revision_before_restore">Before restoring</string>
+    <string name="reason_revision_restored">Restored to v%1$d</string>
+    <string name="reason_revision_before_evolution">Before the evolution</string>
+    <string name="reason_revision_evolved">Evolved: %1$s</string>
+    <string name="reason_revision_baseline">First version</string>
+    <string name="reason_revision_imported">Persona imported</string>
+    <string name="reason_revision_self_adjusted">Adjusted himself: %1$s</string>
+
+    <!-- Backup: preview, import summary, warnings, failure reasons -->
+    <string name="backup_preview_empty">There\'s nothing in this backup</string>
+    <string name="backup_preview_personas">%1$d personas</string>
+    <string name="backup_preview_memories">%1$d memories</string>
+    <string name="backup_preview_sessions">%1$d conversations</string>
+    <string name="backup_preview_messages">%1$d messages</string>
+    <string name="backup_preview_rules">%1$d proactive rules</string>
+    <string name="backup_preview_presets">%1$d presets</string>
+    <string name="backup_exported_at">packed %1$s</string>
+    <string name="backup_exported_unknown">packed at an unknown time</string>
+    <string name="backup_moment_pattern">MMM d, yyyy h:mm a</string>
+    <string name="backup_import_done">He\'s back: %1$s</string>
+    <string name="backup_import_restored">Rebuilt from the backup: %1$s</string>
+    <string name="backup_import_skipped">; %1$d things didn\'t come back</string>
+    <string name="backup_warn_separator">"; "</string>
+    <string name="backup_warn_older_format">The backup is format v%1$d; read as best we can as v%2$d</string>
+    <string name="backup_warn_section_not_list">“%1$s” in the backup isn\'t a list, so that section was skipped</string>
+    <string name="backup_warn_dropped_rows">%1$s: %2$d rows couldn\'t be read and were skipped</string>
+    <string name="backup_warn_blank_ids">%1$s: %2$d rows had no id and were skipped</string>
+    <string name="backup_warn_settings_unreadable">The settings section couldn\'t be read; your settings stay as they are</string>
+    <string name="backup_warn_no_content">He isn\'t in this backup: no personas, no memories, no conversations</string>
+    <string name="backup_warn_extra_sessions">The backup had %1$d extra conversations; only the newest one per persona was kept</string>
+    <string name="backup_warn_attachments">%1$d messages used to have pictures. The pictures didn\'t travel with the backup, so only the text is back</string>
+    <string name="backup_warn_configs_missing_key">%1$d API setups still need a key (keys never travel in backups); fill them in under API settings</string>
+    <string name="backup_warn_no_settings">This backup has no settings, so your settings page stays as it is</string>
+    <string name="backup_warn_settings_partial">Settings couldn\'t be fully restored (he himself came back fine)</string>
+    <string name="backup_warn_active_persona_missing">The active persona in the backup isn\'t in it; the active chat went back to the default persona</string>
+    <string name="backup_warn_avatar_missing">The avatar file for “%1$s” isn\'t on this phone anymore, so that avatar was cleared</string>
+    <string name="backup_section_persona">personas</string>
+    <string name="backup_section_memory">memories</string>
+    <string name="backup_section_session">conversations</string>
+    <string name="backup_section_message">messages</string>
+    <string name="backup_section_preset">presets</string>
+    <string name="backup_section_rule">proactive rules</string>
+    <string name="backup_section_intent">intents</string>
+    <string name="backup_section_consolidation">consolidation runs</string>
+    <string name="backup_section_api_config">API setups</string>
+    <string name="backup_fail_empty">This file is empty; he isn\'t in it.</string>
+    <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
+    <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
+    <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
+
+    <!-- Import results: personas / presets -->
+    <string name="persona_import_result_ok">Imported %1$d personas</string>
+    <string name="persona_import_result_partial">Imported %1$d personas, skipped %2$d incomplete entries</string>
+    <string name="preset_import_result_none">No presets to import</string>
+    <string name="preset_import_result_ok">Imported %1$d presets</string>
+    <string name="preset_import_result_partial">Imported %1$d presets, skipped %2$d invalid entries</string>
+
+    <!-- Memory extraction results (counts from code, wording here) -->
+    <string name="memory_extract_result_added">Memories updated (+%1$d)</string>
+    <string name="memory_extract_result_reinforced">You talked about the past again; the memory is firmer now</string>
+    <string name="memory_extract_result_echoed">Noted — he wants to check once more</string>
+    <string name="memory_extract_result_not_enough">Not enough conversation yet; talk a little more</string>
+    <string name="memory_extract_result_interval">Not at the memory interval yet (every %1$d messages)</string>
+    <string name="memory_extract_result_none">No new long-term memories this time</string>
+
+    <!-- Default note for a proactive rule: written by the UI in the current language before it\'s stored -->
+    <string name="proactive_default_note_daily">Says hi at %1$s every day</string>
+    <string name="proactive_default_note_interval">Checks in every %1$d hours</string>
+
+    <!-- Name suffixes that get stored: the UI passes them in, so they follow the current language -->
+    <string name="common_copy_suffix"> (copy)</string>
+    <string name="persona_import_suffix"> (imported)</string>
+    <string name="chat_persona_switch_no_session">Couldn\'t create a conversation</string>
+    <string name="chat_persona_switch_api_not_bound">No API bound yet; set one up in this conversation</string>
 </resources>

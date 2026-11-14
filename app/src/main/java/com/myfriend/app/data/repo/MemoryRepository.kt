@@ -13,6 +13,7 @@ import com.myfriend.app.data.local.MessageRole
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.ChineseTerms
+import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ImportanceScoring
 import com.myfriend.app.domain.MemoryDecision
 import com.myfriend.app.domain.MemoryDrawer
@@ -23,9 +24,11 @@ import com.myfriend.app.domain.MemoryRow
 import com.myfriend.app.domain.MemoryScreening
 import com.myfriend.app.domain.MemoryTags
 import com.myfriend.app.domain.MemoryTier
+import com.myfriend.app.domain.UserErrorException
 import com.myfriend.app.domain.MemoryCandidate as DomainMemoryCandidate
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.InferenceParams
+import com.myfriend.app.network.userError
 import com.myfriend.app.network.WireMessage
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -42,13 +45,40 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * 一次「从聊天里记东西」的结果。
+ *
+ * 以前这里带一句现成的中文（"记忆已更新（+2）"…），现在只给数量与 [outcome]：
+ * 界面按当前语言映射资源，英文界面不再看到中文。
+ */
 data class MemoryExtractionResult(
     val added: Int,
-    val message: String,
     val reinforced: Int = 0,
     val echoed: Int = 0,
-    val rejected: Int = 0
-)
+    val rejected: Int = 0,
+    /** 特殊结果（对话太少 / 还没到间隔）由调用点显式指定；null 表示按数量推断。 */
+    val outcomeOverride: MemoryExtractionOutcome? = null,
+    /** 「还没到整理间隔（每 N 条）」里的 N。 */
+    val every: Int? = null
+) {
+    val outcome: MemoryExtractionOutcome
+        get() = outcomeOverride ?: when {
+            added > 0 -> MemoryExtractionOutcome.ADDED
+            reinforced > 0 -> MemoryExtractionOutcome.REINFORCED
+            echoed > 0 -> MemoryExtractionOutcome.ECHOED
+            else -> MemoryExtractionOutcome.NONE
+        }
+}
+
+/** 抽取结果的几种「说法」，由 UI 翻成句子。 */
+enum class MemoryExtractionOutcome {
+    ADDED,
+    REINFORCED,
+    ECHOED,
+    NONE,
+    NOT_ENOUGH_CHAT,
+    INTERVAL_NOT_REACHED
+}
 
 /**
  * 一次召回的候选集：候选记忆 + 「这条候选有多像这句话」的向量分。
@@ -350,8 +380,8 @@ class MemoryRepository @Inject constructor(
         happenedAt: Long? = null
     ): Result<String> = runCatching {
         val text = content.trim()
-        require(text.isNotBlank()) { "记忆内容不能为空" }
-        require(text.length <= 2000) { "单条记忆请控制在 2000 字以内" }
+        if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
+        if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         memoryDao.insert(
@@ -400,7 +430,7 @@ class MemoryRepository @Inject constructor(
 
     /** 同一件事又被提到：加固而不是新增。 */
     suspend fun reinforce(memoryId: String, appendedText: String? = null, importance: Int? = null): Result<Unit> = runCatching {
-        val memory = memoryDao.getById(memoryId) ?: error("记忆已不存在")
+        val memory = memoryDao.getById(memoryId) ?: userError(DomainErrorCode.MEMORY_NOT_FOUND)
         val now = System.currentTimeMillis()
         val merged = if (appendedText.isNullOrBlank()) memory.content else {
             (memory.content.trimEnd() + "；" + appendedText.trim()).take(2000)
@@ -427,8 +457,8 @@ class MemoryRepository @Inject constructor(
         pinned: Boolean = false
     ): Result<Unit> = runCatching {
         val text = content.trim()
-        require(text.isNotBlank()) { "记忆内容不能为空" }
-        require(text.length <= 2000) { "单条记忆请控制在 2000 字以内" }
+        if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
+        if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         memoryDao.insert(
@@ -452,8 +482,8 @@ class MemoryRepository @Inject constructor(
 
     suspend fun update(memory: MemoryEntity, content: String, category: MemoryCategory, importance: Int): Result<Unit> = runCatching {
         val text = content.trim()
-        require(text.isNotBlank()) { "记忆内容不能为空" }
-        require(text.length <= 2000) { "单条记忆请控制在 2000 字以内" }
+        if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
+        if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
         memoryDao.update(memory.copy(
             content = text,
@@ -516,10 +546,12 @@ class MemoryRepository @Inject constructor(
     suspend fun maybeExtractMemories(sessionId: String, force: Boolean = false): Result<MemoryExtractionResult> {
         return extractionMutex.withLock {
             runCatching {
-                val session = sessionDao.getById(sessionId) ?: error("会话不存在")
-                val configId = session.apiConfigId ?: error("该会话尚未绑定 API")
-                val resolved = apiConfigRepository.resolve(configId) ?: error("API 配置不存在")
-                val persona = personaDao.getById(session.personaId) ?: error("人格不存在")
+                val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
+                val configId = session.apiConfigId ?: userError(DomainErrorCode.API_CONFIG_NOT_BOUND)
+                val resolved = apiConfigRepository.resolve(configId)
+                    ?: userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
+                val persona = personaDao.getById(session.personaId)
+                    ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
                 val personaName = persona.name.ifBlank { "他" }
                 // 总条数只用来判断「距离上次抽取够不够 N 条」，单独 COUNT 即可；
                 // 正文只取最近 40 行（下面实际只用最后 20 句），不把整段历史读进内存。
@@ -529,13 +561,20 @@ class MemoryRepository @Inject constructor(
                     it.role != MessageRole.SYSTEM && it.content.isNotBlank()
                 }
                 if (conversational.size < 4) {
-                    return@runCatching MemoryExtractionResult(0, "对话还不够多")
+                    return@runCatching MemoryExtractionResult(
+                        added = 0,
+                        outcomeOverride = MemoryExtractionOutcome.NOT_ENOUGH_CHAT
+                    )
                 }
                 // 抽记忆的频率由人格决定（会话可覆盖，3–12 条）。1.9 把它从设置页搬到了联系人编辑页：
                 // 「记性」是这个人什么样的一部分，不该是一个全局开关。
                 val every = (session.extractionEveryOverride ?: persona.extractionEvery).coerceIn(3, 12)
                 if (!force && currentCount - session.lastMemoryExtractedCount < every) {
-                    return@runCatching MemoryExtractionResult(0, "还未到记忆整理间隔（每 $every 条）")
+                    return@runCatching MemoryExtractionResult(
+                        added = 0,
+                        outcomeOverride = MemoryExtractionOutcome.INTERVAL_NOT_REACHED,
+                        every = every
+                    )
                 }
                 val recent = conversational.takeLast(20)
                 val existing = memoryDao.getForPersona(persona.id, 80)
@@ -628,17 +667,7 @@ class MemoryRepository @Inject constructor(
                     added = added,
                     reinforced = reinforced,
                     echoed = echoed,
-                    rejected = rejected,
-                    message = buildString {
-                        append(
-                            when {
-                                added > 0 -> "记忆已更新（+$added）"
-                                reinforced > 0 -> "又聊到了旧事，记忆更牢了"
-                                echoed > 0 -> "记下了，还想再确认一次"
-                                else -> "没有发现需要新增的长期记忆"
-                            }
-                        )
-                    }
+                    rejected = rejected
                 )
             }
         }
@@ -647,7 +676,7 @@ class MemoryRepository @Inject constructor(
     suspend fun extractFromLatestSession(personaId: String): Result<MemoryExtractionResult> {
         val sessions = sessionDao.getByPersona(personaId)
         val target = sessions.maxByOrNull { it.lastMessageAt ?: it.createdAt }
-            ?: return Result.failure(IllegalStateException("该人格还没有对话"))
+            ?: return Result.failure(UserErrorException(DomainErrorCode.NO_CONVERSATION_YET))
         return maybeExtractMemories(target.id, force = true)
     }
 

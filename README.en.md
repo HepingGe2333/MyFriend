@@ -6,17 +6,17 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-639%20Android%20%7C%20827%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-683%20Android%20%7C%20872%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#build-and-test)
 
 ## Project status
 
 | Item | Value |
 | --- | --- |
-| Version | `0.10.0` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
+| Version | `0.10.1` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
 | Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
 | Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 639 on Android (`:app:testDebugUnitTest`), 827 on iOS (`swift test`), 19 in agentd (`:agentd:test`) |
+| Unit tests | 683 on Android (`:app:testDebugUnitTest`), 872 on iOS (`swift test`), 19 in agentd (`:agentd:test`) |
 | CI | None yet; all tests and builds run from local commands |
 
 ## Feature overview
@@ -148,7 +148,7 @@ The server understands `remember` / `recall` / `set_mood` / `web_search` / `myfr
 - **Token statistics only**: no money, quotas or blocking; `costMicroUsd` remains a column and is not displayed.
 - **agentd is not wired yet**: only the standalone service and the contract cases exist; neither client calls it.
 - **No build artifacts in the repository**: `.gitignore` excludes `dist/`, `docs/screenshots/`, APK/IPA files and build caches, so the docs contain no screenshots and no prebuilt packages are provided.
-- **English does not yet cover data-layer errors or model output**: user-visible copy in the UI layer and in the iOS kit is localised, but Android's `data/` and `network/` layers still produce Chinese error messages that surface through `Result` (connection test, timeouts, 429s). Text written by the model (mood reasons, memory bodies, persona names/descriptions) and data created before the upgrade are not translated; code comments, logs and prompt scaffolding remain Chinese (see [docs/I18N.en.md](docs/I18N.en.md)).
+- **Some Chinese remains in English builds**: data and network errors are now structured and mapped to resources (including persisted error tokens), but **tool trace titles** (「联网搜索」, 「记住了」), **values written before the upgrade**, **model output** (mood reasons, memory bodies, persona names/descriptions) and code comments/logs/prompt scaffolding remain Chinese; long English strings have not been reviewed one by one (see [docs/I18N.en.md](docs/I18N.en.md)).
 - **Simulator Keychain limitation**: unsigned simulator builds have no Keychain entitlement, so debugging falls back to UserDefaults and writes `debug.log`; devices are unaffected.
 
 ## Contributing & license

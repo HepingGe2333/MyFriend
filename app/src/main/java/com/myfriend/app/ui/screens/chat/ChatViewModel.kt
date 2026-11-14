@@ -4,7 +4,9 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
+import com.myfriend.app.domain.MessagePaging
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.ChatSessionEntity
@@ -24,6 +26,7 @@ import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.ProactiveScheduler
 import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.domain.MessageAttachment
+import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.MoodState
 import com.myfriend.app.domain.Presence
 import com.myfriend.app.domain.ExportFile
@@ -46,6 +49,7 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
@@ -80,7 +84,11 @@ data class ChatUiState(
     val snackbar: String? = null,
     val showConfigPicker: Boolean = false,
     val showPersonaPicker: Boolean = false,
-    val loaded: Boolean = false
+    val loaded: Boolean = false,
+    /** 还有更早的消息可以往回加载（首屏 60 条之外）。 */
+    val hasMoreOlder: Boolean = false,
+    /** 正在加载更早的一页：列表顶部显示转圈，并且不再重复触发。 */
+    val loadingOlder: Boolean = false
 ) {
     val canSend: Boolean
         get() = session != null && config != null && persona != null && !isGenerating && !switchingPersona
@@ -100,6 +108,8 @@ data class ChatEphemeral(
     val showConfigPicker: Boolean = false,
     val showPersonaPicker: Boolean = false
 )
+
+/** 本地分页状态：只影响聊天页，不进 Session。 */
 
 sealed interface ChatEvent {
     data class OpenSession(val sessionId: String) : ChatEvent
@@ -129,7 +139,28 @@ class ChatViewModel @Inject constructor(
     val events = eventsChannel.receiveAsFlow()
 
     private val sessionFlow = chatRepository.observeSession(sessionId)
-    private val messageFlow = chatRepository.observeMessages(sessionId)
+
+    /**
+     * 分页游标：null 表示只观察最近 `PAGE_SIZE` 条；一旦加载过更早的一页，
+     * 就改成观察「从那一页最早一条到最新」的区间（依然由 Room 观察，编辑/删除都会跟着更新）。
+     */
+    private val sinceCursor = MutableStateFlow<MessagePaging.Cursor?>(null)
+    private val pagingState = MutableStateFlow(MessagePaging.State())
+
+    private val messageFlow = sinceCursor
+        .flatMapLatest { cursor ->
+            if (cursor == null) {
+                chatRepository.observeLatestMessages(sessionId)
+            } else {
+                chatRepository.observeMessagesFrom(sessionId, cursor)
+            }
+        }
+        .onEach { rows ->
+            // 只有首屏能靠「不足一页」判断到底了；之后的区间条数变多不代表还有更早的。
+            if (sinceCursor.value == null) {
+                pagingState.update { MessagePaging.onFirstWindow(it, rows.size) }
+            }
+        }
 
     private val personaFlow = sessionFlow
         .map { it?.personaId }
@@ -168,10 +199,12 @@ class ChatViewModel @Inject constructor(
     /** 心情和「他正在……」一起进界面：都是他自己的状态，界面看得到、改不了。 */
     private val ambientFlow = combine(moodFlow, presenceFlow) { mood, presence -> mood to presence }
 
+    private val localFlow = combine(ephemeral, pagingState) { local, paging -> local to paging }
+
     private val uiFlow = combine(
         detailsFlow.combine(ambientFlow) { (bundle, settings), ambient -> Triple(bundle, settings, ambient) },
-        ephemeral
-    ) { (bundle, settings, ambient), local ->
+        localFlow
+    ) { (bundle, settings, ambient), (local, paging) ->
         val details = bundle.details
         ChatUiState(
             session = details.session,
@@ -193,7 +226,9 @@ class ChatViewModel @Inject constructor(
             snackbar = local.snackbar,
             showConfigPicker = local.showConfigPicker,
             showPersonaPicker = local.showPersonaPicker,
-            loaded = details.session != null
+            loaded = details.session != null,
+            hasMoreOlder = paging.hasMoreOlder,
+            loadingOlder = paging.loadingOlder
         )
     }
 
@@ -227,6 +262,38 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 滚到顶部时往回要一页。
+     *
+     * 「同一时刻只加载一页」由 [MessagePaging.beginLoadOlder] 保证：
+     * 快速滚顶 / 反复触发时第二次直接返回，不会并发打两条查询、也不会把同一页插两遍。
+     */
+    fun loadOlder() {
+        val (next, shouldLoad) = MessagePaging.beginLoadOlder(pagingState.value)
+        if (!shouldLoad) return
+        pagingState.value = next
+        viewModelScope.launch {
+            try {
+                val window = uiState.value.messages
+                val cursor = MessagePaging.oldestCursor(window, { it.createdAt }, { it.id })
+                if (cursor == null) {
+                    // 还没读到首屏（或会话为空）：收掉转圈，下次滚动再试。
+                    pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
+                    return@launch
+                }
+                val page = chatRepository.messagesBefore(sessionId, cursor)
+                pagingState.value = MessagePaging.onOlderPage(pagingState.value, page.size)
+                val oldest = page.firstOrNull() ?: return@launch
+                sinceCursor.value = MessagePaging.Cursor(oldest.createdAt, oldest.id)
+            } catch (cancel: CancellationException) {
+                pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
+                throw cancel
+            } catch (error: Exception) {
+                pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
+            }
+        }
+    }
+
     fun onResume() {
         viewModelScope.launch { chatRepository.markRead(sessionId) }
     }
@@ -252,12 +319,20 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 从草稿里去掉一张图：文件已经落盘了，取消发送就得把它删掉，
+     * 否则「选了又删」每来一次就多一个孤儿文件。
+     */
     fun removeImage(uri: String) {
+        val removed = ephemeral.value.images.filter { it.uri == uri }
         ephemeral.update { state -> state.copy(images = state.images.filterNot { it.uri == uri }) }
+        MediaStorage.deleteFiles(removed)
     }
 
     fun clearImages() {
+        val removed = ephemeral.value.images
         ephemeral.update { it.copy(images = emptyList()) }
+        MediaStorage.deleteFiles(removed)
     }
 
     fun dismissSnackbar() {
@@ -297,7 +372,7 @@ class ChatViewModel @Inject constructor(
                 val result = chatRepository.sendUserMessage(sessionId, text, images)
                 if (result.isFailure) {
                     ephemeral.update {
-                        it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_send_failed))
+                        it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_send_failed))
                     }
                     return@launch
                 }
@@ -358,7 +433,7 @@ class ChatViewModel @Inject constructor(
                                     isGenerating = false,
                                     hasStarted = false,
                                     streamingText = "",
-                                    snackbar = event.message
+                                    snackbar = ErrorText.of(context, event.error)
                                 )
                             }
                         }
@@ -377,7 +452,7 @@ class ChatViewModel @Inject constructor(
                     it.copy(
                         isGenerating = false,
                         streamingText = "",
-                        snackbar = error.message ?: context.getString(R.string.chat_generation_failed)
+                        snackbar = ErrorText.of(context, error, R.string.chat_generation_failed)
                     )
                 }
             }
@@ -398,7 +473,7 @@ class ChatViewModel @Inject constructor(
                 memoryJob?.join()
                 val result = chatRepository.prepareRegeneration(sessionId)
                 if (result.isFailure) {
-                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_regenerate_failed)) }
+                    ephemeral.update { it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_regenerate_failed)) }
                     return@launch
                 }
                 startGeneration(HumanTiming.REGENERATE_MS)
@@ -417,7 +492,7 @@ class ChatViewModel @Inject constructor(
                 memoryJob?.join()
                 val result = chatRepository.editUserMessage(sessionId, messageId, content)
                 if (result.isFailure) {
-                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_edit_failed)) }
+                    ephemeral.update { it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_edit_failed)) }
                     return@launch
                 }
                 startGeneration(HumanTiming.REGENERATE_MS)
@@ -430,7 +505,7 @@ class ChatViewModel @Inject constructor(
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             chatRepository.deleteMessage(messageId)
-                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: context.getString(R.string.chat_delete_failed)) } }
+                .onFailure { error -> ephemeral.update { it.copy(snackbar = ErrorText.of(context, error, R.string.chat_delete_failed)) } }
         }
     }
 
@@ -441,7 +516,8 @@ class ChatViewModel @Inject constructor(
             val result = chatRepository.clearContext(sessionId)
             ephemeral.update {
                 it.copy(
-                    snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_context_cleared)
+                    snackbar = result.exceptionOrNull()?.let { ErrorText.of(context, it) }
+                        ?: context.getString(R.string.chat_context_cleared)
                 )
             }
         }
@@ -452,7 +528,10 @@ class ChatViewModel @Inject constructor(
             val bound = chatRepository.bindSessionConfig(sessionId, configId)
             if (bound.isFailure) {
                 ephemeral.update {
-                    it.copy(showConfigPicker = false, snackbar = bound.exceptionOrNull()?.message ?: context.getString(R.string.chat_bind_failed))
+                    it.copy(
+                        showConfigPicker = false,
+                        snackbar = ErrorText.of(context, bound.exceptionOrNull(), R.string.chat_bind_failed)
+                    )
                 }
                 return@launch
             }
@@ -480,7 +559,7 @@ class ChatViewModel @Inject constructor(
                 eventsChannel.send(ChatEvent.OpenSession(result.session.id))
             } else {
                 ephemeral.update {
-                    it.copy(switchingPersona = false, snackbar = result.message ?: context.getString(R.string.chat_persona_switch_failed))
+                    it.copy(switchingPersona = false, snackbar = switchNoticeText(result.notice))
                 }
             }
         }
@@ -490,7 +569,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val result = chatRepository.exportSession(sessionId)
             result.onSuccess { eventsChannel.send(ChatEvent.ExportReady(it)) }
-                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: context.getString(R.string.chat_export_failed)) } }
+                .onFailure { error -> ephemeral.update { it.copy(snackbar = ErrorText.of(context, error, R.string.chat_export_failed)) } }
         }
     }
 
@@ -514,11 +593,11 @@ class ChatViewModel @Inject constructor(
         val result = memoryRepository.maybeExtractMemories(sessionId)
         result.onSuccess { extraction ->
             if (extraction.added > 0) {
-                ephemeral.update { it.copy(snackbar = extraction.message) }
+                ephemeral.update { it.copy(snackbar = memoryResultText(extraction)) }
             }
         }.onFailure { error ->
             if (!silent) {
-                val reason = error.message ?: context.getString(R.string.chat_unknown_error)
+                val reason = ErrorText.of(context, error, R.string.chat_unknown_error)
                 ephemeral.update { state ->
                     state.copy(snackbar = context.getString(R.string.chat_memory_failed, reason))
                 }
@@ -536,6 +615,31 @@ class ChatViewModel @Inject constructor(
     fun markRead() {
         viewModelScope.launch { chatRepository.markRead(sessionId) }
     }
+
+    /** 切人格时顺口提示的那一句：数据层给枚举，这里翻成当前语言。 */
+    private fun switchNoticeText(notice: PersonaSwitchNotice?): String = when (notice) {
+        PersonaSwitchNotice.API_NOT_BOUND -> context.getString(R.string.chat_persona_switch_api_not_bound)
+        PersonaSwitchNotice.SESSION_CREATE_FAILED -> context.getString(R.string.chat_persona_switch_no_session)
+        PersonaSwitchNotice.PERSONA_NOT_FOUND -> context.getString(R.string.error_persona_not_found)
+        null -> context.getString(R.string.chat_persona_switch_failed)
+    }
+
+    /** 「记忆已更新（+2）」这类结果句：数量在数据层，说法在资源里。 */
+    private fun memoryResultText(result: com.myfriend.app.data.repo.MemoryExtractionResult): String =
+        when (result.outcome) {
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.ADDED ->
+                context.getString(R.string.memory_extract_result_added, result.added)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.REINFORCED ->
+                context.getString(R.string.memory_extract_result_reinforced)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.ECHOED ->
+                context.getString(R.string.memory_extract_result_echoed)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.NONE ->
+                context.getString(R.string.memory_extract_result_none)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.NOT_ENOUGH_CHAT ->
+                context.getString(R.string.memory_extract_result_not_enough)
+            com.myfriend.app.data.repo.MemoryExtractionOutcome.INTERVAL_NOT_REACHED ->
+                context.getString(R.string.memory_extract_result_interval, result.every ?: 0)
+        }
 
     override fun onCleared() {
         streamJob?.cancel()

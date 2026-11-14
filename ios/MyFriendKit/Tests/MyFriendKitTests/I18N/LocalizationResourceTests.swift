@@ -224,7 +224,7 @@ final class LocalizationResourceTests: XCTestCase {
             let keys = Set(try load(language).map(\.key))
             let ones = keys.filter { $0.hasSuffix(".one") }
             let missingOne = keys.filter { !$0.hasSuffix(".one") }
-                .filter { SourceKeys.counted.contains($0) }
+                .filter { SourceKeys.counted.contains($0) || KitSourceKeys.counted.contains($0) }
                 .filter { !ones.contains($0 + ".one") }
                 .sorted()
             let orphanOnes = ones.filter { !keys.contains(String($0.dropLast(4))) }.sorted()
@@ -243,14 +243,17 @@ final class LocalizationResourceTests: XCTestCase {
         static func scan() -> (all: Set<String>, counted: Set<String>) {
             var all = Set<String>()
             var counted = Set<String>()
-            let pattern = #"\b(L|Lf|Lcount|NSLocalizedString)\(\s*"((?:[^"\\]|\\.)*)""#
+            // App 层有两种写法：`L/Lf/Lcount/NSLocalizedString(...)` 与直接 `String(localized:)`
+            //（后者主要出现在 Debug 钩子与个别组件里）。两种都要算「代码用到」。
+            let pattern = #"\b(L|Lf|Lcount|NSLocalizedString)\(\s*"((?:[^"\\]|\\.)*)"|String\(localized:\s*"((?:[^"\\]|\\.)*)""#
             let regex = try! NSRegularExpression(pattern: pattern)
             for url in LocalizationResourceTests.swiftFiles() {
                 guard let raw = try? String(contentsOf: url, encoding: .utf8) else { continue }
                 let text = stripComments(raw)
                 let range = NSRange(text.startIndex..<text.endIndex, in: text)
                 for match in regex.matches(in: text, range: range) {
-                    guard let keyRange = Range(match.range(at: 2), in: text) else { continue }
+                    let keyIndex = match.range(at: 2).length > 0 ? 2 : 3
+                    guard let keyRange = Range(match.range(at: keyIndex), in: text) else { continue }
                     let raw = String(text[keyRange])
                     let key = raw
                         .replacingOccurrences(of: #"\n"#, with: "\n")
@@ -333,31 +336,40 @@ final class LocalizationResourceTests: XCTestCase {
 
     /// Kit 源码里 `String(localized: "…")` 的 key。
     enum KitSourceKeys {
-        static let all: Set<String> = scan()
+        static let all: Set<String> = scan().all
+        /// 走单复数变体的 key（`PluralText.format/template`）：英文必须有 `.one`。
+        static let counted: Set<String> = scan().counted
 
-        static func scan() -> Set<String> {
+        static func scan() -> (all: Set<String>, counted: Set<String>) {
             var keys = Set<String>()
-            let pattern = #"String\(localized:\s*"((?:[^"\\]|\\.)*)""#
-            let regex = try! NSRegularExpression(pattern: pattern)
+            var counted = Set<String>()
+            // 两条分别扫：`String(localized:)` 是普通 key，`PluralText.…` 是需要 `.one` 的计数 key。
+            let localizedPattern = #"String\(localized:\s*"((?:[^"\\]|\\.)*)""#
+            let countedPattern = #"PluralText\.(?:format|template)\(\s*"((?:[^"\\]|\\.)*)""#
+            let localizedRegex = try! NSRegularExpression(pattern: localizedPattern)
+            let countedRegex = try! NSRegularExpression(pattern: countedPattern)
             let root = LocalizationResourceTests.iosRoot
                 .appendingPathComponent("MyFriendKit/Sources", isDirectory: true)
             guard let enumerator = FileManager.default.enumerator(
                 at: root, includingPropertiesForKeys: nil
-            ) else { return keys }
+            ) else { return (keys, counted) }
             for case let url as URL in enumerator where url.pathExtension == "swift" {
                 guard let raw = try? String(contentsOf: url, encoding: .utf8) else { continue }
                 let text = LocalizationResourceTests.stripComments(raw)
                 let range = NSRange(text.startIndex..<text.endIndex, in: text)
-                for match in regex.matches(in: text, range: range) {
-                    guard let keyRange = Range(match.range(at: 1), in: text) else { continue }
-                    let key = String(text[keyRange])
-                        .replacingOccurrences(of: #"\n"#, with: "\n")
-                        .replacingOccurrences(of: #"\""#, with: "\"")
-                        .replacingOccurrences(of: #"\\"#, with: "\\")
-                    keys.insert(key)
+                for (regex, isCounted) in [(localizedRegex, false), (countedRegex, true)] {
+                    for match in regex.matches(in: text, range: range) {
+                        guard let keyRange = Range(match.range(at: 1), in: text) else { continue }
+                        let key = String(text[keyRange])
+                            .replacingOccurrences(of: #"\n"#, with: "\n")
+                            .replacingOccurrences(of: #"\""#, with: "\"")
+                            .replacingOccurrences(of: #"\\"#, with: "\\")
+                        keys.insert(key)
+                        if isCounted { counted.insert(key) }
+                    }
                 }
             }
-            return keys
+            return (keys, counted)
         }
     }
 

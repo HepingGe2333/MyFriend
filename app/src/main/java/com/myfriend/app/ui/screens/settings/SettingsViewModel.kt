@@ -3,6 +3,9 @@ package com.myfriend.app.ui.screens.settings
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.data.repo.BackupImportException
+import com.myfriend.app.ui.common.BackupText
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.prefs.AppSettings
 import com.myfriend.app.data.prefs.BubbleStyle
@@ -57,7 +60,7 @@ data class BackupUiState(
     val busy: Boolean = false,
     val preview: BackupPreview? = null,
     /** 这份备份里有东西没读出来 / 带不回来时的中文说明，直接给用户看。 */
-    val decodeWarnings: List<String> = emptyList()
+    val decodeWarnings: List<com.myfriend.app.domain.BackupWarning> = emptyList()
 )
 
 @HiltViewModel
@@ -98,7 +101,7 @@ class SettingsViewModel @Inject constructor(
 
     private val backupBusy = MutableStateFlow(false)
     private val backupPreview = MutableStateFlow<BackupPreview?>(null)
-    private val backupDecodeWarnings = MutableStateFlow<List<String>>(emptyList())
+    private val backupDecodeWarnings = MutableStateFlow<List<com.myfriend.app.domain.BackupWarning>>(emptyList())
 
     /** 「把他带走」这一节：正在打包/接回来时按钮停一下；读完文件先给一句摘要。 */
     val backupState: StateFlow<BackupUiState> = combine(
@@ -136,7 +139,7 @@ class SettingsViewModel @Inject constructor(
             busy.value = true
             chatRepository.exportAllChats()
                 .onSuccess { events.send(SettingsEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_export) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_export) }
             busy.value = false
         }
     }
@@ -146,7 +149,7 @@ class SettingsViewModel @Inject constructor(
             busy.value = true
             runCatching { chatRepository.clearAllChatData() }
                 .onSuccess { message.value = context.getString(R.string.settings_cleared_chats) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_clear) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_clear) }
             busy.value = false
         }
     }
@@ -163,7 +166,7 @@ class SettingsViewModel @Inject constructor(
                 MediaStorage.clear(context)
                 settingsRepository.resetAll()
             }.onSuccess { message.value = context.getString(R.string.settings_wiped) }
-                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_delete) }
+                .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_delete) }
             busy.value = false
         }
     }
@@ -195,7 +198,7 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             backupBusy.value = true
             when (val decoded = backupRepository.preview(text)) {
-                is BackupDecodeResult.Failure -> message.value = decoded.reason
+                is BackupDecodeResult.Failure -> message.value = BackupText.failure(context, decoded.reason)
                 is BackupDecodeResult.Success -> {
                     pendingBackup = text
                     backupDecodeWarnings.value = decoded.warnings
@@ -220,11 +223,15 @@ class SettingsViewModel @Inject constructor(
             backupBusy.value = true
             runCatching { backupRepository.importJson(raw, mode) }
                 .onSuccess { summary ->
-                    message.value = summary.describe()
+                    message.value = BackupText.importSummary(context, summary)
                     dismissBackupPreview()
                 }
-                .onFailure {
-                    message.value = it.message ?: context.getString(R.string.settings_error_import)
+                .onFailure { error ->
+                    message.value = if (error is BackupImportException) {
+                        BackupText.failure(context, error.failure)
+                    } else {
+                        ErrorText.of(context, error, R.string.settings_error_import)
+                    }
                 }
             backupBusy.value = false
         }
@@ -233,7 +240,7 @@ class SettingsViewModel @Inject constructor(
     private fun launchSetting(block: suspend () -> Unit) {
         viewModelScope.launch {
             runCatching { block() }.onFailure {
-                message.value = it.message ?: context.getString(R.string.settings_error_save)
+                message.value = ErrorText.of(context, it, R.string.settings_error_save)
             }
         }
     }

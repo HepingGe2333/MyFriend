@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.domain.PersonaRevisionReason
+import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
@@ -267,7 +269,7 @@ class PersonaEditorViewModel @Inject constructor(
                 _state.update { it.copy(saving = false) }
                 events.send(
                     PersonaEditorEvent.Message(
-                        result.exceptionOrNull()?.message ?: context.getString(R.string.persona_editor_save_failed)
+                        ErrorText.of(context, result.exceptionOrNull(), R.string.persona_editor_save_failed)
                     )
                 )
                 return@launch
@@ -277,7 +279,11 @@ class PersonaEditorViewModel @Inject constructor(
             // 空卡代表「留空沿用提示词原文」，不能拿占位渲染去覆盖旧设定。
             val card = current.card
             if (card != current.initialCard && !card.isEmpty()) {
-                val reason = if (current.personaId == null) "创建人格卡" else "编辑人格卡"
+                val reason = if (current.personaId == null) {
+                    PersonaRevisionReason.CARD_CREATED
+                } else {
+                    PersonaRevisionReason.CARD_EDITED
+                }
                 val cardResult = personaCardRepository.saveCard(id, card, reason)
                 if (cardResult.isFailure) {
                     _state.update { it.copy(saving = false) }
@@ -285,8 +291,11 @@ class PersonaEditorViewModel @Inject constructor(
                         PersonaEditorEvent.Message(
                             context.getString(
                                 R.string.persona_editor_card_save_failed,
-                                cardResult.exceptionOrNull()?.message
-                                    ?: context.getString(R.string.persona_editor_unknown_error)
+                                ErrorText.of(
+                                    context,
+                                    cardResult.exceptionOrNull(),
+                                    R.string.persona_editor_unknown_error
+                                )
                             )
                         )
                     )

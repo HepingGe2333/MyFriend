@@ -4,6 +4,7 @@ import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.domain.ApiCost
 import com.myfriend.app.domain.LlmLane
+import com.myfriend.app.domain.NetworkErrorKind
 import com.myfriend.app.domain.TokenUsage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -74,11 +75,20 @@ class OpenAiAdapter(
             .applyHeaders(config, apiKey)
             .build()
         return withContext(Dispatchers.IO) {
-            client.newCall(request).execute().use { response ->
-                val body = response.body?.string().orEmpty()
-                if (!response.isSuccessful) throw response.toApiException(body)
+            // 连接失败也要变成结构化错误：否则「连接测试」失败会落到「未知错误」，
+            // 用户看不出是地址不对、断网，还是服务端的问题。
+            val response = try {
+                client.newCall(request).execute()
+            } catch (cancel: CancellationException) {
+                throw cancel
+            } catch (error: Exception) {
+                throw mapNetworkError(error)
+            }
+            response.use { resp ->
+                val body = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) throw resp.toApiException(body)
                 val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
-                    ?: throw ApiException(response.code, "服务返回了无法解析的模型列表")
+                    ?: throw ApiException(NetworkErrorKind.UnparsableModels, body.take(300))
                 val entries = root["data"]?.jsonArray ?: root["models"]?.jsonArray ?: JsonArray(emptyList())
                 entries.mapNotNull { element ->
                     element.runCatching { jsonObject["id"]?.jsonPrimitive?.contentOrNull }.getOrNull()
@@ -146,10 +156,11 @@ class OpenAiAdapter(
                         reportStreamUsage(kind, model, streamUsage, sessionId, personaId)
                         return@flow
                     }
-                    val source = resp.body?.source() ?: throw ApiException(resp.code, "服务未返回响应内容")
+                    val source = resp.body?.source() ?: throw ApiException(NetworkErrorKind.NoContent)
                     source.use {
                         while (currentCoroutineContext().isActive) {
-                            val line = it.readUtf8Line() ?: break
+                            // 单行长度上限：服务端异常时可能吐出无穷无尽的「一行」，不能让它吃掉内存。
+                            val line = SseLines.readLine(it) ?: break
                             if (!line.startsWith("data:")) continue
                             val payload = line.removePrefix("data:").trim()
                             if (payload.isEmpty()) continue
@@ -168,7 +179,7 @@ class OpenAiAdapter(
                         }
                     }
                     if (!emittedThisAttempt) {
-                        throw ApiException(null, "模型没有返回任何文字，请检查模型名称或服务配置")
+                        throw ApiException(NetworkErrorKind.EmptyStream)
                     }
                     emit(StreamEvent.Done)
                     // 服务端没给 usage 时按字数估一个：聊天的钱通常是最大头，不能记成 0。
@@ -227,7 +238,7 @@ class OpenAiAdapter(
                 return@withContext payload.text
             } catch (cancel: CancellationException) {
                 if (cancel is kotlinx.coroutines.TimeoutCancellationException) {
-                    throw ApiException(null, "请求超时，请检查网络或服务响应时间")
+                    throw ApiException(NetworkErrorKind.Timeout)
                 }
                 throw cancel
             } catch (error: Exception) {
@@ -354,7 +365,7 @@ class OpenAiAdapter(
     private fun parseStreamChunk(payload: String, status: Int): StreamChunk? {
         val root = runCatching { json.parseToJsonElement(payload).jsonObject }.getOrNull() ?: return null
         root["error"]?.let { error ->
-            throw ApiException(status, extractErrorMessage(error.toString(), "流式响应返回错误"), error.toString().take(500))
+            throw ApiException(NetworkErrorKind.StreamError(status), error.toString().take(500))
         }
         val usage = ApiCost.parseUsage(root).takeIf { it.promptTokens > 0 || it.completionTokens > 0 }
         val choice = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
@@ -374,16 +385,16 @@ class OpenAiAdapter(
      */
     private fun parseCompletion(raw: String, status: Int): CompletionPayload {
         val root = runCatching { json.parseToJsonElement(raw).jsonObject }.getOrNull()
-            ?: throw ApiException(status, "服务返回了无法识别的回复内容", raw.take(300))
+            ?: throw ApiException(NetworkErrorKind.UnparsableReply, raw.take(300))
         root["error"]?.let { error ->
-            throw ApiException(null, extractErrorMessage(error.toString(), "服务返回错误"), error.toString().take(500))
+            throw ApiException(NetworkErrorKind.Http(status), error.toString().take(500))
         }
         val usage = ApiCost.parseUsage(root)
         val choice = root["choices"]?.jsonArray?.firstOrNull()?.jsonObject
-            ?: throw ApiException(status, "服务返回了空回复", raw.take(300))
+            ?: throw ApiException(NetworkErrorKind.EmptyReply, raw.take(300))
         val text = choice["message"]?.jsonObject?.get("content")?.jsonPrimitive?.contentOrNull
             ?: choice["text"]?.jsonPrimitive?.contentOrNull
-            ?: throw ApiException(status, "服务返回了空回复", raw.take(300))
+            ?: throw ApiException(NetworkErrorKind.EmptyReply, raw.take(300))
         return CompletionPayload(text = text, usage = usage)
     }
 
@@ -402,19 +413,8 @@ class OpenAiAdapter(
     }
 
     private fun Response.toApiException(body: String): ApiException {
-        val friendly = when (code) {
-            400 -> "请求被服务拒绝（400），请检查模型名称与推理参数"
-            401 -> "API Key 无效或未授权（401）"
-            403 -> "没有访问该模型的权限（403）"
-            404 -> "接口或模型不存在（404），请检查 Base URL 与模型 ID"
-            408 -> "服务请求超时（408）"
-            413 -> "请求内容过长（413），请缩短上下文或输出长度"
-            429 -> "请求过于频繁或额度不足（429）"
-            in 500..599 -> "服务端暂时不可用（$code）"
-            else -> "请求失败（HTTP $code）"
-        }
-        val detail = extractErrorMessage(body, "") 
-        return ApiException(code, if (detail.isBlank()) friendly else "$friendly：$detail", body.take(1200))
+        val detail = extractErrorMessage(body, "").takeIf { it.isNotBlank() }
+        return ApiException(NetworkErrorKind.Http(code), detail ?: body.take(1200))
     }
 
     private fun extractErrorMessage(body: String, fallback: String): String {
@@ -430,21 +430,24 @@ class OpenAiAdapter(
     }
 
     private fun isRetryable(error: Exception): Boolean = when (error) {
-        is ApiException -> error.statusCode == null || error.statusCode == 408 || error.statusCode == 429 || error.statusCode in 500..599
+        is ApiException -> error.kind.statusCode.let { code ->
+            code == null || code == 408 || code == 429 || code in 500..599
+        }
         is IOException -> true
         else -> false
     }
 
     private fun mapNetworkError(error: Exception): Exception = when (error) {
         is ApiException, is ProviderUnavailableException -> error
-        is java.net.SocketTimeoutException -> ApiException(null, "连接超时，请检查网络或服务地址")
-        is java.net.UnknownHostException -> ApiException(null, "无法解析服务器地址，请检查网络连接")
-        is IOException -> ApiException(null, "网络连接中断：${error.message ?: "请检查网络"}")
+        is java.net.SocketTimeoutException -> ApiException(NetworkErrorKind.Timeout)
+        is java.net.UnknownHostException -> ApiException(NetworkErrorKind.UnknownHost)
+        is IOException -> ApiException(NetworkErrorKind.NetworkInterrupted, error.message)
         else -> error
     }
 
     private companion object {
         const val MAX_RETRIES = 2
+
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
