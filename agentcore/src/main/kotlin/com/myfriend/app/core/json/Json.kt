@@ -11,6 +11,15 @@ package com.myfriend.app.core.json
  *
  * 不做的事：不支持注释、单引号、尾逗号（宁可比宽松解析器更严格，坏请求直接 400，
  * 免得客户端把「格式错误」当成「服务端行为异常」）。
+ *
+ * 0.11.1 的加固（安全审计 P2-1 / 编解码健壮性）：解析器是唯一会把不可信字节变成对象的入口，
+ * 所以每个维度都有上限，超限一律抛 [JsonParseException]（带「哪个上限、多少」的明确文案）：
+ * - [MAX_DEPTH] 嵌套层数（已有，防止递归打爆栈）；
+ * - [MAX_STRING_LENGTH] 单个字符串字段（防止一个字段就把堆吃掉）；
+ * - [MAX_NUMBER_LENGTH] 数字字面量位数，且必须能表示为有限 double（`1e999` 这类直接拒）；
+ * - [MAX_CONTAINER_ENTRIES] 单个对象/数组的条目数；
+ * - 重复键直接拒（不静默「后者覆盖前者」：那会让不同解析器对同一份 JSON 得出不同结果）。
+ * 这些上限对真实请求/响应都有很大余量（HTTP 层还有 1 MiB 的请求体上限）。
  */
 sealed interface JsonValue {
     data class Obj(val fields: LinkedHashMap<String, JsonValue> = LinkedHashMap()) : JsonValue
@@ -42,7 +51,17 @@ class JsonParseException(message: String) : Exception(message)
 
 object Json {
 
-    private const val MAX_DEPTH = 64
+    /** 最大嵌套层数（对象/数组各算一层）。1000 层输入会得到 400 而不是 `StackOverflowError`。 */
+    const val MAX_DEPTH = 64
+
+    /** 单个字符串字段的最大字符数（转义解码后的长度）。 */
+    const val MAX_STRING_LENGTH = 256 * 1024
+
+    /** 数字字面量的最大字符数；超过或无法表示为有限 double 都拒。 */
+    const val MAX_NUMBER_LENGTH = 128
+
+    /** 单个对象/数组的最大条目数。 */
+    const val MAX_CONTAINER_ENTRIES = 16_384
 
     fun parse(text: String): JsonValue {
         val parser = Parser(text)
@@ -163,7 +182,11 @@ object Json {
                 skipWhitespace()
                 expect(':')
                 val value = parseValue(depth + 1)
+                if (obj.fields.containsKey(key)) fail("JSON 对象里有重复键")
                 obj.fields[key] = value
+                if (obj.fields.size > MAX_CONTAINER_ENTRIES) {
+                    fail("JSON 对象的键过多（上限 $MAX_CONTAINER_ENTRIES 个）")
+                }
                 skipWhitespace()
                 if (atEnd()) fail("对象没有闭合")
                 when (val ch = text[index]) {
@@ -187,6 +210,9 @@ object Json {
             }
             while (true) {
                 arr.items += parseValue(depth + 1)
+                if (arr.items.size > MAX_CONTAINER_ENTRIES) {
+                    fail("JSON 数组的元素过多（上限 $MAX_CONTAINER_ENTRIES 个）")
+                }
                 skipWhitespace()
                 if (atEnd()) fail("数组没有闭合")
                 when (val ch = text[index]) {
@@ -205,7 +231,8 @@ object Json {
             val out = StringBuilder()
             while (true) {
                 if (atEnd()) fail("字符串没有闭合")
-                when (val ch = text[index++]) {
+                val ch = text[index++]
+                when (ch) {
                     '"' -> return out.toString()
                     '\\' -> {
                         if (atEnd()) fail("字符串转义没有写完")
@@ -235,6 +262,9 @@ object Json {
                         out.append(ch)
                     }
                 }
+                if (out.length > MAX_STRING_LENGTH) {
+                    fail("字符串过长（上限 $MAX_STRING_LENGTH 个字符）")
+                }
             }
         }
 
@@ -260,7 +290,15 @@ object Json {
                 if (atEnd() || text[index] !in '0'..'9') fail("指数部分缺少数字")
                 while (!atEnd() && text[index] in '0'..'9') index++
             }
-            return JsonValue.Num(text.substring(start, index))
+            val raw = text.substring(start, index)
+            if (raw.length > MAX_NUMBER_LENGTH) {
+                fail("数字过长（上限 $MAX_NUMBER_LENGTH 位）")
+            }
+            // `1e999` / 300 位整数：语法上是 JSON 数字，但落不进 double（会变 Infinity）。
+            // 放它过去只会在下游变成 NaN/Infinity 或静默截断，所以在解析层就拒。
+            val asDouble = raw.toDoubleOrNull()
+            if (asDouble != null && !asDouble.isFinite()) fail("数字超出可表示范围")
+            return JsonValue.Num(raw)
         }
 
         private fun parseKeyword(word: String, value: JsonValue): JsonValue {

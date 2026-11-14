@@ -6,17 +6,17 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-909%20Android%20%7C%201098%20iOS%20%7C%2014%20agentcore%20%7C%2020%20agentd-brightgreen.svg)](#构建与测试)
+[![Tests](https://img.shields.io/badge/tests-970%20Android%20%7C%201187%20iOS%20%7C%2047%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#构建与测试)
 
 ## 项目状态
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.11.0`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
+| 版本 | `0.11.1`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
 | 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
 | 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 909 条（`:app:testDebugUnitTest`）、`:agentcore` 14 条、`:agentd` 20 条、iOS 1098 条（`swift test`） |
+| 单元测试 | Android 970 条（`:app:testDebugUnitTest`）、`:agentcore` 47 条、`:agentd` 34 条、iOS 1187 条（`swift test`） |
 | 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
 
 ## 特性概览

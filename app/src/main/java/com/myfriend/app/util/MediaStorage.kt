@@ -85,6 +85,58 @@ object MediaStorage {
         }
     }
 
+    /**
+     * 复制一张已经落盘的头像，给「复制人格」用（审计 P2-11 / 0.11.1）。
+     *
+     * 以前 `PersonaRepository.duplicate` 把 `avatarUri` 原样复制，两个 `personas` 行指向
+     * 同一个 `files/avatars/avatar-*.jpg`：删副本 / 给副本换头像都会走 `deleteAvatar(路径)`，
+     * 原人格的头像文件随之消失（界面退回色块，文件永久没了）。
+     *
+     * 这里复制成独立文件（新 UUID 文件名），失败返回 null（调用方退化成「副本没有头像」）。
+     *
+     * @param sourceUri `file://` 头像路径（来自当前人格行，可能为空）
+     */
+    suspend fun copyAvatar(context: Context, sourceUri: String?): String? = withContext(Dispatchers.IO) {
+        val value = sourceUri?.trim().orEmpty()
+        if (value.isEmpty()) return@withContext null
+        val source = fileOf(value) ?: return@withContext null
+        val dir = File(context.filesDir, AVATAR_DIR).apply { mkdirs() }
+        val copied = copyAvatarFile(source, dir) ?: return@withContext null
+        Uri.fromFile(copied).toString()
+    }
+
+    /**
+     * 纯文件复制（不碰 `android.net.Uri`，单测可以直接传临时目录）。
+     *
+     * 只复制 `files/avatars` 里的文件、且只写回 `files/avatars`：源路径是「数据即代码」的输入面，
+     * 不能让它把沙盒里的任意文件复制成一张头像。
+     *
+     * @return 新文件；源不可信 / 复制失败时返回 null。
+     */
+    fun copyAvatarFile(
+        source: File,
+        avatarDir: File,
+        newName: String = "avatar-${UUID.randomUUID()}.jpg"
+    ): File? {
+        if (!source.isFile) return null
+        if (!MediaOwnership.isWithin(source, listOf(avatarDir))) return null
+        if (!BackupAvatarPath.isSafeName(newName)) return null
+        val target = File(avatarDir, newName)
+        if (!MediaOwnership.isWithin(target, listOf(avatarDir))) return null
+        if (target.exists()) return null
+        return runCatching {
+            source.inputStream().use { input ->
+                target.outputStream().use { output -> input.copyTo(output) }
+            }
+            if (target.isFile && target.length() > 0L) {
+                target
+            } else {
+                target.delete()
+                null
+            }
+        }.getOrNull()
+    }
+
     /** 读原图尺寸，不解码像素。读不到返回 null。 */
     private fun readImageBounds(context: Context, source: Uri): Pair<Int, Int>? {
         val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -383,7 +435,16 @@ object MediaStorage {
         if (longest <= 0) return null
         while (longest / sample > targetEdge * 2) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
-        return runCatching { BitmapFactory.decodeFile(file.path, options) }.getOrNull()
+        val decoded = runCatching { BitmapFactory.decodeFile(file.path, options) }.getOrNull() ?: return null
+        // 审计 P2-10（0.11.1）：粗采样只保证不超过 targetEdge 的 2 倍（4000px → 2000px），
+        // API 26–27 上没有 ImageDecoder，必须再缩一次才真的落到「长边 ≤ 1024」，
+        // 否则内存峰值是 1024 预算的 4 倍，单张字节预算也更容易压不进去。
+        val target = ImageContextBudget.scaledSize(decoded.width, decoded.height, targetEdge) ?: return decoded
+        val scaled = runCatching {
+            Bitmap.createScaledBitmap(decoded, target.first, target.second, true)
+        }.getOrDefault(decoded)
+        if (scaled !== decoded) decoded.recycle()
+        return scaled
     }
 
     /** JPEG 没有透明通道：带 alpha 的图先垫一层白底，免得截图/贴纸变成全黑。 */

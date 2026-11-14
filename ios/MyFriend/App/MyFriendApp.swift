@@ -22,6 +22,11 @@ struct MyFriendApp: App {
         // 模拟器上系统不会执行这两种任务，`BackgroundScheduler` 会直接跳过注册；
         // 注册失败也不影响前台，一切只是「少了一次后台机会」。
         BackgroundScheduler.shared.register()
+        // 0.11.1 审计 P2-1：`remote-strict` 的失败必须可见。把决策层诊断接到 Debug 日志上
+        // （Release 包里 `DebugSeeding.log` 是空实现，但计数仍在 `AgentCoreDiagnostics` 里可查）。
+        AgentCoreDiagnostics.shared.setSink { message in
+            DebugSeeding.log(message)
+        }
     }
 
     var body: some Scene {

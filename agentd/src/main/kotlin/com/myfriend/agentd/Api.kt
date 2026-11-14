@@ -15,15 +15,30 @@ import com.myfriend.app.domain.SleepInput
  *
  * 这一层**不碰端口**：`handle()` 是一个纯函数（方法、路径、请求体 → 状态码、响应体），
  * 所以单元测试不用起服务器就能覆盖每一条路由、每一个错误分支。
- * 真正的 `HttpServer` 接线在 [AgentdServer] 里，只负责读写字节。
+ * 真正的 socket/HTTP 接线在 [AgentdServer] 里，只负责读写字节、请求体上限与鉴权。
  *
  * 错误统一是 `{"error":{"message":"…中文…","code":"…"}}` + 4xx/5xx；
  * 绝不静默返回 200（否则客户端会把「参数写错」当成「功能没实现」）。
+ *
+ * 0.11.1 的加固（安全审计 P2-1 / P2-2）：
+ * - 请求体上限 [MAX_BODY_BYTES]（1 MiB）：超了返回 413 `content_too_large`，不解析、不回显；
+ * - 错误文案上限 [MAX_ERROR_MESSAGE_CHARS]：任何错误体最多 512 个字符，客户端输入只出现在
+ *   固定的模板里（不再把工具名/路径原样拼回去），未知输入不回显原文；
+ * - 500 只回固定文案 + 一个随机 `errorId`，异常细节只写服务端 stderr（`errorId` 用来对照日志）。
  */
 object AgentdApi {
 
     const val SERVICE = "myfriend-agentd"
-    const val VERSION = "0.11.0"
+    const val VERSION = "0.11.1"
+
+    /** 请求体字节上限（HTTP 层与 handler 层共用这一份）。 */
+    const val MAX_BODY_BYTES = 1024 * 1024
+
+    /** 错误体里 `message` 的字符上限。 */
+    const val MAX_ERROR_MESSAGE_CHARS = 512
+
+    /** 回显客户端输入（路径等）时的字符上限；超出只留前缀，避免「发 1 份收 1 份」。 */
+    const val MAX_ECHO_CHARS = 64
 
     data class Response(val status: Int, val body: String)
 
@@ -33,6 +48,14 @@ object AgentdApi {
     fun handle(method: String, rawPath: String, body: String?): Response {
         val path = rawPath.substringBefore('?')
         val verb = method.uppercase()
+        // 直接在 handler 层也挡一次：测试与「有人绕过 AgentdServer 直接调 Api」时同样有上限。
+        if (body != null && body.toByteArray(Charsets.UTF_8).size > MAX_BODY_BYTES) {
+            return errorResponse(
+                413,
+                "content_too_large",
+                "请求体超过 ${MAX_BODY_BYTES / 1024} KiB 上限"
+            )
+        }
         return try {
             when (path) {
                 "/health" -> {
@@ -56,22 +79,22 @@ object AgentdApi {
         } catch (failure: ApiFailure) {
             errorResponse(failure.status, failure.code, failure.message ?: "请求不合法")
         } catch (invalid: JsonParseException) {
-            errorResponse(400, "invalid_json", "请求体不是合法 JSON：${invalid.message}")
+            errorResponse(400, "invalid_json", "请求体不是合法 JSON：${invalid.message.orEmpty()}")
         } catch (unexpected: Exception) {
-            errorResponse(500, "internal_error", "服务内部错误：${unexpected.message ?: unexpected::class.simpleName}")
+            unexpectedFailureResponse(unexpected)
         }
     }
 
     private fun routeCore(verb: String, path: String, body: String?): Response {
         // 路由表与客户端共用同一份常量（AgentCoreProtocol），改名时不会一边改一边漏。
-        if (path !in AgentCoreProtocol.CORE_PATHS) throw ApiFailure(404, "not_found", "没有这个接口：$path")
-        if (verb != "POST") throw ApiFailure(405, "method_not_allowed", "$path 只支持 POST")
+        if (path !in AgentCoreProtocol.CORE_PATHS) throw ApiFailure(404, "not_found", "没有这个接口")
+        if (verb != "POST") throw ApiFailure(405, "method_not_allowed", "${echo(path)} 只支持 POST")
         return when (path) {
             AgentCoreProtocol.SLEEP_DECISION_PATH -> sleepDecision(body)
             AgentCoreProtocol.DEFER_PLAN_PATH -> deferPlan(body)
             AgentCoreProtocol.PROACTIVE_CAP_PATH -> proactiveCap(body)
             AgentCoreProtocol.TOOL_ARGS_PATH -> toolArgs(body)
-            else -> throw ApiFailure(404, "not_found", "没有这个接口：$path")
+            else -> throw ApiFailure(404, "not_found", "没有这个接口")
         }
     }
 
@@ -153,7 +176,8 @@ object AgentdApi {
             else -> throw ApiFailure(
                 400,
                 "unknown_tool",
-                "不认识的工具：$tool（支持 remember / web_search / defer_reply）"
+                // 不回显工具名：它可能是几 MB 的客户端输入（审计 P2-1 的 2 MB 放大）。
+                "不认识的工具（支持 remember / web_search / defer_reply）"
             )
         }
         return Response(200, Json.stringify(JsonValue.Obj(linkedMapOf("args" to JsonValue.Obj(out)))))
@@ -171,6 +195,17 @@ object AgentdApi {
 
     // ------------------------------------------------------------------ 错误与取值
 
+    /**
+     * 500 分支的对外文案：固定模板 + 随机编号，异常细节只进 stderr 日志。
+     *
+     * `internal` 是为了让测试直接钉住「不泄漏异常文本」这条规则（不用先构造一个真能抛异常的请求）。
+     */
+    internal fun unexpectedFailureResponse(failure: Exception): Response {
+        val errorId = newErrorId()
+        logInternalError(errorId, failure)
+        return errorResponse(500, "internal_error", "服务内部错误（错误编号 $errorId）")
+    }
+
     private fun errorResponse(status: Int, code: String, message: String): Response = Response(
         status,
         Json.stringify(
@@ -178,7 +213,7 @@ object AgentdApi {
                 linkedMapOf(
                     "error" to JsonValue.Obj(
                         linkedMapOf(
-                            "message" to JsonValue.Str(message),
+                            "message" to JsonValue.Str(truncate(message, MAX_ERROR_MESSAGE_CHARS)),
                             "code" to JsonValue.Str(code)
                         )
                     )
@@ -186,6 +221,21 @@ object AgentdApi {
             )
         )
     )
+
+    /** 回显客户端输入前的截断（路径等）；超出上限只留前缀。 */
+    private fun echo(text: String): String = truncate(text, MAX_ECHO_CHARS)
+
+    private fun truncate(text: String, max: Int): String =
+        if (text.length <= max) text else text.take(max) + "…"
+
+    /** 内部错误编号：只用来在 stderr 日志里对照，不含任何内部信息。 */
+    private fun newErrorId(): String = java.util.UUID.randomUUID().toString().take(8)
+
+    /** 异常细节只写服务端日志；响应里只有编号。 */
+    private fun logInternalError(errorId: String, failure: Exception) {
+        System.err.println("[agentd] 内部错误 $errorId：${failure::class.qualifiedName}")
+        failure.printStackTrace(System.err)
+    }
 
     private fun requestObject(body: String?): JsonValue.Obj {
         if (body.isNullOrBlank()) throw ApiFailure(400, "empty_body", "请求体不能为空")

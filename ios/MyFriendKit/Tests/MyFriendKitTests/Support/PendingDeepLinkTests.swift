@@ -88,6 +88,23 @@ final class PendingDeepLinkTests: XCTestCase {
     }
 
     /// 换一个键也不会和别的库串（默认键带 App 前缀）。
+    // MARK: - 打开前校验会话存在（0.11.1 审计 P2-2）
+
+    /// 会话还在：取走并返回；键被清掉（消费即清）。
+    func testConsumeIfSessionExistsReturnsExistingSession() {
+        XCTAssertTrue(pending.stage("session-1"))
+        XCTAssertEqual(pending.consumeIfSessionExists { $0 == "session-1" }, "session-1")
+        XCTAssertNil(pending.peek(), "消费之后必须清键，否则下次冷启动会再跳一次")
+    }
+
+    /// 会话已经被删（清空数据 / 删人格）：丢弃并回首页，但**同样消费即清**。
+    func testConsumeIfSessionExistsDropsMissingSessionButStillClears() {
+        XCTAssertTrue(pending.stage("session-gone"))
+        XCTAssertNil(pending.consumeIfSessionExists { _ in false })
+        XCTAssertNil(pending.peek(), "不存在的会话也不能把键留着")
+        XCTAssertNil(pending.consume())
+    }
+
     func testCustomKeyIsUsed() {
         let custom = PendingDeepLink(storage: storage, key: "other.key")
         custom.stage("session-x")

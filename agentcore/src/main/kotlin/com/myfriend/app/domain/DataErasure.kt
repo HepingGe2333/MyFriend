@@ -29,6 +29,14 @@ enum class ErasableTable(val tableName: String) {
     MEMORY_VECTORS("memory_vectors"),
     AGENT_TICKS("agent_ticks"),
     AGENT_INTENTS("agent_intents"),
+    /**
+     * 模型调用的 token 流水（personaId / sessionId / 模型名）。
+     *
+     * 审计 P2-4（0.11.1）：0.10.2 的清单漏了这张表，「删除全部数据」只是靠
+     * `SettingsViewModel` 记得额外调一次 `apiUsageRepository.wipe()`；
+     * `wipeAllData()` 本身并不是「整库」。现在纳入清单，任何调用方都删得干净。
+     */
+    API_USAGE("api_usage"),
     PERSONA_PENDING_PATCHES("persona_pending_patches"),
     PERSONA_REVISIONS("persona_revisions"),
     PROACTIVE_RULES("proactive_rules"),
@@ -89,6 +97,7 @@ object ErasurePlan {
             ErasableTable.MEMORY_VECTORS,
             ErasableTable.AGENT_TICKS,
             ErasableTable.AGENT_INTENTS,
+            ErasableTable.API_USAGE,
             ErasableTable.PERSONA_PENDING_PATCHES,
             ErasableTable.PERSONA_REVISIONS,
             ErasableTable.PROACTIVE_RULES,
@@ -188,12 +197,64 @@ interface ErasureFiles {
     fun clearUnreferencedAvatars(keep: Set<String>): Int
 }
 
+/**
+ * 「提交之后才能做」的文件清理（审计 P1-4 / 0.11.1）。
+ *
+ * 删文件是**不可回滚**的副作用：在 `withTransaction` 里删掉之后，事务一旦回滚，
+ * 数据库里的消息/人格回来了、`files/media/chat-*.jpg` 与 `files/avatars/avatar-*.jpg`
+ * 却已经永久消失——用户看到「导入失败，本机没变」，实际丢了一批图片。
+ *
+ * 所以「在调用方事务里执行」的两个入口（[DataEraser.deletePersonaInsideTransaction] /
+ * [DataEraser.replaceForBackupInsideTransaction]）只把要删的路径收集到这里，
+ * 由调用方在事务**提交成功之后**交给 [DataEraser.commitFiles] 执行。
+ * 事务失败时这些动作根本不会跑，文件保持原样。
+ */
+sealed interface ErasureFileCleanup {
+
+    /** 执行清理，返回删掉的文件数。 */
+    fun run(files: ErasureFiles): Int
+
+    /** 清空聊天与记忆：只删聊天图片。 */
+    data object ChatImages : ErasureFileCleanup {
+        override fun run(files: ErasureFiles): Int = files.clearChatImages()
+    }
+
+    /** 删除全部数据：整棵媒体目录。 */
+    data object AllMedia : ErasureFileCleanup {
+        override fun run(files: ErasureFiles): Int = files.clearAllMedia()
+    }
+
+    /** 删一个人格：他的聊天图片 + 他的头像。 */
+    data class PersonaMedia(
+        val attachments: List<String>,
+        val avatarUri: String?
+    ) : ErasureFileCleanup {
+        override fun run(files: ErasureFiles): Int =
+            files.deleteChatImages(attachments) + files.deleteAvatar(avatarUri)
+    }
+
+    /** 备份替换：旧聊天图片 + 按引用回收孤儿头像。 */
+    data class BackupReplace(
+        val keepAvatarUris: Set<String>
+    ) : ErasureFileCleanup {
+        override fun run(files: ErasureFiles): Int =
+            files.clearChatImages() + files.clearUnreferencedAvatars(keepAvatarUris)
+    }
+}
+
 /** 一次清理的结果，给日志和测试对账用。 */
 data class ErasureReport(
     val path: ErasurePath,
     val tables: List<ErasableTable>,
     val personaId: String? = null,
-    val filesCleared: Int = 0
+    val filesCleared: Int = 0,
+    /**
+     * 还没执行的文件清理（只有「在调用方事务里」的入口会留下它）。
+     *
+     * 必须等数据库事务提交成功后再用 [DataEraser.commitFiles] 执行；
+     * 直接丢掉它只会留下孤儿文件（不丢数据），绝不能挪回事务里去删。
+     */
+    val pendingFiles: ErasureFileCleanup? = null
 )
 
 /**
@@ -201,7 +262,9 @@ data class ErasureReport(
  *
  * 设计要点：
  * 1. **清单只有一份**（[ErasurePlan]），加一张含用户原文的表只需要改那里；
- * 2. 表删除在一个事务里（生产实现是 Room `withTransaction`），文件删除在事务之外；
+ * 2. 表删除在一个事务里（生产实现是 Room `withTransaction`），文件删除**只在事务提交之后**
+ *    （[ErasureFileCleanup] + [commitFiles]）——0.11.0 之前备份替换/删人格在事务里就删了文件，
+ *    回滚后数据库回来了、文件却再也回不来（审计 P1-4）；
  * 3. 不抛「部分失败」：删不掉就整次失败，界面照实报错——隐私承诺不能假装成功。
  *
  * 这个类不依赖 Android/Hilt（因此住在 `:agentcore`，Android 与 `agentd` 共用同一份实现），
@@ -214,15 +277,11 @@ class DataEraser(
 
     /** 「清空全部聊天与记忆」：人格与 API 配置保留，记忆派生表与聊天图片一起清。 */
     suspend fun clearChatsAndMemories(): ErasureReport =
-        erase(ErasurePath.CLEAR_CHATS, personaId = null) {
-            files.clearChatImages()
-        }
+        erase(ErasurePath.CLEAR_CHATS, personaId = null, cleanup = ErasureFileCleanup.ChatImages)
 
     /** 「删除全部本地数据」：整库 + 全部媒体文件。 */
     suspend fun wipeAllData(): ErasureReport =
-        erase(ErasurePath.WIPE_ALL, personaId = null) {
-            files.clearAllMedia()
-        }
+        erase(ErasurePath.WIPE_ALL, personaId = null, cleanup = ErasureFileCleanup.AllMedia)
 
     /**
      * 删除一个联系人（独立调用版，会自己开事务）：这个人的行 + 他的聊天图片 + 他的头像。
@@ -230,72 +289,80 @@ class DataEraser(
      * 附件与头像路径会在删除之前取出来：消息删掉之后就查不到了。
      */
     suspend fun deletePersona(personaId: String): ErasureReport =
-        store.inTransaction {
-            deletePersonaInsideTransaction(personaId)
-        }
+        commitFiles(store.inTransaction { deletePersonaInsideTransaction(personaId) })
 
     /**
-     * 备份「替换」导入之前清空本机。
+     * 备份「替换」导入之前清空本机，**在调用方已有的事务里执行**。
      *
-     * 只清聊天图片：备份不携带附件（导入时已经按 warning 丢弃），旧图片留着纯属残留；
-     * 头像与聊天背景不动——备份里的 `avatarUri` 可能就指向本机 `files/avatars` 里
-     * 仍然有效的文件，先清目录会把「刚接回来」的头像一起删掉。
-     *
-     * **必须在调用方已有的事务里执行**（见 [_replaceForBackup]）：备份导入是
-     * 「清空 + 写回」一个事务，清空再单独开事务会破坏原子性。
+     * 备份导入是「清空 + 写回」一个事务，清空再单独开事务会破坏原子性。
+     * 本函数**不碰文件**：只把「旧聊天图片 + 按引用回收孤儿头像」记进
+     * [ErasureReport.pendingFiles]，调用方在 `withTransaction` 提交成功之后调
+     * [commitFiles] 执行（审计 P1-4：事务回滚时文件必须还在）。
      */
     suspend fun replaceForBackupInsideTransaction(keepAvatarUris: Set<String> = emptySet()): ErasureReport =
         _replaceForBackup(keepAvatarUris)
 
     /**
-     * 独立调用版（会自己开事务）。
+     * 独立调用版（会自己开事务，并在提交之后删文件）。
      *
      * 给不便把整段逻辑放进一个事务的调用方用；备份导入走
-     * [replaceForBackupInsideTransaction]。
+     * [replaceForBackupInsideTransaction] + [commitFiles]。
      */
     suspend fun replaceForBackup(keepAvatarUris: Set<String> = emptySet()): ErasureReport =
-        erase(ErasurePath.BACKUP_REPLACE, personaId = null) {
-            files.clearChatImages() + files.clearUnreferencedAvatars(keepAvatarUris)
-        }
+        commitFiles(store.inTransaction { replaceForBackupInsideTransaction(keepAvatarUris) })
 
     /**
      * 删一个联系人，**在调用方已有的事务里**执行（PersonaRepository 还要接着重置默认人格 /
      * activePersonaId，这些必须与删除同属一个事务）。
+     *
+     * 同样不碰文件：附件与头像路径被收集进 [ErasureReport.pendingFiles]。
      */
     suspend fun deletePersonaInsideTransaction(personaId: String): ErasureReport {
+        val tables = ErasurePlan.tables(ErasurePath.DELETE_PERSONA)
+        // 附件与头像路径必须在删行之前取出：行删掉之后就查不到了。
         val attachments = store.attachmentsOfPersona(personaId)
         val avatar = store.avatarUriOf(personaId)
-        return _deletePersona(personaId, attachments, avatar)
+        tables.forEach { table -> store.delete(table, personaId) }
+        return ErasureReport(
+            path = ErasurePath.DELETE_PERSONA,
+            tables = tables,
+            personaId = personaId,
+            pendingFiles = ErasureFileCleanup.PersonaMedia(attachments, avatar)
+        )
+    }
+
+    /**
+     * 数据库事务**提交成功之后**再执行文件清理（审计 P1-4）。
+     *
+     * 事务回滚时调用方走不到这里，所以「库回来了、文件没了」不会发生；
+     * 反过来（库没了、文件还在）最多留下一批孤儿文件，重试一次即可。
+     */
+    suspend fun commitFiles(report: ErasureReport): ErasureReport {
+        val pending = report.pendingFiles ?: return report
+        val cleared = pending.run(files)
+        return report.copy(filesCleared = report.filesCleared + cleared, pendingFiles = null)
     }
 
     private suspend fun _replaceForBackup(keepAvatarUris: Set<String>): ErasureReport {
         val tables = ErasurePlan.tables(ErasurePath.BACKUP_REPLACE)
         tables.forEach { table -> store.delete(table, personaId = null) }
-        val filesCleared = files.clearChatImages() + files.clearUnreferencedAvatars(keepAvatarUris)
-        return ErasureReport(ErasurePath.BACKUP_REPLACE, tables, null, filesCleared)
-    }
-
-    private suspend fun _deletePersona(
-        personaId: String,
-        attachments: List<String>,
-        avatar: String?
-    ): ErasureReport {
-        val tables = ErasurePlan.tables(ErasurePath.DELETE_PERSONA)
-        tables.forEach { table -> store.delete(table, personaId) }
-        val filesCleared = files.deleteChatImages(attachments) + files.deleteAvatar(avatar)
-        return ErasureReport(ErasurePath.DELETE_PERSONA, tables, personaId, filesCleared)
+        return ErasureReport(
+            path = ErasurePath.BACKUP_REPLACE,
+            tables = tables,
+            pendingFiles = ErasureFileCleanup.BackupReplace(keepAvatarUris)
+        )
     }
 
     private suspend fun erase(
         path: ErasurePath,
         personaId: String?,
-        deleteFiles: (() -> Int)? = null
+        cleanup: ErasureFileCleanup
     ): ErasureReport {
         val tables = ErasurePlan.tables(path)
         store.inTransaction {
             tables.forEach { table -> store.delete(table, personaId) }
         }
-        val filesCleared = deleteFiles?.invoke() ?: 0
+        val filesCleared = cleanup.run(files)
         return ErasureReport(path, tables, personaId, filesCleared)
     }
 }

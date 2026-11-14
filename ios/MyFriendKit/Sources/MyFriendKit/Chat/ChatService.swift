@@ -493,8 +493,16 @@ public final class ChatService {
                 userMessagesInWindow: recentUserCount,
                 wakeThreshold: persona.wakeThreshold
             )
-            let sleepDecision = (try? await agentCore.sleepDecision(sleepInput))?.replyDecision
-                ?? NativeAgentCoreClient().sleepDecisionNow(sleepInput).replyDecision
+            // 0.11.1 审计 P2-1：严格模式（`remote-strict`）的失败必须被看见。`decide` 在严格模式
+            // 下记一条可见诊断后把错误原样抛出 —— 于是聊天会显示「生成失败」，而不是静默换成
+            // 本机判定（那会让「agentd 真的被用上了」的联调验收变成假阳性）。
+            // 普通 `remote` 模式仍静默回退本机（每次失败由 `FallbackAgentCoreClient` 记日志）。
+            let sleepDecision = try await agentCore.decide(
+                endpoint: "sleep-decision",
+                nativeFallback: { NativeAgentCoreClient().sleepDecisionNow(sleepInput).replyDecision }
+            ) {
+                try await agentCore.sleepDecision(sleepInput).replyDecision
+            }
             guard sleepDecision.shouldReply else {
                 if sleepDecision.marksRead {
                     // 看到了就是已读 —— 哪怕这一轮不回。免打扰是唯一的例外（§6.2）。
@@ -603,11 +611,18 @@ public final class ChatService {
                     let deferReason = deferred.argument("reason")
                     // 0.11.0：夹取 / trim / 窗口计算走 agent 决策层（`/v1/core/defer-plan`）。
                     // 失败时的兜底只为「严格远程」联调模式准备，正常装配下有 Fallback 顶着。
-                    let plan = (try? await agentCore.deferPlan(
-                        minutes: deferMinutes, reason: deferReason, now: deferAt
-                    )) ?? NativeAgentCoreClient().deferPlanNow(
-                        minutes: deferMinutes, reason: deferReason, now: deferAt
-                    )
+                    let plan = try await agentCore.decide(
+                        endpoint: "defer-plan",
+                        nativeFallback: {
+                            NativeAgentCoreClient().deferPlanNow(
+                                minutes: deferMinutes, reason: deferReason, now: deferAt
+                            )
+                        }
+                    ) {
+                        try await agentCore.deferPlan(
+                            minutes: deferMinutes, reason: deferReason, now: deferAt
+                        )
+                    }
                     rhythm?.handleDeferredReply(
                         personaId: persona.id, sessionId: sessionId,
                         plan: plan, at: deferAt

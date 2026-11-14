@@ -23,10 +23,12 @@ import com.myfriend.app.domain.BackupDecodeResult
 import com.myfriend.app.domain.BackupPreview
 import com.myfriend.app.domain.BackupSettings
 import com.myfriend.app.domain.BackupFailure
+import com.myfriend.app.domain.BackupIntegrity
 import com.myfriend.app.domain.BackupWarning
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ChineseTerms
 import com.myfriend.app.domain.DataEraser
+import com.myfriend.app.domain.SessionGenerationRegistry
 import com.myfriend.app.domain.backupFileName
 import com.myfriend.app.domain.mergeInto
 import com.myfriend.app.domain.toAppSettings
@@ -46,7 +48,9 @@ import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import com.myfriend.app.domain.toNewEntity
 import android.content.Context
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -122,6 +126,10 @@ class BackupRepository @Inject constructor(
     private val apiConfigRepository: ApiConfigRepository,
     private val dataEraser: DataEraser,
     private val settingsRepository: SettingsRepository,
+    /** 备份「替换」前要 bump 所有会复用 sessionId 的世代（审计 P2-3）。 */
+    private val sessionGeneration: SessionGenerationRegistry,
+    /** 取消在跑的生成：替换时本机会话会被清掉，收尾写入不能落进刚恢复的会话。 */
+    private val chatRepository: ChatRepository,
     /** 头像文件在应用私有目录里，导入时要按名字去查（安全 P2-5）。 */
     @ApplicationContext private val appContext: Context
 ) {
@@ -132,9 +140,11 @@ class BackupRepository @Inject constructor(
     /**
      * 把「他」收集成一份可以带走的 JSON 文本。
      *
-     * 大文本由调用方切到 IO 线程去写文件，这里只负责组装。
+     * 审计 P1-3 / 0.11.1：读库（每人一次消息查询）、实体→备份结构映射、JSON 编码
+     * 全在 `Dispatchers.IO` 上；64MB 上限让「主线程做这些」变成可达的 ANR。
+     * 写文件仍由调用方负责（SAF 输出流）。
      */
-    suspend fun exportJson(): String {
+    suspend fun exportJson(): String = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val personas = personaDao.getAll()
         // 一人一段：即使库外数据（旧备份、手工 SQL）塞进来多段，导出也只带最新那段。
@@ -187,7 +197,7 @@ class BackupRepository @Inject constructor(
         val encoded = BackupCodec.encode(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if (BackupCodec.containsSecretField(encoded)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
-        return encoded
+        encoded
     }
 
     /**
@@ -195,22 +205,44 @@ class BackupRepository @Inject constructor(
      *
      * 界面上先让用户确认「几个人格、多少条记忆、多少句话」，再决定合并还是替换。
      */
-    fun preview(raw: String): BackupDecodeResult = BackupCodec.decode(raw)
-
-    /** 预览用的一行摘要（读不懂时返回 null，原因走 [preview]）。 */
-    fun previewOf(raw: String): BackupPreview? =
-        (preview(raw) as? BackupDecodeResult.Success)?.let { BackupPreview.from(it.bundle) }
-
-    /** 从 JSON 文本把他接回来。读不懂就抛 [BackupImportException]，库里什么都不改。 */
-    suspend fun importJson(raw: String, mode: ImportMode): ImportSummary {
-        return when (val decoded = BackupCodec.decode(raw)) {
-            is BackupDecodeResult.Failure -> throw BackupImportException(decoded.reason)
+    suspend fun preview(raw: String): BackupDecodeResult = withContext(Dispatchers.IO) {
+        // 审计 P1-3：JSON 解析 + DOM 构造 + 逐段反序列化可能几十到几百毫秒（上限 64MB），
+        // 不能占着主线程。这里顺手把「结构不完整」也提前算出来，预览对话框先提醒一句。
+        when (val decoded = BackupCodec.decode(raw)) {
+            is BackupDecodeResult.Failure -> decoded
             is BackupDecodeResult.Success -> {
-                val summary = importBundle(decoded.bundle, mode)
-                summary.copy(warnings = decoded.warnings + summary.warnings)
+                val holes = BackupIntegrity.check(decoded.bundle)
+                if (holes.isClean) {
+                    decoded
+                } else {
+                    decoded.copy(
+                        warnings = decoded.warnings + BackupWarning.IncompleteReferences(holes.total)
+                    )
+                }
             }
         }
     }
+
+    /** 预览用的一行摘要（读不懂时返回 null，原因走 [preview]）。 */
+    suspend fun previewOf(raw: String): BackupPreview? =
+        (preview(raw) as? BackupDecodeResult.Success)?.let { BackupPreview.from(it.bundle) }
+
+    /**
+     * 从 JSON 文本把他接回来。读不懂就抛 [BackupImportException]，库里什么都不改。
+     *
+     * 整段（解析 + 映射 + 写库）在 `Dispatchers.IO` 上：Room 事务自己会切线程，
+     * 但「解码 + 结构映射」是纯 CPU 活，留在 `viewModelScope`（Main）上就是一段 ANR 风险。
+     */
+    suspend fun importJson(raw: String, mode: ImportMode): ImportSummary =
+        withContext(Dispatchers.IO) {
+            when (val decoded = BackupCodec.decode(raw)) {
+                is BackupDecodeResult.Failure -> throw BackupImportException(decoded.reason)
+                is BackupDecodeResult.Success -> {
+                    val summary = importBundle(decoded.bundle, mode)
+                    summary.copy(warnings = decoded.warnings + summary.warnings)
+                }
+            }
+        }
 
     /**
      * 把已经解码好的备份写进库。
@@ -222,6 +254,25 @@ class BackupRepository @Inject constructor(
     suspend fun importBundle(bundle: BackupBundle, mode: ImportMode): ImportSummary {
         val warnings = mutableListOf<BackupWarning>()
         var skipped = 0
+
+        // 一人一段：备份里同一人格有多条时只保留最新一条（规格 §八）。
+        // v1 备份可能着带好几段，v2 之后的备份不该有；这里统一按「保留最新」处理。
+        val latestSessions = BackupIntegrity.sessionsToRestore(bundle)
+
+        // 引用完整性闸（审计 P1-2 / 0.11.1）：**在 database.withTransaction 之前**算清
+        // 「这份备份能落成什么」。消息找不到会话、会话/记忆/规则/念头找不到人格时整份拒绝，
+        // 绝不先清空本机再把这些行丢掉（那是「本机没了、备份也没接回来」）。
+        BackupIntegrity.rejectionOf(bundle)?.let { failure ->
+            throw BackupImportException(failure)
+        }
+        // 「替换」不能拿一份四个主段全空的备份把本机清成空（界面本来也不给这个按钮，
+        // 这里挡住绕过界面的调用方）。
+        if (mode == ImportMode.REPLACE && BackupIntegrity.isEffectivelyEmpty(bundle)) {
+            userError(DomainErrorCode.BACKUP_EMPTY)
+        }
+        if (latestSessions.size != bundle.sessions.size) {
+            warnings += BackupWarning.ExtraSessions(bundle.sessions.size - latestSessions.size)
+        }
 
         // 备份里的头像只有文件名（安全 P2-5）：按名字看本机 files/avatars 里有没有同名文件。
         // 有 → 恢复成本机路径；没有（换设备的常态）→ 清空并记一条导入提醒，
@@ -236,19 +287,15 @@ class BackupRepository @Inject constructor(
         }
         val memories = bundle.memories.map { it.toEntity() }
         val sessions = bundle.sessions.map { it.toEntity() }
-        val presets = bundle.presets.map { it.toEntity() }
+        // 预设头像与人格同一策略（安全 P2-6 / 审计 P2-8）：备份里只有文件名，
+        // 本机有同名文件才恢复成本机路径，否则清空——不把外来绝对路径原样写进 presets。
+        val presets = bundle.presets.map { preset ->
+            val localAvatar = MediaStorage.resolveImportedAvatar(appContext, preset.avatarUri)
+            preset.copy(avatarUri = localAvatar).toEntity()
+        }
         val rules = bundle.proactiveRules.map { it.toEntity() }
         val intents = bundle.agentIntents.map { it.toEntity() }
         val consolidations = bundle.memoryConsolidations.map { it.toEntity() }
-
-        // 一人一段：备份里同一人格有多条时只保留最新一条（规格 §八）。
-        // v1 备份可能着带好几段，v2 之后的备份不该有；这里统一按「保留最新」处理。
-        val latestSessions = bundle.sessions
-            .groupBy { it.personaId }
-            .mapNotNull { (_, list) -> list.maxByOrNull { (it.lastMessageAt ?: it.updatedAt) } }
-        if (latestSessions.size != bundle.sessions.size) {
-            warnings += BackupWarning.ExtraSessions(bundle.sessions.size - latestSessions.size)
-        }
 
         // 合并模式下，如果本机已经有这个人的会话，就把备份里的那段落回本机那一段（保留本机 sessionId），
         // 否则唯一索引会让 REPLACE 把本机会话整行删掉，本机消息就成了孤儿。
@@ -294,15 +341,34 @@ class BackupRepository @Inject constructor(
         if (messagesWithAttachments > 0) {
             warnings += BackupWarning.AttachmentsDropped(messagesWithAttachments)
         }
-        database.withTransaction {
-            if (mode == ImportMode.REPLACE) {
+        // 审计 P2-3（0.11.1）：替换会清空本机、再从备份插回**同一个 sessionId**。
+        // 在途生成的收尾（saveInterrupted / saveFailed / save）持有的是 bump 前的世代，
+        // 如果不作废，就会把「用旧上下文生成的半截回复」写进刚恢复的会话。
+        // 放在所有闸门之后、进事务之前：被拒绝的备份不该顺手打断一段正常的在途回复。
+        // （世代号同时也让 HistoryCompressor 的 CompressionWriteGuard 丢弃旧摘要。）
+        if (mode == ImportMode.REPLACE) {
+            val doomed = buildSet {
+                sessionDao.getAll().forEach { add(it.id) }
+                latestSessions.forEach { add(it.id) }
+            }
+            doomed.forEach { sessionId ->
+                sessionGeneration.bump(sessionId)
+                chatRepository.cancelGeneration(sessionId)
+            }
+        }
+
+        val erasure = database.withTransaction {
+            val cleared = if (mode == ImportMode.REPLACE) {
                 // 0.10.2：清空清单统一收在 DataEraser（与「清空聊天与记忆 / 删除全部数据 / 删人格」
                 // 共用 ErasurePlan），这里不再手写一份——以前漏的 agent_ticks / memory_vectors /
                 // persona_pending_patches / 聊天图片文件都在那份清单里。
                 // 注意：API 配置从不删（Key 只在本机），所以 ErasurePlan.BACKUP_REPLACE 不含它。
                 // 用 InsideTransaction 变体：本函数已经在 database.withTransaction 里，
                 // 不再嵌套开事务（清空 + 写回必须同属一个原子操作）。
+                // 它只删表、只收集待删文件；文件在事务提交之后才删（审计 P1-4）。
                 dataEraser.replaceForBackupInsideTransaction(keepAvatarUris)
+            } else {
+                null
             }
 
             personaDao.insertAll(personas)
@@ -346,7 +412,11 @@ class BackupRepository @Inject constructor(
             }
             if (addressKept > 0) warnings += BackupWarning.ApiConfigAddressKept(addressKept)
             if (insecureIgnored > 0) warnings += BackupWarning.ApiConfigInsecureIgnored(insecureIgnored)
+            cleared
         }
+        // 事务已经提交：现在才删媒体文件（审计 P1-4）。失败最多留下孤儿文件，
+        // 不能让「他已经被替换接回来」的导入再报一次失败。
+        erasure?.let { report -> runCatching { dataEraser.commitFiles(report) } }
 
         val configsMissingKey = bundle.apiConfigs.count { config ->
             apiConfigDao.getById(config.id)?.let { it.apiKeyCipher.isNullOrBlank() } ?: true

@@ -129,6 +129,13 @@ public final class BackupService {
     /// 与**解析之前**（UTF-8 字节数）两道，任何一道超限都直接拒绝并给本地化文案。
     public static let maxImportBytes = 64 * 1024 * 1024
 
+    /// 导出的体积上限：与导入同一个数字（0.11.1 审计 P1-4）。
+    ///
+    /// 以前导出没有上限、导入有 64 MB 闸：聊天量大时能导出一份「自己导不回来」的备份，
+    /// 而用户到换机那天才发现 —— 唯一的迁移手段变成死文件。现在导出到上限就明确报错
+    /// （`export()` 抛 `BackupImportError`，界面显示「没能把他带走」），绝不返回半份 JSON。
+    public static let maxExportBytes = maxImportBytes
+
     /// 每个人格最多带多少条「整理过记忆」的留痕。
     public static let exportConsolidationsPerPersona = 20
     /// 每个人格最多带多少条还没过期的念头。
@@ -141,6 +148,10 @@ public final class BackupService {
     private let now: () -> Int64
     /// 备份里的头像路径还能不能落到一个真实文件上（测试可注入临时目录）。
     private let avatarFileExists: (String) -> Bool
+    /// 导入时把「裸文件名」拼回哪个附件目录（默认与 `MediaStorage.shared` 同一个）。
+    private let mediaDirectory: URL
+    /// 导出体积上限（单测注入一个小值，不必真的造 64 MB 数据）。
+    private let exportLimitBytes: Int
 
     public init(
         stores: DatabaseStores,
@@ -148,6 +159,8 @@ public final class BackupService {
         vectorIndex: MemoryVectorIndex? = nil,
         appVersion: String = "",
         avatarFileExists: @escaping (String) -> Bool = { MediaStorage.shared.exists(uriString: $0) },
+        mediaDirectory: URL = MediaStorage.shared.directory,
+        exportLimitBytes: Int = BackupService.maxExportBytes,
         now: @escaping () -> Int64 = { DomainClock.nowMillis }
     ) {
         self.stores = stores
@@ -155,6 +168,8 @@ public final class BackupService {
         self.vectorIndex = vectorIndex ?? MemoryVectorIndex(stores: stores, now: now)
         self.appVersion = appVersion
         self.avatarFileExists = avatarFileExists
+        self.mediaDirectory = mediaDirectory
+        self.exportLimitBytes = exportLimitBytes
         self.now = now
     }
 
@@ -213,6 +228,11 @@ public final class BackupService {
         if BackupCodec.containsSecretField(encoded) {
             throw BackupImportError(String(localized: "备份里出现了密钥字段，已中止导出"))
         }
+        // 0.11.1 审计 P1-4：导出与导入的尺寸口径必须一致。超限时**抛错**（调用点不会拿到
+        // 半份 JSON、更不会写出文件），而不是让用户拿到一份自己导不回来的备份。
+        guard encoded.utf8.count <= exportLimitBytes else {
+            throw BackupImportError(Self.tooLargeExportMessage(limitBytes: exportLimitBytes))
+        }
         return encoded
     }
 
@@ -228,24 +248,49 @@ public final class BackupService {
         preview(fileText: fileText).bundle.map(BackupPreview.from)
     }
 
-    /// 读一个备份文件的内容（导入前的第一道闸：先看大小，再读文本）。
+    /// 读一个备份文件的内容（导入前的第一道闸：先看大小，再分块读文本）。
     ///
     /// 为什么不让界面自己 `String(contentsOf:)`：那样整份文件已经进内存了，
     /// 「超限拒绝」只能发生在 OOM 之后（0.10.2 安全审计 P2-3）。
     public func readBackupText(at url: URL, fileManager: FileManager = .default) throws -> String {
+        try Self.readBoundedText(at: url, fileManager: fileManager)
+    }
+
+    /// 有界读文件（静态版：`BackupImportLoader` 要在后台线程里直接调用它，不持有 service）。
+    ///
+    /// 0.11.1 审计 P2-4：原来用 `String(contentsOf:)` 整份读，文件属性拿不到大小时
+    /// （网络卷 / 文件 Provider）等于没有第一道闸。现在按 64 KB 分块读，读满上限立刻中止；
+    /// UTF-8 解码也只发生一次。
+    public static func readBoundedText(
+        at url: URL,
+        fileManager: FileManager = .default,
+        maxBytes: Int = BackupService.maxImportBytes
+    ) throws -> String {
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
-        if let bytes = size?.intValue, bytes > Self.maxImportBytes {
+        if let bytes = size?.intValue, bytes > maxBytes {
             throw BackupImportError(Self.tooLargeMessage)
         }
-        let text: String
+        guard let handle = try? FileHandle(forReadingFrom: url) else {
+            throw BackupImportError(String(localized: "这个文件读不出来，换一份之前带走的备份试试"))
+        }
+        defer { try? handle.close() }
+        var data = Data()
         do {
-            text = try String(contentsOf: url, encoding: .utf8)
+            while true {
+                guard let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty else { break }
+                data.append(chunk)
+                // 第二道闸：文件属性拿不到大小（网络卷 / 特殊 provider）时按读到的字节数再判一次。
+                guard data.count <= maxBytes else {
+                    throw BackupImportError(Self.tooLargeMessage)
+                }
+            }
+        } catch let error as BackupImportError {
+            throw error
         } catch {
             throw BackupImportError(String(localized: "这个文件读不出来，换一份之前带走的备份试试"))
         }
-        // 第二道闸：文件属性拿不到大小（网络卷 / 特殊 provider）时按读到的字节数再判一次。
-        guard text.utf8.count <= Self.maxImportBytes else {
-            throw BackupImportError(Self.tooLargeMessage)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw BackupImportError(String(localized: "这个文件读不出来，换一份之前带走的备份试试"))
         }
         return text
     }
@@ -253,6 +298,17 @@ public final class BackupService {
     /// 超限时的本地化错误文案（两个入口共用一份）。
     public static var tooLargeMessage: String {
         String(format: String(localized: "备份文件超过 %@，请选一份更小的"), "64 MB")
+    }
+
+    /// 导出超限的文案：说清楚「没写文件」与「怎么办」。
+    public static func tooLargeExportMessage(limitBytes: Int) -> String {
+        let limit = limitBytes == BackupService.maxExportBytes
+            ? "64 MB"
+            : ByteCountFormatter.string(fromByteCount: Int64(limitBytes), countStyle: .file)
+        return String(
+            format: String(localized: "要带走的东西超过 %@（导出上限与导入一致），这次没有写出文件。可以先删掉一些聊天记录或不再需要的记忆再试。"),
+            limit
+        )
     }
 
     /// 从 JSON 文本把他接回来。读不懂就抛 `BackupImportError`，库里什么都不改。
@@ -289,10 +345,22 @@ public final class BackupService {
         // 备份里带着 `avatarUri`，但图片二进制从来不进备份（换台手机路径必然失效）。
         // 指向不存在文件的头像直接清空：留着它，界面会画一个永远加载不出来的头像，
         // 用户也看不出「这是备份带来的坏路径」——把它算进 warnings 才诚实。
+        // 0.11.1 安全审计 P2-4：头像路径也必须过归属守卫。以前只判断「这个路径存在吗」，
+        // 于是备份里的 `../../myfriend.db`（存在）会被原样写成头像引用 —— 而它指向的是
+        // App 容器里的其它文件。现在只收「裸文件名 + 落在 attachments/ 里 + 文件真的存在」，
+        // 落库时统一写成当前容器的绝对路径（容器 UUID 变了也能对上）。
         var staleAvatars = 0
         let personas = bundle.personas.map(Self.toEntity).map { persona -> PersonaEntity in
-            let uri = persona.avatarUri?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !uri.isEmpty, !avatarFileExists(uri) else { return persona }
+            let raw = persona.avatarUri?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !raw.isEmpty else { return persona }
+            if let resolved = BackupAvatarPath.resolveImported(
+                raw, directory: mediaDirectory, fileExists: avatarFileExists
+            ) {
+                guard resolved != persona.avatarUri else { return persona }
+                var fixed = persona
+                fixed.avatarUri = resolved
+                return fixed
+            }
             var fixed = persona
             fixed.avatarUri = nil
             staleAvatars += 1
@@ -775,7 +843,10 @@ public final class BackupService {
             createdAt: message.createdAt, updatedAt: message.updatedAt,
             status: message.status.stored, errorMessage: message.errorMessage,
             model: message.model, edited: message.edited,
-            attachmentsJson: message.attachmentsJson, toolTraceJson: message.toolTraceJson,
+            // 0.11.1 安全审计 P2-12：附件里存的是设备沙盒绝对路径（含容器 UUID）。
+            // 导入侧本来就会丢掉整段 `attachmentsJson`（图片二进制从不进备份），所以导出它
+            // 对「换机恢复」零收益，只会把设备路径一起带出去。这里直接置空。
+            attachmentsJson: nil, toolTraceJson: message.toolTraceJson,
             readAt: message.readAt
         )
     }
@@ -971,5 +1042,43 @@ public final class BackupService {
             webToolsBaseUrl: imported.webToolsBaseUrl,
             webToolsApiKeyCipher: nil
         )
+    }
+}
+
+
+// MARK: - 导入的准备阶段（后台线程）
+
+/// 「读文件 + JSON 预解析」的结果（两份都是 `Sendable`，可以安全地跨线程交回主线程）。
+public struct BackupImportPreparation: Equatable, Sendable {
+    /// 原文（用户确认后要重新交给 `importBackup(text:mode:)`）。
+    public let text: String
+    /// 预解析结果（界面拿它显示「几个人格、多少条记忆」）。
+    public let decoded: BackupDecodeResult
+
+    public init(text: String, decoded: BackupDecodeResult) {
+        self.text = text
+        self.decoded = decoded
+    }
+}
+
+/// 导入的准备阶段：**在后台线程**读文件并做 JSON 预解析（0.11.1 审计 P2-4 / 安全审计 P2-9）。
+///
+/// 64 MB 的 JSON 在主 runloop 上做 UTF-8 解码 + `JSONSerialization` 是秒级卡顿，
+/// 内存峰值还要乘上几份副本。`importBundle` 早就挪进 `Task.detached` 了，但「读 + decode」
+/// 这两步原来还在主线程 —— 这里把它们一起挪走，界面只 `await` 结果。
+public enum BackupImportLoader {
+
+    /// 读并预解析。错误（超限 / 读不出来）原样交回调用点显示。
+    public static func load(at url: URL) async -> Result<BackupImportPreparation, Error> {
+        await Task.detached(priority: .userInitiated) {
+            do {
+                let text = try BackupService.readBoundedText(at: url)
+                return .success(
+                    BackupImportPreparation(text: text, decoded: BackupCodec.decode(text))
+                )
+            } catch {
+                return .failure(error)
+            }
+        }.value
     }
 }

@@ -327,27 +327,39 @@ struct BackupScreen: View {
             banner = MFAlert(title: L("这个文件读不出来"), message: error.localizedDescription)
         case .success(let urls):
             guard let url = urls.first else { return }
+            guard !busy else { return }
+            busy = true
+            // 安全作用域访问必须**在后台读的那段时间**里保持有效，所以在这里开、读完后关。
             let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                // 0.11.0 安全审计 P2-3：先看文件大小再读文本（上限 64 MB，与 Android 同语义），
-                // 不把几百 MB 的「备份」整份读成 String 再 OOM。
-                let text = try env.backup.readBackupText(at: url)
-                let decoded = env.backup.preview(fileText: text)
-                switch decoded {
-                case .failure(let reason):
-                    banner = MFAlert(title: L("这份备份读不出来"), message: reason)
-                case .success(let bundle, let warnings):
-                    pendingImportText = text
-                    pendingPreview = BackupPreview.from(bundle)
-                    pendingWarnings = warnings
-                    showPreview = true
+            Task {
+                // 0.11.1 审计 P2-9：读文件 + JSON 预解析都在后台（`BackupImportLoader` 内部是
+                // `Task.detached` + 分块有界读取），主线程只 await 结果。64 MB 的 JSON 在
+                // main runloop 上做 UTF-8 解码 + JSONSerialization 是秒级卡顿。
+                let outcome = await BackupImportLoader.load(at: url)
+                if scoped { url.stopAccessingSecurityScopedResource() }
+                await MainActor.run {
+                    busy = false
+                    switch outcome {
+                    case .failure(let error):
+                        // 超限 / 读不出来：把具体原因给用户（「超过 64 MB」比「读不出来」有用）。
+                        banner = MFAlert(
+                            title: L("这份备份读不出来"),
+                            message: error.localizedDescription.isEmpty
+                                ? L("换一份之前带走的备份试试。这份文件没有写进任何东西。")
+                                : error.localizedDescription
+                        )
+                    case .success(let preparation):
+                        switch preparation.decoded {
+                        case .failure(let reason):
+                            banner = MFAlert(title: L("这份备份读不出来"), message: reason)
+                        case .success(let bundle, let warnings):
+                            pendingImportText = preparation.text
+                            pendingPreview = BackupPreview.from(bundle)
+                            pendingWarnings = warnings
+                            showPreview = true
+                        }
+                    }
                 }
-            } catch {
-                banner = MFAlert(
-                    title: L("这个文件读不出来"),
-                    message: L("换一份之前带走的备份试试。这份文件没有写进任何东西。")
-                )
             }
         }
     }

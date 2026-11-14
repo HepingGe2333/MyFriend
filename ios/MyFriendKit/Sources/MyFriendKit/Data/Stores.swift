@@ -710,6 +710,36 @@ public final class ChatSessionStore: SQLiteStore<ChatSessionEntity> {
         return changed > 0
     }
 
+    /// 只写「最后一句预览 / 最后一条时间 / updatedAt」三列（0.11.1 审计 P2-15）。
+    ///
+    /// `ChatViewModel.refreshSessionPreview` 原来是「读整行 → 改三列 → `upsert` 整行 REPLACE」：
+    /// 读与写之间别的线程（心跳、主动唤醒）写入的 `unreadCount` / `lastMessagePreview`
+    /// 会被回滚成旧快照 —— 0.10.2 P1-1 的同一类问题在 UI 路径上的残留。
+    /// 定向 UPDATE 只碰这三列，天然不会覆盖并发写入的未读数。
+    ///
+    /// - Returns: false 表示会话已经不在了（调用点不该再显示旧预览）。
+    @discardableResult
+    public func updatePreview(
+        id: String,
+        preview: String?,
+        lastMessageAt: Int64?,
+        updatedAt: Int64
+    ) throws -> Bool {
+        let changed = try database.executeUpdate(
+            """
+            UPDATE chat_sessions SET lastMessagePreview = ?, lastMessageAt = ?, updatedAt = ?
+            WHERE id = ?
+            """,
+            [
+                preview.map { SQLiteValue.text($0) } ?? .null,
+                lastMessageAt.map { SQLiteValue.int($0) } ?? .null,
+                .int(updatedAt),
+                .text(id)
+            ]
+        )
+        return changed > 0
+    }
+
     /// 只写「历史摘要」那三列。
     ///
     /// 乐观检查用**单调性**而不是「旧值相等」：两次压缩同时跑时，压得更远的那一次
@@ -870,6 +900,18 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
         return observed("recent", Array(rows.reversed()))
     }
 
+    /// 「正文算不算有内容」的 SQL 判定（0.11.1 审计 P2-11）。
+    ///
+    /// SQLite 的 `trim(x)` 默认只去空格（0x20），不去 `\t` / `\n` / `\r`；
+    /// 而 Swift 的 `trimmingCharacters(in: .whitespacesAndNewlines)` 会去。
+    /// 于是「只有换行/制表符」的消息会被 SQL 当成对话：拼进提示词变成 `对方：` 空行、
+    /// 被 `countDialogue` 计入「对话够不够多」（提前触发记忆抽取）、被
+    /// `latestUserMessage` 当成「对方上次说的话」。这里显式把 9/10/13/32 都当空白去掉，
+    /// 与 Swift 侧同一语义；四个查询（`recentDialogue` / `countDialogue` /
+    /// `latestUserMessage` / `latestAssistantMessage`）共用这一个表达式。
+    static let hasVisibleContentSQL =
+        "length(trim(content, char(9) || char(10) || char(13) || char(32))) > 0"
+
     /// 最近 `limit` 条**对话消息**（`role` 非 `SYSTEM`、正文 trim 之后非空，时间升序）。
     ///
     /// 拼心跳处境（「最近几句」）与抽记忆的对话窗口都用它：`system` 提示词与空消息
@@ -877,7 +919,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     public func recentDialogue(sessionId: String, limit: Int) throws -> [MessageEntity] {
         guard limit > 0 else { return [] }
         let rows = try fetch(
-            where: "sessionId = ? AND role <> ? AND length(trim(content)) > 0",
+            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL)",
             [.text(sessionId), .text(MessageRole.system.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: limit
@@ -890,7 +932,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 只查计数、不读正文：长会话下 `count(*)` 走索引，比把几千条正文捞出来再 `filter` 便宜几个数量级。
     public func countDialogue(sessionId: String) throws -> Int {
         try count(
-            where: "sessionId = ? AND role <> ? AND length(trim(content)) > 0",
+            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL)",
             [.text(sessionId), .text(MessageRole.system.stored)]
         )
     }
@@ -901,7 +943,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 这 N 条可能全是助手消息，用户上一次说话就被截在窗口外面了（0.11.0 P2-1）。
     public func latestUserMessage(sessionId: String) throws -> MessageEntity? {
         let rows = try fetch(
-            where: "sessionId = ? AND role = ? AND content <> ''",
+            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL)",
             [.text(sessionId), .text(MessageRole.user.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: 1
@@ -912,7 +954,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 最后一次「他（助手）说的话」，语义同 `latestUserMessage`。
     public func latestAssistantMessage(sessionId: String) throws -> MessageEntity? {
         let rows = try fetch(
-            where: "sessionId = ? AND role = ? AND content <> ''",
+            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL)",
             [.text(sessionId), .text(MessageRole.assistant.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: 1

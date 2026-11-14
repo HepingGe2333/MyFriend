@@ -40,6 +40,12 @@ public struct SSEParser {
     /// → 空 chunk），而不是让解析器丢掉已经收到的内容 —— 与 Android「抛 ResponseTooLong
     /// 并中止流」的差别记录在交付报告里（这是本端刻意保留的降级方式）。
     ///
+    /// **0.11.1 审计 P1-1**：这个分支只在「直接喂给解析器的块里没有换行」时才可能执行，
+    /// 而生产代码（`OpenAICompatibleClient`）是攒满一行才 feed 的，所以它是**不可达**的。
+    /// 真正生效的上限在客户端那个累加循环里（同一个常量 `SSEParser.MAX_LINE_BYTES`）：
+    /// 缓冲超过 8 MB 即抛 `ApiException` 并中止流。这条注释留在这里，免得下一个人
+    /// 又以为「解析器兜住了」。`flush()` 的尾巴也照样受客户端上限保护。
+    ///
     /// 错误响应体（非流式 `readAll`）的上限仍是 1 MB，那是另一条路径、另一个常量。
     public static let MAX_LINE_BYTES = 8 << 20
 

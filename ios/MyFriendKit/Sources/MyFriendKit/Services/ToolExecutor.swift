@@ -190,9 +190,13 @@ public final class ToolExecutor: ToolRunning {
         }
         // 0.11.0：参数夹取走 agent 决策层（契约端点 `/v1/core/tool-args`），
         // 本机实现里仍然是 `ToolArgClamp.clampCount` 那一句，不复制边界值。
-        let count = AgentCoreJSON.int(
-            (await clampedToolArgs(AgentCoreTool.webSearch, invocation: invocation))["count"]
-        ) ?? ToolArgClamp.countDefault
+        let clamped: [String: JSONValue]
+        do {
+            clamped = try await clampedToolArgs(AgentCoreTool.webSearch, invocation: invocation)
+        } catch {
+            return failure(invocation, String(localized: "决策服务不可用，这次先不做了"))
+        }
+        let count = AgentCoreJSON.int(clamped["count"]) ?? ToolArgClamp.countDefault
         do {
             let hits = try await webTools.search(
                 query: String(query.prefix(128)),
@@ -372,9 +376,13 @@ public final class ToolExecutor: ToolRunning {
         default: drawer = .user
         }
         // 0.11.0：参数夹取走 agent 决策层（契约端点 `/v1/core/tool-args`）。
-        let importance = AgentCoreJSON.int(
-            (await clampedToolArgs(AgentCoreTool.remember, invocation: invocation))["importance"]
-        ) ?? ToolArgClamp.importanceDefault
+        let clamped: [String: JSONValue]
+        do {
+            clamped = try await clampedToolArgs(AgentCoreTool.remember, invocation: invocation)
+        } catch {
+            return failure(invocation, String(localized: "决策服务不可用，这次先不做了"))
+        }
+        let importance = AgentCoreJSON.int(clamped["importance"]) ?? ToolArgClamp.importanceDefault
         let candidate = MemoryCandidate(
             content: content,
             drawer: drawer,
@@ -659,10 +667,22 @@ public final class ToolExecutor: ToolRunning {
         let reason = invocation.argument("reason")
         let plan: DeferPlan
         do {
-            plan = try await agentCore.deferPlan(minutes: minutes, reason: reason, now: now)
+            // 0.11.1 审计 P2-1：严格模式失败 → 这条工具**可见地失败**（trace 里能看到原因），
+            // 而不是悄悄用本机结果糊过去。普通回退模式照旧（`decide` 内部回退本机）。
+            plan = try await agentCore.decide(
+                endpoint: "defer-plan",
+                nativeFallback: {
+                    NativeAgentCoreClient().deferPlanNow(minutes: minutes, reason: reason, now: now)
+                }
+            ) {
+                try await agentCore.deferPlan(minutes: minutes, reason: reason, now: now)
+            }
         } catch {
-            log("agentcore: defer-plan 失败（\(error)），用本机兜底")
-            plan = NativeAgentCoreClient().deferPlanNow(minutes: minutes, reason: reason, now: now)
+            log("agentcore: defer-plan 严格模式失败（\(error)），这一轮不落「先不回」")
+            return failure(
+                invocation,
+                String(localized: "决策服务不可用，这次先不做了")
+            )
         }
         let window = AgentWindow(
             earliestAt: plan.earliestAt,
@@ -704,13 +724,15 @@ public final class ToolExecutor: ToolRunning {
     private func clampedToolArgs(
         _ tool: String,
         invocation: ToolInvocation
-    ) async -> [String: JSONValue] {
+    ) async throws -> [String: JSONValue] {
         let args = AgentCoreJSON.object(fromArgumentsJson: invocation.argumentsJson)
-        do {
-            return try await agentCore.clampToolArgs(tool: tool, args: args)
-        } catch {
-            log("agentcore: clampToolArgs(\(tool)) 失败（\(error)），用本机兜底")
-            return NativeAgentCoreClient().clampToolArgsNow(tool: tool, args: args)
+        // 严格模式失败会抛出来，由调用点变成一条可见的工具失败（0.11.1 审计 P2-1）；
+        // 普通回退模式由 `decide` 静默用本机夹一次。
+        return try await agentCore.decide(
+            endpoint: "tool-args",
+            nativeFallback: { NativeAgentCoreClient().clampToolArgsNow(tool: tool, args: args) }
+        ) {
+            try await agentCore.clampToolArgs(tool: tool, args: args)
         }
     }
 

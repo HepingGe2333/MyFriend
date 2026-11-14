@@ -66,7 +66,22 @@ public final class PendingDeepLink {
     }
 
     /// 显式清掉（用户在别处已经处理掉这条待办时用）。
+    ///
+    /// 0.11.1 审计 P2-2：温启动（App 正在运行/后台时点通知）也必须消费即清 —— 否则
+    /// 「点一次通知」会变成「以后每次冷启动都跳那条旧会话」。
     public func clear() {
         storage.set(nil, forKey: key)
+    }
+
+    /// 取走待打开会话，但只有「会话仍然存在」才返回（不存在就丢弃 → 回首页）。
+    ///
+    /// 通知里的 `sessionId` 可能指向已经被删掉的会话（清空全部数据、删人格、替换导入）。
+    /// 不校验就 `path.append`，用户会落到一个空白聊天页、发送只会得到「会话不存在」。
+    /// 无论会话在不在，**取走即清**：这是「一次点击」而不是「常驻意图」。
+    ///
+    /// - Parameter sessionExists: 应用层用 `stores.sessions.byId(id) != nil` 实现。
+    public func consumeIfSessionExists(_ sessionExists: (String) -> Bool) -> String? {
+        guard let value = consume() else { return nil }
+        return sessionExists(value) ? value : nil
     }
 }

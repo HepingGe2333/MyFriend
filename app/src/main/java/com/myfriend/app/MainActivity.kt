@@ -26,13 +26,16 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.lifecycleScope
 import com.myfriend.app.data.prefs.ThemeMode
+import com.myfriend.app.data.repo.ChatRepository
 import com.myfriend.app.navigation.MyFriendNavHost
 import com.myfriend.app.util.ChatNotifier
 import com.myfriend.app.util.ProactiveNotifier
 import com.myfriend.app.ui.RootViewModel
 import com.myfriend.app.ui.theme.MyFriendTheme
 import dagger.hilt.android.AndroidEntryPoint
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @AndroidEntryPoint
@@ -41,12 +44,17 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var chatNotifier: ChatNotifier
 
+    @Inject
+    lateinit var chatRepository: ChatRepository
+
     private var pendingSessionId by mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
-        pendingSessionId = intent?.getStringExtra(ProactiveNotifier.EXTRA_SESSION_ID)
         super.onCreate(savedInstanceState)
+        // 安全 P2-7（审计 P2-6）：MainActivity 是 exported 的，extra 可能来自任意应用，
+        // 不能直接塞给导航；先做「会话存在 + 属于当前 activePersona」的校验。
+        handleDeepLink(intent)
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.auto(Color.Transparent.toArgb(), Color.Transparent.toArgb()),
             navigationBarStyle = SystemBarStyle.auto(Color.Transparent.toArgb(), Color.Transparent.toArgb())
@@ -88,7 +96,27 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        pendingSessionId = intent.getStringExtra(ProactiveNotifier.EXTRA_SESSION_ID)
+        handleDeepLink(intent)
+    }
+
+    /**
+     * 只接受「本机真实存在、且属于当前正在聊的人格」的通知落点（安全 P2-7 / 审计 P2-6）。
+     *
+     * 本 App 是单用户本地库，所以这不是越权读数据，而是完整性/可控性：
+     * 任意应用不该能把 App 强推到空白会话页、也不该能借深链触发 `markRead` 或撤通知。
+     * 校验不过就丢弃这个 extra，停在首页。
+     */
+    private fun handleDeepLink(intent: Intent?) {
+        val raw = intent?.getStringExtra(ProactiveNotifier.EXTRA_SESSION_ID)
+        if (raw.isNullOrBlank()) {
+            pendingSessionId = null
+            return
+        }
+        lifecycleScope.launch {
+            val validated = runCatching { chatRepository.resolveNotificationSession(raw) }.getOrNull()
+            pendingSessionId = validated
+            if (validated == null) intent?.removeExtra(ProactiveNotifier.EXTRA_SESSION_ID)
+        }
     }
 
     /** 首次进入请求一次通知权限；被拒后只有系统还允许解释时才补问一次，两次之后不再打扰。 */

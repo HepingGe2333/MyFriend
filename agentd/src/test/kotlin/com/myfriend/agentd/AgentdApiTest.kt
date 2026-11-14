@@ -5,6 +5,7 @@ import com.myfriend.app.core.json.JsonParseException
 import com.myfriend.app.core.json.JsonValue
 import com.myfriend.app.domain.AgentCoreProtocol
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -39,7 +40,7 @@ class AgentdApiTest {
         val response = AgentdApi.handle("GET", "/health", null)
         assertEquals(200, response.status)
         assertEquals(
-            """{"ok":true,"service":"myfriend-agentd","version":"0.11.0"}""",
+            """{"ok":true,"service":"myfriend-agentd","version":"0.11.1"}""",
             response.body
         )
     }
@@ -274,5 +275,123 @@ class AgentdApiTest {
         assertEquals(400, response.status)
         val error = (json(response).obj().fields["error"] as JsonValue.Obj)
         assertEquals("empty_body", (error.fields["code"] as JsonValue.Str).value)
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 加固
+
+    /** 审计 P2-1：8 MiB body 不再「200 + 原样回显」，而是 413，且错误体很小。 */
+    @Test
+    fun `oversized body is 413 and never echoed`() {
+        val body = """{"tool":"remember","args":{"content":"""" + "x".repeat(8 * 1024 * 1024) + """}}"""
+        val response = post("/v1/core/tool-args", body)
+        assertEquals(413, response.status)
+        assertTrue("错误体被放大到 ${response.body.length} 字节", response.body.length < 600)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("content_too_large", (error.fields["code"] as JsonValue.Str).value)
+    }
+
+    /** 审计 P2-1：2 MB 未知工具名以前会回 2,000,115 字节；现在既不回显、也受 1 MiB 上限约束。 */
+    @Test
+    fun `unknown tool is not echoed back`() {
+        val hugeName = "rm_rf-".repeat(40_000) // 240 KB：低于请求体上限，专门验证「不回显」
+        val response = post("/v1/core/tool-args", """{"tool":"$hugeName","args":{}}""")
+        assertEquals(400, response.status)
+        assertTrue("错误体被放大到 ${response.body.length} 字节", response.body.length < 600)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("unknown_tool", (error.fields["code"] as JsonValue.Str).value)
+        assertFalse(response.body.contains(hugeName.take(100)))
+
+        // 超过 1 MiB 的工具名连解析都到不了：直接 413。
+        val oversized = post("/v1/core/tool-args", """{"tool":"${"x".repeat(2 * 1024 * 1024)}","args":{}}""")
+        assertEquals(413, oversized.status)
+    }
+
+    /** 审计 P2-1：1000 字符的路径以前会回 1,065 字节（原样回显）；现在 404 只回固定文案。 */
+    @Test
+    fun `unknown route does not echo a long path`() {
+        val path = "/v1/" + "a".repeat(3_000)
+        val response = AgentdApi.handle("GET", path, null)
+        assertEquals(404, response.status)
+        assertTrue("错误体被放大到 ${response.body.length} 字节", response.body.length < 600)
+        assertFalse(response.body.contains("aaaa"))
+    }
+
+    /** 审计 P2-2：500 只回固定文案 + 错误编号，异常消息/类名/路径都不出现在响应里。 */
+    @Test
+    fun `internal error response is generic`() {
+        val response = AgentdApi.unexpectedFailureResponse(
+            IllegalStateException("boom at /data/user/0/com.myfriend.app/secret.db")
+        )
+        assertEquals(500, response.status)
+        assertTrue(response.body.contains("internal_error"))
+        assertTrue(response.body.contains("错误编号"))
+        assertFalse(response.body.contains("boom"))
+        assertFalse(response.body.contains("secret.db"))
+        assertFalse(response.body.contains("IllegalStateException"))
+        assertTrue(Regex("错误编号 [0-9a-f]{8}").containsMatchIn(response.body))
+    }
+
+    /** 请求体上限不能误伤正常大请求：256 KiB 的 remember 内容仍然 200。 */
+    @Test
+    fun `large but legal body still works`() {
+        val content = "记".repeat(256 * 1024) // UTF-8 下 768 KiB，仍低于 1 MiB
+        val response = post(
+            "/v1/core/tool-args",
+            """{"tool":"remember","args":{"content":"$content"}}"""
+        )
+        assertEquals(200, response.status)
+        assertTrue(response.body.contains("\"importance\":3"))
+    }
+
+    // ------------------------------------------------------------------ JSON 解析边界
+
+    /** 审计：100 层嵌套 → 400（解析深度上限 64），不是 500 / 栈溢出。 */
+    @Test
+    fun `deeply nested json is rejected as invalid json`() {
+        val body = "[".repeat(100) + "]".repeat(100)
+        val response = post("/v1/core/tool-args", body)
+        assertEquals(400, response.status)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("invalid_json", (error.fields["code"] as JsonValue.Str).value)
+        assertTrue((error.fields["message"] as JsonValue.Str).value.contains("嵌套过深"))
+    }
+
+    /** 1e308：语法合法但不能当整数用 → 400 invalid_argument，而不是溢出/静默取默认值。 */
+    @Test
+    fun `huge exponent number is rejected as non integer`() {
+        val response = post("/v1/core/defer-plan", """{"minutes":1e308,"now":0}""")
+        assertEquals(400, response.status)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("invalid_argument", (error.fields["code"] as JsonValue.Str).value)
+    }
+
+    /** `NaN` 不是 JSON 字面量 → 400 invalid_json（不允许宽松解析把非有限值放进决策层）。 */
+    @Test
+    fun `nan literal is rejected`() {
+        val response = post("/v1/core/defer-plan", """{"minutes":NaN,"now":0}""")
+        assertEquals(400, response.status)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("invalid_json", (error.fields["code"] as JsonValue.Str).value)
+    }
+
+    /** 字段长度上限：300 KiB 的单个字符串（低于 HTTP 请求体上限）在解析层被拒。 */
+    @Test
+    fun `oversized json string field is rejected`() {
+        val body = """{"tool":"remember","args":{"content":"${"x".repeat(300 * 1024)}"}}"""
+        val response = post("/v1/core/tool-args", body)
+        assertEquals(400, response.status)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("invalid_json", (error.fields["code"] as JsonValue.Str).value)
+        assertTrue((error.fields["message"] as JsonValue.Str).value.contains("字符串过长"))
+    }
+
+    /** 重复键直接拒，避免「前者后者谁生效」的解析差异。 */
+    @Test
+    fun `duplicate json keys are rejected`() {
+        val response = post("/v1/core/defer-plan", """{"now":0,"now":1}""")
+        assertEquals(400, response.status)
+        val error = (json(response).obj().fields["error"] as JsonValue.Obj)
+        assertEquals("invalid_json", (error.fields["code"] as JsonValue.Str).value)
+        assertTrue((error.fields["message"] as JsonValue.Str).value.contains("重复键"))
     }
 }

@@ -5,7 +5,7 @@
   "authority": "android",
   "authorityNote": "规格见 docs/ROADMAP-1.9.md §三；Android MemoryLifecycle 是权威。0.10.0 之前 Android 没有实现 memoryRetention 对衰减速度的影响、iOS 有，已按 §三 补齐 Android。",
   "kotlin": {
-    "file": "app/src/main/java/com/myfriend/app/domain/MemoryLifecycle.kt",
+    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt",
     "symbol": "MemoryLifecycle.effectiveStrength / decayStep / retentionFactor / nextStatus"
   },
   "swift": {

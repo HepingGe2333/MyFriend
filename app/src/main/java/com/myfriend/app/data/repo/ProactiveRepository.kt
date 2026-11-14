@@ -16,6 +16,7 @@ import com.myfriend.app.data.local.ProactiveKind
 import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.data.local.ProactiveRuleEntity
 import com.myfriend.app.data.local.ProactiveSource
+import com.myfriend.app.domain.MessageOrder
 import com.myfriend.app.domain.ChatNotificationPolicy
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.MessageWindows
@@ -330,8 +331,13 @@ class ProactiveRepository @Inject constructor(
         val text = ProactiveProtocol.extract(raw).first.trim()
         if (text.isBlank()) userError(DomainErrorCode.MODEL_EMPTY_REPLY)
 
-        val created = System.currentTimeMillis()
-        val stamp = if (created <= now) now + 1 else created
+        // 审计 P2-1（0.11.1）：主动消息也必须走 MessageOrder——以前这里自算
+        // 「now 或 now+1」，没有读会话里最新一条的 createdAt，同一毫秒里连写时
+        // 助手消息可能排在用户消息前面（id 是随机 UUID），lastMessageAt 也可能倒退。
+        val stamp = MessageOrder.nextTimestamp(
+            messageDao.latestInSession(session.id)?.createdAt,
+            System.currentTimeMillis()
+        )
         val message = MessageEntity(
             id = UUID.randomUUID().toString(),
             sessionId = session.id,

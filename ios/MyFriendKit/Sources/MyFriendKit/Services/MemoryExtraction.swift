@@ -79,7 +79,11 @@ public final class MemoryExtraction {
         model: String,
         force: Bool = false
     ) async -> Result<MemoryExtractionResult, Error> {
-        await gate.acquire()
+        do {
+            try await gate.acquire()
+        } catch {
+            return .failure(CancellationError())
+        }
         defer { gate.release() }
 
         // 1.9：记忆一律内置开启，抽不抽只看「间隔到了没」，没有开关要读（§一）。

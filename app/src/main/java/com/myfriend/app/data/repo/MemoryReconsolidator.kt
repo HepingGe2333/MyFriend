@@ -301,9 +301,11 @@ class MemoryReconsolidator @Inject constructor(
      *                  非 null = 只在「这个人的记忆已经删掉之后」回收孤儿行。
      */
     suspend fun purgeVersions(personaId: String? = null) {
-        runCatching {
-            if (personaId == null) memoryVersionDao.deleteAll() else memoryVersionDao.deleteOrphans()
-        }
+        // 审计 P2-5（0.11.1）：**不许吞异常**。这张表存的是记忆旧正文，是最敏感的一张；
+        // 用 runCatching 吞掉会让「删除全部数据」显示成功、而 memory_versions 里整段
+        // 用户信息还在（还会吞掉 CancellationException，让本该回滚的擦除继续往下走）。
+        // 删不掉就直接抛给 DataEraser/Room 事务，整次擦除失败、界面照实报错。
+        if (personaId == null) memoryVersionDao.deleteAll() else memoryVersionDao.deleteOrphans()
     }
 
     // ---------------------------------------------------------------- 内部

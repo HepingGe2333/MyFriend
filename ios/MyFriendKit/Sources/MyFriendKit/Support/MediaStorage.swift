@@ -262,6 +262,38 @@ public final class ImageThumbnailCache: NSObject {
 /// 4. `http(s)://` / `content://` 之类 → 不是本机文件，返回 nil。
 public enum AttachmentLocation {
 
+    /// 目录归属判定（与 Android `MediaOwnership.isWithin` 等价）。
+    ///
+    /// 三条规则：① 标准化后必须**是目录的子路径**（不是「同前缀」——`attachments2/` 不算）；
+    /// ② 解开符号链接之后再比一次（防止附件目录里放一个指向沙盒外的软链）；
+    /// ③ 目录自身不算「目录里的文件」。
+    public static func isWithin(_ directory: URL, _ candidate: URL) -> Bool {
+        let directoryPath = directory.standardizedFileURL.path
+        let path = candidate.standardizedFileURL.path
+        guard path != directoryPath else { return false }
+        let prefix = directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/"
+        guard path.hasPrefix(prefix) else { return false }
+
+        // canonical：软链解开后再比一次（`resolvingSymlinksInPath` 对不存在的路径原样返回）。
+        let canonicalDirectory = directory.resolvingSymlinksInPath().standardizedFileURL.path
+        let canonicalPath = candidate.resolvingSymlinksInPath().standardizedFileURL.path
+        guard canonicalPath != canonicalDirectory else { return false }
+        let canonicalPrefix = canonicalDirectory.hasSuffix("/")
+            ? canonicalDirectory
+            : canonicalDirectory + "/"
+        return canonicalPath.hasPrefix(canonicalPrefix)
+    }
+
+    /// 原始字符串里有没有路径穿越（按 `/` 与 `\\` 切片，先做百分号解码）。
+    ///
+    /// 0.11.1 安全审计 P2-3/P2-4：`../../myfriend.db` 以前会被当成「附件目录下的文件」，
+    /// 于是 `exists()` 说它还在、`delete()` 真的把它删了。这条写在解析入口，一处收口。
+    public static func hasPathTraversal(_ raw: String) -> Bool {
+        let decoded = raw.removingPercentEncoding ?? raw
+        let separators = CharacterSet(charactersIn: "/\\")
+        return decoded.components(separatedBy: separators).contains("..")
+    }
+
     public static func resolve(
         _ raw: String,
         directory: URL,
@@ -269,6 +301,8 @@ public enum AttachmentLocation {
     ) -> URL? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+        // 路径穿越一律拒绝：这是「数据即代码」的入口，`..` 不该被解释成语义。
+        guard !hasPathTraversal(trimmed) else { return nil }
 
         guard let url = URL(string: trimmed) else { return nil }
         if let scheme = url.scheme?.lowercased(), scheme != "file" {
@@ -276,17 +310,91 @@ public enum AttachmentLocation {
         }
 
         if url.isFileURL {
-            if fileExists(url.path) { return url }
+            // 绝对路径：只有**落在当前附件目录里**才直接用（容器没变的情形）。
+            // 旧容器路径（UUID 变了）或沙盒外路径都走下面的「同名文件找回来」分支；
+            // 沙盒外的路径即便存在，也会因为同名文件不在附件目录里而返回 nil。
+            if !hasPathTraversal(url.path), fileExists(url.path), isWithin(directory, url) {
+                return url
+            }
             let name = url.lastPathComponent
-            guard !name.isEmpty else { return nil }
-            let candidate = directory.appendingPathComponent(name)
+            guard !name.isEmpty, name != ".", name != ".." else { return nil }
+            let candidate = directory.appendingPathComponent(name).standardizedFileURL
+            guard isWithin(directory, candidate) else { return nil }
             return fileExists(candidate.path) ? candidate : nil
         }
 
-        // 没有 scheme：当作相对当前附件目录的路径。
-        guard !url.path.isEmpty else { return nil }
-        let candidate = directory.appendingPathComponent(url.path)
+        // 没有 scheme：当作相对当前附件目录的路径（防御手工数据）。
+        guard !url.path.isEmpty, !url.path.hasPrefix("/") else { return nil }
+        let candidate = directory.appendingPathComponent(url.path).standardizedFileURL
+        guard isWithin(directory, candidate) else { return nil }
         return fileExists(candidate.path) ? candidate : nil
+    }
+}
+
+// MARK: - 备份里的头像路径（与 Android `BackupAvatarPath` 等价）
+
+/// 备份 JSON 里的 `avatarUri` → 能不能落库、落成什么。
+///
+/// Android 侧（0.10.2 安全审计 P2-2）先拒绝含 `..` 的整条路径、只取最后一段、
+/// 再过 `isSafeName` 与 `MediaOwnership.isWithin`。iOS 以前只判断「文件存不存在」，
+/// 于是 `../../myfriend.db` 这种值会被原样写进 `personas.avatarUri`。
+public enum BackupAvatarPath {
+
+    /// 名字最长多少（比任何我们自己写的 `avatar-<uuid>.jpg` 都长得多，只用来挡垃圾）。
+    public static let maxNameBytes = 128
+
+    /// 只取裸文件名；不安全就返回 nil。
+    ///
+    /// 拒绝：空串、`..`（路径穿越）、反斜杠、冒号（Windows 盘符/URL scheme）、
+    /// `.`/`..`、超长、以及任何带路径分隔符的「名字」。
+    public static func fileName(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        let decoded = trimmed.removingPercentEncoding ?? trimmed
+        guard !self.hasPathTraversal(decoded) else { return nil }
+        if decoded.contains("\\") { return nil }
+
+        // 有 scheme（file:// 等）或绝对路径：取最后一段；裸文件名原样用。
+        let name: String
+        if decoded.contains("/") {
+            name = (decoded as NSString).lastPathComponent
+        } else if let url = URL(string: decoded), url.isFileURL {
+            name = url.lastPathComponent
+        } else {
+            name = decoded
+        }
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else { return nil }
+        guard !name.contains(":") else { return nil }
+        guard name.utf8.count <= maxNameBytes else { return nil }
+        return name
+    }
+
+    /// 导出用：只留「我们自己的头像文件名」，其它一律 nil。
+    ///
+    /// 0.11.1：iOS 导出本来就把绝对路径置空（`exportedAvatarUri`）。这里再补一条：
+    /// 只有 `avatar-` 开头的裸文件名才算我们的资源，避免把 `/etc/passwd` 之类导出成 `"passwd"`。
+    public static func portable(_ raw: String?) -> String? {
+        guard let name = fileName(raw) else { return nil }
+        let prefix = MediaKind.avatar.rawValue + "-"
+        return name.hasPrefix(prefix) ? name : nil
+    }
+
+    /// 导入用：解析成当前附件目录里的绝对 URL 字符串；不存在/不安全就 nil。
+    public static func resolveImported(
+        _ raw: String?,
+        directory: URL,
+        fileExists: (String) -> Bool
+    ) -> String? {
+        guard let name = fileName(raw) else { return nil }
+        let candidate = directory.appendingPathComponent(name).standardizedFileURL
+        guard AttachmentLocation.isWithin(directory, candidate) else { return nil }
+        guard fileExists(candidate.path) else { return nil }
+        return candidate.absoluteString
+    }
+
+    private static func hasPathTraversal(_ text: String) -> Bool {
+        AttachmentLocation.hasPathTraversal(text)
     }
 }
 
@@ -470,8 +578,10 @@ public final class MediaStorage {
     // MARK: 删
 
     public func delete(_ attachment: MessageAttachment) {
-        guard let url = fileURL(for: attachment.uri) else { return }
-        try? fileManager.removeItem(at: url)
+        // 0.11.1 安全审计 P2-3：只删**自己目录里**的文件。以前这里对 `fileURL(for:)` 的结果
+        // 直接 `removeItem`，而解析又会接受 `../../myfriend.db` —— 删一条消息就能删到沙盒里的
+        // 任意文件。`deleteFileIfOwned` 与头像走的是同一个守卫（与 Android `MediaOwnership` 等价）。
+        deleteFileIfOwned(attachment.uri)
     }
 
     public func delete(_ attachments: [MessageAttachment]) {
@@ -495,11 +605,9 @@ public final class MediaStorage {
     /// 换头像时顺手 `removeItem` 一个不属于我们的路径是危险的。
     public func deleteFileIfOwned(_ uriString: String?) {
         guard let uriString, let url = fileURL(for: uriString) else { return }
-        let directoryPath = directory.standardizedFileURL.path
-        let path = url.standardizedFileURL.path
-        guard path.hasPrefix(directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/") else {
-            return
-        }
+        // 目录归属（含符号链接）判定收在 `AttachmentLocation.isWithin`，与 Android 的
+        // `MediaOwnership.isWithin` 语义一致：子目录才算、同前缀不算、软链解开后再比。
+        guard AttachmentLocation.isWithin(directory, url) else { return }
         try? fileManager.removeItem(at: url)
     }
 

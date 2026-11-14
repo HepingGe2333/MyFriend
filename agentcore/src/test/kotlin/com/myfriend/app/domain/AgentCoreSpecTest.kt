@@ -317,7 +317,136 @@ class AgentCoreSpecTest {
         assertEquals(null, AgentCoreCodec.decodeErrorMessage(null))
     }
 
-    // ------------------------------------------------------------------ 6. 协议常量
+    // ------------------------------------------------------------------ 5. 心跳
+
+    /**
+     * 审计 P2-6（0.11.1）：0.11.0 的这个文件只覆盖 4/6 个 cases 文件（55/94 条），
+     * README 却写「94 条由本模块测试」。heartbeat / memory-decay 的行为回归只能靠 `:app`
+     * 的测试才发现——只跑 `:agentcore:test` 是绿的谎言。这里补齐另外两类。
+     */
+    @Test
+    fun `heartbeat cases`() {
+        forEachCase("heartbeat") { _, input, expect ->
+            val mood = input.objOrNull("mood")?.let {
+                MoodState(label = it.str("label"), intensity = it.int("intensity"))
+            } ?: MoodState()
+            val probability = Heartbeat.probability(
+                minutesSinceReset = input.double("minutesSinceReset"),
+                mood = mood,
+                now = 0L,
+                hourOfDay = input.int("hourOfDay")
+            )
+            assertEquals("probability", expect.double("probability"), probability, TOLERANCE)
+
+            input.objOrNull("perBeat")?.let { perBeat ->
+                assertEquals(
+                    "perBeatProbability",
+                    expect.double("perBeatProbability"),
+                    Heartbeat.perBeatProbability(
+                        perMinute = perBeat.double("perMinute"),
+                        intervalMinutes = perBeat.double("intervalMinutes")
+                    ),
+                    TOLERANCE
+                )
+            }
+
+            input.objOrNull("fire")?.let { fire ->
+                assertEquals(
+                    "shouldFire",
+                    expect.bool("shouldFire"),
+                    Heartbeat.shouldFire(
+                        probability = fire.double("probability"),
+                        roll = fire.double("roll")
+                    )
+                )
+            }
+
+            input.objOrNull("minutesBetween")?.let { between ->
+                assertEquals(
+                    "minutesBetween",
+                    expect.double("minutesBetween"),
+                    Heartbeat.minutesBetween(
+                        lastResetAt = between.long("lastResetAt"),
+                        now = between.long("now")
+                    ),
+                    TOLERANCE
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 6. 记忆衰减
+
+    @Test
+    fun `memory decay cases`() {
+        forEachCase("memory-decay") { _, input, expect ->
+            val memory = MemoryLifecycleState(
+                id = "m1",
+                tier = MemoryTier.valueOf(input.str("tier")),
+                pinned = input.bool("pinned"),
+                importance = input.int("importance"),
+                useCount = input.int("useCount"),
+                lastUsedAt = input.long("lastUsedAt"),
+                createdAt = input.long("createdAt"),
+                strength = input.double("strength"),
+                lastConsolidatedAt = input.long("lastConsolidatedAt"),
+                drawer = MemoryDrawer.valueOf(input.str("drawer"))
+            )
+            val now = input.long("now")
+            val retention = input.intOrNull("retention")
+            val factor = retention?.let { MemoryLifecycle.retentionFactor(it) }
+
+            expect.numOrNull("retentionFactor")?.let { expected ->
+                assertNotNull("用例写了 retentionFactor 却没给 retention", factor)
+                assertEquals("retentionFactor", expected, factor!!, TOLERANCE)
+            }
+            expect.numOrNull("effectiveStrength")?.let { expected ->
+                assertEquals(
+                    "effectiveStrength",
+                    expected,
+                    MemoryLifecycle.effectiveStrength(memory, now),
+                    TOLERANCE
+                )
+            }
+            expect.numOrNull("decayStep")?.let { expected ->
+                assertEquals(
+                    "decayStep",
+                    expected,
+                    MemoryLifecycle.decayStep(memory, now, factor ?: 1.0),
+                    TOLERANCE
+                )
+            }
+            expect.objOrNull("action")?.let { element ->
+                val action = MemoryLifecycle.nextStatus(memory, input.double("statusStrength"), now)
+                assertLifecycleAction(memory.id, action, element)
+            }
+        }
+    }
+
+    private fun assertLifecycleAction(id: String, action: LifecycleAction, expect: JsonValue.Obj) {
+        when (expect.str("type")) {
+            "keep" -> assertEquals("action 类型", LifecycleAction.Keep(id), action)
+            "promote" -> {
+                val promote = action as? LifecycleAction.Promote
+                    ?: error("expect promote，实际 $action")
+                assertEquals("promote.strength", expect.double("strength"), promote.strength, TOLERANCE)
+            }
+            "demote" -> {
+                val demote = action as? LifecycleAction.Demote
+                    ?: error("expect demote，实际 $action")
+                assertEquals("demote.to", MemoryTier.valueOf(expect.str("to")), demote.to)
+                assertEquals("demote.strength", expect.double("strength"), demote.strength, TOLERANCE)
+            }
+            "forget" -> {
+                val forget = action as? LifecycleAction.Forget
+                    ?: error("expect forget，实际 $action")
+                assertEquals("forget.reason", expect.str("reason"), forget.reason)
+            }
+            else -> error("未知 action 类型：${expect.str("type")}")
+        }
+    }
+
+    // ------------------------------------------------------------------ 7. 协议常量
 
     @Test
     fun `protocol constants pin the wire contract`() {
@@ -393,6 +522,12 @@ class AgentCoreSpecTest {
     private fun JsonValue.Obj.double(key: String): Double {
         val raw = fields[key] as? JsonValue.Num ?: error("缺少数字字段 $key")
         return raw.asDouble
+    }
+
+    private fun JsonValue.Obj.numOrNull(key: String): Double? {
+        val value = fields[key] ?: return null
+        if (value is JsonValue.Null) return null
+        return (value as? JsonValue.Num)?.asDouble ?: error("字段 $key 不是数字")
     }
 
     private companion object {

@@ -107,6 +107,8 @@ import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.ui.theme.avatarPalette
 import com.myfriend.app.util.MediaStorage
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -130,13 +132,18 @@ fun PersonaEditorScreen(
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             scope.launch {
-                MediaStorage.persistAvatar(context, uri)
-                    .onSuccess { viewModel.setAvatarUri(it) }
-                    .onFailure {
-                        snackbar.showSnackbar(
-                            ErrorText.of(context, it, R.string.persona_editor_avatar_save_failed)
-                        )
-                    }
+                // 审计 P2-12（0.11.1）：落盘与登记放进同一个不可取消区域——选完头像立刻
+                // 返回时，写好的文件必须已经被登记进草稿集合（或交给 ViewModel 直接删掉），
+                // 否则 discardDraftFiles/onCleared 按已登记集合删除，永远删不到它。
+                withContext(NonCancellable) {
+                    MediaStorage.persistAvatar(context, uri)
+                        .onSuccess { viewModel.setAvatarUri(it) }
+                        .onFailure {
+                            snackbar.showSnackbar(
+                                ErrorText.of(context, it, R.string.persona_editor_avatar_save_failed)
+                            )
+                        }
+                }
             }
         }
     }

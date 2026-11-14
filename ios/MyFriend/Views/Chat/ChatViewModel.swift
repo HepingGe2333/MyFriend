@@ -144,12 +144,17 @@ final class ChatViewModel: ObservableObject {
     ///   重新生成这类**会改动历史**的动作必须走它，否则窗口里会留着已经不存在的消息。
     func reloadMessages(preservingLoadedRange: Bool = false) {
         guard let env else { return }
-        // `try?` 会把 `T?` 拍平成一层，所以这里只需要一次 `if let`。
-        if let fresh = try? env.stores.sessions.byId(sessionId) {
-            session = fresh
+
+        // 0.11.1 审计 P1-3：先确认**会话还在不在**。`try?` 会把 nil 拍平成同一条分支，
+        // 所以这里显式解一层：读不到就说明会话被别处删了（清空全部聊天 / 删人格 / 替换导入）。
+        guard let fresh = (try? env.stores.sessions.byId(sessionId)) ?? nil else {
+            handleSessionGone()
+            return
         }
+        if session != fresh { session = fresh }
         // 进页面就把未读清零：Android 端也是「打开会话即已读」。
-        if var current = session, current.unreadCount != 0 {
+        if fresh.unreadCount != 0 {
+            var current = fresh
             current.unreadCount = 0
             try? env.stores.sessions.upsert(current)
             session = current
@@ -157,18 +162,72 @@ final class ChatViewModel: ObservableObject {
         if let personaId = session?.personaId {
             persona = ((try? env.stores.personas.byId(personaId)) ?? nil) ?? persona
         }
+
         // **窗口化**：只读最近一屏（首屏 60 条；已经上滑加载过的页也保住，不把人拽回顶上）。
         // `messages.bySession` 是整段全量读取，长会话下是这一页最大的一块内存。
-        if preservingLoadedRange, let last = messages.last {
-            appendNewerMessages(after: last)
-        } else {
-            let window = max(Self.pageSize, messages.count)
-            messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
-            totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
-            refreshHasMore()
+        if !preservingLoadedRange || messages.isEmpty {
+            resetWindow(env)
+            return
+        }
+
+        // 0.11.1 审计 P1-3：「只追加」必须知道外部删除。拿库里的两个**轻量**数字
+        // （总数 + 最新一条 id）做判定：条数变少 / 窗口比库里还多 → 重置窗口；
+        // 会话没了 → 清空并停轮询（`ChatWindowPolicy` 是纯函数，有单测）。
+        let storedTotal = (try? env.stores.messages.count(sessionId: sessionId)) ?? nil
+        let latestId = ((try? env.stores.messages.latest(sessionId: sessionId)) ?? nil)?.id
+        let plan = ChatWindowPolicy.plan(
+            sessionExists: true,
+            storedTotal: storedTotal,
+            loadedCount: messages.count,
+            loadedTotalAtLastCheck: totalMessageCount,
+            latestIdMatched: latestId == messages.last?.id
+        )
+        switch plan {
+        case .sessionGone:
+            handleSessionGone()
+            return
+        case .keep:
+            break
+        case .reset:
+            resetWindow(env)
+            return
+        case .append:
+            if let last = messages.last { appendNewerMessages(after: last) }
         }
         #if DEBUG
         DebugSeeding.log("[chat] window loaded=\(messages.count) total=\(totalMessageCount) hasMore=\(hasMoreHistory)")
+        #endif
+    }
+
+    /// 以「最近一屏（不小于已加载条数）」重置窗口。
+    private func resetWindow(_ env: AppEnvironment) {
+        let window = max(Self.pageSize, messages.count)
+        messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
+        totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] window reset loaded=\(messages.count) total=\(totalMessageCount)")
+        #endif
+    }
+
+    /// 会话已经不存在：回到空态并停掉两条轮询（0.11.1 审计 P1-3）。
+    ///
+    /// 不弹 toast：这条路径常常是「用户从设置页清空了全部聊天，返回时页面还在」，
+    /// 静默变成空态比弹一句「对话不在了」更贴近「他确实不在了」这件事。
+    private func handleSessionGone() {
+        session = nil
+        persona = nil
+        messages = []
+        totalMessageCount = 0
+        hasMoreHistory = false
+        isLoadingEarlier = false
+        // 停轮询：会话都不在了，每 20 秒重试只是白读库。
+        messagePulseTask?.cancel()
+        messagePulseTask = nil
+        pulseTask?.cancel()
+        pulseTask = nil
+        #if DEBUG
+        DebugSeeding.log("[chat] session gone, 清空窗口并停轮询")
         #endif
     }
 
@@ -385,14 +444,12 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
-    /// 库里的消息变了就**追加**新消息（不是重读最后 N 条，否则已加载的历史会被挤掉）。
+    /// 轮询一拍：交给 `reloadMessages` 的「只追加 + 外部删除判定」统一处理。
+    ///
+    /// 0.11.1 审计 P1-3：原来这里只看「条数或最新 id 变了没」，而**会话被删**这一种变化
+    /// 恰好会让比较条件永远成立（`latest(sessionId:)` 返回 nil ≠ 窗口最后一条 id），
+    /// 于是每 20 秒做一次 count + pageAfter 的无效重试。现在会话没了会清空窗口并停轮询。
     private func reloadMessagesIfChanged() {
-        guard let env else { return }
-        // 比的是**全表**条数与最后一条 id：窗口里只有 60 条，拿窗口条数去比会永远「不相等」。
-        let count = (try? env.stores.messages.count(sessionId: sessionId)) ?? totalMessageCount
-        let latestId = ((try? env.stores.messages.latest(sessionId: sessionId)) ?? nil)?.id
-        let currentLatestId = messages.last?.id
-        guard count != totalMessageCount || latestId != currentLatestId else { return }
         reloadMessages(preservingLoadedRange: true)
     }
 
@@ -613,17 +670,30 @@ final class ChatViewModel: ObservableObject {
     /// 这段与 `ChatService` 里私有的 `refreshPreview` 同义 —— 删除/清空消息后必须重算，
     /// 否则首页会指着一个已经不存在的「最后一句」。理想情况是它作为公开 API 暴露出来（见报告）。
     private func refreshSessionPreview(_ env: AppEnvironment) throws {
-        guard var current = try env.stores.sessions.byId(sessionId) else { return }
         let latest = try env.stores.messages.latest(sessionId: sessionId)
         let flattened = (latest?.content ?? "")
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        current.lastMessagePreview = flattened.isEmpty
+        let preview: String? = flattened.isEmpty
             ? (latest?.status == .error ? L("回复失败") : nil)
             : String(flattened.prefix(100))
-        current.lastMessageAt = latest?.createdAt
-        current.updatedAt = DomainClock.nowMillis
-        try env.stores.sessions.upsert(current)
+        let updatedAt = DomainClock.nowMillis
+        // 0.11.1 审计 P2-15：定向 UPDATE 三列，不再「读整行 → 改 → 整行 REPLACE」。
+        // 后者会把这段时间里心跳/主动唤醒写入的 `unreadCount` 回滚成旧快照
+        // （0.10.2 P1-1 的同一类问题在 UI 路径上的残留）。
+        let stillExists = try env.stores.sessions.updatePreview(
+            id: sessionId, preview: preview, lastMessageAt: latest?.createdAt, updatedAt: updatedAt
+        )
+        if !stillExists {
+            handleSessionGone()
+            return
+        }
+        if var current = session {
+            current.lastMessagePreview = preview
+            current.lastMessageAt = latest?.createdAt
+            current.updatedAt = updatedAt
+            session = current
+        }
     }
 
     // MARK: - 提示

@@ -6,17 +6,17 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-909%20Android%20%7C%201098%20iOS%20%7C%2014%20agentcore%20%7C%2020%20agentd-brightgreen.svg)](#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-970%20Android%20%7C%201187%20iOS%20%7C%2047%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#build-and-test)
 
 ## Project status
 
 | Item | Value |
 | --- | --- |
-| Version | `0.11.0` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
+| Version | `0.11.1` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
 | Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
 | Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 909 on Android (`:app:testDebugUnitTest`), 14 in `:agentcore`, 20 in `:agentd`, 1098 on iOS (`swift test`) |
+| Unit tests | 970 on Android (`:app:testDebugUnitTest`), 47 in `:agentcore`, 34 in `:agentd`, 1187 on iOS (`swift test`) |
 | CI | None yet; all tests and builds run from local commands |
 
 ## Feature overview

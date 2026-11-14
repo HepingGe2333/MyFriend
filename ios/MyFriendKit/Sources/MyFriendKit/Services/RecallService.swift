@@ -32,6 +32,14 @@ public final class RecallService {
     static let scanSessions = 12
     static let supplementThreshold = 3
     static let supplementPerSession = 2
+
+    /// 「翻箱倒柜」时每个会话读多少条窗口（0.11.1 审计 P2-7）。
+    ///
+    /// 以前这里用 `messages.bySession` 把整段会话（含 `content` / `attachmentsJson` /
+    /// `toolTraceJson`）物化到内存再 filter/suffix —— 0.10.2 P2-1 点名的第五处没清，
+    /// 而回忆是用户点一下「深一点想」就会走的高频动作。现在只读最近 200 条对话消息
+    /// （`recentDialogue` 已经在 SQL 侧过滤 system 与空正文），再在窗口内打分。
+    static let recallWindowMessages = 200
     static let normalDigestChars = 500
     static let deepDigestChars = 1200
 
@@ -239,11 +247,12 @@ public final class RecallService {
                 .sorted { ($0.lastMessageAt ?? $0.createdAt) > ($1.lastMessageAt ?? $1.createdAt) }
                 .prefix(Self.scanSessions)
             for session in sessions {
-                let messages = ((try? stores.messages.bySession(session.id)) ?? [])
-                    .filter {
-                        $0.role != .system && $0.status != .error
-                            && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    }
+                // 只读窗口：`recentDialogue` 在 SQL 里就过滤掉了 system 与「只有空白」的正文，
+                // 长会话下不会为了翻两句旧话把整段历史读进内存。
+                let messages = ((try? stores.messages.recentDialogue(
+                    sessionId: session.id, limit: Self.recallWindowMessages
+                )) ?? [])
+                    .filter { $0.status != .error }
                 if messages.isEmpty { continue }
                 let picked: [MessageEntity]
                 if term.isEmpty {

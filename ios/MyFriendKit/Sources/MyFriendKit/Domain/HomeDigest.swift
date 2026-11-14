@@ -70,32 +70,8 @@ public enum HomeDigest {
         return !index.isEmpty
     }
 
-    /// 合并新旧摘要：新的覆盖旧的，按「最近说话」降序。
-    ///
-    /// 为什么是合并而不是直接替换：首屏用一次全量快照，之后每一拍只带回来变化的那几行
-    /// （`onlyChanged`）也成立；顺序与「没有变化时不重画」的判定都放在这里，
-    /// 界面只负责把合并结果画出来。
-    public static func merge(old: [SessionDigest], new: [SessionDigest]) -> [SessionDigest] {
-        var merged: [String: SessionDigest] = [:]
-        var order: [String] = []
-        for digest in old where merged[digest.sessionId] == nil {
-            merged[digest.sessionId] = digest
-            order.append(digest.sessionId)
-        }
-        for digest in new {
-            if merged[digest.sessionId] == nil { order.append(digest.sessionId) }
-            merged[digest.sessionId] = digest
-        }
-        return order.compactMap { merged[$0] }.sorted { lhs, rhs in
-            if lhs.sortAt != rhs.sortAt { return lhs.sortAt > rhs.sortAt }
-            return lhs.sessionId < rhs.sessionId
-        }
-    }
-
-    /// 只挑出与旧快照不同的那几条（增量刷新用；全量快照会返回全部）。
-    public static func onlyChanged(old: [SessionDigest], new: [SessionDigest]) -> [SessionDigest] {
-        var index: [String: SessionDigest] = [:]
-        for digest in old { index[digest.sessionId] = digest }
-        return new.filter { index[$0.sessionId] != $0 }
-    }
+    /// 说明（0.11.1 审计 P2-12）：这里原本还有 `merge` / `onlyChanged` 两个「增量合并」的
+    /// 纯函数，但首页从来没有调用它们 —— 真正执行的是「变了就全量 reload」。
+    /// 测试覆盖的不是生产路径，等于死代码；本版删掉这两个函数与它们的用例，
+    /// 只保留首页真正使用的 `digests` + `changed`（避免下一个人以为增量刷新已经接上了）。
 }

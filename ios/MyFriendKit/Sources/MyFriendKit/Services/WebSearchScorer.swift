@@ -140,12 +140,20 @@ public final class WebSearchScorer: WebSearchScoring {
         config: CompletionConfig,
         model: String
     ) async -> WebSearchScoreResult {
-        await scoreGate.withLock {
-            await scoreLocked(
-                personaId: personaId, query: query, hitsSummary: hitsSummary,
-                config: config, model: model
-            )
+        // 等锁响应取消（0.11.1 审计 P2-18）：被取消时直接返回「不值得记」，
+        // 不去花一次 LLM 调用。
+        let result: WebSearchScoreResult?
+        do {
+            result = try await scoreGate.withLock {
+                await scoreLocked(
+                    personaId: personaId, query: query, hitsSummary: hitsSummary,
+                    config: config, model: model
+                )
+            }
+        } catch {
+            return Self.skipped("这次没打分（被系统取消了）")
         }
+        return result ?? Self.skipped("这次没打分")
     }
 
     private func scoreLocked(
@@ -266,6 +274,14 @@ public final class WebSearchScorer: WebSearchScoring {
     }
 
     /// 只取「他是谁」的几项：打分不需要完整人设。
+    /// 「没打分」的结果（取消 / 没拿到锁时用）。
+    static func skipped(_ message: String) -> WebSearchScoreResult {
+        WebSearchScoreResult(
+            scored: false, important: false, importance: 0, takeaway: "",
+            drawer: .user, message: message
+        )
+    }
+
     static func personaSummary(_ persona: PersonaEntity) -> String {
         var parts: [String] = []
         let name = persona.name.trimmingCharacters(in: .whitespacesAndNewlines)

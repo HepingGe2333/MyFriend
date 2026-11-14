@@ -38,16 +38,17 @@ struct RootView: View {
             }
             .environment(\.mfNavigationPath, $path)
             .onReceive(AppNotifications.shared.$pendingSessionId) { sessionId in
-                // 点开通知 → 进他那段聊天。消费完清空，免得返回栈里再被推一次。
+                // 点开通知 → 进他那段聊天（0.11.1 审计 P2-2）。
                 guard let sessionId, !sessionId.isEmpty else { return }
-                AppNotifications.shared.pendingSessionId = nil
-                path.append(Route.chat(sessionId: sessionId))
+                openPendingSession(sessionId)
             }
             .task {
                 // 冷启动时点通知进会话（0.11.0 审计 P2-7）：delegate 可能早在首帧之前就收到了响应，
                 // 那一帧的 `@Published` 没人订阅 —— 所以先看持久化的待办，消费一次就清掉。
-                // `consume()` 是幂等的：视图重建、状态恢复都不会重复跳一次。
-                if let sessionId = AppNotifications.shared.pendingDeepLink.consume() {
+                // `consumeIfSessionExists` 取走即清（幂等），并会丢弃指向已删会话的深链。
+                if let sessionId = AppNotifications.shared.pendingDeepLink.consumeIfSessionExists({
+                    env.sessionExists(id: $0)
+                }) {
                     AppNotifications.shared.pendingSessionId = nil
                     path.append(Route.chat(sessionId: sessionId))
                 }
@@ -56,6 +57,22 @@ struct RootView: View {
                 DebugSeeding.bootstrap(env: env, path: $path)
             }
         }
+    }
+
+    /// 消费一条待打开的通知深链（0.11.1 审计 P2-2）。
+    ///
+    /// 两件事必须一起做，否则「点一次通知」会变成「以后每次冷启动都跳旧会话」：
+    /// 1. **消费即清**：温启动（App 已在运行/后台）那次点击也会写 UserDefaults，
+    ///    原来只有根视图首次 `.task` 才 `consume()`，键留着 → 下次冷启动再跳一次。
+    /// 2. **打开前校验会话存在**：不存在就丢弃、留在首页（不 push 一个空白聊天页）。
+    private func openPendingSession(_ sessionId: String) {
+        AppNotifications.shared.pendingDeepLink.clear()
+        AppNotifications.shared.pendingSessionId = nil
+        guard env.sessionExists(id: sessionId) else {
+            DebugSeeding.log("[deeplink] 会话已经不在了（\(sessionId)），丢弃并回首页")
+            return
+        }
+        path.append(Route.chat(sessionId: sessionId))
     }
 }
 

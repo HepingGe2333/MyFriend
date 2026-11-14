@@ -83,6 +83,33 @@ object MessagePaging {
     /** 回到最新一屏（定位窗口之外的「更新消息」入口）：状态整体复位。 */
     fun onLatest(state: State): State = State()
 
+    /**
+     * 稳定序 `(createdAt, id)` 下 [latest] 是不是比 [windowEnd] 更新。
+     *
+     * 定位窗口是 `LIMIT rows` 的固定区间：窗口末尾之后来的消息（别人写的、心跳/后台写的、
+     * 用户自己发的）不会自己进窗口。这里只回答「窗口外还有没有更新的」，
+     * 由界面决定要不要亮「更新的消息」入口（审计 P1-1）。
+     */
+    fun isNewer(latest: Cursor?, windowEnd: Cursor?): Boolean {
+        if (latest == null || windowEnd == null) return false
+        return latest.createdAt > windowEnd.createdAt ||
+            (latest.createdAt == windowEnd.createdAt && latest.id > windowEnd.id)
+    }
+
+    /**
+     * 有界窗口的数据变了：按「窗口末尾 vs 会话最新一条」**重算** `hasMoreNewer`（审计 P1-1）。
+     *
+     * 以前 `hasMoreNewer` 只在定位那一刻按 `MessageJump.plan` 算一次：定位窗口正好覆盖到
+     * 会话末尾时它是 false，之后来一条新消息/自己发一条，界面就再也没有「更新的消息」入口，
+     * 用户只能退出重进。现在窗口每次重新发出（Room 在 `messages` 变化时会重跑同一个查询）
+     * 都用这个纯函数重算——心跳/后台写入同样能被看见。
+     *
+     * @param latest 会话里最新一条消息的游标（没有消息为 null）
+     * @param windowEnd 当前窗口里最后一条消息的游标（窗口还没数据时传 null）
+     */
+    fun onWindowRows(state: State, latest: Cursor?, windowEnd: Cursor?): State =
+        state.copy(hasMoreNewer = isNewer(latest, windowEnd))
+
     /** 用户滚到顶部，想加载更早：返回新的状态 + 是否真的该发查询。 */
     fun beginLoadOlder(state: State): Pair<State, Boolean> {
         if (!state.canLoadOlder) return state to false

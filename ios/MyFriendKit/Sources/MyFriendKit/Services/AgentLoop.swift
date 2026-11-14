@@ -132,7 +132,12 @@ public final class AgentLoop {
     /// 想一次。
     public func tick(config: CompletionConfig?, model: String, now: Int64? = nil) async -> Outcome {
         // 串行化用 `AsyncMutex`：等待的 tick 挂起而不是占住线程，系统锁也不会被带过 await。
-        await tickGate.acquire()
+        // 0.11.1 审计 P2-18：等锁响应取消（BGTask 到期时不再白跑一整拍 LLM）。
+        do {
+            try await tickGate.acquire()
+        } catch {
+            return Outcome(nextDelayMinutes: Self.backoffMinutes, acted: false, summary: "这次不跑了（已取消）")
+        }
         defer { tickGate.release() }
         let at = now ?? self.now()
         let settings = settings.load()
@@ -173,9 +178,21 @@ public final class AgentLoop {
         // 0.11.0：基础值走 agent 决策层（远程失败回退本机 —— 他自己的循环不该因为内核不可用停摆）。
         // 心情修正仍在本机（`MoodBehavior.effectiveDailyCap`）：它要 label 驱动的 `MoodTuning`，
         // 而客户端的 `proactiveCap(level:moodIntensity:)` 只有强度。
-        let baseCap = (try? await agentCore.proactiveCap(
-            level: persona.proactiveLevel, moodIntensity: moodState.intensity
-        )) ?? NativeAgentCoreClient().proactiveCapNow(
+        // 0.11.1 审计 P2-1：严格模式失败会记进 `AgentCoreDiagnostics`（计数 + 可见日志）
+        // 并抛出来，这里用 `try?` 收住是为了「一次心跳不因为内核不可用而整拍停摆」；
+        // 严格模式本身已经把失败变得可观测，不再是无声的假回退。
+        let baseCap = (try? await agentCore.decide(
+            endpoint: "proactive-cap",
+            nativeFallback: {
+                NativeAgentCoreClient().proactiveCapNow(
+                    level: persona.proactiveLevel, moodIntensity: moodState.intensity
+                )
+            }
+        ) {
+            try await agentCore.proactiveCap(
+                level: persona.proactiveLevel, moodIntensity: moodState.intensity
+            )
+        }) ?? NativeAgentCoreClient().proactiveCapNow(
             level: persona.proactiveLevel, moodIntensity: moodState.intensity
         )
         let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: tuning)
@@ -278,7 +295,11 @@ public final class AgentLoop {
         now: Int64? = nil
     ) async -> ProactiveFireOutcome {
         // 与 `tick` 共用同一把异步互斥：手动触发和心跳同时开口会写两条几乎一样的消息。
-        await tickGate.acquire()
+        do {
+            try await tickGate.acquire()
+        } catch {
+            return .failure(String(localized: "这次没跑完（被系统取消了）"))
+        }
         defer { tickGate.release() }
         let at = now ?? self.now()
         guard let rule = (try? stores.proactiveRules.byId(ruleId)) ?? nil else {

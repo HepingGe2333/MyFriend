@@ -621,6 +621,57 @@ class BackupCodecTest {
         assertTrue(summary.warnings.isEmpty())
     }
 
+    /**
+     * 安全 P2-6（审计 P2-8）：预设头像与人格同一策略——备份里只写裸文件名。
+     *
+     * 0.11.0 修了 persona 的 `avatarUri = BackupAvatarPath.portable(...)`，preset 仍是
+     * `avatarUri = avatarUri`：任一含头像预设的导出都会把
+     * `file:///data/user/0/<pkg>/files/avatars/avatar-<uuid>.jpg` 写进 JSON（设备沙盒布局 + 文件名
+     * 一起外泄，对换机恢复零收益）。
+     */
+    @Test
+    fun presetsExportAvatarAsBareFileName() {
+        val preset = PersonaPresetEntity(
+            id = "preset-avatar",
+            name = "带头像的模板",
+            description = "",
+            prompt = "你说话很慢",
+            category = "温柔",
+            avatarUri = "file:///data/user/0/com.myfriend.app/files/avatars/avatar-1234.jpg",
+            avatarSeed = 3,
+            createdAt = 1_700_000_000_000L,
+            updatedAt = 1_700_000_000_000L
+        ).toBackupPreset()
+        assertEquals("预设头像只该写裸文件名", "avatar-1234.jpg", preset.avatarUri)
+
+        val bundle = sampleBundle().copy(presets = listOf(preset))
+        val encoded = BackupCodec.encode(bundle)
+        // 注意：sampleBundle 的消息 attachmentsJson 仍带 `file:///data/media/...`（安全 P2-12
+        // 是另一条），这里只断言**头像字段**不再出现设备路径。
+        assertFalse(
+            "预设头像不该把 files/avatars 的绝对路径写进备份",
+            encoded.contains("files/avatars")
+        )
+        val decoded = decodeSuccess(encoded)
+        assertEquals("avatar-1234.jpg", decoded.bundle.presets.single().avatarUri)
+    }
+
+    @Test
+    fun presetsWithoutAvatarStayNull() {
+        val entity = PersonaPresetEntity(
+            id = "preset-null",
+            name = "无头像",
+            description = "",
+            prompt = "",
+            category = "",
+            avatarUri = null,
+            avatarSeed = 0,
+            createdAt = 0L,
+            updatedAt = 0L
+        )
+        assertNull(entity.toBackupPreset().avatarUri)
+    }
+
     @Test
     fun decodedBundleCarriesTechniqueMetadata() {
         val decoded = decodeSuccess(BackupCodec.encode(sampleBundle()))

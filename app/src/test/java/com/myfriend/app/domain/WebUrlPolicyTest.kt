@@ -21,7 +21,10 @@ class WebUrlPolicyTest {
         assertNull(WebUrlPolicy.check("https://example.com/a/b?c=1#d"))
         assertNull(WebUrlPolicy.check("http://example.com:8080/path"))
         assertNull(WebUrlPolicy.check("  https://example.com/x  "))
-        assertNull(WebUrlPolicy.check("https://user:pass@example.com/x"))
+        // 0.11.1 安全 P2-5：带 userinfo 的 URL 一律拒绝——口令会被原样发给第三方抓取服务
+        // 并进它的日志。WebUrlPolicy 没有新增 Rejection 值（两端 `when` 是穷尽的），
+        // userinfo 归到 MISSING_HOST（对调用方而言结果都是「不发这个请求」）。
+        assertEquals(Rejection.MISSING_HOST, WebUrlPolicy.check("https://user:pass@example.com/x"))
         assertNull("公网 IPv4 放行", WebUrlPolicy.check("https://8.8.8.8/dns"))
     }
 
@@ -52,6 +55,17 @@ class WebUrlPolicyTest {
     fun `没有 host 拒绝`() {
         assertEquals(Rejection.MISSING_HOST, WebUrlPolicy.check("https:///path"))
         assertEquals(Rejection.MISSING_HOST, WebUrlPolicy.check("https://"))
+    }
+
+    @Test
+    fun `带 userinfo 的地址拒绝（口令会进第三方日志）`() {
+        assertEquals(Rejection.MISSING_HOST, WebUrlPolicy.check("https://user:pass@example.com/x"))
+        assertEquals(Rejection.MISSING_HOST, WebUrlPolicy.check("http://token@example.com/"))
+        assertEquals(
+            "内网判定优先：userinfo 指向内网仍然是 LOCAL_HOST",
+            Rejection.LOCAL_HOST,
+            WebUrlPolicy.check("https://user@10.0.0.1/x")
+        )
     }
 
     @Test

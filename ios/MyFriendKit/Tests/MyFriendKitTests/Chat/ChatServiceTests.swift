@@ -41,10 +41,12 @@ final class ChatServiceTests: XCTestCase {
         background = RecordingBackground()
         tools = RecordingTools()
         service = makeService()
+        AgentCoreDiagnostics.shared.reset()
     }
 
     override func tearDownWithError() throws {
         service = nil
+        AgentCoreDiagnostics.shared.reset()
         StubURLProtocol.reset()
         stores = nil
         for suffix in ["", "-wal", "-shm"] {
@@ -53,7 +55,10 @@ final class ChatServiceTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeService(media: MediaStorage = .shared) -> ChatService {
+    private func makeService(
+        media: MediaStorage = .shared,
+        agentCore: any AgentCoreClient = NativeAgentCoreClient()
+    ) -> ChatService {
         ChatService(
             stores: stores,
             apiKeys: apiKeys,
@@ -62,7 +67,8 @@ final class ChatServiceTests: XCTestCase {
                                            usage: recorder, gate: LlmConcurrencyGate()),
             tools: tools,
             background: background,
-            media: media
+            media: media,
+            agentCore: agentCore
         )
     }
 
@@ -141,6 +147,46 @@ final class ChatServiceTests: XCTestCase {
             if case .done(let completion) = event { return completion }
         }
         return nil
+    }
+
+    /// 严格远程（`remote-strict`）下决策层失败必须变成**可见错误**（0.11.1 审计 P2-1）。
+    ///
+    /// 0.11.0 的问题：每个调用点都 `try?` 掉并改用本机判定，于是严格模式与普通回退模式
+    /// 在 App 行为上没有区别 —— 用它验收「agentd 真的被用上了」会得到假阳性。
+    func testStrictRemoteFailureSurfacesAsVisibleChatError() async throws {
+        try seedReadySession()
+        let strict = makeService(agentCore: StrictFailingAgentCoreClient())
+        guard case .started(let stream) = strict.sendChecked(sessionId: sessionId, text: "在吗") else {
+            return XCTFail("用户消息落库成功，应当返回 .started")
+        }
+        do {
+            _ = try await collect(stream)
+            XCTFail("严格模式失败必须让这条流报错，而不是把本机判定当成远程结果")
+        } catch let error as AgentCoreClientError {
+            let text = error.errorDescription ?? ""
+            XCTAssertFalse(text.isEmpty, "用户要能看到一句人话（严格模式是联调模式，失败要显眼）")
+        }
+        XCTAssertEqual(
+            AgentCoreDiagnostics.shared.strictCount(endpoint: "sleep-decision"), 1,
+            "严格模式的失败要计数（可观测）"
+        )
+    }
+
+    /// 永远失败、并对外声称自己是严格远程的假客户端。
+    private struct StrictFailingAgentCoreClient: AgentCoreClient {
+        var agentCoreMode: AgentCoreMode { .remote(preferredFallback: false) }
+        func sleepDecision(_ input: SleepInput) async throws -> SleepDecision {
+            throw AgentCoreClientError.transport("agentd 没起")
+        }
+        func deferPlan(minutes: Int?, reason: String?, now: Int64) async throws -> DeferPlan {
+            throw AgentCoreClientError.transport("agentd 没起")
+        }
+        func proactiveCap(level: Int, moodIntensity: Int?) async throws -> Int {
+            throw AgentCoreClientError.transport("agentd 没起")
+        }
+        func clampToolArgs(tool: String, args: [String: JSONValue]) async throws -> [String: JSONValue] {
+            throw AgentCoreClientError.transport("agentd 没起")
+        }
     }
 
     private func messages(sessionId: String = "s-1") throws -> [MessageEntity] {

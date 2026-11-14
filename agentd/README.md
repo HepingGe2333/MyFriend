@@ -31,9 +31,14 @@ third-party runtime dependencies**), and both clients compile against it:
 - iOS mirrors the same rules in Swift and reads the same `spec/agent-core/cases/*.json`
   contract files (see the root README); it is not routed through `:agentcore` (which is JVM-only).
 
-The HTTP server is the JDK's own `com.sun.net.httpserver`, and JSON is parsed/serialized by the
-recursive-descent parser in `:agentcore` (`com/myfriend/app/core/json/Json.kt`). There is no web
-framework, no JSON library, no DI container, no logging framework, no coroutines.
+The HTTP layer is a ~250-line minimal HTTP/1.1 loop built on `ServerSocket` (one request per
+connection, `Connection: close`; no keep-alive, no chunked, no TLS). It replaced the JDK's
+`com.sun.net.httpserver` in 0.11.1 because that API has no read timeout, its request
+`InputStream.available()` is unreliable, and closing a response drains the unread request body in a
+blocking read that `exchange.close()` cannot interrupt — which made the audit's P1-1 half-open
+denial of service impossible to fix reliably. JSON is parsed/serialized by the recursive-descent
+parser in `:agentcore` (`com/myfriend/app/core/json/Json.kt`). There is no web framework, no JSON
+library, no DI container, no logging framework, no coroutines.
 
 Runtime classpath of the distribution is exactly `agentd.jar` + `agentcore.jar` + Kotlin stdlib
 (+ the stdlib's `annotations` transitive).
@@ -70,8 +75,9 @@ Options:
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--host` | `127.0.0.1` | Bind address. Use `0.0.0.0` only when deploying behind your own auth/proxy. |
+| `--host` | `127.0.0.1` | Bind address. `0.0.0.0` means **anyone on the network can call it** — there is no TLS and (unless `--token` is set) no auth. Only use it on a trusted LAN or behind your own auth/proxy. |
 | `--port` | `8788` | Listen port. |
+| `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `MYFRIEND_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
 | `--help` / `-h` | — | Usage. |
 
 Smoke test:
@@ -79,7 +85,41 @@ Smoke test:
 ```bash
 curl -s http://127.0.0.1:8788/health
 # {"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
+
+# only when --token is set:
+curl -s -H "Authorization: Bearer $MYFRIEND_AGENTD_TOKEN" http://127.0.0.1:8788/health
 ```
+
+## Limits, timeouts and auth (0.11.1)
+
+`agentd` is an embedded service, not a public API; 0.11.1 adds the minimum hardening needed so
+one client cannot take it down or make it amplify traffic. All of it is covered by tests in
+`AgentdApiTest` / `AgentdServerTest`.
+
+| Limit | Value | Behaviour |
+| --- | --- | --- |
+| Request body | 1 MiB (`AgentdApi.MAX_BODY_BYTES`) | `Content-Length` over the cap → `413 content_too_large`, body is not read into memory |
+| Read timeout | 5 s (`AgentdServer.READ_TIMEOUT_MS`) | A body that stalls mid-transfer → `408 request_timeout`, connection closed, worker released |
+| Body framing | `Content-Length` only | `Transfer-Encoding: chunked` → `411 length_required` (both clients send `Content-Length`; a blocking chunked parse would reopen the slow-client hole) |
+| Workers | 4 fixed threads + a bounded 64-connection queue | Slow clients can occupy at most the pool; `/health` keeps responding on the remaining threads, and a full queue closes new connections instead of growing memory |
+| Error bodies | message ≤ 512 chars | Client input is never echoed (unknown tool / long path / invalid JSON are answered with fixed text); `500` is a fixed message + random `errorId`, details only go to stderr |
+| Auth | optional `--token` | Missing/wrong `Authorization: Bearer …` → `401 unauthorized` (constant-time compare) |
+
+The timeout is enforced as a **total per-request deadline** (request line + headers + body), not a
+per-read timeout: a client that sends one byte every few seconds is cut off at 5 s as well. After
+the response is flushed the server half-closes the socket, briefly drains whatever the client is
+still sending (50 ms / 64 KiB) so a `413`/`401` answer is not lost to a TCP RST, then closes the
+connection. All of this lives in `AgentdServer` and is covered by `AgentdServerTest`.
+
+`/health` intentionally keeps reporting `service` and `version`: the Android/iOS remote clients use
+it to tell "agentd is up" from "wrong service on this port". It exposes nothing beyond the service
+name and the build version (the audit accepted this; see 0.11.1 P2-15). When `--token` is set,
+`/health` requires the token too.
+
+**Known limitation:** the token is a shared secret over plain HTTP. It stops random LAN clients
+and accidental exposure, not an active network attacker; for that you still need TLS/reverse proxy.
+The Android remote client does not send `Authorization` yet, so keep `--token` off until the client
+is updated (or use it with a proxy that injects the header).
 
 ## Point the Android client at it
 
@@ -132,6 +172,10 @@ Path and field names are not duplicated in the service: both sides read them fro
 ```json
 {"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
 ```
+
+The version is exposed on purpose (clients and humans use it to verify which build is answering);
+it is the only "internal" detail any response carries. When `--token` is set this endpoint needs
+the token as well.
 
 ### `POST /v1/core/sleep-decision`
 
@@ -240,14 +284,18 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | Status | `code` | When |
 | --- | --- | --- |
 | 400 | `empty_body` | No request body. |
-| 400 | `invalid_json` | Body is not valid JSON. |
-| 400 | `invalid_body` | Body is valid JSON but not an object. |
+| 400 | `invalid_json` | Body is not valid JSON (too deep / too long / duplicate key / non-finite number also land here). |
+| 400 | `invalid_body` | Body is valid JSON but not an object; also used when the body could not be read completely. |
 | 400 | `missing_field` | A required field is absent. |
 | 400 | `invalid_argument` | A field has the wrong type / can't be parsed. |
-| 400 | `unknown_tool` | `/v1/core/tool-args` got an unsupported tool. |
-| 404 | `not_found` | Unknown route. |
+| 400 | `unknown_tool` | `/v1/core/tool-args` got an unsupported tool (the tool name is **not** echoed back). |
+| 401 | `unauthorized` | `--token` is set and the request has no/incorrect `Authorization: Bearer …`. |
+| 404 | `not_found` | Unknown route (the path is not echoed back). |
 | 405 | `method_not_allowed` | Known route with the wrong method. |
-| 500 | `internal_error` | Unexpected server-side failure. |
+| 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
+| 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
+| 413 | `content_too_large` | Declared or accumulated body exceeds 1 MiB. |
+| 500 | `internal_error` | Unexpected server-side failure; the response is a fixed message plus a random `errorId`, never the exception text. |
 
 ## Why this shape
 
@@ -259,8 +307,9 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
   `:agentd` produced two separate copies of the same classes. Now the 36 portable files live in
   `:agentcore` and both modules compile the *same* classes.
 - **Handler layer is a pure function** (`AgentdApi.handle(method, path, body)`) so tests cover
-  every route and error without opening a port; one integration test still starts a real server
-  on an ephemeral port with the JDK `HttpClient`.
+  every route and error without opening a port; a handful of integration tests still start a real
+  server on an ephemeral port with the JDK `HttpClient` / raw sockets (slow-client, size limits,
+  token).
 
 ### What stayed in `:app`
 
@@ -290,7 +339,12 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 
 ## What this service does **not** do yet
 
-- No authentication, TLS, rate limiting, or request size cap. Bind to `127.0.0.1` by default.
+- **No TLS and no rate limiting.** It binds to `127.0.0.1` by default; `--host 0.0.0.0` makes it
+  reachable by the whole network. Since 0.11.1 there is an optional shared token (`--token`),
+  a 1 MiB request-body cap, a 5 s read timeout and 4 fixed worker threads (see
+  “Limits, timeouts and auth” above) — but a token over plain HTTP is not a substitute for TLS,
+  and a determined client can still slow the service down. Treat `0.0.0.0` as “trusted network
+  only”.
 - No persistence: it does not touch SQLite/Room, does not write `agent_intents`, does not store
   memories. It only exposes deterministic pure functions.
 - No LLM calls, no prompting, no streaming.
@@ -305,9 +359,16 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 ./.tooling/gradle-8.9/bin/gradle :agentcore:test :agentd:test
 ```
 
-- `:agentcore` — `AgentCoreSpecTest` (20 assertions groups over `spec/agent-core/cases/*.json`
-  through the `AgentCore` interface, protocol pinning, JSON codec round-trips, malformed-response
-  rejection). 14 tests.
-- `AgentdApiTest` — handler-level: every route, defaults, clamping, error codes, and a check that
-  the route table comes from `AgentCoreProtocol`. 19 tests.
-- `AgentdServerTest` — one integration test: real `HttpServer` on port 0 + JDK `HttpClient`.
+- `:agentcore` — 47 tests. `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json`
+  contract through the `AgentCore` interface, protocol pinning, JSON codec round-trips,
+  malformed-response rejection), plus the 0.11.1 hardening suites:
+  `WebUrlPolicyHardeningTest` (the audit's URL-bypass table and the “normal domains/public IPs
+  still pass” side), `JsonLimitsTest` (nesting/string/number/container/dedup limits) and
+  `AgentCoreCodecLimitsTest` (codec-level rejection + bounded error text).
+- `AgentdApiTest` — 29 handler-level tests: every route, defaults, clamping, error codes, and a
+  check that the route table comes from `AgentCoreProtocol`; 0.11.1 additions cover 413 (8 MiB
+  body), no-echo of long tool names/paths, generic 500, deeply nested / `1e308` / `NaN` /
+  duplicate-key / over-long-string JSON, and a legal 256 KiB body.
+- `AgentdServerTest` — 5 integration tests on a real `ServerSocket`-based server (port 0): normal
+  requests, half-open body (health stays fast, then `408`), oversized declared body (`413`),
+  chunked body (`411`), and the optional token (`401`/`200`).

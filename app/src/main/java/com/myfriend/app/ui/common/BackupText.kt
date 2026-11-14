@@ -88,9 +88,12 @@ object BackupText {
         is BackupWarning.ApiConfigAddressKept ->
             context.quantity(R.plurals.backup_warn_api_config_address_kept, warning.count)
         is BackupWarning.ApiConfigInsecureIgnored ->
-            context.getString(R.string.backup_warn_api_config_insecure_ignored, warning.count)
+            context.quantity(R.plurals.backup_warn_api_config_insecure_ignored, warning.count, warning.count)
         is BackupWarning.ApiConfigRejected ->
             context.getString(R.string.backup_warn_api_config_rejected, warning.configName)
+        // 审计 P1-2：预览阶段就告诉用户「这份结构不完整，导入会被拒绝」。
+        is BackupWarning.IncompleteReferences ->
+            context.getString(R.string.backup_warn_incomplete_references, warning.holes)
     }
 
     fun failure(context: Context, failure: BackupFailure): String = when (failure) {
@@ -102,6 +105,9 @@ object BackupText {
         // 超大文件（安全 P2-3）：给出上限，用户能判断「是不是拿错了文件」。
         is BackupFailure.TooLarge ->
             context.getString(R.string.backup_fail_too_large, com.myfriend.app.domain.BackupLimits.megabytes(failure.limitBytes))
+        // 审计 P1-2：结构不完整（跨表引用断了）时整份拒绝，并说清「没有被清空」。
+        is BackupFailure.IncompleteReferences ->
+            context.getString(R.string.backup_fail_incomplete_references, failure.holes)
     }
 
     private fun section(context: Context, section: BackupSection): String = context.getString(

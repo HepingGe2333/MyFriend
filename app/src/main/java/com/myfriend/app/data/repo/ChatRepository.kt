@@ -20,6 +20,7 @@ import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.data.prefs.SettingsRepository
+import com.myfriend.app.domain.NotificationDeepLink
 import com.myfriend.app.domain.AttachmentsCodec
 import com.myfriend.app.domain.ChatNotificationPolicy
 import com.myfriend.app.domain.DataEraser
@@ -257,6 +258,15 @@ class ChatRepository @Inject constructor(
         rows: Int
     ): Flow<List<MessageEntity>> =
         messageDao.observeWindow(sessionId, start.createdAt, start.id, rows.coerceAtLeast(1))
+
+    /**
+     * 会话里最新一条消息的游标（没有消息为 null）。
+     *
+     * 审计 P1-1：定位窗口是固定区间，`hasMoreNewer` 不能只在定位那一刻算一次；
+     * 窗口数据每次变化时都要拿它和「窗口末尾」比一遍。
+     */
+    suspend fun latestMessageCursor(sessionId: String): MessagePaging.Cursor? =
+        messageDao.latestInSession(sessionId)?.let { MessagePaging.Cursor(it.createdAt, it.id) }
 
     /** 往前翻一页（时间正序返回）；返回不足一页说明到底了。 */
     suspend fun messagesBefore(
@@ -917,6 +927,21 @@ class ChatRepository @Inject constructor(
         sessionDao.markRead(sessionId)
     }
 
+    /**
+     * 通知深链的落点校验（安全 P2-7 / 审计 P2-6）：这个 `extra_session_id` 能不能直接打开。
+     *
+     * 任意应用都能给 exported 的 `MainActivity` 塞这个 extra，所以字符串一律不可信：
+     * 会话必须真的存在，而且属于当前 `activePersonaId`。任何一条不满足都返回 null，
+     * 界面停在首页（不导航、不 `markRead`、也不撤别人的通知）。
+     */
+    suspend fun resolveNotificationSession(raw: String?): String? {
+        val candidate = raw?.trim().orEmpty()
+        if (candidate.isEmpty()) return null
+        val session = sessionDao.getById(candidate) ?: return null
+        val active = runCatching { settingsRepository.settings.first().activePersonaId }.getOrNull()
+        return NotificationDeepLink.sessionIdToOpen(candidate, session.personaId, active)
+    }
+
     /** 打开某段会话（原子写入，见 [OpenSessionTracker]）。 */
     fun setOpenSession(id: String?) {
         openSessionTracker.open(id)
@@ -1210,6 +1235,10 @@ class ChatRepository @Inject constructor(
      */
     suspend fun clearAllChatData() {
         dataEraser.clearChatsAndMemories()
+        // 审计 P2-2（0.11.1）：与 wipeAllData 对齐——表都删了，还挂着的通知与被认为
+        // 「仍开着」的会话都要收掉，否则点旧通知会跳进一个不存在的会话、未读判定也拿旧值比较。
+        openSessionTracker.clearAll()
+        runCatching { chatNotifier.cancelAll(appContext) }
     }
 
     /**

@@ -10,6 +10,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -265,9 +267,13 @@ class DataErasureContractTest {
         seedAllTables(store)
         val keep = setOf("file:///files/avatars/avatar-keep.jpg", "file:///files/avatars/user.jpg")
 
-        eraser.replaceForBackupInsideTransaction(keep)
+        val report = store.inTransaction { eraser.replaceForBackupInsideTransaction(keep) }
+        assertNull("事务里只收集，不删文件（审计 P1-4）", files.keptAvatars)
+        assertEquals("事务里不该碰聊天图片", 0, files.chatImagesCleared)
 
+        eraser.commitFiles(report)
         assertEquals(keep, files.keptAvatars)
+        assertEquals(1, files.chatImagesCleared)
     }
 
     @Test
@@ -280,6 +286,97 @@ class DataErasureContractTest {
 
         store.inTransaction { eraser.deletePersonaInsideTransaction("p-A") }
         assertEquals("删人格的事务由 PersonaRepository 提供", 2, store.transactions)
+    }
+
+    // ------------------------------------------------------------------ 事务外删文件（审计 P1-4）
+
+    @Test
+    fun `删人格在事务内只收集待删文件 提交后才删`() = runTest {
+        val (eraser, store, files) = newEraser()
+        seedAllTables(store)
+        store.attachments = listOf("file:///files/media/chat-a1.jpg")
+        store.avatar = "file:///files/avatars/avatar-a.jpg"
+
+        val report = store.inTransaction { eraser.deletePersonaInsideTransaction("p-A") }
+
+        assertTrue("事务里这个人的行已经删了", store.isEmpty(ErasableTable.MESSAGES, "p-A"))
+        assertTrue("表删除发生在事务内", store.transactions == 1)
+        assertTrue("事务内不能删图片", files.deletedChatImages.isEmpty())
+        assertTrue("事务内不能删头像", files.deletedAvatars.isEmpty())
+        assertNotNull("待删文件被收集进报告", report.pendingFiles)
+
+        eraser.commitFiles(report)
+        assertEquals(listOf("file:///files/media/chat-a1.jpg"), files.deletedChatImages)
+        assertEquals(listOf<String?>("file:///files/avatars/avatar-a.jpg"), files.deletedAvatars)
+    }
+
+    @Test
+    fun `删人格事务失败时 一个文件都不删`() = runTest {
+        val (eraser, store, files) = newEraser()
+        seedAllTables(store)
+        store.attachments = listOf("file:///files/media/chat-a1.jpg")
+        store.avatar = "file:///files/avatars/avatar-a.jpg"
+        store.failOn = ErasableTable.MEMORIES
+
+        val error = runCatching { eraser.deletePersona("p-A") }.exceptionOrNull()
+
+        assertTrue("事务失败必须抛出来", error != null)
+        // 假 store 没有真回滚（它只记录调用），所以这里只断言**文件**：
+        // 这条测试要钉住的正是「事务失败时文件删除根本没发生」。
+        assertTrue("失败路径绝不能已经删掉聊天图片", files.deletedChatImages.isEmpty())
+        assertTrue("失败路径绝不能已经删掉头像", files.deletedAvatars.isEmpty())
+    }
+
+    @Test
+    fun `备份替换事务失败时 一个文件都不删`() = runTest {
+        val (eraser, store, files) = newEraser()
+        seedAllTables(store)
+        store.failOn = ErasableTable.PERSONAS
+
+        val error = runCatching { eraser.replaceForBackup(setOf("file:///files/avatars/avatar-keep.jpg")) }
+            .exceptionOrNull()
+
+        assertTrue("事务失败必须抛出来", error != null)
+        assertEquals("旧聊天图片不能被删", 0, files.chatImagesCleared)
+        assertNull("头像目录不能被回收", files.keptAvatars)
+    }
+
+    @Test
+    fun `删除全部数据事务失败时 不删媒体目录`() = runTest {
+        val (eraser, store, files) = newEraser()
+        seedAllTables(store)
+        store.failOn = ErasableTable.AGENT_TICKS
+
+        val error = runCatching { eraser.wipeAllData() }.exceptionOrNull()
+
+        assertTrue(error != null)
+        assertEquals("失败路径不能删整棵媒体目录", 0, files.allMediaCleared)
+    }
+
+    @Test
+    fun `两个调用点在事务提交之后才删文件`() {
+        val personaRepo = source("src/main/java/com/myfriend/app/data/repo/PersonaRepository.kt")
+        val backupRepo = source("src/main/java/com/myfriend/app/data/repo/BackupRepository.kt")
+        listOf("PersonaRepository" to personaRepo, "BackupRepository" to backupRepo).forEach { (name, text) ->
+            assertTrue("$name 必须在提交后调 commitFiles", text.contains("dataEraser.commitFiles("))
+        }
+        val importBody = backupBody(backupRepo)
+        val transactionIndex = importBody.indexOf("database.withTransaction")
+        val filesIndex = importBody.indexOf("dataEraser.commitFiles(")
+        assertTrue("备份替换：withTransaction 必须在 commitFiles 之前", transactionIndex in 0 until filesIndex)
+        val personaDeleteBody = personaDeleteBody(personaRepo)
+        val personaTransaction = personaDeleteBody.indexOf("database.withTransaction")
+        val personaFiles = personaDeleteBody.indexOf("dataEraser.commitFiles(")
+        assertTrue("删人格：withTransaction 必须在 commitFiles 之前", personaTransaction in 0 until personaFiles)
+        val eraserSource = source("agentcore/src/main/kotlin/com/myfriend/app/domain/DataErasure.kt")
+        listOf(
+            "suspend fun replaceForBackupInsideTransaction(",
+            "suspend fun deletePersonaInsideTransaction(",
+            "private suspend fun _replaceForBackup("
+        ).forEach { marker ->
+            val body = section(eraserSource, marker)
+            assertFalse("$marker 在事务里，不许碰文件（只收集）", body.contains("files."))
+        }
     }
 
     // ------------------------------------------------------------------ 清单本身
@@ -295,7 +392,7 @@ class DataErasureContractTest {
             ErasurePath.WIPE_ALL to setOf(
                 "messages", "chat_sessions", "memories", "memory_terms", "memory_echoes",
                 "memory_versions", "memory_vectors", "memory_consolidations", "agent_ticks",
-                "agent_intents", "persona_pending_patches", "persona_revisions",
+                "agent_intents", "api_usage", "persona_pending_patches", "persona_revisions",
                 "proactive_rules", "persona_presets", "personas", "api_configs"
             ),
             ErasurePath.DELETE_PERSONA to setOf(
@@ -360,6 +457,33 @@ class DataErasureContractTest {
         }
     }
 
+    /**
+     * 反向守卫（审计 P2-4）：`Entities.kt` 里出现的**每一张表**都必须在 [ErasableTable] 里。
+     *
+     * 0.10.2 的守卫只做「枚举 → Entities」一个方向：新加一张含用户原文的表、忘了登记枚举时，
+     * 测试仍然绿（这正是 `api_usage` 漏掉的路径）。反向枚举后，新表一进库就必须在清单里出现，
+     * 或者显式写进 allow-list 并说明理由。
+     */
+    @Test
+    fun `Entities 里的每一张表都在擦除清单里`() {
+        val entities = source("src/main/java/com/myfriend/app/data/local/Entities.kt")
+        val declared = Regex("""tableName\s*=\s*"([^"]+)"""")
+            .findAll(entities)
+            .map { it.groupValues[1] }
+            .toSet()
+        assertTrue("一张表都没读到，路径判断有问题", declared.size >= 17)
+        val known = ErasableTable.entries.map { it.tableName }.toSet()
+        // 目前没有「刻意不擦除」的表：允许列表留空，加进来必须写理由。
+        val allowList = emptyMap<String, String>()
+        val missing = declared.filter { it !in known && it !in allowList }
+        assertEquals(
+            "以下真实表不在 ErasableTable 里（新的用户内容表必须能被删干净）：$missing",
+            emptyList<String>(),
+            missing
+        )
+        assertTrue("api_usage 必须在清单里（审计 P2-4）", "api_usage" in known)
+    }
+
     @Test
     fun `删除中途失败会整体失败 不返回成功报告`() = runTest {
         val (eraser, store, _) = newEraser()
@@ -419,8 +543,46 @@ class DataErasureContractTest {
 
     private fun source(relative: String): String {
         val candidates = listOf(File("."), File(".."))
-        val root = candidates.firstOrNull { File(it, "src/main/java/com/myfriend/app").isDirectory }
+        val appRoot = candidates.firstOrNull { File(it, "src/main/java/com/myfriend/app").isDirectory }
             ?: error("找不到工程根目录：${File(".").absolutePath}")
-        return File(root, relative).readText()
+        // `agentcore/...` 这类路径相对仓库根；其它相对 app 模块。
+        val file = if (relative.startsWith("agentcore/")) {
+            File(repoRoot(appRoot), relative)
+        } else {
+            File(appRoot, relative)
+        }
+        return file.readText()
+    }
+
+    /** 从 app 模块目录往上找仓库根（`File(".").parentFile == null`，不能直接用 parent）。 */
+    private fun repoRoot(appRoot: File): File {
+        var dir: File? = appRoot.absoluteFile
+        while (dir != null) {
+            if (File(dir, "settings.gradle.kts").isFile) return dir
+            dir = dir.parentFile
+        }
+        error("找不到仓库根目录：${appRoot.absolutePath}")
+    }
+
+    private fun backupBody(text: String): String = section(text, "suspend fun importBundle(")
+
+    private fun personaDeleteBody(text: String): String = section(text, "suspend fun delete(personaId: String)")
+
+    private fun insideTransactionBody(text: String): String = section(text, "suspend fun replaceForBackupInsideTransaction(")
+
+    /** 从 [marker] 起截到本类下一个成员声明之前。 */
+    private fun section(text: String, marker: String): String {
+        val start = text.indexOf(marker)
+        require(start >= 0) { "找不到 $marker" }
+        val rest = text.substring(start + marker.length)
+        val ends = listOf(
+            "\n    private suspend fun ",
+            "\n    private fun ",
+            "\n    suspend fun ",
+            "\n    override fun ",
+            "\n    fun "
+        )
+        val end = ends.map { rest.indexOf(it) }.filter { it >= 0 }.minOrNull() ?: rest.length
+        return rest.substring(0, end)
     }
 }

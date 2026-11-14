@@ -13,6 +13,7 @@ import com.myfriend.app.domain.SleepInput
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
@@ -100,6 +101,10 @@ class RemoteAgentCoreClient(
 
     private val baseUrl: String = baseUrl.trim().trimEnd('/')
     private val client: OkHttpClient = httpClient.newBuilder()
+        // 审计 P2-7（0.11.1）：决策请求不跟随重定向。OkHttp 默认对 307/308 **保留方法与请求体**
+        // 并跟到跨域地址——被劫持/错配的局域网主机可以把 tool-args 里的文本转给第三方收集端。
+        .followRedirects(false)
+        .followSslRedirects(false)
         .connectTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
         .readTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
         .writeTimeout(timeoutMillis, TimeUnit.MILLISECONDS)
@@ -155,11 +160,16 @@ class RemoteAgentCoreClient(
     // ------------------------------------------------------------------ 内部
 
     private inline fun <T> remoteOrFallback(action: String, remote: () -> T, local: () -> T): T = try {
-        remote()
+        val result = remote()
+        AgentCoreRemoteStats.recordSuccess(action)
+        result
     } catch (failure: Exception) {
         // 刻意不 catch Throwable：OOM / StackOverflow 这类问题不该被伪装成「服务没起」。
+        // 审计 P2-7：回退要可观测（计数器），服务端可控的文案截断到 200 字符再进日志。
+        AgentCoreRemoteStats.recordFallback(action)
         logger.warn(
-            "agentd 决策调用失败（$action），已回退进程内实现：${failure.message ?: failure::class.simpleName}",
+            "agentd 决策调用失败（$action，累计回退 ${AgentCoreRemoteStats.fallbackCount()} 次），" +
+                "已回退进程内实现：${boundedForLog(failure.message ?: failure::class.simpleName)}",
             failure
         )
         local()
@@ -172,7 +182,9 @@ class RemoteAgentCoreClient(
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         client.newCall(request).execute().use { response ->
-            val text = response.body?.string().orEmpty()
+            // 审计 P2-7 / 安全 P2-8：响应体必须有上限。以前 `body.string()` 整份读，
+            // 一个错配/恶意的主机可以把审计进程直接 OOM（决策层在聊天链路上同步调用）。
+            val text = readBoundedBody(response)
             if (!response.isSuccessful) {
                 // 统一错误体里有一句中文；没有就退化成「HTTP 5xx」。
                 throw AgentCoreProtocolException(
@@ -183,12 +195,54 @@ class RemoteAgentCoreClient(
         }
     }
 
+    /**
+     * 读响应体，超过 [MAX_RESPONSE_BYTES] 直接按协议失败处理（随后回退进程内）。
+     *
+     * 先看 `Content-Length` 挡掉「声明就超大」的情况，读的时候再累计挡掉「不声明/撒谎」的。
+     */
+    private fun readBoundedBody(response: Response): String {
+        val body = response.body ?: return ""
+        val declared = body.contentLength()
+        if (declared > MAX_RESPONSE_BYTES) {
+            throw AgentCoreProtocolException(
+                "agentd 响应体过大（声明 $declared 字节，上限 $MAX_RESPONSE_BYTES）"
+            )
+        }
+        val bytes = java.io.ByteArrayOutputStream()
+        body.byteStream().use { input ->
+            val chunk = ByteArray(8 * 1024)
+            while (true) {
+                val read = input.read(chunk)
+                if (read < 0) break
+                bytes.write(chunk, 0, read)
+                if (bytes.size() > MAX_RESPONSE_BYTES) {
+                    throw AgentCoreProtocolException(
+                        "agentd 响应体过大（超过上限 $MAX_RESPONSE_BYTES 字节）"
+                    )
+                }
+            }
+        }
+        return bytes.toString("UTF-8")
+    }
+
+    /** 日志里只留固定长度，服务端可控文本不能无限写进 Logcat / debug.log（安全 P2-8）。 */
+    private fun boundedForLog(text: String?): String {
+        val value = text?.trim().orEmpty()
+        return if (value.length <= MAX_LOG_CHARS) value else value.take(MAX_LOG_CHARS) + "…"
+    }
+
     companion object {
         /**
          * 默认 1.5 秒：纯函数计算的远程往返，模拟器访问宿主机通常 < 10ms；
          * 1.5 秒还没回来，说明服务多半不在，回退比继续等更有价值。
          */
         const val DEFAULT_TIMEOUT_MILLIS = 1_500L
+
+        /** 决策响应体的上限：四个接口的正常响应都只有几百字节。 */
+        const val MAX_RESPONSE_BYTES = 256 * 1024
+
+        /** 日志里异常文案的最大长度（服务端可控文本，安全审计 P2-8）。 */
+        const val MAX_LOG_CHARS = 200
 
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }

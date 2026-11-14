@@ -897,6 +897,16 @@ interface ApiUsageDao {
 
     @Query("DELETE FROM api_usage")
     suspend fun deleteAll()
+
+    /**
+     * 按人清 token 流水。
+     *
+     * 当前没有任何删除路径按人清它（删人格刻意保留历史，界面归到「未知联系人」，
+     * 见 [observeBySession]）；这个方法让 `RoomErasureStore` 的两种口径（整库/按人）
+     * 都能实现，而不是留下一个「只能整表删」的特例。
+     */
+    @Query("DELETE FROM api_usage WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
 }
 
 @Dao

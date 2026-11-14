@@ -39,6 +39,14 @@ public enum MessagePaging {
     /// 长会话下会让点一下结果卡住好几秒。宁可少翻一点，给个「没找到」的提示。
     public static let maxFocusPages = 200
 
+    /// 定位时窗口的**条数上限**（0.11.1 审计 P2-13）。
+    ///
+    /// `maxFocusPages = 200` 只限制了「翻多少页」，翻满就是 200 × 60 = 12000 条消息
+    /// 同时驻留（每条还带 `content` / `attachmentsJson` / `toolTraceJson` 三份大字符串）——
+    /// 正是 P2-1 想消掉的那类全量物化，只是换了个入口。与 Android 侧的「窗口封顶 240 条」
+    /// 对齐：目标进入窗口后只保留它附近的一屏上下文，更早的页丢掉。
+    public static let maxFocusWindowMessages = 240
+
     /// 定位的结果。
     public struct FocusWindow: Equatable {
         /// 最终的窗口（时间升序）。
@@ -67,10 +75,13 @@ public enum MessagePaging {
     ///     参数是「当前窗口里最早的那条（可能为空）」与「这是第几页」——真实实现
     ///     拿它当 `pageBefore` 的游标，所以这层不需要知道数据库长什么样。
     ///   - maxPages: 最多翻几页（默认 `maxFocusPages`）。
+    ///   - cap: 窗口条数上限（默认 `maxFocusWindowMessages`）。超限时保留**最旧的一端**：
+    ///     目标总是刚从更早那一页并进来的，所以在窗口开头附近；丢掉的是「比目标新很多」的尾巴。
     public static func window(
         reaching messageId: String,
         from start: [MessageEntity],
         maxPages: Int = maxFocusPages,
+        cap: Int = maxFocusWindowMessages,
         loadOlder: (MessageEntity?, Int) -> [MessageEntity]?
     ) -> FocusWindow {
         var messages = start
@@ -92,10 +103,10 @@ public enum MessagePaging {
             pages += 1
             // 一页都没合进来（全是重复 id）说明游标没有往前走，再翻也是同一页。
             guard merged.count > messages.count else {
-                messages = merged
+                messages = Self.capped(merged, cap: cap)
                 return FocusWindow(messages: messages, found: false, pagesLoaded: pages, reachedEarliest: false)
             }
-            messages = merged
+            messages = Self.capped(merged, cap: cap)
             if messages.contains(where: { $0.id == messageId }) {
                 return FocusWindow(messages: messages, found: true, pagesLoaded: pages, reachedEarliest: false)
             }
@@ -107,6 +118,13 @@ public enum MessagePaging {
             pagesLoaded: pages,
             reachedEarliest: false
         )
+    }
+
+    /// 只保留窗口最旧的一端（`cap` 条）。目标一定是刚并进来的那一页里的，
+    /// 所以它在保留区间里；丢的是「离目标很远的新消息」。
+    static func capped(_ messages: [MessageEntity], cap: Int) -> [MessageEntity] {
+        guard cap > 0, messages.count > cap else { return messages }
+        return Array(messages.prefix(cap))
     }
 
     // MARK: - 新消息到达：已加载区间不随窗口滑动（0.11.0 P2-5）

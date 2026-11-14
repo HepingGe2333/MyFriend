@@ -2,6 +2,7 @@ package com.myfriend.app.i18n
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -51,11 +52,38 @@ class StringResourceParityTest {
         val zh = TestResources.strings("values")
         val en = TestResources.strings("values-en")
         val mismatched = (zh.keys intersect en.keys).mapNotNull { key ->
-            val left = placeholders(zh.getValue(key))
-            val right = placeholders(en.getValue(key))
+            val left = formatSlots(zh.getValue(key))
+            val right = formatSlots(en.getValue(key))
             if (left == right) null else "$key zh=$left en=$right"
         }
         assertEquals("占位符对不上的条目：$mismatched", emptyList<String>(), mismatched)
+    }
+
+    /**
+     * 没有位置参数时 `%s` / `%d` **互换**也会让 `String.format` 抛
+     * `IllegalFormatConversionException`（安全审计 P2-10 的第二个缺口）。
+     *
+     * 以前的比较是「格式符集合」：`已用 %s，共 %d` 与 `%d used by %s` 的集合都是
+     * `{%s, %d}`，于是绿；但按参数位置看，中文第 1 个是字符串、英文第 1 个是整数，
+     * 运行时直接崩。现在比的是「参数位置 → 格式符」的映射。
+     */
+    @Test
+    fun `无位置参数的格式符互换会被判红`() {
+        assertNotEquals(
+            "第 1 个参数在中文里是 %s、英文里是 %d，必须判红",
+            formatSlots("已用 %s，共 %d"),
+            formatSlots("%d used by %s")
+        )
+        assertEquals(
+            "有位置参数时换了语序但参数位置不变，是合法的",
+            formatSlots("已用 %1\$s，共 %2\$d"),
+            formatSlots("%2\$d used by %1\$s")
+        )
+        assertEquals(
+            "同一个位置重复引用同一个值也是合法的",
+            formatSlots("%1\$d 条（共 %1\$d 条）"),
+            formatSlots("%1\$d item(s) (of %1\$d)")
+        )
     }
 
     @Test
@@ -64,14 +92,22 @@ class StringResourceParityTest {
         val en = TestResources.plurals("values-en")
         val problems = buildList {
             (zh.keys intersect en.keys).forEach { key ->
-                val left = zh.getValue(key).values.flatMap { placeholders(it) }.toSet()
-                val right = en.getValue(key).values.flatMap { placeholders(it) }.toSet()
-                if (left != right) add("$key 占位符不一致 zh=$left en=$right")
-                if (zh.getValue(key).keys != setOf("other")) {
-                    add("$key 中文 plurals 只该有 other，实际 ${zh.getValue(key).keys}")
+                val zhItems = zh.getValue(key)
+                val enItems = en.getValue(key)
+                if (zhItems.keys != setOf("other")) {
+                    add("$key 中文 plurals 只该有 other，实际 ${zhItems.keys}")
                 }
-                if ("other" !in en.getValue(key).keys) {
-                    add("$key 英语 plurals 缺少 other")
+                if ("other" !in enItems.keys) add("$key 英语 plurals 缺少 other")
+                // 英文每个 quantity 里出现的格式符都必须与中文同位置同类型；
+                // 少用某个占位符是合法的（`getQuantityString` 会忽略多余参数，例如 en 的
+                // one = "once" 不再重复计数）。但**多出**或**位置/类型不同**会崩，必须判红。
+                val expected = formatSlots(zhItems["other"].orEmpty())
+                enItems.forEach { (quantity, text) ->
+                    val actual = formatSlots(text)
+                    val problemsForQuantity = actual.filter { (index, spec) -> expected[index] != spec }
+                    if (problemsForQuantity.isNotEmpty()) {
+                        add("$key[$quantity] 占位符与中文不一致 zh=$expected en=$actual")
+                    }
                 }
             }
         }
@@ -154,6 +190,17 @@ class StringResourceParityTest {
         assertEquals("格式符对不上的条目：$mismatched", emptyList<String>(), mismatched)
     }
 
+    /** 只写中文标点/全角字符也算「没翻译」——0.10.x 的正则漏了 U+3000–303F 与 U+FF00–FFEF。 */
+    @Test
+    fun `只写中文标点或全角字符也判红`() {
+        listOf("Settings。", "Settings，", "Settings：", "Ｓｅｔｔｉｎｇｓ", "设置").forEach { text ->
+            assertTrue("「$text」应当被中文守卫拦住", CONTAINS_CJK.containsMatchIn(text))
+        }
+        listOf("Settings.", "Set: up", "Older format (v%1\$d)", "…", "—", "·").forEach { text ->
+            assertFalse("「$text」是正常英文/排版字符，不该判红", CONTAINS_CJK.containsMatchIn(text))
+        }
+    }
+
     @Test
     fun `plurals 的完整格式符集合两边一致`() {
         val zh = TestResources.plurals("values")
@@ -167,21 +214,48 @@ class StringResourceParityTest {
     }
 
     /**
-     * 一条文案里的全部格式符（Android `String.format` 语法）。
+     * 「参数位置 → 格式符」的映射（安全审计 P2-10）。
      *
-     * 覆盖位置参数、flags、宽度、精度与所有转换字符（`%s %d %f %x %c %%` 等）。
-     * `%%` 也保留：它决定「这段文案里有没有一个字面百分号」，两边不一致同样是问题。
+     * 没写 `%n$` 的格式符按出现顺序自动编号（`String.format` 的真实语义）；
+     * `%%` 不消耗参数，忽略。这样 `%s %d` 与 `%d %s` 会得出不同的映射（判红），
+     * 而 `%1$s %2$d` 与 `%2$d %1$s` 相同（合法换语序）。
      */
-    /** 0.10.1 的窄口径占位符（只认 `%1$s` / `%d`）；保留给老测试，全量口径见 [formatSpecifiers]。 */
-    private fun placeholders(text: String): Set<String> = formatSpecifiers(text)
+    private fun formatSlots(text: String): Map<Int, String> {
+        val slots = LinkedHashMap<Int, String>()
+        var nextImplicit = 1
+        FORMAT_SPECIFIER.findAll(text).forEach { match ->
+            if (match.groupValues[2] == "%") return@forEach
+            val explicit = match.groupValues[1]
+            val index = if (explicit.isNotEmpty()) {
+                explicit.dropLast(1).toInt()
+            } else {
+                nextImplicit++
+                nextImplicit - 1
+            }
+            slots[index] = match.value
+        }
+        return slots
+    }
 
     private fun formatSpecifiers(text: String): Set<String> =
-        Regex("""%(\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?([a-zA-Z%])""")
-            .findAll(text)
+        FORMAT_SPECIFIER.findAll(text)
+            .filter { it.groupValues[2] != "%" }
             .map { it.value }
             .toSet()
 
     private companion object {
-        val CONTAINS_CJK = Regex("[\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]")
+        /**
+         * `values-en` 里不允许出现的字符（安全审计 P2-10 的第一个缺口）。
+         *
+         * 旧正则只覆盖 CJK 统一表意文字（3400–4DBF / 4E00–9FFF / F900–FAFF）：
+         * `values-en/strings.xml` 里写 `Settings。` 或全角字母都会绿。
+         * 现在把 CJK 标点（U+3000–303F）、全角字符（U+FF00–FFEF）也算进来。
+         *
+         * 允许的排版字符不在这些区间：`…`(U+2026)、`—`(U+2014)、`·`(U+00B7)、`’`(U+2019)。
+         */
+        val CONTAINS_CJK = Regex("[\\u3000-\\u303f\\uff00-\\uffef\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]")
+
+        /** Android `String.format` 语法：位置参数、flags、宽度、精度、转换字符。 */
+        val FORMAT_SPECIFIER = Regex("""%(\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?([a-zA-Z%])""")
     }
 }

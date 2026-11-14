@@ -77,6 +77,25 @@ object ImageContextBudget {
     fun imagesForMessage(count: Int): Int = count.coerceIn(0, MAX_IMAGES_PER_MESSAGE)
 
     /**
+     * 解码后要把位图缩到的目标尺寸（纯函数，审计 P2-10 / 0.11.1）。
+     *
+     * API 28+ 的 `ImageDecoder` 能直接按目标尺寸解码；API 26–27 只能用
+     * `BitmapFactory.inSampleSize` 粗采样（只能保证不超过 [TARGET_EDGE_PX] 的 2 倍），
+     * 之后再调一次 `Bitmap.createScaledBitmap` 才真正落到「长边 ≤ 1024」。
+     *
+     * @return 目标宽高；已经是目标尺寸以内（或输入非法）时返回 null，表示不用缩。
+     */
+    fun scaledSize(width: Int, height: Int, targetEdge: Int = TARGET_EDGE_PX): Pair<Int, Int>? {
+        if (width <= 0 || height <= 0 || targetEdge <= 0) return null
+        val longest = maxOf(width, height)
+        if (longest <= targetEdge) return null
+        val scale = targetEdge.toFloat() / longest
+        val scaledWidth = (width * scale).toInt().coerceAtLeast(1)
+        val scaledHeight = (height * scale).toInt().coerceAtLeast(1)
+        return scaledWidth to scaledHeight
+    }
+
+    /**
      * 还能不能再塞一张已经编码好的 data URL。
      *
      * [usedChars] 是已经拼进去的字符数。空值（解不出来 / 文件没了）不占预算，返回 false。

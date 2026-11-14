@@ -42,6 +42,10 @@ struct HomeView: View {
     @State private var digests: [SessionDigest] = []
     /// 页面是否在屏幕上（`onAppear` / `onDisappear` 之间）。
     @State private var isVisible = false
+    /// App 是否在前台（`scenePhase` 的缓存：Task 里要读的是最新值，而不是闭包捕获的那一份）。
+    @State private var sceneActive = true
+    /// 4 秒一拍的摘要核对（只在可见 + 前台时活着）。
+    @State private var pulseTask: Task<Void, Never>?
 
     var body: some View {
         ScrollView {
@@ -62,26 +66,26 @@ struct HomeView: View {
         .onAppear {
             isVisible = true
             reload()
+            startDigestPulse()
         }
-        .onDisappear { isVisible = false }
+        .onDisappear {
+            isVisible = false
+            stopDigestPulse()
+        }
         .onChange(of: env.currentSettings.activePersonaId) { _ in reload() }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:
+                sceneActive = true
                 // 从后台回来：先核一次（这段时间里可能有人写过消息），再等下一拍。
                 refreshDigestsIfChanged()
+                startDigestPulse()
             case .background, .inactive:
-                break
+                sceneActive = false
+                stopDigestPulse()
             @unknown default:
                 break
             }
-        }
-        // 首页的「观察聚合」：只在页面可见 + App 在前台时每 4 秒核一次会话摘要。
-        // 用 `Timer.publish` 而不是自己开 Task：它天然在主 runloop 上跑、进后台自动暂停，
-        // 回调里用纯逻辑 `HomeDigest.changed` 判断要不要重画（值没变就什么都不做）。
-        .onReceive(Self.pulseTimer) { _ in
-            guard isVisible, scenePhase == .active else { return }
-            refreshDigestsIfChanged()
         }
         .refreshable { reload() }
         .alert(L("出了点问题"), isPresented: Binding(
@@ -300,10 +304,32 @@ struct HomeView: View {
     /// 首页核一次会话摘要的间隔（只在可见 + 前台时跑）。
     static let pulseIntervalSeconds: TimeInterval = 4
 
-    /// 只在首页活着的时候走的一拍。`common` 模式：滚动（tracking）时也照常触发。
-    static let pulseTimer = Timer
-        .publish(every: pulseIntervalSeconds, on: .main, in: .common)
-        .autoconnect()
+    /// 起一拍「观察聚合」（0.11.1 审计 P2-12）。
+    ///
+    /// 原来用 `Timer.publish(...).autoconnect()`：订阅绑在视图树上，`onDisappear` 不会退订，
+    /// 首页被 push 走之后仍然每 4 秒唤醒主线程（与聊天页「不可见即停」的口径不一致）。
+    /// 改成受控 `Task`：不可见 / 进后台立刻取消，回来再起，节奏与 `pulseIntervalSeconds` 一致。
+    private func startDigestPulse() {
+        stopDigestPulse()
+        pulseTask = Task {
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(
+                        nanoseconds: UInt64(Self.pulseIntervalSeconds * 1_000_000_000)
+                    )
+                } catch {
+                    return
+                }
+                guard !Task.isCancelled, isVisible, sceneActive else { return }
+                refreshDigestsIfChanged()
+            }
+        }
+    }
+
+    private func stopDigestPulse() {
+        pulseTask?.cancel()
+        pulseTask = nil
+    }
 
     /// 会话摘要变了才重画（未读 / 预览 / 最后一条时间）。
     ///

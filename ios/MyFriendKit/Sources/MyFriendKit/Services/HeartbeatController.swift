@@ -178,9 +178,20 @@ public final class HeartbeatController {
         // 0.11.0：基础值走 agent 决策层（远程失败回退本机 —— 心跳不能因为内核不可用停摆）。
         // 心情修正仍在本机：`MoodBehavior` 需要 label 驱动的 `MoodTuning`，客户端的
         // `proactiveCap(level:moodIntensity:)` 只有强度。
-        let baseCap = (try? await agentCore.proactiveCap(
-            level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
-        )) ?? NativeAgentCoreClient().proactiveCapNow(
+        // 0.11.1 审计 P2-1：同上 —— 严格模式的失败在 `decide` 里已经记成可见诊断并抛出，
+        // 这里不再「假装什么都没发生」地静默回退（回退路径只给普通 remote 模式）。
+        let baseCap = (try? await agentCore.decide(
+            endpoint: "proactive-cap",
+            nativeFallback: {
+                NativeAgentCoreClient().proactiveCapNow(
+                    level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+                )
+            }
+        ) {
+            try await agentCore.proactiveCap(
+                level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+            )
+        }) ?? NativeAgentCoreClient().proactiveCapNow(
             level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
         )
         let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: snapshot.tuning)

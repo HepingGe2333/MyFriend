@@ -20,6 +20,12 @@ import kotlin.math.floor
  */
 object AgentCoreCodec {
 
+    /** 远端错误体最长接受的字符数；超过直接当作「没有可读错误」，避免异常响应放大内存/日志。 */
+    const val MAX_ERROR_BODY_CHARS = 1024 * 1024
+
+    /** 取出来给人看/写日志的错误文案上限（0.11.1 P2-2：错误回显必须有界）。 */
+    const val MAX_ERROR_MESSAGE_CHARS = 512
+
     // ------------------------------------------------------------------ 睡眠
 
     fun encodeSleepInput(input: SleepInput): String = Json.stringify(
@@ -157,18 +163,30 @@ object AgentCoreCodec {
 
     // ------------------------------------------------------------------ 错误体
 
-    /** 从统一错误体里取一句人话；不是错误体 / 坏 JSON 返回 null（不抛异常）。 */
+    /**
+     * 从统一错误体里取一句人话；不是错误体 / 坏 JSON / 超大响应返回 null（不抛异常）。
+     *
+     * 0.11.1 起对「读回来的东西」也设上限：错误体本身超过 [MAX_ERROR_BODY_CHARS] 直接不解析，
+     * 取出的文案截断到 [MAX_ERROR_MESSAGE_CHARS]——服务端可控文本会进客户端日志（审计 P2-8），
+     * 不能让一条远端错误把 logcat 刷爆。
+     */
     fun decodeErrorMessage(body: String?): String? {
         if (body.isNullOrBlank()) return null
+        if (body.length > MAX_ERROR_BODY_CHARS) return null
         val parsed = runCatching { Json.parse(body) }.getOrNull() as? JsonValue.Obj ?: return null
         val error = parsed.fields[AgentCoreProtocol.FIELD_ERROR] as? JsonValue.Obj ?: return null
         val message = (error.fields[AgentCoreProtocol.FIELD_ERROR_MESSAGE] as? JsonValue.Str)?.value
         val code = (error.fields[AgentCoreProtocol.FIELD_ERROR_CODE] as? JsonValue.Str)?.value
-        return when {
+        val text = when {
             !message.isNullOrBlank() && !code.isNullOrBlank() -> "$message（$code）"
             !message.isNullOrBlank() -> message
             !code.isNullOrBlank() -> code
             else -> null
+        } ?: return null
+        return if (text.length > MAX_ERROR_MESSAGE_CHARS) {
+            text.take(MAX_ERROR_MESSAGE_CHARS) + "…"
+        } else {
+            text
         }
     }
 

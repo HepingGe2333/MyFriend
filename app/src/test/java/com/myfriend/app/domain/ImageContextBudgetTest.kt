@@ -2,6 +2,7 @@ package com.myfriend.app.domain
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -74,6 +75,31 @@ class ImageContextBudgetTest {
         assertTrue("单张要压到 320KB 以内", ImageContextBudget.MAX_ENCODED_BYTES <= 320 * 1024)
         assertTrue("质量阶梯必须递减", ImageContextBudget.JPEG_QUALITY_LADDER.zipWithNext().all { (a, b) -> a > b })
         assertTrue("最低质量不能太低（否则截图看不清）", ImageContextBudget.JPEG_QUALITY_LADDER.last() >= 45)
+    }
+
+    // ------------------------------------------------------------------ 审计 P2-10（0.11.1）：目标尺寸
+
+    @Test
+    fun `长图按长边缩到目标尺寸`() {
+        // API 26–27 的 BitmapFactory 只能粗采样（4000 → 2000），必须再缩到 1024。
+        assertEquals(1024 to 768, ImageContextBudget.scaledSize(4000, 3000))
+        assertEquals(768 to 1024, ImageContextBudget.scaledSize(3000, 4000))
+        assertEquals(1024 to 1024, ImageContextBudget.scaledSize(4096, 4096))
+        assertEquals(1024 to 1, ImageContextBudget.scaledSize(100_000, 1))
+    }
+
+    @Test
+    fun `已经够小的图不缩`() {
+        assertNull("长边本来就 ≤1024，不该再缩一次", ImageContextBudget.scaledSize(1024, 768))
+        assertNull(ImageContextBudget.scaledSize(300, 200))
+        assertNull("宽高相等也要看长边", ImageContextBudget.scaledSize(1024, 1024))
+    }
+
+    @Test
+    fun `非法尺寸返回 null 而不是除零`() {
+        assertNull(ImageContextBudget.scaledSize(0, 100))
+        assertNull(ImageContextBudget.scaledSize(-5, 100))
+        assertNull(ImageContextBudget.scaledSize(100, 100, targetEdge = 0))
     }
 
     @Test

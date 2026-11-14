@@ -196,6 +196,8 @@
     <string name="api_edit">Edit</string>
     <string name="api_duplicate">Duplicate</string>
     <string name="api_key_not_set">No key set</string>
+    <string name="api_key_unrecoverable_placeholder">Key can\'t be decrypted — please enter it again</string>
+    <string name="api_key_unrecoverable_hint">The key saved on this device can no longer be decrypted (system backup restore or lock-screen change). Please enter the API key again.</string>
     <string name="api_key_stored">Key saved encrypted</string>
     <string name="api_list_duplicated">Config duplicated</string>
     <string name="api_list_duplicate_failed">Couldn\'t duplicate</string>
@@ -1384,7 +1386,10 @@
         <item quantity="one">%1$d API setup points somewhere else in the backup; this phone’s addresses were kept (edit and confirm manually to change one)</item>
         <item quantity="other">%1$d API setups point somewhere else in the backup; this phone’s addresses were kept (edit and confirm manually to change one)</item>
     </plurals>
-    <string name="backup_warn_api_config_insecure_ignored">The backup asks to allow plain HTTP, which was not applied: insecure HTTP can only be turned on here, by hand</string>
+    <plurals name="backup_warn_api_config_insecure_ignored">
+        <item quantity="one">%1$d API setup asks to allow plain HTTP; that was not applied (insecure HTTP can only be turned on here, by hand)</item>
+        <item quantity="other">%1$d API setups ask to allow plain HTTP; that was not applied (insecure HTTP can only be turned on here, by hand)</item>
+    </plurals>
     <string name="backup_warn_api_config_rejected">Setup “%1$s” failed this phone’s validation (for example a plain HTTP address) and was skipped</string>
     <string name="backup_section_persona">personas</string>
     <string name="backup_section_memory">memories</string>
@@ -1399,6 +1404,8 @@
     <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
     <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
     <string name="backup_fail_too_large">That file is too large (over %1$dMB) to be a MyFriend backup.</string>
+    <string name="backup_fail_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to. The import was cancelled so it doesn\'t overwrite him on this phone.</string>
+    <string name="backup_warn_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to, so importing it will be refused</string>
     <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
 
     <!-- Import results: personas / presets -->

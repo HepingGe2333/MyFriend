@@ -52,7 +52,14 @@ class ApiConfigRepository @Inject constructor(
         )
     }
 
-    fun hasApiKey(config: ApiConfigEntity): Boolean = secretCipher.hasKey(config.apiKeyCipher)
+    /**
+     * 「这个配置现在能不能用 Key」的布尔形状。
+     *
+     * 安全 P2-6（0.11.1 审计 P2-5）：语义改成三态判定的转发——只有
+     * [ApiKeyState.USABLE] 才算已配置，Keystore 失效时不再谎报「已保存」。
+     * 界面直接用 [keyState] 区分「没配 / 可用 / 解不出来」。
+     */
+    fun hasApiKey(config: ApiConfigEntity): Boolean = keyState(config) == ApiKeyState.USABLE
 
     /** 是否已保存独立的联网专用 Key（为空表示复用主 Key）。 */
     fun hasWebToolsKey(config: ApiConfigEntity): Boolean = secretCipher.hasKey(config.webToolsApiKeyCipher)

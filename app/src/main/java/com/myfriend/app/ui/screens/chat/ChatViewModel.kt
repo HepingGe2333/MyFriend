@@ -43,6 +43,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -206,10 +208,19 @@ class ChatViewModel @Inject constructor(
             }
         }
         .onEach { rows ->
-            // 只有首屏能靠「不足一页」判断到底了；之后的区间条数变多不代表还有更早的。
-            // 有界窗口里「还有没有更早/更新」由 MessageJump 的计划决定，不在这里重算。
-            if (jumpWindow.value == null && sinceCursor.value == null) {
-                pagingState.update { MessagePaging.onFirstWindow(it, rows.size) }
+            if (jumpWindow.value == null) {
+                // 只有首屏能靠「不足一页」判断到底了；之后的区间条数变多不代表还有更早的。
+                if (sinceCursor.value == null) {
+                    pagingState.update { MessagePaging.onFirstWindow(it, rows.size) }
+                }
+            } else {
+                // 审计 P1-1：有界窗口是 `LIMIT rows` 的固定区间，窗口末尾之后的新消息
+                // （自己发的、心跳/后台写的）不会自己进来。Room 在 messages 变化时会重跑
+                // 这个窗口查询，这里趁机按「窗口末尾 vs 会话最新一条」重算 hasMoreNewer，
+                // 让「更新的消息」入口能重新出现，而不是只在定位那一刻算一次。
+                val windowEnd = rows.lastOrNull()?.let { MessagePaging.Cursor(it.createdAt, it.id) }
+                val latest = runCatching { chatRepository.latestMessageCursor(sessionId) }.getOrNull()
+                pagingState.update { MessagePaging.onWindowRows(it, latest, windowEnd) }
             }
         }
 
@@ -302,6 +313,10 @@ class ChatViewModel @Inject constructor(
     private var streamJob: Job? = null
     private var memoryJob: Job? = null
 
+    /** ViewModel 是否已经销毁（[onCleared] 里立起）：选图协程据此决定「登记还是直接删文件」。 */
+    @Volatile
+    private var draftWindowClosed = false
+
     /**
      * 一次「发送 / 重新生成 / 编辑」从落库到开始出字之间有几十毫秒空档。
      * 没有它，连着点两下会写进两条一样的消息——这是原来 isPreparing 顺带挡住的事。
@@ -370,6 +385,17 @@ class ChatViewModel @Inject constructor(
         pagingState.update { MessagePaging.onLatest(it) }
     }
 
+    /**
+     * 用户主动写消息（发送 / 重新生成 / 编辑）之前，若正停在检索定位的有界窗口里，
+     * 先回到最新一屏（审计 P1-1）。
+     *
+     * 留在窗口里的话：新写的消息 `createdAt` 落在窗口区间之外，列表里根本看不到——
+     * 用户感知是「发出去的话消失了、他也不理我」；随后助手回复同样落在窗口外。
+     */
+    private fun leaveJumpWindowForNewMessage() {
+        if (jumpWindow.value != null) showLatest()
+    }
+
     private suspend fun initialPrepare() {
         val session = chatRepository.getSession(sessionId) ?: return
         if (session.apiConfigId == null && apiConfigRepository.getAll().isNotEmpty()) {
@@ -433,16 +459,30 @@ class ChatViewModel @Inject constructor(
     fun addImages(uris: List<Uri>) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
-            val added = uris.take(MAX_IMAGES).mapNotNull { uri ->
-                MediaStorage.persistChatImage(context, uri).getOrNull()
+            // 审计 P2-12（0.11.1）：落盘与登记必须在同一个不可取消区域里。
+            // 以前 `persistChatImage` 已经写完文件、协程在 `ephemeral.update` 之前被取消
+            //（选完图立刻按返回 / 切人格），返回的路径从未进入 `images`，`onCleared` 按
+            // 已登记集合删除，自然删不到——每张 ≤4MB 纯增量泄漏。
+            val added = withContext(NonCancellable) {
+                val persisted = uris.take(MAX_IMAGES).mapNotNull { uri ->
+                    MediaStorage.persistChatImage(context, uri).getOrNull()
+                }
+                if (persisted.isEmpty()) {
+                    emptyList()
+                } else if (draftWindowClosed) {
+                    // ViewModel 已经销毁（onCleared 跑过）：文件不该留在磁盘上。
+                    MediaStorage.deleteAttachments(context, persisted)
+                    emptyList()
+                } else {
+                    ephemeral.update { state ->
+                        val merged = (state.images + persisted).take(MAX_IMAGES)
+                        state.copy(images = merged)
+                    }
+                    persisted
+                }
             }
             if (added.isEmpty()) {
                 ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_image_load_failed)) }
-                return@launch
-            }
-            ephemeral.update { state ->
-                val merged = (state.images + added).take(MAX_IMAGES)
-                state.copy(images = merged)
             }
         }
     }
@@ -496,6 +536,8 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
+                // 审计 P1-1：定位窗口里发送 → 先回到最新一屏，否则自己刚发的那条落在窗口外。
+                leaveJumpWindowForNewMessage()
                 // 0.10.2：发送不再等「抽记忆」跑完。抽取是后台任务（读的是历史窗口），
                 // 与「写一条用户消息」没有写冲突；以前在这里 join 会让发送键看起来坏掉
                 // （最长等一次完整模型往返，期间没有任何 loading）。
@@ -600,6 +642,8 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
+                // 审计 P1-1：定位窗口里重新生成 → 新回复会落在窗口外，先回到最新一屏。
+                leaveJumpWindowForNewMessage()
                 // 同上：重新生成也不等后台抽记忆。
                 val result = chatRepository.prepareRegeneration(sessionId)
                 if (result.isFailure) {
@@ -619,6 +663,8 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
+                // 审计 P1-1：定位窗口里编辑重发 → 先回到最新一屏，不然改完的话看不见。
+                leaveJumpWindowForNewMessage()
                 // 同上：编辑重发也不等后台抽记忆。
                 val result = chatRepository.editUserMessage(sessionId, messageId, content)
                 if (result.isFailure) {
@@ -806,6 +852,10 @@ class ChatViewModel @Inject constructor(
         }
 
     override fun onCleared() {
+        // 审计 P2-12（0.11.1）：先立起「草稿窗口已关」的旗子，再删已登记的图片。
+        // `addImages` 的落盘+登记在 NonCancellable 里，看到旗子后会自己删掉刚写的文件，
+        // 不会把路径登记进一个已经销毁的 ViewModel。
+        draftWindowClosed = true
         streamJob?.cancel()
         memoryJob?.cancel()
         // 审计 P2-1：选了图但没发出去（返回键 / 切人格 / 从通知跳到别的会话）时，

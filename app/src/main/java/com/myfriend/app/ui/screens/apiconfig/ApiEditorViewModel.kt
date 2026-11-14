@@ -9,6 +9,7 @@ import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.domain.ApiConfigDraft
+import com.myfriend.app.domain.ApiKeyState
 import com.myfriend.app.network.ProviderCapabilities
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -31,7 +32,14 @@ data class ApiEditorUiState(
     val provider: ProviderType = ProviderType.OPENAI,
     val baseUrl: String = "",
     val apiKey: String = "",
-    val hasExistingKey: Boolean = false,
+    /**
+     * 已保存 Key 的三态（安全 P2-6 / 审计 P2-5）。
+     *
+     * 以前界面只拿到 `hasExistingKey`（密文非空）：Keystore 失效、密文还在时显示
+     * 「密钥已加密保存」，用户发消息才收到 401/无法恢复。现在「解不出来」是独立状态，
+     * 界面上直接说「密钥无法解密，请重新填写」。
+     */
+    val existingKeyState: ApiKeyState = ApiKeyState.MISSING,
     val model: String = "",
     val customHeadersJson: String = "",
     val allowInsecureHttp: Boolean = false,
@@ -89,7 +97,7 @@ class ApiEditorViewModel @Inject constructor(
                             name = config.name,
                             provider = config.provider,
                             baseUrl = config.baseUrl,
-                            hasExistingKey = repository.hasApiKey(config),
+                            existingKeyState = repository.keyState(config),
                             model = config.model,
                             customHeadersJson = config.customHeadersJson,
                             allowInsecureHttp = config.allowInsecureHttp,

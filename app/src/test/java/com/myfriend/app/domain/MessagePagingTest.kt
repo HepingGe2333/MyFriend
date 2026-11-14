@@ -144,6 +144,65 @@ class MessagePagingTest {
         assertTrue("失败了还能再试", failed.canLoadOlder)
     }
 
+    // ------------------------------------------------------------------ 定位窗口的「更新的消息」（审计 P1-1）
+
+    @Test
+    fun `窗口末尾之后还有消息 就亮更新的入口`() {
+        val end = MessagePaging.Cursor(createdAt = 100L, id = "m100")
+        val latest = MessagePaging.Cursor(createdAt = 200L, id = "m200")
+        assertTrue(MessagePaging.isNewer(latest, end))
+        val state = MessagePaging.onWindowRows(MessagePaging.State(initialized = true), latest, end)
+        assertTrue("后台/心跳写入也要让「回到最新」入口重新出现", state.hasMoreNewer)
+    }
+
+    @Test
+    fun `窗口已经到最新 就不亮入口`() {
+        val latest = MessagePaging.Cursor(createdAt = 200L, id = "m200")
+        val state = MessagePaging.onWindowRows(MessagePaging.State(), latest, latest)
+        assertFalse(state.hasMoreNewer)
+        assertFalse(MessagePaging.isNewer(latest, latest))
+    }
+
+    @Test
+    fun `同一毫秒也要按稳定序比较`() {
+        val end = MessagePaging.Cursor(createdAt = 100L, id = "b")
+        val newer = MessagePaging.Cursor(createdAt = 100L, id = "c")
+        val older = MessagePaging.Cursor(createdAt = 100L, id = "a")
+        assertTrue("同毫秒时 id 更大的更晚", MessagePaging.isNewer(newer, end))
+        assertFalse("同毫秒时 id 更小的更早", MessagePaging.isNewer(older, end))
+    }
+
+    @Test
+    fun `没有消息时不算更新`() {
+        assertFalse(MessagePaging.isNewer(null, MessagePaging.Cursor(1L, "a")))
+        assertFalse(MessagePaging.isNewer(MessagePaging.Cursor(1L, "a"), null))
+    }
+
+    @Test
+    fun `定位时计划说没有更新的 但新消息到达后会重算`() {
+        // 审计 P1-1 的真实场景：200 条会话跳到第 100 条，窗口 40..199、hasMoreNewer=false
+        //（MessageJump.plan 的计划值）。之后来一条新消息，界面必须重新出现「回到最新」。
+        val plan = MessageJump.plan(total = 200, beforeTarget = 100, pageSize = page)
+        assertFalse("计划值：定位那一刻窗口确实到末尾", plan.hasMoreNewer)
+        val jumped = MessagePaging.onJumped(
+            MessagePaging.State(),
+            MessagePaging.Window(
+                start = MessagePaging.Cursor(40L, "m40"),
+                rows = plan.windowRows,
+                hasMoreOlder = plan.hasMoreOlder,
+                hasMoreNewer = plan.hasMoreNewer
+            )
+        )
+        assertFalse(jumped.hasMoreNewer)
+        val afterNewMessage = MessagePaging.onWindowRows(
+            jumped,
+            latest = MessagePaging.Cursor(201L, "m201"),
+            windowEnd = MessagePaging.Cursor(199L, "m199")
+        )
+        assertTrue("来了新消息之后必须能回到最新", afterNewMessage.hasMoreNewer)
+        assertEquals("hasMoreOlder 不该被这次重算改掉", jumped.hasMoreOlder, afterNewMessage.hasMoreOlder)
+    }
+
     @Test
     fun `游标取已加载区间里最早的一条`() {
         data class Row(val at: Long, val id: String)

@@ -14,6 +14,9 @@ Independent defect and security audits of the codebase. Each report is written b
 | [`0.10.2-android.md`](0.10.2-android.md) | Android: concurrency, lifecycle, data integrity, error handling, resources, i18n | 0.10.1 + search feature |
 | [`0.10.2-ios.md`](0.10.2-ios.md) | iOS: concurrency, memory, background tasks, notifications, SQLite transactions, security | 0.10.1 + search feature |
 | [`0.10.2-security-contract.md`](0.10.2-security-contract.md) | Both: secrets, network, WebView, file paths, privacy; cross-platform schema/backup/i18n contracts | 0.10.1 + search feature |
+| [`0.11.1-android.md`](0.11.1-android.md) | Android: `:agentcore` boundary, `AgentCoreClient`, the 0.11.0 P2 fixes | 0.11.0 |
+| [`0.11.1-ios.md`](0.11.1-ios.md) | iOS: agent-core client layering, P2 fixes, lifecycle/refresh/security | 0.11.0 |
+| [`0.11.1-security-contract.md`](0.11.1-security-contract.md) | agentd exposure, remote clients, path/URL policies, contract drift | 0.11.0 |
 
 ## Severity
 
@@ -33,6 +36,10 @@ one-line suggested fix. A finding without evidence is not a finding — reports 
 | --- | --- |
 | `0.10.2-*` (1 P0, 17 P1) | 0.10.2 |
 | `0.10.2-*` remaining P2 items | 0.11.0 (except the accepted risks listed below) |
+| `0.11.1-*` (10 P1, 51 P2) | 0.11.1 — all P1 and most P2; the rest are listed in the reports as honest leftovers |
+
+Scope of the 0.11.1 round: the code introduced by 0.11.0 (`:agentcore` extraction, both `AgentCoreClient`
+implementations, the P2 work), plus a re-check of previously accepted risks.
 
 ## Process
 

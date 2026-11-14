@@ -136,7 +136,16 @@ public final class MemoryConsolidator {
         model: String,
         now: Int64? = nil
     ) async -> ConsolidationResult {
-        await gate.acquire()
+        do {
+            try await gate.acquire()
+        } catch {
+            return ConsolidationResult(
+                personaId: personaId,
+                status: .failed,
+                summary: String(localized: "整理记忆被取消了"),
+                at: now ?? self.now()
+            )
+        }
         defer { gate.release() }
         let at = now ?? self.now()
         do {

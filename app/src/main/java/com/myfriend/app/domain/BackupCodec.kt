@@ -782,7 +782,9 @@ fun PersonaPresetEntity.toBackupPreset(): BackupPreset = BackupPreset(
     description = description,
     prompt = prompt,
     category = category,
-    avatarUri = avatarUri,
+    // 安全 P2-6（审计 P2-8）：预设头像与人格同一策略——备份里只写裸文件名，
+    // 不把设备沙盒绝对路径（`file:///data/user/0/<pkg>/files/avatars/…`）带进备份。
+    avatarUri = BackupAvatarPath.portable(avatarUri),
     avatarSeed = avatarSeed,
     createdAt = createdAt,
     updatedAt = updatedAt

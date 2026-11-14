@@ -468,6 +468,14 @@ final class AppEnvironment: ObservableObject {
         activeApiConfig?.id
     }
 
+    /// 这段会话还在不在（不建新的）。
+    ///
+    /// 0.11.1 审计 P2-2：通知深链在 push 之前必须校验 —— 会话可能已经被删掉
+    /// （清空全部数据、删人格、替换导入），直接跳进去只会得到空白页。
+    func sessionExists(id: String) -> Bool {
+        ((try? stores.sessions.byId(id)) ?? nil) != nil
+    }
+
     /// 取这个人格的那一段会话；没有就建一段（1.9 起「一人一段」，§二）。
     ///
     /// 为什么把「取」和「建」合成一个入口：首页、聊天页、`defer_reply`、心跳都要拿到

@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.myfriend.app.data.local.AgentIntentDao
 import com.myfriend.app.data.local.AgentTickDao
 import com.myfriend.app.data.local.ApiConfigDao
+import com.myfriend.app.data.local.ApiUsageDao
 import com.myfriend.app.data.local.ChatSessionDao
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryDao
@@ -55,6 +56,7 @@ class RoomErasureStore @Inject constructor(
     private val presetDao: PersonaPresetDao,
     private val personaDao: PersonaDao,
     private val apiConfigDao: ApiConfigDao,
+    private val apiUsageDao: ApiUsageDao,
     private val memoryReconsolidator: MemoryReconsolidator
 ) : ErasureStore {
 
@@ -98,6 +100,11 @@ class RoomErasureStore @Inject constructor(
 
             ErasableTable.AGENT_INTENTS ->
                 if (personaId == null) agentIntentDao.deleteAll() else agentIntentDao.deleteByPersona(personaId)
+
+            ErasableTable.API_USAGE ->
+                // 流水按人删：sessionId 是「按人看用量」的依据，personaId 也为空的历史行
+                // 只会在整库清空时一起走。这里只支持整库/按人两种口径，与其它表一致。
+                if (personaId == null) apiUsageDao.deleteAll() else apiUsageDao.deleteByPersona(personaId)
 
             ErasableTable.PERSONA_PENDING_PATCHES ->
                 if (personaId == null) pendingPatchDao.deleteAll() else pendingPatchDao.deleteByPersona(personaId)

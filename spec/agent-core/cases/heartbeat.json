@@ -5,7 +5,7 @@
   "authority": "android",
   "authorityNote": "规格见 docs/ROADMAP-1.9.md（心跳不由用户调参）；Android Heartbeat 是权威实现，两端公式与常量必须一致。",
   "kotlin": {
-    "file": "app/src/main/java/com/myfriend/app/domain/Heartbeat.kt",
+    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt",
     "symbol": "Heartbeat.probability / moodBoost / perBeatProbability / shouldFire / minutesBetween"
   },
   "swift": {

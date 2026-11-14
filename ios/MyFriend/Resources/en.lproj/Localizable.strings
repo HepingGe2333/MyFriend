@@ -910,3 +910,13 @@
 "这个文件读不出来，换一份之前带走的备份试试" = "This file can't be read. Try another backup you exported earlier.";
 "备份文件超过 %@，请选一份更小的" = "That backup is larger than %@. Pick a smaller file.";
 "这个链接没有在应用内打开" = "This link can't be opened inside the app.";
+
+// 0.11.1 security / robustness strings (export ceiling, local-URL guard, decision-layer failures)
+"模型返回的数据过长（单行超过 8 MB），已中止" = "The model returned too much data (a single line over 8 MB), so the stream was stopped.";
+"决策服务不可用，这次先不做了" = "The decision service is unavailable, so this was skipped.";
+"整理记忆被取消了" = "Memory consolidation was cancelled.";
+"这次没跑完（被系统取消了）" = "This run didn't finish (cancelled by the system).";
+"要带走的东西超过 %@（导出上限与导入一致），这次没有写出文件。可以先删掉一些聊天记录或不再需要的记忆再试。" = "There is more than %@ to export (the same limit as importing), so no file was written. Delete some chats or memories and try again.";
+"这个链接指向本机或内网地址，联网工具不会去访问" = "That link points to this device or a private network, so the web tool won't fetch it.";
+"这个链接里带着账号或密码，联网工具不会把它发出去" = "That link contains a username or password, so the web tool won't send it.";
+"决策服务不可用（严格远程模式），请检查 agentd 是否在运行" = "The decision service is unavailable (strict remote mode). Check that agentd is running.";

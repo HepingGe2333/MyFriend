@@ -23,6 +23,89 @@ Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the 
 
 ---
 
+## 0.11.1
+
+A small release: **three independent audits of the new 0.11.0 code** (`:agentcore` extraction, both agent clients,
+the P2 work) — 0 P0, **10 P1**, 51 P2; every P1 fixed, most P2 fixed. Version `0.11.1`, build numbers **16**,
+schema stays **v10**, backup format stays **v2**. (This release **is tagged and the changelog is published in the
+GitHub Release**.)
+
+### Security and robustness (server / shared policies)
+
+- **`agentd` HTTP layer rewritten** (still zero third-party dependencies): the JDK `HttpServer` default single thread
+  plus a synchronous body read let **one half-open connection** take the service down (`/health` timed out after 3 s).
+  Now: 4 fixed workers with a bounded queue, a **5-second total read deadline** per connection (408 on expiry),
+  a **1 MiB request-body limit** (413), chunked bodies rejected (411), and an optional `--token`
+  (`Authorization: Bearer`, 401 when missing). Measured: `/health` under a half-open connection went from 3.01 s to
+  **0.8 ms**; an 8 MiB body went from "200 and 8 MB echoed back" to **413 with a 227-byte response**.
+- **Error responses no longer echo input**: unknown tool names/paths and exception text are truncated or omitted; 500
+  returns only "internal error (error id)" with details on stderr; `/health` keeps only service name and version.
+- **`WebUrlPolicy` hardened** (the `web_fetch` URL guard): closes `http://127.0.0.1:8080\@example.com/`, `localhost.`,
+  `2130706433`, `0x7f000001`, `0177.0.0.1`, `[::ffff:7f00:1]`, `127.0.0.1.nip.io`, percent-encoded hosts and userinfo;
+  private IPv6 ranges (ULA, link-local, NAT64, 6to4) are covered too.
+- **JSON limits**: depth 64, 256 KiB per string, 128-char number literals, 16 384 entries per container, duplicate keys
+  rejected.
+- **iOS media guard**: `MediaStorage.delete` and `AttachmentLocation.resolve` had no directory check (a probe could
+  delete/point outside the app container); now confined to `attachments/`, rejecting `..`, percent-encoded traversal and
+  symlink escapes.
+- **iOS `validatePageUrl`** gained the same private-address and literal-form checks (independent implementation,
+  same policy as Android).
+
+### Correctness (P1)
+
+- **Backup referential integrity** (Android): a backup whose `messages`/`memories` were non-empty but whose
+  `sessions`/`personas` were missing passed the gate, so `REPLACE` wiped the device and then dropped the rows — device
+  data gone, backup not restored. Cross-table references are now validated **before** wiping; failing backups are
+  rejected whole (and the preview warns first).
+- **Jump window ignored new messages** (Android): after jumping from search into a bounded window, your own messages or
+  new replies were invisible with no way back. Sending/regenerating/editing now returns to the latest screen, and
+  background writes make the "back to latest" affordance reappear.
+- **Media deleted inside DB transactions** (Android): backup replace/persona delete removed files before commit, so a
+  rollback left rows but no files. Files are now collected and deleted **after** a successful commit.
+- **Window ignored external deletes** (iOS): clearing data from settings left the chat showing deleted messages and
+  polling forever. Lightweight existence/count checks now reset the window or return home.
+- **SSE 8 MB limit actually enforced** (iOS): the limit lived in the parser while the client accumulated bytes itself;
+  it is now enforced where bytes are appended.
+- **Connect timeout effective + circuit breaker** (iOS): the 3 s connect budget was overridden by the 8 s request budget,
+  so every decision waited 8 s when agentd was unreachable; now 3 s applies and a single failure short-circuits to
+  native for 30 s.
+- **Export/import size symmetry** (iOS): export had no 64 MB cap while import did; aligned.
+- **Backup parsing off the main thread** (both): Android JSON parse/map/encode and iOS file read + pre-parse could ANR;
+  all moved to IO/`Task.detached`.
+
+### Other fixes (P2 summary)
+
+- Android: `hasKey` three-state wired into the UI (decryptable key counts as configured, unrecoverable keys show a clear
+  state); notification deep links validate that the session exists and belongs to the active persona (`MainActivity` no
+  longer trusts the extra; forged ids were tested on the emulator); `preset.avatarUri` also exports as a bare file name;
+  clearing chats cancels notifications and closes the open session; backup replace bumps session generations;
+  `WIPE_ALL` now includes `api_usage` with a two-way table guard; the remote client disables redirects, caps responses
+  at 256 KB and exposes fallback counters; the 1024-px cap is really applied on API 26–27; duplicating a persona copies
+  its avatar file; image drafting runs in a non-cancellable region; release builds force in-process decisions.
+- iOS: strict remote failures are no longer swallowed by `try?` (diagnostic counters + visible errors); notification deep
+  links are consumed-and-cleared and validated; deep recall reads a window; `marksRead` defaults from DND; `asleep`
+  matches the Kotlin contract; `AsyncMutex` responds to cancellation; remote responses capped at 1 MB; home polling is
+  visibility-gated; preview updates use targeted UPDATEs; focus windows cap at 240 messages; golden tests cover all four
+  endpoints.
+- i18n guards strengthened (both): Chinese punctuation/full-width characters in `values-en`/`en` now fail, positional
+  format-specifier swaps fail, and resource keys mentioned only in comments no longer count as used.
+
+### Tests
+
+| Target | Result |
+| --- | --- |
+| Android | **970 tests / 91 classes / 0 failures** |
+| `:agentcore` | **47 tests / 0 failures** (all 94 contract cases asserted) |
+| `:agentd` | **34 tests / 0 failures** |
+| iOS | **1187 tests / 0 failures** (Debug and Release, zero Swift warnings) |
+| Other | `lintDebug` passes (one format-string lint error fixed), `assembleRelease`, `:agentd:fatJar` succeed |
+
+### Audit reports
+
+`docs/audits/0.11.1-{android,ios,security-contract}.md` (every finding is traceable).
+
+---
+
 ## 0.11.0
 
 A large release: **the agent decision layer becomes a single implementation (`:agentcore`) and both clients sit behind a

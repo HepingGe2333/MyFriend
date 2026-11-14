@@ -199,10 +199,21 @@ class PersonaEditorViewModel @Inject constructor(
      */
     private val pendingAvatarUris = mutableSetOf<String>()
 
+    /** ViewModel 是否已经销毁：选图协程晚到的登记据此改成「直接删文件」（审计 P2-12）。 */
+    @Volatile
+    private var draftWindowClosed = false
+
     /** 数据库里当前保存的头像（编辑开始时的那张）；取消编辑时它不能被删。 */
     private var savedAvatarUri: String? = null
 
     fun setAvatarUri(uri: String?) {
+        // 审计 P2-12（0.11.1）：页面已经销毁时才落盘的头像，没人会在草稿集合里登记它；
+        // 这里直接删掉刚写的文件（否则就是一个永远没人回收的孤儿文件）。
+        if (draftWindowClosed) {
+            val orphan = uri?.trim().orEmpty().takeIf { it.isNotEmpty() }
+            if (orphan != null) MediaStorage.deleteAvatar(context, orphan)
+            return
+        }
         val previous = _state.value.form.avatarUri
         // 连选两张：前一张如果是本次草稿，立刻删掉（不留中间文件）。
         val stale = AvatarDraftFiles.onPicked(previous, pendingAvatarUris)
@@ -351,6 +362,8 @@ class PersonaEditorViewModel @Inject constructor(
     fun getSavedPrompt(): String = _state.value.initialPrompt
 
     override fun onCleared() {
+        // 审计 P2-12（0.11.1）：先立旗子，之后到达的 setAvatarUri 会直接删文件而不是登记。
+        draftWindowClosed = true
         // 兜底（审计 P2-2）：用户直接按返回键 / 进程回收时，界面可能没机会调 discardDraftFiles。
         discardDraftFiles()
         super.onCleared()

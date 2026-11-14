@@ -42,10 +42,11 @@ android {
         applicationId = "com.myfriend.app"
         minSdk = 26
         targetSdk = 35
-        // 内测版本号：0.9.0 → 0.9.1 → 0.10.0 → 0.10.1 → 0.10.2，本次 0.11.0（agent 决策层抽成 :agentcore + 客户端/服务端分层）。
+        // 内测版本号：0.9.0 → 0.10.0 → 0.10.2 → 0.11.0，本次 0.11.1（审计修复：备份引用完整性 /
+        // 定位窗口 / 事务外删文件 / 主线程 IO / 深链校验 / i18n 守卫）。
         // versionCode 只增不减，升级路径才不会断。
-        versionCode = 15
-        versionName = "0.11.0"
+        versionCode = 16
+        versionName = "0.11.1"
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -89,6 +90,15 @@ android {
             // 以前这里用 debug 的签名配置兜底，可那签出来的包永远升不了级（签名不一致），
             // 等于把升级失败留给用户自己的手机。现在：配了就签，没配就不签，绝不拿 debug key 冒充。
             signingConfig = if (hasReleaseSigning) signingConfigs.getByName("release") else null
+            // 审计 P2-14（0.11.1）：**release 强制走进程内**。
+            // 这个开关是开发/联调用的，不是用户可见设置项；以前只靠「不传 -PagentCoreRemote」
+            // 保证，CI 误传就会把 release 打成远程客户端：
+            // - base URL 是 http → release 的 usesCleartextTraffic=false 让每次决策先被系统拒绝、
+            //   再静默回退（永远连不上，却只留一行 logcat）；
+            // - base URL 是 https → 真的把决策请求（含模型文本）发到编译期写死的主机。
+            // defaultConfig 里那份值仍按 Gradle property 生成（debug 可用），release 这里覆盖成 false。
+            buildConfigField("boolean", "AGENT_CORE_REMOTE", "false")
+            buildConfigField("String", "AGENT_CORE_BASE_URL", "\"\"")
         }
         debug {
             applicationIdSuffix = ".debug"

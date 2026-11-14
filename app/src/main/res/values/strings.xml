@@ -191,6 +191,9 @@
     <string name="api_edit">编辑</string>
     <string name="api_duplicate">复制配置</string>
     <string name="api_key_not_set">未设置密钥</string>
+    <!-- 安全 P2-6 / 0.11.1 审计 P2-5：有密文但解不出来时界面要明说（资源化）。 -->
+    <string name="api_key_unrecoverable_placeholder">密钥无法解密，请重新填写</string>
+    <string name="api_key_unrecoverable_hint">这台设备上的密钥已经解不开了（系统恢复过备份或改过锁屏密码），请重新填写一次 API Key</string>
     <string name="api_key_stored">密钥已加密保存</string>
     <string name="api_list_duplicated">配置已复制</string>
     <string name="api_list_duplicate_failed">复制失败</string>
@@ -1347,7 +1350,9 @@
     <plurals name="backup_warn_api_config_address_kept">
         <item quantity="other">有 %1$d 条 API 配置的地址与备份里不同，已保留这台手机上的地址（要改地址请手动编辑并重新确认）</item>
     </plurals>
-    <string name="backup_warn_api_config_insecure_ignored">备份要求允许明文 HTTP，没有被采纳：明文只能在这台手机的设置里手动开启</string>
+    <plurals name="backup_warn_api_config_insecure_ignored">
+        <item quantity="other">有 %1$d 条 API 配置要求允许明文 HTTP，没有被采纳：明文只能在这台手机的设置里手动开启</item>
+    </plurals>
     <string name="backup_warn_api_config_rejected">配置「%1$s」没通过本机校验（例如地址是明文 HTTP），已跳过</string>
     <string name="backup_section_persona">人格</string>
     <string name="backup_section_memory">记忆</string>
@@ -1363,6 +1368,9 @@
     <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
     <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
     <string name="backup_fail_too_large">这个文件太大了（超过 %1$dMB），不像是一份 MyFriend 备份。</string>
+    <!-- 0.11.1 审计 P1-2：结构不完整（消息找不到会话 / 会话找不到人格……）的备份整份拒绝。 -->
+    <string name="backup_fail_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，写不回来。为了不覆盖你手机上的他，这次导入已取消。</string>
+    <string name="backup_warn_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，导入会被拒绝</string>
 
     <!-- 导入结果：人格 / 预设 -->
     <plurals name="persona_import_result_ok">

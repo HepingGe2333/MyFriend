@@ -64,6 +64,16 @@ public protocol AgentCoreClient: Sendable {
     /// 工具参数夹取：只夹已知数值键（`importance` / `count` / `minutes`），其余键原样保留，
     /// 缺省值补在结果里。不认识的工具原样返回（拒绝未知工具是服务端 HTTP 层的事）。
     func clampToolArgs(tool: String, args: [String: JSONValue]) async throws -> [String: JSONValue]
+
+    /// 这个实现背后是哪条路（0.11.1 审计 P2-1）。
+    ///
+    /// 调用点需要区分「严格远程」与「带回退的远程 / 本机」：前者失败必须被看见，
+    /// 后者失败要静默回退。默认 `.native`（本机实现不会失败）。
+    var agentCoreMode: AgentCoreMode { get }
+}
+
+public extension AgentCoreClient {
+    var agentCoreMode: AgentCoreMode { .native }
 }
 
 /// `clampToolArgs` / agentd `tool-args` 认识的工具名。
@@ -145,8 +155,12 @@ public struct SleepDecision: Equatable, Sendable {
         self.marksRead = marksRead
     }
 
-    /// 此刻在他的睡眠窗口里（= 不会回，而且不是被叫醒的）。
-    public var asleep: Bool { !wake }
+    /// 此刻在他的睡眠窗口里（= 不会回，或只是被叫醒）。
+    ///
+    /// 0.11.1 审计 P2-10：与 Kotlin 契约对齐。`agentcore` 的
+    /// `SleepDecision.asleep` 是 `!wake || moodRelaxed`（被叫醒时人仍在睡眠窗口里），
+    /// 这里原来写的 `!wake` 会在「被叫醒」时返回 false —— 与共享契约不一致。
+    public var asleep: Bool { !wake || moodRelaxed }
 
     /// 睡眠中开着免打扰（= 连已读都不留）。
     public var dnd: Bool { !marksRead }
@@ -163,12 +177,15 @@ public struct SleepDecision: Equatable, Sendable {
         return marksRead ? .sleepingWaiting : .sleepingDoNotDisturb
     }
 
-    init(json: [String: JSONValue]) throws {
+    init(json: [String: JSONValue], marksReadFallback: Bool = false) throws {
         wake = try AgentCoreJSON.requiredBool(json, "wake")
         moodRelaxed = try AgentCoreJSON.bool(json, "moodRelaxed", fallback: false)
         reason = try AgentCoreJSON.text(json, "reason", fallback: "")
-        // 0.10.x 的 agentd 没有 marksRead：按「会留已读」处理，不把睡着的人显示成冷处理。
-        marksRead = try AgentCoreJSON.bool(json, "marksRead", fallback: true)
+        // 0.11.1 审计 P2-9：老 agentd（0.10.x）不返回 marksRead。缺省值不能写死 true ——
+        // 「睡着 + 免打扰」时会因此悄悄把已读补回去（与本机 `SleepGate` 的 `marksRead = !dnd` 相反）。
+        // 远程客户端按输入推断一个更准的缺省值（`dndOnSleep && !wake` → 不标已读），
+        // 单独解码时缺省 false（宁可不补已读，也不要在免打扰里补）。
+        marksRead = try AgentCoreJSON.bool(json, "marksRead", fallback: marksReadFallback)
     }
 }
 
@@ -192,6 +209,12 @@ public enum AgentCoreMode: Equatable, Sendable, CustomStringConvertible {
     /// 这个模式下会不会发网络请求。
     public var usesRemote: Bool {
         if case .remote = self { return true }
+        return false
+    }
+
+    /// 严格远程（没有本机兜底）：失败要冒到调用点，而不是被静默回退。
+    public var isStrictRemote: Bool {
+        if case .remote(let preferredFallback) = self { return !preferredFallback }
         return false
     }
 }
@@ -243,6 +266,8 @@ public enum AgentCoreClientError: Error, Equatable, Sendable, CustomStringConver
     case timedOut(TimeInterval)
     /// 传输层失败（DNS / 连接被拒 / 断网……）。
     case transport(String)
+    /// 响应体超过上限（默认 1 MB）：恶意/坏掉的 agentd 不能用一条响应把内存打高。
+    case responseTooLarge(limit: Int)
 
     public var description: String {
         switch self {
@@ -260,7 +285,23 @@ public enum AgentCoreClientError: Error, Equatable, Sendable, CustomStringConver
             return String(format: "agentd 超时（%.1f 秒）", seconds)
         case .transport(let detail):
             return "连接 agentd 失败：\(detail)"
+        case .responseTooLarge(let limit):
+            return "agentd 响应体超过上限（\(limit) 字节）"
         }
+    }
+
+    /// 任意错误的可读描述（只进日志/诊断，不进用户界面）。
+    public static func describe(_ error: Error) -> String {
+        if let core = error as? AgentCoreClientError { return core.description }
+        return String(describing: error)
+    }
+}
+
+extension AgentCoreClientError: LocalizedError {
+    /// 用户可见的那句话（只在 `remote-strict` 联调模式会冒到界面：严格模式的失败要能被看见，
+    /// 否则它和普通回退模式没有区别）。普通回退模式不会显示它 —— 错误被 `decide` 换成了本机结果。
+    public var errorDescription: String? {
+        String(localized: "决策服务不可用（严格远程模式），请检查 agentd 是否在运行")
     }
 }
 
@@ -397,6 +438,16 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
     public let baseURL: URL
     public let timeouts: AgentCoreTimeouts
 
+    /// 这个实现就是「严格远程」：失败原样抛给调用点，绝不自己回退。
+    public var agentCoreMode: AgentCoreMode { .remote(preferredFallback: false) }
+
+    /// 响应体上限：1 MB（与聊天侧 `readAll` 的上限同一个数量级）。
+    ///
+    /// 0.11.1 安全审计 P2-8 / iOS 审计 P2-11：agentd 是客户端信任的地址，但在协议里
+    /// 「对方能回多少」不该没有边界 —— 一个坏掉的/被替换的服务端用一条高带宽响应就能把
+    /// 决策线程的内存打高（决策被聊天链路同步调用，OOM 会直接杀 App）。
+    public static let maxResponseBytes = 1 * 1024 * 1024
+
     private let sessionBox: AgentCoreSessionBox
     private let log: @Sendable (String) -> Void
 
@@ -435,7 +486,12 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
         let body = try JSONEncoder().encode(input)
         let json = try await post(AgentCoreEndpoint.sleepDecision, body: body)
         do {
-            return try SleepDecision(json: json)
+            // 0.11.1 审计 P2-9：0.10.x 的 agentd 没有 `marksRead`。缺省值按**输入**推断：
+            // 「这一轮是免打扰（dndOnSleep 且没被叫醒）」时不要补已读，否则远程模式会在
+            // 免打扰里把已读补回去（与本机 `SleepGate` 的 `marksRead = !dnd` 语义相反）。
+            let wakeFlag = try AgentCoreJSON.requiredBool(json, "wake")
+            let fallback = !(input.dndOnSleep && !wakeFlag)
+            return try SleepDecision(json: json, marksReadFallback: fallback)
         } catch let error as AgentCoreClientError {
             throw error
         } catch {
@@ -493,7 +549,12 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.httpBody = body
-        request.timeoutInterval = timeouts.overall
+        // 0.11.1 审计 P1-2：`URLRequest.timeoutInterval` 会**覆盖**会话级的
+        // `timeoutIntervalForRequest`。这里原来设成 `overall`（8 秒），把会话里的
+        // `connect`（3 秒）彻底作废了 —— agentd 不可达时每次决策都要等满 8 秒。
+        // 现在请求级 = connect（= 等首个字节/空闲超时），整体硬上限由会话的
+        // `timeoutIntervalForResource` 与 `send()` 里的 Task 赛跑（overall）兜住。
+        request.timeoutInterval = max(timeouts.connect, 0.1)
         request.setValue("application/json; charset=utf-8", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
@@ -503,6 +564,10 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
         }
         guard (200...299).contains(http.statusCode) else {
             throw AgentCoreClientError.http(status: http.statusCode, message: Self.errorMessage(from: data))
+        }
+        guard data.count <= Self.maxResponseBytes else {
+            // `send()` 已经在读的时候就截住了；这里是第二道（自定义 session 也可能绕过）。
+            throw AgentCoreClientError.responseTooLarge(limit: Self.maxResponseBytes)
         }
         log("agentcore: \(path) 远程成功（HTTP \(http.statusCode)）")
         guard !data.isEmpty else {
@@ -518,16 +583,17 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
 
     /// 发请求 + 整体超时兜底。
     ///
-    /// URLSession 的资源超时在少数情况下不会立刻触发（连接卡在半路），所以再压一层
-    /// `Task.sleep` 赛跑：先到者说了算。取消（用户点了停止）原样抛 `CancellationError`。
+    /// 三条边界：① 请求级 `timeoutInterval = connect`（见 `post`）负责「等不到首个字节」；
+    /// ② 会话资源超时 = overall；③ 再压一层 `Task.sleep` 赛跑兜住「连接卡在半路」。
+    /// 取消（用户点了停止）原样抛 `CancellationError`。
     private func send(_ request: URLRequest) async throws -> (Data, URLResponse) {
         let session = sessionBox.session
         let overall = timeouts.overall
+        let started = Date()
         do {
             let result = try await withThrowingTaskGroup(of: AgentCoreHTTPResult.self) { group in
                 group.addTask {
-                    let (data, response) = try await session.data(for: request)
-                    return AgentCoreHTTPResult(data: data, response: response)
+                    try await Self.readResponse(session: session, request: request)
                 }
                 group.addTask {
                     try await Task.sleep(nanoseconds: UInt64(max(overall, 0.001) * 1_000_000_000))
@@ -545,19 +611,54 @@ public struct RemoteAgentCoreClient: AgentCoreClient {
         } catch is CancellationError {
             throw CancellationError()
         } catch let urlError as URLError {
-            throw Self.mapURLError(urlError, timeouts: timeouts)
+            throw Self.mapURLError(
+                urlError, timeouts: timeouts, elapsed: Date().timeIntervalSince(started)
+            )
         } catch {
             throw AgentCoreClientError.transport(String(describing: error))
         }
     }
 
-    static func mapURLError(_ error: URLError, timeouts: AgentCoreTimeouts) -> Error {
+    /// 边读边数：超过 `maxResponseBytes` 立刻中止，不把整份响应读进内存。
+    ///
+    /// 0.11.1：`session.data(for:)` 是「先整份读进内存再判断」，上限等于没有。
+    /// 换成 `bytes(for:)` 之后，恶意/坏掉的服务端最多让我们多读一个字节。
+    fileprivate static func readResponse(
+        session: URLSession,
+        request: URLRequest
+    ) async throws -> AgentCoreHTTPResult {
+        let (bytes, response) = try await session.bytes(for: request)
+        if let http = response as? HTTPURLResponse,
+           http.expectedContentLength > Int64(maxResponseBytes) {
+            throw AgentCoreClientError.responseTooLarge(limit: maxResponseBytes)
+        }
+        var data = Data()
+        data.reserveCapacity(16 * 1024)
+        for try await byte in bytes {
+            guard data.count < maxResponseBytes else {
+                throw AgentCoreClientError.responseTooLarge(limit: maxResponseBytes)
+            }
+            data.append(byte)
+        }
+        return AgentCoreHTTPResult(data: data, response: response)
+    }
+
+    static func mapURLError(
+        _ error: URLError,
+        timeouts: AgentCoreTimeouts,
+        elapsed: TimeInterval? = nil
+    ) -> Error {
         switch error.code {
         case .cancelled:
             // 上层取消（用户点了停止）：这不是「服务不可用」。
             return CancellationError()
         case .timedOut:
-            return AgentCoreClientError.timedOut(timeouts.overall)
+            // 0.11.1 审计 P1-2：请求级（空闲/等首个字节）= connect，会话资源级 = overall。
+            // 用实际耗时区分两者，日志里才能看出到底是「3 秒连不上」还是「8 秒没回完」。
+            if let elapsed, timeouts.overall > 0, elapsed >= timeouts.overall * 0.9 {
+                return AgentCoreClientError.timedOut(timeouts.overall)
+            }
+            return AgentCoreClientError.timedOut(timeouts.connect)
         case .cannotFindHost, .dnsLookupFailed:
             return AgentCoreClientError.transport("解析不到 agentd 地址")
         case .cannotConnectToHost, .networkConnectionLost, .notConnectedToInternet:
@@ -652,21 +753,25 @@ struct ToolArgsRequest: Encodable {
 public struct FallbackAgentCoreClient: AgentCoreClient {
 
     public let mode: AgentCoreMode
+    public var agentCoreMode: AgentCoreMode { mode }
 
     private let remote: any AgentCoreClient
     private let native: any AgentCoreClient
     private let log: @Sendable (String) -> Void
+    private let breaker: AgentCoreCircuitBreaker?
 
     public init(
         mode: AgentCoreMode = .remote(preferredFallback: true),
         remote: any AgentCoreClient,
         native: any AgentCoreClient = NativeAgentCoreClient(),
-        log: @escaping @Sendable (String) -> Void = { _ in }
+        log: @escaping @Sendable (String) -> Void = { _ in },
+        breaker: AgentCoreCircuitBreaker? = AgentCoreCircuitBreaker()
     ) {
         self.mode = mode
         self.remote = remote
         self.native = native
         self.log = log
+        self.breaker = breaker
     }
 
     /// `.remote(preferredFallback: true)` 才回退；`.native` 本来就只走本机。
@@ -719,21 +824,32 @@ public struct FallbackAgentCoreClient: AgentCoreClient {
         recover: () async throws -> T
     ) async throws -> T {
         guard mode.usesRemote else { return try await recover() }
+        // 0.11.1 审计 P1-2：连续失败后先短路一段时间。没有它的话，agentd 不可达时
+        // 一次回复里串行经过的几次决策会各等满一个超时（用户看到模型迟迟不开口）。
+        if let breaker, breaker.isOpen {
+            log("agentcore: \(endpoint) 熔断中（远程最近连续失败），直接走本机")
+            return try await recover()
+        }
         do {
-            return try await attempt()
+            let value = try await attempt()
+            breaker?.recordSuccess()
+            return value
         } catch is CancellationError {
             // 用户点了停止：不算「服务挂了」，也不要回退（回退会让停止变得迟钝）。
             throw CancellationError()
         } catch {
+            let opened = breaker?.recordFailure() ?? false
             guard fallsBack else { throw error }
             log("agentcore: \(endpoint) 远程失败（\(Self.describe(error))），回退本机")
+            if opened {
+                log("agentcore: 远程连续失败，接下来 \(Int(breaker?.cooldown ?? 0)) 秒直接走本机")
+            }
             return try await recover()
         }
     }
 
     static func describe(_ error: Error) -> String {
-        if let core = error as? AgentCoreClientError { return core.description }
-        return String(describing: error)
+        AgentCoreClientError.describe(error)
     }
 }
 

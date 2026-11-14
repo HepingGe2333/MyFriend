@@ -176,9 +176,14 @@ class PersonaRepository @Inject constructor(
     suspend fun duplicate(personaId: String, copySuffix: String): Result<String> = runCatching {
         val source = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
+        // 审计 P2-11（0.11.1）：头像必须复制成独立文件。原样共享 `avatarUri` 的话，
+        // 删副本或给副本换头像都会把原人格的文件删掉（`deleteAvatar` 只按路径删，
+        // 不查还有没有别的行引用）。
+        val copyAvatarUri = MediaStorage.copyAvatar(appContext, source.avatarUri)
         val copy = source.copy(
             id = UUID.randomUUID().toString(),
             name = (source.name + copySuffix).take(80),
+            avatarUri = copyAvatarUri,
             isDefault = false,
             version = 1,
             createdAt = now,
@@ -221,18 +226,24 @@ class PersonaRepository @Inject constructor(
      */
     suspend fun delete(personaId: String) {
         val wasActive = settingsRepository.settings.first().activePersonaId == personaId
-        database.withTransaction {
+        // 事务内只删表、只收集待删文件；文件必须等提交成功之后再删（审计 P1-4：
+        // 事务回滚时消息/人格会回来，删掉的文件却回不来）。
+        val erasure = database.withTransaction {
             val wasDefault = personaDao.getById(personaId)?.isDefault == true
             // 清单统一在 ErasurePlan（DataEraser）：消息 / 会话 / 记忆 / 回声 / 整理摘要 /
             // 记忆旧正文（memory_versions）/ 向量 / 念头 / 思考留痕 / 待确认补丁 / 版本历史 /
-            // 主动节奏 / 人格本体，外加他的聊天图片与头像文件。
-            dataEraser.deletePersonaInsideTransaction(personaId)
+            // 主动节奏 / 人格本体，外加他的聊天图片与头像文件（后者在提交后删）。
+            val report = dataEraser.deletePersonaInsideTransaction(personaId)
             if (wasDefault) {
                 personaDao.getAll().firstOrNull()?.let {
                     personaDao.markDefault(it.id, System.currentTimeMillis())
                 }
             }
+            report
         }
+        // 事务已经提交：现在删文件才是安全的。删不掉只会留下孤儿文件（不影响这次删除），
+        // 不让「人格已经删了」的操作再报一次失败。
+        runCatching { dataEraser.commitFiles(erasure) }
         // 人已经删了：他发过的通知（会话通知 + 聚合摘要）也得撤掉，否则点开是一个空会话
         //（审计 P2-14：以前 cancel 只支持单会话，删人格之后残留通知没人收）。
         runCatching { chatNotifier.cancelByPersona(appContext, personaId) }

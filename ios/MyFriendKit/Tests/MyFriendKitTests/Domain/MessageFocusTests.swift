@@ -97,6 +97,36 @@ final class MessageFocusTests: XCTestCase {
         XCTAssertEqual(result.messages.count, 60)
     }
 
+    /// 0.11.1 审计 P2-13：定位窗口有**条数上限**（原来 200 页 × 60 = 12000 条会同时驻留）。
+    func testFocusWindowIsCapped() {
+        let start = messages(5_000..<5_060)
+        var page = 0
+        let result = MessagePaging.window(reaching: "m-000", from: start) { _, _ in
+            defer { page += 1 }
+            let upper = 5_000 - page * 60
+            guard upper > 0 else { return nil }
+            return messages(max(0, upper - 60)..<upper)
+        }
+        XCTAssertTrue(result.found)
+        XCTAssertLessThanOrEqual(
+            result.messages.count, MessagePaging.maxFocusWindowMessages,
+            "定位不能把整个会话搬进内存"
+        )
+        XCTAssertEqual(result.messages.first?.id, "m-000", "目标必须留在窗口里（从最旧的一端裁剪）")
+        XCTAssertEqual(result.messages.map(\.id), result.messages.map(\.id).sorted(), "窗口保持时间升序")
+    }
+
+    /// 窗口上限不会影响「目标就在首屏」的正常情况（不裁剪已加载的 600 条）。
+    func testFocusCapDoesNotTrimWhenTargetIsAlreadyLoaded() {
+        let start = messages(0..<600)
+        let result = MessagePaging.window(reaching: "m-500", from: start) { _, _ in
+            XCTFail("首屏已经有目标，不该再读库")
+            return nil
+        }
+        XCTAssertTrue(result.found)
+        XCTAssertEqual(result.messages.count, 600)
+    }
+
     func testEmptyTargetIdIsANoOp() {
         let start = messages(60..<120)
         let result = MessagePaging.window(reaching: "", from: start) { _, _ in

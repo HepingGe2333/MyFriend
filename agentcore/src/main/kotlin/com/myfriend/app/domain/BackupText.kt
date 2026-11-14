@@ -33,6 +33,15 @@ sealed interface BackupFailure {
      * 在读之前 / 读的过程中就拒绝，而不是先读进内存再判断（那正是 OOM 的地方）。
      */
     data class TooLarge(val limitBytes: Long) : BackupFailure
+
+    /**
+     * 结构不完整：有行引用了备份里不存在（或这次不会写进去）的人格/会话（审计 P1-2 / 0.11.1）。
+     *
+     * 这类备份能解析、甚至「看起来很满」，但真的写库时这些行会落不下去。替换模式会先清空本机、
+     * 再把这些行丢掉——用户得到的是「本机没了，备份也没接回来」。所以整份拒绝，
+     * 绝不先清后弃。[holes] 是落不下去的行数。
+     */
+    data class IncompleteReferences(val holes: Int) : BackupFailure
 }
 
 /** 读懂了、但有一部分没能带回来的说明。 */
@@ -68,4 +77,11 @@ sealed interface BackupWarning {
 
     /** 备份里的某条配置没通过与本机保存相同的校验（例如 `http://` 明文地址），已跳过。 */
     data class ApiConfigRejected(val configName: String) : BackupWarning
+
+    /**
+     * 预览阶段就发现了跨表引用缺口（审计 P1-2）：导入会被整份拒绝，先在这里提醒一句。
+     *
+     * [holes] 是落不下去的行数（找不到所属人格/会话的消息、记忆、规则、念头等）。
+     */
+    data class IncompleteReferences(val holes: Int) : BackupWarning
 }

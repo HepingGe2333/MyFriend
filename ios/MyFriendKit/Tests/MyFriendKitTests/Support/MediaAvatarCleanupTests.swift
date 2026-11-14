@@ -41,7 +41,9 @@ final class MediaAvatarCleanupTests: XCTestCase {
         let outside = FileManager.default.temporaryDirectory
             .appendingPathComponent("outside-\(UUID().uuidString).jpg")
         try Data([0xFF]).write(to: outside)
-        XCTAssertTrue(media.exists(uriString: outside.absoluteString), "能判断存在")
+        // 0.11.1 安全审计 P2-3：`exists` 现在也要过归属守卫 —— 目录外的真实文件
+        // 不能再被当成「本机附件还在」（否则它会以头像/附件的身份落库）。
+        XCTAssertFalse(media.exists(uriString: outside.absoluteString), "目录外的文件不算自家附件")
         media.deleteFileIfOwned(outside.absoluteString)
         XCTAssertTrue(FileManager.default.fileExists(atPath: outside.path), "不属于自家目录的文件不能删")
         try? FileManager.default.removeItem(at: outside)
@@ -123,7 +125,11 @@ final class MediaAvatarCleanupTests: XCTestCase {
         let settings = InMemorySettings(AppSettings(activePersonaId: personaId))
         let service = BackupService(
             stores: target.stores, settings: settings, appVersion: "0.10.1-ios",
-            avatarFileExists: { _ in true }, now: { self.now }
+            avatarFileExists: { _ in true },
+            // 0.11.1 安全审计 P2-4：导入会把头像归一成**当前附件目录**里的路径，
+            // 所以这里要把目录注入进去（生产默认与 `MediaStorage.shared` 同一个）。
+            mediaDirectory: mediaDirectory,
+            now: { self.now }
         )
         let summary = try service.import(text: text, mode: .replace)
         let imported = try XCTUnwrap(try target.stores.personas.byId(personaId) ?? nil)

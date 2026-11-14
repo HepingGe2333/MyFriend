@@ -236,6 +236,162 @@ class DataResilienceContractTest {
         assertTrue("列表顶部有「加载更早」那一行", screen.contains("LoadEarlierRow("))
     }
 
+    // ------------------------------------------------------------------ 0.11.1 审计：备份 IO（P1-3）
+
+    @Test
+    fun `备份的解析 映射 编码都在 IO 上`() {
+        val export = bodyOf(backupRepo, "suspend fun exportJson(")
+        assertTrue("导出（读库 + 映射 + 编码）要切 IO", export.contains("withContext(Dispatchers.IO)"))
+
+        val preview = bodyOf(backupRepo, "suspend fun preview(")
+        assertTrue("预览解码（DOM + 反序列化）要切 IO", preview.contains("withContext(Dispatchers.IO)"))
+        assertTrue("解析仍走同一个 BackupCodec", preview.contains("BackupCodec.decode(raw)"))
+
+        val importJson = bodyOf(backupRepo, "suspend fun importJson(")
+        assertTrue("导入（解码 + 映射 + 写库）要切 IO", importJson.contains("withContext(Dispatchers.IO)"))
+        assertTrue(
+            "Room 事务自己会切线程，但解码/映射是 CPU 活，不能留在 Main",
+            importJson.indexOf("BackupCodec.decode(raw)") > importJson.indexOf("withContext(Dispatchers.IO)")
+        )
+        assertTrue(
+            "设置页的导入入口不再自己手写解码",
+            source("src/main/java/com/myfriend/app/ui/screens/settings/SettingsViewModel.kt")
+                .contains("backupRepository.preview(text)")
+        )
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：主动消息时间戳（P2-1）
+
+    @Test
+    fun `主动规则消息也走 MessageOrder`() {
+        val proactive = source("src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt")
+        val body = bodyOf(proactive, "private suspend fun fire(")
+        assertTrue(
+            "主动消息要按会话最新一条 + now 取严格递增的时间戳",
+            body.contains("MessageOrder.nextTimestamp(")
+        )
+        assertTrue("必须读会话里的最新一条", body.contains("messageDao.latestInSession(session.id)?.createdAt"))
+        assertFalse("不能再自算 now/now+1（同一毫秒会排到用户消息前面）", body.contains("if (created <= now) now + 1 else created"))
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：清空聊天收尾（P2-2）
+
+    @Test
+    fun `清空聊天与记忆也会撤通知并结束 openSession`() {
+        val body = bodyOf(chatRepo, "suspend fun clearAllChatData()")
+        assertTrue("要结束「正开着」的会话", body.contains("openSessionTracker.clearAll()"))
+        assertTrue("要撤掉残留通知", body.contains("chatNotifier.cancelAll(appContext)"))
+        assertTrue(
+            "与删除全部数据走同一套收尾语义",
+            bodyOf(chatRepo, "suspend fun wipeAllData()").contains("openSessionTracker.clearAll()")
+        )
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：备份替换世代（P2-3）
+
+    @Test
+    fun `备份替换先 bump 世代并取消在跑的生成`() {
+        val body = bodyOf(backupRepo, "suspend fun importBundle(")
+        val bumpIndex = body.indexOf("sessionGeneration.bump(sessionId)")
+        // 注释里也会提到 database.withTransaction，所以找真正的赋值。
+        val transactionIndex = body.indexOf("val erasure = database.withTransaction")
+        assertTrue("替换前要对会复用的 sessionId bump 世代", bumpIndex >= 0)
+        assertTrue("还要取消在跑的生成", body.contains("chatRepository.cancelGeneration(sessionId)"))
+        assertTrue("必须在清空/写回事务之前", bumpIndex < transactionIndex)
+        assertTrue("只在替换模式做", body.contains("if (mode == ImportMode.REPLACE)"))
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：隐私承诺（P2-5）
+
+    @Test
+    fun `purgeVersions 不再吞掉删除异常`() {
+        val consolidator = source("src/main/java/com/myfriend/app/data/repo/MemoryReconsolidator.kt")
+        val body = bodyOf(consolidator, "suspend fun purgeVersions(")
+        assertFalse(
+            "记忆旧正文删不掉时不能假装成功（runCatching 还会吞 CancellationException）",
+            body.contains("runCatching {")
+        )
+        assertTrue("失败直接抛给事务", body.contains("memoryVersionDao.deleteAll()"))
+        assertTrue(body.contains("memoryVersionDao.deleteOrphans()"))
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：API 26–27 图片缩放（P2-10）
+
+    @Test
+    fun `旧系统上粗采样之后还会缩到目标尺寸`() {
+        val body = source("src/main/java/com/myfriend/app/util/MediaStorage.kt")
+            .let { text ->
+                val start = text.indexOf("private fun decodeForContext(")
+                require(start >= 0)
+                text.substring(start, minOf(text.length, start + 2_400))
+            }
+        assertTrue("API<28 分支要按目标尺寸再缩一次", body.contains("ImageContextBudget.scaledSize("))
+        assertTrue("真的创建缩放位图", body.contains("Bitmap.createScaledBitmap("))
+        assertTrue("用后释放中间位图", body.contains("decoded.recycle()"))
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：选图落盘竞态（P2-12）
+
+    @Test
+    fun `选图落盘与登记在不可取消区域`() {
+        val viewModel = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt")
+        val addImages = bodyOf(viewModel, "fun addImages(")
+        assertTrue("落盘与登记要放在 NonCancellable 里", addImages.contains("withContext(NonCancellable)"))
+        assertTrue(
+            "落盘必须在这个区域里",
+            addImages.indexOf("MediaStorage.persistChatImage(") > addImages.indexOf("withContext(NonCancellable)")
+        )
+        assertTrue("ViewModel 销毁后要删掉刚写的文件", addImages.contains("draftWindowClosed"))
+        assertTrue(
+            "onCleared 先立旗子再删已登记的图片",
+            bodyOf(viewModel, "override fun onCleared()").let { body ->
+                body.indexOf("draftWindowClosed = true") in 0 until body.indexOf("MediaStorage.deleteAttachments(")
+            }
+        )
+        val editor = source("src/main/java/com/myfriend/app/ui/screens/persona/PersonaEditorScreen.kt")
+        assertTrue("头像选图同样要 NonCancellable", editor.contains("withContext(NonCancellable)"))
+        val editorVm = source("src/main/java/com/myfriend/app/ui/screens/persona/PersonaEditorViewModel.kt")
+        assertTrue("晚到的头像登记直接删文件", bodyOf(editorVm, "fun setAvatarUri(").contains("draftAvatarWindowClosed") ||
+            bodyOf(editorVm, "fun setAvatarUri(").contains("draftWindowClosed"))
+    }
+
+    // ------------------------------------------------------------------ 0.11.1 审计：发布构建（P2-14）
+
+    @Test
+    fun `release 构建强制进程内 并且版本号是 0_11_1`() {
+        val gradle = source("build.gradle.kts")
+        val release = gradle.substringAfter("buildTypes {", "")
+            .substringAfter("release {", "")
+            .substringBefore("debug {")
+        assertTrue(
+            "release 不能允许 -PagentCoreRemote=true 把决策请求发到远端",
+            release.contains("""buildConfigField("boolean", "AGENT_CORE_REMOTE", "false")""")
+        )
+        assertTrue(
+            "release 不把编译期地址打进包（remote 已强制 false，baseUrl 留空）",
+            release.contains("AGENT_CORE_BASE_URL")
+        )
+        assertTrue("versionCode 必须递增", gradle.contains("versionCode = 16"))
+        assertTrue("versionName 是 0.11.1", gradle.contains("""versionName = "0.11.1""""))
+    }
+
+    @Test
+    fun `远程客户端禁重定向 限制响应体 回退可观测`() {
+        val client = source("src/main/java/com/myfriend/app/core/AgentCoreClient.kt")
+        assertTrue("禁跟随重定向", client.contains(".followRedirects(false)"))
+        assertTrue("禁跟随 SSL 重定向", client.contains(".followSslRedirects(false)"))
+        assertTrue("响应体有上限", client.contains("MAX_RESPONSE_BYTES"))
+        assertTrue("读响应时累计检查大小", client.contains("readBoundedBody(response)"))
+        assertTrue("回退计数", client.contains("AgentCoreRemoteStats.recordFallback(action)"))
+        assertTrue("成功计数", client.contains("AgentCoreRemoteStats.recordSuccess(action)"))
+        assertTrue("日志里截断服务端文案", client.contains("boundedForLog("))
+        assertTrue(
+            "计数器是独立可测的单例",
+            source("src/main/java/com/myfriend/app/core/AgentCoreRemoteStats.kt")
+                .contains("object AgentCoreRemoteStats")
+        )
+    }
+
     // ------------------------------------------------------------------ 工具
 
     private fun projectRoot(): File {

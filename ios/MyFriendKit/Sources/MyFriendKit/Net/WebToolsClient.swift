@@ -95,6 +95,10 @@ public enum WebToolsFailure: Error, LocalizedError, Equatable {
     case invalidBaseUrl(String)
     /// 要抓取的网页地址不是合法的 http(s) 链接。
     case invalidUrl(String)
+    /// 要抓取的网页地址指向本机/内网字面量（0.11.1 安全审计 P2-5）。
+    case localUrl(String)
+    /// 要抓取的网页地址里带 userinfo（口令会随 URL 发给第三方抓取服务）。
+    case credentialsInURL(String)
     /// 搜索关键词为空（trim 之后）。
     case emptyQuery
     /// 配置里没填联网工具 Key（也不会退回空 Key 发请求：那只会换来 401）。
@@ -110,6 +114,10 @@ public enum WebToolsFailure: Error, LocalizedError, Equatable {
             return String(localized: "联网工具地址不是合法的 http/https 链接")
         case .invalidUrl:
             return String(localized: "这个链接不是合法的 http/https 链接")
+        case .localUrl:
+            return String(localized: "这个链接指向本机或内网地址，联网工具不会去访问")
+        case .credentialsInURL:
+            return String(localized: "这个链接里带着账号或密码，联网工具不会把它发出去")
         case .emptyQuery:
             return String(localized: "搜索关键词不能为空")
         case .missingAPIKey:
@@ -457,14 +465,21 @@ public final class WebToolsClient: @unchecked Sendable {
         }
     }
 
-    /// 要抓取的网页地址必须是 http(s)：这个地址最终由服务端去访问，本端只做形状校验
-    /// （`javascript:`、`file:` 这类交给模型乱填只会白白烧一次请求）。
-    private static func validatePageUrl(_ raw: String) throws {
-        guard !raw.isEmpty,
-              let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = url.host, !host.isEmpty else {
+    /// 要抓取的网页地址必须是 http(s) 且不是本机/内网字面量。
+    ///
+    /// 这个地址最终由服务端去访问，本端只做形状校验；但「形状」包含与 Android
+    /// `WebUrlPolicy` 对齐的**内网字面量**规则（0.11.1 安全审计 P2-5 / iOS 审计 P2-17）：
+    /// 同一句模型生成的 `http://192.168.1.5/admin`，Android 报错、iOS 以前照发。
+    /// 规则表与绕过用例都在 `WebUrlPolicyTests`（`WebUrlPolicy` 是纯函数，便于逐条钉住）。
+    static func validatePageUrl(_ raw: String) throws {
+        switch WebUrlPolicy.check(raw) {
+        case nil:
+            return
+        case .localHost:
+            throw WebToolsFailure.localUrl(raw)
+        case .credentialsInURL:
+            throw WebToolsFailure.credentialsInURL(raw)
+        case .empty, .unsupportedScheme, .missingHost, .ambiguousAuthority, .invalidHost:
             throw WebToolsFailure.invalidUrl(raw)
         }
     }

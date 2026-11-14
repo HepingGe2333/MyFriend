@@ -465,6 +465,18 @@ public final class OpenAICompatibleClient: ChatCompleting {
                     for try await byte in bytes {
                         if Task.isCancelled { throw CancellationError() }
                         buffer.append(byte)
+                        // 0.11.1 审计 P1-1：单行 8 MB 上限必须加在**生产真正累加的那个缓冲区**上。
+                        // `SSEParser.feed` 的超限分支只在「喂进去的块里没有换行、且长度 > 8 MB」时执行，
+                        // 而这里总是攒到换行才喂 —— 那条分支在生产路径上不可达。真正会无上限增长的
+                        // 就是这里的 `buffer`（服务端声明 text/event-stream 却一直不吐换行时）。
+                        // 超限即中止整条流：与 Android `SseLines` 的「抛 ResponseTooLong 并中止」对齐，
+                        // 也避免把几百 MB 的「一行」当成正文解析。
+                        guard buffer.count <= SSEParser.MAX_LINE_BYTES else {
+                            throw ApiException(
+                                statusCode: status,
+                                message: String(localized: "模型返回的数据过长（单行超过 8 MB），已中止")
+                            )
+                        }
                         // 攒到一整行再进解析器：byte 级喂进去只会多绕几圈，结果一样。
                         guard byte == 0x0A else { continue }
                         let events = parser.feed(buffer)

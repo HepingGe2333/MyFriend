@@ -58,6 +58,11 @@ class AgentCoreClientTest {
     private val logger = AgentCoreLogger { message, _ -> logs += message }
 
     @Before
+    fun resetRemoteStats() {
+        AgentCoreRemoteStats.reset()
+    }
+
+    @Before
     fun startServer() {
         server = FakeHttpServer { path, body ->
             // 先计数再算响应：超时用例里响应会慢慢算，但请求确实已经到了。
@@ -348,6 +353,76 @@ class AgentCoreClientTest {
         assertTrue(logs.isEmpty())
     }
 
+    // ------------------------------------------------------------------ 3.5 网络加固（审计 P2-7）
+
+    /**
+     * 审计 P2-7：决策客户端**不跟随重定向**。
+     *
+     * OkHttp 默认对 307/308 保留方法与请求体并跟到跨域地址——一台被劫持的局域网主机
+     * 可以让 `tool-args` 里的文本（例如 remember 的 content）转给自己的收集端。
+     * 这里让假服务回 302 + Location，断言客户端只发了 1 个请求（没有打到 /collect），
+     * 并且按「非 2xx」回退进程内。
+     */
+    @Test
+    fun `redirects are not followed`() {
+        server.extraHeaders = { listOf("Location: /collect") }
+        responder = { _, _ -> 302 to "" }
+        val core = client()
+
+        val decision = core.sleepDecision(SleepInput(true, false, 1410, 480, 120, 0, 6))
+
+        assertEquals("重定向不该被跟随：只能有一个请求", 1, hits.get())
+        assertEquals(listOf(AgentCoreProtocol.SLEEP_DECISION_PATH), paths.toList())
+        assertEquals(
+            "回退结果必须与进程内一致",
+            InProcessAgentCore.sleepDecision(SleepInput(true, false, 1410, 480, 120, 0, 6)),
+            decision
+        )
+        assertEquals(1L, AgentCoreRemoteStats.fallbackCount())
+        assertEquals(1L, AgentCoreRemoteStats.fallbackCount("sleep-decision"))
+    }
+
+    /** 审计 P2-7 / 安全 P2-8：响应体超过上限按协议失败回退，不能整份读进内存。 */
+    @Test
+    fun `oversized response falls back instead of being read`() {
+        val huge = """{"moodRelaxed":true,"asleep":false,"dnd":false,"wake":true,"marksRead":true,"pad":"""" +
+            "x".repeat(RemoteAgentCoreClient.MAX_RESPONSE_BYTES + 1024) + """"}"""
+        responder = { _, _ -> 200 to huge }
+        val core = client()
+
+        val decision = core.sleepDecision(SleepInput(true, false, 1410, 480, 120, 0, 6))
+
+        assertTrue(
+            "响应过大必须回退（日志里应当说明原因）：" + logs,
+            logs.any { it.contains("响应体过大") }
+        )
+        assertEquals(
+            InProcessAgentCore.sleepDecision(SleepInput(true, false, 1410, 480, 120, 0, 6)),
+            decision
+        )
+        assertEquals(1L, AgentCoreRemoteStats.fallbackCount())
+        assertEquals(0L, AgentCoreRemoteStats.successCount())
+    }
+
+    /** 审计 P2-7：回退不再只有一行 logcat——计数器按 action 分开记，成功/失败都能看见。 */
+    @Test
+    fun `fallbacks and successes are observable`() {
+        responder = ::realContract
+        val core = client()
+        core.deferPlan(null, null, 0L)
+        core.proactiveCap(ProactiveCapInput(3, "雀跃", 4))
+        assertEquals(2L, AgentCoreRemoteStats.successCount())
+        assertEquals(0L, AgentCoreRemoteStats.fallbackCount())
+
+        responder = { _, _ -> 503 to "" }
+        core.deferPlan(null, null, 0L)
+        assertEquals(1L, AgentCoreRemoteStats.fallbackCount())
+        assertEquals(1L, AgentCoreRemoteStats.fallbackCount("defer-plan"))
+        assertEquals(0L, AgentCoreRemoteStats.fallbackCount("sleep-decision"))
+        // 日志里带累计回退次数，便于「永远连不上」与「偶尔抖一下」区分。
+        assertTrue(logs.any { it.contains("累计回退") })
+    }
+
     // ------------------------------------------------------------------ 4. 进程内实现与直接调用一致
 
     @Test
@@ -451,6 +526,10 @@ private class FakeHttpServer(
     private val serverSocket = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
     val port: Int = serverSocket.localPort
 
+    /** 追加到响应头的行（例如 `Location:`，用来验证客户端不跟随重定向）。 */
+    @Volatile
+    var extraHeaders: (Int) -> List<String> = { emptyList() }
+
     @Volatile
     private var running = true
 
@@ -498,6 +577,7 @@ private class FakeHttpServer(
             append("HTTP/1.1 ").append(status).append(' ').append(reason).append("\r\n")
             append("Content-Type: application/json; charset=utf-8\r\n")
             append("Content-Length: ").append(bytes.size).append("\r\n")
+            extraHeaders(status).forEach { line -> append(line).append("\r\n") }
             append("Connection: close\r\n\r\n")
         }
         connection.getOutputStream().apply {

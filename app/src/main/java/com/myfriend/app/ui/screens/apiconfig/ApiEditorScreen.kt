@@ -74,6 +74,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
+import com.myfriend.app.domain.ApiKeyState
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
 import com.myfriend.app.ui.components.BottomSheetHandle
@@ -213,11 +214,19 @@ fun ApiEditorScreen(
                         value = state.apiKey,
                         onValueChange = { value -> viewModel.update { it.copy(apiKey = value.trim()) } },
                         label = "API Key",
-                        placeholder = if (state.hasExistingKey) {
-                            stringResource(R.string.api_field_key_stored_placeholder)
-                        } else {
-                            "sk-…"
+                        // 三态（安全 P2-6 / 审计 P2-5）：只有「解得出非空 Key」才显示已保存；
+                        // 「有密文但解不出来」要明说，而不是显示「已保存」让用户去猜 401。
+                        placeholder = when (state.existingKeyState) {
+                            ApiKeyState.USABLE -> stringResource(R.string.api_field_key_stored_placeholder)
+                            ApiKeyState.UNRECOVERABLE -> stringResource(R.string.api_key_unrecoverable_placeholder)
+                            ApiKeyState.MISSING -> "sk-…"
                         },
+                        supportingText = when (state.existingKeyState) {
+                            ApiKeyState.UNRECOVERABLE -> stringResource(R.string.api_key_unrecoverable_hint)
+                            ApiKeyState.USABLE -> stringResource(R.string.api_key_stored)
+                            ApiKeyState.MISSING -> null
+                        },
+                        isError = state.existingKeyState == ApiKeyState.UNRECOVERABLE,
                         visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         leadingIcon = {
                             Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
