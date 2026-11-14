@@ -91,21 +91,23 @@ public final class MemoryExtraction {
         }
         let personaName = persona.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "他" : persona.name
-        let messages = (try? stores.messages.bySession(sessionId)) ?? []
-        let conversational = messages.filter {
-            $0.role != .system && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        if conversational.count < 4 {
+        let conversationCount = (try? stores.messages.countDialogue(sessionId: sessionId)) ?? 0
+        if conversationCount < 4 {
             return .success(MemoryExtractionResult(added: 0, message: "对话还不够多"))
         }
-        let currentCount = messages.count
+        // 「抽到第几条」用的是**整段**条数（与 `lastMemoryExtractedCount` 同一口径）：
+        // 只查计数，不读正文。
+        let currentCount = (try? stores.messages.count(sessionId: sessionId)) ?? conversationCount
         // 间隔归人格（`extractionEvery`，会话可覆盖，§三）。
         let interval = session.effectiveExtractionEvery(persona: persona)
         if !force && currentCount - session.lastMemoryExtractedCount < interval {
             return .success(MemoryExtractionResult(added: 0, message: "还未到记忆整理间隔"))
         }
 
-        let recent = Array(conversational.suffix(Self.recentMessageCount))
+        // 0.11.0 P2-1：只捞最近 20 条对话消息，不再整段读进内存再 filter/suffix。
+        let recent = (try? stores.messages.recentDialogue(
+            sessionId: sessionId, limit: Self.recentMessageCount
+        )) ?? []
         let existing = (try? memoryRepository.getForPrompt(personaId: persona.id, limit: 80)) ?? []
         let transcript = recent.map { message -> String in
             let who = message.role == .user ? "对方" : persona.name

@@ -1,5 +1,9 @@
 package com.myfriend.agentd
 
+import com.myfriend.app.core.json.Json
+import com.myfriend.app.core.json.JsonParseException
+import com.myfriend.app.core.json.JsonValue
+import com.myfriend.app.domain.AgentCoreProtocol
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -35,7 +39,7 @@ class AgentdApiTest {
         val response = AgentdApi.handle("GET", "/health", null)
         assertEquals(200, response.status)
         assertEquals(
-            """{"ok":true,"service":"myfriend-agentd","version":"0.10.0"}""",
+            """{"ok":true,"service":"myfriend-agentd","version":"0.11.0"}""",
             response.body
         )
     }
@@ -54,6 +58,8 @@ class AgentdApiTest {
         assertTrue(body.bool("wake"))
         assertEquals(false, body.bool("moodRelaxed"))
         assertEquals("醒着，会正常回复", body.str("reason"))
+        // 0.11.0 新增的兼容字段：醒着时一定留已读。
+        assertTrue(body.bool("marksRead"))
     }
 
     @Test
@@ -67,6 +73,8 @@ class AgentdApiTest {
         assertEquals(false, body.bool("wake"))
         assertEquals(false, body.bool("moodRelaxed"))
         assertEquals("免打扰中，不会醒", body.str("reason"))
+        // 免打扰是唯一例外：连已读都不留（规格 §6.2）。
+        assertEquals(false, body.bool("marksRead"))
     }
 
     @Test
@@ -79,6 +87,8 @@ class AgentdApiTest {
         val body = json(response).obj()
         assertEquals(false, body.bool("wake"))
         assertEquals("睡着了 · 08:00 醒", body.str("reason"))
+        // 睡着了但没开免打扰：已读要留（界面只显示「已读」，不显示任何解释）。
+        assertTrue(body.bool("marksRead"))
     }
 
     @Test
@@ -231,6 +241,31 @@ class AgentdApiTest {
         assertEquals(400, response.status)
         val error = (json(response).obj().fields["error"] as JsonValue.Obj)
         assertEquals("unknown_tool", (error.fields["code"] as JsonValue.Str).value)
+    }
+
+    // ------------------------------------------------------------------ 协议常量
+
+    /**
+     * 路由表必须来自 `:agentcore` 的 [AgentCoreProtocol] 常量。
+     *
+     * 这条测试的意义：客户端（Android 的 `RemoteAgentCoreClient`）拼 URL 用的是同一批常量。
+     * 谁要是只改了服务端字符串、没改 agentcore，这里会立刻红，而不是等到联调时 404。
+     */
+    @Test
+    fun `core routes match agentcore protocol constants`() {
+        assertEquals(
+            listOf(
+                "/v1/core/sleep-decision",
+                "/v1/core/defer-plan",
+                "/v1/core/proactive-cap",
+                "/v1/core/tool-args"
+            ),
+            AgentCoreProtocol.CORE_PATHS
+        )
+        for (path in AgentCoreProtocol.CORE_PATHS) {
+            // 存在性：不是 404（空体应该是 400 empty_body，说明路由真的接上了）。
+            assertEquals(path, 400, AgentdApi.handle("POST", path, "").status)
+        }
     }
 
     @Test

@@ -140,6 +140,84 @@ final class ChatPagingTests: XCTestCase {
         XCTAssertEqual(Set(twice.map(\.id)).count, twice.count, "没有重复 id")
     }
 
+    // MARK: - 新消息只往后追加（0.11.0 P2-5）
+
+    /// 用户上滑加载到 120 条之后，连着来 5 条新消息：已加载的那 120 条必须还在窗口里。
+    ///
+    /// 0.10.2 的写法是「重读最后 max(pageSize, loaded) 条」：来一条新消息，窗口就往后
+    /// 滑一格，最早那一页被挤掉、滚动位置跳动。现在以「窗口最后一条」为游标只取更新的，
+    /// 再接在已加载区间后面。
+    func testFiveNewMessagesKeepTheLoadedHundredAndTwenty() throws {
+        try seed(120)
+        var loaded = try temp.stores.messages.recent(sessionId: sessionId, limit: 120)
+        XCTAssertEqual(loaded.count, 120)
+        let before = loaded.map(\.id)
+
+        // 模拟「心跳在这段时间里写了 5 条」。
+        let fresh = (120..<125).map { index in
+            TestData.message(
+                id: String(format: "m-%03d", index),
+                role: .assistant,
+                content: "新消息 \(index)",
+                createdAt: base + Int64(index) * 1000
+            )
+        }
+        try temp.stores.messages.upsert(fresh)
+        let cursor = try XCTUnwrap(loaded.last)
+        let newer = try temp.stores.messages.pageAfter(
+            sessionId: sessionId, createdAt: cursor.createdAt, id: cursor.id, limit: 50
+        )
+        loaded = MessagePaging.appendingNewer(newer, to: loaded)
+
+        XCTAssertEqual(loaded.count, 125)
+        XCTAssertEqual(Array(loaded.prefix(120)).map(\.id), before, "已加载的 120 条原封不动")
+        XCTAssertEqual(Array(loaded.suffix(5)).map(\.id), fresh.map(\.id), "新消息接在后面")
+        XCTAssertEqual(loaded.map(\.id), loaded.map(\.id).sorted(), "仍然是时间升序")
+    }
+
+    /// 重复合并同一批新消息是幂等的（轮询与流结束可能同时触发一次重读）。
+    func testAppendingNewerIsIdempotent() throws {
+        try seed(10)
+        var loaded = try temp.stores.messages.recent(sessionId: sessionId, limit: 6)
+        let newer = try temp.stores.messages.recent(sessionId: sessionId, limit: 4)
+        loaded = MessagePaging.appendingNewer(newer, to: loaded)
+        let once = loaded
+        loaded = MessagePaging.appendingNewer(newer, to: loaded)
+        XCTAssertEqual(loaded.map(\.id), once.map(\.id))
+        XCTAssertEqual(Set(loaded.map(\.id)).count, loaded.count, "没有重复 id")
+    }
+
+    /// 长时间停留的页面不能把窗口重新涨成「几千条」：超过上限时从最旧的一端丢。
+    func testWindowCapDropsOldestOnly() throws {
+        try seed(10)
+        let loaded = try temp.stores.messages.recent(sessionId: sessionId, limit: 8)
+        XCTAssertEqual(loaded.map(\.id), ["m-002", "m-003", "m-004", "m-005", "m-006", "m-007", "m-008", "m-009"])
+        let cursor = try XCTUnwrap(loaded.last)
+        try temp.stores.messages.upsert((10..<13).map { index in
+            TestData.message(
+                id: String(format: "m-%03d", index),
+                role: .assistant,
+                content: "新消息 \(index)",
+                createdAt: base + Int64(index) * 1000
+            )
+        })
+        let newer = try temp.stores.messages.pageAfter(
+            sessionId: sessionId, createdAt: cursor.createdAt, id: cursor.id, limit: 100
+        )
+        let capped = MessagePaging.appendingNewer(newer, to: loaded, cap: 5)
+        XCTAssertEqual(capped.count, 5)
+        XCTAssertEqual(capped.map(\.id), ["m-008", "m-009", "m-010", "m-011", "m-012"],
+                       "丢的是最旧的那几条，最新的一定留着")
+    }
+
+    /// 窗口还空着（刚进页面 / 清空上下文之后）时，新消息就是窗口本身。
+    func testAppendingToEmptyWindowUsesTheNewMessages() throws {
+        try seed(3)
+        let newer = try temp.stores.messages.recent(sessionId: sessionId, limit: 3)
+        XCTAssertEqual(MessagePaging.appendingNewer(newer, to: []).map(\.id), newer.map(\.id))
+        XCTAssertTrue(MessagePaging.appendingNewer([], to: []).isEmpty)
+    }
+
     // MARK: - 未读 / 免打扰走全表
 
     func testUnreadAndWakeCountsIgnoreTheWindow() throws {

@@ -81,6 +81,8 @@ final class SSEParserTests: XCTestCase {
     /// 非流式响应（一整份 JSON、中间没有换行）不能无声地占内存：
     /// 超长行按「一行」吐出来，让上层当成完整回复解析。
     func testLongLineWithoutNewlineIsEmitted() {
+        // 0.10.2 安全审计 P2-10：与 Android 的 8 MB 阈值对齐（原来 iOS 是 1 MB）。
+        XCTAssertEqual(SSEParser.MAX_LINE_BYTES, 8 << 20)
         var parser = SSEParser()
         let long = "x" + String(repeating: "y", count: SSEParser.MAX_LINE_BYTES + 10)
         let events = parser.feed("data: " + long)

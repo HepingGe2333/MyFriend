@@ -42,12 +42,31 @@ android {
         applicationId = "com.myfriend.app"
         minSdk = 26
         targetSdk = 35
-        // 内测版本号：1.9.0 → 0.9.0 → 0.9.1 → 0.10.0 → 0.10.1，本次 0.10.2（i18n 收尾 + 工具痕迹标题本地化 + 版本号统一）。
+        // 内测版本号：0.9.0 → 0.9.1 → 0.10.0 → 0.10.1 → 0.10.2，本次 0.11.0（agent 决策层抽成 :agentcore + 客户端/服务端分层）。
         // versionCode 只增不减，升级路径才不会断。
-        versionCode = 14
-        versionName = "0.10.2"
+        versionCode = 15
+        versionName = "0.11.0"
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // agent 决策层走哪条路：默认进程内（InProcessAgentCoreClient），行为与 0.10.x 完全一致。
+        //
+        // 打开远程模式（`-PagentCoreRemote=true`）后，睡眠判定 / defer_reply 计划 / 主动上限 /
+        // 工具参数夹取会先请求 `agentd` 的 `/v1/core/*`；请求失败（超时、5xx、坏 JSON）自动回退到
+        // 进程内实现并记一行日志——**决策层不能因为服务不可用就让聊天挂掉**。
+        //
+        // 这是给开发/联调用构建开关，不是用户可见设置项：release 包默认仍走进程内。
+        // 地址默认指向模拟器里的宿主机（10.0.2.2）；真机联调可 `-PagentCoreBaseUrl=http://<局域网 IP>:8788`。
+        buildConfigField(
+            "boolean",
+            "AGENT_CORE_REMOTE",
+            (findProperty("agentCoreRemote") as String?)?.toBoolean()?.toString() ?: "false"
+        )
+        buildConfigField(
+            "String",
+            "AGENT_CORE_BASE_URL",
+            "\"" + ((findProperty("agentCoreBaseUrl") as String?) ?: "http://10.0.2.2:8788") + "\""
+        )
     }
 
     signingConfigs {
@@ -97,6 +116,21 @@ android {
     sourceSets["androidTest"].assets.srcDirs("$projectDir/schemas")
 }
 
+/**
+ * 可选的端到端联调：`-PagentCoreE2eUrl=http://127.0.0.1:8788`（或同名环境变量 `AGENTCORE_E2E_URL`）
+ * 时，`AgentCoreRemoteE2ETest` 会真的打到运行中的 `agentd`。
+ *
+ * 默认不设置 → 那条测试自行跳过（CI 不依赖外部进程）；设置后它要求 **4 个决策全部走远程成功**，
+ * 一旦回退进程内就直接失败——这比「结果相等」更能证明客户端/服务端真的接上了。
+ */
+tasks.withType<org.gradle.api.tasks.testing.Test>().configureEach {
+    val e2eUrl = providers.gradleProperty("agentCoreE2eUrl").orNull
+        ?: System.getenv("AGENTCORE_E2E_URL")
+    if (!e2eUrl.isNullOrBlank()) {
+        environment("AGENTCORE_E2E_URL", e2eUrl)
+    }
+}
+
 ksp {
     // Room 把每一版的表结构导出到 app/schemas/<库名>/<版本号>.json。
     // 没有这份历史，就没法证明「升级不会把用户的记忆清空」；有了它，迁移测试和 review 才有依据。
@@ -107,6 +141,9 @@ dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
     implementation(composeBom)
     androidTestImplementation(composeBom)
+
+    // 两端一致的 agent 决策（纯 Kotlin/JVM、零第三方依赖）：睡眠判定、defer_reply、主动上限、工具参数夹取。
+    implementation(project(":agentcore"))
 
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.core:core-splashscreen:1.0.1")

@@ -107,3 +107,18 @@ enum LText {
 extension LText {
     static var sentenceSeparator: String { AppLanguage.current == .en ? " " : "" }
 }
+
+// MARK: - 与 Kit 的种子人设对接
+
+extension AppLanguage {
+    /// 界面语言 → 种子人设语言。
+    ///
+    /// `SeedPersonas` 的数据在 Kit 里（0.11.0 P2-13：清空后重新播种要能单测），
+    /// 而 Kit 不认识 App 的 `Bundle` 语言机制，所以由这里把当前语言"翻"成一个纯值。
+    var seedLanguage: SeedLanguage {
+        switch self {
+        case .en: return .english
+        case .zhHans: return .chinese
+        }
+    }
+}

@@ -18,6 +18,7 @@ import com.myfriend.app.data.local.MessageStatus
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
+import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.AttachmentsCodec
 import com.myfriend.app.domain.ChatNotificationPolicy
@@ -30,6 +31,10 @@ import com.myfriend.app.domain.GenerationEvent
 import com.myfriend.app.domain.HistoryCompression
 import com.myfriend.app.domain.LanguageDirective
 import com.myfriend.app.domain.LlmLane
+import com.myfriend.app.domain.ImageContextBudget
+import com.myfriend.app.domain.InterruptedReply
+import com.myfriend.app.domain.MessageJump
+import com.myfriend.app.domain.MessageOrder
 import com.myfriend.app.domain.MoodRecovery
 import com.myfriend.app.domain.MessageAttachment
 import com.myfriend.app.domain.MessagePaging
@@ -46,6 +51,8 @@ import com.myfriend.app.domain.SearchRanking
 import com.myfriend.app.domain.SearchSnippet
 import com.myfriend.app.domain.UserError
 import com.myfriend.app.domain.UserErrorTokens
+import com.myfriend.app.domain.SleepDecision
+import com.myfriend.app.domain.SleepInput
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.ToolCatalog
 import com.myfriend.app.domain.ToolProtocol
@@ -200,6 +207,8 @@ class ChatRepository @Inject constructor(
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     private val agentTickDao: AgentTickDao,
+    /** agent 决策（睡眠判定）：默认进程内，可切 agentd；失败会自动回退，见 [AgentCoreClient]。 */
+    private val agentCore: AgentCoreClient,
     @ApplicationContext private val appContext: Context,
     private val chatNotifier: ChatNotifier,
     private val foregroundTracker: com.myfriend.app.util.AppForegroundTracker,
@@ -235,6 +244,20 @@ class ChatRepository @Inject constructor(
     ): Flow<List<MessageEntity>> =
         messageDao.observeSince(sessionId, cursor.createdAt, cursor.id)
 
+    /**
+     * 有界窗口：从 [start] 起最多 [rows] 条（可观察）。
+     *
+     * 从检索结果定位时用它，窗口只覆盖目标附近（见 [cursorContainingMessage] 与
+     * [com.myfriend.app.domain.MessageJump]）。往前翻页时把 [start] 前移、
+     * 同时把 [rows] 加上一页，窗口的「下界」（更近的一侧）保持不变。
+     */
+    fun observeMessagesWindow(
+        sessionId: String,
+        start: MessagePaging.Cursor,
+        rows: Int
+    ): Flow<List<MessageEntity>> =
+        messageDao.observeWindow(sessionId, start.createdAt, start.id, rows.coerceAtLeast(1))
+
     /** 往前翻一页（时间正序返回）；返回不足一页说明到底了。 */
     suspend fun messagesBefore(
         sessionId: String,
@@ -244,44 +267,52 @@ class ChatRepository @Inject constructor(
         messageDao.pageBefore(sessionId, cursor.createdAt, cursor.id, limit).asReversed()
 
     /**
-     * 检索结果「跳转到那条消息」用的锚点：算出**窗口起点**，让目标消息落进已加载区间。
+     * 检索结果「跳转到那条消息」用的窗口：算出**窗口起点与条数上界**，让目标消息落进窗口。
      *
-     * 做法就是聊天页分页本身：从最新一页开始，用 `pageBefore` 一页页往回走
-     * （游标仍是 `(createdAt, id)`，与 [messagesBefore] 同一套），直到某页的最早一条
-     * 不晚于目标消息 —— 这时把窗口起点设成那一页的最早一条，`observeMessagesFrom`
-     * 就会把「目标消息 + 它之后的所有消息」都观察进来，目标是连续的上下文，
-     * 不是被硬塞进列表的一条孤立消息。
+     * ## 为什么不再「一页页往回翻」
      *
-     * 返回 null 有两种含义，调用方都不用管：目标消息已经在首屏窗口里（不用动游标），
+     * 0.10.2 的做法是从最新一页开始用 `pageBefore` 往前爬，每爬一页就把窗口起点挪一次；
+     * 而聊天页观察的是「起点 → 最新」的连续区间，于是第 k 页要重读 60×k 行，
+     * 合计 O(页数²)（最多 200 页 ≈ 120 万行）。这正是分页要避免的峰值，只是换了个入口
+     * （审计 P2-13）。
+     *
+     * 现在只做三次**有界**查询：
+     * 1. `COUNT(*)`：会话一共几条；
+     * 2. `COUNT(*) WHERE (createdAt,id) < 目标`：目标之前几条（只回一个数字，不 materialize 行）；
+     * 3. `pageBefore(目标, 一页)`：取目标之上的一页当作上下文起点。
+     *
+     * 窗口长度由 [com.myfriend.app.domain.MessageJump] 封顶（最多四页），所以一次定位的
+     * 读取量与会话总长度无关；目标之后还有更新的消息时，界面底部给「更新的消息」入口。
+     *
+     * 返回 null 有两种含义，调用方都不用管：目标消息已经在首屏窗口里（不用动窗口），
      * 或者它已经不在了（删过、换过设备）。
-     *
-     * 为什么不在界面层「翻一页判断一次」：那样每一页都要等一次 Room 的 Flow 回声，
-     * 状态机很容易在上一次结果还没落进窗口时又发起下一页（第一版就踩了这个坑，
-     * 同一个游标被查了三遍）。这里直接一次算完，界面只需要等窗口到。
      */
     suspend fun cursorContainingMessage(
         sessionId: String,
         messageId: String,
-        limit: Int = MessagePaging.PAGE_SIZE,
-        maxPages: Int = MAX_JUMP_PAGES
-    ): MessagePaging.Cursor? {
+        pageSize: Int = MessagePaging.PAGE_SIZE
+    ): MessagePaging.Window? {
         val target = messageDao.getById(messageId) ?: return null
         if (target.sessionId != sessionId) return null
-        var bound = MessagePaging.Cursor(Long.MAX_VALUE, HIGHEST_ID)
-        var oldest: MessagePaging.Cursor? = null
-        var pages = 0
-        while (pages < maxPages) {
-            val page = messageDao.pageBefore(sessionId, bound.createdAt, bound.id, limit)
-            if (page.isEmpty()) break
-            // 首屏那一页里就有：不需要挪窗口，聊天页本来就是从最新一屏打开的。
-            if (pages == 0 && page.any { it.id == messageId }) return null
-            val last = page.last()
-            oldest = MessagePaging.Cursor(last.createdAt, last.id)
-            pages++
-            if (last.createdAt <= target.createdAt) break
-            bound = oldest
+        val total = messageDao.countInSession(sessionId)
+        val beforeTarget = messageDao.countBefore(sessionId, target.createdAt, target.id)
+        val plan = MessageJump.plan(total, beforeTarget, pageSize)
+        // 目标就在首屏（最近一页）：聊天页本来就是从最新一屏打开的，什么都不用挪。
+        if (plan.targetInLatestPage) return null
+        val contextRow = if (plan.contextRows > 0) {
+            messageDao.pageBefore(sessionId, target.createdAt, target.id, plan.contextRows).lastOrNull()
+        } else {
+            null
         }
-        return oldest
+        val start = contextRow
+            ?.let { MessagePaging.Cursor(it.createdAt, it.id) }
+            ?: MessagePaging.Cursor(target.createdAt, target.id)
+        return MessagePaging.Window(
+            start = start,
+            rows = plan.windowRows,
+            hasMoreOlder = plan.hasMoreOlder,
+            hasMoreNewer = plan.hasMoreNewer
+        )
     }
 
     suspend fun getSession(id: String): ChatSessionEntity? = sessionDao.getById(id)
@@ -323,8 +354,14 @@ class ChatRepository @Inject constructor(
             lastPersonaVersion = persona.version,
             lastMemoryExtractedCount = 0
         )
-        sessionDao.insert(session)
-        session
+        // 幂等 upsert：`index_chat_sessions_personaId_unique` 下，两个调用方（首页点联系人 /
+        // 启动补会话 / 主动消息）同时发现「还没有会话」时，只有一方插得进去。
+        // 以前走 ABORT 会抛 SQLiteConstraintException，首页直接报「打开失败」（审计 P2-6）；
+        // 走 REPLACE 更糟：会把对方刚建的那一行整行删掉再插（消息成孤儿）。
+        // IGNORE + 回读：撞了就说明别人已经建好了，直接返回那一行。
+        val inserted = sessionDao.insertIgnore(session)
+        if (inserted != -1L) return@runCatching session
+        sessionDao.latestForPersona(personaId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
     }
 
     suspend fun getOrCreateForPersona(personaId: String): ChatSessionEntity =
@@ -413,11 +450,17 @@ class ChatRepository @Inject constructor(
                 emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_REQUIRED), null))
                 return@flow
             }
-        val resolved = apiConfigRepository.resolve(configId)
-            ?: run {
-                emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_GONE), null))
-                return@flow
-            }
+        // 安全 P2-6：配置在、但 Key 解不出来（Keystore 被系统清掉 / 换机迁移异常）时说清楚，
+        // 不再让请求带着空 Authorization 发出去、最后变成一句「API Key 无效（401）」。
+        val resolved = try {
+            apiConfigRepository.resolve(configId)
+        } catch (error: Exception) {
+            emit(GenerationEvent.Failed(error.toUserError(), null))
+            return@flow
+        } ?: run {
+            emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_GONE), null))
+            return@flow
+        }
         val config = resolved.config
         // 只读最近 N 条：长会话不再每次把整段历史读进内存（更早的部分已经收成摘要了）。
         val recentHistory = messageDao.recentBySession(sessionId, CONTEXT_RECENT_LIMIT)
@@ -428,7 +471,8 @@ class ChatRepository @Inject constructor(
         val now0 = System.currentTimeMillis()
         // 睡眠 / 免打扰 / 唤醒阈值（规格 §六）。判定是纯函数，这里只负责拿数据、落痕迹。
         val sleepDecision = evaluateSleep(persona, sessionId, now0)
-        if (sleepDecision.asleep && !sleepDecision.woken) {
+        // asleep && !woken 的等价写法（决策数据类只暴露 wake / moodRelaxed）：
+        if (!sleepDecision.wake && !sleepDecision.moodRelaxed) {
             // 他确实看到了（已读），但这会儿不会回。界面只显示「已读」，不显示任何解释。
             // 免打扰是例外：连「已读」都不留 —— 那是「他不想被打扰」的一部分（规格 §6.2）。
             if (sleepDecision.marksRead) {
@@ -437,7 +481,7 @@ class ChatRepository @Inject constructor(
             emit(GenerationEvent.Silent)
             return@flow
         }
-        if (sleepDecision.woken) {
+        if (sleepDecision.moodRelaxed) {
             // 被连着叫醒：心情先缓一缓，并在他自己的思考留痕里写一句，用户看不见细节。
             runCatching {
                 val mood = moodRepository.current(persona.id, now0)
@@ -629,16 +673,23 @@ class ChatRepository @Inject constructor(
             val pendingMemory = count - (freshSession?.lastMemoryExtractedCount ?: 0) >= every
             emit(GenerationEvent.Completed(saved, pendingMemory, proposal))
         } catch (cancel: CancellationException) {
-            if (!completed && (shownText.isNotBlank() || traces.isNotEmpty())) {
-                withContext(NonCancellable) {
-                    saveInterrupted(
-                        sessionId = sessionId,
-                        personaId = persona.id,
-                        partial = shownText,
-                        model = session.model.ifBlank { config.model },
-                        toolTraceJson = ToolTraceCodec.encode(traces),
-                        generation = generation
-                    )
+            // 0.11.0（审计 P2-8）：这一轮到底有没有「值得落库的东西」由 InterruptedReply 决定。
+            // 以前只要 traces 非空就落一条 content="" 的消息，界面上既没有正文（空串不渲染）
+            // 也没有工具痕迹（只有 COMPLETE 才渲染），于是出现一个点不开的空气泡。
+            if (!completed) {
+                when (InterruptedReply.decide(shownText, traces.isNotEmpty())) {
+                    InterruptedReply.Outcome.DISCARD -> Unit
+                    InterruptedReply.Outcome.STATUS_ONLY,
+                    InterruptedReply.Outcome.SAVE_TEXT -> withContext(NonCancellable) {
+                        saveInterrupted(
+                            sessionId = sessionId,
+                            personaId = persona.id,
+                            partial = shownText,
+                            model = session.model.ifBlank { config.model },
+                            toolTraceJson = ToolTraceCodec.encode(traces),
+                            generation = generation
+                        )
+                    }
                 }
             }
             throw cancel
@@ -719,7 +770,12 @@ class ChatRepository @Inject constructor(
             val fresh = sessionDao.getById(sessionId) ?: return@withTransaction
             sessionDao.update(
                 fresh.copy(
-                    lastMessagePreview = partial.replace('\n', ' ').trim().take(100),
+                    // 只有工具调用、没有正文的中断：预览保持上一句，不写一个空预览（P2-8）。
+                    lastMessagePreview = if (partial.isBlank()) {
+                        fresh.lastMessagePreview
+                    } else {
+                        partial.replace('\n', ' ').trim().take(100)
+                    },
                     lastMessageAt = now,
                     updatedAt = now
                 )
@@ -793,7 +849,10 @@ class ChatRepository @Inject constructor(
         val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         database.withTransaction {
             messageDao.updateContent(messageId, content, now)
-            messageDao.deleteAfter(sessionId, message.createdAt)
+            // 「删除这条消息之后的消息」按稳定序 (createdAt, id) 判断（审计 P2-7）：
+            // 以前只删 createdAt 严格更晚的，后台消息刚好落在同一毫秒时旧回复会留下来，
+            // 编辑重发后对话读起来是错位的。
+            messageDao.deleteAfterCursor(sessionId, message.createdAt, message.id)
             val latest = messageDao.latestInSession(sessionId)
             sessionDao.update(
                 session.copy(
@@ -1162,36 +1221,53 @@ class ChatRepository @Inject constructor(
     suspend fun wipeAllData() {
         dataEraser.wipeAllData()
         openSessionTracker.clearAll()
+        // 「删除全部数据」之后不该还挂着任何一条他的通知（审计 P2-14：以前 cancel 只支持单会话）。
+        runCatching { chatNotifier.cancelAll(appContext) }
     }
 
     /**
-     * 睡眠判定：把人格的作息、免打扰、唤醒阈值和「最近 30 分钟几条消息」交给纯逻辑。
+     * 睡眠判定：把人格的作息、免打扰、唤醒阈值和「最近 30 分钟几条消息」交给 agent 决策层。
      *
      * 最近消息数包含刚刚发来的这一条——所以「第 N 条叫醒」的语义是直观的，
      * 不需要额外建表记「叫了几次」，30 分钟窗口自己会滚动清零。
+     *
+     * 0.11.0：判定本身改为经由 [AgentCoreClient]（默认进程内委托 `InProcessAgentCore`，
+     * 打开构建开关时请求 `agentd` 的同名接口，失败自动回退）。这里只负责取数据与落痕迹，
+     * 规则仍只有一份（`:agentcore`），行为与 0.10.x 逐字一致。
      */
     private suspend fun evaluateSleep(
         persona: PersonaEntity,
         sessionId: String,
         now: Long
-    ): SleepPolicy.Decision {
-        if (!persona.sleepEnabled) return SleepPolicy.Decision()
+    ): SleepDecision {
         val minute = Instant.ofEpochMilli(now)
             .atZone(ZoneId.systemDefault())
             .toLocalTime()
             .let { it.hour * 60 + it.minute }
-        val recent = runCatching {
-            messageDao.countUserMessagesSince(sessionId, now - SleepPolicy.WAKE_WINDOW_MS)
-        }.getOrDefault(0)
-        return SleepPolicy.evaluate(
-            sleepEnabled = true,
-            sleepMinutes = persona.quietSleepMinutes,
-            wakeMinutes = persona.quietWakeMinutes,
-            minuteOfDay = minute,
-            dndOnSleep = persona.dndOnSleep,
-            recentUserMessages = recent,
-            wakeThreshold = persona.wakeThreshold
-        )
+        // 不睡觉的人不需要查「最近几条」：判定输入里 sleepEnabled=false 已经足够。
+        val recent = if (persona.sleepEnabled) {
+            runCatching {
+                messageDao.countUserMessagesSince(sessionId, now - SleepPolicy.WAKE_WINDOW_MS)
+            }.getOrDefault(0)
+        } else {
+            0
+        }
+        // 放到 IO：远程模式下这是一次同步 HTTP（最长 1.5 秒），而这条 flow 是从
+        // viewModelScope（Main）collect 的；留在主线程会触发 NetworkOnMainThreadException
+        // 并被客户端当成「远程失败」，于是永远静默回退。进程内实现只是多一次调度，可忽略。
+        return withContext(Dispatchers.IO) {
+            agentCore.sleepDecision(
+                SleepInput(
+                    sleepEnabled = persona.sleepEnabled,
+                    dndOnSleep = persona.dndOnSleep,
+                    sleepMinutes = persona.quietSleepMinutes,
+                    wakeMinutes = persona.quietWakeMinutes,
+                    nowMinutes = minute,
+                    userMessagesInWindow = recent,
+                    wakeThreshold = persona.wakeThreshold
+                )
+            )
+        }
     }
 
     private suspend fun buildContext(
@@ -1211,21 +1287,38 @@ class ChatRepository @Inject constructor(
         // 1.9：记忆内置开启；「记性」决定此刻能想起多少条（1 忘得快，5 什么都记得）。
         val memoryLimit = 4 + persona.memoryRetention.coerceIn(1, 5) * 2
         val memories = memoryRepository.getRelevant(persona.id, query = recallQuery, limit = memoryLimit)
-        // 只带着最近几条消息里的图片，避免上下文被 base64 撑爆（先过滤再解码，别为裁掉的消息解一遍）。
-        val recentImageOwners = visible.filter { it.role == MessageRole.USER && !it.attachmentsJson.isNullOrBlank() }
-            .takeLast(MAX_IMAGE_MESSAGES_IN_CONTEXT)
-            .map { it.id }
-            .toSet()
+        // 只带着最近两条消息里的图片（审计 P2-9）：先按「数量预算」挑消息，再逐张解码，
+        // 别为裁掉的消息解一遍。真正的双重限制（条数 / 单图尺寸 / 总字符预算）在
+        // ImageContextBudget 里，纯逻辑单测钉住了上界。
+        val imageOwners = ImageContextBudget.ownersWithImages(
+            visible.map {
+                ImageContextBudget.Candidate(
+                    messageId = it.id,
+                    isUser = it.role == MessageRole.USER,
+                    hasImages = !it.attachmentsJson.isNullOrBlank()
+                )
+            }
+        )
+        // 整个上下文里所有 data URL 的字符预算：塞不下就不再带（宁可少一张，也别把堆撑爆）。
+        var usedImageChars = 0
         val history = visible.filter {
             (it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT) &&
                 (it.content.isNotBlank() || !it.attachmentsJson.isNullOrBlank()) &&
                 it.status != MessageStatus.ERROR
         }.map { message ->
             val outgoing = message.role == MessageRole.USER
-            val images = if (outgoing && message.id in recentImageOwners) {
-                AttachmentsCodec.decode(message.attachmentsJson)
-                    .take(MAX_IMAGES_PER_MESSAGE)
-                    .mapNotNull { MediaStorage.toDataUrl(it) }
+            val images = if (outgoing && message.id in imageOwners) {
+                buildList {
+                    val attachments = AttachmentsCodec.decode(message.attachmentsJson)
+                        .take(ImageContextBudget.imagesForMessage(Int.MAX_VALUE))
+                    for (attachment in attachments) {
+                        // 发送前按目标尺寸重编码（长边 ≤1024、单张 ≤320KB），并且守住整体预算。
+                        val dataUrl = MediaStorage.toContextDataUrl(attachment) ?: continue
+                        if (!ImageContextBudget.acceptsEncoded(usedImageChars, dataUrl)) continue
+                        add(dataUrl)
+                        usedImageChars += dataUrl.length
+                    }
+                }
             } else {
                 emptyList()
             }
@@ -1311,11 +1404,11 @@ class ChatRepository @Inject constructor(
         )
     }
 
-    private suspend fun nextTimestamp(sessionId: String): Long {
-        val latest = messageDao.latestInSession(sessionId)
-        val now = System.currentTimeMillis()
-        return if (latest != null && now <= latest.createdAt) latest.createdAt + 1 else now
-    }
+    private suspend fun nextTimestamp(sessionId: String): Long =
+        MessageOrder.nextTimestamp(
+            latestCreatedAt = messageDao.latestInSession(sessionId)?.createdAt,
+            now = System.currentTimeMillis()
+        )
 
     private fun autoTitle(content: String): String {
         val flat = content.replace(Regex("\\s+"), " ").trim()
@@ -1329,22 +1422,12 @@ class ChatRepository @Inject constructor(
         /** 一次回复里最多连着用几轮工具，用完就必须说话。 */
         const val MAX_TOOL_ROUNDS = 3
 
-        /**
-         * 从检索结果定位时最多往回翻多少页（每页 [MessagePaging.PAGE_SIZE] 条）。
-         *
-         * 60 页 = 3600 条消息 ≈ 一个人几个月的聊天量。上限是两道保护：
-         * 1. 目标消息已经被删掉时不要一直查库；
-         * 2. 「定位」本质上要把 [cursorContainingMessage] 到最新之间的消息都放进窗口
-         *    （聊天页只观察「从某条往后」的连续区间），所以这条线也是窗口内存的上界。
-         *    超过它就更倾向「停在最新一屏」而不是把几千条消息读进内存。
-         */
-        const val MAX_JUMP_PAGES = 60
-
         /** 聊天导出的 schema 版本（与 `ExportBundle` 的默认值一致）。 */
         const val EXPORT_SCHEMA_VERSION = 1
 
-        /** 游标上界的 id 兜底（配合 `createdAt = Long.MAX_VALUE` 取「最新一页」）。 */
-        const val HIGHEST_ID = "\uFFFF"
+        /** 一条消息最多带几张图（与 `ImageContextBudget` 的预算一致）。 */
+        const val MAX_IMAGES_PER_MESSAGE = ImageContextBudget.MAX_IMAGES_PER_MESSAGE
+
         const val CONTEXT_CHAR_BUDGET = 28_000
 
         /**
@@ -1354,7 +1437,5 @@ class ChatRepository @Inject constructor(
          * 这里只是别让一次聊天把整段历史读进内存（几百条够覆盖两万字预算了）。
          */
         const val CONTEXT_RECENT_LIMIT = 200
-        const val MAX_IMAGES_PER_MESSAGE = 4
-        const val MAX_IMAGE_MESSAGES_IN_CONTEXT = 3
     }
 }

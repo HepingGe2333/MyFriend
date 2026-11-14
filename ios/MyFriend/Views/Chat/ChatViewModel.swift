@@ -77,9 +77,17 @@ final class ChatViewModel: ObservableObject {
     private var totalMessageCount = 0
     private var sessionId = ""
     private var generationTask: Task<Void, Never>?
+    /// 「他此刻」/ 心情的重算（30 秒一拍，只在页面可见且 App 在前台时跑）。
     private var pulseTask: Task<Void, Never>?
     /// 消息轮询：Kit 是拉取式的（没有 Room 的 Flow），页面上要自己按需重读。
     private var messagePulseTask: Task<Void, Never>?
+    /// 页面是否在屏幕上（`onAppear` 与 `onDisappear` 之间）。
+    ///
+    /// 0.11.0 审计 P2-3：两条轮询 Task 原来只在 `leave()` 时停，页面一直开着就每 4 秒查一次库。
+    /// 现在「可见 + 前台」才有轮询，节奏交给 `ChatPollingPolicy`（纯逻辑，有单测）。
+    private var isVisible = false
+    /// App 是否在前台（`ChatScreen` 转发的 `scenePhase`）。
+    private var sceneActive = true
     private var toastTask: Task<Void, Never>?
     /// 停止的兜底：底层流万一不响应取消，也不让界面永远停在「正在输入」。
     private var stopFallback: Task<Void, Never>?
@@ -100,11 +108,13 @@ final class ChatViewModel: ObservableObject {
     /// 因为那边可能改过消息（比如清空上下文）或人格。
     func enter() {
         guard let env else { return }
+        isVisible = true
         env.chat.setOpenSession(sessionId)
-        reloadMessages()
+        // 只追加「窗口最后一条之后」的新消息：已加载的历史不该因为重新出现页面被挤掉（P2-5）。
+        reloadMessages(preservingLoadedRange: true)
         refreshContext()
         loaded = true
-        startPulse()
+        restartPulses()
     }
 
     /// 页面离开：把「正开着」的标记撤掉，停掉脉冲。
@@ -112,6 +122,7 @@ final class ChatViewModel: ObservableObject {
     /// 刻意**不**取消正在跑的生成：他正说到一半的那句话不该因为用户退出页面被掐断；
     /// `ChatService` 自己会把结果落库（此时会话已不是「开着」的，未读会 +1，首页能看到）。
     func leave() {
+        isVisible = false
         env?.chat.setOpenSession(nil)
         pulseTask?.cancel()
         pulseTask = nil
@@ -125,7 +136,13 @@ final class ChatViewModel: ObservableObject {
 
     // MARK: - 读
 
-    func reloadMessages() {
+    /// 重读消息窗口。
+    ///
+    /// - Parameter preservingLoadedRange: `true` 只把「窗口最后一条之后」的新消息追加进来，
+    ///   已加载的历史一条都不少（心跳写消息、流式结束、页面重新出现都走它）；
+    ///   `false` 以「最近一屏（不小于已加载条数）」重置窗口 —— 删除消息 / 清空上下文 /
+    ///   重新生成这类**会改动历史**的动作必须走它，否则窗口里会留着已经不存在的消息。
+    func reloadMessages(preservingLoadedRange: Bool = false) {
         guard let env else { return }
         // `try?` 会把 `T?` 拍平成一层，所以这里只需要一次 `if let`。
         if let fresh = try? env.stores.sessions.byId(sessionId) {
@@ -142,13 +159,36 @@ final class ChatViewModel: ObservableObject {
         }
         // **窗口化**：只读最近一屏（首屏 60 条；已经上滑加载过的页也保住，不把人拽回顶上）。
         // `messages.bySession` 是整段全量读取，长会话下是这一页最大的一块内存。
-        let window = max(Self.pageSize, messages.count)
-        messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
-        totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
-        refreshHasMore()
+        if preservingLoadedRange, let last = messages.last {
+            appendNewerMessages(after: last)
+        } else {
+            let window = max(Self.pageSize, messages.count)
+            messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
+            totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
+            refreshHasMore()
+        }
         #if DEBUG
         DebugSeeding.log("[chat] window loaded=\(messages.count) total=\(totalMessageCount) hasMore=\(hasMoreHistory)")
         #endif
+    }
+
+    /// 把「`cursor` 之后」的新消息接在已加载区间后面（0.11.0 P2-5）。
+    ///
+    /// 窗口以已加载区间的最早一条为锚：新消息只往后追加，最早那一页不会被挤掉、
+    /// 滚动位置也不跳（0.10.2 是「重读最后 N 条」，来一条新消息就把最旧的挤出去）。
+    private func appendNewerMessages(after cursor: MessageEntity) {
+        guard let env else { return }
+        let newer = (try? env.stores.messages.pageAfter(
+            sessionId: sessionId,
+            createdAt: cursor.createdAt,
+            id: cursor.id,
+            limit: MessagePaging.maxLoadedMessages
+        )) ?? []
+        if !newer.isEmpty {
+            messages = MessagePaging.appendingNewer(newer, to: messages)
+        }
+        totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
+        refreshHasMore()
     }
 
     /// 窗口前面还有没有更早的消息。
@@ -263,55 +303,97 @@ final class ChatViewModel: ObservableObject {
         presence = env.presence.current(personaId: persona.id)
     }
 
-    private func startPulse() {
+    // MARK: - 轮询（0.11.0 审计 P2-3）
+
+    /// 页面可见性与前台状态变了：按新的计划重启两条轮询。
+    ///
+    /// `ChatScreen` 的 `onAppear` / `onDisappear` / `scenePhase` 都走这里（以及 `enter()`）。
+    func setSceneActive(_ active: Bool) {
+        guard sceneActive != active else { return }
+        sceneActive = active
+        if active {
+            // 回到前台：这段时间他可能自己写了点什么（心跳 / 主动唤醒），先核一次再排下一拍。
+            reloadMessages(preservingLoadedRange: true)
+            refreshContext()
+        }
+        restartPulses()
+    }
+
+    /// 按 `ChatPollingPolicy` 重排两条轮询。
+    ///
+    /// 规则（纯逻辑在 Kit，有单测）：
+    /// - 页面不可见 / App 在后台：两路都停；
+    /// - 正在流式输出：消息轮询停（流是事件源，`finishGeneration` 会统一重读），心情仍然 30 秒一拍；
+    /// - 停在页面上发呆：消息轮询 20 秒一拍（保底，不是 0.10.2 的每 4 秒）。
+    private func restartPulses() {
         pulseTask?.cancel()
+        pulseTask = nil
+        messagePulseTask?.cancel()
+        messagePulseTask = nil
+        let plan = ChatPollingPolicy.plan(
+            isVisible: isVisible, sceneActive: sceneActive, isGenerating: isGenerating
+        )
+        if plan.contextIntervalNanos != nil { startContextPulse() }
+        if plan.messageIntervalNanos != nil { startMessagePulse() }
+    }
+
+    /// 心情与「他此刻」的脉冲：每 30 秒重算一次（只在可见 + 前台时跑）。
+    private func startContextPulse() {
         pulseTask = Task { [weak self] in
             while true {
+                guard let self, !Task.isCancelled else { return }
+                let plan = ChatPollingPolicy.plan(
+                    isVisible: self.isVisible, sceneActive: self.sceneActive, isGenerating: self.isGenerating
+                )
+                guard let interval = plan.contextIntervalNanos else { return }
                 do {
-                    try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                    try await Task.sleep(nanoseconds: interval)
                 } catch {
                     return
                 }
-                guard let self, !Task.isCancelled else { return }
+                guard !Task.isCancelled else { return }
                 self.refreshContext()
             }
         }
-        startMessagePulse()
     }
 
-    /// 每 4 秒核一次「库里是不是多了消息」。
+    /// 每 20 秒核一次「库里是不是多了消息」（只在可见 + 前台、且不在流式输出时跑）。
     ///
-    /// 为什么需要它：这条会话的消息**不一定都是从这个页面发出去的** ——
+    /// 为什么还需要它：这条会话的消息**不一定都是从这个页面发出去的** ——
     /// 心跳 / 主动唤醒 / 回忆重写都可能在他那边往当前会话里写一条；
-    /// Android 靠 Room 的 Flow 自动刷，iOS 的 Kit 是拉取式的（见 PresenceRepository 的注释），
+    /// Android 靠 Room 的 Flow 自动刷，iOS 的 Kit 是拉取式的（见 `PresenceRepository` 的注释），
     /// 所以界面自己按需重读。只比一次「最新一条的 id + 条数」，没有变化就不动状态，不触发重绘。
     private func startMessagePulse() {
-        messagePulseTask?.cancel()
         messagePulseTask = Task { [weak self] in
             while true {
+                guard let self, !Task.isCancelled else { return }
+                let plan = ChatPollingPolicy.plan(
+                    isVisible: self.isVisible, sceneActive: self.sceneActive, isGenerating: self.isGenerating
+                )
+                guard let interval = plan.messageIntervalNanos else { return }
                 do {
-                    try await Task.sleep(nanoseconds: 4 * 1_000_000_000)
+                    try await Task.sleep(nanoseconds: interval)
                 } catch {
                     return
                 }
-                guard let self, !Task.isCancelled else { return }
-                // 正在流式输出时不插手：这一轮结束时 `finishGeneration` 会统一重读。
-                guard !self.isGenerating else { continue }
+                guard !Task.isCancelled else { return }
+                guard ChatPollingPolicy.plan(
+                    isVisible: self.isVisible, sceneActive: self.sceneActive, isGenerating: self.isGenerating
+                ).messageIntervalNanos != nil else { continue }
                 self.reloadMessagesIfChanged()
             }
         }
     }
 
-    /// 库里的消息变了就重读一次（否则不动，避免把滚动位置与展开状态抖坏）。
+    /// 库里的消息变了就**追加**新消息（不是重读最后 N 条，否则已加载的历史会被挤掉）。
     private func reloadMessagesIfChanged() {
         guard let env else { return }
         // 比的是**全表**条数与最后一条 id：窗口里只有 60 条，拿窗口条数去比会永远「不相等」。
         let count = (try? env.stores.messages.count(sessionId: sessionId)) ?? totalMessageCount
         let latestId = ((try? env.stores.messages.latest(sessionId: sessionId)) ?? nil)?.id
         let currentLatestId = messages.last?.id
-        if count != totalMessageCount || latestId != currentLatestId {
-            reloadMessages()
-        }
+        guard count != totalMessageCount || latestId != currentLatestId else { return }
+        reloadMessages(preservingLoadedRange: true)
     }
 
     // MARK: - 发送
@@ -367,9 +449,10 @@ final class ChatViewModel: ObservableObject {
             sendFailure = nil
             draft = ""
             pendingAttachments.removeAll()
-            // `ChatService` 会**先**把用户这句话落库、再返回流；立刻重读一次，
+            // `ChatService` 会**先**把用户这句话落库、再返回流；立刻追加一次，
             // 自己说的话就马上出现在屏幕上，而不是等模型开口。
-            reloadMessages()
+            // 用「追加」而不是重读最后 N 条：已加载的历史不能被自己这一句挤掉（P2-5）。
+            reloadMessages(preservingLoadedRange: true)
             consume(stream)
         case .rejected(let error):
             let message = Self.describe(error)
@@ -422,6 +505,8 @@ final class ChatViewModel: ObservableObject {
     private func consume(_ stream: AsyncThrowingStream<ChatEvent, Error>) {
         generationTask?.cancel()
         isGenerating = true
+        // 开始流式输出：按 `ChatPollingPolicy` 立刻把消息轮询停掉（流是事件源）。
+        restartPulses()
         isStopping = false
         lastNoReply = nil
         streamingText = ""
@@ -478,8 +563,10 @@ final class ChatViewModel: ObservableObject {
         streamingTraces = []
         stopFallback?.cancel()
         stopFallback = nil
-        reloadMessages()
+        reloadMessages(preservingLoadedRange: true)
         refreshContext()
+        // 流结束：消息轮询重新按计划起来（生成中它是停的）。
+        restartPulses()
     }
 
     // MARK: - 消息操作

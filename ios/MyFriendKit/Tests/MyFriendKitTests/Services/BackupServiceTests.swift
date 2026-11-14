@@ -360,4 +360,90 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(restoredSession.extractionEveryOverride, 11)
         XCTAssertEqual(try db.stores.messages.byId("msg-1")?.readAt, TestData.now - 1000)
     }
+
+    // MARK: - 导入大小上限（0.10.2 安全审计 P2-3）
+
+    /// 超限的备份在**读文件之前**就被拒：不会把几百 MB 读成字符串再 OOM。
+    func testReadBackupTextRejectsOversizedFileBeforeReading() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myfriend-backup-limit-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let huge = directory.appendingPathComponent("huge.json")
+        FileManager.default.createFile(atPath: huge.path, contents: Data())
+        let handle = try FileHandle(forWritingTo: huge)
+        // 稀疏文件：只改文件长度，不真的写 64 MB 数据。
+        try handle.truncate(atOffset: UInt64(BackupService.maxImportBytes + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(try service.readBackupText(at: huge)) { error in
+            let importError = error as? BackupImportError
+            XCTAssertEqual(importError?.message, BackupService.tooLargeMessage)
+            XCTAssertTrue(importError?.message.contains("64 MB") ?? false)
+        }
+
+        // 小文件照常读出来（闸不能把正常备份挡在外面）。
+        let small = directory.appendingPathComponent("small.json")
+        let json = try service.export()
+        try json.write(to: small, atomically: true, encoding: .utf8)
+        XCTAssertEqual(try service.readBackupText(at: small), json)
+    }
+
+    /// 就算调用方绕过 `readBackupText`（剪贴板/旧代码），解析前还有一道按字节数的闸。
+    func testImportRejectsOversizedText() throws {
+        let oversized = String(repeating: "a", count: BackupService.maxImportBytes + 1)
+        XCTAssertThrowsError(try service.importBackup(text: oversized, mode: .merge)) { error in
+            XCTAssertEqual((error as? BackupImportError)?.message, BackupService.tooLargeMessage)
+        }
+        // 库一点没动。
+        XCTAssertEqual(try db.stores.personas.count(), 2)
+    }
+
+    func testImportLimitBoundaryIs64MB() {
+        XCTAssertEqual(BackupService.maxImportBytes, 64 * 1024 * 1024)
+    }
+
+    // MARK: - 导出不带设备绝对路径（0.10.2 安全审计 P2-5）
+
+    /// 本机头像是 `file:///…/attachments/avatar-….jpg`：导出时置空，备份里没有设备路径。
+    func testExportStripsLocalAbsoluteAvatarUri() throws {
+        var persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        persona.avatarUri = "file:///var/mobile/Containers/Data/Application/ABC/Documents/attachments/avatar-1.jpg"
+        try db.stores.personas.upsert(persona)
+        var preset = try XCTUnwrap(try db.stores.presets.byId("preset-1"))
+        preset.avatarUri = "/Users/someone/Library/preset.png"
+        try db.stores.presets.upsert(preset)
+
+        let json = try service.export()
+        XCTAssertFalse(json.contains("file:///"), "备份里不该出现设备绝对路径：\(json.prefix(200))")
+        XCTAssertFalse(json.contains("/Users/someone"))
+        XCTAssertFalse(json.contains("avatar-1.jpg"))
+
+        let bundle = try XCTUnwrap(service.preview(fileText: json).bundle)
+        XCTAssertNil(bundle.personas.first { $0.id == "persona-1" }?.avatarUri)
+        XCTAssertNil(bundle.presets.first { $0.id == "preset-1" }?.avatarUri)
+
+        // 老备份里的绝对路径仍然能读进来（导入侧「文件不存在则清空」照旧）。
+        let withPath = json.replacingOccurrences(
+            of: "\"name\":\"林岸\"",
+            with: "\"name\":\"林岸\",\"avatarUri\":\"file:///var/mobile/Containers/x/avatar-1.jpg\""
+        )
+        XCTAssertTrue(withPath.contains("file:///"), "夹具应该真的把路径写回去了")
+        let decoded = try XCTUnwrap(BackupCodec.decode(withPath).bundle)
+        XCTAssertEqual(decoded.personas.first?.avatarUri, "file:///var/mobile/Containers/x/avatar-1.jpg")
+    }
+
+    func testExportedAvatarUriPolicy() {
+        XCTAssertNil(BackupService.exportedAvatarUri(nil))
+        XCTAssertNil(BackupService.exportedAvatarUri("   "))
+        XCTAssertNil(BackupService.exportedAvatarUri("file:///var/mobile/a.jpg"))
+        XCTAssertNil(BackupService.exportedAvatarUri("FILE:///var/mobile/a.jpg"))
+        XCTAssertNil(BackupService.exportedAvatarUri("/var/mobile/a.jpg"))
+        // 非文件 URI 不是「设备路径」，保留（将来若支持网络头像，两端口径一致）。
+        XCTAssertEqual(BackupService.exportedAvatarUri("https://example.com/a.png"),
+                       "https://example.com/a.png")
+        XCTAssertEqual(BackupService.exportedAvatarUri("  https://example.com/a.png  "),
+                       "https://example.com/a.png")
+    }
 }

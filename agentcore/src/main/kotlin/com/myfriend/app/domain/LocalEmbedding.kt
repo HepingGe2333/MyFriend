@@ -114,10 +114,13 @@ object LocalEmbedding {
      * 一段文本 →（特征, 权重）。
      *
      * 只做三件事：拿 [ChineseTerms] 的词元当基底、把相邻二元组拼成三元组、按长度给静态 IDF 先验。
-     * 暴露成 internal 是为了单测能单独钉住「三元组真的是拼出来的、虚词真的不在里面」，
-     * 而不是只能隔着余弦相似度去猜。
+     * 
+     * 0.11.0 从 `internal` 改成公开：这个文件搬进 `:agentcore` 之后，Kotlin 的 internal
+     * 不再对 `:app` 的测试源集可见；而「三元组真的是拼出来的、虚词真的不在里面」这条单测
+     * 留在了 Android 的测试源集里（不想为了可见性把测试也搬走、打乱两端测试的归属）。
+     * 它是一个纯函数，公开没有副作用。
      */
-    internal fun features(text: String): Map<String, Double> {
+    fun features(text: String): Map<String, Double> {
         val base = ChineseTerms.weights(text)
         if (base.isEmpty()) return emptyMap()
         val out = LinkedHashMap<String, Double>(base.size * 2)

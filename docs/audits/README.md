@@ -27,6 +27,13 @@ Every finding must carry a `file:line`, a concrete trigger, why the current code
 one-line suggested fix. A finding without evidence is not a finding — reports also list
 "checked and not a defect" items so the next auditor does not repeat the work.
 
+## Status
+
+| Report | Fixed in |
+| --- | --- |
+| `0.10.2-*` (1 P0, 17 P1) | 0.10.2 |
+| `0.10.2-*` remaining P2 items | 0.11.0 (except the accepted risks listed below) |
+
 ## Process
 
 1. An audit is requested with a scope ("read-only, find defects, do not modify code").

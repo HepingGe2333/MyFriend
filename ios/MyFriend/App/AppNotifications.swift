@@ -21,7 +21,16 @@ final class AppNotifications: NSObject, ObservableObject {
     static let shared = AppNotifications()
 
     /// 用户点了通知，界面上该跳去哪个会话。根视图消费完把它清空。
+    ///
+    /// 只是「当下这一帧」的提示：真正的可信来源是下面那份持久化的待办
+    ///（0.11.0 审计 P2-7：冷启动时 delegate 回调可能早于 SwiftUI 的订阅）。
     @Published var pendingSessionId: String?
+
+    /// 「等会儿要打开的会话」的持久化状态机（UserDefaults 支撑，Kit 里定义）。
+    ///
+    /// 冷启动链路：系统回调 → `stage` 落盘 → 首帧之后 `RootView` 在 `.task` 里 `consume`。
+    /// 落盘这一步是关键：`@Published` 在视图订阅之前发布的事件没人收得到。
+    let pendingDeepLink = PendingDeepLink(storage: UserDefaultsPendingDeepLinkStorage())
 
     /// App 是不是正在前台。前台的会话页里再弹一条通知是打扰。
     private(set) var isAppActive = true
@@ -133,7 +142,31 @@ final class AppNotifications: NSObject, ObservableObject {
 
     func handleNotificationTap(sessionId: String?) {
         guard let sessionId, !sessionId.isEmpty else { return }
+        // 先落盘再发通知：落盘的那一份负责「冷启动时也不丢」，`@Published` 只负责当前这帧。
+        pendingDeepLink.stage(sessionId)
         pendingSessionId = sessionId
+    }
+}
+
+/// `PendingDeepLink` 的 `UserDefaults` 实现（Kit 不碰全局 `UserDefaults.standard`，
+/// 由 App 层决定存在哪；测试用内存实现）。
+struct UserDefaultsPendingDeepLinkStorage: PendingDeepLink.Storage {
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func string(forKey key: String) -> String? {
+        defaults.string(forKey: key)
+    }
+
+    func set(_ value: String?, forKey key: String) {
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
     }
 }
 

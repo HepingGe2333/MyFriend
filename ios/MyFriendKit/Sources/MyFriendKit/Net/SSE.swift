@@ -33,8 +33,15 @@ public struct SSEParser {
     private var buffer = Data()
 
     /// 单行上限：正常一行 JSON 也就几 KB，超过这个数说明对面根本不是 SSE。
-    /// 设一个上限是为了别让畸形响应把内存吃满。
-    public static let MAX_LINE_BYTES = 1 << 20
+    ///
+    /// 8 MB 与 Android `network/SseLines.kt` 的阈值**逐字节一致**（0.10.2 安全审计 P2-10：
+    /// 原来 iOS 是 1 MB、Android 是 8 MB，同一段异常响应在两端表现不同）。
+    /// 超限时的行为也保持 iOS 原来的语义：把缓冲区当成**一整行**吐出去（上层 JSON 解析失败
+    /// → 空 chunk），而不是让解析器丢掉已经收到的内容 —— 与 Android「抛 ResponseTooLong
+    /// 并中止流」的差别记录在交付报告里（这是本端刻意保留的降级方式）。
+    ///
+    /// 错误响应体（非流式 `readAll`）的上限仍是 1 MB，那是另一条路径、另一个常量。
+    public static let MAX_LINE_BYTES = 8 << 20
 
     public init() {}
 

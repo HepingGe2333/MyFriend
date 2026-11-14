@@ -24,6 +24,9 @@ import com.myfriend.app.data.local.PersonaPendingPatchDao
 import com.myfriend.app.data.local.PersonaPresetDao
 import com.myfriend.app.data.local.PersonaRevisionDao
 import com.myfriend.app.data.local.ProactiveRuleDao
+import com.myfriend.app.BuildConfig
+import com.myfriend.app.core.AgentCoreClient
+import com.myfriend.app.core.AgentCoreClients
 import com.myfriend.app.data.repo.AndroidErasureFiles
 import com.myfriend.app.data.repo.RoomErasureStore
 import com.myfriend.app.domain.AppMemoryBudget
@@ -95,7 +98,7 @@ object AppModule {
     /**
      * 四条删除路径共用的清理器。
      *
-     * [DataEraser] 本身是纯 Kotlin（在 `domain/`，agentd 也会编译），所以不能在它头上写
+     * [DataEraser] 本身是纯 Kotlin（在 `:agentcore`，两端共用同一份 class），所以不能在它头上写
      * `@Inject`；接口在 domain、实现（Room / Android 文件）在 data 层，这里做绑定。
      */
     @Provides
@@ -115,6 +118,23 @@ object AppModule {
     @Provides
     @Singleton
     fun provideSessionGeneration(): SessionGenerationRegistry = SessionGenerationRegistry()
+
+    /**
+     * agent 决策层：默认进程内；只有构建开关 `AGENT_CORE_REMOTE=true` 时才走 `agentd`。
+     *
+     * 为什么在这里装配而不是让业务代码自己 new：
+     * - 调用点（ChatRepository / ToolExecutor / AgentLoop / 心跳 / 主动判定）只依赖 [AgentCoreClient]，
+     *   换实现不用改业务；
+     * - 远程实现带了「失败回退进程内 + 记日志」，装配成单例后所有调用点共享同一个连接池与超时策略；
+     * - 这里**没有**用户可见开关：远程模式是 `-PagentCoreRemote=true` 的构建配置，release 默认进程内。
+     */
+    @Provides
+    @Singleton
+    fun provideAgentCoreClient(okHttp: OkHttpClient): AgentCoreClient = AgentCoreClients.create(
+        remoteEnabled = BuildConfig.AGENT_CORE_REMOTE,
+        baseUrl = BuildConfig.AGENT_CORE_BASE_URL,
+        httpClient = okHttp
+    )
 
     @Provides
     @Singleton

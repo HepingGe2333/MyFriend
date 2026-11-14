@@ -591,8 +591,8 @@ private fun MoodCard(mood: MoodState, presence: Presence) {
 
 @Composable
 private fun AgentIntentsCard(state: ProactiveUiState) {
+    val context = LocalContext.current
     val zone = java.time.ZoneId.systemDefault()
-    val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
     // 日期部分按当前语言取系统格式，避免把「月/日」写死在代码里。
     val locale = LocalContext.current.resources.configuration.locales[0]
     val dayFmt = remember(locale) {
@@ -630,7 +630,8 @@ private fun AgentIntentsCard(state: ProactiveUiState) {
                 val end = java.time.Instant.ofEpochMilli(intent.latestAt).atZone(zone)
                 val sameDay = start.toLocalDate() == java.time.LocalDate.now()
                 val window = if (sameDay) {
-                    "${start.format(fmt)}–${end.format(fmt)}"
+                    // 审计 P2-11：时钟格式跟界面语言走（中文 HH:mm / 英文 h:mm a），不再写死 24 小时制。
+                    "${formatClock(context, intent.earliestAt)}–${formatClock(context, intent.latestAt)}"
                 } else {
                     stringResource(R.string.proactive_intent_window_around, start.format(dayFmt))
                 }
@@ -660,8 +661,7 @@ private fun AgentIntentsCard(state: ProactiveUiState) {
 /** 他最近几次「想」：让他不是黑箱。 */
 @Composable
 private fun AgentThoughtsCard(thoughts: List<com.myfriend.app.data.local.AgentTickEntity>) {
-    val zone = java.time.ZoneId.systemDefault()
-    val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
+    val context = LocalContext.current
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.6f),
@@ -689,7 +689,8 @@ private fun AgentThoughtsCard(thoughts: List<com.myfriend.app.data.local.AgentTi
                 } else {
                     Spacer(Modifier.height(8.dp))
                 }
-                val at = java.time.Instant.ofEpochMilli(tick.at).atZone(zone).format(fmt)
+                // 同上：时钟格式走资源（审计 P2-11）。
+                val at = formatClock(context, tick.at)
                 Row(verticalAlignment = Alignment.Top) {
                     Text(
                         at,

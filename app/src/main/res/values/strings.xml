@@ -226,7 +226,9 @@
     <string name="chat_typing">正在输入</string>
     <string name="chat_latest">最新</string>
     <string name="chat_load_earlier">上滑加载更早的消息</string>
+    <string name="chat_back_to_latest">下面还有更新的消息 · 回到最新</string>
     <string name="chat_loading_earlier">正在加载更早的消息…</string>
+    <string name="chat_stopped_status">已停止</string>
     <string name="chat_scroll_to_bottom">回到底部</string>
 
     <!-- 聊天页：更多菜单 -->
@@ -1177,6 +1179,7 @@
     <string name="error_preset_prompt_too_long">提示词超出安全上限</string>
     <string name="error_preset_library_empty">预设库还是空的，先保存一个预设再导出</string>
     <string name="error_import_file_too_large">导入文件过大</string>
+    <string name="error_backup_empty">这里还没有可以带走的内容</string>
     <string name="error_import_invalid_json">文件不是有效的 JSON</string>
     <string name="error_import_not_preset_file">这不是 MyFriend 的预设文件</string>
     <string name="error_import_no_persona_data">未找到可导入的人格数据</string>
@@ -1193,6 +1196,7 @@
     <string name="error_model_id_required">请填写模型 ID</string>
     <string name="error_model_id_too_long">模型 ID 过长</string>
     <string name="error_provider_reserved">该服务商适配仍在预留中，请选择 OpenAI 兼容</string>
+    <string name="error_api_key_unrecoverable">这台设备上的密钥已经无法解密（系统恢复过备份或清过锁屏），请重新填写 API Key</string>
     <string name="error_headers_invalid_json">自定义 Headers 必须是合法的 JSON 对象</string>
     <string name="error_header_name_required">Header 名称不能为空</string>
     <string name="error_header_value_not_string">Header %1$s 的值必须是字符串</string>
@@ -1255,6 +1259,9 @@
     <string name="error_web_base_missing">DeepSeek 地址不能为空</string>
     <string name="error_web_unparsable">联网服务返回了无法解析的内容</string>
     <string name="error_web_page_unreachable">这个页面抓不到内容</string>
+    <string name="error_network_web_url_scheme">只能抓取 http / https 网页</string>
+    <string name="error_network_web_url_host">网页地址缺少主机名</string>
+    <string name="error_network_web_url_local">不支持抓取本机或内网地址</string>
     <string name="error_web_status_401">DeepSeek 密钥无效或已过期</string>
     <string name="error_web_status_402">DeepSeek 账户余额不足</string>
     <string name="error_web_status_403">抓取被目标站点或安全策略拒绝</string>
@@ -1355,6 +1362,7 @@
     <string name="backup_fail_invalid_json">这个文件读不出来：不是一份有效的备份 JSON。</string>
     <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
     <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
+    <string name="backup_fail_too_large">这个文件太大了（超过 %1$dMB），不像是一份 MyFriend 备份。</string>
 
     <!-- 导入结果：人格 / 预设 -->
     <plurals name="persona_import_result_ok">

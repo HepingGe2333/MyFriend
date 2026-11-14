@@ -499,6 +499,13 @@ final class OpenAICompatibleClientTests: XCTestCase {
         // 已经带状态码的错误不再被改写。
         let original = ApiException(statusCode: 401, message: "x")
         XCTAssertEqual((client.mapNetworkError(original, timedOutMessage: "") as? ApiException)?.message, "x")
+
+        // 0.11.0 审计：认不出的错误不许把系统 `localizedDescription`（英文 + 错误码）当用户文案。
+        // 这里给一个自定义错误，文案必须落到那句通用中文上。
+        struct WeirdError: Error {}
+        let weird = client.mapNetworkError(WeirdError(), timedOutMessage: "") as? ApiException
+        XCTAssertEqual(weird?.message, "网络连接中断，请检查网络后重试")
+        XCTAssertNil(weird?.statusCode)
     }
 
     func testRetryClassification() {

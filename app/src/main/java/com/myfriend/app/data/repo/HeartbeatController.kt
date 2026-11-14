@@ -9,14 +9,18 @@ import com.myfriend.app.data.local.ChatSessionDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
+import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.Heartbeat
 import com.myfriend.app.domain.HeartbeatState
 import com.myfriend.app.domain.MoodBehavior
+import com.myfriend.app.domain.ProactiveCapInput
 import com.myfriend.app.domain.MoodTuning
 import com.myfriend.app.domain.MoodState
 import com.myfriend.app.domain.ProactiveLevel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import java.time.Instant
 import java.time.ZoneId
@@ -55,7 +59,9 @@ class HeartbeatController @Inject constructor(
     private val intentRepository: AgentIntentRepository,
     private val tickDao: AgentTickDao,
     private val sessionDao: ChatSessionDao,
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
+    private val agentCore: AgentCoreClient
 ) {
 
     /**
@@ -117,10 +123,16 @@ class HeartbeatController @Inject constructor(
             return Beat(why = "刚想过，再等等")
         }
         // 每日上限由人格的主动程度决定；1.9 没有「每天最多主动几次」这个设置了。
-        val dailyCap = MoodBehavior.effectiveDailyCap(
-            ProactiveLevel.dailyCap(persona.proactiveLevel),
-            snapshot.tuning
-        )
+        // 0.11.0：换算走 agent 决策层（默认进程内，可切 agentd），规则只有 :agentcore 一份。
+        val dailyCap = withContext(Dispatchers.IO) {
+            agentCore.proactiveCap(
+                ProactiveCapInput(
+                    level = persona.proactiveLevel,
+                    moodLabel = snapshot.mood.label,
+                    moodIntensity = snapshot.mood.intensity
+                )
+            )
+        }
         if (dailyCap <= 0) return Beat(why = "他今天不想主动开口")
         val spoken = runCatching { intentRepository.spokenToday(persona.id, now) }.getOrDefault(0)
         if (spoken >= dailyCap) return Beat(why = "今天说够了（$spoken/$dailyCap）")

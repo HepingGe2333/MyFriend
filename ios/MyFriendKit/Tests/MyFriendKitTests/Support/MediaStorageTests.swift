@@ -285,4 +285,75 @@ final class MediaStorageTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data
     }
+
+    // MARK: - 相册选图走文件路径（0.11.0 审计 P2-14）
+
+    /// 从文件 URL 落盘：按目标尺寸缩略图解码，不是先读整张图的 Data。
+    func testSaveImageFromFileURLDownscalesWithoutLoadingFullImage() throws {
+        let source = try makeJPEGFile(width: 4000, height: 3000)
+        defer { try? FileManager.default.removeItem(at: source) }
+
+        let attachment = try storage.saveImage(at: source, kind: .chatImage)
+        XCTAssertLessThanOrEqual(max(attachment.width, attachment.height), ImageEncodingPolicy.chatMaxLongEdge)
+        XCTAssertEqual(attachment.width, 1600)
+        XCTAssertEqual(attachment.height, 1200)
+        let stored = try XCTUnwrap(storage.fileURL(for: attachment.uri))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: stored.path))
+        // 原图没有被搬进附件目录（只留压好的那一份）。
+        XCTAssertNotEqual(stored.lastPathComponent, source.lastPathComponent)
+    }
+
+    /// 超过 20 MB 的文件**在解码之前**就被拒：先看文件大小，再决定要不要碰像素。
+    ///
+    /// 这里放的是「不是图片」的 21 MB 稀疏文件：如果实现先解码，会得到 `.unreadable`；
+    /// 得到 `.tooLarge` 才说明大小判断真的在解码前面。
+    func testSaveImageRejectsOversizedFilePathBeforeDecoding() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myfriend-oversized-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let huge = directory.appendingPathComponent("huge.jpg")
+        FileManager.default.createFile(atPath: huge.path, contents: Data())
+        let handle = try FileHandle(forWritingTo: huge)
+        try handle.truncate(atOffset: UInt64(ImageEncodingPolicy.maxInputBytes + 1))
+        try handle.close()
+
+        XCTAssertThrowsError(try storage.saveImage(at: huge, kind: .chatImage)) { error in
+            XCTAssertEqual(error as? MediaStorage.StorageError, .tooLarge)
+        }
+        // 上限的纯逻辑：20 MB 整可以，多 1 字节就不行。
+        XCTAssertFalse(ImageEncodingPolicy.isTooLargeInput(ImageEncodingPolicy.maxInputBytes))
+        XCTAssertTrue(ImageEncodingPolicy.isTooLargeInput(ImageEncodingPolicy.maxInputBytes + 1))
+    }
+
+    /// 空文件 / 不存在的文件：给出与人话一致的错误，不崩。
+    func testSaveImageFromMissingOrEmptyFileFailsGracefully() throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myfriend-missing-\(UUID().uuidString).jpg")
+        XCTAssertThrowsError(try storage.saveImage(at: missing, kind: .avatar)) { error in
+            XCTAssertEqual(error as? MediaStorage.StorageError, .emptyImage)
+        }
+    }
+
+    private func makeJPEGFile(width: Int, height: Int) throws -> URL {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: colorSpace, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ))
+        context.setFillColor(CGColor(red: 0.4, green: 0.5, blue: 0.6, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        let image = try XCTUnwrap(context.makeImage())
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myfriend-source-\(UUID().uuidString).jpg")
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(
+            url as CFURL, "public.jpeg" as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(
+            destination, image,
+            [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary
+        )
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return url
+    }
 }

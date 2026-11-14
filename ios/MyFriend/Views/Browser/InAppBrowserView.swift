@@ -139,15 +139,26 @@ private struct WebViewContainer: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
-        configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        // 0.11.0 审计 P2-8：策略全部来自 `BrowserPolicy`（纯逻辑，有单测）。
+        // 1) 默认关闭 JavaScript：分享/阅读场景够用，少一整类攻击面；
+        // 2) 会话级数据仓：Cookie/LocalStorage 不写盘、退出即弃，站点之间也认不出彼此。
+        configuration.defaultWebpagePreferences.allowsContentJavaScript = BrowserPolicy.allowsJavaScript
+        configuration.websiteDataStore = BrowserPolicy.dataStore == .nonPersistent
+            ? .nonPersistent()
+            : .default()
         configuration.allowsInlineMediaPlayback = true
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = context.coordinator
         webView.allowsBackForwardNavigationGestures = true
         webView.isOpaque = false
         webView.backgroundColor = .clear
-        if let link = URL(string: url) {
+        if let link = URL(string: url), BrowserPolicy.decide(link) == .allow {
             webView.load(URLRequest(url: link, timeoutInterval: 60))
+        } else {
+            // 初始地址本身就不在白名单里（正常入口走不到这里：`LinkDetector` 只放行
+            // http/https）。明确说一句「没在应用内打开」，而不是留一个永远转圈的空白页。
+            let report = onFailure
+            DispatchQueue.main.async { report(L("这个链接没有在应用内打开")) }
         }
         return webView
     }
@@ -185,6 +196,30 @@ private struct WebViewContainer: UIViewRepresentable {
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
             onProgress(0.1)
+        }
+
+        /// 导航白名单（0.11.0 审计 P2-8）。
+        ///
+        /// 消息里的链接过了 `LinkDetector`，但**页面内的跳转/重定向**不受那是控制：
+        /// `javascript:` 能执行脚本、`data:` 能伪造整页、`file:` 能读沙盒。
+        /// 这里只放行 http/https；危险 scheme 一律取消；`mailto:`/`tel:`/自定义 scheme
+        /// 交给系统打开（应用内浏览器不处理）。
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            switch BrowserPolicy.decide(navigationAction.request.url) {
+            case .allow:
+                decisionHandler(.allow)
+            case .cancel:
+                decisionHandler(.cancel)
+            case .external:
+                if let link = navigationAction.request.url, UIApplication.shared.canOpenURL(link) {
+                    UIApplication.shared.open(link)
+                }
+                decisionHandler(.cancel)
+            }
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {

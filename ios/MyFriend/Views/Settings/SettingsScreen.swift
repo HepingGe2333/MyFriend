@@ -691,7 +691,8 @@ struct SettingsScreen: View {
 
     private func clearAll() {
         // 全部数据都删：附件目录（消息图 + 头像）由 `DataReset` 一起清掉。
-        let summary = env.dataReset.clearAll()
+        // 清空之后按当前语言重新播种人格（0.11.0 审计 P2-13）：入口只有 `AppEnvironment`。
+        let summary = env.clearAllData()
         // 清空会重置 SettingsStore；AppEnvironment 的内存快照要跟着换一份，
         // 否则界面上还挂着已经不存在的人格与主题。
         env.reloadSettings()

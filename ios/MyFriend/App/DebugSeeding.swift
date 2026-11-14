@@ -9,7 +9,9 @@ import SwiftUI
 /// - `MYFRIEND_DEBUG_API_BASE`：自动建一条指向本地参考服务的 API 配置
 ///   （例如 `http://127.0.0.1:8787/v1`），模型默认 `myfriend-reference`；
 /// - `MYFRIEND_DEBUG_SEND`：启动后在这段会话里发一句话，把流式回复打到控制台；
-/// - `MYFRIEND_DEBUG_OPEN`：`chat` 表示启动后直接进会话页（方便截图）。
+/// - `MYFRIEND_DEBUG_OPEN`：`chat` 表示启动后直接进会话页（方便截图）；
+/// - `MYFRIEND_DEBUG_AGENT_CORE_PING=1`：启动后把 agent 决策层的四个端点各走一次并写日志
+///   （配合 `MYFRIEND_AGENT_CORE=remote-strict` 验证 App 真的连上了 agentd）。
 ///
 /// 用 `xcrun simctl launch` 的 `SIMCTL_CHILD_` 前缀传进去，例如：
 /// ```
@@ -25,10 +27,17 @@ enum DebugSeeding {
     /// 调试日志写进 App 沙盒的 Documents/debug.log。
     /// 为什么不用 print：`xcrun simctl launch --console` 在受限环境里起不了 FIFO，
     /// 日志落文件才能被 `xcrun simctl get_app_container` 读出来。
+    ///
+    /// 0.11.0 审计：心跳 / 后台补算 / 工具执行会在不同线程上同时写这一行，
+    /// 而 `seekToEndOfFile + write` 不是原子操作 —— 没有这把锁，两行日志会互相覆盖。
+    private static let logLock = NSLock()
+
     static func log(_ message: String) {
         let line = "\(Int(Date().timeIntervalSince1970)) \(message)\n"
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
         let url = dir.appendingPathComponent("debug.log")
+        logLock.lock()
+        defer { logLock.unlock() }
         if let handle = try? FileHandle(forWritingTo: url) {
             handle.seekToEndOfFile()
             handle.write(Data(line.utf8))
@@ -52,6 +61,7 @@ enum DebugSeeding {
         applyProactiveDebugAction(env)
         applyScenarioIfNeeded(env)
         importDebugMediaIfNeeded(env)
+        pingAgentCoreIfNeeded(env)
         if let route = launchRoute {
             path.wrappedValue.append(route)
         }
@@ -168,6 +178,49 @@ enum DebugSeeding {
     static var pendingFollowUpMessage: String? {
         let text = ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEND_2"] ?? ""
         return text.isEmpty ? nil : text
+    }
+
+    // MARK: - agent 决策层联调
+
+    /// `MYFRIEND_DEBUG_AGENT_CORE_PING=1`：启动后把 agent 决策层的四个端点各走一次，
+    /// 结果写进 `debug.log`。
+    ///
+    /// 为什么需要它：睡眠判定 / defer 计划 / 工具参数夹取都要等模型或心跳才能触发，
+    /// 而「app 到底有没有走远程 agentd」这件事必须在联调时一眼看见。
+    /// 配合 `MYFRIEND_AGENT_CORE=remote-strict`（不回退）使用：任何一条失败都会写成
+    /// `[agentcore-ping] 失败：…`，不会静默回退到本机。
+    static var agentCorePingOnLaunch: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_AGENT_CORE_PING"] == "1"
+    }
+
+    @MainActor
+    static func pingAgentCoreIfNeeded(_ env: AppEnvironment) {
+        guard agentCorePingOnLaunch else { return }
+        let mode = ProcessInfo.processInfo.environment["MYFRIEND_AGENT_CORE"] ?? "native（默认）"
+        let baseURL = ProcessInfo.processInfo.environment["MYFRIEND_AGENT_CORE_URL"] ?? "http://127.0.0.1:8788（默认）"
+        let core = env.agentCore
+        log("[agentcore-ping] 开始：mode=\(mode) baseURL=\(baseURL)")
+        Task.detached(priority: .utility) {
+            let input = SleepInput(
+                sleepEnabled: true, dndOnSleep: false,
+                sleepMinutes: nil, wakeMinutes: nil,
+                nowMinutes: 1410, userMessagesInWindow: 1, wakeThreshold: 3
+            )
+            do {
+                let sleep = try await core.sleepDecision(input)
+                log("[agentcore-ping] sleep-decision wake=\(sleep.wake) marksRead=\(sleep.marksRead) reason=\(sleep.reason)")
+                let plan = try await core.deferPlan(minutes: 90, reason: "联调", now: 1_700_000_000_000)
+                log("[agentcore-ping] defer-plan minutes=\(plan.minutes) earliestAt=\(plan.earliestAt) latestAt=\(plan.latestAt)")
+                let cap = try await core.proactiveCap(level: 5, moodIntensity: 2)
+                log("[agentcore-ping] proactive-cap dailyCap=\(cap)")
+                let args: [String: JSONValue] = ["content": .string("联调"), "importance": .int(9)]
+                let clamped = try await core.clampToolArgs(tool: AgentCoreTool.remember, args: args)
+                log("[agentcore-ping] tool-args importance=\(String(describing: clamped["importance"] ?? .null))")
+                log("[agentcore-ping] 四个端点全部成功")
+            } catch {
+                log("[agentcore-ping] 失败：\(error)")
+            }
+        }
     }
 
     /// 建一条本地参考服务的配置（幂等：已存在同名配置就只更新地址）。

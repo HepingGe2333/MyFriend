@@ -46,6 +46,9 @@ public final class ToolExecutor: ToolRunning {
     private let webTools: WebToolsClient
     /// 搜完顺手判断「值不值得记」；没接（或没配置）就是「只搜不记」，搜索本身不受影响。
     private let scorer: WebSearchScoring?
+    /// agent 决策层（0.11.0）：工具参数夹取与 `defer_reply` 计划走它。
+    /// 默认本机实现；配成远程时失败会回退本机（工具执行不该因为内核服务没起而失败）。
+    private let agentCore: any AgentCoreClient
     private let now: () -> Int64
     private let log: (String) -> Void
 
@@ -63,6 +66,7 @@ public final class ToolExecutor: ToolRunning {
         echoes: MemoryEchoStoring? = nil,
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
+        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -76,6 +80,7 @@ public final class ToolExecutor: ToolRunning {
         self.echoes = echoes ?? MemoryEchoStore(database: stores.database)
         self.webTools = webTools
         self.scorer = scorer
+        self.agentCore = agentCore
         self.now = now
         self.log = log
     }
@@ -95,7 +100,7 @@ public final class ToolExecutor: ToolRunning {
         case "web_fetch":
             return await webFetch(invocation, persona: persona, sessionId: sessionId)
         case "remember":
-            return remember(invocation, persona: persona, sessionId: sessionId, now: at)
+            return await remember(invocation, persona: persona, sessionId: sessionId, now: at)
         case "update_persona", "persona_patch":
             return updatePersona(invocation, persona: persona, sessionId: sessionId, now: at)
         case "set_quiet_hours":
@@ -105,7 +110,7 @@ public final class ToolExecutor: ToolRunning {
         case "recall":
             return recall(invocation, persona: persona, now: at)
         case "defer_reply":
-            return deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
+            return await deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
         case "think":
             return think(invocation)
         default:
@@ -183,7 +188,11 @@ public final class ToolExecutor: ToolRunning {
         guard let access = webAccess(persona: persona, sessionId: sessionId) else {
             return failure(invocation, String(localized: "这个人格还没有开启联网"))
         }
-        let count = ToolArgClamp.clampCount(invocation.intArgument("count", default: ToolArgClamp.countDefault))
+        // 0.11.0：参数夹取走 agent 决策层（契约端点 `/v1/core/tool-args`），
+        // 本机实现里仍然是 `ToolArgClamp.clampCount` 那一句，不复制边界值。
+        let count = AgentCoreJSON.int(
+            (await clampedToolArgs(AgentCoreTool.webSearch, invocation: invocation))["count"]
+        ) ?? ToolArgClamp.countDefault
         do {
             let hits = try await webTools.search(
                 query: String(query.prefix(128)),
@@ -353,7 +362,7 @@ public final class ToolExecutor: ToolRunning {
         persona: PersonaEntity,
         sessionId: String,
         now: Int64
-    ) -> ToolResult {
+    ) async -> ToolResult {
         let content = (invocation.argument("content") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if content.isEmpty { return failure(invocation, String(localized: "没有给出要记住的内容")) }
         let drawer: MemoryDrawer
@@ -362,9 +371,10 @@ public final class ToolExecutor: ToolRunning {
         case "EVENT": drawer = .event
         default: drawer = .user
         }
-        let importance = ToolArgClamp.clampImportance(
-            invocation.intArgument("importance", default: ToolArgClamp.importanceDefault)
-        )
+        // 0.11.0：参数夹取走 agent 决策层（契约端点 `/v1/core/tool-args`）。
+        let importance = AgentCoreJSON.int(
+            (await clampedToolArgs(AgentCoreTool.remember, invocation: invocation))["importance"]
+        ) ?? ToolArgClamp.importanceDefault
         let candidate = MemoryCandidate(
             content: content,
             drawer: drawer,
@@ -642,12 +652,18 @@ public final class ToolExecutor: ToolRunning {
         persona: PersonaEntity,
         sessionId: String,
         now: Int64
-    ) -> ToolResult {
-        let plan = DeferReply.plan(
-            minutes: invocation.intArgument("minutes", default: DeferReply.defaultMinutes),
-            reason: invocation.argument("reason"),
-            now: now
-        )
+    ) async -> ToolResult {
+        // 0.11.0：夹取 / trim / 窗口计算走 agent 决策层（`/v1/core/defer-plan`）；
+        // 失败时用本机 `DeferReply.plan` 兜底（工具执行不能失败）。
+        let minutes = invocation.intArgument("minutes", default: DeferReply.defaultMinutes)
+        let reason = invocation.argument("reason")
+        let plan: DeferPlan
+        do {
+            plan = try await agentCore.deferPlan(minutes: minutes, reason: reason, now: now)
+        } catch {
+            log("agentcore: defer-plan 失败（\(error)），用本机兜底")
+            plan = NativeAgentCoreClient().deferPlanNow(minutes: minutes, reason: reason, now: now)
+        }
         let window = AgentWindow(
             earliestAt: plan.earliestAt,
             latestAt: plan.latestAt,
@@ -679,6 +695,24 @@ public final class ToolExecutor: ToolRunning {
     }
 
     // MARK: - 辅助
+
+    /// 走 agent 决策层夹一次工具参数（0.11.0）。
+    ///
+    /// 参数表原样传过去（`tool-args` 的契约是「只夹已知数值键、其余键原样保留」），
+    /// 回来再取要用的那一个数字。远程失败时用本机兜底并记一行日志：
+    /// 工具执行失败会让模型以为「这件事做不了」，比慢一个超时更糟。
+    private func clampedToolArgs(
+        _ tool: String,
+        invocation: ToolInvocation
+    ) async -> [String: JSONValue] {
+        let args = AgentCoreJSON.object(fromArgumentsJson: invocation.argumentsJson)
+        do {
+            return try await agentCore.clampToolArgs(tool: tool, args: args)
+        } catch {
+            log("agentcore: clampToolArgs(\(tool)) 失败（\(error)），用本机兜底")
+            return NativeAgentCoreClient().clampToolArgsNow(tool: tool, args: args)
+        }
+    }
 
     private func success(
         _ invocation: ToolInvocation,

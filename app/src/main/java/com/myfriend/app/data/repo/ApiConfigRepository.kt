@@ -10,6 +10,8 @@ import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.ApiConfigDraft
 import com.myfriend.app.domain.ApiConfigRules
+import com.myfriend.app.domain.ApiKeyPolicy
+import com.myfriend.app.domain.ApiKeyState
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.network.ConnectionTestResult
 import com.myfriend.app.domain.ResolvedApiConfig
@@ -55,9 +57,24 @@ class ApiConfigRepository @Inject constructor(
     /** 是否已保存独立的联网专用 Key（为空表示复用主 Key）。 */
     fun hasWebToolsKey(config: ApiConfigEntity): Boolean = secretCipher.hasKey(config.webToolsApiKeyCipher)
 
+    /** 这条配置的 Key 现在是「没配 / 可用 / 解不出来」哪一种（安全审计 P2-6）。 */
+    fun keyState(config: ApiConfigEntity): ApiKeyState =
+        ApiKeyPolicy.evaluate(config.apiKeyCipher, secretCipher.decrypt(config.apiKeyCipher))
+
+    /**
+     * 解析一条配置（含明文 Key）。
+     *
+     * 安全 P2-6：密文在、但**解不出来**时抛 [com.myfriend.app.domain.DomainErrorCode.API_KEY_UNRECOVERABLE]，
+     * 而不是返回一个 `apiKey = null` 的配置——那会让请求不带 Authorization 发出去，
+     * 用户最后看到的是一句「API Key 无效（401）」，而真正的解法是「重新填一次 Key」。
+     */
     suspend fun resolve(configId: String): ResolvedApiConfig? {
         val config = apiConfigDao.getById(configId) ?: return null
-        return ResolvedApiConfig(config, secretCipher.decrypt(config.apiKeyCipher))
+        val decrypted = secretCipher.decrypt(config.apiKeyCipher)
+        if (ApiKeyPolicy.evaluate(config.apiKeyCipher, decrypted) == ApiKeyState.UNRECOVERABLE) {
+            userError(DomainErrorCode.API_KEY_UNRECOVERABLE)
+        }
+        return ResolvedApiConfig(config, decrypted)
     }
 
     /**

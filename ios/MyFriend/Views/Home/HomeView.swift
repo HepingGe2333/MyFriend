@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// 首页 = 联系人列表（1.9 §七）。
@@ -12,6 +13,7 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
 
     /// 一行 = 一个人 + 他的那一段会话。
     private struct Contact: Identifiable {
@@ -31,6 +33,15 @@ struct HomeView: View {
     @State private var contacts: [Contact] = []
     @State private var errorText: String?
     @State private var pendingDelete: PersonaEntity?
+    /// 最近读到的会话摘要（未读 / 预览 / 最后一条时间）。
+    ///
+    /// 为什么要有它：首页原来只在 `onAppear` 读一次库，心跳/主动唤醒在用户停留首页时
+    /// 写了消息，未读角标与「最后一句」不会变（0.10.2 审计 P2-4）。
+    /// 现在页面可见且 App 在前台时每 4 秒对一次这三列（只读 `chat_sessions`，不碰消息正文），
+    /// 变了才重画；空闲时没有别的轮询。
+    @State private var digests: [SessionDigest] = []
+    /// 页面是否在屏幕上（`onAppear` / `onDisappear` 之间）。
+    @State private var isVisible = false
 
     var body: some View {
         ScrollView {
@@ -48,8 +59,30 @@ struct HomeView: View {
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .bottomTrailing) { newPersonaButton }
-        .onAppear(perform: reload)
+        .onAppear {
+            isVisible = true
+            reload()
+        }
+        .onDisappear { isVisible = false }
         .onChange(of: env.currentSettings.activePersonaId) { _ in reload() }
+        .onChange(of: scenePhase) { phase in
+            switch phase {
+            case .active:
+                // 从后台回来：先核一次（这段时间里可能有人写过消息），再等下一拍。
+                refreshDigestsIfChanged()
+            case .background, .inactive:
+                break
+            @unknown default:
+                break
+            }
+        }
+        // 首页的「观察聚合」：只在页面可见 + App 在前台时每 4 秒核一次会话摘要。
+        // 用 `Timer.publish` 而不是自己开 Task：它天然在主 runloop 上跑、进后台自动暂停，
+        // 回调里用纯逻辑 `HomeDigest.changed` 判断要不要重画（值没变就什么都不做）。
+        .onReceive(Self.pulseTimer) { _ in
+            guard isVisible, scenePhase == .active else { return }
+            refreshDigestsIfChanged()
+        }
         .refreshable { reload() }
         .alert(L("出了点问题"), isPresented: Binding(
             get: { errorText != nil },
@@ -244,19 +277,42 @@ struct HomeView: View {
     private func reload() {
         do {
             let personas = try env.stores.personas.allOrderedByUpdatedAt()
+            let sessions = try env.stores.sessions.allOrderedByRecency()
+            var byPersona: [String: ChatSessionEntity] = [:]
+            for session in sessions where byPersona[session.personaId] == nil {
+                byPersona[session.personaId] = session
+            }
             contacts = personas.map { persona in
-                Contact(
-                    persona: persona,
-                    session: (try? env.stores.sessions.session(forPersona: persona.id)) ?? nil
-                )
+                Contact(persona: persona, session: byPersona[persona.id])
             }
             .sorted { lhs, rhs in
                 if lhs.sortAt != rhs.sortAt { return lhs.sortAt > rhs.sortAt }
                 return lhs.persona.name < rhs.persona.name
             }
+            digests = HomeDigest.digests(from: sessions)
         } catch {
             errorText = error.localizedDescription
         }
+    }
+
+    // MARK: - 观察后台写入（0.11.0 审计 P2-4）
+
+    /// 首页核一次会话摘要的间隔（只在可见 + 前台时跑）。
+    static let pulseIntervalSeconds: TimeInterval = 4
+
+    /// 只在首页活着的时候走的一拍。`common` 模式：滚动（tracking）时也照常触发。
+    static let pulseTimer = Timer
+        .publish(every: pulseIntervalSeconds, on: .main, in: .common)
+        .autoconnect()
+
+    /// 会话摘要变了才重画（未读 / 预览 / 最后一条时间）。
+    ///
+    /// 只读 `chat_sessions` 的几列（没有消息正文），一次几十行；值没变就什么都不做，
+    /// 不会像 0.10.2 那样「只有 onAppear 读一次」，也不会每拍重画整张列表。
+    private func refreshDigestsIfChanged() {
+        let fresh = HomeDigest.digests(from: (try? env.stores.sessions.allOrderedByRecency()) ?? [])
+        guard HomeDigest.changed(old: digests, new: fresh) else { return }
+        reload()
     }
 
     /// 点一行 = 去找他。会话不存在就顺手建一段（一人一段，§二）。

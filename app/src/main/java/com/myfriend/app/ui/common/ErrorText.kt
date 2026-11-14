@@ -7,6 +7,7 @@ import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.NetworkErrorKind
 import com.myfriend.app.domain.UserError
 import com.myfriend.app.domain.UserErrorTokens
+import com.myfriend.app.domain.WebUrlPolicy
 import com.myfriend.app.network.toUserError
 
 /**
@@ -101,6 +102,7 @@ object ErrorText {
         DomainErrorCode.PRESET_PROMPT_TOO_LONG -> R.string.error_preset_prompt_too_long
         DomainErrorCode.PRESET_LIBRARY_EMPTY -> R.string.error_preset_library_empty
         DomainErrorCode.IMPORT_FILE_TOO_LARGE -> R.string.error_import_file_too_large
+        DomainErrorCode.BACKUP_EMPTY -> R.string.error_backup_empty
         DomainErrorCode.IMPORT_INVALID_JSON -> R.string.error_import_invalid_json
         DomainErrorCode.IMPORT_NOT_PRESET_FILE -> R.string.error_import_not_preset_file
         DomainErrorCode.IMPORT_NO_PERSONA_DATA -> R.string.error_import_no_persona_data
@@ -117,6 +119,7 @@ object ErrorText {
         DomainErrorCode.MODEL_ID_REQUIRED -> R.string.error_model_id_required
         DomainErrorCode.MODEL_ID_TOO_LONG -> R.string.error_model_id_too_long
         DomainErrorCode.PROVIDER_RESERVED -> R.string.error_provider_reserved
+        DomainErrorCode.API_KEY_UNRECOVERABLE -> R.string.error_api_key_unrecoverable
         DomainErrorCode.HEADERS_INVALID_JSON -> R.string.error_headers_invalid_json
         DomainErrorCode.HEADER_NAME_REQUIRED -> R.string.error_header_name_required
         DomainErrorCode.HEADER_VALUE_NOT_STRING -> R.string.error_header_value_not_string
@@ -188,6 +191,13 @@ object ErrorText {
         NetworkErrorKind.WebBaseMissing -> R.string.error_web_base_missing
         NetworkErrorKind.WebUnparsable -> R.string.error_web_unparsable
         NetworkErrorKind.WebPageUnreachable -> R.string.error_web_page_unreachable
+        // 安全 P2-11：被本地 URL 校验拒绝时，按原因给不同说法（与 iOS 的 validatePageUrl 语义一致）。
+        is NetworkErrorKind.WebUrlRejected -> when (kind.reason) {
+            WebUrlPolicy.Rejection.EMPTY -> R.string.error_web_url_missing
+            WebUrlPolicy.Rejection.UNSUPPORTED_SCHEME -> R.string.error_network_web_url_scheme
+            WebUrlPolicy.Rejection.MISSING_HOST -> R.string.error_network_web_url_host
+            WebUrlPolicy.Rejection.LOCAL_HOST -> R.string.error_network_web_url_local
+        }
         is NetworkErrorKind.WebStatus -> webStatusRes(kind.status)
     }
 

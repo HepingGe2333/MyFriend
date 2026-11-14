@@ -89,6 +89,11 @@ class ErrorResourceMappingTest {
             NetworkErrorKind.WebBaseMissing,
             NetworkErrorKind.WebUnparsable,
             NetworkErrorKind.WebPageUnreachable,
+            // 安全 P2-11：web_fetch 的本地 URL 校验有四种拒绝原因，各自都要有中英资源。
+            NetworkErrorKind.WebUrlRejected(com.myfriend.app.domain.WebUrlPolicy.Rejection.EMPTY),
+            NetworkErrorKind.WebUrlRejected(com.myfriend.app.domain.WebUrlPolicy.Rejection.UNSUPPORTED_SCHEME),
+            NetworkErrorKind.WebUrlRejected(com.myfriend.app.domain.WebUrlPolicy.Rejection.MISSING_HOST),
+            NetworkErrorKind.WebUrlRejected(com.myfriend.app.domain.WebUrlPolicy.Rejection.LOCAL_HOST),
             NetworkErrorKind.WebStatus(401),
             NetworkErrorKind.WebStatus(402),
             NetworkErrorKind.WebStatus(403),

@@ -40,7 +40,7 @@ data class Segment(val text: String, val highlighted: Boolean)
  *   高亮，反而让人以为命中的是「aaa」。iOS 侧按同样规则实现即可。
  * - `window <= 0` 一律返回空（没有窗口就没有摘要），不会抛异常。
  *
- * 纯 Kotlin：不碰 Android、不读时钟、不查库，`agentd` 也直接编译这个文件。
+ * 纯 Kotlin：不碰 Android、不读时钟、不查库，住在 `:agentcore`、由 `:app` 与 `:agentd` 共用。
  */
 object SearchSnippet {
 

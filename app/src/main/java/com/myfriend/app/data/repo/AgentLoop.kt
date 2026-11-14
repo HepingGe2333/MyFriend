@@ -16,12 +16,14 @@ import com.myfriend.app.data.local.MessageStatus
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
+import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.AgentAction
 import com.myfriend.app.domain.AgentDecision
 import com.myfriend.app.domain.AgentDecisionCodec
 import com.myfriend.app.domain.AgentPromptBuilder
 import com.myfriend.app.domain.AgentTickLock
+import com.myfriend.app.domain.MessageOrder
 import com.myfriend.app.domain.ChatNotificationPolicy
 import com.myfriend.app.domain.MessageWindows
 import com.myfriend.app.domain.MoodBehavior
@@ -29,7 +31,7 @@ import com.myfriend.app.domain.MoodState
 import com.myfriend.app.domain.MoodTuning
 import com.myfriend.app.domain.LlmLane
 import com.myfriend.app.domain.OpenSessionTracker
-import com.myfriend.app.domain.ProactiveLevel
+import com.myfriend.app.domain.ProactiveCapInput
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.ResolvedApiConfig
 import com.myfriend.app.network.ApiException
@@ -40,6 +42,8 @@ import com.myfriend.app.network.inferenceParams
 import com.myfriend.app.util.AppForegroundTracker
 import com.myfriend.app.util.ProactiveNotifier
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.first
 import java.time.Instant
 import java.time.ZoneId
@@ -74,6 +78,8 @@ class AgentLoop @Inject constructor(
     private val openSessionTracker: OpenSessionTracker,
     private val presenceRepository: PresenceRepository,
     private val foregroundTracker: AppForegroundTracker,
+    /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
+    private val agentCore: AgentCoreClient,
     private val database: MyFriendDatabase,
     @ApplicationContext private val context: Context
 ) {
@@ -157,8 +163,17 @@ class AgentLoop @Inject constructor(
         val mood = runCatching { moodRepository.current(persona.id, now) }.getOrDefault(MoodState())
         val tuning = MoodBehavior.from(mood, now)
         // 1.9：每日主动上限由人格的主动程度决定（1–5 → 1–5 次），心情再挪一格。
-        val baseDailyCap = ProactiveLevel.dailyCap(persona.proactiveLevel)
-        val dailyCap = MoodBehavior.effectiveDailyCap(baseDailyCap, tuning)
+        // 0.11.0：这条换算改为经由 agent 决策层（默认进程内，可切 agentd），规则仍只有 :agentcore 一份。
+        // 心情只影响上限的「一格」，深夜折扣不改 dailyMessageCapDelta，所以结果与 0.10.x 一致。
+        val dailyCap = withContext(Dispatchers.IO) {
+            agentCore.proactiveCap(
+                ProactiveCapInput(
+                    level = persona.proactiveLevel,
+                    moodLabel = mood.label,
+                    moodIntensity = mood.intensity
+                )
+            )
+        }
 
         val contextText = buildContext(persona, session, now, dailyCap, dueIntents, tuning)
         val personaText = personaCardRepository.systemText(
@@ -411,11 +426,11 @@ class AgentLoop @Inject constructor(
         text: String,
         now: Long
     ): MessageEntity {
-        val stamp = if (now <= (messageDao.latestInSession(session.id)?.createdAt ?: 0L)) {
-            now + 1
-        } else {
-            now
-        }
+        // 审计 P2-7：时间戳推算只有一份实现（同毫秒 +1、时钟回拨兜住），与聊天发送路径共用。
+        val stamp = MessageOrder.nextTimestamp(
+            latestCreatedAt = messageDao.latestInSession(session.id)?.createdAt,
+            now = now
+        )
         val message = MessageEntity(
             id = UUID.randomUUID().toString(),
             sessionId = session.id,

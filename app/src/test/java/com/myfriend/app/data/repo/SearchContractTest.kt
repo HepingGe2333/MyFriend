@@ -14,8 +14,8 @@ import java.io.File
  *    而不是把用户输入拼进 SQL 文本 —— 拼接出来的 SQL 看起来能跑，注射面却一直开着；
  * 2. 排序必须走跨端共享的 `SearchRanking`，摘要必须走 `SearchSnippet`；
  *    界面自己再截一次字符串，就一定会和 iOS 不一致；
- * 3. 跳转定位必须复用聊天分页的 `pageBefore`（`(createdAt, id)` 游标），
- *    不许另写一条「按 id 查一条插进列表」的捷径；
+ * 3. 跳转定位必须用**一次**计数算出有界窗口（`COUNT(*)` + `pageBefore` 取一页上下文），
+ *    不许再「一页页往回爬」，也不许另写一条「按 id 查一条插进列表」的捷径；
  * 4. 检索**只读**：不写库、不碰网络。
  */
 class SearchContractTest {
@@ -85,20 +85,25 @@ class SearchContractTest {
     }
 
     @Test
-    fun `跳转定位复用聊天分页的游标`() {
+    fun `跳转定位一次算出有界窗口 不再逐页往回爬`() {
         val block = block(chatRepo, "suspend fun cursorContainingMessage(")
         assertTrue(
-            "定位要一页页用 pageBefore 往回走（与 messagesBefore 同一套 (createdAt, id) 游标）",
-            block.contains("messageDao.pageBefore(")
+            "先 COUNT 目标之前有几条（只回一个数字，不 materialize 行）",
+            block.contains("messageDao.countBefore(")
+        )
+        assertTrue("再按消息总数算窗口计划", block.contains("MessageJump.plan("))
+        assertTrue(
+            "上下文起点只取一页（pageBefore + plan.contextRows），不是循环翻页",
+            block.contains("messageDao.pageBefore(") && !block.contains("while (")
         )
         assertTrue("目标消息必须属于这个会话", block.contains("target.sessionId != sessionId"))
-        assertTrue("要有页数上限，别为了找不到的消息一直查库", block.contains("while (pages < maxPages)"))
         val vm = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt")
         assertTrue(
-            "聊天页要真的用上这个游标（否则定位只是个死方法）",
+            "聊天页要真的用上这个窗口（否则定位只是个死方法）",
             vm.contains("chatRepository.cursorContainingMessage(sessionId, target)")
         )
-        assertTrue("定位完成后要把窗口起点挪过去", vm.contains("sinceCursor.value = cursor"))
+        assertTrue("定位后按有界窗口观察", vm.contains("observeMessagesWindow("))
+        assertTrue("窗口起点与条数上界一起写进去", vm.contains("jumpWindow.value = window"))
     }
 
     @Test

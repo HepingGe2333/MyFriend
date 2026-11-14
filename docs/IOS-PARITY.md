@@ -154,7 +154,7 @@ API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串�
 
 | 0.9.1：图片消息、头像、内存上限、工具执行器、主动唤醒页面、人设卡、压缩编排、通知与后台调度 | ✅ | iOS **810 条**单测全绿、`xcodebuild` BUILD SUCCEEDED；模拟器实测发图 / 工具调用 / 规则落库与开关 / 重启后回声仍在 |
 
-iOS 侧合计 **1016 条单测**（`swift test --disable-sandbox`），Android 侧 **823 条**（`:app:testDebugUnitTest`），
+iOS 侧合计 **1098 条单测**（`swift test --disable-sandbox`），Android 侧 **909 条**（`:app:testDebugUnitTest`），
 两端都绿；两端 App 都能编译（Android `assembleDebug`、iOS `xcodebuild … build`）。
 
 ### 1.9 里两端必须一致的三个取舍（规格没写死，已对齐）
@@ -170,6 +170,7 @@ iOS 侧合计 **1016 条单测**（`swift test --disable-sandbox`），Android �
 > 0.9.1 补掉了：图片附件、聊天侧工具执行器、主动唤醒规则落库 + 界面、历史压缩编排、人设卡编辑器、通知与 BGTask 注册。
 > 0.10.1 补掉了：聊天分页（两端）、iOS 的 `web_search` 后打分、记忆回声清理、「现在试一次」+ 失败原因、编译警告清零。
 > 0.10.2 补掉了：聊天历史检索（iOS 从零新建）与「点结果跳回该消息并高亮」；并按三份审计修掉 1 个 P0 / 17 个 P1。
+> 0.11.0 补掉了：agent 决策层的客户端/服务端分层（Android 用共享 `:agentcore`，iOS 用契约对齐的 Swift 实现 + 可切远程 `agentd`），以及三份审计剩下的 P2 项。
 > 下面这张表是**现在**还差的。
 
 | 缺口 | 现状 |

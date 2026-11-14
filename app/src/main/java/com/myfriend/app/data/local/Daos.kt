@@ -144,6 +144,17 @@ interface ChatSessionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(session: ChatSessionEntity)
 
+    /**
+     * 幂等插入：撞上 `index_chat_sessions_personaId_unique` 时**什么都不做**并返回 -1。
+     *
+     * 一人一段的唯一索引下，「先查后插」在两个调用方并发时必然有一方撞索引：
+     * REPLACE 会把对方刚建的那一段整行删掉再插（消息就成了孤儿），而默认的 ABORT 会抛
+     * `SQLiteConstraintException`，于是首页点联系人直接报错（审计 P2-6）。
+     * 这里用 IGNORE：撞了就说明别人已经建好了，调用方回读一行即可。
+     */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnore(session: ChatSessionEntity): Long
+
     @Update
     suspend fun update(session: ChatSessionEntity)
 
@@ -241,6 +252,26 @@ interface MessageDao {
     ): Flow<List<MessageEntity>>
 
     /**
+     * 有界窗口：从游标（含）往后最多 [limit] 条。
+     *
+     * 「从检索结果跳到很久以前那条消息」用它：窗口只覆盖目标附近的一段（审计 P2-13），
+     * 不再把「目标 → 最新」整段读进内存；要往更新处走时，界面上有「更新的消息」入口。
+     */
+    @Query(
+        """
+        SELECT * FROM messages WHERE sessionId = :sessionId
+        AND (createdAt > :sinceCreatedAt OR (createdAt = :sinceCreatedAt AND id >= :sinceId))
+        ORDER BY createdAt ASC, id ASC LIMIT :limit
+        """
+    )
+    fun observeWindow(
+        sessionId: String,
+        sinceCreatedAt: Long,
+        sinceId: String,
+        limit: Int
+    ): Flow<List<MessageEntity>>
+
+    /**
      * 往前翻一页：比 `(beforeCreatedAt, beforeId)` 更早的最近 [limit] 条（新的在前）。
      *
      * 用 `(createdAt, id)` 双列游标而不是只看时间：导入的备份、极端情况下同一毫秒写入的
@@ -279,6 +310,20 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countInSession(sessionId: String): Int
+
+    /**
+     * 稳定序 `(createdAt, id)` 下严格早于这条消息的条数。
+     *
+     * 「跳到很久以前那条消息」只靠这个数字 + 一页对齐就能算出窗口起点，
+     * 不用一页页往回翻（审计 P2-13）。只回一个计数，不 materialize 任何行。
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId
+        AND (createdAt < :createdAt OR (createdAt = :createdAt AND id < :id))
+        """
+    )
+    suspend fun countBefore(sessionId: String, createdAt: Long, id: String): Int
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
@@ -357,8 +402,20 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteById(id: String)
 
-    @Query("DELETE FROM messages WHERE sessionId = :sessionId AND createdAt > :after")
-    suspend fun deleteAfter(sessionId: String, after: Long)
+    /**
+     * 删掉这条消息**之后**的所有消息（按稳定序 `(createdAt, id)`）。
+     *
+     * 以前是 `createdAt > :after`：另一条路径（后台主动消息）刚好落在同一毫秒时，
+     * 那条实际更晚的助手回复不会被删，编辑重发后旧回复还留在列表里（审计 P2-7）。
+     * 现在同毫秒按 id 决出先后：被编辑的这条自己不算「之后」，所以不会被删。
+     */
+    @Query(
+        """
+        DELETE FROM messages WHERE sessionId = :sessionId
+        AND (createdAt > :createdAt OR (createdAt = :createdAt AND id > :id))
+        """
+    )
+    suspend fun deleteAfterCursor(sessionId: String, createdAt: Long, id: String)
 
     @Query("DELETE FROM messages WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)

@@ -35,6 +35,10 @@ public struct ClearSummary: Equatable, Sendable {
     public var usage: Int
     /// 哪几张表没删成功（`clearAll` 逐表吞错，但要如实告诉用户是哪些）。
     public var warnings: [String]
+    /// 清空之后重新播种了几个人格（0.11.0 P2-13：不留一个空白 App）。
+    public var seededPersonas: Int
+    /// 重新播种时建了几段会话（一人一段）。
+    public var seededSessions: Int
 
     public init(
         messages: Int = 0,
@@ -47,7 +51,9 @@ public struct ClearSummary: Equatable, Sendable {
         consolidations: Int = 0,
         apiConfigs: Int = 0,
         usage: Int = 0,
-        warnings: [String] = []
+        warnings: [String] = [],
+        seededPersonas: Int = 0,
+        seededSessions: Int = 0
     ) {
         self.messages = messages
         self.sessions = sessions
@@ -60,6 +66,8 @@ public struct ClearSummary: Equatable, Sendable {
         self.apiConfigs = apiConfigs
         self.usage = usage
         self.warnings = warnings
+        self.seededPersonas = seededPersonas
+        self.seededSessions = seededSessions
     }
 
     public func describeChats() -> String {
@@ -113,7 +121,35 @@ extension SettingsStore: SettingsResetting {
     }
 }
 
+/// 「删除全部本地数据」之后重新播种的参数。
+///
+/// 为什么由装配层传进来而不是在 `DataReset` 里读 `Bundle`：Kit 不认识界面语言，
+/// 而单测要能指定语言（断言「清空后是当前语言的种子」）。
+public struct ReseedConfig {
+    public var language: SeedLanguage
+    /// 新建会话的标题（界面语言的一句话）。
+    public var sessionTitle: String
+    /// 新建会话绑定的 API 配置（清空之后通常已经没有了，传 nil）。
+    public var apiConfigId: String?
+    /// 播种时间（测试注入固定时钟）。
+    public var now: Int64
+
+    public init(language: SeedLanguage, sessionTitle: String, apiConfigId: String? = nil,
+                now: Int64 = DomainClock.nowMillis) {
+        self.language = language
+        self.sessionTitle = sessionTitle
+        self.apiConfigId = apiConfigId
+        self.now = now
+    }
+}
+
 public final class DataReset {
+
+    /// 清空之后是否重新播种示例人格。
+    ///
+    /// 装配层在调用 `clearAll()` 之前设好它（`AppEnvironment.clearAllData()`）；
+    /// 测试可以直接构造。nil = 不播种（与 0.10.2 的行为一致，只有单测会用）。
+    public var reseed: ReseedConfig?
 
     private let stores: DatabaseStores
     private let settings: SettingsProviding
@@ -242,6 +278,24 @@ public final class DataReset {
             settings.save(AppSettings())
         }
         vectorIndex.resetEnsured()
+        if let reseed {
+            // 0.10.2 审计 P2-13：清空之后立刻按当前语言重新播种三位示例人格。
+            // 不这么做的话，用户在「删除全部本地数据」之后会看到一个空 App，
+            // 下次启动种子人格又回来了 —— 同一台设备两种「出厂状态」。
+            do {
+                let outcome = try PersonaSeeding.seed(
+                    stores: stores,
+                    language: reseed.language,
+                    sessionTitle: reseed.sessionTitle,
+                    apiConfigId: reseed.apiConfigId,
+                    now: reseed.now
+                )
+                summary.seededPersonas = outcome.personaIds.count
+                summary.seededSessions = outcome.sessions
+            } catch {
+                failures.append("personas（重新播种失败）")
+            }
+        }
         summary.warnings = failures
         return summary
     }

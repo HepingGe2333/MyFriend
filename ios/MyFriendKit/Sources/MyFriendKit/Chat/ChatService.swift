@@ -170,6 +170,9 @@ public final class ChatService {
     /// 附件文件（沙盒里的图片）：把历史里最近几张图读成 data URL 交给多模态报文。
     /// 默认用 App 的 `Application Support/attachments`；单测可以换成临时目录。
     private let media: MediaStorage
+    /// agent 决策层（0.11.0）：睡眠判定与 `defer_reply` 计划走它。
+    /// 默认本机实现（零网络）；App 装配时按 `AgentCoreClientFactory` 的选择结果注入。
+    private let agentCore: any AgentCoreClient
 
     private let lock = NSLock()
     private var runningGenerations: [String: RunningGeneration] = [:]
@@ -191,6 +194,7 @@ public final class ChatService {
         log: ((String) -> Void)? = nil,
         languageDirective: (() -> String?)? = nil,
         media: MediaStorage = .shared,
+        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.stores = stores
@@ -208,6 +212,7 @@ public final class ChatService {
         self.log = log
         self.languageDirective = languageDirective
         self.media = media
+        self.agentCore = agentCore
         self.now = now
     }
 
@@ -459,8 +464,12 @@ public final class ChatService {
             personaId = persona.id
             model = session.model.isEmpty ? config.model : session.model
 
-            let all = try stores.messages.bySession(sessionId)
-            let recent = Array(all.suffix(PromptBuilder.contextRecentLimit))
+            // 0.11.0 P2-1：只从 SQLite 捞「最近 N 条」，不再整段读进内存再截尾巴。
+            // 几千条的会话里这一步省下的是三份大字符串（`content` / `attachmentsJson` /
+            // `toolTraceJson`）的全量物化 —— 每一轮回复都要付一次。
+            let recent = try stores.messages.recent(
+                sessionId: sessionId, limit: PromptBuilder.contextRecentLimit
+            )
             guard recent.contains(where: { $0.role == .user }) else {
                 throw ApiException(statusCode: nil, message: String(localized: "还没有可以回复的消息"))
             }
@@ -471,9 +480,21 @@ public final class ChatService {
             let recentUserCount = (try? stores.messages.countUserMessages(
                 personaId: persona.id, since: sleepTimestamp - SleepSchedule.wakeWindowMillis
             )) ?? 1
-            let sleepDecision = SleepGate.decide(
-                persona: persona, recentUserMessages: recentUserCount, now: sleepTimestamp
+            // 0.11.0：判定走 agent 决策层（`AgentCoreClient`）。默认是本机实现，
+            // 结果与原来的 `SleepGate.decide` 逐字一致；配成远程时由 `agentd` 判定，
+            // 失败由 `FallbackAgentCoreClient` 回退本机。这里的 `try?` 只兜「严格远程」
+            // 这种故意让错误冒出来的联调模式 —— 聊天不该因为内核不可用而失败。
+            let sleepInput = SleepInput(
+                sleepEnabled: persona.sleepEnabled,
+                dndOnSleep: persona.dndOnSleep,
+                sleepMinutes: persona.quietSleepMinutes,
+                wakeMinutes: persona.quietWakeMinutes,
+                nowMinutes: ServiceTime.minuteOfDay(sleepTimestamp),
+                userMessagesInWindow: recentUserCount,
+                wakeThreshold: persona.wakeThreshold
             )
+            let sleepDecision = (try? await agentCore.sleepDecision(sleepInput))?.replyDecision
+                ?? NativeAgentCoreClient().sleepDecisionNow(sleepInput).replyDecision
             guard sleepDecision.shouldReply else {
                 if sleepDecision.marksRead {
                     // 看到了就是已读 —— 哪怕这一轮不回。免打扰是唯一的例外（§6.2）。
@@ -578,14 +599,18 @@ public final class ChatService {
                     // 同一个 now 同时用于「计划」与「落库」：两次取时钟可能差几毫秒，
                     // 会让 earliestAt 与 agent_intents.createdAt 对不上。
                     let deferAt = now()
-                    let plan = DeferReply.plan(
-                        minutes: deferred.intArgument("minutes", default: DeferReply.defaultMinutes),
-                        reason: deferred.argument("reason"),
-                        now: deferAt
+                    let deferMinutes = deferred.intArgument("minutes", default: DeferReply.defaultMinutes)
+                    let deferReason = deferred.argument("reason")
+                    // 0.11.0：夹取 / trim / 窗口计算走 agent 决策层（`/v1/core/defer-plan`）。
+                    // 失败时的兜底只为「严格远程」联调模式准备，正常装配下有 Fallback 顶着。
+                    let plan = (try? await agentCore.deferPlan(
+                        minutes: deferMinutes, reason: deferReason, now: deferAt
+                    )) ?? NativeAgentCoreClient().deferPlanNow(
+                        minutes: deferMinutes, reason: deferReason, now: deferAt
                     )
                     rhythm?.handleDeferredReply(
                         personaId: persona.id, sessionId: sessionId,
-                        minutes: plan.minutes, reason: plan.reason, at: deferAt
+                        plan: plan, at: deferAt
                     )
                     continuation.yield(.noReply(.deferred(minutes: plan.minutes, reason: plan.reason)))
                     continuation.finish()

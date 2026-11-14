@@ -39,22 +39,49 @@ object MessagePaging {
         val loadingOlder: Boolean = false,
         /** 还有更早的消息。首屏未知时按「有」处理，等第一批数据回来看条数。 */
         val hasMoreOlder: Boolean = true,
-        /** 首屏是否已经回过一次（决定 [onWindowObserved] 要不要改 hasMoreOlder）。 */
-        val initialized: Boolean = false
+        /** 首屏是否已经回过一次（[onFirstWindow] 之后为真）。 */
+        val initialized: Boolean = false,
+        /**
+         * 定位到很久以前的消息之后，窗口末尾**之后**还有更新的消息。
+         *
+         * 0.11.0 起定位只加载目标附近一个有界窗口（见 [MessageJump]），所以「下面还有更近的话」
+         * 是一个真实存在的状态：界面在列表底部给一个「更新的消息」入口，点了就回到最新一屏。
+         */
+        val hasMoreNewer: Boolean = false
     ) {
         val canLoadOlder: Boolean get() = hasMoreOlder && !loadingOlder
     }
+
+    /** 一次定位要观察的窗口：[start] 是窗口起点，[rows] 是窗口条数上界。 */
+    data class Window(
+        val start: Cursor,
+        val rows: Int,
+        val hasMoreOlder: Boolean,
+        val hasMoreNewer: Boolean
+    )
 
     /**
      * 首屏窗口到了。
      *
      * 只有**首屏**（还没设过游标）能靠「不足一页」判断到底了；之后的观察结果是整个
-     * 已加载区间，条数变多不代表「还有更早的」。
+     * 已加载区间，条数变多不代表「还有更早的」——这一点由 ViewModel 负责（只在游标为空时调这里）。
+     *
+     * 每次都要重算：窗口是滑动的（新消息进来时最上面那条会悄悄滑出 60 条），
+     * 如果只在第一次算，用户会看不到「上面还有更早的消息」这条提示（审计 P2-14）。
      */
-    fun onFirstWindow(state: State, rows: Int): State {
-        if (state.initialized) return state
-        return state.copy(initialized = true, hasMoreOlder = rows >= PAGE_SIZE)
-    }
+    fun onFirstWindow(state: State, rows: Int): State =
+        state.copy(initialized = true, hasMoreOlder = rows >= PAGE_SIZE)
+
+    /** 从检索结果定位成功：窗口起点与「还有更早/更新」都按 [window] 定。 */
+    fun onJumped(state: State, window: Window): State = state.copy(
+        loadingOlder = false,
+        initialized = true,
+        hasMoreOlder = window.hasMoreOlder,
+        hasMoreNewer = window.hasMoreNewer
+    )
+
+    /** 回到最新一屏（定位窗口之外的「更新消息」入口）：状态整体复位。 */
+    fun onLatest(state: State): State = State()
 
     /** 用户滚到顶部，想加载更早：返回新的状态 + 是否真的该发查询。 */
     fun beginLoadOlder(state: State): Pair<State, Boolean> {

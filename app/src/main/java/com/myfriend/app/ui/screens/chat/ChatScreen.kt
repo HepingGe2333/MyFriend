@@ -164,6 +164,7 @@ import com.myfriend.app.ui.components.SheetActionRow
 import com.myfriend.app.ui.components.StyledOutlinedField
 import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.domain.AttachmentsCodec
+import com.myfriend.app.domain.InterruptedReply
 import com.myfriend.app.domain.MessageAttachment
 import com.myfriend.app.domain.ToolTraceCodec
 import com.myfriend.app.domain.ToolTraceItem
@@ -339,6 +340,7 @@ fun ChatScreen(
                         state = state,
                         focusMessageId = focusedMessageId,
                         onLoadOlder = viewModel::loadOlder,
+                        onShowLatest = viewModel::showLatest,
                         onLongPress = { message ->
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             selectedMessage = message
@@ -811,6 +813,8 @@ private fun ChatMessageList(
     /** 从检索结果跳进来时要滚到并高亮的那条消息（null = 正常打开会话）。 */
     focusMessageId: String? = null,
     onLoadOlder: () -> Unit,
+    /** 定位窗口之外的「更新的消息」：回到最新一屏。 */
+    onShowLatest: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
     onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
@@ -978,13 +982,13 @@ private fun ChatMessageList(
                                 isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
                                 // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
                                 // 否则每条用户消息都挂一个小字，会像回执系统而不像一个人。
+                                // 0.11.0（审计 P2-10）：「最后一条助手消息」由 ViewModel 一次算好
+                                // （state.lastAssistantAt），这里每条气泡只做一次比较，
+                                // 不再对每条可见消息扫整个已加载窗口（翻完历史后是 O(n²)）。
                                 showRead = com.myfriend.app.domain.ReadReceipt.shouldShow(
                                     readAt = item.message.readAt,
-                                    hasAssistantAfter = state.messages.any { later ->
-                                        later.role == MessageRole.ASSISTANT &&
-                                            later.createdAt > item.message.createdAt &&
-                                            later.status != MessageStatus.ERROR
-                                    }
+                                    userCreatedAt = item.message.createdAt,
+                                    lastAssistantAt = state.lastAssistantAt
                                 ),
                                 onLongPress = { onLongPress(item.message) },
                                 onRetry = onRetry,
@@ -1002,6 +1006,13 @@ private fun ChatMessageList(
                             traces = state.streamingTraces,
                             onOpenLink = onOpenLink
                         )
+                    }
+                }
+                if (state.hasMoreNewer) {
+                    // 审计 P2-13：定位只加载目标附近的有界窗口，「下面还有更近的话」是真的；
+                    // 点了回到最新一屏（而不是把「目标 → 最新」整段读进内存）。
+                    item(key = "load-newer") {
+                        LoadNewerRow(onClick = onShowLatest)
                     }
                 }
                 item(key = "tail-space") { Spacer(Modifier.height(4.dp)) }
@@ -1126,6 +1137,25 @@ private fun LoadEarlierRow(loading: Boolean) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
         }
+    }
+}
+
+/** 列表底部那一行：「下面还有更新的消息」——点了回到最新一屏（定位窗口是有界的）。 */
+@Composable
+private fun LoadNewerRow(onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp)
+            .clickable(onClick = onClick),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            stringResource(R.string.chat_back_to_latest),
+            style = MaterialTheme.typography.labelSmall,
+            color = LocalAccentColor.current
+        )
     }
 }
 
@@ -1278,6 +1308,21 @@ private fun MessageBubble(
                         onOpenLink = onOpenLink,
                         selectable = false,
                         onLongPress = onLongPress
+                    )
+                } else if (InterruptedReply.showsStatusPlaceholder(message.content, message.status == MessageStatus.STOPPED) &&
+                    attachments.isEmpty()
+                ) {
+                    // 审计 P2-8：只有工具调用、没有正文就点了「停止」的那一轮，以前会落一条
+                    // content="" 的消息——既没正文也不渲染工具痕迹，是个点不开的空气泡。
+                    // 现在落库的是一条「状态消息」，这里按资源显示「已停止」。
+                    Text(
+                        stringResource(R.string.chat_stopped_status),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (outgoing && !isOutlined) {
+                            contentColor.copy(alpha = 0.75f)
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                 }
                 if (message.status == MessageStatus.ERROR) {

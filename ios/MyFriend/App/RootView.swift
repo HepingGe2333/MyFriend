@@ -44,6 +44,13 @@ struct RootView: View {
                 path.append(Route.chat(sessionId: sessionId))
             }
             .task {
+                // 冷启动时点通知进会话（0.11.0 审计 P2-7）：delegate 可能早在首帧之前就收到了响应，
+                // 那一帧的 `@Published` 没人订阅 —— 所以先看持久化的待办，消费一次就清掉。
+                // `consume()` 是幂等的：视图重建、状态恢复都不会重复跳一次。
+                if let sessionId = AppNotifications.shared.pendingDeepLink.consume() {
+                    AppNotifications.shared.pendingSessionId = nil
+                    path.append(Route.chat(sessionId: sessionId))
+                }
                 // 调试启动助手：Debug 包里读环境变量（建本地 API 配置、可选自动发一句话、直接进会话页）。
                 // Release 包里 `DebugSeeding.bootstrap` 是空实现，这段等于不存在。
                 DebugSeeding.bootstrap(env: env, path: $path)

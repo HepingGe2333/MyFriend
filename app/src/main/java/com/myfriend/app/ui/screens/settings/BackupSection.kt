@@ -41,6 +41,11 @@ import com.myfriend.app.ui.components.SectionLabel
 import com.myfriend.app.ui.components.SettingCard
 import com.myfriend.app.ui.components.SettingRow
 import com.myfriend.app.ui.theme.LocalAccentColor
+import com.myfriend.app.domain.BackupFailure
+import com.myfriend.app.domain.BackupLimits
+import com.myfriend.app.domain.BoundedTextRead
+import android.content.ContentResolver
+import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -194,11 +199,35 @@ fun rememberBackupTransfer(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val text = runCatching {
+            // 安全 P2-3：读之前先看大小，读的时候按字节设上限。以前是 readText() 不分大小，
+            // 用户选中一个 GB 级的「备份」就会在 UI 附近 OOM。
+            val read = runCatching {
                 withContext(Dispatchers.IO) {
-                    context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+                    val declared = context.contentResolver.declaredSizeBytes(uri)
+                    if (declared != null && declared >= 0 && BackupLimits.isTooLarge(declared)) {
+                        throw BoundedTextRead.TooLarge(BackupLimits.MAX_BACKUP_BYTES)
+                    }
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        BoundedTextRead.read(input, BackupLimits.MAX_BACKUP_BYTES)
+                    }
                 }
-            }.getOrNull()
+            }
+            if (read.isFailure) {
+                val error = read.exceptionOrNull()
+                if (error is BoundedTextRead.TooLarge) {
+                    // 超限：给一句明确的话（带上限），不要只说「读不出来」。
+                    onMessage(
+                        BackupText.failure(
+                            context,
+                            BackupFailure.TooLarge(error.limitBytes)
+                        )
+                    )
+                } else {
+                    onMessage(context.getString(R.string.backup_error_unreadable))
+                }
+                return@launch
+            }
+            val text = read.getOrNull()
             if (text.isNullOrBlank()) {
                 onMessage(context.getString(R.string.backup_error_unreadable))
             } else {
@@ -315,4 +344,23 @@ private fun ImportPreviewDialog(
             { TextButton(onClick = onDismiss) { Text(stringResource(R.string.backup_dialog_cancel)) } }
         }
     )
+}
+
+
+/**
+ * 系统文件提供者声明的大小（未知时返回 null / 负数）。
+ *
+ * 先用 `OpenableColumns.SIZE`（云端文件也常给），拿不到再退回
+ * `openAssetFileDescriptor().length`——都不行就交给 [BoundedTextRead] 的字节上限兜底。
+ */
+private fun ContentResolver.declaredSizeBytes(uri: android.net.Uri): Long? {
+    runCatching {
+        query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (index >= 0 && !cursor.isNull(index)) return cursor.getLong(index)
+            }
+        }
+    }
+    return runCatching { openAssetFileDescriptor(uri, "r")?.use { it.length } }.getOrNull()
 }

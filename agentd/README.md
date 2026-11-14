@@ -1,24 +1,45 @@
 # agentd — the shared agent core as a standalone JVM service
 
-`agentd` is a small HTTP service that runs the **same Kotlin source files** Android uses for its
-pure agent logic (`app/src/main/java/com/myfriend/app/domain/`). It is built with the Kotlin/JVM
-Gradle plugin and has **no third-party runtime dependency beyond the Kotlin stdlib**: the HTTP
-server is the JDK's own `com.sun.net.httpserver`, and JSON is parsed/serialized by a ~200-line
-parser in `agentd/src/main/kotlin/com/myfriend/agentd/Json.kt`. There is no web framework, no JSON
-library, no DI container, no logging framework, no coroutines.
+`agentd` is a small HTTP service that exposes the **shared agent decisions** over the wire.
+Since 0.11.0 those decisions live in their own module, `:agentcore` (pure Kotlin/JVM, **zero
+third-party runtime dependencies**), and both clients compile against it:
 
-Runtime classpath of the distribution is exactly `agentd.jar` + `kotlin-stdlib-2.0.21.jar` +
-`annotations-13.0.jar` (the last one is a transitive of the Kotlin stdlib).
+```
+                 ┌─────────────────────────────┐
+                 │  :agentcore  (pure Kotlin)  │
+                 │  com.myfriend.app.domain    │
+                 │  SleepPolicy / DeferReply   │
+                 │  ProactiveLevel / Clamp …   │
+                 │  AgentCore + InProcess impl │
+                 │  AgentCoreProtocol / Codec  │
+                 └──────────┬──────────────────┘
+                            │ implementation(project(":agentcore"))
+             ┌──────────────┴───────────────┐
+             │                              │
+   ┌───────────────────┐          ┌───────────────────┐
+   │       :app        │          │      :agentd      │
+   │ Android client    │          │ JVM HTTP service  │
+   │ InProcess default │          │ validates request │
+   │ Remote optional   │◄─HTTP────►│ → InProcessCore   │
+   └───────────────────┘ /v1/core  └───────────────────┘
+```
 
-It is a **skeleton**, not a finished agent backend. It proves three things:
+- `:app` never depends on `:agentd` — the Android build is unaffected by the service. It depends
+  on `:agentcore` and calls it **in-process by default**.
+- `:agentd` never re-implements a rule: its handlers validate the HTTP request and then call
+  `InProcessAgentCore` (the same object Android uses in-process).
+- iOS mirrors the same rules in Swift and reads the same `spec/agent-core/cases/*.json`
+  contract files (see the root README); it is not routed through `:agentcore` (which is JVM-only).
 
-1. the "two platforms must agree" logic can be compiled once and run on a plain JVM;
-2. Android can use it as an in-process / localhost embedded service (not wired yet);
-3. iOS or any third party can call the same logic over HTTP on a standalone server (client not
-   wired yet).
+The HTTP server is the JDK's own `com.sun.net.httpserver`, and JSON is parsed/serialized by the
+recursive-descent parser in `:agentcore` (`com/myfriend/app/core/json/Json.kt`). There is no web
+framework, no JSON library, no DI container, no logging framework, no coroutines.
 
-Version: `0.10.0`. It is included in the root build as `:agentd` and is deliberately **not** a
-dependency of `:app` — the Android build is unaffected.
+Runtime classpath of the distribution is exactly `agentd.jar` + `agentcore.jar` + Kotlin stdlib
+(+ the stdlib's `annotations` transitive).
+
+Version: `0.11.0`. Included in the root build as `:agentd`, deliberately **not** a dependency
+of `:app`.
 
 ## Run it
 
@@ -38,7 +59,7 @@ Or build a runnable distribution:
 agentd/build/install/agentd/bin/agentd --port 8788
 ```
 
-Or build the self-contained jar (Kotlin stdlib bundled, `Main-Class` set):
+Or build the self-contained jar (Kotlin stdlib + agentcore bundled, `Main-Class` set):
 
 ```bash
 ./.tooling/gradle-8.9/bin/gradle :agentd:fatJar
@@ -57,23 +78,64 @@ Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8788/health
-# {"ok":true,"service":"myfriend-agentd","version":"0.10.0"}
+# {"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
+```
+
+## Point the Android client at it
+
+The Android app can use this service instead of computing the four decisions in-process.
+It is a **build switch**, not a user-visible setting (release builds stay in-process):
+
+```bash
+# default: in-process, no network involved
+./.tooling/gradle-8.9/bin/gradle :app:assembleDebug
+
+# remote mode: sleep / defer / proactive-cap / tool-args POST to agentd
+./.tooling/gradle-8.9/bin/gradle :app:assembleDebug \
+  -PagentCoreRemote=true \
+  -PagentCoreBaseUrl=http://10.0.2.2:8788
+```
+
+- `10.0.2.2` is the host machine as seen from the Android emulator. For a physical device use
+  the LAN IP and start the service with `--host 0.0.0.0`.
+- Cleartext HTTP is allowed only in debug builds (`app/src/debug/AndroidManifest.xml`); a release
+  build talks HTTPS or falls back to in-process.
+- The switch becomes `BuildConfig.AGENT_CORE_REMOTE`; the URL becomes
+  `BuildConfig.AGENT_CORE_BASE_URL` (`RemoteAgentCoreClient`).
+- Every remote call has a short timeout (1.5 s by default). **Any** failure — connection refused,
+  timeout, 4xx/5xx, malformed JSON, missing field — is logged under the `MyFriendAgentCore`
+  logcat tag and answered by the in-process implementation instead, so chat never hangs or breaks
+  because the service is down.
+- When the switch is off, `AgentCoreClients.create` returns the in-process client and no HTTP
+  client is even constructed (there is a unit test asserting zero requests in that case).
+
+Optional end-to-end check against this service (runs the real `RemoteAgentCoreClient` from
+`:app`, no fallback allowed):
+
+```bash
+./.tooling/gradle-8.9/bin/gradle :app:testDebugUnitTest \
+  --tests "com.myfriend.app.core.AgentCoreRemoteE2ETest" \
+  -PagentCoreE2eUrl=http://127.0.0.1:8788 --rerun
 ```
 
 ## Endpoints
 
-All request bodies are JSON objects. All responses are JSON. `Content-Type:
-application/json; charset=utf-8`.
+All request bodies are JSON objects. All responses are JSON with
+`Content-Type: application/json; charset=utf-8`.
+
+Path and field names are not duplicated in the service: both sides read them from
+`AgentCoreProtocol` in `:agentcore`, and `AgentdApiTest` asserts that the route table equals
+`AgentCoreProtocol.CORE_PATHS`.
 
 ### `GET /health`
 
 ```json
-{"ok":true,"service":"myfriend-agentd","version":"0.10.0"}
+{"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
 ```
 
 ### `POST /v1/core/sleep-decision`
 
-Wraps `SleepPolicy.evaluate` (Kotlin `domain/SleepPolicy.kt`, Swift `SleepGate.evaluate`).
+Wraps `SleepPolicy.evaluate` (via `InProcessAgentCore.sleepDecision`; Swift `SleepGate.evaluate`).
 
 ```json
 {
@@ -88,7 +150,7 @@ Wraps `SleepPolicy.evaluate` (Kotlin `domain/SleepPolicy.kt`, Swift `SleepGate.e
 ```
 
 ```json
-{"wake":true,"moodRelaxed":true,"reason":"被你叫醒了，缓了缓"}
+{"wake":true,"moodRelaxed":true,"reason":"被你叫醒了，缓了缓","marksRead":true}
 ```
 
 - `sleepMinutes` / `wakeMinutes`: minutes after midnight, nullable (null = 23:30 / 08:00).
@@ -97,6 +159,10 @@ Wraps `SleepPolicy.evaluate` (Kotlin `domain/SleepPolicy.kt`, Swift `SleepGate.e
 - `nowMinutes`: minutes after midnight; wrapped mod 1440.
 - `wake` = "this round he will reply" (`Decision.shouldReply`); `moodRelaxed` = he was woken and
   his mood is pulled back (`Decision.woken`).
+- `marksRead`: whether the user message gets a read receipt. **Added in 0.11.0** (compatible,
+  additive) because remote mode would otherwise silently lose the "do not disturb leaves no read
+  receipt" rule (spec §6.2). Older clients ignore it; when it is missing, clients default to
+  `true`.
 - `reason` is a stable Chinese sentence for clients that want to log/display it:
   `"醒着，会正常回复"`, `"免打扰中，不会醒"`, `"被你叫醒了，缓了缓"`,
   `"睡着了 · 08:00 醒"` (wake clock derived from the persona's schedule).
@@ -117,12 +183,13 @@ Wraps `DeferReply.plan` (Kotlin / Swift `DeferReply.plan`).
 - `reason` is optional, trimmed and truncated to 80 characters.
 - `now` is **required** and explicit (milliseconds) so the call is deterministic; this service
   does not read the wall clock for pure functions.
-- `earliestAt` / `latestAt` are epoch milliseconds: `now + minutes*60_000`,
-  and the decision window is 30 minutes wide.
+- `earliestAt` / `latestAt` are epoch milliseconds: `now + minutes*60_000`, and the decision
+  window is 30 minutes wide.
 
 ### `POST /v1/core/proactive-cap`
 
-Wraps `ProactiveLevel.dailyCap` and, when a mood is given, `MoodBehavior.effectiveDailyCap`.
+Wraps `ProactiveLevel.dailyCap` and, when a mood is given, `MoodBehavior.effectiveDailyCap`
+(via `InProcessAgentCore.proactiveCap`).
 
 ```json
 {"level": 3, "moodLabel": "雀跃", "moodIntensity": 4}
@@ -140,7 +207,8 @@ Wraps `ProactiveLevel.dailyCap` and, when a mood is given, `MoodBehavior.effecti
 
 ### `POST /v1/core/tool-args`
 
-Wraps `ToolArgClamp` for the numeric boundaries the two clients must share.
+Wraps `ToolArgClamp` for the numeric boundaries the two clients must share
+(via `InProcessAgentCore.clampToolArgs`).
 
 ```json
 {"tool": "remember", "args": {"content": "她妹妹叫小雨", "drawer": "USER", "importance": 9}}
@@ -158,7 +226,8 @@ Supported tools and clamps:
 | `web_search` | `count` | 1–12 | 6 |
 | `defer_reply` | `minutes` | 5–720 | 45 |
 
-All other keys in `args` are preserved untouched. Unknown tools return 400 `unknown_tool`.
+All other keys in `args` are preserved untouched (including their original JSON number spelling).
+Unknown tools return 400 `unknown_tool`.
 
 ## Errors
 
@@ -184,19 +253,18 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 
 - **Zero dependencies** keeps the deployment story simple: a JDK 17 `java -jar` is enough, no
   framework, no transitive CVE surface, no version skew with the Android build.
-- **Reusing Android's domain sources instead of copying them** is the whole point: the service
-  and the app compile the exact same files. A change to `SleepPolicy` is immediately in both.
-  The `sourceSet` points at `../app/src/main/java/com/myfriend/app/domain` and excludes the files
-  that legitimately cannot leave Android — see below.
+- **One implementation, not two copies.** Before 0.11.0 the service compiled the Android source
+  tree via `kotlin.srcDir("../app/src/main/java/com/myfriend/app/domain")` plus an exclude list of
+  14 files. That worked but had two failure modes: the exclude list could drift, and `:app` /
+  `:agentd` produced two separate copies of the same classes. Now the 36 portable files live in
+  `:agentcore` and both modules compile the *same* classes.
 - **Handler layer is a pure function** (`AgentdApi.handle(method, path, body)`) so tests cover
   every route and error without opening a port; one integration test still starts a real server
   on an ephemeral port with the JDK `HttpClient`.
 
-### Domain files that are NOT compiled into `agentd`
+### What stayed in `:app`
 
-The source set is an exclude list (not an include allow-list): a new pure domain file is picked up
-automatically, and a new file that secretly imports Android fails the build loudly instead of
-silently existing only on one side.
+These domain files cannot leave Android and remain in `app/src/main/java/com/myfriend/app/domain/`:
 
 | File | Why it can't be shared |
 | --- | --- |
@@ -206,7 +274,7 @@ silently existing only on one side.
 | `BackupCodec.kt` | Room entities (`AgentIntentEntity`, ...). |
 | `ImportanceScoring.kt` | `kotlinx.serialization` (model output parsing). |
 | `LlmConcurrencyGate.kt` | `kotlinx.coroutines`. |
-| `MemoryScreening.kt` | `kotlinx.serialization` (`MemoryTags`); `MemoryDrawer` was extracted to its own file so `MemoryLifecycle` can be shared. |
+| `MemoryScreening.kt` | `kotlinx.serialization` (`MemoryTags`). |
 | `Models.kt` | Room entities (`ChatSessionEntity`, `MessageEntity`). |
 | `OpenSessionTracker.kt` | `javax.inject` (Hilt). |
 | `PersonaCard.kt` | `kotlinx.serialization`. |
@@ -215,9 +283,10 @@ silently existing only on one side.
 | `ToolProtocol.kt` | `kotlinx.serialization` (tool protocol). |
 | `ToolTrace.kt` | `kotlinx.serialization` (tool traces). |
 
-What remains is genuinely pure: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heartbeat`, `Mood`,
-`MoodBehavior`, `MemoryLifecycle`, `MemoryDrawer`, `ToolArgClamp`, plus other stdlib-only domain
-files (`ChineseTerms`, `HistoryCompression`, `LocalEmbedding`, ...).
+Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heartbeat`, `Mood`,
+`MoodBehavior`, `MemoryLifecycle`, `MemoryDrawer`, `ToolArgClamp`, `ChineseTerms`,
+`HistoryCompression`, `LocalEmbedding`, ...) is in `:agentcore` under the same package
+`com.myfriend.app.domain`, so Android imports and tests did not change at all.
 
 ## What this service does **not** do yet
 
@@ -225,15 +294,20 @@ files (`ChineseTerms`, `HistoryCompression`, `LocalEmbedding`, ...).
 - No persistence: it does not touch SQLite/Room, does not write `agent_intents`, does not store
   memories. It only exposes deterministic pure functions.
 - No LLM calls, no prompting, no streaming.
-- Android does not start it yet (no foreground service, no localhost client); iOS has no client.
-- Only four functions are exposed. Adding more means adding a route in `Api.kt` and a test —
-  the domain function is already shared.
+- Android does not start it as an embedded service; remote mode is a development build switch.
+  iOS has its own Swift mirror and does not call this service.
+- Only four functions are exposed. Adding more means adding an `AgentCore` method, a route in
+  `Api.kt`, and a test — the shared implementation is already in `:agentcore`.
 
 ## Tests
 
 ```bash
-./.tooling/gradle-8.9/bin/gradle :agentd:test
+./.tooling/gradle-8.9/bin/gradle :agentcore:test :agentd:test
 ```
 
-- `AgentdApiTest` — handler-level: every route, defaults, clamping, and error codes (18 tests).
+- `:agentcore` — `AgentCoreSpecTest` (20 assertions groups over `spec/agent-core/cases/*.json`
+  through the `AgentCore` interface, protocol pinning, JSON codec round-trips, malformed-response
+  rejection). 14 tests.
+- `AgentdApiTest` — handler-level: every route, defaults, clamping, error codes, and a check that
+  the route table comes from `AgentCoreProtocol`. 19 tests.
 - `AgentdServerTest` — one integration test: real `HttpServer` on port 0 + JDK `HttpClient`.

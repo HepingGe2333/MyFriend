@@ -67,6 +67,7 @@ class PersonaRepository @Inject constructor(
     private val database: MyFriendDatabase,
     private val settingsRepository: SettingsRepository,
     @ApplicationContext private val appContext: Context,
+    private val chatNotifier: com.myfriend.app.util.ChatNotifier,
     private val json: Json
 ) {
     fun observeAll(): Flow<List<PersonaEntity>> = personaDao.observeAll()
@@ -232,6 +233,9 @@ class PersonaRepository @Inject constructor(
                 }
             }
         }
+        // 人已经删了：他发过的通知（会话通知 + 聚合摘要）也得撤掉，否则点开是一个空会话
+        //（审计 P2-14：以前 cancel 只支持单会话，删人格之后残留通知没人收）。
+        runCatching { chatNotifier.cancelByPersona(appContext, personaId) }
         proactiveScheduler.ensureScheduled()
         if (wasActive) {
             settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
@@ -242,7 +246,9 @@ class PersonaRepository @Inject constructor(
     private suspend fun ensureSessionFor(persona: PersonaEntity, now: Long) {
         if (sessionDao.latestForPersona(persona.id) != null) return
         val config = persona.defaultApiConfigId?.let { apiConfigDao.getById(it) }
-        sessionDao.insert(
+        // 启动补会话与「首页点联系人」是并发入口：唯一索引下只可能有一方插得进去（审计 P2-6）。
+        // 用 IGNORE 而不是 ABORT：撞了就说明别人刚补上了，这里不该让启动编排失败。
+        sessionDao.insertIgnore(
             com.myfriend.app.data.local.ChatSessionEntity(
                 id = UUID.randomUUID().toString(),
                 personaId = persona.id,

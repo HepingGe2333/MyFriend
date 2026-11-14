@@ -98,4 +98,32 @@ final class ApiKeyStoreTests: XCTestCase {
         XCTAssertNil(store.apiKey(for: "a-1"))
         XCTAssertEqual(backend.storedCount, 1)
     }
+
+    // MARK: - 「已配置」以读出非空 Key 为准（0.10.2 安全审计 P2-6）
+
+    func testIsConfiguredOnlyWhenKeychainReturnsNonEmptyKey() throws {
+        XCTAssertFalse(store.isConfigured(for: "a-1"))
+        try store.setAPIKey("sk-live", for: "a-1")
+        XCTAssertTrue(store.isConfigured(for: "a-1"))
+
+        // Keychain 条目被系统清掉 / 读不到：立刻变成「未配置」。
+        try backend.delete(service: ApiKeyStore.service,
+                           account: ApiKeyStore.Account.apiKey(configId: "a-1"))
+        XCTAssertFalse(store.isConfigured(for: "a-1"))
+
+        // 只剩下空白：同样不算已配置（不会「假装已保存」）。
+        try backend.set("  \n ", service: ApiKeyStore.service,
+                        account: ApiKeyStore.Account.apiKey(configId: "a-1"))
+        XCTAssertFalse(store.isConfigured(for: "a-1"))
+        // 但底层值确实还在：说明这条判定不是「看有没有记录」，而是「看值能不能用」。
+        XCTAssertEqual(backend.storedCount, 1)
+    }
+
+    /// 配置了但没有 Key 时 `resolvedChatConfig` 仍然会把 `apiKey` 交给上层（nil），
+    /// 界面用 `isConfigured` 决定显示「未填写」还是「已保存」。
+    func testIsConfiguredIsPerConfig() throws {
+        try store.setAPIKey("sk-a", for: "a-1")
+        XCTAssertTrue(store.isConfigured(for: "a-1"))
+        XCTAssertFalse(store.isConfigured(for: "a-2"))
+    }
 }

@@ -1,31 +1,42 @@
 import Foundation
 
 // ---------------------------------------------------------------------------
-// 首次启动的三位示例人格。
+// 首次启动的三位示例人格（0.11.0 从 App 层搬进 Kit，以便「清空后重新播种」有单测）。
 //
-// 两套人设（中文 / 英文），随系统语言二选一：中文系统得到「林深 / 阿岚 / 墨」，
-// 英文系统得到三个英语原生的人（不是把中文人设译过去——名字、语气、生活细节都是英文原生的）。
+// 两套人设（中文 / 英文），随界面语言二选一：中文得到「林深 / 阿岚 / 墨」，
+// 英文得到三个英语原生的人（不是把中文人设译过去——名字、语气、生活细节都是英文原生的）。
 //
 // 为什么不放进 `Localizable.strings`：这些是**数据**，要落库、之后用户可以随便改；
 // 提示词是模型面向的长文，不是界面上一句话的两种说法。
 //
-// 只影响新安装：`seedIfNeeded()` 只在「库里一个人格都没有」时跑一次；
+// 只影响新安装与「删除全部本地数据」之后（0.10.2 审计 P2-13：清空不该留下一个
+// 空白 App —— 原来要等下次启动才重新出现，同一台设备出现两种「出厂状态」）。
 // 已有数据不迁移、不改名，切系统语言也不会重写它们。人格 id 是固定常量，
 // 不随语言、安装次数变化（备份和会话引用认的是这个 id）。
+//
+// 语言为什么是参数而不是直接读 `Bundle`：Kit 要能在 macOS 上 `swift test`，
+// 而「当前界面语言」只有 App 层知道（`AppLanguage.current`）。
 // ---------------------------------------------------------------------------
 
-enum SeedPersonas {
+/// 种子人格用哪一套人设。
+public enum SeedLanguage: Equatable, Sendable {
+    case chinese
+    case english
+}
+
+/// 三位示例人格的数据与构造（纯函数，不碰数据库）。
+public enum SeedPersonas {
 
     /// 三个固定 id：中文/英文两套人设共用同一个「位次」，换语言不会换 id。
-    private enum Identifiers {
-        static let first = "9778CC9F-6163-449E-82AA-052132B598D4"
-        static let second = "1C2E26D3-A4D9-4D0A-A27A-D2AC0CD9ABBE"
-        static let third = "CC451F4D-343F-46B7-A57C-253CE5C6267B"
+    public enum Identifiers {
+        public static let first = "9778CC9F-6163-449E-82AA-052132B598D4"
+        public static let second = "1C2E26D3-A4D9-4D0A-A27A-D2AC0CD9ABBE"
+        public static let third = "CC451F4D-343F-46B7-A57C-253CE5C6267B"
     }
 
-    /// 按当前界面语言取一套，生成要落库的人格实体。
-    static func build(now: Int64) -> [PersonaEntity] {
-        let presets = AppLanguage.current == .en ? english : chinese
+    /// 按指定语言取一套，生成要落库的人格实体。
+    public static func build(now: Int64, language: SeedLanguage) -> [PersonaEntity] {
+        let presets = language == .english ? english : chinese
         return presets.map { preset in
             PersonaEntity(
                 id: preset.id,
@@ -43,7 +54,9 @@ enum SeedPersonas {
         }
     }
 
-    private struct Preset {
+    // MARK: - 数据
+
+    struct Preset {
         var id: String
         var name: String
         var description: String

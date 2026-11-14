@@ -109,41 +109,66 @@ sequenceDiagram
 2. **规格文档**：`docs/ROADMAP-1.9.md` 这类「行为规格 + 验收表」，数字与文案逐条写死；
 3. **共享用例**（0.10.0 新增）：`spec/agent-core/cases/*.json`，两端各有一个测试读同一批 JSON 断言自己的实现。
 
-## 5. Agent 核心：三种运行形态
+## 5. Agent 核心：一份实现，三种运行形态
 
-「agent 逻辑」在本项目里指**决策**：这一轮回不回、什么时候醒、心跳概率、记忆该不该淡、工具参数怎么夹取、system 怎么拼。
-它**不包含**持久化——会话、记忆、念头、用量都在客户端数据库里。这个切分让「服务化」变得可行：
+「agent 逻辑」在本项目里指**决策**：这一轮回不回、什么时候醒、心跳概率、记忆该不该淡、工具参数怎么夹取。
+它**不包含**持久化——会话、记忆、念头、用量都在客户端数据库里。这个切分让「共享 + 服务化」同时变得可行。
+
+**0.11.0 起决策层只有一份 Kotlin 实现**：`agentcore/`（`:agentcore`，零第三方依赖、纯 JVM）。
 
 ```mermaid
-flowchart LR
-  subgraph 形态 A：进程内（现状）
-    A1[客户端] --> A2[本端 domain 实现]
+flowchart TB
+  subgraph shared[":agentcore（唯一实现）"]
+    AC[AgentCore 接口<br/>sleepDecision / deferPlan / proactiveCap / clampToolArgs]
+    IP[InProcessAgentCore]
+    PR[AgentCoreProtocol / AgentCoreCodec]
   end
-  subgraph 形态 B：内嵌服务（Android 可先走）
-    B1[客户端] --> B2[agentd 模块 · 同进程调用 handler]
+  subgraph android["Android 客户端"]
+    A1[ChatRepository / ToolExecutor / AgentLoop / Heartbeat]
+    A2[InProcessAgentCoreClient]
+    A3["RemoteAgentCoreClient（OkHttp，构建开关）"]
   end
-  subgraph 形态 C：远程服务
-    C1[客户端] --> C2[(agentd / HTTP)]
-    C2 --> C3[LLM API]
+  subgraph ios["iOS 客户端"]
+    I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
+    I2[NativeAgentCoreClient]
+    I3["RemoteAgentCoreClient（URLSession，环境变量/Info.plist）"]
   end
+  subgraph server["agentd（服务端）"]
+    S1[/"POST /v1/core/*"/]
+    S2[InProcessAgentCore]
+  end
+  AC --> IP
+  IP --> A2
+  IP --> S2
+  A2 --> A1
+  A3 --> A1
+  A3 <--> S1
+  I2 --> I1
+  I3 --> I1
+  I3 <--> S1
+  S2 --> S1
+  PR --> A3
+  PR --> S1
+  PR --> I3
 ```
 
-| 形态 | 一致性 | 离线 | 手机开销 | 可行性 |
+| 形态 | 谁在用 | 一致性 | 离线 | 说明 |
 | --- | --- | --- | --- | --- |
-| A 进程内（当前两端都是） | 靠契约与用例保证 | ✅ 完全离线 | 决策本身很轻（毫秒级纯函数） | ✅ 已在用 |
-| B 内嵌服务（`agentd` 模块，同进程） | ✅ 同一份 Kotlin 代码 | ✅ | 比 A 多一层调用，可忽略 | ✅ 可用于 Android；iOS 需要 KMP 才能同进程共享 |
-| C 远程服务（HTTP） | ✅ 同一份代码 | ❌ 断网时决策退化 | 网络往返 + 隐私面变大 | ✅ 适合自建服务器 / 多设备场景；**默认关闭** |
+| **A 进程内** | Android（默认）、iOS（默认） | ✅ 同一份 `:agentcore` 实现（Android）；iOS 是契约对齐的 Swift 实现 | ✅ | 毫秒级纯函数，没有网络往返 |
+| **B 内嵌服务** | Android 可选 | ✅ 服务端同一份代码 | ✅ | `agentd` 可运行在同一台机器/同一局域网，Android 通过 `-PagentCoreRemote=true` 指向它 |
+| **C 远程服务** | 两端都可选 | ✅ | ❌（失败自动回退本机） | 自建服务器 / 多设备场景；默认关闭，客户端会回退并记日志 |
 
-`agentd/` 是形态 B/C 的骨架：Kotlin/JVM、零第三方依赖、复用 Android 的纯领域源码（35 个 domain 文件里 21 个可直接编进
-JVM 源集，其余因依赖 Room / kotlinx-serialization / Hilt / coroutines 被排除，原因逐条写在 `agentd/README.md`）。
-暴露 `/health`、`/v1/core/sleep-decision`、`/v1/core/defer-plan`、`/v1/core/proactive-cap`、`/v1/core/tool-args`；
-接口字段与两端领域结构体同名，客户端不需要翻译层。`spec/agent-core` 现有 **94 条**用例，agentd 自带 **19 条**测试
-（18 条 handler + 1 条真端口集成）。详见 `agentd/README.md` 与 `spec/agent-core/README.md`。
+- **契约**：`AgentCoreProtocol` 里的路径与字段名常量同时被 `agentd` 路由表和两端客户端使用；`spec/agent-core/`
+  的 94 条用例由 `:agentcore` 与 iOS 各跑一遍，`spec/search/` 另 16 条同理。字段名改名会同时红三处。
+- **服务端**：`agentd/` 只做 HTTP + JSON（`AgentCoreCodec`），业务逻辑全在 `:agentcore`；自带 20 条测试，
+  可 `java -jar` 或 `installDist` 运行，默认只监听回环地址。
+- **客户端**：Android 的 `AgentCoreClient` 是 `:app` 内的接口（进程内 / 远程两实现，`BuildConfig.AGENT_CORE_REMOTE`
+  选择、远程失败回退进程内）；iOS 的 `AgentCoreClient` 是 Kit 协议（`Native` / `Remote` / `Fallback` 三实现，
+  `MYFRIEND_AGENT_CORE` 环境变量或 Info.plist 选择、默认 native）。**没有用户可见的设置项**。
+- **为什么不是 KMP**：KMP 能让 iOS 也跑同一份 Kotlin，但需要 Kotlin/Native 工具链与 framework 打包；
+  在引入它之前，先把契约、模块边界与客户端抽象建立起来，收益更确定、风险更小。KMP 仍是 Stage 2 的可选项。
 
-**为什么先做契约与用例，而不是直接上 KMP**：契约与用例是**任何**共享方案的前置条件——没有它，
-无论换成 KMP 还是独立服务，两端仍然会悄悄漂移。而且它零风险：不引入新工具链、不改客户端代码路径。
-
-## 5.5 检索
+## 5.5 检索## 5.5 检索
 
 聊天检索是**同一个语义在两端的两次实现**，靠 `spec/search/`（16 条用例）钉住：参数化 `LIKE` 粗筛
 （用户输入的 `%`/`_`/`\` 按普通字符处理）+ `ChineseTerms` 词元召回 → 内存精排（命中词元数 → `relevance`

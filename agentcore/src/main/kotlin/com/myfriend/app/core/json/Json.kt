@@ -1,12 +1,13 @@
-package com.myfriend.agentd
+package com.myfriend.app.core.json
 
 /**
  * 一个够用的 JSON 值 / 解析器 / 序列化器。
  *
- * 为什么自己写：`agentd` 的硬约束是**零第三方依赖**（只用 JDK），而 Android 的 domain 源码
- * 里那些依赖 kotlinx-serialization 的文件已经被排除在编译之外。HTTP 接口又必须能收 JSON，
- * 所以这里放一个 ~200 行的递归下降解析器：只支持标准 JSON，遇到坏输入抛 [JsonParseException]，
- * 由 API 层翻成 400，不会静默吞掉。
+ * 为什么自己写：`:agentcore` 的硬约束是**零第三方依赖**（只用 Kotlin 标准库 + JDK），
+ * 不能引 kotlinx-serialization。而 `AgentCore` 的 HTTP 契约（`:agentd` 收请求、
+ * Android 的远程客户端发请求/读响应）都需要 JSON，所以这里放一个 ~250 行的递归下降解析器：
+ * 只支持标准 JSON，遇到坏输入抛 [JsonParseException]，由调用方翻成 400 / 回退进程内实现，
+ * 不会静默吞掉。
  *
  * 不做的事：不支持注释、单引号、尾逗号（宁可比宽松解析器更严格，坏请求直接 400，
  * 免得客户端把「格式错误」当成「服务端行为异常」）。

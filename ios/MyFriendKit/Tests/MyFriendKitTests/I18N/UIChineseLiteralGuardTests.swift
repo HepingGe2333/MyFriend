@@ -34,7 +34,6 @@ final class UIChineseLiteralGuardTests: XCTestCase {
 
     /// 文件级白名单：路径后缀 → 理由。
     private static let fileWhitelist: [(suffix: String, reason: String)] = [
-        ("App/SeedPersonas.swift", "种子人格是数据（中/英两套人设），不是界面文案"),
         ("App/DebugSeeding.swift", "仅 DEBUG 构建的模拟器验收钩子，Release 里不存在"),
         ("App/Localization.swift", "语言名「中文 / English」是发给模型的语言标识")
     ]
@@ -72,7 +71,9 @@ final class UIChineseLiteralGuardTests: XCTestCase {
         }
 
         XCTAssertGreaterThan(scannedFiles, 15, "扫描到的 Swift 文件太少，测试定位可能错了")
-        XCTAssertGreaterThan(allowedByWhitelist, 2, "白名单文件一个都没匹配上，路径可能变了")
+        // 种子人格的数据在 0.11.0 搬到了 `MyFriendKit/Sources`（Kit 不在本测试扫描范围内），
+        // 白名单还剩 `DebugSeeding` 与 `Localization` 两个文件。
+        XCTAssertGreaterThan(allowedByWhitelist, 1, "白名单文件一个都没匹配上，路径可能变了")
         XCTAssertTrue(
             violations.isEmpty,
             """

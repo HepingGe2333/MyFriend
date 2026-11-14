@@ -85,8 +85,10 @@ enum class DomainErrorCode {
     PRESET_PROMPT_TOO_LONG,
     PRESET_LIBRARY_EMPTY,
 
-    // 导入 / 导出（人格、预设）
+    // 导入 / 导出（人格、预设、备份）
     IMPORT_FILE_TOO_LARGE,
+    /** 备份为空：没有任何可带走的内容（审计 P2-14）。 */
+    BACKUP_EMPTY,
     IMPORT_INVALID_JSON,
     IMPORT_NOT_PRESET_FILE,
     IMPORT_NO_PERSONA_DATA,
@@ -109,6 +111,12 @@ enum class DomainErrorCode {
     MODEL_ID_REQUIRED,
     MODEL_ID_TOO_LONG,
     PROVIDER_RESERVED,
+    /**
+     * 有密文、但 Keystore 已经解不出来（安全审计 P2-6）。
+     *
+     * 与「Key 无效（401）」分开：这是本机密钥不可恢复，用户需要重新填一次 Key。
+     */
+    API_KEY_UNRECOVERABLE,
     HEADERS_INVALID_JSON,
     HEADER_NAME_REQUIRED,
     HEADER_VALUE_NOT_STRING,
@@ -178,6 +186,14 @@ sealed interface NetworkErrorKind {
     data object WebPageUnreachable : NetworkErrorKind
     data class WebStatus(val status: Int) : NetworkErrorKind
 
+    /**
+     * 要抓的 URL 被本地校验拒绝（安全审计 P2-11）。
+     *
+     * Android 以前只判空：`file://`、`javascript:`、`data:` 和内网字面量都会被原样转给
+     * 第三方服务。现在与 iOS 的 `validatePageUrl` 对齐，原因细分以便给不同文案。
+     */
+    data class WebUrlRejected(val reason: WebUrlPolicy.Rejection) : NetworkErrorKind
+
     /** HTTP 状态码（只有 [Http] 有）。 */
     val statusCode: Int?
         get() = (this as? Http)?.status
@@ -234,6 +250,12 @@ private fun NetworkErrorKind.debugText(): String = when (this) {
     NetworkErrorKind.WebBaseMissing -> "DeepSeek 地址不能为空"
     NetworkErrorKind.WebUnparsable -> "联网服务返回了无法解析的内容"
     NetworkErrorKind.WebPageUnreachable -> "这个页面抓不到内容"
+    is NetworkErrorKind.WebUrlRejected -> when (reason) {
+        WebUrlPolicy.Rejection.EMPTY -> "要抓取的网页地址不能为空"
+        WebUrlPolicy.Rejection.UNSUPPORTED_SCHEME -> "只能抓取 http / https 网页"
+        WebUrlPolicy.Rejection.MISSING_HOST -> "网页地址缺少主机名"
+        WebUrlPolicy.Rejection.LOCAL_HOST -> "不支持抓取本机或内网地址"
+    }
     is NetworkErrorKind.WebStatus -> when (status) {
         401 -> "DeepSeek 密钥无效或已过期"
         402 -> "DeepSeek 账户余额不足"
@@ -282,6 +304,7 @@ private fun DomainErrorCode.debugText(arg: String?, number: Int?): String = when
     DomainErrorCode.PRESET_PROMPT_TOO_LONG -> "提示词超出安全上限"
     DomainErrorCode.PRESET_LIBRARY_EMPTY -> "预设库还是空的，先保存一个预设再导出"
     DomainErrorCode.IMPORT_FILE_TOO_LARGE -> "导入文件过大"
+    DomainErrorCode.BACKUP_EMPTY -> "这里还没有可以带走的内容"
     DomainErrorCode.IMPORT_INVALID_JSON -> "文件不是有效的 JSON"
     DomainErrorCode.IMPORT_NOT_PRESET_FILE -> "这不是 MyFriend 的预设文件"
     DomainErrorCode.IMPORT_NO_PERSONA_DATA -> "未找到可导入的人格数据"
@@ -298,6 +321,8 @@ private fun DomainErrorCode.debugText(arg: String?, number: Int?): String = when
     DomainErrorCode.MODEL_ID_REQUIRED -> "请填写模型 ID"
     DomainErrorCode.MODEL_ID_TOO_LONG -> "模型 ID 过长"
     DomainErrorCode.PROVIDER_RESERVED -> "该服务商适配仍在预留中，请选择 OpenAI 兼容"
+    DomainErrorCode.API_KEY_UNRECOVERABLE ->
+        "这台设备上的密钥已经无法解密（系统恢复过备份或清过锁屏），请重新填写 API Key"
     DomainErrorCode.HEADERS_INVALID_JSON -> "自定义 Headers 必须是合法的 JSON 对象"
     DomainErrorCode.HEADER_NAME_REQUIRED -> "Header 名称不能为空"
     DomainErrorCode.HEADER_VALUE_NOT_STRING -> "Header ${arg.orEmpty()} 的值必须是字符串"
@@ -412,6 +437,7 @@ object UserErrorTokens {
         NetworkErrorKind.WebUnparsable -> "web_unparsable"
         NetworkErrorKind.WebPageUnreachable -> "web_page_unreachable"
         is NetworkErrorKind.WebStatus -> "web_status" + SEP + kind.status
+        is NetworkErrorKind.WebUrlRejected -> "web_url_rejected" + SEP + kind.reason.name
     }
 
     private fun decodeNetwork(key: String): NetworkErrorKind? = when (key) {
@@ -444,6 +470,9 @@ object UserErrorTokens {
                 "provider_unavailable" ->
                     NetworkErrorKind.ProviderUnavailable(parts.getOrNull(1)?.takeIf { it.isNotEmpty() })
                 "web_status" -> NetworkErrorKind.WebStatus(parts.getOrNull(1)?.toIntOrNull() ?: 0)
+                "web_url_rejected" -> parts.getOrNull(1)
+                    ?.let { name -> WebUrlPolicy.Rejection.entries.firstOrNull { it.name == name } }
+                    ?.let { NetworkErrorKind.WebUrlRejected(it) }
                 "response_too_long" -> NetworkErrorKind.ResponseTooLong(parts.getOrNull(1)?.toLongOrNull() ?: 0L)
                 else -> null
             }

@@ -151,7 +151,13 @@ fun PersonaEditorScreen(
     }
 
     fun requestBack() {
-        if (state.isDirty) showDiscardConfirm = true else onBack()
+        if (state.isDirty) {
+            showDiscardConfirm = true
+        } else {
+            // 审计 P2-2：选了头像又直接返回时，本次新建的那张不能留在 files/avatars 里。
+            viewModel.discardDraftFiles()
+            onBack()
+        }
     }
     BackHandler(enabled = true) { requestBack() }
 
@@ -405,6 +411,8 @@ fun PersonaEditorScreen(
             destructive = true,
             onConfirm = {
                 showDiscardConfirm = false
+                // 放弃这次编辑：本次新建的头像草稿一起回收（审计 P2-2）。
+                viewModel.discardDraftFiles()
                 onBack()
             },
             onDismiss = { showDiscardConfirm = false }

@@ -41,6 +41,21 @@ public final class ApiKeyStore {
         backend.get(service: service, account: Account.apiKey(configId: configId))
     }
 
+    /// 这个配置到底有没有可用的 Key：**以能不能从 Keychain 读出非空 Key 为准**。
+    ///
+    /// 0.10.2 安全审计 P2-6 记的是 Android 那边「只看密文是否非空」的毛病
+    ///（Keystore 密钥被系统清掉后 UI 仍说「已保存」，发消息只会得到 401）。
+    /// iOS 的实体里本来就不存密文（`apiKeyCipher` 恒空），这里把「已配置」的定义
+    /// 写死成读 Keychain 本身；以后谁想改成看数据库字段，这条测试会当场变红。
+    ///
+    /// 读不到（Keychain 读失败 / 条目被系统清掉）与「没填过」在这里是同一个结果：
+    /// 界面显示「未填写」并允许重新输入 —— 对用户来说那就是「需要重新填一次」的明确提示，
+    /// 不会像 Android 那样「假装已配置」。
+    public func isConfigured(for configId: String) -> Bool {
+        guard let key = apiKey(for: configId) else { return false }
+        return !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     // MARK: 联网工具专用 Key（留空则复用主 Key，与 Android 同语义）
 
     public func setWebToolsAPIKey(_ key: String?, for configId: String) throws {

@@ -9,7 +9,7 @@ import com.sun.net.httpserver.HttpServer
  * ```
  * ./gradlew :agentd:run --args="--port 8788"
  * # 或（distribution 装好之后）
- * java -jar agentd/build/install/agentd/lib/agentd-0.10.0.jar --port 8788
+ * agentd/build/install/agentd/bin/agentd --port 8788
  * ```
  *
  * 默认只监听 `127.0.0.1`：它是「嵌入式服务」，不是公网 API。

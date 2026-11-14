@@ -43,7 +43,7 @@ class AgentdServerTest {
             assertEquals(200, health.statusCode())
             assertTrue(health.headers().firstValue("Content-Type").orElse("").contains("application/json"))
             assertEquals(
-                """{"ok":true,"service":"myfriend-agentd","version":"0.10.0"}""",
+                """{"ok":true,"service":"myfriend-agentd","version":"0.11.0"}""",
                 health.body()
             )
 

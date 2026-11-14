@@ -122,6 +122,13 @@ public struct BackupImportError: Error, LocalizedError, CustomStringConvertible 
 
 public final class BackupService {
 
+    /// 备份文件的大小上限（64 MB，与 Android 侧同一个数字语义）。
+    ///
+    /// 0.10.2 安全审计 P2-3：导入原来是「先把整份文件读成 String，再解析」——
+    /// 几百 MB～GB 的假备份会在 UI 附近 OOM，进程被杀。闸放在**读之前**（文件属性）
+    /// 与**解析之前**（UTF-8 字节数）两道，任何一道超限都直接拒绝并给本地化文案。
+    public static let maxImportBytes = 64 * 1024 * 1024
+
     /// 每个人格最多带多少条「整理过记忆」的留痕。
     public static let exportConsolidationsPerPersona = 20
     /// 每个人格最多带多少条还没过期的念头。
@@ -221,8 +228,39 @@ public final class BackupService {
         preview(fileText: fileText).bundle.map(BackupPreview.from)
     }
 
+    /// 读一个备份文件的内容（导入前的第一道闸：先看大小，再读文本）。
+    ///
+    /// 为什么不让界面自己 `String(contentsOf:)`：那样整份文件已经进内存了，
+    /// 「超限拒绝」只能发生在 OOM 之后（0.10.2 安全审计 P2-3）。
+    public func readBackupText(at url: URL, fileManager: FileManager = .default) throws -> String {
+        let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
+        if let bytes = size?.intValue, bytes > Self.maxImportBytes {
+            throw BackupImportError(Self.tooLargeMessage)
+        }
+        let text: String
+        do {
+            text = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            throw BackupImportError(String(localized: "这个文件读不出来，换一份之前带走的备份试试"))
+        }
+        // 第二道闸：文件属性拿不到大小（网络卷 / 特殊 provider）时按读到的字节数再判一次。
+        guard text.utf8.count <= Self.maxImportBytes else {
+            throw BackupImportError(Self.tooLargeMessage)
+        }
+        return text
+    }
+
+    /// 超限时的本地化错误文案（两个入口共用一份）。
+    public static var tooLargeMessage: String {
+        String(format: String(localized: "备份文件超过 %@，请选一份更小的"), "64 MB")
+    }
+
     /// 从 JSON 文本把他接回来。读不懂就抛 `BackupImportError`，库里什么都不改。
     public func importBackup(text: String, mode: ImportMode) throws -> ImportSummary {
+        // 解析之前再判一次：调用方可能绕过 `readBackupText`（备份来自剪贴板、测试、旧代码）。
+        guard text.utf8.count <= Self.maxImportBytes else {
+            throw BackupImportError(Self.tooLargeMessage)
+        }
         switch BackupCodec.decode(text) {
         case .failure(let reason):
             throw BackupImportError(reason)
@@ -600,10 +638,28 @@ public final class BackupService {
     // 这些映射只在这里写一遍：任何实体新增字段却忘了带进备份，往返测试会当场变红。
     // 刻意手写而不是靠 Codable 自动合成：备份的字段名是**跨端契约**，不能跟着属性名漂。
 
+    /// 导出时该写进备份的 `avatarUri`：本机绝对路径一律置空。
+    ///
+    /// 0.10.2 安全审计 P2-5：头像存的是 `file:///…/Application Support/attachments/avatar-…`，
+    /// 原样写进备份等于把「对方设备的沙盒路径 + 文件名 UUID」带出去（低敏感，但属于设备路径），
+    /// 而且换台手机它必然失效。图片二进制本来就不进备份，所以直接不写。
+    /// 导入侧「文件不存在则清空」的逻辑照旧兜住老备份里的路径。
+    ///
+    /// 非文件类 URI（将来若支持网络头像）仍然保留 —— 那些不是设备路径。
+    static func exportedAvatarUri(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+            return nil
+        }
+        if trimmed.lowercased().hasPrefix("file:") { return nil }
+        if trimmed.hasPrefix("/") { return nil }
+        return trimmed
+    }
+
     static func toBackupPersona(_ persona: PersonaEntity) -> BackupPersona {
         BackupPersona(
             id: persona.id, name: persona.name, description: persona.description,
-            avatarUri: persona.avatarUri, avatarSeed: persona.avatarSeed, prompt: persona.prompt,
+            avatarUri: exportedAvatarUri(persona.avatarUri), avatarSeed: persona.avatarSeed,
+            prompt: persona.prompt,
             category: persona.category, version: persona.version,
             defaultApiConfigId: persona.defaultApiConfigId, modelOverride: persona.modelOverride,
             isDefault: persona.isDefault, createdAt: persona.createdAt, updatedAt: persona.updatedAt,
@@ -742,7 +798,8 @@ public final class BackupService {
     static func toBackupPreset(_ preset: PersonaPresetEntity) -> BackupPreset {
         BackupPreset(
             id: preset.id, name: preset.name, description: preset.description,
-            prompt: preset.prompt, category: preset.category, avatarUri: preset.avatarUri,
+            prompt: preset.prompt, category: preset.category,
+            avatarUri: exportedAvatarUri(preset.avatarUri),
             avatarSeed: preset.avatarSeed, createdAt: preset.createdAt, updatedAt: preset.updatedAt
         )
     }

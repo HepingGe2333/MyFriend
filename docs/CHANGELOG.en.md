@@ -23,6 +23,82 @@ Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the 
 
 ---
 
+## 0.11.0
+
+A large release: **the agent decision layer becomes a single implementation (`:agentcore`) and both clients sit behind a
+client/server boundary**, plus the remaining P2 items from the audits. Version `0.11.0`, build numbers **15**, schema stays
+**v10**, backup format stays **v2**. (Per the maintainer's request this release is **not tagged**.)
+
+### Architecture: one decision implementation + client/server layering
+
+- New Gradle module **`:agentcore`** (pure Kotlin/JVM, zero third-party dependencies) holding the **40 pure decision
+  files** that used to live in `app/.../domain/` (sleep policy, `defer_reply`, proactive cap, mood, heartbeat, memory
+  lifecycle, vectors, search, backup copy, erasure plan, error model, …). Package names are unchanged. Both `:app` and
+  `:agentd` depend on it.
+- `:agentd` no longer uses the `kotlin.srcDir(app/domain)` + 14-`exclude` trick — **the exclusion list is gone**; the
+  JSON parser moved into `:agentcore` too (`com.myfriend.app.core.json`), so there is one copy in the repository.
+- Added the `AgentCore` interface (four kinds of decisions), `InProcessAgentCore` (shaping only, delegating to the
+  existing pure functions), `AgentCoreProtocol` (path and field-name constants shared by the `agentd` route table and
+  both clients) and `AgentCoreCodec` (HTTP encode/decode).
+- **Android client**: `AgentCoreClient` (`InProcess` by default / `Remote` over OkHttp to `agentd`), selected by the
+  `-PagentCoreRemote=true` build flag (`BuildConfig.AGENT_CORE_REMOTE`); remote failures **fall back in-process** and log,
+  and with the flag off the remote client is never constructed (**zero requests**). Wired for sleep decisions,
+  `defer_reply`, tool argument clamping and the daily proactive cap (three call sites).
+- **iOS client**: a Kit `AgentCoreClient` protocol with `Native` / `Remote` (URLSession) / `Fallback` implementations,
+  selected by `MYFRIEND_AGENT_CORE` (`native|remote|remote-strict`) or Info.plist, **native by default (zero requests)**;
+  the same four call sites are wired. On the simulator, `remote-strict` hit all four endpoints with HTTP 200.
+- **No new user-facing settings**; the decision layer still holds no state (sessions, memories and usage stay in the
+  client database).
+
+### Android: P2 cleanup
+
+- Chat images picked but never sent, and avatars picked then cancelled or replaced twice, are now reclaimed by the draft
+  lifecycle (with the directory guard).
+- `createSession` is an idempotent upsert (re-read on unique-index conflict), so tapping a contact never fails.
+- `createdAt` collisions now use a stable `(createdAt, id)` order; `deleteAfter` uses the composite cursor so editing a
+  message no longer leaves stale replies behind.
+- The "read" badge no longer scans the window per message (O(n²)); the last assistant timestamp is computed once.
+- Stopping a generation that only produced tool calls no longer writes an empty bubble (three-way decision).
+- The multimodal context now has **count and size limits** (last 2 image messages, ≤4 images each, ≤8 total; ≤1024px,
+  ≤320KB per image, ≤4MB overall) and images are re-encoded before sending.
+- Search jump-to-message computes the window in one query and caps it at 240 messages (no more "target → latest"
+  crawling), with a "back to latest" affordance.
+- `hasKey` requires a decryptable non-empty key, so a lost key reports a clear error instead of a bare 401.
+- `web_fetch` validates scheme/host (rejecting loopback/private literals and `file:`/`javascript:`/`data:`).
+- Backup import is capped at **64 MB** (streamed read that aborts at the limit); export no longer writes absolute device
+  paths (avatars keep only the file name); an empty backup is no longer exported as an empty file.
+- Proactive page clock follows the locale (12-hour in English); notifications can be cancelled per persona or all at
+  once; the "earlier messages above" hint is recomputed when the paging window slides.
+
+### iOS: P2 cleanup
+
+- Four long-session full-history reads became window queries plus exact "latest user/assistant message" queries
+  (400-message session reads 200 rows).
+- Chat polling changed from "always 4 s" to a policy: off in background/not visible, message polling off while streaming,
+  20 s when idle.
+- The paging window no longer drops loaded history when new messages arrive (append by id, capped at 600).
+- Home unread/preview uses a lightweight digest poll (4 s while visible and active, redraw only on change).
+- Notification cold-start deep links are persisted (`PendingDeepLink`) and verified end to end.
+- In-app browser hardened: `nonPersistent` data store, **JavaScript off by default**, only http/https allowed, dangerous
+  schemes cancelled, `mailto`/`tel` handed to the system.
+- "Delete all data" now reseeds personas in the current language instead of leaving an empty app.
+- The photo picker prefers a file URL and decodes at the target size (the original image is never fully loaded); oversized
+  files are rejected before decoding.
+- Backup import capped at 64 MB; export strips absolute device paths; the SSE line limit is aligned to 8 MB;
+  `isConfigured` really reads the Keychain.
+
+### Tests
+
+| Target | Result |
+| --- | --- |
+| Android | **909 tests / 87 classes / 0 failures** |
+| `:agentcore` | **14 tests / 0 failures** |
+| `:agentd` | **20 tests / 0 failures** |
+| iOS | **1098 tests / 0 failures** (Debug and Release builds, zero Swift warnings) |
+| Builds | `:app:assembleDebug`, `:app:assembleRelease`, `:agentcore:build`, `:agentd:build`, `:agentd:fatJar`, iOS Debug/Release all succeed |
+
+---
+
 ## 0.10.2
 
 A small release: **chat-history search** (both platforms; iOS had none), **fixes from three independent audits**

@@ -833,20 +833,111 @@ public struct SearchPage: Equatable, Sendable {
 }
 
 public final class MessageStore: SQLiteStore<MessageEntity> {
+    /// **整段**读取（时间升序）。
+    ///
+    /// 只该给「本来就需要全部消息」的地方用：备份导出、从搜索结果往前翻页的边界、
+    /// 以及没有窗口可用的诊断路径。0.11.0 P2-1 之后，**取上下文、拼心跳处境、抽记忆、
+    /// 记忆整理**一律走下面那几个窗口查询 —— 它们在几千条的会话里也只会物化几十/几百行。
     public func bySession(_ sessionId: String) throws -> [MessageEntity] {
-        try fetch(where: "sessionId = ?", [.text(sessionId)], orderBy: "createdAt ASC")
+        try observed("bySession", fetch(where: "sessionId = ?", [.text(sessionId)], orderBy: "createdAt ASC"))
+    }
+
+    /// 单测钩子：每物化完一批消息就回调「方法名 + 行数」。
+    ///
+    /// 为什么需要它：0.11.0 P2-1 的验收要证明「长会话只读窗口」。这件事从返回值上看不出来
+    ///（`recent(limit:)` 与「读全文再 suffix」给的东西一模一样），只有数「到底从 SQLite
+    /// 捞了多少行」才分得清。生产代码里恒为 nil，每次查询多一次 `if let` 的开销。
+    ///
+    /// 只该在单线程里装/卸（测试的 `setUp` 里装上，跑完置 nil），不做加锁：
+    /// 写成 `NSLock` 的话每次查询都要抢一次锁，比它想验证的东西本身还贵。
+    public var queryObserver: ((String, Int) -> Void)?
+
+    private func observed(_ method: String, _ rows: [MessageEntity]) -> [MessageEntity] {
+        queryObserver?(method, rows.count)
+        return rows
     }
 
     /// 最近 `limit` 条（按时间升序返回）。
     ///
     /// 聊天页首屏与主动开口读历史都走这里：长会话下不该为了看最后 60 条把整段读进内存。
+    /// 0.11.0 P2-1 起，`ChatService` 的上下文窗口（`PromptBuilder.contextRecentLimit`）也走这里。
     public func recent(sessionId: String, limit: Int) throws -> [MessageEntity] {
         guard limit > 0 else { return [] }
         let rows = try fetch(
             where: "sessionId = ?", [.text(sessionId)],
             orderBy: "createdAt DESC, id DESC", limit: limit
         )
-        return Array(rows.reversed())
+        return observed("recent", Array(rows.reversed()))
+    }
+
+    /// 最近 `limit` 条**对话消息**（`role` 非 `SYSTEM`、正文 trim 之后非空，时间升序）。
+    ///
+    /// 拼心跳处境（「最近几句」）与抽记忆的对话窗口都用它：`system` 提示词与空消息
+    /// 对这两处都没有意义，而「先全量读再 filter」正是 P2-1 要消掉的那件事。
+    public func recentDialogue(sessionId: String, limit: Int) throws -> [MessageEntity] {
+        guard limit > 0 else { return [] }
+        let rows = try fetch(
+            where: "sessionId = ? AND role <> ? AND length(trim(content)) > 0",
+            [.text(sessionId), .text(MessageRole.system.stored)],
+            orderBy: "createdAt DESC, id DESC",
+            limit: limit
+        )
+        return observed("recentDialogue", Array(rows.reversed()))
+    }
+
+    /// 这段会话里「能算进对话」的消息一共有多少条（抽记忆判断「对话够不够多」用）。
+    ///
+    /// 只查计数、不读正文：长会话下 `count(*)` 走索引，比把几千条正文捞出来再 `filter` 便宜几个数量级。
+    public func countDialogue(sessionId: String) throws -> Int {
+        try count(
+            where: "sessionId = ? AND role <> ? AND length(trim(content)) > 0",
+            [.text(sessionId), .text(MessageRole.system.stored)]
+        )
+    }
+
+    /// 最后一次「用户说的话」（精确查询：`ORDER BY createdAt DESC, id DESC LIMIT 1`）。
+    ///
+    /// 为什么不能拿窗口里最后一条用户消息代替：窗口是按「最近 N 条」截的，
+    /// 这 N 条可能全是助手消息，用户上一次说话就被截在窗口外面了（0.11.0 P2-1）。
+    public func latestUserMessage(sessionId: String) throws -> MessageEntity? {
+        let rows = try fetch(
+            where: "sessionId = ? AND role = ? AND content <> ''",
+            [.text(sessionId), .text(MessageRole.user.stored)],
+            orderBy: "createdAt DESC, id DESC",
+            limit: 1
+        )
+        return observed("latestUserMessage", rows).first
+    }
+
+    /// 最后一次「他（助手）说的话」，语义同 `latestUserMessage`。
+    public func latestAssistantMessage(sessionId: String) throws -> MessageEntity? {
+        let rows = try fetch(
+            where: "sessionId = ? AND role = ? AND content <> ''",
+            [.text(sessionId), .text(MessageRole.assistant.stored)],
+            orderBy: "createdAt DESC, id DESC",
+            limit: 1
+        )
+        return observed("latestAssistantMessage", rows).first
+    }
+
+    /// 游标**之后**的消息（严格晚于 `(createdAt, id)`，按时间升序）。
+    ///
+    /// 聊天页的窗口以「已加载区间」为锚：新消息只往后追加，不重读「最后 N 条」把
+    /// 最早那一页挤掉（0.11.0 P2-5）。第二排序键 `id` 同样是「同一毫秒两条」的稳定游标。
+    public func pageAfter(
+        sessionId: String,
+        createdAt: Int64,
+        id: String,
+        limit: Int
+    ) throws -> [MessageEntity] {
+        guard limit > 0 else { return [] }
+        let rows = try fetch(
+            where: "sessionId = ? AND (createdAt > ? OR (createdAt = ? AND id > ?))",
+            [.text(sessionId), .int(createdAt), .int(createdAt), .text(id)],
+            orderBy: "createdAt ASC, id ASC",
+            limit: limit
+        )
+        return observed("pageAfter", rows)
     }
 
     /// 游标分页：取「严格早于 `(createdAt, id)`」的最近 `limit` 条，仍按时间升序返回。

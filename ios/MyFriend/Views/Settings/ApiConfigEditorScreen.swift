@@ -306,7 +306,7 @@ struct ApiConfigEditorScreen: View {
         temperatureText = Self.format(config.temperature)
         maxTokensText = config.maxOutputTokens.map { "\($0)" } ?? ""
         topPText = Self.format(config.topP)
-        hasExistingKey = !(env.apiKeys.apiKey(for: config.id) ?? "").isEmpty
+        hasExistingKey = env.apiKeys.isConfigured(for: config.id)
     }
 
     private func save() {
@@ -334,6 +334,9 @@ struct ApiConfigEditorScreen: View {
             if !typedKey.isEmpty {
                 try env.apiKeys.setAPIKey(typedKey, for: entity.id)
             }
+            // 「删除全部本地数据」之后重新播种的会话还没有绑定配置（那时一个配置都没有）：
+            // 新配置存下来时补一次绑定，否则第一次发消息只会得到「请先为该会话选择 API 配置」。
+            env.bindMissingApiConfigs()
             dismiss()
         } catch {
             banner = MFAlert(title: L("没能保存"), message: error.localizedDescription)

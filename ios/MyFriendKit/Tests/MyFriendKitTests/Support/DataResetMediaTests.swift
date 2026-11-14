@@ -139,10 +139,16 @@ final class DataResetMediaTests: XCTestCase {
     }
 
     /// 备份页的两个危险动作都必须只走 `DataReset`（0.10.1 就是这里漏了媒体清理）。
+    ///
+    /// 0.11.0 P2-13 起「全部删除」的唯一入口是 `AppEnvironment.clearAllData()`：
+    /// 它在 `DataReset.clearAll` 之外还负责「按当前语言重新播种人格 / 重设正在聊的人」，
+    /// 两个界面都只调它，才不会一个播种、一个不播种。
     func testBackupScreenClearsThroughDataResetOnly() throws {
         let screen = try Self.readIOSFile("MyFriend/Views/Backup/BackupScreen.swift")
         XCTAssertTrue(screen.contains("env.dataReset.clearChats()"), "备份页要调 DataReset.clearChats")
-        XCTAssertTrue(screen.contains("env.dataReset.clearAll()"), "备份页要调 DataReset.clearAll")
+        XCTAssertTrue(screen.contains("env.clearAllData()"), "备份页要调 AppEnvironment.clearAllData")
+        XCTAssertFalse(screen.contains("env.dataReset.clearAll()"),
+                       "全部删除要带上重新播种，别绕过 clearAllData")
         XCTAssertFalse(
             screen.contains("MediaStorage.shared.deleteAll()"),
             "备份页不该自己删文件（清理只在 DataReset 里做一次，两个入口才不会走偏）"

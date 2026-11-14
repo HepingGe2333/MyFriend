@@ -1,12 +1,14 @@
 package com.myfriend.agentd
 
-import com.myfriend.app.domain.DeferReply
-import com.myfriend.app.domain.MoodBehavior
-import com.myfriend.app.domain.MoodRecovery
-import com.myfriend.app.domain.MoodState
-import com.myfriend.app.domain.ProactiveLevel
-import com.myfriend.app.domain.SleepPolicy
-import com.myfriend.app.domain.ToolArgClamp
+import com.myfriend.app.core.json.Json
+import com.myfriend.app.core.json.JsonParseException
+import com.myfriend.app.core.json.JsonValue
+import com.myfriend.app.domain.AgentCore
+import com.myfriend.app.domain.AgentCoreCodec
+import com.myfriend.app.domain.AgentCoreProtocol
+import com.myfriend.app.domain.InProcessAgentCore
+import com.myfriend.app.domain.ProactiveCapInput
+import com.myfriend.app.domain.SleepInput
 
 /**
  * HTTP 合约层：路由 + 请求校验 + 调 domain + 拼 JSON。
@@ -21,7 +23,7 @@ import com.myfriend.app.domain.ToolArgClamp
 object AgentdApi {
 
     const val SERVICE = "myfriend-agentd"
-    const val VERSION = "0.10.0"
+    const val VERSION = "0.11.0"
 
     data class Response(val status: Int, val body: String)
 
@@ -61,24 +63,22 @@ object AgentdApi {
     }
 
     private fun routeCore(verb: String, path: String, body: String?): Response {
-        val known = setOf(
-            "/v1/core/sleep-decision",
-            "/v1/core/defer-plan",
-            "/v1/core/proactive-cap",
-            "/v1/core/tool-args"
-        )
-        if (path !in known) throw ApiFailure(404, "not_found", "没有这个接口：$path")
+        // 路由表与客户端共用同一份常量（AgentCoreProtocol），改名时不会一边改一边漏。
+        if (path !in AgentCoreProtocol.CORE_PATHS) throw ApiFailure(404, "not_found", "没有这个接口：$path")
         if (verb != "POST") throw ApiFailure(405, "method_not_allowed", "$path 只支持 POST")
         return when (path) {
-            "/v1/core/sleep-decision" -> sleepDecision(body)
-            "/v1/core/defer-plan" -> deferPlan(body)
-            "/v1/core/proactive-cap" -> proactiveCap(body)
-            "/v1/core/tool-args" -> toolArgs(body)
+            AgentCoreProtocol.SLEEP_DECISION_PATH -> sleepDecision(body)
+            AgentCoreProtocol.DEFER_PLAN_PATH -> deferPlan(body)
+            AgentCoreProtocol.PROACTIVE_CAP_PATH -> proactiveCap(body)
+            AgentCoreProtocol.TOOL_ARGS_PATH -> toolArgs(body)
             else -> throw ApiFailure(404, "not_found", "没有这个接口：$path")
         }
     }
 
     // ------------------------------------------------------------------ 睡眠
+    //
+    // 请求校验留在这里（错误码/中文提示是 HTTP 契约的一部分），判定与 reason 文案在
+    // `InProcessAgentCore`：服务端与 Android 的进程内实现必须给出同一句话。
 
     private fun sleepDecision(body: String?): Response {
         val request = requestObject(body)
@@ -90,111 +90,64 @@ object AgentdApi {
         val recent = request.intField("userMessagesInWindow")
         val threshold = request.intField("wakeThreshold")
 
-        val decision = SleepPolicy.evaluate(
-            sleepEnabled = sleepEnabled,
-            sleepMinutes = sleepMinutes,
-            wakeMinutes = wakeMinutes,
-            minuteOfDay = nowMinutes,
-            dndOnSleep = dndOnSleep,
-            recentUserMessages = recent,
-            wakeThreshold = threshold
-        )
-        val wakeClock = SleepPolicy.wakeClockText(sleepEnabled, sleepMinutes, wakeMinutes)
-        val reason = when {
-            !decision.asleep -> "醒着，会正常回复"
-            decision.dnd -> "免打扰中，不会醒"
-            decision.woken -> MoodRecovery.WAKE_REASON
-            wakeClock != null -> "睡着了 · $wakeClock 醒"
-            else -> "睡着了"
-        }
-        return Response(
-            200,
-            Json.stringify(
-                JsonValue.Obj(
-                    linkedMapOf(
-                        "wake" to JsonValue.Bool(decision.shouldReply),
-                        "moodRelaxed" to JsonValue.Bool(decision.woken),
-                        "reason" to JsonValue.Str(reason)
-                    )
-                )
+        val decision = InProcessAgentCore.sleepDecision(
+            SleepInput(
+                sleepEnabled = sleepEnabled,
+                dndOnSleep = dndOnSleep,
+                sleepMinutes = sleepMinutes,
+                wakeMinutes = wakeMinutes,
+                nowMinutes = nowMinutes,
+                userMessagesInWindow = recent,
+                wakeThreshold = threshold
             )
         )
+        // 0.11.0 起响应多一个 `marksRead`（兼容字段）：远程模式下缺少它，免打扰时的已读抑制会丢失。
+        return Response(200, AgentCoreCodec.encodeSleepDecision(decision))
     }
 
     // ------------------------------------------------------------------ defer_reply
-
     private fun deferPlan(body: String?): Response {
         val request = requestObject(body)
-        val now = request.longField("now")
-        val plan = DeferReply.plan(
+        val plan = InProcessAgentCore.deferPlan(
             minutes = request.optionalIntField("minutes"),
             reason = request.optionalStringField("reason"),
-            now = now
+            now = request.longField("now")
         )
-        return Response(
-            200,
-            Json.stringify(
-                JsonValue.Obj(
-                    linkedMapOf(
-                        "earliestAt" to JsonValue.Num(plan.earliestAt.toString()),
-                        "latestAt" to JsonValue.Num(plan.latestAt.toString()),
-                        "minutes" to JsonValue.Num(plan.minutes.toString()),
-                        "reason" to JsonValue.Str(plan.reason)
-                    )
-                )
-            )
-        )
+        return Response(200, AgentCoreCodec.encodeDeferPlan(plan))
     }
 
     // ------------------------------------------------------------------ 主动程度
-
     private fun proactiveCap(body: String?): Response {
         val request = requestObject(body)
-        val level = request.intField("level")
-        val baseCap = ProactiveLevel.dailyCap(level)
-        // moodIntensity 单独存在时无法改变上限：域模型要靠 label 判断 valence / energy。
-        // 这里只接受 moodLabel + moodIntensity 一起给（README 里写清楚了）。
-        val label = request.optionalStringField("moodLabel")
-        val intensity = request.optionalIntField("moodIntensity")
-        val cap = if (!label.isNullOrBlank()) {
-            val tuning = MoodBehavior.from(
-                MoodState(label = label, intensity = intensity ?: 2),
-                now = 0L
-            )
-            MoodBehavior.effectiveDailyCap(baseCap, tuning)
-        } else {
-            baseCap
-        }
-        return Response(
-            200,
-            Json.stringify(JsonValue.Obj(linkedMapOf("dailyCap" to JsonValue.Num(cap.toString()))))
+        val input = ProactiveCapInput(
+            level = request.intField("level"),
+            // moodIntensity 单独存在时无法改变上限：域模型要靠 label 判断 valence / energy。
+            // 只给强度、不给标签时按「没有心情」处理（README 里写清楚了）。
+            moodLabel = request.optionalStringField("moodLabel"),
+            moodIntensity = request.optionalIntField("moodIntensity")
         )
+        val cap = InProcessAgentCore.proactiveCap(input)
+        return Response(200, AgentCoreCodec.encodeProactiveCap(cap))
     }
 
     // ------------------------------------------------------------------ 工具参数
-
     private fun toolArgs(body: String?): Response {
         val request = requestObject(body)
         val tool = request.stringField("tool")
         val args = request.objField("args")
+        // 除被夹取的那个数值键外，其余字段原样回显（保持 JSON 数值的原始写法）。
         val out = LinkedHashMap(args.fields)
         when (tool) {
-            "remember" -> out["importance"] = JsonValue.Num(
-                ToolArgClamp.clampImportance(
-                    args.optionalIntField("importance") ?: ToolArgClamp.IMPORTANCE_DEFAULT
-                ).toString()
+            AgentCore.TOOL_REMEMBER -> out["importance"] = jsonNumber(
+                clampedInt(tool, "importance", args.optionalIntField("importance"))
             )
 
-            "web_search" -> out["count"] = JsonValue.Num(
-                ToolArgClamp.clampCount(
-                    args.optionalIntField("count") ?: ToolArgClamp.COUNT_DEFAULT
-                ).toString()
+            AgentCore.TOOL_WEB_SEARCH -> out["count"] = jsonNumber(
+                clampedInt(tool, "count", args.optionalIntField("count"))
             )
 
-            "defer_reply" -> out["minutes"] = JsonValue.Num(
-                ToolArgClamp.clampDeferMinutes(
-                    args.optionalIntField("minutes") ?: ToolArgClamp.MINUTES_DEFAULT
-                ).toString()
+            AgentCore.TOOL_DEFER_REPLY -> out["minutes"] = jsonNumber(
+                clampedInt(tool, "minutes", args.optionalIntField("minutes"))
             )
 
             else -> throw ApiFailure(
@@ -205,6 +158,16 @@ object AgentdApi {
         }
         return Response(200, Json.stringify(JsonValue.Obj(linkedMapOf("args" to JsonValue.Obj(out)))))
     }
+
+    /**
+     * 取夹取后的整数：缺省值也由 `:agentcore` 给（不在 HTTP 层再抄一遍 1–5 / 1–12 / 5–720）。
+     */
+    private fun clampedInt(tool: String, key: String, raw: Int?): Int {
+        val args: Map<String, Any?> = if (raw == null) emptyMap() else mapOf(key to raw)
+        return InProcessAgentCore.clampToolArgs(tool, args)[key] as Int
+    }
+
+    private fun jsonNumber(value: Int): JsonValue = JsonValue.Num(value.toString())
 
     // ------------------------------------------------------------------ 错误与取值
 

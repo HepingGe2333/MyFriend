@@ -27,6 +27,13 @@ final class AppEnvironment: ObservableObject {
     let gate: LlmConcurrencyGate
     /// 他说不说话的那些节奏（被叫醒、`defer_reply`）。
     let rhythm: ChatRhythmService
+    /// agent 决策层（0.11.0）：睡眠判定 / defer 计划 / 主动上限 / 工具参数夹取。
+    ///
+    /// 装配层只造**一个**实例再分发：远程模式下它持有一条 `URLSession`，
+    /// 每个服务各造一份会让超时与连接各自独立、联调日志也散掉。
+    /// 选择顺序见 `AgentCoreClientFactory`（环境变量 → Info.plist → 本机）；
+    /// 默认本机实现，零网络请求。
+    let agentCore: any AgentCoreClient
 
     // MARK: - 服务
 
@@ -99,6 +106,10 @@ final class AppEnvironment: ObservableObject {
         //（`KeychainFallbackPolicy`，见 0.10.2 审计 P1-5）。
         let apiKeys = ApiKeyStore(backend: ResilientKeychain())
         self.apiKeys = apiKeys
+        // agent 决策层：默认本机（零网络）。要让 App 走远程，用环境变量/Info.plist 选择，
+        // 例如 `SIMCTL_CHILD_MYFRIEND_AGENT_CORE=remote` + `..._URL=http://127.0.0.1:8788`。
+        let agentCore = AgentCoreClientFactory.make(log: { DebugSeeding.log($0) })
+        self.agentCore = agentCore
         let loadedSettings = settings.load()
         self.currentSettings = loadedSettings
 
@@ -175,6 +186,7 @@ final class AppEnvironment: ObservableObject {
             ticks: tickStore,
             presence: presence,
             mood: moodRepository,
+            agentCore: agentCore,
             // 他自己想改人设时（`persona_patch` 动作）真的写进人设卡；iOS 没有 pending 表，直接生效。
             personaPatchApplier: { personaId, patchJson, reason in
                 switch PersonaCardRepository(stores: fallbackStores)
@@ -208,6 +220,7 @@ final class AppEnvironment: ObservableObject {
             intents: intents,
             ticks: tickStore,
             mood: moodRepository,
+            agentCore: agentCore,
             tickRunner: { now in
                 let resolved = AppEnvironment.resolveConfig(stores: fallbackStores, settings: settings, apiKeys: apiKeys)
                 guard let resolved else { return nil }
@@ -260,6 +273,7 @@ final class AppEnvironment: ObservableObject {
             intents: intents,
             webTools: webTools,
             scorer: webSearchScorer,
+            agentCore: agentCore,
             log: { DebugSeeding.log($0) }
         )
         let chatBackground = ChatBackgroundService(
@@ -313,7 +327,8 @@ final class AppEnvironment: ObservableObject {
             },
             log: { DebugSeeding.log($0) },
             // 语言跟随系统（含 per-app language）：每次请求现读，用户改完语言不用重启装配。
-            languageDirective: { AppLanguage.languageDirective }
+            languageDirective: { AppLanguage.languageDirective },
+            agentCore: agentCore
         )
         chatBox.chat = self.chat
 
@@ -400,27 +415,45 @@ final class AppEnvironment: ObservableObject {
     /// 英文系统得到 Rowan / Juno / Ellis。判定只看「库里有没有人」这一件事——
     /// 所以只影响新安装，已有数据不迁移、不改名，切语言也不会重写它们。
     private func seedIfNeeded() {
-        let existing = (try? stores.personas.all()) ?? []
-        guard existing.isEmpty else { return }
+        // 播种逻辑在 Kit（`PersonaSeeding`，有单测）：首次启动与「删除全部本地数据之后」
+        // 走的是同一份代码、同一套固定 id（0.11.0 审计 P2-13）。
+        let outcome = (try? PersonaSeeding.seedIfNeeded(
+            stores: stores,
+            language: AppLanguage.current.seedLanguage,
+            sessionTitle: L("新的对话"),
+            apiConfigId: defaultApiConfigId(),
+            now: DomainClock.nowMillis
+        )) ?? PersonaSeeding.Outcome()
+        guard !outcome.skipped, let first = outcome.personaIds.first else { return }
+        updateSettings { $0.activePersonaId = first }
+    }
 
-        let now = DomainClock.nowMillis
-        let personas = SeedPersonas.build(now: now)
-        for persona in personas {
-            try? stores.personas.upsert(persona)
+    /// 「删除全部本地数据」的唯一入口（设置页与备份页都调它）。
+    ///
+    /// 为什么不让两个 View 各自调 `dataReset.clearAll()`：清空之后还要做几件装配层的事，
+    /// 任何一处漏掉都会让用户看到不一致的状态（0.11.0 审计 P2-13）：
+    /// 1. 按**当前语言**重新播种三位示例人格（不留一个空白 App）；
+    /// 2. 设置刚被清空，把「正在聊的人」指回第一个种子人格；
+    /// 3. 给每个人格补上会话与 API 配置绑定（清空之后通常还没有配置，这一步是幂等的）。
+    @discardableResult
+    func clearAllData() -> ClearSummary {
+        dataReset.reseed = ReseedConfig(
+            language: AppLanguage.current.seedLanguage,
+            sessionTitle: L("新的对话"),
+            apiConfigId: nil,
+            now: DomainClock.nowMillis
+        )
+        let summary = dataReset.clearAll()
+        dataReset.reseed = nil
+        reloadSettings()
+        if let first = (try? stores.personas.all(orderBy: "createdAt ASC"))?.first {
+            updateSettings { $0.activePersonaId = first.id }
         }
-        // 一人一段：每个人格都先建好他那一段会话，首页/聊天页不会各自再建一遍。
-        for persona in personas {
-            let session = ChatSessionEntity(
-                id: UUID().uuidString,
-                personaId: persona.id,
-                apiConfigId: defaultApiConfigId(),
-                title: L("新的对话"),
-                createdAt: now,
-                updatedAt: now
-            )
-            try? stores.sessions.upsert(session)
-        }
-        updateSettings { $0.activePersonaId = personas.first?.id }
+        ensureEveryPersonaHasSession()
+        bindMissingApiConfigs()
+        heartbeat.clearCache()
+        DebugSeeding.log("[reset] 全部删除：重新播种 \(summary.seededPersonas) 个人格、\(summary.seededSessions) 段会话")
+        return summary
     }
 
     /// 从磁盘重新读一遍设置（清空数据、导入备份之后用：这两件事会让设置整体变掉）。
@@ -508,7 +541,7 @@ final class AppEnvironment: ObservableObject {
     /// 什么时候会出现这种会话：从 Android 备份接回来（那边可能没绑）、老版本建的、
     /// 以及「先建会话再配 API」的顺序。不补的话，用户点进会话发消息只会得到一句
     /// 「请先为该会话选择 API 配置」——那是内部错误的措辞，不该甩给用户。
-    private func bindMissingApiConfigs() {
+    func bindMissingApiConfigs() {
         guard let configId = defaultApiConfigId() else { return }
         let sessions = (try? stores.sessions.all()) ?? []
         for session in sessions where (session.apiConfigId ?? "").isEmpty {

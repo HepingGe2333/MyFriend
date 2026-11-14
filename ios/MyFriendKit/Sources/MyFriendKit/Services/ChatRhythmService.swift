@@ -21,8 +21,12 @@ public protocol ChatRhythmHandling: AnyObject {
     func handleWokenUp(personaId: String, at: Int64)
 
     /// 模型这一轮选择不回（`defer_reply`）：写一条 REACH_OUT 的念头，到点再决定开不开口。
+    ///
+    /// `plan` 由**调用点**算好传进来（0.11.0：`ChatService` 经由 `AgentCoreClient` 拿计划，
+    /// 可能是本机 `DeferReply.plan`，也可能是远程 `agentd` 的 `/v1/core/defer-plan`）。
+    /// 这样「夹取 / 窗口」只有一次计算，不会出现调用点算一个、落库处再算一个的漂移。
     func handleDeferredReply(personaId: String, sessionId: String,
-                             minutes: Int, reason: String, at: Int64)
+                             plan: DeferPlan, at: Int64)
 }
 
 /// 真正的实现：全部落在既有的仓储上（不新建表，不新建第二种「念头」）。
@@ -97,10 +101,11 @@ public final class ChatRhythmService: ChatRhythmHandling {
     /// - **不产生助手消息**：一个空气泡比沉默更让人难受；
     /// - 用户消息**已经**是已读（模型看到了它才做出这个决定）；
     /// - 由心跳在到点时再问他一次，他仍然可以选择继续沉默。
+    ///
+    /// 夹取 / trim / 窗口计算在 `DeferReply.plan`（纯函数，契约用例钉住同一组边界），
+    /// 0.11.0 起由调用点经 `AgentCoreClient` 算好后传进来（见协议注释）。
     public func handleDeferredReply(personaId: String, sessionId: String,
-                                    minutes: Int, reason: String, at: Int64) {
-        // 夹取 / trim / 窗口计算全部收在 `DeferReply.plan`：纯函数，契约用例钉住同一组边界。
-        let plan = DeferReply.plan(minutes: minutes, reason: reason, now: at)
+                                    plan: DeferPlan, at: Int64) {
         let window = AgentWindow(
             earliestAt: plan.earliestAt,
             latestAt: plan.latestAt,

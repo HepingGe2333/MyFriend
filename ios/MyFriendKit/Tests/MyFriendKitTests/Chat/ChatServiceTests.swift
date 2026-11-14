@@ -726,6 +726,52 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(requestMessages.count, 3)
     }
 
+    // MARK: - 长会话只读窗口（0.11.0 P2-1）
+
+    /// 400 条的会话里发一句：上下文窗口只从 SQLite 捞 `contextRecentLimit` 行。
+    ///
+    /// 为什么这条测试必须在**调用点**上做：`MessageStore.recent` 自己只返回 N 条，
+    /// 但「读全文再 suffix」的写法返回值一模一样 —— 只有数物化了多少行才分得清。
+    /// 0.10.2 审计 P2-1 说的就是这条路径（`ChatService.swift` 的 `bySession` + `suffix`）。
+    func testLongSessionContextReadsWindowOnly() async throws {
+        try seedReadySession()
+        // 400 条历史：远超上下文窗口（200 条），也远超一屏。
+        let history = (0..<400).map { index in
+            TestData.message(
+                id: String(format: "h-%03d", index),
+                sessionId: sessionId,
+                personaId: personaId,
+                role: index % 2 == 0 ? .user : .assistant,
+                content: "历史第 \(index) 句",
+                createdAt: 1_000 + Int64(index) * 1000
+            )
+        }
+        try stores.messages.upsert(history)
+
+        let reads = ReadLog()
+        stores.messages.queryObserver = { method, rows in reads.record(method, rows) }
+        defer { stores.messages.queryObserver = nil }
+
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        let snapshot = reads.snapshot()
+        XCTAssertFalse(
+            snapshot.contains { $0.method == "bySession" },
+            "长会话不该整段读历史（实际读到：\(snapshot)）"
+        )
+        let contextReads = snapshot.filter { $0.method == "recent" }
+        XCTAssertEqual(contextReads.count, 1, "上下文窗口只查一次，实际：\(snapshot)")
+        XCTAssertEqual(
+            contextReads.first?.rows, PromptBuilder.contextRecentLimit,
+            "窗口只该物化 \(PromptBuilder.contextRecentLimit) 行，而不是 400 行"
+        )
+        // 报文里也只带窗口内的消息：system + 窗口那 200 条（最后一条就是刚发的这句）。
+        let requestMessages = try XCTUnwrap(try requestBody()["messages"] as? [[String: Any]])
+        XCTAssertEqual(requestMessages.count, PromptBuilder.contextRecentLimit + 1)
+        XCTAssertEqual(requestMessages.last?["content"] as? String, "在吗")
+    }
+
     // MARK: - 造图
 
     private func makeJPEG(width: Int, height: Int) throws -> Data {
@@ -747,6 +793,31 @@ final class ChatServiceTests: XCTestCase {
         )
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data
+    }
+}
+
+// MARK: - 读行数记录（P2-1 的验收）
+
+/// `MessageStore.queryObserver` 的记录器：生成跑在别的 Task 上，所以要加锁。
+final class ReadLog {
+    struct Entry {
+        var method: String
+        var rows: Int
+    }
+
+    private var entries: [Entry] = []
+    private let lock = NSLock()
+
+    func record(_ method: String, _ rows: Int) {
+        lock.lock()
+        entries.append(Entry(method: method, rows: rows))
+        lock.unlock()
+    }
+
+    func snapshot() -> [Entry] {
+        lock.lock()
+        defer { lock.unlock() }
+        return entries
     }
 }
 

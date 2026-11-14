@@ -6,17 +6,17 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-823%20Android%20%7C%201016%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-909%20Android%20%7C%201098%20iOS%20%7C%2014%20agentcore%20%7C%2020%20agentd-brightgreen.svg)](#build-and-test)
 
 ## Project status
 
 | Item | Value |
 | --- | --- |
-| Version | `0.10.2` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
+| Version | `0.11.0` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
 | Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
 | Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 823 on Android (`:app:testDebugUnitTest`, plus 3 instrumented), 1016 on iOS (`swift test`), 19 in agentd (`:agentd:test`) |
+| Unit tests | 909 on Android (`:app:testDebugUnitTest`), 14 in `:agentcore`, 20 in `:agentd`, 1098 on iOS (`swift test`) |
 | CI | None yet; all tests and builds run from local commands |
 
 ## Feature overview
@@ -61,6 +61,7 @@ Most decisions in this project follow one constraint: **the interface faces a co
 | Secrets | Keystore-encrypted value in DataStore | Keychain (debug fallback on simulators without entitlements) |
 | Minimum versions | Android 8.0 (`minSdk 26`), `targetSdk 35`, JDK 17 | iOS 16.0, Xcode 16+ |
 | Tests | JUnit4 + kotlinx-coroutines-test; migration tests under `androidTest` | XCTest (local SPM package `ios/MyFriendKit`, runs on macOS) |
+| Agent decisions | Shared `:agentcore` (Kotlin/JVM, the single implementation) | Contract-aligned Swift implementation; can switch to remote `agentd` |
 
 Cross-platform contracts (three things that must stay identical):
 
@@ -68,7 +69,7 @@ Cross-platform contracts (three things that must stay identical):
 2. **Backup**: `BackupCodec` on both platforms and the v1 / v2 fixtures in `fixtures/backup/` are mutually readable; changing one side without the other turns the tests red.
 3. **Agent core**: `spec/agent-core/cases/*.json` holds language-neutral cases. One Android test and one iOS test read the same files and feed them into their own domain implementations (sleep decision, `defer_reply`, proactive cap, heartbeat, memory decay, tool-argument clamping).
 
-In addition, `agentd/` at the repository root is a standalone agent core service (Kotlin/JVM, only the JDK's `com.sun.net.httpserver`, compiling Android's pure domain sources directly). It exposes `GET /health` and four core endpoints (`sleep-decision` / `defer-plan` / `proactive-cap` / `tool-args`) for local integration and standalone deployment; **the two clients are not wired to it yet.**
+Decision logic has a single implementation: `agentcore/` (`:agentcore`, zero third-party dependencies), which both `:app` and `agentd/` depend on. `agentd/` adds an HTTP layer on top (only the JDK's `com.sun.net.httpserver`) exposing `GET /health` and four core endpoints (`sleep-decision` / `defer-plan` / `proactive-cap` / `tool-args`). Both clients go through an `AgentCoreClient` abstraction: **in-process / native by default** (zero network), switchable to the remote service via a build flag or environment variable, with automatic fallback — there is no user-facing setting.
 
 ## Repository layout
 
@@ -87,7 +88,8 @@ In addition, `agentd/` at the repository root is a standalone agent core service
 │   ├── MyFriendKit/        UI-free SPM package (Domain / Data / Net / Backup / Chat / Services), testable with swift test
 │   ├── MyFriend/           SwiftUI layer (App / Views / Resources for localised strings)
 │   └── MyFriend.xcodeproj  Deployment target 16.0, no third-party dependencies
-├── agentd/                 Standalone agent core service (Kotlin/JVM, HTTP, reuses Android domain sources)
+├── agentcore/              Shared agent decision layer (pure Kotlin/JVM, zero deps; used by :app and :agentd)
+├── agentd/                 Standalone agent core service (Kotlin/JVM, HTTP, built on :agentcore)
 ├── spec/agent-core/cases/  Cross-platform agent contract cases (JSON, read by both test suites)
 ├── harness/                Dependency-free Node.js reference server (OpenAI-compatible mock with tool and heartbeat branches)
 ├── fixtures/backup/        Golden backup fixtures (read-only v1 samples + v2 contract)
@@ -149,7 +151,8 @@ The server understands `remember` / `recall` / `set_mood` / `web_search` / `myfr
 - **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled opportunistically, so background heartbeat and daily consolidation may run late; missed time is caught up once when the app returns to the foreground.
 - **Images and avatars are not backed up**: backups keep paths and metadata only, so images must be picked again after switching devices.
 - **Token statistics only**: no money, quotas or blocking; `costMicroUsd` remains a column and is not displayed.
-- **agentd is not wired yet**: only the standalone service and the contract cases exist; neither client calls it.
+- **Remote mode is off by default**: both clients decide locally (zero network); Android opts in with `-PagentCoreRemote=true`, iOS with `MYFRIEND_AGENT_CORE=remote`, and failures fall back locally with a log.
+- **iOS keeps a second implementation**: `:agentcore` is Kotlin/JVM and cannot run on iOS; parity is enforced by the shared `spec/agent-core` and `spec/search` cases plus field-name golden tests (KMP remains a later option).
 - **No build artifacts in the repository**: `.gitignore` excludes `dist/`, `docs/screenshots/`, APK/IPA files and build caches, so the docs contain no screenshots and no prebuilt packages are provided.
 - **Some Chinese remains in English builds**: tool trace titles, data-layer errors and kit copy are localised (including session titles and previews generated at write time), but **values persisted before the upgrade**, **model output** (mood reasons, memory bodies, persona names/descriptions, invented mood words) and code comments/logs/prompt scaffolding remain Chinese (see [docs/I18N.en.md](docs/I18N.en.md)).
 - **Release builds do not do cleartext HTTP**: Android Release disables `usesCleartextTraffic`, and iOS Release only allows local-network cleartext; enabling "allow insecure HTTP" in a release build against a public host reports a clear error (debug builds are unaffected).

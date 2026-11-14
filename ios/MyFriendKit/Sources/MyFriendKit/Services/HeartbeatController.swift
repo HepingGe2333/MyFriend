@@ -85,6 +85,8 @@ public final class HeartbeatController {
     private let now: () -> Int64
     private let roll: () -> Double
     private let isLowPower: () -> Bool
+    /// agent 决策层（0.11.0）：每日主动上限的**基础值**走它（心情修正仍在本机）。
+    private let agentCore: any AgentCoreClient
     private let lock = NSLock()
     private var cached: BeatSnapshot?
     /// 「这一拍归谁」的互斥（0.10.2 审计 P1-2）。
@@ -104,6 +106,7 @@ public final class HeartbeatController {
         intents: AgentIntentSupport,
         ticks: AgentTickStoring,
         mood: MoodRepository,
+        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
         tickRunner: @escaping (Int64) async -> AgentLoop.Outcome?,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
@@ -114,6 +117,7 @@ public final class HeartbeatController {
         self.intents = intents
         self.ticks = ticks
         self.mood = mood
+        self.agentCore = agentCore
         self.tickRunner = tickRunner
         self.now = now
         self.roll = roll
@@ -171,7 +175,15 @@ public final class HeartbeatController {
             return Beat(why: "刚想过，再等等")
         }
         // 每天最多主动几次，现在由人格的 `proactiveLevel` 决定（§一、§三）。
-        let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: persona.proactiveDailyCap, tuning: snapshot.tuning)
+        // 0.11.0：基础值走 agent 决策层（远程失败回退本机 —— 心跳不能因为内核不可用停摆）。
+        // 心情修正仍在本机：`MoodBehavior` 需要 label 驱动的 `MoodTuning`，客户端的
+        // `proactiveCap(level:moodIntensity:)` 只有强度。
+        let baseCap = (try? await agentCore.proactiveCap(
+            level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+        )) ?? NativeAgentCoreClient().proactiveCapNow(
+            level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+        )
+        let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: snapshot.tuning)
         if dailyCap <= 0 { return Beat(why: "主动消息关掉了") }
         let spoken = intents.spokenToday(personaId: persona.id, now: at)
         if spoken >= dailyCap { return Beat(why: "今天说够了（\(spoken)/\(dailyCap)）") }
@@ -181,13 +193,7 @@ public final class HeartbeatController {
         // 不管他做了什么、甚至出错了，这一轮都算「想过一回」：曲线从此刻重新走。
         let finishedAt = max(at, self.now())
         saveHeartbeatState(lastResetAt: finishedAt, lastFiredAt: finishedAt)
-        cached = BeatSnapshot(
-            at: finishedAt,
-            personaId: persona.id,
-            resetAt: finishedAt,
-            mood: cached?.mood ?? snapshot.mood,
-            tuning: cached?.tuning ?? snapshot.tuning
-        )
+        cacheBeatSnapshot(snapshot, personaId: persona.id, at: finishedAt)
         return Beat(
             fired: true,
             acted: outcome?.acted ?? false,
@@ -230,6 +236,24 @@ public final class HeartbeatController {
     }
 
     // MARK: - 快照
+
+    /// 把「刚刚想过一回」写回快照缓存（0.11.0 审计：读写都必须在这把锁里）。
+    ///
+    /// 单独一个**同步**方法而不是在 `beat()` 里直接 lock：`beat()` 是 async，
+    /// 在异步上下文里调 `NSLock.lock()` 会被 Swift 6 判成错误（阻塞线程）。
+    /// 锁只圈住一次纯内存赋值，里面不 await。
+    private func cacheBeatSnapshot(_ snapshot: BeatSnapshot, personaId: String, at: Int64) {
+        lock.lock()
+        // 旧快照的心情 / 分寸如果不是这次读的，保留它（与原来锁外的语义一致，只是变成原子操作）。
+        cached = BeatSnapshot(
+            at: at,
+            personaId: personaId,
+            resetAt: at,
+            mood: cached?.mood ?? snapshot.mood,
+            tuning: cached?.tuning ?? snapshot.tuning
+        )
+        lock.unlock()
+    }
 
     func snapshotFor(persona: PersonaEntity, settings: AppSettings, now: Int64) -> BeatSnapshot {
         lock.lock()

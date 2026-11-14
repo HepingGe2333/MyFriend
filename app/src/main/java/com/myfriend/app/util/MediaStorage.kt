@@ -3,6 +3,8 @@ package com.myfriend.app.util
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
@@ -10,10 +12,13 @@ import android.util.Base64
 import android.util.Log
 import com.myfriend.app.R
 import com.myfriend.app.domain.AvatarImagePolicy
+import com.myfriend.app.domain.BackupAvatarPath
+import com.myfriend.app.domain.ImageContextBudget
 import com.myfriend.app.domain.MediaOwnership
 import com.myfriend.app.domain.MessageAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.UUID
 
@@ -166,14 +171,50 @@ object MediaStorage {
             }
         }
 
-    /** 转成 OpenAI 兼容接口可直接使用的 data URL。 */
-    fun toDataUrl(attachment: MessageAttachment): String? {
-        val file = fileOf(attachment.uri) ?: return null
-        if (!file.exists() || !file.canRead()) return null
-        val bytes = runCatching { file.readBytes() }.getOrNull() ?: return null
-        if (bytes.isEmpty()) return null
-        val encoded = Base64.encodeToString(bytes, Base64.NO_WRAP)
-        return "data:${attachment.mime};base64,$encoded"
+    /**
+     * 把一张聊天附件转成上下文里能直接用的 data URL（审计 P2-9）。
+     *
+     * 与旧 `toDataUrl` 的区别：
+     * - **在 IO 上做**：解码/压缩/读文件都是阻塞活，以前是在调用方上下文里直接 `readBytes()`；
+     * - **按目标尺寸重编码**：长边压到 [ImageContextBudget.TARGET_EDGE_PX]，PNG 也转 JPEG
+     *   （PNG 截图不压缩，一张就能到 4MB，是 OOM 的主要来源）；
+     * - **单张字节上限**：按 [ImageContextBudget.JPEG_QUALITY_LADDER] 逐档降质量，
+     *   压不到 [ImageContextBudget.MAX_ENCODED_BYTES] 就放弃这一张（返回 null）。
+     *
+     * 返回 null 表示「这张图这次带不上」，调用方跳过即可，不该让整轮回复失败。
+     */
+    suspend fun toContextDataUrl(attachment: MessageAttachment): String? = withContext(Dispatchers.IO) {
+        runCatching {
+            val file = fileOf(attachment.uri) ?: return@runCatching null
+            if (!file.isFile || !file.canRead()) return@runCatching null
+            val decoded = decodeForContext(file) ?: return@runCatching null
+            val flattened = flattenForJpeg(decoded)
+            try {
+                val bytes = encodeBounded(flattened) ?: return@runCatching null
+                "data:image/jpeg;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+            } finally {
+                if (flattened !== decoded) flattened.recycle()
+                decoded.recycle()
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * 备份里的头像值 → 本机可用的 `file://` 路径（安全审计 P2-5）。
+     *
+     * 备份里只写文件名（新备份）或老备份里的绝对路径，两者都归一成文件名，
+     * 再看本机 `files/avatars/<文件名>` 在不在：在就恢复成本机路径，不在就返回 null，
+     * 由导入方清空字段并记一条警告。
+     */
+    fun resolveImportedAvatar(context: Context, raw: String?): String? {
+        val value = raw?.trim().orEmpty()
+        if (value.isEmpty()) return null
+        val name = BackupAvatarPath.fileName(value) ?: return null
+        val dir = File(context.filesDir, AVATAR_DIR)
+        val file = File(dir, name)
+        if (!MediaOwnership.isWithin(file, listOf(dir))) return null
+        if (!file.isFile) return null
+        return Uri.fromFile(file).toString()
     }
 
     fun fileOf(uriString: String): File? = runCatching {
@@ -309,6 +350,62 @@ object MediaStorage {
         val format = if (usePng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
         target.outputStream().use { output -> bitmap.compress(format, quality, output) }
         return target.length()
+    }
+
+    /**
+     * 上下文用图的解码：长边压到 [ImageContextBudget.TARGET_EDGE_PX]。
+     *
+     * API 28+ 用 ImageDecoder 直接按目标尺寸解码（不会先解一张原图再缩）；旧版本按
+     * `inSampleSize` 粗采样。返回 null 表示这张图读不出来（文件坏了 / 不是图片）。
+     */
+    private fun decodeForContext(file: File): Bitmap? {
+        val targetEdge = ImageContextBudget.TARGET_EDGE_PX
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            return runCatching {
+                ImageDecoder.decodeBitmap(ImageDecoder.createSource(file)) { decoder, info, _ ->
+                    decoder.isMutableRequired = false
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+                    val longest = maxOf(info.size.width, info.size.height)
+                    if (longest > targetEdge) {
+                        val scale = targetEdge.toFloat() / longest
+                        decoder.setTargetSize(
+                            (info.size.width * scale).toInt().coerceAtLeast(1),
+                            (info.size.height * scale).toInt().coerceAtLeast(1)
+                        )
+                    }
+                }
+            }.getOrNull()
+        }
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, bounds)
+        var sample = 1
+        val longest = maxOf(bounds.outWidth, bounds.outHeight)
+        if (longest <= 0) return null
+        while (longest / sample > targetEdge * 2) sample *= 2
+        val options = BitmapFactory.Options().apply { inSampleSize = sample }
+        return runCatching { BitmapFactory.decodeFile(file.path, options) }.getOrNull()
+    }
+
+    /** JPEG 没有透明通道：带 alpha 的图先垫一层白底，免得截图/贴纸变成全黑。 */
+    private fun flattenForJpeg(bitmap: Bitmap): Bitmap {
+        if (!bitmap.hasAlpha()) return bitmap
+        val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888)
+        Canvas(out).apply {
+            drawColor(Color.WHITE)
+            drawBitmap(bitmap, 0f, 0f, null)
+        }
+        return out
+    }
+
+    /** 按质量阶梯压到单张字节预算以内；压不进去返回 null（这张就不带了）。 */
+    private fun encodeBounded(bitmap: Bitmap): ByteArray? {
+        val buffer = ByteArrayOutputStream()
+        for (quality in ImageContextBudget.JPEG_QUALITY_LADDER) {
+            buffer.reset()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, buffer)
+            if (buffer.size() in 1..ImageContextBudget.MAX_ENCODED_BYTES) return buffer.toByteArray()
+        }
+        return null
     }
 
     /**

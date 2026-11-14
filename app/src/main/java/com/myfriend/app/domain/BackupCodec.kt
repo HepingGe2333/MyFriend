@@ -436,6 +436,11 @@ object BackupCodec {
     /** 坏 JSON、坏条目、版本过高都在这里被接住，返回中文原因而不是抛异常。 */
     fun decode(raw: String?): BackupDecodeResult {
         if (raw.isNullOrBlank()) return BackupDecodeResult.Failure(BackupFailure.EmptyFile)
+        // 安全 P2-3：解析前再兜一次大小。读文件的闸（BoundedTextRead）挡的是 OOM 主路径，
+        // 这里挡的是「别的调用方把一份超大字符串直接塞进来」（调试面板、将来的 CLI/同步）。
+        if (BackupLimits.isTooManyChars(raw.length)) {
+            return BackupDecodeResult.Failure(BackupFailure.TooLarge(BackupLimits.MAX_BACKUP_BYTES))
+        }
 
         val root = runCatching { readJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
             ?: return BackupDecodeResult.Failure(BackupFailure.InvalidJson)
@@ -573,7 +578,9 @@ fun PersonaEntity.toBackupPersona(): BackupPersona = BackupPersona(
     id = id,
     name = name,
     description = description,
-    avatarUri = avatarUri,
+    // 安全 P2-5：备份里不写本机绝对路径（`file:///data/user/0/<pkg>/files/avatars/…`），
+    // 只留文件名；导入时按「本机同名文件在不在」决定恢复还是清空。
+    avatarUri = BackupAvatarPath.portable(avatarUri),
     avatarSeed = avatarSeed,
     prompt = prompt,
     category = category,

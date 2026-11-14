@@ -231,7 +231,9 @@
     <string name="chat_typing">Typing</string>
     <string name="chat_latest">Latest</string>
     <string name="chat_load_earlier">Scroll up to load earlier messages</string>
+    <string name="chat_back_to_latest">Newer messages below · back to latest</string>
     <string name="chat_loading_earlier">Loading earlier messages…</string>
+    <string name="chat_stopped_status">Stopped</string>
     <string name="chat_scroll_to_bottom">Back to the latest</string>
 
     <!-- Chat: overflow menu -->
@@ -1202,6 +1204,7 @@
     <string name="error_preset_prompt_too_long">The prompt is over the safe limit</string>
     <string name="error_preset_library_empty">The preset library is empty; save one before exporting</string>
     <string name="error_import_file_too_large">That file is too large</string>
+    <string name="error_backup_empty">There is nothing to take with you yet</string>
     <string name="error_import_invalid_json">That file isn\'t valid JSON</string>
     <string name="error_import_not_preset_file">That isn\'t a MyFriend preset file</string>
     <string name="error_import_no_persona_data">No importable persona data was found</string>
@@ -1218,6 +1221,7 @@
     <string name="error_model_id_required">Enter a model ID</string>
     <string name="error_model_id_too_long">That model ID is too long</string>
     <string name="error_provider_reserved">That provider is still on the way; choose OpenAI-compatible</string>
+    <string name="error_api_key_unrecoverable">The key on this device can no longer be decrypted (a backup was restored or the lock screen was reset). Please enter the API key again</string>
     <string name="error_headers_invalid_json">Custom headers must be a valid JSON object</string>
     <string name="error_header_name_required">A header name can\'t be empty</string>
     <string name="error_header_value_not_string">The value of header %1$s must be a string</string>
@@ -1278,6 +1282,9 @@
     <string name="error_web_base_missing">The DeepSeek address can\'t be empty</string>
     <string name="error_web_unparsable">The web service returned something that couldn\'t be read</string>
     <string name="error_web_page_unreachable">That page couldn\'t be fetched</string>
+    <string name="error_network_web_url_scheme">Only http / https pages can be fetched</string>
+    <string name="error_network_web_url_host">That page address has no host name</string>
+    <string name="error_network_web_url_local">Local or private network addresses can\'t be fetched</string>
     <string name="error_web_status_401">The DeepSeek key is invalid or expired</string>
     <string name="error_web_status_402">The DeepSeek account is out of credit</string>
     <string name="error_web_status_403">The fetch was refused by the site or a security policy</string>
@@ -1391,6 +1398,7 @@
     <string name="backup_fail_empty">This file is empty; he isn\'t in it.</string>
     <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
     <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
+    <string name="backup_fail_too_large">That file is too large (over %1$dMB) to be a MyFriend backup.</string>
     <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
 
     <!-- Import results: personas / presets -->

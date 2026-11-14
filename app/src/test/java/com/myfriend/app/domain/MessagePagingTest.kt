@@ -45,10 +45,40 @@ class MessagePagingTest {
     }
 
     @Test
-    fun `首屏之后窗口条数变化不再影响 hasMore`() {
-        // 已经加载过更早的一页，观察结果变成「整个已加载区间」：条数从 60 变 90 不代表还有更早的。
-        val loaded = MessagePaging.State(initialized = true, hasMoreOlder = false)
-        assertEquals(loaded, MessagePaging.onFirstWindow(loaded, 90))
+    fun `滑窗时首屏的 hasMoreOlder 每次都会重算`() {
+        // 场景：会话原来只有 30 条（打开时判「到底了」），聊到 90 条之后最早的 30 条滑出了 60 条窗口。
+        // 如果只在第一次算，用户就永远看不到「上面还有更早的消息」（审计 P2-14）。
+        val first = MessagePaging.onFirstWindow(MessagePaging.State(), 30)
+        assertFalse(first.hasMoreOlder)
+        val slid = MessagePaging.onFirstWindow(first, page)
+        assertTrue("窗口滑满一页就必须提示上面还有更早的", slid.hasMoreOlder)
+        assertTrue(slid.canLoadOlder)
+    }
+
+    @Test
+    fun `定位到旧消息后窗口有上界 并给出更新的入口`() {
+        val window = MessagePaging.Window(
+            start = MessagePaging.Cursor(1_000L, "a"),
+            rows = MessageJump.maxWindowRows(),
+            hasMoreOlder = true,
+            hasMoreNewer = true
+        )
+        val state = MessagePaging.onJumped(MessagePaging.State(), window)
+        assertTrue(state.initialized)
+        assertTrue("上面还有更早的", state.hasMoreOlder)
+        assertTrue("下面还有更新的", state.hasMoreNewer)
+        assertFalse(state.loadingOlder)
+    }
+
+    @Test
+    fun `回到最新一屏时状态整体复位`() {
+        val state = MessagePaging.onJumped(
+            MessagePaging.State(),
+            MessagePaging.Window(MessagePaging.Cursor(1L, "a"), 240, hasMoreOlder = true, hasMoreNewer = true)
+        )
+        val latest = MessagePaging.onLatest(state)
+        assertEquals(MessagePaging.State(), latest)
+        assertFalse(latest.hasMoreNewer)
     }
 
     @Test

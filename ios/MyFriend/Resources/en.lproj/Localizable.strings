@@ -906,3 +906,7 @@
 "睡着的时候，你连着发满 %d 条，他会被叫醒（并有点不好意思）。1–20。.one" = "While he is asleep, %d message in a row will wake him (and leave him a little embarrassed). 1–20.";
 "连上了：这个 Key 能看到 %d 个可用项，比如 %@。.one" = "Connected: this Key can see %d available item, such as %@.";
 "一共 %d 次调用 · 读了 %@ · 写了 %@.one" = "%d call in total · %@ read · %@ written";
+
+"这个文件读不出来，换一份之前带走的备份试试" = "This file can't be read. Try another backup you exported earlier.";
+"备份文件超过 %@，请选一份更小的" = "That backup is larger than %@. Pick a smaller file.";
+"这个链接没有在应用内打开" = "This link can't be opened inside the app.";

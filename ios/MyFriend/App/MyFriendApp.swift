@@ -13,6 +13,11 @@ struct MyFriendApp: App {
     @State private var lastScenePhase: ScenePhase = .inactive
 
     init() {
+        // 通知 delegate **必须**在启动完成前装配（0.11.0 审计 P2-7）：
+        // `UNUserNotificationCenter` 只在 `didFinishLaunching` 返回前交出「点击冷启动」
+        // 那一次响应；SwiftUI 的 `.task` 要等首帧之后才跑，那时回调已经错过，
+        // 于是「点通知冷启动」只会打开首页。这里提前设好，配合 `PendingDeepLink` 落盘。
+        AppNotifications.shared.configure()
         // 后台调度必须在启动完成前注册（标识符与 Config/Info.plist 里的一致）。
         // 模拟器上系统不会执行这两种任务，`BackgroundScheduler` 会直接跳过注册；
         // 注册失败也不影响前台，一切只是「少了一次后台机会」。
@@ -28,6 +33,7 @@ struct MyFriendApp: App {
                 .tint(Color(argb: env.currentSettings.accentColor))
                 .task {
                     // 通知权限（第一次启动问一次）+ 后台任务真的能拿到 AppEnvironment。
+                    // delegate 已在 `init()` 里装配过；这里只补「权限申请」和后台任务的装配。
                     AppNotifications.shared.configure()
                     BackgroundScheduler.shared.attach(env: env)
                     // 启动自检：清掉库里那些「不像记忆」的旧摘要（1.7 事故的脏数据不会自己消失）。

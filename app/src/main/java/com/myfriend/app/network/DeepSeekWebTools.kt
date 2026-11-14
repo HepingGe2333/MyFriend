@@ -1,6 +1,7 @@
 package com.myfriend.app.network
 
 import com.myfriend.app.domain.NetworkErrorKind
+import com.myfriend.app.domain.WebUrlPolicy
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -93,6 +94,15 @@ class DeepSeekWebTools @Inject constructor(
     ): WebPage {
         val target = url.trim()
         if (target.isEmpty()) throw ApiException(NetworkErrorKind.WebUrlMissing)
+        // 安全 P2-11：与 iOS 的 validatePageUrl 对齐——只放行 http/https、必须有 host、
+        // 不接受本机/内网字面量。以前这里只判空，`file://`、`javascript:`、`data:`、
+        // `http://127.0.0.1/admin` 都会被原样塞进 {"url": …} 转给第三方服务。
+        WebUrlPolicy.check(target)?.let { rejection ->
+            if (rejection == WebUrlPolicy.Rejection.EMPTY) {
+                throw ApiException(NetworkErrorKind.WebUrlMissing)
+            }
+            throw ApiException(NetworkErrorKind.WebUrlRejected(rejection))
+        }
         val key = requireApiKey(apiKey)
         val endpoint = resolveEndpoint(baseUrl, TOOL_FETCH, allowInsecureHttp)
         val payload = buildJsonObject { put("url", target) }

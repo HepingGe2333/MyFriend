@@ -52,7 +52,7 @@ class SecurityGuardsContractTest {
         )
         assertTrue(
             "release 下 http:// 必须抛 CleartextDisabled（有专门文案）",
-            source("src/main/java/com/myfriend/app/domain/CleartextHttpPolicy.kt")
+            source("../agentcore/src/main/kotlin/com/myfriend/app/domain/CleartextHttpPolicy.kt")
                 .contains("NetworkErrorKind.CleartextDisabled")
         )
     }

@@ -204,7 +204,7 @@ data class ErasureReport(
  * 2. 表删除在一个事务里（生产实现是 Room `withTransaction`），文件删除在事务之外；
  * 3. 不抛「部分失败」：删不掉就整次失败，界面照实报错——隐私承诺不能假装成功。
  *
- * 这个类不依赖 Android/Hilt（因此也能被 `agentd` 的纯 Kotlin 编译覆盖），
+ * 这个类不依赖 Android/Hilt（因此住在 `:agentcore`，Android 与 `agentd` 共用同一份实现），
  * 由 DI 模块用 [ErasureStore] + [ErasureFiles] 组装。
  */
 class DataEraser(

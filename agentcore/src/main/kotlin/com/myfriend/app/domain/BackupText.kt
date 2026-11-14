@@ -25,6 +25,14 @@ sealed interface BackupFailure {
     data object InvalidJson : BackupFailure
     data class WrongFormat(val format: String) : BackupFailure
     data class NewerFormat(val version: Int, val supported: Int) : BackupFailure
+
+    /**
+     * 文件 / 字符串超过上限（安全审计 P2-3）。
+     *
+     * 超过 [limitBytes] 的「备份」只可能是拿错了文件：正常备份是几 MB 量级。
+     * 在读之前 / 读的过程中就拒绝，而不是先读进内存再判断（那正是 OOM 的地方）。
+     */
+    data class TooLarge(val limitBytes: Long) : BackupFailure
 }
 
 /** 读懂了、但有一部分没能带回来的说明。 */

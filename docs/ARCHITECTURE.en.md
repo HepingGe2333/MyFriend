@@ -108,35 +108,71 @@ So both sides implement it, held together by three mechanisms:
 2. **Written specs** — `docs/ROADMAP-1.9.md` and friends pin down behaviours, numbers and copy, with acceptance tables;
 3. **Shared conformance cases** (new in 0.10.0) — `spec/agent-core/cases/*.json`; each platform asserts its own implementation against the same JSON.
 
-## 5. The agent core: three runtime shapes
+## 5. The agent core: one implementation, three runtime shapes
 
-"Agent logic" here means **decisions**: answer or not, when to wake, heartbeat probability, whether a memory decays, how tool arguments are clamped, how the system prompt is assembled. It deliberately excludes persistence — sessions, memories, intents and usage live in the client database. That split is what makes serving it feasible:
+"Agent logic" here means **decisions**: answer or not, when to wake, heartbeat probability, whether a memory decays, how
+tool arguments are clamped. It deliberately excludes persistence — sessions, memories, intents and usage live in the
+client database. That split is what makes sharing *and* serving feasible at the same time.
+
+**Since 0.11.0 the decision layer is a single Kotlin implementation**: `agentcore/` (`:agentcore`, zero third-party
+dependencies, pure JVM).
 
 ```mermaid
-flowchart LR
-  subgraph Shape A: in-process (current)
-    A1[client] --> A2[local domain implementation]
+flowchart TB
+  subgraph shared[":agentcore (the single implementation)"]
+    AC[AgentCore interface<br/>sleepDecision / deferPlan / proactiveCap / clampToolArgs]
+    IP[InProcessAgentCore]
+    PR[AgentCoreProtocol / AgentCoreCodec]
   end
-  subgraph Shape B: embedded service (Android first)
-    B1[client] --> B2[agentd module · same process, handler call]
+  subgraph android["Android client"]
+    A1[ChatRepository / ToolExecutor / AgentLoop / Heartbeat]
+    A2[InProcessAgentCoreClient]
+    A3["RemoteAgentCoreClient (OkHttp, build flag)"]
   end
-  subgraph Shape C: remote service
-    C1[client] --> C2[(agentd / HTTP)]
-    C2 --> C3[LLM API]
+  subgraph ios["iOS client"]
+    I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
+    I2[NativeAgentCoreClient]
+    I3["RemoteAgentCoreClient (URLSession, env/plist)"]
   end
+  subgraph server["agentd (server)"]
+    S1[/"POST /v1/core/*"/]
+    S2[InProcessAgentCore]
+  end
+  AC --> IP
+  IP --> A2
+  IP --> S2
+  A2 --> A1
+  A3 --> A1
+  A3 <--> S1
+  I2 --> I1
+  I3 --> I1
+  I3 <--> S1
+  S2 --> S1
+  PR --> A3
+  PR --> S1
+  PR --> I3
 ```
 
-| Shape | Parity | Offline | Device cost | Feasible |
+| Shape | Used by | Parity | Offline | Notes |
 | --- | --- | --- | --- | --- |
-| A in-process (both platforms today) | via contract + cases | ✅ fully offline | decisions are millisecond pure functions | ✅ in use |
-| B embedded service (`agentd`, same process) | ✅ one Kotlin code base | ✅ | one extra call layer, negligible | ✅ for Android; iOS needs KMP for true in-process sharing |
-| C remote service (HTTP) | ✅ one code base | ❌ decisions degrade offline | network round-trip, wider privacy surface | ✅ for self-hosting / multi-device; **off by default** |
+| **A in-process** | Android (default), iOS (default) | ✅ one `:agentcore` implementation on Android; iOS is a contract-aligned Swift implementation | ✅ | millisecond pure functions, no round-trip |
+| **B embedded service** | Android, optional | ✅ same server code | ✅ | run `agentd` on the same machine/LAN and point Android at it with `-PagentCoreRemote=true` |
+| **C remote service** | both, optional | ✅ | ❌ (falls back to native on failure) | self-hosting / multi-device; off by default, clients fall back and log |
 
-`agentd/` is the skeleton for B and C: Kotlin/JVM, zero third-party dependencies, compiling Android's pure domain sources directly (21 of the 35 domain files compile into the JVM source set; the rest depend on Room / kotlinx-serialization / Hilt / coroutines and are excluded — the reasons are listed in `agentd/README.md`). It exposes `/health`, `/v1/core/sleep-decision`, `/v1/core/defer-plan`, `/v1/core/proactive-cap`, `/v1/core/tool-args`; field names match the domain structs on both platforms, so clients need no translation layer. `spec/agent-core` currently holds **94** cases and agentd carries **19** tests (18 handler tests + 1 real-port integration test). See `agentd/README.md` and `spec/agent-core/README.md`.
+- **Contract**: the path and field-name constants in `AgentCoreProtocol` are used by the `agentd` route table and both
+  clients; the 94 cases in `spec/agent-core/` run against `:agentcore` and against iOS, and the 16 in `spec/search/`
+  likewise. Renaming a field turns all three red at once.
+- **Server**: `agentd/` is only HTTP + JSON (`AgentCoreCodec`); all logic lives in `:agentcore`. It carries 20 tests and
+  runs via `java -jar` or `installDist`, listening on loopback by default.
+- **Clients**: Android's `AgentCoreClient` is an interface in `:app` (in-process / remote, chosen by
+  `BuildConfig.AGENT_CORE_REMOTE`, remote failures fall back); iOS's is a Kit protocol (native / remote / fallback,
+  chosen by the `MYFRIEND_AGENT_CORE` environment variable or Info.plist, native by default). **There is no user-facing
+  setting.**
+- **Why not KMP**: KMP would let iOS run the same Kotlin, but requires the Kotlin/Native toolchain and framework
+  packaging. Establishing the contract, module boundary and client abstraction first is the higher-confidence step;
+  KMP remains an option for Stage 2.
 
-**Why contract + cases before KMP**: the contract is a prerequisite for *any* sharing strategy. Without it, both KMP and a remote service still drift. It is also zero-risk: no new toolchain, no client code path changes.
-
-## 5.5 Search
+## 5.5 Search## 5.5 Search
 
 Chat search is the same semantics implemented twice, pinned by `spec/search/` (16 cases): parameterised `LIKE`
 pre-filtering (user input `%`/`_`/`\` treated literally) plus `ChineseTerms` token recall, then in-memory ranking

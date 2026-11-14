@@ -11,6 +11,8 @@ import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MessageEntity
+import com.myfriend.app.data.local.MessageRole
+import com.myfriend.app.data.local.MessageStatus
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaPendingPatchEntity
 import com.myfriend.app.data.local.ProactiveRuleEntity
@@ -26,6 +28,7 @@ import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.ProactiveScheduler
 import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.domain.MessageAttachment
+import com.myfriend.app.domain.ReadReceipt
 import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.MoodState
 import com.myfriend.app.domain.Presence
@@ -33,6 +36,7 @@ import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.domain.GenerationEvent
 import com.myfriend.app.domain.ToolTraceItem
 import com.myfriend.app.domain.ProactiveProposal
+import com.myfriend.app.util.ChatNotifier
 import com.myfriend.app.util.HumanTiming
 import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -93,7 +97,21 @@ data class ChatUiState(
     /** 还有更早的消息可以往回加载（首屏 60 条之外）。 */
     val hasMoreOlder: Boolean = false,
     /** 正在加载更早的一页：列表顶部显示转圈，并且不再重复触发。 */
-    val loadingOlder: Boolean = false
+    val loadingOlder: Boolean = false,
+    /**
+     * 从检索结果跳到很久以前的消息后，窗口末尾**之后**还有更新的消息。
+     *
+     * 0.11.0 起定位只加载目标附近一个有界窗口（审计 P2-13），所以「下面还有更近的话」
+     * 是一个真实状态：界面在底部给「更新的消息」入口，点了回到最新一屏。
+     */
+    val hasMoreNewer: Boolean = false,
+    /**
+     * 窗口里最后一条「可计入」的助手消息时间（`role=ASSISTANT && status != ERROR`）。
+     *
+     * 已读判定（`ReadReceipt`）每条气泡只跟它比一次：以前每个气泡都扫一遍整个已加载窗口，
+     * 把历史翻完之后是 O(n²)（审计 P2-10）。
+     */
+    val lastAssistantAt: Long? = null
 ) {
     val canSend: Boolean
         get() = session != null && config != null && persona != null && !isGenerating && !switchingPersona
@@ -143,6 +161,7 @@ class ChatViewModel @Inject constructor(
     private val presenceRepository: PresenceRepository,
     private val proactiveRepository: ProactiveRepository,
     private val settingsRepository: SettingsRepository,
+    private val chatNotifier: ChatNotifier,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -159,19 +178,37 @@ class ChatViewModel @Inject constructor(
      * 就改成观察「从那一页最早一条到最新」的区间（依然由 Room 观察，编辑/删除都会跟着更新）。
      */
     private val sinceCursor = MutableStateFlow<MessagePaging.Cursor?>(null)
+
+    /**
+     * 从检索结果定位时的**有界窗口**（审计 P2-13）。
+     *
+     * 不为 null 时聊天页只观察「窗口起点 + 最多 [MessagePaging.Window.rows] 条」，
+     * 不再把「目标 → 最新」整段读进内存；窗口的「更新的一侧」由界面上的「更新的消息」
+     * 入口回到最新一屏（[showLatest]）。
+     */
+    private val jumpWindow = MutableStateFlow<MessagePaging.Window?>(null)
+
     private val pagingState = MutableStateFlow(MessagePaging.State())
 
-    private val messageFlow = sinceCursor
-        .flatMapLatest { cursor ->
-            if (cursor == null) {
-                chatRepository.observeLatestMessages(sessionId)
-            } else {
-                chatRepository.observeMessagesFrom(sessionId, cursor)
+    private data class PagingTarget(
+        val cursor: MessagePaging.Cursor?,
+        val window: MessagePaging.Window?
+    )
+
+    private val messageFlow = combine(sinceCursor, jumpWindow) { cursor, window -> PagingTarget(cursor, window) }
+        .distinctUntilChanged()
+        .flatMapLatest { target ->
+            val window = target.window
+            when {
+                window != null -> chatRepository.observeMessagesWindow(sessionId, window.start, window.rows)
+                target.cursor == null -> chatRepository.observeLatestMessages(sessionId)
+                else -> chatRepository.observeMessagesFrom(sessionId, target.cursor)
             }
         }
         .onEach { rows ->
             // 只有首屏能靠「不足一页」判断到底了；之后的区间条数变多不代表还有更早的。
-            if (sinceCursor.value == null) {
+            // 有界窗口里「还有没有更早/更新」由 MessageJump 的计划决定，不在这里重算。
+            if (jumpWindow.value == null && sinceCursor.value == null) {
                 pagingState.update { MessagePaging.onFirstWindow(it, rows.size) }
             }
         }
@@ -220,6 +257,13 @@ class ChatViewModel @Inject constructor(
         localFlow
     ) { (bundle, settings, ambient), (local, paging) ->
         val details = bundle.details
+        // 已读判定用到的「最后一条可计入的助手消息」一次算好（审计 P2-10）：
+        // 以前每个气泡都扫一遍整个窗口，翻完历史后每帧上万次比较。
+        val lastAssistantAt = ReadReceipt.latestAssistantAt(
+            details.messages
+                .filter { it.role == MessageRole.ASSISTANT && it.status != MessageStatus.ERROR }
+                .map { it.createdAt }
+        )
         ChatUiState(
             session = details.session,
             messages = details.messages,
@@ -243,7 +287,9 @@ class ChatViewModel @Inject constructor(
             showPersonaPicker = local.showPersonaPicker,
             loaded = details.session != null,
             hasMoreOlder = paging.hasMoreOlder,
-            loadingOlder = paging.loadingOlder
+            loadingOlder = paging.loadingOlder,
+            hasMoreNewer = paging.hasMoreNewer,
+            lastAssistantAt = lastAssistantAt
         )
     }
 
@@ -276,6 +322,8 @@ class ChatViewModel @Inject constructor(
 
     init {
         chatRepository.setOpenSession(sessionId)
+        // 从首页点进这个会话时，也把它的那条系统通知撤掉（审计 P2-14：以前只有「从通知进来」才撤）。
+        runCatching { chatNotifier.cancel(context, sessionId) }
         viewModelScope.launch {
             chatRepository.markRead(sessionId)
             initialPrepare()
@@ -293,18 +341,33 @@ class ChatViewModel @Inject constructor(
         val target = jumpTargetId ?: return
         if (target.isBlank()) return
         viewModelScope.launch {
-            val cursor = runCatching {
+            // 一次算出「目标附近的有界窗口」（审计 P2-13）：两次 COUNT + 一页上下文，
+            // 不再从最新一页往回爬（那是 O(页数²) 行读取）。
+            val window = runCatching {
                 chatRepository.cursorContainingMessage(sessionId, target)
             }.getOrNull()
-            if (cursor != null) sinceCursor.value = cursor
+            if (window != null) {
+                // 先写窗口、再写游标：messageFlow 一看到窗口就按有界区间观察，
+                // 不会先按「游标 → 最新」订阅一次（那才是要避免的全量读）。
+                jumpWindow.value = window
+                sinceCursor.value = window.start
+                pagingState.update { MessagePaging.onJumped(it, window) }
+            }
 
-            // 目标可能就在首屏（cursor 为 null），也可能要等窗口挪过去；统一等「窗口里出现它」。
+            // 目标可能就在首屏（window 为 null），也可能要等窗口到；统一等「窗口里出现它」。
             // 5 秒上限是为了它已经被删掉时不要把协程永远挂着（此时停在新的一屏即可）。
             val settled = withTimeoutOrNull(JUMP_TIMEOUT_MILLIS) {
                 uiState.first { state -> state.messages.any { it.id == target } }
             }
             if (settled != null) eventsChannel.send(ChatEvent.FocusMessage(target))
         }
+    }
+
+    /** 定位窗口之外的「更新的消息」：回到最新一屏（清掉游标与有界窗口，恢复实时观察）。 */
+    fun showLatest() {
+        jumpWindow.value = null
+        sinceCursor.value = null
+        pagingState.update { MessagePaging.onLatest(it) }
     }
 
     private suspend fun initialPrepare() {
@@ -326,6 +389,19 @@ class ChatViewModel @Inject constructor(
         pagingState.value = next
         viewModelScope.launch {
             try {
+                // 定位窗口里往前翻：窗口起点前移一页，同时把条数上界加上一页，
+                // 这样窗口「更新的一侧」不动（目标还在，往下看还是原来那段）。
+                val bounded = jumpWindow.value
+                if (bounded != null) {
+                    val page = chatRepository.messagesBefore(sessionId, bounded.start)
+                    pagingState.value = MessagePaging.onOlderPage(pagingState.value, page.size)
+                    val oldest = page.firstOrNull() ?: return@launch
+                    jumpWindow.value = bounded.copy(
+                        start = MessagePaging.Cursor(oldest.createdAt, oldest.id),
+                        rows = bounded.rows + page.size
+                    )
+                    return@launch
+                }
                 val window = uiState.value.messages
                 val cursor = MessagePaging.oldestCursor(window, { it.createdAt }, { it.id })
                 if (cursor == null) {
@@ -611,7 +687,17 @@ class ChatViewModel @Inject constructor(
             ephemeral.update { it.copy(switchingPersona = true, isGenerating = false, streamingText = "") }
             val result = chatRepository.switchToPersona(personaId)
             if (result.success && result.session != null) {
-                ephemeral.update { it.copy(switchingPersona = false, showPersonaPicker = false) }
+                // 切走时草稿里那几张图属于上一段对话：文件留在磁盘上没人会再引用（审计 P2-1）。
+                val abandoned = ephemeral.value.images
+                ephemeral.update {
+                    it.copy(
+                        switchingPersona = false,
+                        showPersonaPicker = false,
+                        images = emptyList(),
+                        draft = ""
+                    )
+                }
+                MediaStorage.deleteAttachments(context, abandoned)
                 eventsChannel.send(ChatEvent.OpenSession(result.session.id))
             } else {
                 ephemeral.update {
@@ -722,6 +808,11 @@ class ChatViewModel @Inject constructor(
     override fun onCleared() {
         streamJob?.cancel()
         memoryJob?.cancel()
+        // 审计 P2-1：选了图但没发出去（返回键 / 切人格 / 从通知跳到别的会话）时，
+        // 文件已经落在 files/media/chat-*.jpg 了。只有「点 ×」「清空」「发送成功」三条路
+        // 会处理它们，退出编辑必须在这里兜一次，否则是纯增量、无上限的磁盘泄漏。
+        // 发送成功时 images 已经被清空，所以这里不会删到已发出的图。
+        MediaStorage.deleteAttachments(context, ephemeral.value.images)
         // compare-and-clear：转场期间新 VM 可能已经打开了下一段会话，旧 VM 不能把它清掉。
         // 无条件 setOpenSession(null) 会让「正在读的会话」被判成没开着：未读 +1 并弹通知。
         chatRepository.clearOpenSession(sessionId)

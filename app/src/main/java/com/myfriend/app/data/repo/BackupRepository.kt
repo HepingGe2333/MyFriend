@@ -43,7 +43,9 @@ import com.myfriend.app.domain.toBackupSettings
 import com.myfriend.app.domain.toEntity
 import com.myfriend.app.network.userError
 import com.myfriend.app.util.MediaStorage
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.myfriend.app.domain.toNewEntity
+import android.content.Context
 import kotlinx.coroutines.flow.first
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -119,7 +121,9 @@ class BackupRepository @Inject constructor(
     private val apiConfigDao: ApiConfigDao,
     private val apiConfigRepository: ApiConfigRepository,
     private val dataEraser: DataEraser,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    /** 头像文件在应用私有目录里，导入时要按名字去查（安全 P2-5）。 */
+    @ApplicationContext private val appContext: Context
 ) {
 
     /** 备份文件建议名字：`myfriend-backup-20261114-0140.json`。 */
@@ -172,6 +176,14 @@ class BackupRepository @Inject constructor(
             settings = settingsRepository.settings.first().toBackupSettings()
         )
 
+        // 空包闸（审计 P2-14）：没有任何人事/记忆/对话时不该导出一个「什么都接不回来」的文件，
+        // 用户会以为备份成功了，换手机才发现里面是空的。
+        if (bundle.personas.isEmpty() && bundle.memories.isEmpty() && bundle.sessions.isEmpty() &&
+            bundle.messages.isEmpty() && bundle.presets.isEmpty() && bundle.proactiveRules.isEmpty()
+        ) {
+            userError(DomainErrorCode.BACKUP_EMPTY)
+        }
+
         val encoded = BackupCodec.encode(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if (BackupCodec.containsSecretField(encoded)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
@@ -211,12 +223,16 @@ class BackupRepository @Inject constructor(
         val warnings = mutableListOf<BackupWarning>()
         var skipped = 0
 
-        // 备份里的头像只是一条路径：换手机之后文件已经不在了。清空这类失效路径，
-        // 别让界面拿到一个「点了没反应」的地址；同时记一条导入提醒。
+        // 备份里的头像只有文件名（安全 P2-5）：按名字看本机 files/avatars 里有没有同名文件。
+        // 有 → 恢复成本机路径；没有（换设备的常态）→ 清空并记一条导入提醒，
+        // 别让界面拿到一个「点了没反应」的地址。
         val personas = bundle.personas.map { backup ->
-            val missing = MediaStorage.isMissingLocalFile(backup.avatarUri)
-            if (missing) warnings += BackupWarning.AvatarMissing(backup.name)
-            if (missing) backup.copy(avatarUri = null).toEntity() else backup.toEntity()
+            val rawAvatar = backup.avatarUri?.trim().orEmpty()
+            val localAvatar = MediaStorage.resolveImportedAvatar(appContext, rawAvatar)
+            if (rawAvatar.isNotEmpty() && localAvatar == null) {
+                warnings += BackupWarning.AvatarMissing(backup.name)
+            }
+            backup.copy(avatarUri = localAvatar).toEntity()
         }
         val memories = bundle.memories.map { it.toEntity() }
         val sessions = bundle.sessions.map { it.toEntity() }
@@ -267,7 +283,8 @@ class BackupRepository @Inject constructor(
         // + 用户自己的头像。其余旧头像文件当孤儿回收（否则「替换」之后旧头像永远留在手机上）。
         val keepAvatarUris = buildSet {
             bundle.personas.forEach { persona ->
-                persona.avatarUri?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+                // 备份里是文件名，本机要留的是解析后的绝对路径（解析不出来就是没有这个文件）。
+                MediaStorage.resolveImportedAvatar(appContext, persona.avatarUri)?.let { add(it) }
             }
             runCatching { settingsRepository.settings.first().userAvatarUri }
                 .getOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }

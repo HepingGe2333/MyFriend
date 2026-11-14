@@ -229,7 +229,11 @@ class BackupCodecTest {
     @Test
     fun personaRoundTripKeepsEveryField() {
         val original = persona()
-        assertEquals(original, original.toBackupPersona().toEntity())
+        // 安全 P2-5 是唯一的例外：头像在备份里只留文件名（不写本机绝对路径），
+        // 所以「往返一致」在这一列上按「同一张图的文件名」断言。
+        val backup = original.toBackupPersona()
+        assertEquals("avatar.png", backup.avatarUri)
+        assertEquals(original, backup.toEntity().copy(avatarUri = original.avatarUri))
     }
 
     @Test

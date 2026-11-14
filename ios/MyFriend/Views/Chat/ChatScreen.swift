@@ -160,11 +160,18 @@ struct ChatScreen: View {
             pendingScroll?.cancel()
             pendingScroll = nil
         }
-        // 从后台回来时重读一遍：这段时间里他可能自己写了点什么（心跳 / 主动唤醒）。
+        // 前台 / 后台：0.11.0 审计 P2-3 —— 轮询只在「页面可见 + App 在前台」时跑。
+        // 回前台时 `setSceneActive(true)` 会先追加一次新消息（心跳/主动唤醒期间写进来的），
+        // 再按 `ChatPollingPolicy` 排下一拍；进后台立刻停，不留在后台每 4 秒查一次库。
         .onChange(of: scenePhase) { phase in
-            if phase == .active {
-                model.enter()
+            switch phase {
+            case .active:
+                model.setSceneActive(true)
                 autoFollow = true
+            case .background, .inactive:
+                model.setSceneActive(false)
+            @unknown default:
+                break
             }
         }
     }

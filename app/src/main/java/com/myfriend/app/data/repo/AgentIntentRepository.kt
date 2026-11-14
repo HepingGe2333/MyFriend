@@ -12,8 +12,10 @@ import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.ProactiveKind
 import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.domain.AgentWindow
-import com.myfriend.app.domain.ProactiveLevel
+import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.domain.SleepPolicy
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import java.time.Instant
@@ -39,7 +41,9 @@ class AgentIntentRepository @Inject constructor(
     private val ruleDao: ProactiveRuleDao,
     private val personaDao: PersonaDao,
     private val sessionDao: ChatSessionDao,
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    /** agent 决策（每日主动上限的兜底换算）：默认进程内，可切 agentd，失败自动回退。 */
+    private val agentCore: AgentCoreClient
 ) {
 
     private companion object {
@@ -310,7 +314,11 @@ class AgentIntentRepository @Inject constructor(
     ): ReachOutCheck {
         val persona = personaDao.getById(personaId) ?: return ReachOutCheck(false, "人格不存在")
         // 带了上限就用调用方算好的那个；没有就按人格的主动程度换算。
-        val limit = limitOverride ?: ProactiveLevel.dailyCap(persona.proactiveLevel)
+        // 不带心情的兜底换算：canReachOut 的调用方要么已经算好上限传进来，
+        // 要么这里只按人格的主动程度换算（心情修正发生在 AgentLoop / 心跳里）。
+        val limit = limitOverride ?: withContext(Dispatchers.IO) {
+            agentCore.proactiveCap(persona.proactiveLevel, null)
+        }
         if (limit <= 0) return ReachOutCheck(false, "他不想主动开口")
         val spoken = spokenToday(personaId, now)
         if (spoken >= limit) return ReachOutCheck(false, "今天已经主动 $spoken 次，够了")

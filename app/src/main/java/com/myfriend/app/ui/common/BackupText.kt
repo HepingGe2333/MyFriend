@@ -99,6 +99,9 @@ object BackupText {
         is BackupFailure.WrongFormat -> context.getString(R.string.backup_fail_wrong_format, failure.format)
         is BackupFailure.NewerFormat ->
             context.getString(R.string.backup_fail_newer_format, failure.version, failure.supported)
+        // 超大文件（安全 P2-3）：给出上限，用户能判断「是不是拿错了文件」。
+        is BackupFailure.TooLarge ->
+            context.getString(R.string.backup_fail_too_large, com.myfriend.app.domain.BackupLimits.megabytes(failure.limitBytes))
     }
 
     private fun section(context: Context, section: BackupSection): String = context.getString(

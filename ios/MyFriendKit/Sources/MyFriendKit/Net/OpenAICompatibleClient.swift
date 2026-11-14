@@ -855,7 +855,13 @@ public final class OpenAICompatibleClient: ChatCompleting {
                 )
             }
         default:
-            return ApiException(statusCode: nil, message: error.localizedDescription)
+            // 0.11.0 审计：不再把系统 `localizedDescription` 当用户文案（那是「The operation
+            // couldn't be completed. (NSURLErrorDomain error -1005.)」这种气人的句子）。
+            // 给一句通用、两段语言都翻好的话：具体错误码在日志里，不在气泡里。
+            return ApiException(
+                statusCode: nil,
+                message: String(localized: "网络连接中断，请检查网络后重试")
+            )
         }
     }
 

@@ -14,6 +14,8 @@ import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaPendingPatchDao
 import com.myfriend.app.data.local.PersonaPendingPatchEntity
 import com.myfriend.app.data.secure.SecretCipher
+import com.myfriend.app.core.AgentCoreClient
+import com.myfriend.app.domain.AgentCore
 import com.myfriend.app.domain.AgentWindow
 import com.myfriend.app.domain.DeferReply
 import com.myfriend.app.domain.DomainErrorCode
@@ -38,6 +40,8 @@ import com.myfriend.app.network.ApiException
 import com.myfriend.app.network.toUserError
 import com.myfriend.app.network.DeepSeekWebTools
 import com.myfriend.app.network.WebSearchHit
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -56,6 +60,8 @@ data class ToolExecution(
  */
 @Singleton
 class ToolExecutor @Inject constructor(
+    /** agent 决策（defer_reply 计划 / 工具参数夹取）：默认进程内，可切 agentd，失败自动回退。 */
+    private val agentCore: AgentCoreClient,
     @ApplicationContext private val appContext: Context,
     private val webTools: DeepSeekWebTools,
     private val apiConfigRepository: ApiConfigRepository,
@@ -176,7 +182,14 @@ class ToolExecutor @Inject constructor(
                 baseUrl = access.baseUrl,
                 apiKey = access.apiKey,
                 query = query.take(128),
-                count = ToolArgClamp.clampCount(invocation.intArgument("count", ToolArgClamp.COUNT_DEFAULT)),
+                // 参数夹取走 agent 决策层：模型给的 50 条在这里变成 12（规则只有 :agentcore 一份）。
+                count = withContext(Dispatchers.IO) {
+                    // 远程模式下这是同步 HTTP；工具执行本来就是后台任务，但显式切 IO 更稳。
+                    agentCore.clampToolArgs(
+                        AgentCore.TOOL_WEB_SEARCH,
+                        mapOf("count" to invocation.intArgument("count", ToolArgClamp.COUNT_DEFAULT))
+                    )["count"] as Int
+                },
                 allowInsecureHttp = access.allowInsecureHttp
             )
             if (hits.isEmpty()) {
@@ -315,9 +328,12 @@ class ToolExecutor @Inject constructor(
             "EVENT" -> MemoryDrawer.EVENT
             else -> MemoryDrawer.USER
         }
-        val importance = ToolArgClamp.clampImportance(
-            invocation.intArgument("importance", ToolArgClamp.IMPORTANCE_DEFAULT)
-        )
+        val importance = withContext(Dispatchers.IO) {
+            agentCore.clampToolArgs(
+                AgentCore.TOOL_REMEMBER,
+                mapOf("importance" to invocation.intArgument("importance", ToolArgClamp.IMPORTANCE_DEFAULT))
+            )["importance"] as Int
+        }
         val candidate = MemoryCandidate(
             content = content,
             drawer = drawer,
@@ -583,11 +599,13 @@ class ToolExecutor @Inject constructor(
         sessionId: String,
         now: Long
     ): ToolExecution {
-        val plan = DeferReply.plan(
-            minutes = invocation.intArgument("minutes", DeferReply.DEFAULT_MINUTES),
-            reason = invocation.argument("reason"),
-            now = now
-        )
+        val plan = withContext(Dispatchers.IO) {
+            agentCore.deferPlan(
+                minutes = invocation.intArgument("minutes", DeferReply.DEFAULT_MINUTES),
+                reason = invocation.argument("reason"),
+                now = now
+            )
+        }
         val window = AgentWindow(
             earliestAt = plan.earliestAt,
             latestAt = plan.latestAt,

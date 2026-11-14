@@ -339,9 +339,10 @@ public final class MemoryConsolidator {
         guard let session = sessions.max(by: {
             ($0.lastMessageAt ?? $0.createdAt) < ($1.lastMessageAt ?? $1.createdAt)
         }) else { return "" }
-        let messages = ((try? stores.messages.bySession(session.id)) ?? [])
-            .filter { $0.role != .system && !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .suffix(Self.maxRecentMessages)
+        // 0.11.0 P2-1：只要最近 8 句，就走窗口查询；不再整段读会话再 filter/suffix。
+        let messages = (try? stores.messages.recentDialogue(
+            sessionId: session.id, limit: Self.maxRecentMessages
+        )) ?? []
         return messages.map { message -> String in
             let who = message.role == .user ? "对方" : "他"
             let body = String(message.content.replacingOccurrences(of: "\n", with: " ").prefix(60))

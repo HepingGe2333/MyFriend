@@ -330,7 +330,9 @@ struct BackupScreen: View {
             let scoped = url.startAccessingSecurityScopedResource()
             defer { if scoped { url.stopAccessingSecurityScopedResource() } }
             do {
-                let text = try String(contentsOf: url, encoding: .utf8)
+                // 0.11.0 安全审计 P2-3：先看文件大小再读文本（上限 64 MB，与 Android 同语义），
+                // 不把几百 MB 的「备份」整份读成 String 再 OOM。
+                let text = try env.backup.readBackupText(at: url)
                 let decoded = env.backup.preview(fileText: text)
                 switch decoded {
                 case .failure(let reason):
@@ -398,7 +400,8 @@ struct BackupScreen: View {
 
     private func clearAll() {
         // 同上：附件目录（聊天图 + 头像）由 `DataReset` 一起清，备份页不再漏这一步。
-        let summary = env.dataReset.clearAll()
+        // 清空之后按当前语言重新播种人格（0.11.0 审计 P2-13）。
+        let summary = env.clearAllData()
         env.reloadSettings()
         banner = MFAlert(title: L("都删掉了"), message: summary.describeAll())
     }

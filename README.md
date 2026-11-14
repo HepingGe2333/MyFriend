@@ -6,17 +6,17 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-823%20Android%20%7C%201016%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#构建与测试)
+[![Tests](https://img.shields.io/badge/tests-909%20Android%20%7C%201098%20iOS%20%7C%2014%20agentcore%20%7C%2020%20agentd-brightgreen.svg)](#构建与测试)
 
 ## 项目状态
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.10.2`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
+| 版本 | `0.11.0`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
 | 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
 | 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 823 条（`:app:testDebugUnitTest`，另有 3 条 instrumented）、iOS 1016 条（`swift test`）、agentd 19 条（`:agentd:test`） |
+| 单元测试 | Android 909 条（`:app:testDebugUnitTest`）、`:agentcore` 14 条、`:agentd` 20 条、iOS 1098 条（`swift test`） |
 | 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
 
 ## 特性概览
@@ -61,6 +61,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | 密钥 | Keystore 加密后写入 DataStore | Keychain（模拟器无 entitlement 时回退到调试兜底） |
 | 最低版本 | Android 8.0（`minSdk 26`）、`targetSdk 35`、JDK 17 | iOS 16.0、Xcode 16+ |
 | 测试 | JUnit4 + kotlinx-coroutines-test；迁移测试在 `androidTest` | XCTest（`ios/MyFriendKit` 本地 SPM 包，macOS 上直接跑） |
+| Agent 决策 | 共享 `:agentcore`（Kotlin/JVM，唯一实现） | 契约对齐的 Swift 实现；可切换远程 `agentd` |
 
 跨端契约（三处必须一致）：
 
@@ -68,7 +69,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 2. **备份**：两端 `BackupCodec` 与 `fixtures/backup/` 的 v1 / v2 样本互读，任何一端改格式而另一端没跟就会红；
 3. **Agent 核心**：`spec/agent-core/cases/*.json` 是与语言无关的用例，Android 与 iOS 各有一条测试读同一批文件，喂给各自的领域实现（睡眠判定、`defer_reply`、主动上限、心跳、记忆衰减、工具参数夹取）。
 
-此外，仓库根目录的 `agentd/` 是一个独立可运行的 agent 核心服务（Kotlin/JVM，仅用 JDK 自带 `com.sun.net.httpserver`，直接编译 Android 的纯领域源码）。它暴露 `GET /health` 与四个核心接口（`sleep-decision` / `defer-plan` / `proactive-cap` / `tool-args`），供本地联调或独立部署；**本轮尚未把两端客户端切到该服务上**。
+决策层只有一份实现：`agentcore/`（`:agentcore`，零第三方依赖）被 `:app` 与 `agentd/` 同时依赖。`agentd/` 在此之上加一层 HTTP（仅 JDK `com.sun.net.httpserver`），暴露 `GET /health` 与四个核心接口（`sleep-decision` / `defer-plan` / `proactive-cap` / `tool-args`）。两端客户端都通过 `AgentCoreClient` 抽象接入：**默认走进程内/本机实现**（零网络），可按构建开关或环境变量切到远程服务，失败自动回退——没有用户可见设置项。
 
 ## 目录结构
 
@@ -87,7 +88,8 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 │   ├── MyFriendKit/        与 UI 无关的 SPM 包（Domain / Data / Net / Backup / Chat / Services），可 swift test
 │   ├── MyFriend/           SwiftUI 层（App / Views / Resources 本地化资源）
 │   └── MyFriend.xcodeproj  部署目标 16.0，无第三方依赖
-├── agentd/                 独立 agent 核心服务（Kotlin/JVM，HTTP，复用 Android 领域源码）
+├── agentcore/              共享 agent 决策层（纯 Kotlin/JVM，零依赖；:app 与 :agentd 都依赖它）
+├── agentd/                 独立 agent 核心服务（Kotlin/JVM，HTTP，基于 :agentcore）
 ├── spec/agent-core/cases/  跨端 agent 契约用例（JSON，两端测试共读）
 ├── harness/                零依赖 Node.js 参考服务（OpenAI 兼容 mock，含工具与心跳分支）
 ├── fixtures/backup/        跨端备份黄金样本（v1 只读样例 + v2 契约）
@@ -150,7 +152,8 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 - **iOS 后台不保证实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；回到前台时按错过的时间补算。
 - **图片与头像不进备份**：备份只保留路径与元数据，换机后需要重新选择图片。
 - **只有 token 统计**：没有金额、额度与拦截，`costMicroUsd` 仅保留列，不展示。
-- **agentd 尚未接线**：只有独立服务与契约用例，Android / iOS 客户端还没有调用它。
+- **远程模式默认关闭**：两端默认走本机决策（零网络）；Android 用 `-PagentCoreRemote=true`、iOS 用 `MYFRIEND_AGENT_CORE=remote` 才会连 `agentd`，失败自动回退本机并记日志。
+- **iOS 仍是第二份实现**：`:agentcore` 是 Kotlin/JVM，iOS 不能用它；两端一致靠 `spec/agent-core` 与 `spec/search` 的共享用例 + 字段名 golden 测试保证（KMP 是后续可选项）。
 - **仓库不含产物**：`.gitignore` 排除了 `dist/`、`docs/screenshots/`、APK / IPA 与构建缓存，因此文档中不放截图，也不提供预编译包。
 - **英文仍有几处中文**：工具痕迹标题、数据层错误与 Kit 层可见文案已本地化（含写入时生成的会话标题与预览），
   但**升级前已落库的中文值**、**模型写出的文本**（心情理由、记忆正文、人格名/简介、自造心情词）与

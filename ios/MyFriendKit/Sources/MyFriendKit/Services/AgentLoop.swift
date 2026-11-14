@@ -64,6 +64,10 @@ public final class AgentLoop {
     /// 出错/没配置时退避得久一点，别把电和额度烧在失败上。
     static let backoffMinutes = 30
 
+    /// 拼处境时带多少句「最近几句」。窗口查询（`MessageStore.recentDialogue`）的上限，
+    /// 不是「读完整段再截」——长会话下每一拍都要付的那点开销就省在这里。
+    static let contextRecentMessages = 6
+
     private let stores: DatabaseStores
     private let settings: SettingsProviding
     private let completion: CompletionClient
@@ -72,6 +76,8 @@ public final class AgentLoop {
     private let ticks: AgentTickStoring
     private let presence: PresenceRepository
     private let mood: MoodRepository
+    /// agent 决策层（0.11.0）：每日主动上限的**基础值**走它（心情修正仍在本机）。
+    private let agentCore: any AgentCoreClient
     private let now: () -> Int64
     private let random: () -> Double
     private let openSessionId: () -> String?
@@ -91,6 +97,7 @@ public final class AgentLoop {
         ticks: AgentTickStoring,
         presence: PresenceRepository,
         mood: MoodRepository,
+        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         random: @escaping () -> Double = { Double.random(in: 0..<1) },
         openSessionId: @escaping () -> String? = { nil },
@@ -107,6 +114,7 @@ public final class AgentLoop {
         self.ticks = ticks
         self.presence = presence
         self.mood = mood
+        self.agentCore = agentCore
         self.now = now
         self.random = random
         self.openSessionId = openSessionId
@@ -162,7 +170,15 @@ public final class AgentLoop {
         let tuning = MoodBehavior.from(moodState, now: at)
         // 每天最多主动几次 = 人格的 `proactiveLevel`（1→1 次 … 5→5 次），再叠心情修正。
         // 1.9 起没有「每天最多主动几次」这个设置了（§一）。
-        let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: persona.proactiveDailyCap, tuning: tuning)
+        // 0.11.0：基础值走 agent 决策层（远程失败回退本机 —— 他自己的循环不该因为内核不可用停摆）。
+        // 心情修正仍在本机（`MoodBehavior.effectiveDailyCap`）：它要 label 驱动的 `MoodTuning`，
+        // 而客户端的 `proactiveCap(level:moodIntensity:)` 只有强度。
+        let baseCap = (try? await agentCore.proactiveCap(
+            level: persona.proactiveLevel, moodIntensity: moodState.intensity
+        )) ?? NativeAgentCoreClient().proactiveCapNow(
+            level: persona.proactiveLevel, moodIntensity: moodState.intensity
+        )
+        let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: tuning)
 
         let contextText = buildContext(
             persona: persona, session: session, now: at, dailyLimit: dailyCap,
@@ -659,9 +675,12 @@ public final class AgentLoop {
         }
 
         if let session {
-            let messages = (try? stores.messages.bySession(session.id)) ?? []
-            let lastUser = messages.last { $0.role == .user && !$0.content.isEmpty }
-            let lastAssistant = messages.last { $0.role == .assistant && !$0.content.isEmpty }
+            // 0.11.0 P2-1：「对方上次说话」「你上次说话」各走一次**精确查询**
+            // （`ORDER BY createdAt DESC, id DESC LIMIT 1`），「最近几句」走窗口查询。
+            // 原来这里是「整段读进内存再 `last {}` / `suffix(6)`」——每一拍心智活动都要
+            // 为几千条消息付一次全量分配。窗口只有 6 条，精确查询只有 1 条。
+            let lastUser = (try? stores.messages.latestUserMessage(sessionId: session.id)) ?? nil
+            let lastAssistant = (try? stores.messages.latestAssistantMessage(sessionId: session.id)) ?? nil
             if let lastUser {
                 text += "对方上次说话：\(ServiceTime.timeAgo(lastUser.createdAt, now: now))，"
                 text += "「\(String(lastUser.content.replacingOccurrences(of: "\n", with: " ").prefix(60)))」\n"
@@ -670,9 +689,9 @@ public final class AgentLoop {
                 text += "你上次说话：\(ServiceTime.timeAgo(lastAssistant.createdAt, now: now))，"
                 text += "「\(String(lastAssistant.content.replacingOccurrences(of: "\n", with: " ").prefix(60)))」\n"
             }
-            let recent = messages
-                .filter { ($0.role == .user || $0.role == .assistant) && !$0.content.isEmpty }
-                .suffix(6)
+            let recent = (try? stores.messages.recentDialogue(
+                sessionId: session.id, limit: Self.contextRecentMessages
+            )) ?? []
             if !recent.isEmpty {
                 text += "最近几句：\n"
                 for message in recent {

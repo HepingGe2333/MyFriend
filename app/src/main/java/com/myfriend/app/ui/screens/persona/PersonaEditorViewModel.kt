@@ -11,12 +11,14 @@ import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.PersonaCardRepository
 import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.domain.AvatarDraftFiles
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaProfile
 import com.myfriend.app.domain.ProactiveLevel
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.PersonaDraft
 import com.myfriend.app.domain.PersonaTrait
+import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
@@ -117,6 +119,7 @@ class PersonaEditorViewModel @Inject constructor(
         viewModelScope.launch {
             if (personaId != null) {
                 val persona = personaRepository.getById(personaId)
+                savedAvatarUri = persona?.avatarUri
                 if (persona == null) {
                     events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_persona_missing)))
                     _state.update { it.copy(loading = false) }
@@ -188,7 +191,38 @@ class PersonaEditorViewModel @Inject constructor(
         _state.update { it.copy(form = transform(it.form)) }
     }
 
-    fun setAvatarUri(uri: String?) = update { it.copy(avatarUri = uri) }
+    /**
+     * 本次编辑过程中新建、但还没保存的头像文件（审计 P2-2）。
+     *
+     * 选图是「立刻落盘」的；不记着它们，取消编辑或连选两张就会在 files/avatars 里留孤儿。
+     * 只有「本次新建的」才进这个集合：数据库里已经保存过的那张由仓库层负责删。
+     */
+    private val pendingAvatarUris = mutableSetOf<String>()
+
+    /** 数据库里当前保存的头像（编辑开始时的那张）；取消编辑时它不能被删。 */
+    private var savedAvatarUri: String? = null
+
+    fun setAvatarUri(uri: String?) {
+        val previous = _state.value.form.avatarUri
+        // 连选两张：前一张如果是本次草稿，立刻删掉（不留中间文件）。
+        val stale = AvatarDraftFiles.onPicked(previous, pendingAvatarUris)
+        stale.forEach { MediaStorage.deleteAvatar(context, it) }
+        pendingAvatarUris.removeAll(stale.toSet())
+        val next = uri?.trim().orEmpty()
+        if (next.isNotEmpty() && next != savedAvatarUri) pendingAvatarUris += next
+        update { it.copy(avatarUri = uri) }
+    }
+
+    /**
+     * 取消编辑 / 返回 / ViewModel 销毁时调用：删掉本次新建但没被保存的头像文件。
+     *
+     * 幂等：保存成功后 pending 已经清空，再调一次什么都不做。
+     */
+    fun discardDraftFiles() {
+        val stale = AvatarDraftFiles.onDiscard(savedAvatarUri, pendingAvatarUris)
+        stale.forEach { MediaStorage.deleteAvatar(context, it) }
+        pendingAvatarUris.removeAll(stale.toSet())
+    }
     fun setAvatarSeed(seed: Int) = update { it.copy(avatarSeed = seed) }
     fun setPrompt(prompt: String) = update { it.copy(prompt = prompt) }
     fun resetPromptToSaved() = update { it.copy(prompt = _state.value.initialPrompt) }
@@ -275,6 +309,12 @@ class PersonaEditorViewModel @Inject constructor(
                 return@launch
             }
             val id = result.getOrThrow()
+            // 保存成功：只有被采纳的那张头像该留下（审计 P2-2：连选两张时前一张是孤儿）。
+            val adoptedAvatar = _state.value.form.avatarUri
+            AvatarDraftFiles.onSaved(adoptedAvatar, pendingAvatarUris)
+                .forEach { MediaStorage.deleteAvatar(context, it) }
+            pendingAvatarUris.clear()
+            savedAvatarUri = adoptedAvatar
             // 只有用户真的动过卡、且卡不是空的才写回：
             // 空卡代表「留空沿用提示词原文」，不能拿占位渲染去覆盖旧设定。
             val card = current.card
@@ -309,6 +349,12 @@ class PersonaEditorViewModel @Inject constructor(
     }
 
     fun getSavedPrompt(): String = _state.value.initialPrompt
+
+    override fun onCleared() {
+        // 兜底（审计 P2-2）：用户直接按返回键 / 进程回收时，界面可能没机会调 discardDraftFiles。
+        discardDraftFiles()
+        super.onCleared()
+    }
 
     private companion object {
         /** 空的睡眠时间 = 不自定义，交给默认 23:30–08:00。 */

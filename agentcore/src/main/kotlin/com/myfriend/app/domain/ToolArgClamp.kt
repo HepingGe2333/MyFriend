@@ -9,8 +9,8 @@ package com.myfriend.app.domain
  *
  * 为什么单独一个文件、而且是纯 Kotlin：
  * - 夹取规则（1–5 / 1–12 / 5–720）是**两端必须一致**的事实，值得单独被契约用例钉住；
- * - Android 的 `ToolExecutor` 与 JVM 服务 `agentd/` 共用这份源码（同包、零依赖），
- *   不必为了一个 `coerceIn` 各自抄一遍、日后改一处漏一处。
+ * - 规则住在 `:agentcore`，Android 的 `ToolExecutor` 与 JVM 服务 `:agentd` 编译的是**同一份
+ *   class**，不必为了一个 `coerceIn` 各自抄一遍、日后改一处漏一处。
  *
  * 注意：这里只做「数值夹取」，不做字符串清洗、不碰 JSON 解析、不碰数据库。
  */

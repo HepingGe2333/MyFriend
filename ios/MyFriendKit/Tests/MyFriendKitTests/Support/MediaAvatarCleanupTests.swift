@@ -85,7 +85,14 @@ final class MediaAvatarCleanupTests: XCTestCase {
             stores: temp.stores, settings: settings, appVersion: "0.10.1-ios",
             avatarFileExists: { _ in withAvatarExists }, now: { self.now }
         )
-        let text = try service.export()
+        let exported = try service.export()
+        // 0.11.0 安全审计 P2-5：导出已经不写本机绝对路径了。这里把 `avatarUri` 塞回去，
+        // 模拟「老版本 / 另一端导出的备份」——导入侧「文件不存在则清空」的逻辑必须照旧兜住它。
+        let text = exported.replacingOccurrences(
+            of: "\"name\":\"\(persona.name)\"",
+            with: "\"name\":\"\(persona.name)\",\"avatarUri\":\"\(avatar.absoluteString)\""
+        )
+        XCTAssertTrue(text.contains(avatar.absoluteString), "夹具要把 avatarUri 写进备份")
         if !withAvatarExists { try? FileManager.default.removeItem(at: avatar) }
         return (text, avatar.absoluteString)
     }

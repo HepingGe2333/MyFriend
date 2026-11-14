@@ -97,6 +97,39 @@ class ChatNotifier @Inject constructor() {
     }
 
     /**
+     * 把某个人的通知全部撤掉（会话通知 + 那条聚合摘要）。
+     *
+     * 审计 P2-14：`cancel` 以前只支持「单个会话」，而删人格 / 关掉常驻这些动作需要
+     * 「这个人的所有通知都消失」。组名由 [NotificationIds.chatGroup] 决定，所以不用扫通知、
+     * 也不怕进程重启过（组名是稳定推导的）。
+     */
+    fun cancelByPersona(context: Context, personaId: String) {
+        val group = NotificationIds.chatGroup(personaId)
+        runCatching {
+            val manager = NotificationManagerCompat.from(context)
+            manager.activeNotifications
+                .filter { it.notification.group == group }
+                .forEach { manager.cancel(it.tag, it.id) }
+            manager.cancel(NotificationIds.chatSummaryId(personaId))
+        }
+    }
+
+    /**
+     * 撤掉**所有**聊天通知（会话 + 摘要）。
+     *
+     * 「删除全部数据」这类动作之后，任何一条残留通知都指向一个已经不存在的会话，
+     * 点开只会进到一个空页面。
+     */
+    fun cancelAll(context: Context) {
+        runCatching {
+            val manager = NotificationManagerCompat.from(context)
+            manager.activeNotifications
+                .filter { it.notification.group?.startsWith(GROUP_PREFIX) == true }
+                .forEach { manager.cancel(it.tag, it.id) }
+        }
+    }
+
+    /**
      * 一个 persona 一条摘要：同一个人开了几个会话时，锁屏/通知栏只折叠成这一条，
      * 而不是把同样的话说三遍。
      */

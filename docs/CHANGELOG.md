@@ -24,6 +24,68 @@
 
 ---
 
+## 0.11.0
+
+大改动：**agent 决策层收敛成一份实现（`:agentcore`），两端客户端都走客户端/服务端分层**；
+同时把三份审计里剩下的 P2 项清完。版本 `0.11.0`，两端构建号 **15**，schema 仍 **v10**、备份仍 **v2**。
+（按维护者要求，本版**不创建发布 tag**。）
+
+### 架构：一份决策实现 + 客户端/服务端分层
+
+- 新增 Gradle 模块 **`:agentcore`**（纯 Kotlin/JVM，零第三方依赖）：把原先散在 `app/.../domain/` 的
+  **40 个纯决策文件**（睡眠判定、`defer_reply`、主动上限、心情、心跳、记忆生命周期、向量、检索、备份文案、
+  擦除清单、错误模型…）移进来，**包名不变**。`:app` 与 `:agentd` 都依赖它。
+- `:agentd` 不再用「`kotlin.srcDir(app/domain)` + 14 条 exclude」的临时手段，**排除列表已删除**；
+  JSON 解析器也收进 `:agentcore`（`com.myfriend.app.core.json`），仓库里只有一份。
+- 新增 `AgentCore` 接口（4 类决策）与 `InProcessAgentCore`（只做整形、全部委托既有纯函数）、
+  `AgentCoreProtocol`（路径与字段名常量，`agentd` 路由表与两端客户端共用）、`AgentCoreCodec`（HTTP 编解码）。
+- **Android 客户端**：`AgentCoreClient`（`InProcess` 默认 / `Remote` 走 OkHttp 调 `agentd`），
+  由构建开关 `-PagentCoreRemote=true`（`BuildConfig.AGENT_CORE_REMOTE`）选择；远程失败**自动回退进程内**并记日志，
+  开关关闭时**不构造远程客户端、零网络请求**。接线：睡眠判定、`defer_reply`、工具参数夹取、每日主动上限（3 处）。
+- **iOS 客户端**：Kit 里的 `AgentCoreClient` 协议 + `Native` / `Remote`（URLSession）/ `Fallback` 三种实现，
+  由 `MYFRIEND_AGENT_CORE`（`native|remote|remote-strict`）或 Info.plist 选择，**默认 native（零请求）**；
+  接线同一组 4 处。模拟器实测 `remote-strict` 下 4 个端点全部 HTTP 200。
+- **没有新增任何用户可见设置项**；决策层仍不持有状态（会话/记忆/用量都在客户端数据库）。
+
+### Android：P2 收尾
+
+- 聊天图片「选了没发出去」、头像「选完取消/连选两张」留下的文件 → 按草稿生命周期回收（含目录守卫）。
+- `createSession` 改成幂等 upsert（撞唯一索引就回读），首页点联系人不会失败。
+- `createdAt` 撞同一毫秒 → `(createdAt, id)` 稳定序；`deleteAfter` 改复合游标，编辑消息不再漏删旧回复。
+- 「已读」判定从每条消息扫窗口（O(n²)）改成一次算好最后一条助手时间（O(1)）。
+- 停止生成只剩工具调用时不再落空洞气泡（三分：不落库 / 状态消息 / 正常）。
+- 多模态上下文加**数量 + 尺寸双限**（最近 2 条、每条 ≤4 张、合计 ≤8 张；单张长边 ≤1024、≤320KB、整体 ≤4MB），发送前重编码。
+- 检索跳转改成**一次查询算窗口**、窗口封顶 240 条（不再「目标→最新」全量爬），并给「回到最新」入口。
+- `hasKey` 改成「能解出非空 Key 才算已配置」，解不出时报明确错误而不是裸奔 401。
+- `web_fetch` 加 scheme/host 校验（拒绝内网字面量与 `file:`/`javascript:`/`data:`）。
+- 备份导入加 **64MB 上限**（按字节流读到上限即中止）；导出**不再写设备绝对路径**（头像只留文件名）；
+  空备份不再导出空文件。
+- 主动页时钟格式跟随语言（英文 12 小时制）；通知支持按人格/全部取消；分页滑窗时「上面还有更早」提示会重算。
+
+### iOS：P2 收尾
+
+- 长会话四处全量读历史 → 窗口查询 + 「最后一条用户/助手消息」精确查询（400 条会话只读 200 行）。
+- 聊天页轮询从「一律 4 秒」改成策略：后台/不可见全停、流式中停消息轮询、发呆 20 秒。
+- 分页窗口不再被新消息挤掉已加载历史（按 id 追加、上限 600 条）。
+- 首页未读/预览用轻量摘要轮询（可见+前台 4 秒，变了才重画）。
+- 通知冷启动深链改为持久化待打开会话（`PendingDeepLink`），端到端实测通过。
+- 内置浏览器加固：`nonPersistent` 数据仓、**默认关闭 JS**、只放行 http/https，危险 scheme cancel、`mailto/tel` 交系统。
+- 「删除全部数据」后按当前语言**重新播种**人格（不会再得到一个空白 App）。
+- 相册选图优先走文件 URL + 按目标尺寸解码（不把原图整张读进内存），超大文件在解码前拒绝。
+- 备份导入加 64MB 上限；导出剥离设备绝对路径；SSE 单行上限对齐 8MB；`isConfigured` 改为真正读 Keychain。
+
+### 测试
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **909 条 / 87 个测试类 / 0 失败** |
+| `:agentcore` | **14 条 / 0 失败** |
+| `:agentd` | **20 条 / 0 失败** |
+| iOS | **1098 条 / 0 失败**（Debug 与 Release 构建均零 Swift 警告） |
+| 构建 | `:app:assembleDebug`、`:app:assembleRelease`、`:agentcore:build`、`:agentd:build`、`:agentd:fatJar`、iOS Debug/Release 全部成功 |
+
+---
+
 ## 0.10.2
 
 小改动：**聊天记录检索**（两端，iOS 此前完全没有）、**三份独立审计后的缺陷修复**（1 个 P0、17 个 P1）、I18N 收尾。
