@@ -1,0 +1,1156 @@
+import PhotosUI
+import SwiftUI
+
+/// 人格编辑页（= 联系人编辑，1.9 §七）。
+///
+/// 1.9 把「他是谁」从一个巨大的提示词框拆成了分节填写：名字 / 一句话介绍 / 性格 /
+/// 喜欢的事 / 行为方式 / 成长经历 / 个人设定，再接三个行为参数（主动程度、记性、
+/// 抽记忆频率）与三条睡眠参数（会不会睡、睡的时间段、唤醒阈值）。
+///
+/// 为什么分节而不是继续写一段话：
+/// - 用户填得动。一段 800 字的提示词对大多数人是一堵墙，「性格：慢热、嘴硬心软」是一次点击；
+/// - 模型用得上。这些字段会被拼成 `## 你是谁` 下的小节（`PromptBuilder.personaSection`），
+///   结构化的小节比一整段话更容易被遵守；
+/// - 值可校验。1–5、3–12、1–20 这些范围由界面自己夹住，不用等备份导入时才发现写歪了。
+///
+/// 提示词全文仍然保留在最下面（可折叠的「高级」）：老用户的那一整段话不会丢。
+struct PersonaEditorScreen: View {
+    let personaId: String?
+
+    @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
+
+    // MARK: 表单状态
+
+    @State private var name = ""
+    @State private var summary = ""
+    /// 头像：从相册选一张（压到 ≤512px 存沙盒），nil = 用名字首字。
+    @State private var avatarUri: String?
+    @State private var avatarSeed = 0
+    /// 载入时的原头像：保存时用它判断「旧图要不要删」。
+    @State private var originalAvatarUri: String?
+    @State private var avatarPick: PhotosPickerItem?
+    @State private var isImportingAvatar = false
+    @State private var prompt = ""
+    @State private var modelOverride = ""
+    @State private var traits: [String] = []
+    @State private var likes: [String] = []
+    @State private var behaviors: [String] = []
+    @State private var backstory = ""
+    @State private var quirks = ""
+    @State private var proactiveLevel = PersonaFieldLimits.proactiveLevelDefault
+    @State private var memoryRetention = PersonaFieldLimits.memoryRetentionDefault
+    @State private var extractionEvery = PersonaFieldLimits.extractionEveryDefault
+    @State private var sleepEnabled = true
+    @State private var dndOnSleep = false
+    @State private var wakeThreshold = PersonaFieldLimits.wakeThresholdDefault
+    @State private var sleepTime = PersonaEditorScreen.time(hour: 23, minute: 30)
+    @State private var wakeTime = PersonaEditorScreen.time(hour: 8, minute: 0)
+    @State private var promptExpanded = false
+    // 结构化人设卡：`card` 是编辑中的卡，`initialCard` 是载入时的那份——
+    // 只有「真的动过 + 卡非空」才写库，空卡继续沿用手写提示词（与 Android 编辑页同一条规则）。
+    @State private var card = PersonaCard()
+    @State private var initialCard = PersonaCard()
+    @State private var cardExpanded = false
+    @State private var loaded = false
+    @State private var banner: MFAlert?
+
+    private var isNew: Bool { personaId == nil }
+    private var accent: Color { Color(argb: env.currentSettings.accentColor) }
+    private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedPrompt: String { prompt.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                identityCard
+                characterCard
+                storyCard
+                personaCardCard
+                behaviorCard
+                sleepCard
+                advancedCard
+            }
+            .padding(.horizontal, MFTheme.gutter)
+            .padding(.vertical, 16)
+        }
+        .background(MFTheme.canvas(scheme).ignoresSafeArea())
+        .navigationTitle(isNew ? "新联系人" : "编辑联系人")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("保存") { save() }
+                    .fontWeight(.medium)
+                    .disabled(!canSave)
+            }
+        }
+        .onAppear(perform: loadIfNeeded)
+        .mfAlert($banner)
+    }
+
+    // MARK: - 名字 / 一句话介绍
+
+    private var identityCard: some View {
+        MFCard {
+            avatarRow
+
+            MFRowDivider(leadingInset: 0)
+
+            FieldCaption("名字", hint: "他会怎么称呼自己。")
+            TextField("比如：林深", text: $name)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+                .padding(.bottom, 14)
+
+            FieldCaption("一句话介绍", hint: "给别人看的一句话，也能帮他记住自己是谁。")
+            TextField("比如：一个温柔而安静的朋友", text: $summary)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+        }
+    }
+
+    // MARK: - 头像
+
+    /// 头像这一行：预览 + 「从相册选一张 / 换一张 / 恢复默认」。
+    ///
+    /// 为什么不做成一整页的「头像设置」：换个头像就是一次选择，不该多一层页面。
+    /// 压缩（长边 ≤ 512、JPEG）与落盘都在 `ImageImport` 里，这里只负责把 uri 记进表单。
+    private var avatarRow: some View {
+        HStack(alignment: .top, spacing: 14) {
+            MFAvatar(
+                personaName: trimmedName.isEmpty ? "他" : trimmedName,
+                avatarUri: avatarUri,
+                avatarSeed: avatarSeed == 0 ? Self.avatarSeed(for: trimmedName.isEmpty ? "他" : trimmedName) : avatarSeed,
+                size: 62
+            )
+            .overlay(alignment: .bottomTrailing) {
+                if isImportingAvatar {
+                    ProgressView()
+                        .scaleEffect(0.6)
+                        .frame(width: 22, height: 22)
+                        .background(.thinMaterial, in: Circle())
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("头像")
+                    .font(.system(.body, design: .serif))
+                Text(avatarUri == nil
+                     ? "没选就先用名字的首字。"
+                     : "这张图只存在这台手机上，不跟着备份走。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 14) {
+                    PhotosPicker(selection: $avatarPick, matching: .images, photoLibrary: .shared()) {
+                        Text(avatarUri == nil ? "从相册选一张" : "换一张")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(accent)
+                    }
+                    .disabled(isImportingAvatar)
+                    .onChange(of: avatarPick) { item in
+                        importAvatar(item)
+                    }
+
+                    if avatarUri != nil {
+                        Button("恢复默认") { removeAvatar() }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 10)
+    }
+
+    private func importAvatar(_ item: PhotosPickerItem?) {
+        guard let item else { return }
+        avatarPick = nil
+        isImportingAvatar = true
+        Task { @MainActor in
+            let outcome = await ImageImport.importOne(item, kind: .avatar)
+            isImportingAvatar = false
+            switch outcome {
+            case .success(let attachment):
+                avatarUri = attachment.uri
+            case .failure(let message):
+                banner = MFAlert(title: "这张图用不了", message: message)
+            }
+        }
+    }
+
+    private func removeAvatar() {
+        if avatarUri != nil, avatarUri != originalAvatarUri {
+            // 刚选的新图还没落库，直接删掉，别留垃圾文件。
+            MediaStorage.shared.deleteFileIfOwned(avatarUri)
+        }
+        avatarUri = nil
+    }
+
+    // MARK: - 性格 / 喜欢 / 习惯
+
+    private var characterCard: some View {
+        MFCard {
+            TagEditor(
+                title: "性格",
+                hint: "他是怎样的人。点一个加上，也可以自己写。最多 \(PersonaFieldLimits.maxTraits) 个。",
+                suggestions: Self.traitSuggestions,
+                limit: PersonaFieldLimits.maxTraits,
+                values: $traits,
+                accent: accent
+            )
+
+            MFRowDivider(leadingInset: 0)
+
+            TagEditor(
+                title: "喜欢的事",
+                hint: "他乐意做的事、爱聊的话题。最多 \(PersonaFieldLimits.maxLikes) 个。",
+                suggestions: Self.likeSuggestions,
+                limit: PersonaFieldLimits.maxLikes,
+                values: $likes,
+                accent: accent
+            )
+
+            MFRowDivider(leadingInset: 0)
+
+            TagEditor(
+                title: "行为方式",
+                hint: "他习惯怎么相处，比如「先听完再给建议」。最多 \(PersonaFieldLimits.maxBehaviors) 个。",
+                suggestions: Self.behaviorSuggestions,
+                limit: PersonaFieldLimits.maxBehaviors,
+                values: $behaviors,
+                accent: accent
+            )
+        }
+    }
+
+    // MARK: - 成长经历 / 个人设定
+
+    private var storyCard: some View {
+        MFCard {
+            FieldCaption("成长经历", hint: "他过去发生过什么。≤ \(PersonaFieldLimits.backstoryMax) 字。")
+            TextEditor(text: $backstory)
+                .font(.system(.body, design: .serif))
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 110)
+                .padding(8)
+                .background(fieldBackground)
+                .overlay(alignment: .bottomTrailing) {
+                    Text("\(backstory.count)/\(PersonaFieldLimits.backstoryMax)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(6)
+                }
+                .padding(.bottom, 14)
+
+            FieldCaption("个人设定", hint: "称呼、口头禅、忌讳这些细节。≤ \(PersonaFieldLimits.quirksMax) 字。")
+            TextEditor(text: $quirks)
+                .font(.system(.body, design: .serif))
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 90)
+                .padding(8)
+                .background(fieldBackground)
+        }
+    }
+
+    // MARK: - 人设卡（结构化）
+
+    /// 结构化人设卡：身份 / 说话方式 / 性格 / 在意的事 / 边界 / 生活 / 你们之间。
+    ///
+    /// 为什么和上面的「性格 / 喜欢 / 行为方式」并存：上面那三组是 1.9 的**五段人设**（会拼成
+    /// `## 你是谁` 的小节，永远追加在提示词后面）；人设卡更细，而且会**替掉提示词全文**——
+    /// 系统提示里只留一条短策略，正文按预算进对话。两边都填时以卡为准，卡空着就继续用手写提示词。
+    private var personaCardCard: some View {
+        MFCard {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { cardExpanded.toggle() }
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("人设卡")
+                            .font(.system(.body, design: .serif))
+                        Text(card.isEmpty
+                             ? "可选：空着就继续用提示词全文"
+                             : "身份 · 说话方式 · 性格 · 在意的事 · 边界 · 生活 · 你们之间")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: cardExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if cardExpanded {
+                MFRowDivider(leadingInset: 0)
+                cardEditor
+            }
+        }
+    }
+
+    private var cardEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            MFNote(text: "填了卡，他的人格就按这些字段来：系统提示里只放一条短策略，正文按预算进对话。保存时提示词全文会被卡的镜像替换；卡空着就继续用你手写的那段。")
+                .padding(.top, 10)
+
+            cardGroupLabel("身份")
+            cardIdentityFields
+
+            cardGroupLabel("说话方式")
+            cardVoiceFields
+
+            cardGroupLabel("性格标签")
+            cardTraitsEditor
+
+            cardGroupLabel("在意的事")
+            TagEditor(
+                title: "他在意的事",
+                hint: "他看重什么、会为什么认真。最多 \(PersonaCardLimits.maxListItems) 条。",
+                suggestions: [],
+                limit: PersonaCardLimits.maxListItems,
+                values: $card.values,
+                accent: accent
+            )
+
+            cardGroupLabel("边界")
+            TagEditor(
+                title: "他不会做的事",
+                hint: "明确的边界，比如「不假装记得没说过的事」。最多 \(PersonaCardLimits.maxListItems) 条。",
+                suggestions: [],
+                limit: PersonaCardLimits.maxListItems,
+                values: $card.boundaries,
+                accent: accent
+            )
+
+            cardGroupLabel("生活")
+            cardLifeFields
+
+            cardGroupLabel("你们之间")
+            cardField(
+                "他对你的认知与变化",
+                hint: "他怎么理解你、这段关系里发生过什么。≤ \(PersonaCardLimits.bondMax) 字。",
+                text: cardText(\.bond, limit: PersonaCardLimits.bondMax),
+                minHeight: 110
+            )
+        }
+        .padding(.top, 12)
+    }
+
+    // 小段拆开写：一个巨大的 `VStack` 会让 SwiftUI 的类型检查慢到离谱。
+    private var cardIdentityFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cardField(
+                "名字",
+                hint: "人设卡里他自己的名字。留空时用「身份 / 职业」当称呼。",
+                placeholder: "比如：林岸",
+                text: cardText(\.identity.name, limit: PersonaCardLimits.nameMax)
+            )
+            cardField(
+                "年龄感",
+                placeholder: "比如：二十多岁",
+                text: cardText(\.identity.age, limit: PersonaCardLimits.nameMax)
+            )
+            cardField(
+                "身份 / 职业",
+                placeholder: "比如：开旧书店的人",
+                text: cardText(\.identity.role, limit: PersonaCardLimits.roleMax)
+            )
+            cardField(
+                "和你的关系",
+                placeholder: "比如：认识很多年的朋友",
+                text: cardText(\.identity.relation, limit: PersonaCardLimits.nameMax)
+            )
+        }
+    }
+
+    private var cardVoiceFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cardField(
+                "语速",
+                placeholder: "比如：慢，偶尔停下来想想",
+                text: cardText(\.voice.pace, limit: PersonaCardLimits.fieldMax)
+            )
+            cardField(
+                "句子长短",
+                placeholder: "比如：短句，一次说一两句",
+                text: cardText(\.voice.sentence, limit: PersonaCardLimits.fieldMax)
+            )
+            TagEditor(
+                title: "口头禅",
+                hint: "他常挂在嘴边的短句。最多 \(PersonaCardLimits.maxListItems) 条。",
+                suggestions: [],
+                limit: PersonaCardLimits.maxListItems,
+                values: $card.voice.catchphrases,
+                accent: accent
+            )
+            cardField(
+                "怎么称呼你",
+                placeholder: "比如：喊你名字的后两个字",
+                text: cardText(\.voice.address, limit: PersonaCardLimits.nameMax)
+            )
+            cardField(
+                "语气小习惯",
+                placeholder: "比如：少用感叹号，爱用省略号",
+                text: cardText(\.voice.quirks, limit: PersonaCardLimits.fieldMax)
+            )
+        }
+    }
+
+    private var cardLifeFields: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            cardField(
+                "作息",
+                placeholder: "比如：凌晨两点睡，中午起",
+                text: cardText(\.life.schedule, limit: PersonaCardLimits.fieldMax)
+            )
+            cardField(
+                "现在在",
+                placeholder: "比如：把店里的旧书重新分类",
+                text: cardText(\.life.doing, limit: PersonaCardLimits.fieldMax)
+            )
+            cardField(
+                "最近在意",
+                placeholder: "比如：你最近睡得好不好",
+                text: cardText(\.life.caresAbout, limit: PersonaCardLimits.fieldMax)
+            )
+        }
+    }
+
+    private var cardTraitsEditor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("他有哪些性格，以及有多强（0–1）")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text("\(card.traits.count)/\(PersonaCardLimits.maxTraits)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if card.traits.isEmpty {
+                Text("还没有标签。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(card.traits.indices, id: \.self) { index in
+                cardTraitRow(index)
+            }
+            if card.traits.count < PersonaCardLimits.maxTraits {
+                Button {
+                    card.traits.append(PersonaTrait())
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("添加一条")
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(accent)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func cardTraitRow(_ index: Int) -> some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("比如：嘴硬心软", text: cardTraitNameBinding(index))
+                    .textFieldStyle(.plain)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(fieldBackground)
+                Button {
+                    if card.traits.indices.contains(index) { card.traits.remove(at: index) }
+                } label: {
+                    Image(systemName: "minus.circle")
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("删掉这个性格"))
+            }
+            HStack(spacing: 8) {
+                Text("强度")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Slider(value: cardTraitStrengthBinding(index), in: 0...1)
+                    .tint(accent)
+                Text(cardTraitStrengthText(index))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 26, alignment: .trailing)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(Color.secondary.opacity(0.06))
+        )
+    }
+
+    private func cardGroupLabel(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .padding(.top, 6)
+    }
+
+    /// 人设卡里某个文本字段的绑定：编辑时顺手把长度夹到上限（上限与 `PersonaCardLimits` 一致）。
+    private func cardText(_ keyPath: WritableKeyPath<PersonaCard, String>, limit: Int) -> Binding<String> {
+        Binding(
+            get: { card[keyPath: keyPath] },
+            set: { card[keyPath: keyPath] = String($0.prefix(limit)) }
+        )
+    }
+
+    @ViewBuilder
+    private func cardField(
+        _ title: String,
+        hint: String = "",
+        placeholder: String = "",
+        text: Binding<String>,
+        limit: Int = PersonaCardLimits.fieldMax,
+        minHeight: CGFloat = 0
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(title)
+                    .font(.footnote.weight(.medium))
+                Spacer(minLength: 4)
+                Text("\(text.wrappedValue.count)/\(limit)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            if !hint.isEmpty {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if minHeight > 0 {
+                TextEditor(text: text)
+                    .font(.system(.body, design: .serif))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: minHeight)
+                    .padding(8)
+                    .background(fieldBackground)
+            } else {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.plain)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(fieldBackground)
+            }
+        }
+    }
+
+    private func cardTraitNameBinding(_ index: Int) -> Binding<String> {
+        Binding(
+            get: { card.traits.indices.contains(index) ? card.traits[index].name : "" },
+            set: { value in
+                guard card.traits.indices.contains(index) else { return }
+                card.traits[index].name = String(value.prefix(PersonaCardLimits.nameMax))
+            }
+        )
+    }
+
+    private func cardTraitStrengthBinding(_ index: Int) -> Binding<Double> {
+        Binding(
+            get: { card.traits.indices.contains(index) ? Double(card.traits[index].strength) : 0.5 },
+            set: { value in
+                guard card.traits.indices.contains(index) else { return }
+                card.traits[index].strength = min(max(Float(value), 0), 1)
+            }
+        )
+    }
+
+    private func cardTraitStrengthText(_ index: Int) -> String {
+        let strength = card.traits.indices.contains(index) ? card.traits[index].strength : 0.5
+        return String(format: "%.1f", strength)
+    }
+
+    // MARK: - 行为参数
+
+    private var behaviorCard: some View {
+        MFCard {
+            LevelSliderRow(
+                title: "主动程度",
+                hint: Self.proactiveLevelText(proactiveLevel),
+                value: Binding(
+                    get: { Double(proactiveLevel) },
+                    set: { proactiveLevel = Int($0.rounded()) }
+                ),
+                range: 1...5,
+                step: 1,
+                accent: accent
+            )
+
+            MFRowDivider(leadingInset: 0)
+
+            LevelSliderRow(
+                title: "记性",
+                hint: Self.memoryRetentionText(memoryRetention),
+                value: Binding(
+                    get: { Double(memoryRetention) },
+                    set: { memoryRetention = Int($0.rounded()) }
+                ),
+                range: 1...5,
+                step: 1,
+                accent: accent
+            )
+
+            MFRowDivider(leadingInset: 0)
+
+            LevelSliderRow(
+                title: "多久记一次",
+                hint: "每聊 \(extractionEvery) 条消息，他会在后台回头看一眼，把值得记的事记下来。",
+                value: Binding(
+                    get: { Double(extractionEvery) },
+                    set: { extractionEvery = Int($0.rounded()) }
+                ),
+                range: 3...12,
+                step: 1,
+                accent: accent
+            )
+        }
+    }
+
+    // MARK: - 睡眠
+
+    private var sleepCard: some View {
+        MFCard {
+            Toggle(isOn: $sleepEnabled) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("他会自己睡觉")
+                        .font(.system(.body, design: .serif))
+                    Text(sleepEnabled
+                         ? "到点就去睡。睡着时你发消息他多半不回，除非连着叫醒他几次。"
+                         : "他不睡，任何时间都会回你。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .tint(accent)
+
+            if sleepEnabled {
+                MFRowDivider(leadingInset: 0)
+
+                HStack {
+                    Text("几点睡")
+                        .font(.system(.body, design: .serif))
+                    Spacer()
+                    DatePicker("", selection: $sleepTime, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                }
+                .padding(.vertical, 8)
+
+                MFRowDivider(leadingInset: 0)
+
+                HStack {
+                    Text("几点醒")
+                        .font(.system(.body, design: .serif))
+                    Spacer()
+                    DatePicker("", selection: $wakeTime, displayedComponents: .hourAndMinute)
+                        .labelsHidden()
+                        .environment(\.locale, Locale(identifier: "zh_CN"))
+                }
+                .padding(.vertical, 8)
+
+                MFRowDivider(leadingInset: 0)
+
+                LevelSliderRow(
+                    title: "叫醒他要几条消息",
+                    hint: "睡着的时候，你连着发满 \(wakeThreshold) 条，他会被叫醒（并有点不好意思）。1–20。",
+                    value: Binding(
+                        get: { Double(wakeThreshold) },
+                        set: { wakeThreshold = Int($0.rounded()) }
+                    ),
+                    range: 1...20,
+                    step: 1,
+                    accent: accent
+                )
+
+                // 免打扰是**他自己**的决定（§6.1）：模型可以在对话/独处时打开或关掉，
+                // 用户不能直接改。所以这里只读地显示一句现状，不给开关。
+                HStack(spacing: 8) {
+                    Image(systemName: dndOnSleep ? "moon.zzz.fill" : "moon.zzz")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Text(dndOnSleep
+                         ? "睡前免打扰：开着（他自己选的）。睡着时你发什么都叫不醒他，消息留到醒了再看。"
+                         : "睡前免打扰：关着（他自己选的）。睡着时连着发几条能把他叫醒。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 10)
+
+                MFNote(text: "现在：\(clock(sleepMinutes)) 睡 → \(clock(wakeMinutes)) 醒")
+            }
+        }
+    }
+
+    // MARK: - 高级（提示词全文 + 模型）
+
+    private var advancedCard: some View {
+        MFCard {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { promptExpanded.toggle() }
+            } label: {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("提示词全文（高级）")
+                            .font(.system(.body, design: .serif))
+                        Text("上面那些字段会被拼成小节，接在这一段后面。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: promptExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if promptExpanded {
+                MFRowDivider(leadingInset: 0)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("他是谁、怎么说话、什么不做。原文会完整保存。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(prompt.count) 字")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.top, 8)
+                .padding(.bottom, 8)
+
+                TextEditor(text: $prompt)
+                    .font(.system(.body, design: .serif))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 200)
+                    .padding(8)
+                    .background(fieldBackground)
+
+                MFRowDivider(leadingInset: 0)
+
+                FieldCaption("模型覆盖（可留空）", hint: "留空就用 API 配置里的模型；填了只对这个人生效。")
+                TextField(modelHint, text: $modelOverride)
+                    .textFieldStyle(.plain)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(fieldBackground)
+
+                MFNote(text: "改完之后版本号会 +1，方便你在备份里分辨是哪一版的他。")
+            }
+        }
+    }
+
+    private var modelHint: String {
+        if let model = env.activeApiConfig?.model, !model.isEmpty {
+            return "留空使用 \(model)"
+        }
+        return "留空使用 API 配置中的模型"
+    }
+
+    // MARK: - 载入与保存
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        loaded = true
+        guard let personaId, let persona = (try? env.stores.personas.byId(personaId)) ?? nil else {
+            return
+        }
+        name = persona.name
+        summary = persona.description
+        avatarUri = persona.avatarUri
+        originalAvatarUri = persona.avatarUri
+        avatarSeed = persona.avatarSeed
+        prompt = persona.prompt
+        modelOverride = persona.modelOverride ?? ""
+        traits = persona.traits
+        likes = persona.likes
+        behaviors = persona.behaviors
+        backstory = persona.backstory ?? ""
+        quirks = persona.quirks ?? ""
+        proactiveLevel = persona.proactiveLevel
+        memoryRetention = persona.memoryRetention
+        extractionEvery = persona.extractionEvery
+        sleepEnabled = persona.sleepEnabled
+        dndOnSleep = persona.dndOnSleep
+        wakeThreshold = persona.wakeThreshold
+        sleepTime = Self.time(fromMinutes: SleepSchedule.sleepMinutes(persona))
+        wakeTime = Self.time(fromMinutes: SleepSchedule.wakeMinutes(persona))
+        // 人设卡：有卡读卡，没卡从旧提示词里临时拆一份（只读，不写库，与 Android 一致）。
+        let loadedCard = env.personaCards.readCard(persona)
+        card = loadedCard
+        initialCard = loadedCard
+        cardExpanded = !loadedCard.isEmpty
+        // 提示词只有真写过才展开：默认收起，别让一屏全是字号很小的正文。
+        promptExpanded = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isNew == false
+    }
+
+    /// 只要求名字：其余字段都可以空着（§三「老数据不填也能用」）。
+    private var canSave: Bool { !trimmedName.isEmpty }
+
+    private func save() {
+        let now = DomainClock.nowMillis
+        let existing: PersonaEntity? = personaId.flatMap { try? env.stores.personas.byId($0) } ?? nil
+        var entity = existing ?? PersonaEntity(
+            id: UUID().uuidString,
+            name: trimmedName,
+            createdAt: now,
+            updatedAt: now
+        )
+        let promptChanged = entity.prompt != prompt
+        entity.name = trimmedName
+        entity.description = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        entity.avatarUri = avatarUri
+        entity.prompt = prompt
+        entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? nil
+            : modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
+        entity.traits = PersonaTags.normalize(traits, limit: PersonaFieldLimits.maxTraits)
+        entity.likes = PersonaTags.normalize(likes, limit: PersonaFieldLimits.maxLikes)
+        entity.behaviors = PersonaTags.normalize(behaviors, limit: PersonaFieldLimits.maxBehaviors)
+        entity.backstory = PersonaEntity.clean(backstory, limit: PersonaFieldLimits.backstoryMax)
+        entity.quirks = PersonaEntity.clean(quirks, limit: PersonaFieldLimits.quirksMax)
+        entity.proactiveLevel = PersonaFieldLimits.clampLevel(proactiveLevel)
+        entity.memoryRetention = PersonaFieldLimits.clampLevel(memoryRetention)
+        entity.extractionEvery = PersonaFieldLimits.clampExtractionEvery(extractionEvery)
+        entity.sleepEnabled = sleepEnabled
+        entity.dndOnSleep = dndOnSleep
+        entity.wakeThreshold = PersonaFieldLimits.clampWakeThreshold(wakeThreshold)
+        if sleepEnabled {
+            entity.quietSleepMinutes = sleepMinutes
+            entity.quietWakeMinutes = wakeMinutes
+        }
+        entity.updatedAt = now
+        if existing == nil {
+            entity.version = max(entity.version, 1)
+            entity.avatarSeed = Self.avatarSeed(for: trimmedName)
+        } else if promptChanged {
+            // 提示词变了才算新的一版；只改性格或作息不该把版本号顶上去。
+            entity.version = max(entity.version, 1) + 1
+        }
+
+        do {
+            try env.stores.personas.upsert(entity)
+            // 结构化人设卡：只有「用户真的动过、且卡非空」才写库。
+            // 空卡代表「我还是想用上面手写的那段提示词」，不能拿空镜像把它抹掉（Android 同一条规则）。
+            if card != initialCard && !card.isEmpty {
+                var finalCard = card
+                // 卡里没填名字时用上面填的人格名——否则系统提示里的稳定策略会退化成通用兜底。
+                if finalCard.identity.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    finalCard.identity.name = trimmedName
+                }
+                // 走 saveCardFields：它会在落库前按卡片上限收敛（去空项、夹强度、截长度），
+                // 并把 prompt 重写成卡的镜像。卡没变化时它什么也不写。
+                if case .failure(let error) = env.personaCards.saveCardFields(
+                    personaId: entity.id,
+                    identity: finalCard.identity,
+                    voice: finalCard.voice,
+                    traits: finalCard.traits,
+                    values: finalCard.values,
+                    boundaries: finalCard.boundaries,
+                    life: finalCard.life,
+                    bond: finalCard.bond,
+                    reason: "编辑人设卡"
+                ) {
+                    banner = MFAlert(
+                        title: "人设卡没写进去",
+                        message: "人格已经保存了，但结构化人设卡写入失败：\(error.localizedDescription)"
+                    )
+                    return
+                }
+            }
+            // 换了头像：把旧文件删掉（只删我们自己目录里的）。
+            if originalAvatarUri != avatarUri {
+                MediaStorage.shared.deleteFileIfOwned(originalAvatarUri)
+                originalAvatarUri = avatarUri
+            }
+            // 一人一段（§二）：创建人格的同时就把他那一段会话建好，
+            // 否则首页点进去还要再补一次，补失败就成了「点了没反应」。
+            _ = env.session(forPersona: entity.id)
+            if env.currentSettings.activePersonaId == nil {
+                env.updateSettings { $0.activePersonaId = entity.id }
+            }
+            dismiss()
+        } catch {
+            banner = MFAlert(title: "没能保存", message: error.localizedDescription)
+        }
+    }
+
+    // MARK: - 工具
+
+    private var fieldBackground: some View {
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(Color.secondary.opacity(0.08))
+    }
+
+    private var sleepMinutes: Int { Self.minutesOfDay(sleepTime) }
+    private var wakeMinutes: Int { Self.minutesOfDay(wakeTime) }
+
+    private func clock(_ minutes: Int) -> String {
+        ServiceTime.clockText(minutes)
+    }
+
+    private static func proactiveLevelText(_ level: Int) -> String {
+        switch min(max(level, 1), 5) {
+        case 1: return "很少主动。他会等你来找他。"
+        case 2: return "偶尔主动，大部分时候安静待着。"
+        case 3: return "普通朋友的分寸：想起你的时候会来找你。"
+        case 4: return "比较黏，一天会主动找你几次。"
+        default: return "很黏。他几乎一有空就想跟你说话。"
+        }
+    }
+
+    private static func memoryRetentionText(_ level: Int) -> String {
+        switch min(max(level, 1), 5) {
+        case 1: return "忘得快：很久以前的事会慢慢淡掉。"
+        case 2: return "记性一般。"
+        case 3: return "正常记性：重要的事记得住。"
+        case 4: return "记性好，很久以前提过的事都还在。"
+        default: return "什么都记得，包括你随口说过的话。"
+        }
+    }
+
+    private static let traitSuggestions = [
+        "慢热", "嘴硬心软", "话少", "爱开玩笑", "安静", "容易吃醋",
+        "理性", "爱撒娇", "倔", "温柔", "怕冷", "好奇心重"
+    ]
+    private static let likeSuggestions = [
+        "夜里散步", "旧书", "下雨天", "咖啡", "猫", "听歌", "做饭", "看球"
+    ]
+    private static let behaviorSuggestions = [
+        "先听完再给建议", "不主动打断", "有话直说", "拐弯抹角", "先道歉再讲道理", "只在深夜说真心话"
+    ]
+
+    /// 头像底色的种子：与名字绑定、与进程无关（`hashValue` 每次启动都会变，不能用）。
+    private static func avatarSeed(for name: String) -> Int {
+        let sum = name.unicodeScalars.reduce(0) { $0 &+ Int($1.value) }
+        return sum == 0 ? 1 : sum
+    }
+
+    private static func minutesOfDay(_ date: Date) -> Int {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: date)
+        return (components.hour ?? 0) * 60 + (components.minute ?? 0)
+    }
+
+    fileprivate static func time(hour: Int, minute: Int) -> Date {
+        Calendar.current.date(
+            bySettingHour: hour,
+            minute: minute,
+            second: 0,
+            of: Date()
+        ) ?? Date()
+    }
+
+    fileprivate static func time(fromMinutes minutes: Int) -> Date {
+        let wrapped = ((minutes % 1440) + 1440) % 1440
+        return time(hour: wrapped / 60, minute: wrapped % 60)
+    }
+}
+
+// MARK: - 表单小部件
+
+/// 一个可多选的标签编辑器：点建议词加上/去掉，也可以自己写一个。
+///
+/// 为什么不用系统 `Menu` / `Picker`：这些是「多个并列的小词」，用一排可点的胶囊
+/// 比展开一个列表更直观；用户还能看到「我现在一共有几个」。
+private struct TagEditor: View {
+    let title: String
+    let hint: String
+    let suggestions: [String]
+    let limit: Int
+    @Binding var values: [String]
+    let accent: Color
+
+    @State private var draft = ""
+    @FocusState private var draftFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                Text("\(values.count)/\(limit)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !values.isEmpty {
+                FlowingTags(values: values, accent: accent) { tag in
+                    values.removeAll { $0 == tag }
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(availableSuggestions, id: \.self) { suggestion in
+                        Button {
+                            add(suggestion)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text(suggestion)
+                                    .font(.caption)
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
+            HStack(spacing: 8) {
+                TextField("自己写一个", text: $draft)
+                    .font(.footnote)
+                    .focused($draftFocused)
+                    .onSubmit { add(draft) }
+                    .padding(.vertical, 7)
+                    .padding(.horizontal, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(Color.secondary.opacity(0.08))
+                    )
+                Button("加上") { add(draft) }
+                    .font(.footnote)
+                    .tint(accent)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || values.count >= limit)
+            }
+        }
+        .padding(.vertical, 12)
+    }
+
+    private var availableSuggestions: [String] {
+        suggestions.filter { !values.contains($0) }
+    }
+
+    private func add(_ raw: String) {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, values.count < limit, !values.contains(trimmed) else {
+            draft = ""
+            return
+        }
+        values.append(trimmed)
+        draft = ""
+    }
+}
+
+/// 已选标签的换行排列（iOS 16 没有 FlowLayout，用固定列数的 LazyVGrid 近似）。
+private struct FlowingTags: View {
+    let values: [String]
+    let accent: Color
+    let onRemove: (String) -> Void
+
+    private let columns = [GridItem(.adaptive(minimum: 72), spacing: 8)]
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+            ForEach(values, id: \.self) { tag in
+                Button {
+                    onRemove(tag)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(tag)
+                            .font(.caption)
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundStyle(accent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(accent.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text("去掉 \(tag)"))
+            }
+        }
+    }
+}
+
+/// 「主动程度 / 记性 / 唤醒阈值」共用的一行：标题 + 人话解释 + 滑杆 + 当前第几档。
+private struct LevelSliderRow: View {
+    let title: String
+    let hint: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                Text("\(Int(value.rounded()))")
+                    .font(.footnote)
+                    .foregroundStyle(accent)
+            }
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Slider(value: $value, in: range, step: step)
+                .tint(accent)
+        }
+        .padding(.vertical, 12)
+    }
+}
+
+/// 表单里的小标题 + 一句解释（人格编辑页用）。
+private struct FieldCaption: View {
+    let title: String
+    let hint: String
+
+    init(_ title: String, hint: String) {
+        self.title = title
+        self.hint = hint
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.footnote.weight(.medium))
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, 6)
+    }
+}

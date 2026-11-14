@@ -1,0 +1,893 @@
+import PhotosUI
+import SwiftUI
+
+/// 聊天页。
+///
+/// 这是 Android `ChatScreen.kt` 的 iOS 版：顶部一行「返回 / 他 / 更多」，
+/// 中间是消息与流式气泡，底部是输入栏。所有「怎么回一句话」都在 `MyFriendKit` 的
+/// `ChatService` 里，这个文件只做三件事：**把状态画出来**、**把点击交回去**、**把滚动管好**。
+///
+/// 几个刻意与 Android 对齐的细节：
+/// - 长按气泡出的是自己的菜单（复制 / 重新生成 / 删除），不是系统选字工具条；
+/// - 流式正文用全文覆盖同一条气泡（`ChatEvent.delta` 传的就是全文），带闪烁光标；
+/// - 生成中发送按钮变停止按钮，停止不会清空气泡，而是留一句「已停止」；
+/// - 滚到底部做了 60ms 节流，长回复一路 token 一路滚会抖。
+struct ChatScreen: View {
+
+    let sessionId: String
+
+    @EnvironmentObject private var env: AppEnvironment
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
+
+    @StateObject private var model = ChatViewModel()
+    @FocusState private var composerFocused: Bool
+
+    /// 从聊天页推出去的目的地：内置浏览器、长期记忆、API 设置。
+    /// （为什么不用 `NavigationLink(value:)`：链接在 `Text` 里、菜单项在 `Menu` 里，
+    ///  都没法包一个 `NavigationLink`；`Route` 的 push 需要根视图持有 `NavigationPath`，见报告。）
+    private enum Destination: Identifiable {
+        case browser(String)
+        case memories
+        case settings
+
+        var id: String {
+            switch self {
+            case .browser(let url): return "browser:\(url)"
+            case .memories: return "memories"
+            case .settings: return "settings"
+            }
+        }
+    }
+
+    @State private var destination: Destination?
+    @State private var showProfile = false
+    /// 相册里选中的临时项；读成 Data、压缩落盘之后就清空（避免重复导入）。
+    @State private var pickedItems: [PhotosPickerItem] = []
+    /// 全屏看图：点的是哪条消息里的第几张。
+    @State private var previewItem: ChatImagePreviewItem?
+    @State private var confirmClear = false
+    @State private var pendingDelete: MessageEntity?
+
+    /// 是否跟随到底部。用户往上翻之后停止自动跟随，点「最新」或发消息时恢复。
+    @State private var autoFollow = true
+    @State private var lastScrollAt: UInt64 = 0
+    @State private var pendingScroll: Task<Void, Never>?
+
+    private let bottomAnchor = "chat-bottom"
+
+    /// 强调色跟设置走（`accentColor` 是 Android 那边存的 ARGB）。
+    private var accent: Color {
+        let argb = env.currentSettings.accentColor
+        let alpha = (UInt32(truncatingIfNeeded: argb) >> 24) & 0xFF
+        return alpha == 0 ? MFTheme.defaultAccent : Color(argb: argb)
+    }
+
+    private var bubbleStyle: BubbleStyle { env.currentSettings.bubbleStyle }
+    private var animationsEnabled: Bool { env.currentSettings.animationsEnabled }
+
+    // MARK: - 主体
+
+    var body: some View {
+        VStack(spacing: 0) {
+            topBar
+            messageArea
+            if !model.hasApiConfig {
+                noConfigBar
+            }
+            composer
+        }
+        .background(MFTheme.canvas(scheme).ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .navigationDestination(isPresented: Binding(
+            get: { destination != nil },
+            set: { if !$0 { destination = nil } }
+        )) {
+            destinationView
+        }
+        .fullScreenCover(item: $previewItem) { item in
+            ChatImageViewer(attachments: item.attachments, initialIndex: item.index)
+        }
+        .sheet(isPresented: $showProfile) {
+            ChatProfileSheet(
+                persona: model.persona,
+                session: model.session,
+                config: env.activeApiConfig,
+                messageCount: model.messages.count,
+                mood: model.mood,
+                onOpenMemories: {
+                    showProfile = false
+                    destination = .memories
+                },
+                onOpenSettings: {
+                    showProfile = false
+                    destination = .settings
+                }
+            )
+        }
+        .confirmationDialog(
+            "清空这段对话？",
+            isPresented: $confirmClear,
+            titleVisibility: .visible
+        ) {
+            Button("清空上下文", role: .destructive) { model.clearContext() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这段对话的消息会被删除。人格设定与长期记忆都会保留。")
+        }
+        .confirmationDialog(
+            "删除这条消息？",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                if let message = pendingDelete { model.delete(message) }
+                pendingDelete = nil
+            }
+            Button("取消", role: .cancel) { pendingDelete = nil }
+        } message: {
+            Text("删除后无法撤销。")
+        }
+        .overlay(alignment: .bottom) { toastView }
+        .animation(.easeInOut(duration: 0.18), value: model.toast)
+        .onAppear {
+            model.bind(env: env, sessionId: sessionId)
+            model.enter()
+            // Debug：进入聊天 30 秒后打一条内存快照（Release 里是空实现）。
+            DebugMemoryLog.scheduleChatSnapshot()
+            // Debug：`MYFRIEND_DEBUG_OPEN_IMAGE=1` 时自动打开第一张图的全屏查看（模拟器没法点）。
+            if DebugSeeding.openImageOnLaunch { openFirstImageForDebug() }
+        }
+        .onDisappear {
+            model.leave()
+            pendingScroll?.cancel()
+            pendingScroll = nil
+        }
+        // 从后台回来时重读一遍：这段时间里他可能自己写了点什么（心跳 / 主动唤醒）。
+        .onChange(of: scenePhase) { phase in
+            if phase == .active {
+                model.enter()
+                autoFollow = true
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var destinationView: some View {
+        if let destination {
+            switch destination {
+            case .browser(let url):
+                InAppBrowserView(url: url)
+            case .memories:
+                MemoryListScreen()
+            case .settings:
+                SettingsScreen()
+            }
+        } else {
+            EmptyView()
+        }
+    }
+
+    // MARK: - 顶栏
+
+    private var topBar: some View {
+        HStack(spacing: 6) {
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text("返回"))
+
+            Button {
+                showProfile = true
+            } label: {
+                HStack(spacing: 10) {
+                    if let persona = model.persona {
+                        MFAvatar(persona: persona, size: 38)
+                    } else {
+                        Circle()
+                            .fill(Color.secondary.opacity(0.2))
+                            .frame(width: 38, height: 38)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.persona?.name ?? "对话")
+                            .font(.system(.headline, design: .serif))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        subtitle
+                    }
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(Text("打开会话资料"))
+
+            Spacer(minLength: 4)
+
+            Menu {
+                Button {
+                    showProfile = true
+                } label: {
+                    Label("会话资料", systemImage: "info.circle")
+                }
+                Button {
+                    destination = .memories
+                } label: {
+                    Label("长期记忆", systemImage: "brain")
+                }
+                Button {
+                    destination = .settings
+                } label: {
+                    Label("API 设置", systemImage: "gearshape")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    confirmClear = true
+                } label: {
+                    Label("清空上下文", systemImage: "trash")
+                }
+                .disabled(model.messages.isEmpty || model.isGenerating)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 18, weight: .semibold))
+                    .frame(width: 38, height: 38)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel(Text("更多"))
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+    }
+
+    /// 副标题：生成中是「正在输入…」，否则是「心情胶囊 + 他此刻」。
+    /// 这一行刻意只显示、不提供任何设置入口——他的状态是可以看见的，不是可以调的。
+    @ViewBuilder
+    private var subtitle: some View {
+        if model.isGenerating {
+            Text(model.isStopping ? "正在停下…" : "正在输入…")
+                .font(.caption2)
+                .foregroundStyle(accent)
+        } else {
+            HStack(spacing: 6) {
+                ChatMoodCapsule(mood: model.mood)
+                // 睡着时状态行要带上「几点醒」（§7）：那是用户唯一需要知道的事实。
+                let presenceText = SleepSchedule.statusLine(
+                    model.persona, presenceText: model.presence.display()
+                )
+                if !presenceText.isEmpty {
+                    Text(presenceText)
+                        .font(.caption2)
+                        .foregroundStyle(MFTheme.subtleText(scheme))
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    // MARK: - 消息区
+
+    private var messageArea: some View {
+        ZStack(alignment: .top) {
+            if model.loaded && model.messages.isEmpty && !model.isGenerating {
+                emptyConversation
+            } else {
+                chatScroll
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var chatScroll: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(model.rows) { row in
+                        switch row.content {
+                        case .day(let label):
+                            ChatDateDivider(label: label)
+                        case .message(let message):
+                            ChatBubbleRow(
+                                message: message,
+                                isLatestAssistant: message.id == model.latestAssistantId,
+                                showsRead: model.showsReadBadge(for: message),
+                                bubbleStyle: bubbleStyle,
+                                accent: accent,
+                                animationsEnabled: animationsEnabled,
+                                myAvatarUri: env.currentSettings.myAvatarUri,
+                                onOpenLink: openLink,
+                                onOpenImage: { attachments, index in
+                                    previewItem = ChatImagePreviewItem(
+                                        message: message, attachments: attachments, index: index
+                                    )
+                                },
+                                onCopy: { model.copy(message.content) },
+                                onRegenerate: { model.regenerate() },
+                                onDelete: { pendingDelete = message }
+                            )
+                        }
+                    }
+                    if model.isGenerating {
+                        ChatStreamingBubble(
+                            text: model.streamingText,
+                            traces: model.streamingTraces,
+                            bubbleStyle: bubbleStyle,
+                            animationsEnabled: animationsEnabled,
+                            onOpenLink: openLink
+                        )
+                        .id("chat-streaming")
+                    }
+                    Color.clear
+                        .frame(height: 1)
+                        .id(bottomAnchor)
+                }
+                .padding(.horizontal, 14)
+                .padding(.top, 8)
+                .padding(.bottom, 10)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            // 手机上往上翻一下就不要再把他往下拽：这是「我在看历史」的信号。
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 12).onChanged { _ in autoFollow = false }
+            )
+            .onChange(of: model.messages.count) { _ in
+                scrollToBottom(proxy, animated: true)
+            }
+            .onChange(of: model.isGenerating) { _ in
+                scrollToBottom(proxy, animated: true)
+            }
+            .onChange(of: model.streamingText) { _ in
+                throttledScrollToBottom(proxy)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                jumpToLatest(proxy)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func jumpToLatest(_ proxy: ScrollViewProxy) -> some View {
+        if !autoFollow && !model.messages.isEmpty {
+            Button {
+                autoFollow = true
+                scrollToBottom(proxy, animated: true)
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                    Text("最新")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(.thinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 4)
+            .padding(.bottom, 10)
+            .accessibilityLabel(Text("回到最新消息"))
+        }
+    }
+
+    /// 空会话引导：几句能直接填进输入框的开场白（点了只填，不直接发送——
+    /// 用户可以改一改再说，这比替他把话说完更礼貌）。
+    private var emptyConversation: some View {
+        VStack(spacing: 10) {
+            if let persona = model.persona {
+                MFAvatar(persona: persona, size: 74)
+                    .padding(.bottom, 4)
+                Text(persona.name)
+                    .font(.system(.title2, design: .serif))
+                Text(persona.description.isEmpty ? "开始一段新的对话。" : persona.description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+            } else {
+                Text("开始一段新的对话")
+                    .font(.system(.title3, design: .serif))
+            }
+
+            VStack(spacing: 8) {
+                ForEach(["嗨，今天过得怎么样？", "陪我待一会儿", "我最近有件事想和你说"], id: \.self) { suggestion in
+                    Button {
+                        model.draft = suggestion
+                        composerFocused = true
+                    } label: {
+                        Text(suggestion)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 9)
+                            .background(
+                                scheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.9),
+                                in: Capsule()
+                            )
+                            .overlay(
+                                Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+                            )
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 8)
+
+            Text("对话仅保存在本机")
+                .font(.caption2)
+                .foregroundStyle(.secondary.opacity(0.7))
+                .padding(.top, 6)
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - 滚动
+
+    /// 立刻滚到底部（新消息、开始/结束生成时用）。
+    private func scrollToBottom(_ proxy: ScrollViewProxy, animated: Bool) {
+        guard autoFollow else { return }
+        lastScrollAt = DispatchTime.now().uptimeNanoseconds
+        if animated && animationsEnabled {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            }
+        } else {
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    /// 流式输出时**每 60ms 最多滚一次**：每个 token 都滚一次会让长回复整屏发抖，
+    /// 而完全不等又会让字跑出可视区。
+    private func throttledScrollToBottom(_ proxy: ScrollViewProxy) {
+        guard autoFollow else { return }
+        let interval: UInt64 = 60_000_000
+        let now = DispatchTime.now().uptimeNanoseconds
+        let elapsed = now >= lastScrollAt ? now - lastScrollAt : interval
+
+        if elapsed >= interval && pendingScroll == nil {
+            lastScrollAt = now
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+            return
+        }
+        guard pendingScroll == nil else { return }
+        pendingScroll = Task { @MainActor in
+            let wait = interval - min(elapsed, interval)
+            try? await Task.sleep(nanoseconds: max(wait, 1))
+            pendingScroll = nil
+            guard autoFollow else { return }
+            lastScrollAt = DispatchTime.now().uptimeNanoseconds
+            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+        }
+    }
+
+    // MARK: - 输入栏
+
+    private var composer: some View {
+        VStack(spacing: 0) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 0.5)
+
+            attachmentPreview
+
+            HStack(alignment: .bottom, spacing: 10) {
+                photoPickerButton
+
+                TextField(composerPlaceholder, text: $model.draft, axis: .vertical)
+                    // 1–5 行自适应：一句话时不占地方，写长了会自己长高（再多就内部滚动）。
+                    .lineLimit(1...5)
+                    .font(.body)
+                    .focused($composerFocused)
+                    .disabled(!model.hasApiConfig)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(
+                        RoundedRectangle(cornerRadius: 21, style: .continuous)
+                            .fill(scheme == .dark ? Color.white.opacity(0.07) : Color.white)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 21, style: .continuous)
+                            .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+                    )
+                    .opacity(model.hasApiConfig ? 1 : 0.6)
+
+                sendButton
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+        }
+        .background(.regularMaterial)
+    }
+
+    private var composerPlaceholder: String {
+        if !model.hasApiConfig { return "先去设置里配一个 API" }
+        return "说点什么…"
+    }
+
+    // MARK: - 发图片
+
+    /// 「+」：打开系统相册选图（`PhotosPicker` = `PHPickerViewController` 的 SwiftUI 外壳）。
+    ///
+    /// 一条消息最多四张（`AttachmentsCodec.maxImagesPerMessage`）：已选的张数会从可选上限里扣掉，
+    /// 选满之后按钮自己变灰，而不是让用户选完再被裁掉。
+    private var photoPickerButton: some View {
+        let remaining = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingAttachments.count)
+        let enabled = model.hasApiConfig && !model.isGenerating && remaining > 0
+        // 闭包里只读这一份快照：`PhotosPicker` 的 label 是 @Sendable，
+        // 直接读 @MainActor 的 `model.isPreparingAttachments` 会出并发警告。
+        let preparing = model.isPreparingAttachments
+        return PhotosPicker(
+            selection: $pickedItems,
+            maxSelectionCount: max(remaining, 1),
+            matching: .images,
+            photoLibrary: .shared()
+        ) {
+            Image(systemName: preparing ? "hourglass" : "plus")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(enabled ? accent : Color.secondary.opacity(0.45))
+                .frame(width: 38, height: 38)
+                .contentShape(Circle())
+        }
+        .disabled(!enabled)
+        .accessibilityLabel(Text("从相册选一张图"))
+        .onChange(of: pickedItems) { items in
+            importPickedImages(items)
+        }
+    }
+
+    /// 输入框上方那条缩略图：选了哪几张、还能一张张撤掉。
+    @ViewBuilder
+    private var attachmentPreview: some View {
+        if !model.pendingAttachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(Array(model.pendingAttachments.enumerated()), id: \.offset) { index, attachment in
+                        ZStack(alignment: .topTrailing) {
+                            AttachmentThumbnail(uri: attachment.uri, pointSize: 54) { missing in
+                                AttachmentPlaceholder(missing: missing, compact: true)
+                            }
+                            .frame(width: 54, height: 54)
+                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+                            Button {
+                                model.removeAttachment(at: index)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 17))
+                                    .symbolRenderingMode(.palette)
+                                    .foregroundStyle(Color.white, Color.black.opacity(0.55))
+                            }
+                            .buttonStyle(.plain)
+                            .offset(x: 5, y: -5)
+                            .accessibilityLabel(Text("撤掉这张图"))
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+            }
+        }
+    }
+
+    /// 相册选完：压好、落盘、放进待发送列表。失败的图给一句中文提示，不影响其它张。
+    private func importPickedImages(_ items: [PhotosPickerItem]) {
+        guard !items.isEmpty else { return }
+        pickedItems = []
+        let room = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingAttachments.count)
+        guard room > 0 else { return }
+        model.setPreparingAttachments(true)
+        Task { @MainActor in
+            let result = await ImageImport.importMany(items, kind: .chatImage, limit: room)
+            model.setPreparingAttachments(false)
+            model.addAttachments(result.attachments)
+            if let failure = result.failure { model.showToast(failure) }
+        }
+    }
+
+    private var sendButton: some View {
+        let stopping = model.isGenerating
+        let enabled = stopping || model.canSend
+        return Button {
+            if stopping {
+                model.stop()
+                return
+            }
+            guard model.canSend else { return }
+            autoFollow = true
+            model.send()
+            composerFocused = true
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(enabled ? accent : Color.secondary.opacity(0.22))
+                    .frame(width: 42, height: 42)
+                if stopping {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous)
+                        .fill(Color.white)
+                        .frame(width: 13, height: 13)
+                } else {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(enabled ? Color.white : Color.secondary)
+                }
+            }
+            .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(Text(stopping ? "停止生成" : "发送"))
+    }
+
+    private var noConfigBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "key")
+                .font(.system(size: 14))
+                .foregroundStyle(.secondary)
+            Text("先去设置里配一个 API")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            NavigationLink(value: Route.settings) {
+                Text("去设置")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(MFTheme.defaultAccent)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            Color.primary.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .padding(.horizontal, 14)
+        .padding(.bottom, 6)
+    }
+
+    // MARK: - 提示条
+
+    @ViewBuilder
+    private var toastView: some View {
+        if let toast = model.toast {
+            Text(toast)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.thinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08), lineWidth: 1))
+                .padding(.bottom, 96)
+                .transition(.opacity)
+                .accessibilityAddTraits(.isStaticText)
+        }
+    }
+
+    // MARK: - 动作
+
+    /// 只给截图验收用：等消息加载完，把第一张有附件的消息的全屏查看打开。
+    private func openFirstImageForDebug() {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            for message in model.messages.reversed() {
+                let attachments = AttachmentsCodec.decode(message.attachmentsJson)
+                guard !attachments.isEmpty else { continue }
+                previewItem = ChatImagePreviewItem(message: message, attachments: attachments, index: 0)
+                return
+            }
+        }
+    }
+
+    private func openLink(_ url: String) {
+        guard URL(string: url) != nil else { return }
+        destination = .browser(url)
+    }
+}
+
+// MARK: - 心情胶囊
+
+/// 他此刻心情的一枚小胶囊：五个点表示浓度，一个字表示内容。
+///
+/// 做得很轻——心情是背景信息，不该抢走对话本身（与 Android 的 `MoodChip(compact = true)` 一致）。
+struct ChatMoodCapsule: View {
+
+    let mood: MoodState
+
+    @Environment(\.colorScheme) private var scheme
+
+    var body: some View {
+        if mood.updatedAt <= 0 && mood.isEmpty() {
+            EmptyView()
+        } else {
+            HStack(spacing: 5) {
+                HStack(spacing: 2) {
+                    ForEach(0..<5, id: \.self) { index in
+                        Circle()
+                            .fill(tint.opacity(index < intensity ? 0.9 : 0.22))
+                            .frame(width: intensity >= 4 ? 4 : 3, height: intensity >= 4 ? 4 : 3)
+                    }
+                }
+                Text(mood.label.isEmpty ? MoodLexicon.BASELINE : mood.label)
+                    .font(.caption2)
+                    .foregroundStyle(tint)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(Color.primary.opacity(0.06), in: Capsule())
+            .accessibilityLabel(Text("他现在的心情：\(mood.label)"))
+        }
+    }
+
+    private var intensity: Int {
+        min(max(mood.intensity, 1), 5)
+    }
+
+    /// 心情的极性决定小点的颜色：低落偏砖红、疲惫偏棕、雀跃偏绿、其余用次要文字色。
+    private var tint: Color {
+        let word = MoodLexicon.classify(mood.label)
+        if word.valence <= -2 { return Color(hex: 0xB4, 0x73, 0x6B) }
+        if word.valence < 0 || word.energy <= -2 { return Color(hex: 0xB0, 0x8A, 0x5A) }
+        if word.valence >= 2 { return Color(hex: 0x6E, 0x9E, 0x76) }
+        return MFTheme.subtleText(scheme)
+    }
+}
+
+// MARK: - 会话资料
+
+/// 「会话资料」：这一段对话用的是谁、哪个配置、多少条消息，以及去记忆 / 设置的两个入口。
+///
+/// 刻意不做成设置面板：这里只陈列「现在是什么」，改人格去人格页、改记忆去记忆页。
+struct ChatProfileSheet: View {
+
+    let persona: PersonaEntity?
+    let session: ChatSessionEntity?
+    let config: ApiConfigEntity?
+    let messageCount: Int
+    let mood: MoodState
+    let onOpenMemories: () -> Void
+    let onOpenSettings: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.scenePhase) private var scenePhase
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
+                    infoCard
+                    actions
+                    Text("所有对话只保存在这台设备上。")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 4)
+                }
+                .padding(MFTheme.gutter)
+            }
+            .background(MFTheme.canvas(scheme).ignoresSafeArea())
+            .navigationTitle("会话资料")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 14) {
+            if let persona {
+                MFAvatar(persona: persona, size: 56)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(persona.name)
+                        .font(.system(.title3, design: .serif))
+                    HStack(spacing: 6) {
+                        Text(persona.category.isEmpty ? "未分类" : persona.category)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                        Text("v\(persona.version)")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } else {
+                Text("对话")
+                    .font(.system(.title3, design: .serif))
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var infoCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let description = persona?.description, !description.isEmpty {
+                Text(description)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            row("当前 API", config?.name ?? "未绑定")
+            row("模型", modelName)
+            row("这段对话", session?.title.isEmpty == false ? session!.title : "新的对话")
+            row("消息", "\(messageCount) 条")
+            row("他的心情", mood.isEmpty() ? MoodLexicon.BASELINE : mood.display())
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            scheme == .dark ? Color.white.opacity(0.05) : Color.white,
+            in: RoundedRectangle(cornerRadius: MFTheme.cardRadius, style: .continuous)
+        )
+    }
+
+    private var modelName: String {
+        if let override = session?.model, !override.isEmpty { return override }
+        if let model = config?.model, !model.isEmpty { return model }
+        return "未设置"
+    }
+
+    private func row(_ label: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 76, alignment: .leading)
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var actions: some View {
+        VStack(spacing: 0) {
+            actionRow("长期记忆", icon: "brain", action: onOpenMemories)
+            Rectangle()
+                .fill(Color.primary.opacity(0.06))
+                .frame(height: 0.5)
+                .padding(.leading, 44)
+            actionRow("API 设置", icon: "gearshape", action: onOpenSettings)
+        }
+        .background(
+            scheme == .dark ? Color.white.opacity(0.05) : Color.white,
+            in: RoundedRectangle(cornerRadius: MFTheme.cardRadius, style: .continuous)
+        )
+    }
+
+    private func actionRow(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: icon)
+                    .font(.system(size: 15))
+                    .foregroundStyle(MFTheme.defaultAccent)
+                    .frame(width: 20)
+                Text(title)
+                    .font(.body)
+                    .foregroundStyle(.primary)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary.opacity(0.6))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}

@@ -1,0 +1,468 @@
+import Foundation
+import UIKit
+
+/// 聊天页的状态机。
+///
+/// 为什么要有这一层（而不是把逻辑塞进 `ChatScreen` 的 `@State`）：
+/// - 一轮回复是「先把用户那句话落库 → 再消费 `AsyncThrowingStream` → 最后重读消息」，
+///   中途还要能被停止、能在离开页面后继续跑完，这些都不是「视图状态」而是「会话状态」；
+/// - 消息列表、流式正文、动作痕迹、心情、「他此刻」是五份互相独立的状态，
+///   混在 View 里最容易出现「正在输入的字盖住了历史消息」这类互相踩的问题；
+/// - 与 SwiftUI 无关，换成 UIKit 也能直接用。
+///
+/// 它**不实现任何能力**：落库、拼提示词、流式解析都在 `MyFriendKit` 里，
+/// 这里只做「读 → 交给服务 → 把事件翻译成界面状态」。
+@MainActor
+final class ChatViewModel: ObservableObject {
+
+    // MARK: - 会话数据
+
+    @Published private(set) var session: ChatSessionEntity?
+    @Published private(set) var persona: PersonaEntity?
+    @Published private(set) var messages: [MessageEntity] = []
+    @Published private(set) var mood = MoodState()
+    @Published private(set) var presence = Presence()
+    /// 首屏读完之前不画空会话引导，免得「先闪一下空状态再出现历史」。
+    @Published private(set) var loaded = false
+    /// 有没有可用的 API 配置：没有就禁用输入栏并提示去设置。
+    @Published private(set) var hasApiConfig = false
+
+    // MARK: - 生成中
+
+    @Published private(set) var isGenerating = false
+    /// 已经点了停止、正在等这一轮收尾（避免连点）。
+    @Published private(set) var isStopping = false
+    /// 流式正文的**全文**（`ChatEvent.delta` 传的是全文，不是增量）。
+    @Published private(set) var streamingText = ""
+    @Published private(set) var streamingTraces: [ToolTraceItem] = []
+
+    /// 输入框里的草稿。视图直接 `$model.draft` 双向绑定。
+    @Published var draft = ""
+
+    /// 已经压好、存在沙盒里，等着跟这句话一起发出去的图片。
+    /// 最多 `AttachmentsCodec.maxImagesPerMessage` 张（与 Android 一致）。
+    @Published private(set) var pendingAttachments: [MessageAttachment] = []
+    /// 正在把相册里选的图压缩落盘（期间发送按钮转圈，避免发出半份附件）。
+    @Published private(set) var isPreparingAttachments = false
+
+    /// 一句会自己消失的提示（已复制、生成失败……）。不做成 alert：聊天里不该被弹窗打断。
+    @Published private(set) var toast: String?
+
+    /// 上一轮他为什么没说话（睡着 / 免打扰 / 主动晚点回）。界面不解释、不弹窗，
+    /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
+    @Published private(set) var lastNoReply: ChatNoReplyReason?
+
+    // MARK: - 内部
+
+    private var env: AppEnvironment?
+    private var sessionId = ""
+    private var generationTask: Task<Void, Never>?
+    private var pulseTask: Task<Void, Never>?
+    /// 消息轮询：Kit 是拉取式的（没有 Room 的 Flow），页面上要自己按需重读。
+    private var messagePulseTask: Task<Void, Never>?
+    private var toastTask: Task<Void, Never>?
+    /// 停止的兜底：底层流万一不响应取消，也不让界面永远停在「正在输入」。
+    private var stopFallback: Task<Void, Never>?
+
+    // MARK: - 进 / 出页面
+
+    /// 绑定依赖（只做一次；`@StateObject` 在页面第一次出现时调用）。
+    func bind(env: AppEnvironment, sessionId: String) {
+        self.env = env
+        self.sessionId = sessionId
+    }
+
+    /// 页面出现：标记「这一轮会话正开着」（未读计数据此归零），重读消息，开始 30 秒脉冲。
+    ///
+    /// 每次 `onAppear` 都会走到这里 —— 从内置浏览器、记忆页返回时正好需要刷新一遍，
+    /// 因为那边可能改过消息（比如清空上下文）或人格。
+    func enter() {
+        guard let env else { return }
+        env.chat.setOpenSession(sessionId)
+        reloadMessages()
+        refreshContext()
+        loaded = true
+        startPulse()
+    }
+
+    /// 页面离开：把「正开着」的标记撤掉，停掉脉冲。
+    ///
+    /// 刻意**不**取消正在跑的生成：他正说到一半的那句话不该因为用户退出页面被掐断；
+    /// `ChatService` 自己会把结果落库（此时会话已不是「开着」的，未读会 +1，首页能看到）。
+    func leave() {
+        env?.chat.setOpenSession(nil)
+        pulseTask?.cancel()
+        pulseTask = nil
+        messagePulseTask?.cancel()
+        messagePulseTask = nil
+        stopFallback?.cancel()
+        stopFallback = nil
+    }
+
+    // MARK: - 读
+
+    func reloadMessages() {
+        guard let env else { return }
+        // `try?` 会把 `T?` 拍平成一层，所以这里只需要一次 `if let`。
+        if let fresh = try? env.stores.sessions.byId(sessionId) {
+            session = fresh
+        }
+        // 进页面就把未读清零：Android 端也是「打开会话即已读」。
+        if var current = session, current.unreadCount != 0 {
+            current.unreadCount = 0
+            try? env.stores.sessions.upsert(current)
+            session = current
+        }
+        if let personaId = session?.personaId {
+            persona = ((try? env.stores.personas.byId(personaId)) ?? nil) ?? persona
+        }
+        messages = ((try? env.stores.messages.bySession(sessionId)) ?? []) 
+    }
+
+    /// 心情与「他此刻」都是**只读推导**：心情会让时间冲淡（`MoodRepository` 顺手落库），
+    /// presence 什么都不写。30 秒重算一次，与 Android 的 Flow 语义一致。
+    func refreshContext() {
+        guard let env else { return }
+        hasApiConfig = env.resolvedChatConfig() != nil
+        guard let persona else { return }
+        mood = env.moodRepository.current(personaId: persona.id)
+        presence = env.presence.current(personaId: persona.id)
+    }
+
+    private func startPulse() {
+        pulseTask?.cancel()
+        pulseTask = Task { [weak self] in
+            while true {
+                do {
+                    try await Task.sleep(nanoseconds: 30 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                self.refreshContext()
+            }
+        }
+        startMessagePulse()
+    }
+
+    /// 每 4 秒核一次「库里是不是多了消息」。
+    ///
+    /// 为什么需要它：这条会话的消息**不一定都是从这个页面发出去的** ——
+    /// 心跳 / 主动唤醒 / 回忆重写都可能在他那边往当前会话里写一条；
+    /// Android 靠 Room 的 Flow 自动刷，iOS 的 Kit 是拉取式的（见 PresenceRepository 的注释），
+    /// 所以界面自己按需重读。只比一次「最新一条的 id + 条数」，没有变化就不动状态，不触发重绘。
+    private func startMessagePulse() {
+        messagePulseTask?.cancel()
+        messagePulseTask = Task { [weak self] in
+            while true {
+                do {
+                    try await Task.sleep(nanoseconds: 4 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                // 正在流式输出时不插手：这一轮结束时 `finishGeneration` 会统一重读。
+                guard !self.isGenerating else { continue }
+                self.reloadMessagesIfChanged()
+            }
+        }
+    }
+
+    /// 库里的消息变了就重读一次（否则不动，避免把滚动位置与展开状态抖坏）。
+    private func reloadMessagesIfChanged() {
+        guard let env else { return }
+        let count = (try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count
+        let latestId = ((try? env.stores.messages.latest(sessionId: sessionId)) ?? nil)?.id
+        let currentLatestId = messages.last?.id
+        if count != messages.count || latestId != currentLatestId {
+            reloadMessages()
+        }
+    }
+
+    // MARK: - 发送
+
+    var canSend: Bool {
+        guard hasApiConfig, !isGenerating, !isPreparingAttachments else { return false }
+        return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
+    }
+
+    // MARK: - 附件（图片）
+
+    /// 加进待发送的图片；超过上限的部分直接丢掉（界面只让选 4 张，这里是兜底）。
+    func addAttachments(_ attachments: [MessageAttachment]) {
+        let images = attachments.filter { $0.isImage }
+        guard !images.isEmpty else { return }
+        let room = max(0, AttachmentsCodec.maxImagesPerMessage - pendingAttachments.count)
+        pendingAttachments.append(contentsOf: images.prefix(room))
+    }
+
+    func removeAttachment(at index: Int) {
+        guard pendingAttachments.indices.contains(index) else { return }
+        let attachment = pendingAttachments.remove(at: index)
+        // 用户撤掉的那张不该留在沙盒里当垃圾。
+        MediaStorage.shared.delete(attachment)
+    }
+
+    func clearPendingAttachments() {
+        MediaStorage.shared.delete(pendingAttachments)
+        pendingAttachments.removeAll()
+    }
+
+    func setPreparingAttachments(_ preparing: Bool) {
+        isPreparingAttachments = preparing
+    }
+
+    func send() {
+        guard let env, !isGenerating, !isPreparingAttachments else { return }
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let attachments = pendingAttachments
+        guard !text.isEmpty || !attachments.isEmpty else { return }
+        // 没有 API 配置就不发一个注定失败的请求：禁用输入栏 + 一句引导。
+        // 会话绑定哪个配置由装配层负责（`AppEnvironment` 建会话时写 `apiConfigId`）。
+        guard env.resolvedChatConfig() != nil else {
+            hasApiConfig = false
+            showToast("先去设置里配一个 API")
+            return
+        }
+        draft = ""
+        pendingAttachments.removeAll()
+        // `ChatService.send` 会**先**把用户这句话落库、再返回流；立刻重读一次，
+        // 自己说的话就马上出现在屏幕上，而不是等模型开口。
+        let stream = env.chat.send(sessionId: sessionId, text: text, attachments: attachments)
+        reloadMessages()
+        consume(stream)
+    }
+
+    /// 重新生成：`ChatService` 会删掉最后一条助手消息再跑一轮。
+    func regenerate() {
+        guard let env, !isGenerating else { return }
+        guard env.resolvedChatConfig() != nil else {
+            hasApiConfig = false
+            showToast("先去设置里配一个 API")
+            return
+        }
+        let stream = env.chat.regenerate(sessionId: sessionId)
+        reloadMessages()
+        consume(stream)
+    }
+
+    /// 停止：交给 `ChatService`，它会把已经说出来的半句落成 `STOPPED` 消息再结束流。
+    ///
+    /// 不直接 `cancel` 自己这一路消费：那样等于把「落成半句」也一起掐掉，
+    /// 界面上会看到气泡凭空消失，而不是「他话说了一半」。
+    func stop() {
+        guard let env, isGenerating, !isStopping else { return }
+        isStopping = true
+        env.chat.stop(sessionId: sessionId)
+        stopFallback?.cancel()
+        stopFallback = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 2_000_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled, self.isGenerating else { return }
+            self.generationTask?.cancel()
+            self.finishGeneration()
+        }
+    }
+
+    // MARK: - 消费流
+
+    private func consume(_ stream: AsyncThrowingStream<ChatEvent, Error>) {
+        generationTask?.cancel()
+        isGenerating = true
+        isStopping = false
+        lastNoReply = nil
+        streamingText = ""
+        streamingTraces = []
+        stopFallback?.cancel()
+        stopFallback = nil
+
+        // 强引用 self：一轮回复正在跑的时候，即使页面被 pop 掉也要把它读完、写进库，
+        // 否则用户会得到一条「永远没说完的消息」。任务结束即释放，不会长期泄漏。
+        generationTask = Task { [self] in
+            var failure: String?
+            do {
+                for try await event in stream {
+                    apply(event)
+                }
+            } catch {
+                if !Task.isCancelled { failure = Self.describe(error) }
+            }
+            finishGeneration()
+            if let failure { showToast(failure) }
+        }
+    }
+
+    private func apply(_ event: ChatEvent) {
+        switch event {
+        case .delta(let text):
+            streamingText = text
+        case .toolStarted(let item):
+            streamingTraces.append(item)
+        case .toolFinished(let item):
+            // `ChatService` 先发一个只带名字的「开始」，跑完再发完整的一条：
+            // 同一个工具只该算一次，否则摘要会变成「联网搜索 2 次」。
+            if let index = streamingTraces.lastIndex(where: { $0.name == item.name && $0.title == item.title }) {
+                streamingTraces[index] = item
+            } else {
+                streamingTraces.append(item)
+            }
+        case .done:
+            // 落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
+            break
+        case .noReply(let reason):
+            // 他这一轮没说话：没有助手消息要落库，界面只重读一次消息（用户气泡会显示「已读」）。
+            lastNoReply = reason
+            streamingText = ""
+            streamingTraces = []
+        }
+    }
+
+    private func finishGeneration() {
+        generationTask = nil
+        isGenerating = false
+        isStopping = false
+        streamingText = ""
+        streamingTraces = []
+        stopFallback?.cancel()
+        stopFallback = nil
+        reloadMessages()
+        refreshContext()
+    }
+
+    // MARK: - 消息操作
+
+    /// 删除一条消息，并把会话的「最后一句预览」重算一遍。
+    func delete(_ message: MessageEntity) {
+        guard let env else { return }
+        do {
+            try env.stores.messages.delete(id: message.id)
+            // 图片跟着这条消息一起离开：留着文件只占空间，而且在文件 App 里也看不到它。
+            MediaStorage.shared.deleteAttachments(in: message.attachmentsJson)
+            try refreshSessionPreview(env)
+            reloadMessages()
+            showToast("已删除这条消息")
+        } catch {
+            showToast("删除失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 清空这段对话的上下文（人格与长期记忆都不动）。
+    func clearContext() {
+        guard let env, !isGenerating else { return }
+        do {
+            // 先把这段对话里的图片文件找出来，消息删掉之后再删文件。
+            let images = ((try? env.stores.messages.bySession(sessionId)) ?? [])
+                .flatMap { AttachmentsCodec.decode($0.attachmentsJson) }
+            try env.stores.messages.delete(where: "sessionId = ?", [.text(sessionId)])
+            MediaStorage.shared.delete(images)
+            try refreshSessionPreview(env)
+            reloadMessages()
+            showToast("上下文已清空")
+        } catch {
+            showToast("清空失败：\(error.localizedDescription)")
+        }
+    }
+
+    func copy(_ text: String) {
+        UIPasteboard.general.string = text
+        showToast("已复制")
+    }
+
+    /// 会话摘要栏（首页那一行预览）跟着消息走。
+    ///
+    /// 这段与 `ChatService` 里私有的 `refreshPreview` 同义 —— 删除/清空消息后必须重算，
+    /// 否则首页会指着一个已经不存在的「最后一句」。理想情况是它作为公开 API 暴露出来（见报告）。
+    private func refreshSessionPreview(_ env: AppEnvironment) throws {
+        guard var current = try env.stores.sessions.byId(sessionId) else { return }
+        let latest = try env.stores.messages.latest(sessionId: sessionId)
+        let flattened = (latest?.content ?? "")
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        current.lastMessagePreview = flattened.isEmpty
+            ? (latest?.status == .error ? "回复失败" : nil)
+            : String(flattened.prefix(100))
+        current.lastMessageAt = latest?.createdAt
+        current.updatedAt = DomainClock.nowMillis
+        try env.stores.sessions.upsert(current)
+    }
+
+    // MARK: - 提示
+
+    func showToast(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        toast = trimmed
+        toastTask?.cancel()
+        toastTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 2_400_000_000)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.toast = nil
+        }
+    }
+
+    private static func describe(_ error: Error) -> String {
+        if let api = error as? ApiException { return api.message }
+        let localized = (error as NSError).localizedDescription
+        return localized.isEmpty ? "生成失败" : localized
+    }
+
+    // MARK: - 列表条目（日期分隔条 + 消息）
+
+    /// 消息列表的一行：要么是「今天 / 昨天 / 3月5日」的分隔条，要么是一条消息。
+    struct Row: Identifiable {
+        enum Content {
+            case day(String)
+            case message(MessageEntity)
+        }
+
+        let id: String
+        let content: Content
+    }
+
+    /// 跨天的第一条消息前面插一条日期分隔条（与 Android 的 `ChatDisplayItem` 一一对应）。
+    var rows: [Row] {
+        var result: [Row] = []
+        var previousAt: Int64?
+        for message in messages {
+            if previousAt == nil || !Self.isSameDay(previousAt!, message.createdAt) {
+                let label = MFDate.day(message.createdAt)
+                result.append(Row(id: "day-\(message.id)", content: .day(label)))
+            }
+            result.append(Row(id: message.id, content: .message(message)))
+            previousAt = message.createdAt
+        }
+        return result
+    }
+
+    /// 这条用户消息要不要显示「已读」（§2.3、§四）。
+    ///
+    /// 三个条件缺一不可：
+    /// 1. 它是用户发的，并且 `readAt` 有值（模型真的看到过它）；
+    /// 2. 它是**最后一条消息**（后面还没有他的回复）——否则每条消息都挂一个「已读」很吵；
+    /// 3. 此刻不是「正在生成」：他正在打字时显示「已读」会让人以为他看了却不回。
+    func showsReadBadge(for message: MessageEntity) -> Bool {
+        guard message.role == .user, message.readAt != nil, !isGenerating else { return false }
+        guard let last = messages.last else { return false }
+        return last.id == message.id
+    }
+
+    /// 最后一条助手消息的 id：只有它才值得「重新生成」（`ChatService` 删的也是最后一条）。
+    var latestAssistantId: String? {
+        messages.last(where: { $0.role == .assistant })?.id
+    }
+
+    private static func isSameDay(_ lhs: Int64, _ rhs: Int64) -> Bool {
+        let calendar = Calendar.current
+        return calendar.isDate(
+            Date(timeIntervalSince1970: Double(lhs) / 1000),
+            inSameDayAs: Date(timeIntervalSince1970: Double(rhs) / 1000)
+        )
+    }
+}

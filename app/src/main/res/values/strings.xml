@@ -1,0 +1,65 @@
+<resources>
+    <string name="app_name">MyFriend</string>
+    <string name="proactive_channel_name">主动唤醒</string>
+    <string name="proactive_channel_description">人格按你设定的时间主动发来消息</string>
+    <string name="chat_reply_channel_name">他的消息</string>
+    <string name="chat_reply_channel_description">他在你不在聊天页时发来的回复</string>
+    <string name="agent_channel_name">他一直在</string>
+    <string name="agent_channel_description">常驻后台时，用这条低调的通知告诉你他还醒着</string>
+    <string name="agent_foreground_title">他还醒着</string>
+    <string name="agent_foreground_text">在后台偶尔会想起你</string>
+
+    <!-- 通知：只露这一句，正文留给解锁后的 App。 -->
+    <string name="chat_notify_one_message">他发来一条消息</string>
+    <string name="chat_notify_few_messages">他发来几条消息</string>
+    <string name="agent_notify_public_text">他还在</string>
+
+    <!-- 设置页「用量」：只统计 token，不显示钱、没有额度、没有输入框 -->
+    <string name="usage_section_title">用量</string>
+    <string name="usage_headline_none">这个月还没怎么说话</string>
+    <string name="usage_headline_tokens">这个月一共用了 %1$s tokens</string>
+    <string name="usage_detail_none">等他开始陪你聊天、自己整理记忆，这里会慢慢有数。</string>
+    <string name="usage_detail_counts">一共 %1$d 次调用 · 读了 %2$s tokens · 写了 %3$s tokens</string>
+    <string name="usage_by_kind_title">按用途</string>
+    <string name="usage_by_session_title">按人（前 10）</string>
+    <string name="usage_kind_calls_tokens">%1$d 次 · %2$s tokens</string>
+    <string name="usage_tokens_ten_thousand">%1$s 万</string>
+    <string name="usage_local_only">只记在本机，不上传；也不会因此限制他做任何事。</string>
+
+    <!-- 设置页「带走与接回来」 -->
+    <string name="backup_section_title">带走与接回来</string>
+    <string name="backup_intro_title">他不是一份数据，是一个陪你聊过很久的人。</string>
+    <string name="backup_intro_body">把他带走，会把人格、你们聊过的每一句、他记得的事、他给自己定的规矩和能带走的设置，一起打包成一份 JSON。换手机、重装 App 之后，用下面的「从备份里接他回来」把他接回原处。</string>
+    <string name="backup_safety_body">备份里有你们的聊天和记忆，放在安全的地方。API Key 不在备份里——接回来以后，在这台手机上的「API 配置」里重新填一次就好。头像图片不随备份走，换手机后重新选一张就好。</string>
+    <string name="backup_export_row_title">把他带走</string>
+    <string name="backup_export_row_desc">选一个位置，把这份 JSON 存起来</string>
+    <string name="backup_import_row_title">从备份里接他回来</string>
+    <string name="backup_import_row_desc">先看看这份备份里有什么，再决定合并还是替换</string>
+    <string name="backup_busy">正在整理他的东西，稍等一下……</string>
+    <string name="backup_error_pack">打包失败，没能把他带走</string>
+    <string name="backup_error_unwritable">无法写入这个位置</string>
+    <string name="backup_success">已经把他带走了%1$s。放在安全的地方。</string>
+    <string name="backup_error_write">没能写进那个文件：%1$s</string>
+    <string name="backup_error_unreadable">这个文件读不出来，换一份试试</string>
+    <string name="backup_dialog_title_empty">这份备份里没有他</string>
+    <string name="backup_dialog_title">备份里有什么</string>
+    <string name="backup_dialog_meta">%1$s · v%2$s</string>
+    <string name="backup_dialog_empty_hint">换一份之前带走的备份试试。这份文件没有写进任何东西。</string>
+    <string name="backup_dialog_modes">合并：同一条用备份里的更新，这台手机上多出来的留着。\n替换：先清空这台手机上的他，再照备份接回来。</string>
+    <string name="backup_dialog_keys_hint">API 配置和密钥不在这份备份里，所以两种方式都不会动你存的 Key。</string>
+    <string name="backup_dialog_ok">好</string>
+    <string name="backup_dialog_merge">合并</string>
+    <string name="backup_dialog_replace">替换</string>
+    <string name="backup_dialog_cancel">取消</string>
+
+    <!-- 设置页「数据与安全」里清空数据那几句 -->
+    <string name="clear_data_intro_title">清空之前，先把他带走。</string>
+    <string name="clear_data_intro_body">删掉以后，那些对话和他记住的事就真的没有了；先留一份备份，随时能接回来。</string>
+    <string name="clear_data_take_away_first">先把他带走</string>
+    <string name="clear_chats_confirm_title">清空全部聊天？</string>
+    <string name="clear_chats_confirm_message">每个会话、消息和长期记忆都将被删除。人格设定与 API 配置会保留。</string>
+    <string name="clear_chats_confirm_action">清空</string>
+    <string name="wipe_confirm_title">删除全部本地数据？</string>
+    <string name="wipe_confirm_message">这将永久删除所有人物人格、聊天记录、长期记忆、版本历史、自定义预设、主动唤醒规则、API 配置与设置。此操作无法撤销；想留个底的话，先把他带走。</string>
+    <string name="wipe_confirm_action">全部删除</string>
+</resources>

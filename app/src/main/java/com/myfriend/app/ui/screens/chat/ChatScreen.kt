@@ -1,0 +1,1995 @@
+@file:OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+
+package com.myfriend.app.ui.screens.chat
+
+import android.content.Intent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.DeleteOutline
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Lightbulb
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.PersonOutline
+import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Sync
+import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
+import com.myfriend.app.data.prefs.BubbleStyle
+import com.myfriend.app.data.local.ChatSessionEntity
+import com.myfriend.app.data.local.MessageEntity
+import com.myfriend.app.data.local.MessageRole
+import com.myfriend.app.data.local.MessageStatus
+import com.myfriend.app.data.local.PersonaEntity
+import com.myfriend.app.data.local.PersonaPendingPatchEntity
+import com.myfriend.app.data.local.ProactiveKind
+import com.myfriend.app.data.local.ProactiveRuleEntity
+import com.myfriend.app.data.prefs.AppSettings
+import com.myfriend.app.ui.components.BottomSheetHandle
+import com.myfriend.app.ui.components.InlineText
+import com.myfriend.app.ui.components.markdownLinkColor
+import com.myfriend.app.ui.components.BottomSheetTitle
+import com.myfriend.app.ui.components.CircleIconButton
+import com.myfriend.app.ui.components.ConfirmDialog
+import com.myfriend.app.ui.components.MarkdownText
+import com.myfriend.app.ui.components.MoodChip
+import com.myfriend.app.ui.components.PersonaAvatar
+import com.myfriend.app.ui.components.UserAvatar
+import com.myfriend.app.ui.components.PresenceText
+import com.myfriend.app.ui.components.SectionLabel
+import com.myfriend.app.ui.components.SheetActionRow
+import com.myfriend.app.ui.components.StyledOutlinedField
+import com.myfriend.app.ui.components.TextPill
+import com.myfriend.app.domain.AttachmentsCodec
+import com.myfriend.app.domain.MessageAttachment
+import com.myfriend.app.domain.ToolTraceCodec
+import com.myfriend.app.domain.ToolTraceItem
+import com.myfriend.app.ui.theme.LocalAccentColor
+import com.myfriend.app.ui.theme.LocalAnimationsEnabled
+import com.myfriend.app.ui.theme.LocalAppDark
+import com.myfriend.app.util.dayLabel
+import com.myfriend.app.util.formatClock
+import com.myfriend.app.util.formatFullDateTime
+import com.myfriend.app.util.isSameDay
+import com.myfriend.app.data.repo.ProactiveProtocol
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.io.File
+import java.util.UUID
+
+private sealed interface ChatDisplayItem {
+    data class Date(val label: String, val key: String) : ChatDisplayItem
+    data class Message(val message: MessageEntity) : ChatDisplayItem
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+fun ChatScreen(
+    onBack: () -> Unit,
+    onOpenPersona: (String) -> Unit,
+    onOpenMemory: (String) -> Unit,
+    onOpenEvolution: (String) -> Unit,
+    onOpenApiConfigs: () -> Unit,
+    onOpenProactive: (String) -> Unit,
+    onSwitchSession: (String) -> Unit,
+    /** 「去设置」的跳转；由导航层接上，没接时引导卡片只保留「知道了」。 */
+    onOpenSettings: (() -> Unit)? = null,
+    /** 点消息里的链接：在应用里打开看一眼，不跳外部浏览器。 */
+    onOpenLink: (String) -> Unit = {},
+    viewModel: ChatViewModel = hiltViewModel()
+) {
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val haptics = LocalHapticFeedback.current
+    val animations = LocalAnimationsEnabled.current
+    val isDark = LocalAppDark.current
+    val accent = LocalAccentColor.current
+
+    var showProfileSheet by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+    var selectedMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var editMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var deleteMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var pendingExport by remember { mutableStateOf<com.myfriend.app.domain.ExportFile?>(null) }
+    var localNotice by remember { mutableStateOf<String?>(null) }
+    var viewingImage by remember { mutableStateOf<MessageAttachment?>(null) }
+
+    val imagePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(4)
+    ) { uris -> viewModel.addImages(uris) }
+    val coroutineScope = rememberCoroutineScope()
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        val file = pendingExport
+        if (uri != null && file != null) {
+            runCatching {
+                context.contentResolver.openOutputStream(uri)?.use { stream ->
+                    stream.write(file.content.toByteArray(Charsets.UTF_8))
+                } ?: error("无法写入文件")
+            }.onSuccess {
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("对话已导出", duration = SnackbarDuration.Short)
+                }
+            }.onFailure {
+                coroutineScope.launch {
+                    snackbarHostState.showSnackbar("导出失败：${it.message}", duration = SnackbarDuration.Long)
+                }
+            }
+        }
+        pendingExport = null
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is ChatEvent.OpenSession -> onSwitchSession(event.sessionId)
+                is ChatEvent.ExportReady -> {
+                    pendingExport = event.file
+                    runCatching { exportLauncher.launch(event.file.fileName) }
+                }
+                ChatEvent.SessionDeleted -> onBack()
+            }
+        }
+    }
+
+    LaunchedEffect(state.snackbar) {
+        val message = state.snackbar ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
+        viewModel.dismissSnackbar()
+    }
+
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.onResume()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        ChatBackground(state.settings, isDark)
+        Column(Modifier.fillMaxSize()) {
+            ChatTopBar(
+                persona = state.persona,
+                mood = state.mood,
+                presence = state.presence,
+                config = state.config,
+                session = state.session,
+                typing = state.isGenerating && state.hasStarted,
+                onBack = onBack,
+                onProfile = { showProfileSheet = true },
+                onOpenMenu = { showMenu = true }
+            )
+            if (state.config == null) {
+                NoConfigBanner(
+                    configsAvailable = state.apiConfigs.isNotEmpty(),
+                    onChoose = viewModel::openConfigPicker,
+                    onAdd = onOpenApiConfigs
+                )
+            }
+            Box(Modifier.weight(1f)) {
+                if (!state.loaded) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            strokeWidth = 2.dp,
+                            color = accent
+                        )
+                    }
+                } else {
+                    ChatMessageList(
+                        state = state,
+                        onLongPress = { message ->
+                            haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                            selectedMessage = message
+                        },
+                        onRetry = viewModel::regenerate,
+                        onViewImage = { viewingImage = it },
+                        onOpenLink = onOpenLink,
+                        onSuggestion = { suggestion ->
+                            viewModel.setDraft(suggestion)
+                        }
+                    )
+                }
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+            }
+            if (!state.settings.backgroundTipDismissed) {
+                BackgroundTipBanner(
+                    onDismiss = viewModel::dismissBackgroundTip,
+                    onOpenSettings = onOpenSettings
+                )
+            }
+            Composer(
+                state = state,
+                accent = accent,
+                onDraftChange = viewModel::setDraft,
+                onSend = viewModel::send,
+                onStop = viewModel::stopGeneration,
+                onPickImages = {
+                    imagePicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                    )
+                },
+                onRemoveImage = viewModel::removeImage
+            )
+        }
+
+        DropdownMenu(
+            expanded = showMenu,
+            onDismissRequest = { showMenu = false },
+            modifier = Modifier
+                .statusBarsPadding()
+                .padding(top = 54.dp, end = 12.dp)
+                .align(Alignment.TopEnd)
+        ) {
+            DropdownItem("切换人格") {
+                showMenu = false
+                viewModel.openPersonaPicker()
+            }
+            DropdownItem("清空上下文") {
+                showMenu = false
+                showClearConfirm = true
+            }
+            DropdownItem("导出对话") {
+                showMenu = false
+                viewModel.exportChat()
+            }
+            DropdownItem("删除对话", destructive = true) {
+                showMenu = false
+                showDeleteConfirm = true
+            }
+        }
+    }
+
+    if (showProfileSheet && state.persona != null && state.session != null) {
+        ProfileSheet(
+            persona = state.persona!!,
+            session = state.session!!,
+            configName = state.config?.name,
+            configModel = state.session?.model ?: state.config?.model,
+            onDismiss = { showProfileSheet = false },
+            onEdit = {
+                showProfileSheet = false
+                onOpenPersona(state.persona!!.id)
+            },
+            onMemory = {
+                showProfileSheet = false
+                onOpenMemory(state.persona!!.id)
+            },
+            onEvolution = {
+                showProfileSheet = false
+                onOpenEvolution(state.persona!!.id)
+            },
+            onProactive = {
+                showProfileSheet = false
+                onOpenProactive(state.persona!!.id)
+            },
+            onSwitchPersona = {
+                showProfileSheet = false
+                viewModel.openPersonaPicker()
+            }
+        )
+    }
+
+    if (state.showConfigPicker) {
+        ConfigPickerSheet(
+            state = state,
+            onDismiss = viewModel::closeConfigPicker,
+            onSelect = viewModel::selectConfig,
+            onAddConfig = {
+                viewModel.closeConfigPicker()
+                onOpenApiConfigs()
+            }
+        )
+    }
+
+    if (state.showPersonaPicker) {
+        PersonaPickerSheet(
+            state = state,
+            onDismiss = viewModel::closePersonaPicker,
+            onSelect = viewModel::switchPersona
+        )
+    }
+
+    selectedMessage?.let { message ->
+        MessageActionSheet(
+            message = message,
+            isLastAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == message.id,
+            onDismiss = { selectedMessage = null },
+            onCopy = {
+                clipboard.setText(AnnotatedString(message.content))
+                selectedMessage = null
+                coroutineScope.launch { snackbarHostState.showSnackbar("已复制") }
+            },
+            onEdit = {
+                selectedMessage = null
+                editMessage = message
+            },
+            onRegenerate = {
+                selectedMessage = null
+                viewModel.regenerate()
+            },
+            onDelete = {
+                selectedMessage = null
+                deleteMessage = message
+            }
+        )
+    }
+
+    editMessage?.let { message ->
+        var value by remember(message.id) { mutableStateOf(message.content) }
+        AlertDialog(
+            onDismissRequest = { editMessage = null },
+            shape = RoundedCornerShape(26.dp),
+            containerColor = MaterialTheme.colorScheme.surface,
+            title = { Text("编辑消息") },
+            text = {
+                StyledOutlinedField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = "你的消息",
+                    singleLine = false,
+                    minLines = 3,
+                    maxLines = 10
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.editUserMessage(message.id, value)
+                    editMessage = null
+                }, enabled = value.isNotBlank()) { Text("保存并重新生成") }
+            },
+            dismissButton = { TextButton(onClick = { editMessage = null }) { Text("取消") } }
+        )
+    }
+
+    deleteMessage?.let { message ->
+        ConfirmDialog(
+            title = "删除这条消息？",
+            message = "删除后将重新计算对话摘要，此操作无法撤销。",
+            confirmText = "删除",
+            destructive = true,
+            onConfirm = {
+                viewModel.deleteMessage(message.id)
+                deleteMessage = null
+            },
+            onDismiss = { deleteMessage = null }
+        )
+    }
+
+    if (showClearConfirm) {
+        ConfirmDialog(
+            title = "清空上下文？",
+            message = "这段对话的所有消息将被删除。人格设定与长期记忆会保留。",
+            confirmText = "清空",
+            destructive = true,
+            onConfirm = {
+                showClearConfirm = false
+                viewModel.clearContext()
+            },
+            onDismiss = { showClearConfirm = false }
+        )
+    }
+
+    viewingImage?.let { attachment ->
+        ImageViewerDialog(attachment = attachment, onDismiss = { viewingImage = null })
+    }
+
+    if (showDeleteConfirm) {
+        ConfirmDialog(
+            title = "删除整段对话？",
+            message = "所有聊天消息将被永久删除，此操作无法撤销。",
+            confirmText = "删除",
+            destructive = true,
+            onConfirm = {
+                showDeleteConfirm = false
+                viewModel.deleteSession()
+            },
+            onDismiss = { showDeleteConfirm = false }
+        )
+    }
+}
+
+/**
+ * 一个「目标尺寸写死」的图片请求。
+ *
+ * 聊天里的每一张图都必须走这里：Coil 会按目标尺寸采样解码，而不是把相册原图整张
+ * 解出来再交给 ContentScale。没有 size 的请求是最容易被忽略的内存黑洞——
+ * 一张 12MP 的照片按原尺寸是 48MB，按 272dp 的显示尺寸只有几百 KB。
+ */
+@Composable
+private fun rememberSizedImageRequest(data: Any?, width: Dp, height: Dp): ImageRequest {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val widthPx = with(density) { width.roundToPx() }.coerceAtLeast(1)
+    val heightPx = with(density) { height.roundToPx() }.coerceAtLeast(1)
+    return remember(data, widthPx, heightPx) {
+        ImageRequest.Builder(context)
+            .data(data)
+            .size(widthPx, heightPx)
+            .crossfade(true)
+            .build()
+    }
+}
+
+/** 全屏尺寸（背景、大图查看器）：按屏幕像素解码，不碰原图分辨率。 */
+@Composable
+private fun rememberScreenSize(): Pair<Int, Int> {
+    val configuration = LocalConfiguration.current
+    val density = LocalDensity.current
+    return remember(configuration.screenWidthDp, configuration.screenHeightDp, density) {
+        with(density) {
+            (configuration.screenWidthDp.dp.roundToPx().coerceAtLeast(1)) to
+                (configuration.screenHeightDp.dp.roundToPx().coerceAtLeast(1))
+        }
+    }
+}
+
+@Composable
+private fun ChatBackground(settings: AppSettings, isDark: Boolean) {
+    if (!settings.chatBackgroundImageUri.isNullOrBlank()) {
+        val context = LocalContext.current
+        val (screenWidthPx, screenHeightPx) = rememberScreenSize()
+        val backgroundRequest = remember(settings.chatBackgroundImageUri, screenWidthPx, screenHeightPx) {
+            ImageRequest.Builder(context)
+                .data(settings.chatBackgroundImageUri)
+                .size(screenWidthPx, screenHeightPx)
+                .build()
+        }
+        Box(Modifier.fillMaxSize()) {
+            AsyncImage(
+                model = backgroundRequest,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        if (isDark) Color.Black.copy(alpha = 0.62f)
+                        else Color.White.copy(alpha = 0.66f)
+                    )
+            )
+        }
+    } else {
+        val color = settings.chatBackgroundColor?.let { Color(it) } ?: MaterialTheme.colorScheme.background
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(color)
+                .background(
+                    Brush.verticalGradient(
+                        listOf(Color.Transparent, LocalAccentColor.current.copy(alpha = 0.025f))
+                    )
+                )
+        )
+    }
+}
+
+@Composable
+private fun ChatTopBar(
+    persona: PersonaEntity?,
+    mood: com.myfriend.app.domain.MoodState,
+    presence: com.myfriend.app.domain.Presence,
+    config: com.myfriend.app.data.local.ApiConfigEntity?,
+    session: ChatSessionEntity?,
+    typing: Boolean,
+    onBack: () -> Unit,
+    onProfile: () -> Unit,
+    onOpenMenu: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.92f),
+        tonalElevation = 0.dp
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .height(66.dp)
+                .padding(horizontal = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircleIconButton(
+                icon = Icons.AutoMirrored.Outlined.ArrowBack,
+                contentDescription = "返回",
+                onClick = onBack,
+                modifier = Modifier.size(40.dp)
+            )
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .combinedClickable(onClick = onProfile, onLongClick = null)
+                    .padding(horizontal = 4.dp, vertical = 5.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (persona != null) {
+                    Box {
+                        PersonaAvatar(persona.avatarUri, persona.avatarSeed, persona.name, size = 40.dp)
+                        Box(
+                            Modifier
+                                .align(Alignment.BottomEnd)
+                                .size(11.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.background)
+                                .padding(2.dp)
+                                .clip(CircleShape)
+                                .background(
+                                    if (config == null) MaterialTheme.colorScheme.error
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                                )
+                        )
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            persona.name,
+                            style = MaterialTheme.typography.titleMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (typing) {
+                            TypingSubtitle()
+                        } else {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                // 心情先露一眼：他此刻是什么状态，比模型名字更值得知道。
+                                MoodChip(mood, compact = true)
+                                // 副标题让给「他正在……」：他自己在做什么，用户只是看见。
+                                PresenceText(
+                                    presence = presence,
+                                    modifier = Modifier.weight(1f, fill = false),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    Text("对话", style = MaterialTheme.typography.titleMedium)
+                }
+            }
+            CircleIconButton(
+                icon = Icons.Outlined.MoreVert,
+                contentDescription = "更多",
+                onClick = onOpenMenu,
+                modifier = Modifier.size(40.dp)
+            )
+        }
+    }
+}
+
+/**
+ * 标题栏里的「正在输入…」，像微信那样，等他自己开口。
+ */
+@Composable
+private fun TypingSubtitle() {
+    val animations = LocalAnimationsEnabled.current
+    val accent = LocalAccentColor.current
+    val transition = rememberInfiniteTransition(label = "typing-subtitle")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "正在输入",
+            style = MaterialTheme.typography.labelSmall,
+            color = accent.copy(alpha = 0.95f)
+        )
+        Spacer(Modifier.width(3.dp))
+        repeat(3) { index ->
+            val alpha by transition.animateFloat(
+                initialValue = 0.25f,
+                targetValue = 1f,
+                animationSpec = infiniteRepeatable(
+                    animation = tween(600, delayMillis = index * 140),
+                    repeatMode = RepeatMode.Reverse
+                ),
+                label = "typingSubtitleDot$index"
+            )
+            Text(
+                "·",
+                style = MaterialTheme.typography.labelSmall,
+                color = accent.copy(alpha = if (animations) alpha else 0.8f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun NoConfigBanner(
+    configsAvailable: Boolean,
+    onChoose: () -> Unit,
+    onAdd: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f)
+    ) {
+        Row(
+            Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                "为这段对话选择一个 API 配置",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = if (configsAvailable) onChoose else onAdd) {
+                Text(if (configsAvailable) "选择" else "添加", style = MaterialTheme.typography.labelMedium)
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChatMessageList(
+    state: ChatUiState,
+    onLongPress: (MessageEntity) -> Unit,
+    onRetry: () -> Unit,
+    onViewImage: (MessageAttachment) -> Unit,
+    onSuggestion: (String) -> Unit,
+    onOpenLink: (String) -> Unit
+) {
+    val listState = rememberLazyListState()
+    val isDragged by listState.interactionSource.collectIsDraggedAsState()
+    val coroutineScope = rememberCoroutineScope()
+    var autoFollow by remember { mutableStateOf(true) }
+    val displayItems = remember(state.messages) {
+        buildList {
+            var previousTimestamp: Long? = null
+            state.messages.forEach { message ->
+                val previous = previousTimestamp
+                if (previous == null || !isSameDay(previous, message.createdAt)) {
+                    add(ChatDisplayItem.Date(dayLabel(message.createdAt), dayLabel(message.createdAt) + message.createdAt))
+                }
+                add(ChatDisplayItem.Message(message))
+                previousTimestamp = message.createdAt
+            }
+        }
+    }
+    val extraItems = if (state.isGenerating) 1 else 0
+    val totalItems = displayItems.size + extraItems
+
+    val isAtBottom by remember {
+        androidx.compose.runtime.derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@derivedStateOf true
+            info.totalItemsCount == 0 ||
+                (last.index >= info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset + 48)
+        }
+    }
+
+    LaunchedEffect(isDragged) {
+        if (isDragged) autoFollow = false
+    }
+    LaunchedEffect(isAtBottom) {
+        if (isAtBottom) autoFollow = true
+    }
+    LaunchedEffect(displayItems.size) {
+        if (autoFollow && displayItems.isNotEmpty()) {
+            listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+        }
+    }
+    LaunchedEffect(state.streamingText.length, state.isGenerating) {
+        if (autoFollow) {
+            val target = listState.layoutInfo.totalItemsCount - 1
+            if (target >= 0) listState.scrollToItem(target)
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        if (state.messages.isEmpty() && !state.isGenerating) {
+            EmptyConversation(state, onSuggestion)
+        } else {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                items(displayItems, key = {
+                    when (it) {
+                        is ChatDisplayItem.Date -> "date-${it.key}"
+                        is ChatDisplayItem.Message -> it.message.id
+                    }
+                }) { item ->
+                    when (item) {
+                        is ChatDisplayItem.Date -> DateDivider(item.label)
+                        is ChatDisplayItem.Message -> {
+                            MessageBubble(
+                                message = item.message,
+                                settings = state.settings,
+                                userAvatarUri = state.settings.userAvatarUri,
+                                isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
+                                // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
+                                // 否则每条用户消息都挂一个小字，会像回执系统而不像一个人。
+                                showRead = com.myfriend.app.domain.ReadReceipt.shouldShow(
+                                    readAt = item.message.readAt,
+                                    hasAssistantAfter = state.messages.any { later ->
+                                        later.role == MessageRole.ASSISTANT &&
+                                            later.createdAt > item.message.createdAt &&
+                                            later.status != MessageStatus.ERROR
+                                    }
+                                ),
+                                onLongPress = { onLongPress(item.message) },
+                                onRetry = onRetry,
+                                onViewImage = onViewImage,
+                                onOpenLink = onOpenLink
+                            )
+                        }
+                    }
+                }
+                if (state.isGenerating && state.hasStarted) {
+                    item(key = "streaming") {
+                        StreamingBubble(
+                            text = state.streamingText,
+                            settings = state.settings,
+                            traces = state.streamingTraces,
+                            onOpenLink = onOpenLink
+                        )
+                    }
+                }
+                item(key = "tail-space") { Spacer(Modifier.height(4.dp)) }
+            }
+            AnimatedVisibility(
+                visible = !isAtBottom && state.messages.isNotEmpty(),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 8.dp, bottom = 10.dp),
+                enter = fadeIn() + slideInVertically { it / 2 },
+                exit = fadeOut() + slideOutVertically { it / 2 }
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .combinedClickable(
+                            onClick = {
+                                autoFollow = true
+                                coroutineScope.launch {
+                                    listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+                                }
+                            },
+                            onLongClick = null
+                        )
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Outlined.ExpandMore, contentDescription = "回到底部", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(Modifier.width(4.dp))
+                        Text("最新", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyConversation(state: ChatUiState, onSuggestion: (String) -> Unit) {
+    val persona = state.persona ?: return
+    val accent = LocalAccentColor.current
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        PersonaAvatar(persona.avatarUri, persona.avatarSeed, persona.name, size = 76.dp, ringColor = accent.copy(alpha = 0.55f))
+        Spacer(Modifier.height(18.dp))
+        Text(persona.name, style = MaterialTheme.typography.headlineSmall)
+        Spacer(Modifier.height(7.dp))
+        Text(
+            text = persona.description.ifBlank { "开始一段新的对话。" },
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+        )
+        Spacer(Modifier.height(24.dp))
+        val suggestions = listOf("嗨，今天过得怎么样？", "陪我待一会儿", "我最近有件事想和你说")
+        suggestions.forEach { suggestion ->
+            Surface(
+                onClick = { onSuggestion(suggestion) },
+                shape = RoundedCornerShape(50),
+                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.82f),
+                border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.8f)),
+                modifier = Modifier.padding(vertical = 4.dp)
+            ) {
+                Text(
+                    suggestion,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.padding(horizontal = 17.dp, vertical = 9.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "对话仅保存在本机",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+        )
+    }
+}
+
+@Composable
+private fun DateDivider(label: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.68f))
+                .padding(horizontal = 10.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageBubble(
+    message: MessageEntity,
+    settings: AppSettings,
+    /** 「我的头像」；null 时不画（默认就是没有头像的克制样子）。 */
+    userAvatarUri: String? = null,
+    isLatestAssistant: Boolean,
+    showRead: Boolean = false,
+    onLongPress: () -> Unit,
+    onRetry: () -> Unit,
+    onViewImage: (MessageAttachment) -> Unit,
+    onOpenLink: (String) -> Unit
+) {
+    val attachments = remember(message.id, message.attachmentsJson) {
+        AttachmentsCodec.decode(message.attachmentsJson)
+    }
+    // 他这一轮做过什么（搜了什么、记住了什么）。折叠成一行小字，点开看细节。
+    val traceItems = remember(message.id, message.toolTraceJson) {
+        ToolTraceCodec.decode(message.toolTraceJson)
+    }
+    // 展开状态跟着消息 id 走，滚动收起再回来时保持；不跨消息串味。
+    var traceExpanded by rememberSaveable(message.id) { mutableStateOf(false) }
+    val outgoing = message.role == MessageRole.USER
+    // 纯图片消息（无正文）用更小的内边距，让照片几乎贴着气泡边缘，
+    // 否则会像被一圈底色装裱起来，观感偏重。
+    val imageOnly = attachments.isNotEmpty() &&
+        message.content.isBlank() &&
+        message.status != MessageStatus.ERROR
+    val padH = when {
+        imageOnly -> 5.dp
+        settings.bubbleStyle == BubbleStyle.COMPACT -> 12.dp
+        else -> 14.dp
+    }
+    val padV = when {
+        imageOnly -> 5.dp
+        settings.bubbleStyle == BubbleStyle.COMPACT -> 8.dp
+        else -> 10.dp
+    }
+    val accent = LocalAccentColor.current
+    val animations = LocalAnimationsEnabled.current
+    val shape = bubbleShape(settings.bubbleStyle, outgoing)
+    val isOutlined = settings.bubbleStyle == BubbleStyle.OUTLINED
+    val background = when {
+        isOutlined && outgoing -> accent.copy(alpha = 0.10f)
+        isOutlined -> MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)
+        outgoing -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.94f)
+    }
+    val contentColor = when {
+        isOutlined -> MaterialTheme.colorScheme.onSurface
+        outgoing -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    val border = when {
+        isOutlined && outgoing -> androidx.compose.foundation.BorderStroke(1.dp, accent.copy(alpha = 0.45f))
+        isOutlined -> androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+        outgoing -> null
+        else -> androidx.compose.foundation.BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+    }
+    val showUserAvatar = outgoing && !userAvatarUri.isNullOrBlank()
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = if (settings.bubbleStyle == BubbleStyle.COMPACT) 1.dp else 2.dp),
+        contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart
+    ) {
+        Surface(
+            modifier = Modifier
+                .widthIn(min = 56.dp, max = 560.dp)
+                // 头像占 28dp + 6dp 间距：气泡整体往左让出这条槽，两者不会叠在一起。
+                .padding(end = if (showUserAvatar) 34.dp else 0.dp)
+                .combinedClickable(onClick = {}, onLongClick = onLongPress),
+            shape = shape,
+            color = background,
+            border = border,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp
+        ) {
+            Column(
+                Modifier.padding(
+                    horizontal = padH,
+                    vertical = padV
+                )
+            ) {
+                attachments.forEach { attachment ->
+                    // 气泡里图片的最大显示尺寸就是解码目标：272×340 / 248×300dp。
+                    val imageRequest = rememberSizedImageRequest(
+                        data = File(android.net.Uri.parse(attachment.uri).path ?: ""),
+                        width = if (imageOnly) 272.dp else 248.dp,
+                        height = if (imageOnly) 340.dp else 300.dp
+                    )
+                    AsyncImage(
+                        model = imageRequest,
+                        contentDescription = "图片消息",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .padding(bottom = if (imageOnly) 2.dp else 6.dp)
+                            .widthIn(max = if (imageOnly) 272.dp else 248.dp)
+                            .heightIn(max = if (imageOnly) 340.dp else 300.dp)
+                            .clip(RoundedCornerShape(if (imageOnly) 16.dp else 14.dp))
+                            .combinedClickable(
+                                onClick = { onViewImage(attachment) },
+                                onLongClick = onLongPress
+                            )
+                    )
+                }
+                if (message.content.isNotBlank()) {
+                    MarkdownText(
+                        text = message.content,
+                        color = contentColor,
+                        isOutgoing = outgoing && !isOutlined,
+                        compact = settings.bubbleStyle == BubbleStyle.COMPACT,
+                        onOpenLink = onOpenLink,
+                        selectable = false,
+                        onLongPress = onLongPress
+                    )
+                }
+                if (message.status == MessageStatus.ERROR) {
+                    Spacer(Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (outgoing && !isOutlined) Color.White.copy(alpha = 0.12f)
+                        else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.6f)
+                    ) {
+                        Column(Modifier.padding(horizontal = 10.dp, vertical = 8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Outlined.ErrorOutline,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = if (outgoing && !isOutlined) contentColor else MaterialTheme.colorScheme.error
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "生成失败",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (outgoing && !isOutlined) contentColor else MaterialTheme.colorScheme.onErrorContainer
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            val errorTint = (if (outgoing && !isOutlined) contentColor
+                            else MaterialTheme.colorScheme.onErrorContainer).copy(alpha = 0.85f)
+                            // 报错里偶尔带着地址（比如某个服务给的提示），同样点得开
+                            InlineText(
+                                raw = message.errorMessage ?: "未知错误",
+                                color = errorTint,
+                                codeBackground = Color.Transparent,
+                                isOutgoing = outgoing && !isOutlined,
+                                linkColor = markdownLinkColor(outgoing && !isOutlined),
+                                onOpenLink = onOpenLink,
+                                style = MaterialTheme.typography.bodySmall,
+                                // 报错里也可能带链接；长按同样要叫得出菜单，不然这段文字像块死区。
+                                onLongPress = onLongPress
+                            )
+                        }
+                    }
+                    if (isLatestAssistant) {
+                        TextButton(
+                            onClick = onRetry,
+                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
+                            modifier = Modifier.height(32.dp)
+                        ) {
+                            Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = contentColor)
+                            Spacer(Modifier.width(5.dp))
+                            Text("重新生成", style = MaterialTheme.typography.labelSmall, color = contentColor)
+                        }
+                    }
+                }
+                if (traceItems.isNotEmpty() && message.status == MessageStatus.COMPLETE) {
+                    // 出向气泡（用户消息）一般没有动作痕迹；真有时退回气泡自身文字色，避免在 accent 底上看不清。
+                    val baseTint = if (outgoing && !isOutlined) contentColor
+                    else MaterialTheme.colorScheme.onSurfaceVariant
+                    val traceTint = baseTint.copy(alpha = 0.75f)
+                    Spacer(Modifier.height(6.dp))
+                    ToolTraceRow(
+                        items = traceItems,
+                        expanded = traceExpanded,
+                        onToggle = { traceExpanded = !traceExpanded },
+                        tint = traceTint,
+                        onLongPress = onLongPress,
+                        // 和时间戳 Row 一样只占自身宽度并对齐到气泡内侧，
+                        // 用 fillMaxWidth 会把气泡撑到最大宽度。
+                        modifier = Modifier.align(if (outgoing) Alignment.End else Alignment.Start)
+                    )
+                    AnimatedVisibility(
+                        visible = traceExpanded,
+                        modifier = Modifier.align(if (outgoing) Alignment.End else Alignment.Start)
+                    ) {
+                        ToolTraceDetail(items = traceItems, tint = traceTint)
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                Row(
+                    // 时间戳只占自身宽度并对齐到气泡内侧：
+                    // 用 fillMaxWidth 会把每个气泡都撑到最大宽度。
+                    modifier = Modifier
+                        .align(if (outgoing) Alignment.End else Alignment.Start)
+                        .padding(
+                            horizontal = if (imageOnly) 7.dp else 0.dp,
+                            vertical = if (imageOnly) 3.dp else 0.dp
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (message.status == MessageStatus.STOPPED) {
+                        Text(
+                            "已停止 · ",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.62f)
+                        )
+                    }
+                    if (message.edited) {
+                        Text(
+                            "已编辑 · ",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.62f)
+                        )
+                    }
+                    Text(
+                        text = formatClock(message.createdAt),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = contentColor.copy(alpha = 0.62f)
+                    )
+                    if (outgoing && showRead) {
+                        Text(
+                            " · 已读",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = contentColor.copy(alpha = 0.62f)
+                        )
+                    }
+                }
+            }
+        }
+        if (showUserAvatar) {
+            // 像 Telegram 的「自己这一侧」：小头像贴在这条消息的右下角，只占一条窄槽。
+            UserAvatar(
+                avatarUri = userAvatarUri,
+                size = 28.dp,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(bottom = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun StreamingBubble(
+    text: String,
+    settings: AppSettings,
+    // 生成过程中已经发生的动作（ViewModel 接好后传实时的，目前先走默认空列表）。
+    traces: List<ToolTraceItem> = emptyList(),
+    onOpenLink: (String) -> Unit = {}
+) {
+    var traceExpanded by rememberSaveable { mutableStateOf(false) }
+    val outgoing = false
+    val shape = bubbleShape(settings.bubbleStyle, outgoing)
+    Surface(
+        modifier = Modifier
+            .widthIn(min = 56.dp, max = 560.dp),
+        shape = shape,
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
+        border = androidx.compose.foundation.BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
+            if (text.isBlank()) {
+                TypingIndicator()
+            } else {
+                MarkdownText(
+                    text = text,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    isOutgoing = false,
+                    compact = settings.bubbleStyle == BubbleStyle.COMPACT,
+                    onOpenLink = onOpenLink,
+                    selectable = false
+                )
+                BlinkingCursor()
+            }
+            if (traces.isNotEmpty()) {
+                Spacer(Modifier.height(6.dp))
+                StreamingTraceRow(
+                    items = traces,
+                    expanded = traceExpanded,
+                    onToggle = { traceExpanded = !traceExpanded }
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 生成中的动作行：药丸样式的一行「联网搜索」，点开可以看到已经拿到的细节。
+ */
+@Composable
+private fun StreamingTraceRow(
+    items: List<ToolTraceItem>,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    val tint = MaterialTheme.colorScheme.onSurfaceVariant
+    val summary = ToolTraceCodec.summarize(items).ifBlank { "正在忙" }
+    Column(Modifier.widthIn(max = 460.dp)) {
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .clickable(onClick = onToggle)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 9.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(11.dp),
+                    tint = tint.copy(alpha = 0.8f)
+                )
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = tint.copy(alpha = 0.75f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(2.dp))
+                Icon(
+                    imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                    contentDescription = if (expanded) "收起动作痕迹" else "展开动作痕迹",
+                    modifier = Modifier.size(13.dp),
+                    tint = tint.copy(alpha = 0.7f)
+                )
+            }
+        }
+        AnimatedVisibility(visible = expanded) {
+            ToolTraceDetail(items = items, tint = tint.copy(alpha = 0.75f))
+        }
+    }
+}
+
+/**
+ * 气泡里的动作行折叠头：图标 + 一句话摘要 + 展开箭头。
+ * 整行可点，长按仍然交给外层的删除菜单，只包住这一行，不抢气泡正文的点击。
+ */
+@Composable
+private fun ToolTraceRow(
+    items: List<ToolTraceItem>,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    tint: Color,
+    modifier: Modifier = Modifier,
+    onLongPress: (() -> Unit)? = null
+) {
+    Row(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .combinedClickable(onClick = onToggle, onLongClick = onLongPress)
+            .padding(horizontal = 1.dp, vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.AutoAwesome,
+            contentDescription = null,
+            modifier = Modifier.size(12.dp),
+            tint = tint
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            text = "· " + ToolTraceCodec.summarize(items).ifBlank { "动作痕迹" },
+            style = MaterialTheme.typography.labelSmall,
+            color = tint,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        Spacer(Modifier.width(3.dp))
+        Icon(
+            imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+            contentDescription = if (expanded) "收起动作痕迹" else "展开动作痕迹",
+            modifier = Modifier.size(14.dp),
+            tint = tint
+        )
+    }
+}
+
+/**
+ * 展开后的逐条明细：标题（· 副标题），正文最多 3 行；失败的条目整条用 error 色并标注「失败」。
+ */
+@Composable
+private fun ToolTraceDetail(
+    items: List<ToolTraceItem>,
+    tint: Color,
+    modifier: Modifier = Modifier
+) {
+    val errorColor = MaterialTheme.colorScheme.error
+    Column(
+        modifier = modifier
+            .widthIn(max = 440.dp)
+            .padding(top = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        items.forEach { item ->
+            val itemColor = if (item.ok) tint.copy(alpha = 0.92f) else errorColor
+            val headline = buildList {
+                add(item.title.ifBlank { item.name })
+                item.subtitle?.takeIf { it.isNotBlank() }?.let { add(it) }
+                if (!item.ok) add("失败")
+            }.filter { it.isNotBlank() }.joinToString(" · ")
+            Column {
+                Text(
+                    text = headline,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = itemColor,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                if (item.detail.isNotBlank()) {
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        text = item.detail,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = itemColor.copy(alpha = 0.85f),
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TypingIndicator() {
+    val animations = LocalAnimationsEnabled.current
+    val transition = rememberInfiniteTransition(label = "typing")
+    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+        repeat(3) { index ->
+            val alpha = if (animations) {
+                val animated by transition.animateFloat(
+                    initialValue = 0.25f,
+                    targetValue = 1f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(600, delayMillis = index * 140),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "dot$index"
+                )
+                animated
+            } else 0.6f
+            Box(
+                Modifier
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha))
+            )
+        }
+    }
+}
+
+@Composable
+private fun BlinkingCursor() {
+    val animations = LocalAnimationsEnabled.current
+    if (!animations) return
+    val transition = rememberInfiniteTransition(label = "cursor")
+    val alpha by transition.animateFloat(
+        initialValue = 0.2f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(700), RepeatMode.Reverse),
+        label = "cursorAlpha"
+    )
+    Text(
+        "▍",
+        color = LocalAccentColor.current.copy(alpha = alpha),
+        fontSize = 13.sp,
+        modifier = Modifier.padding(top = 2.dp)
+    )
+}
+
+private fun bubbleShape(style: BubbleStyle, outgoing: Boolean): RoundedCornerShape = when (style) {
+    BubbleStyle.SOFT -> if (outgoing) RoundedCornerShape(21.dp, 21.dp, 7.dp, 21.dp)
+    else RoundedCornerShape(21.dp, 21.dp, 21.dp, 7.dp)
+    BubbleStyle.COMPACT -> if (outgoing) RoundedCornerShape(12.dp, 12.dp, 4.dp, 12.dp)
+    else RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
+    BubbleStyle.OUTLINED -> RoundedCornerShape(18.dp)
+}
+
+@Composable
+private fun Composer(
+    state: ChatUiState,
+    accent: Color,
+    onDraftChange: (String) -> Unit,
+    onSend: () -> Unit,
+    onStop: () -> Unit,
+    onPickImages: () -> Unit,
+    onRemoveImage: (String) -> Unit
+) {
+    var value by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
+    LaunchedEffect(state.draft) {
+        if (state.draft.isEmpty() && value.text.isNotEmpty()) {
+            value = TextFieldValue("")
+        } else if (state.draft.isNotEmpty() && value.text.isEmpty()) {
+            value = TextFieldValue(state.draft, TextRange(state.draft.length))
+        }
+    }
+    val sendEnabled = (state.draft.isNotBlank() || state.images.isNotEmpty()) && state.canSend && !state.isGenerating
+    Surface(
+        color = MaterialTheme.colorScheme.background.copy(alpha = 0.94f)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 10.dp)
+        ) {
+            if (state.images.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 4.dp, bottom = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    state.images.forEach { attachment ->
+                        Box {
+                            val pendingRequest = rememberSizedImageRequest(
+                                data = File(android.net.Uri.parse(attachment.uri).path ?: ""),
+                                width = 62.dp,
+                                height = 62.dp
+                            )
+                            AsyncImage(
+                                model = pendingRequest,
+                                contentDescription = "待发送图片",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopEnd)
+                                    .padding(2.dp)
+                                    .size(18.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.Black.copy(alpha = 0.55f))
+                                    .combinedClickable(
+                                        onClick = { onRemoveImage(attachment.uri) },
+                                        onLongClick = null
+                                    ),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Close,
+                                    contentDescription = "移除图片",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(12.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                if (!state.isGenerating) {
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(onClick = onPickImages, onLongClick = null),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Outlined.Image,
+                            contentDescription = "发送图片",
+                            tint = if (state.canSend) MaterialTheme.colorScheme.onSurfaceVariant
+                            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                }
+                Surface(
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(25.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (state.isGenerating) MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+                        else MaterialTheme.colorScheme.outlineVariant
+                    )
+                ) {
+                    Box(
+                        Modifier
+                            .heightIn(min = 46.dp, max = 132.dp)
+                            .padding(horizontal = 17.dp, vertical = 12.dp)
+                    ) {
+                        if (value.text.isEmpty()) {
+                            Text(
+                                text = when {
+                                    state.config == null -> "选择 API 配置后开始对话"
+                                    state.images.isNotEmpty() -> "说点什么，或直接发送图片…"
+                                    else -> "说点什么…"
+                                },
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
+                            )
+                        }
+                        BasicTextField(
+                            value = value,
+                            onValueChange = {
+                                value = it
+                                onDraftChange(it.text)
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = androidx.compose.ui.graphics.SolidColor(accent),
+                            keyboardOptions = KeyboardOptions.Default,
+                            maxLines = 6
+                        )
+                    }
+                }
+                Spacer(Modifier.width(8.dp))
+                val enabled = state.isGenerating || sendEnabled
+                Box(
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (enabled) accent
+                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f)
+                        )
+                        .combinedClickable(
+                            onClick = {
+                                if (state.isGenerating) onStop() else if (sendEnabled) onSend()
+                            },
+                            onLongClick = null
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (state.isGenerating) {
+                        Box(
+                            Modifier
+                                .size(13.dp)
+                                .clip(RoundedCornerShape(3.dp))
+                                .background(Color.White)
+                        )
+                    } else {
+                        Icon(
+                            Icons.Rounded.ArrowUpward,
+                            contentDescription = "发送",
+                            tint = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 一次性引导：把他留在后台。关掉一次就不再出现。 */
+@Composable
+private fun BackgroundTipBanner(
+    onDismiss: () -> Unit,
+    onOpenSettings: (() -> Unit)?
+) {
+    val accent = LocalAccentColor.current
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Outlined.PowerSettingsNew,
+                    contentDescription = null,
+                    tint = accent,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "把他留在后台",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "他会在后台继续想事情，偶尔主动找你；关掉的话他只在应用打开时存在。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (onOpenSettings != null) {
+                    TextButton(onClick = onOpenSettings) {
+                        Text("去设置", style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(
+                        "知道了",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImageViewerDialog(attachment: MessageAttachment, onDismiss: () -> Unit) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            // 大图查看器：目标就是屏幕，不再放大到原图分辨率；ContentScale.Fit 负责留边。
+            val context = LocalContext.current
+            val (screenWidthPx, screenHeightPx) = rememberScreenSize()
+            val viewerRequest = remember(attachment.uri, screenWidthPx, screenHeightPx) {
+                ImageRequest.Builder(context)
+                    .data(File(android.net.Uri.parse(attachment.uri).path ?: ""))
+                    .size(screenWidthPx, screenHeightPx)
+                    .build()
+            }
+            AsyncImage(
+                model = viewerRequest,
+                contentDescription = "图片",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+    }
+}
+
+@Composable
+private fun DropdownItem(text: String, destructive: Boolean = false, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = {
+            Text(
+                text,
+                style = MaterialTheme.typography.bodyMedium,
+                color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+            )
+        },
+        onClick = onClick
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProfileSheet(
+    persona: PersonaEntity,
+    session: ChatSessionEntity,
+    configName: String?,
+    configModel: String?,
+    onDismiss: () -> Unit,
+    onEdit: () -> Unit,
+    onMemory: () -> Unit,
+    onEvolution: () -> Unit,
+    onProactive: () -> Unit,
+    onSwitchPersona: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = { BottomSheetHandle() }
+    ) {
+        Column(Modifier.padding(bottom = 28.dp)) {
+            Row(Modifier.padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
+                PersonaAvatar(persona.avatarUri, persona.avatarSeed, persona.name, size = 58.dp)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(persona.name, style = MaterialTheme.typography.headlineSmall)
+                    Spacer(Modifier.height(2.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextPill(persona.category.ifBlank { "未分类" })
+                        TextPill("v${persona.version}")
+                    }
+                }
+            }
+            if (persona.description.isNotBlank()) {
+                Text(
+                    persona.description,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
+                )
+            }
+            SettingLine("当前 API", configName ?: "未绑定")
+            SettingLine("模型", configModel?.ifBlank { "未设置" } ?: "未设置")
+            SettingLine("人格注入", "每轮随 system 一起发送")
+            SettingLine("会话", "本地会话 ${session.id.take(8)}")
+            SettingLine("人格提示词", "${persona.prompt.length} 字符 · 完整保存")
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+            SheetActionRow(Icons.Outlined.PersonOutline, "编辑人格与提示词", onClick = onEdit)
+            SheetActionRow(Icons.Outlined.Memory, "长期记忆", onClick = onMemory)
+            SheetActionRow(Icons.Outlined.AutoAwesome, "人格进化与版本保留", onClick = onEvolution)
+            SheetActionRow(Icons.Outlined.Alarm, "主动唤醒规则", onClick = onProactive)
+            SheetActionRow(Icons.Outlined.Sync, "切换到其他已有人格", onClick = onSwitchPersona)
+        }
+    }
+}
+
+@Composable
+private fun SettingLine(label: String, value: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.width(88.dp))
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ConfigPickerSheet(
+    state: ChatUiState,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit,
+    onAddConfig: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = { BottomSheetHandle() }
+    ) {
+        Column(Modifier.padding(bottom = 28.dp)) {
+            BottomSheetTitle("选择 API 配置", "人格提示词只会发送给绑定的服务端")
+            Spacer(Modifier.height(10.dp))
+            if (state.apiConfigs.isEmpty()) {
+                Column(Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
+                    Text("还没有 API 配置", style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "添加一个 OpenAI 兼容的服务，然后回到对话继续。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    TextButton(onClick = onAddConfig, contentPadding = PaddingValues(0.dp)) {
+                        Text("添加 API 配置")
+                    }
+                }
+            } else {
+                state.apiConfigs.forEach { config ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(onClick = { onSelect(config.id) }, onLongClick = null)
+                            .padding(horizontal = 24.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            Modifier
+                                .size(38.dp)
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(config.name, style = MaterialTheme.typography.titleSmall)
+                            Text(
+                                config.model,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (config.id == state.session?.apiConfigId) {
+                            Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = LocalAccentColor.current, modifier = Modifier.size(18.dp))
+                        }
+                    }
+                }
+                TextButton(
+                    onClick = onAddConfig,
+                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
+                ) { Text("管理 API 配置") }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PersonaPickerSheet(
+    state: ChatUiState,
+    onDismiss: () -> Unit,
+    onSelect: (String) -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = { BottomSheetHandle() }
+    ) {
+        Column(Modifier.padding(bottom = 28.dp)) {
+            BottomSheetTitle("切换人格", "会恢复到该人格最近的会话，并带上完整人格与记忆")
+            Spacer(Modifier.height(8.dp))
+            if (state.switchingPersona) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = LocalAccentColor.current)
+                    Spacer(Modifier.width(10.dp))
+                    Text("正在切换人格…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            state.personas.forEach { persona ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .combinedClickable(
+                            onClick = { if (!state.switchingPersona) onSelect(persona.id) },
+                            onLongClick = null
+                        )
+                        .padding(horizontal = 24.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PersonaAvatar(persona.avatarUri, persona.avatarSeed, persona.name, size = 44.dp)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(persona.name, style = MaterialTheme.typography.titleSmall)
+                        Text(persona.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (persona.id == state.session?.personaId) {
+                        Icon(Icons.Outlined.CheckCircle, contentDescription = null, tint = LocalAccentColor.current, modifier = Modifier.size(18.dp))
+                    } else {
+                        Icon(Icons.Outlined.Refresh, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun MessageActionSheet(
+    message: MessageEntity,
+    isLastAssistant: Boolean,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit,
+    onEdit: () -> Unit,
+    onRegenerate: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        dragHandle = { BottomSheetHandle() }
+    ) {
+        Column(Modifier.padding(bottom = 28.dp)) {
+            BottomSheetTitle(if (message.role == MessageRole.USER) "你的消息" else "回复")
+            Text(
+                message.content.take(160).ifBlank { message.errorMessage ?: "空消息" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+            )
+            Spacer(Modifier.height(6.dp))
+            SheetActionRow(Icons.Outlined.ContentCopy, "复制", onClick = onCopy)
+            if (message.role == MessageRole.USER) {
+                SheetActionRow(Icons.Outlined.Edit, "编辑并重新请求", onClick = onEdit)
+            } else if (isLastAssistant) {
+                SheetActionRow(Icons.Outlined.Refresh, "重新生成", onClick = onRegenerate)
+            }
+            SheetActionRow(Icons.Outlined.DeleteOutline, "删除这条消息", danger = true, onClick = onDelete)
+        }
+    }
+}

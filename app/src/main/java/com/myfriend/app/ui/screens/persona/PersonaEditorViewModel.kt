@@ -1,0 +1,290 @@
+package com.myfriend.app.ui.screens.persona
+
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.myfriend.app.data.local.ApiConfigEntity
+import com.myfriend.app.data.repo.ApiConfigRepository
+import com.myfriend.app.data.repo.PersonaCardRepository
+import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.domain.PersonaCard
+import com.myfriend.app.domain.PersonaProfile
+import com.myfriend.app.domain.ProactiveLevel
+import com.myfriend.app.domain.SleepPolicy
+import com.myfriend.app.domain.PersonaDraft
+import com.myfriend.app.domain.PersonaTrait
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+import kotlin.random.Random
+
+/**
+ * 联系人编辑表单。
+ *
+ * 1.9 把它从「名字 + 大段提示词」扩展成可一眼看懂的分节：
+ * 性格 / 喜欢 / 习惯 / 过去 / 设定 + 主动程度 / 记性 / 抽记忆频率 / 睡觉 / 唤醒阈值。
+ * 列表字段用「逗号分隔」的字符串编辑，落库前再拆成数组——这是界面上最不容易写错的形式。
+ */
+data class PersonaForm(
+    val name: String = "",
+    val description: String = "",
+    val avatarUri: String? = null,
+    val avatarSeed: Int = 0,
+    val prompt: String = "",
+    val category: String = "日常聊天",
+    val defaultApiConfigId: String? = null,
+    val modelOverride: String = "",
+    val traitsText: String = "",
+    val likesText: String = "",
+    val behaviorsText: String = "",
+    val backstory: String = "",
+    val quirks: String = "",
+    val proactiveLevel: Int = ProactiveLevel.DEFAULT,
+    val memoryRetention: Int = 3,
+    val extractionEvery: Int = 6,
+    val sleepEnabled: Boolean = true,
+    /** 睡觉 / 醒来的 HH:mm；留空用默认 23:30–08:00。 */
+    val sleepAt: String = "",
+    val wakeAt: String = "",
+    val wakeThreshold: Int = 6
+) {
+    val traits: List<String> get() = parseList(traitsText)
+    val likes: List<String> get() = parseList(likesText)
+    val behaviors: List<String> get() = parseList(behaviorsText)
+
+    companion object {
+        /** 中英文逗号、顿号、换行都当分隔符；去空、去重、保序。 */
+        fun parseList(raw: String): List<String> =
+            raw.split(',', '，', '、', '\n')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .distinct()
+
+        fun joinList(items: List<String>): String = items.joinToString("、")
+    }
+}
+
+data class PersonaEditorUiState(
+    val personaId: String? = null,
+    val form: PersonaForm = PersonaForm(),
+    val initialPrompt: String = "",
+    val initialForm: PersonaForm = PersonaForm(),
+    /** 结构化人设卡（可在提示词下方展开编辑）。 */
+    val card: PersonaCard = PersonaCard(),
+    val initialCard: PersonaCard = PersonaCard(),
+    val configs: List<ApiConfigEntity> = emptyList(),
+    val loading: Boolean = true,
+    val saving: Boolean = false,
+    val isNew: Boolean = true,
+    val isDefault: Boolean = false
+) {
+    val isDirty: Boolean get() = form != initialForm || card != initialCard
+    val boundConfig: ApiConfigEntity? get() = configs.firstOrNull { it.id == form.defaultApiConfigId }
+}
+
+sealed interface PersonaEditorEvent {
+    data class Saved(val personaId: String) : PersonaEditorEvent
+    data class Message(val text: String) : PersonaEditorEvent
+}
+
+@HiltViewModel
+class PersonaEditorViewModel @Inject constructor(
+    savedStateHandle: SavedStateHandle,
+    private val personaRepository: PersonaRepository,
+    private val personaCardRepository: PersonaCardRepository,
+    apiConfigRepository: ApiConfigRepository
+) : ViewModel() {
+    private val personaId: String? = savedStateHandle.get<String>("personaId")?.takeIf { it.isNotBlank() }
+    private val _state = MutableStateFlow(PersonaEditorUiState(personaId = personaId, isNew = personaId == null))
+    val state: StateFlow<PersonaEditorUiState> = _state.asStateFlow()
+    private val events = Channel<PersonaEditorEvent>(Channel.BUFFERED)
+    val eventFlow = events.receiveAsFlow()
+
+    init {
+        viewModelScope.launch {
+            if (personaId != null) {
+                val persona = personaRepository.getById(personaId)
+                if (persona == null) {
+                    events.send(PersonaEditorEvent.Message("人格不存在"))
+                    _state.update { it.copy(loading = false) }
+                } else {
+                    val form = PersonaForm(
+                        name = persona.name,
+                        description = persona.description,
+                        avatarUri = persona.avatarUri,
+                        avatarSeed = persona.avatarSeed,
+                        prompt = persona.prompt,
+                        category = persona.category,
+                        defaultApiConfigId = persona.defaultApiConfigId,
+                        modelOverride = persona.modelOverride.orEmpty(),
+                        traitsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.traits)),
+                        likesText = PersonaForm.joinList(PersonaProfile.decodeList(persona.likes)),
+                        behaviorsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.behaviors)),
+                        backstory = persona.backstory.orEmpty(),
+                        quirks = persona.quirks.orEmpty(),
+                        proactiveLevel = ProactiveLevel.normalize(persona.proactiveLevel),
+                        memoryRetention = persona.memoryRetention.coerceIn(1, 5),
+                        extractionEvery = persona.extractionEvery.coerceIn(3, 12),
+                        sleepEnabled = persona.sleepEnabled,
+                        sleepAt = persona.quietSleepMinutes?.let { formatClock(it) }.orEmpty(),
+                        wakeAt = persona.quietWakeMinutes?.let { formatClock(it) }.orEmpty(),
+                        wakeThreshold = SleepPolicy.normalizeThreshold(persona.wakeThreshold)
+                    )
+                    // 还没有卡时，这里会从旧的一整段提示词里尽力拆一份出来（只读，不写库）。
+                    val card = runCatching { personaCardRepository.cardOf(persona.id) }
+                        .getOrDefault(PersonaCard())
+                    _state.update {
+                        it.copy(
+                            form = form,
+                            initialForm = form,
+                            initialPrompt = persona.prompt,
+                            card = card,
+                            initialCard = card,
+                            isDefault = persona.isDefault,
+                            loading = false
+                        )
+                    }
+                }
+            } else {
+                val initial = PersonaForm(avatarSeed = Random.nextInt(0, 13))
+                _state.update {
+                    it.copy(
+                        form = initial,
+                        initialForm = initial.copy(name = "", prompt = "", description = ""),
+                        initialPrompt = "",
+                        loading = false
+                    )
+                }
+            }
+            apiConfigRepository.observeAll().collect { configs ->
+                _state.update { it.copy(configs = configs) }
+            }
+        }
+    }
+
+    fun update(transform: (PersonaForm) -> PersonaForm) {
+        _state.update { it.copy(form = transform(it.form)) }
+    }
+
+    fun setAvatarUri(uri: String?) = update { it.copy(avatarUri = uri) }
+    fun setAvatarSeed(seed: Int) = update { it.copy(avatarSeed = seed) }
+    fun setPrompt(prompt: String) = update { it.copy(prompt = prompt) }
+    fun resetPromptToSaved() = update { it.copy(prompt = _state.value.initialPrompt) }
+
+    /** 修改结构化人设卡（身份/声音/性格/价值观/边界/生活/你们之间）。 */
+    fun updateCard(transform: (PersonaCard) -> PersonaCard) {
+        _state.update { it.copy(card = transform(it.card)) }
+    }
+
+    fun addTrait() {
+        _state.update {
+            it.copy(card = it.card.copy(traits = it.card.traits + PersonaTrait()))
+        }
+    }
+
+    fun updateTrait(index: Int, transform: (PersonaTrait) -> PersonaTrait) {
+        _state.update { state ->
+            val traits = state.card.traits.toMutableList()
+            if (index !in traits.indices) return@update state
+            traits[index] = transform(traits[index])
+            state.copy(card = state.card.copy(traits = traits))
+        }
+    }
+
+    fun removeTrait(index: Int) {
+        _state.update { state ->
+            val traits = state.card.traits.toMutableList()
+            if (index !in traits.indices) return@update state
+            traits.removeAt(index)
+            state.copy(card = state.card.copy(traits = traits))
+        }
+    }
+
+    fun save() {
+        val current = _state.value
+        if (current.saving) return
+        val form = current.form
+        if (form.name.isBlank()) {
+            viewModelScope.launch { events.send(PersonaEditorEvent.Message("请填写人格名称")) }
+            return
+        }
+        if (form.prompt.isBlank()) {
+            viewModelScope.launch { events.send(PersonaEditorEvent.Message("请写下人格提示词，或从历史版本恢复")) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(saving = true) }
+            val result = personaRepository.save(
+                PersonaDraft(
+                    id = personaId,
+                    name = form.name,
+                    description = form.description,
+                    avatarUri = form.avatarUri,
+                    avatarSeed = form.avatarSeed,
+                    prompt = form.prompt,
+                    category = form.category,
+                    defaultApiConfigId = form.defaultApiConfigId,
+                    modelOverride = form.modelOverride.ifBlank { null },
+                    traits = form.traits,
+                    likes = form.likes,
+                    behaviors = form.behaviors,
+                    backstory = form.backstory.ifBlank { null },
+                    quirks = form.quirks.ifBlank { null },
+                    proactiveLevel = form.proactiveLevel,
+                    memoryRetention = form.memoryRetention,
+                    extractionEvery = form.extractionEvery,
+                    sleepEnabled = form.sleepEnabled,
+                    wakeThreshold = form.wakeThreshold,
+                    quietSleepMinutes = parseClock(form.sleepAt),
+                    quietWakeMinutes = parseClock(form.wakeAt)
+                )
+            )
+            if (result.isFailure) {
+                _state.update { it.copy(saving = false) }
+                events.send(PersonaEditorEvent.Message(result.exceptionOrNull()?.message ?: "保存失败"))
+                return@launch
+            }
+            val id = result.getOrThrow()
+            // 只有用户真的动过卡、且卡不是空的才写回：
+            // 空卡代表「留空沿用提示词原文」，不能拿占位渲染去覆盖旧设定。
+            val card = current.card
+            if (card != current.initialCard && !card.isEmpty()) {
+                val reason = if (current.personaId == null) "创建人格卡" else "编辑人格卡"
+                val cardResult = personaCardRepository.saveCard(id, card, reason)
+                if (cardResult.isFailure) {
+                    _state.update { it.copy(saving = false) }
+                    events.send(
+                        PersonaEditorEvent.Message(
+                            "人格已保存，但人格卡写入失败：${cardResult.exceptionOrNull()?.message ?: "未知错误"}"
+                        )
+                    )
+                    events.send(PersonaEditorEvent.Saved(id))
+                    return@launch
+                }
+            }
+            _state.update { it.copy(saving = false) }
+            events.send(PersonaEditorEvent.Saved(id))
+        }
+    }
+
+    fun getSavedPrompt(): String = _state.value.initialPrompt
+
+    private companion object {
+        /** 空的睡眠时间 = 不自定义，交给默认 23:30–08:00。 */
+        fun parseClock(text: String): Int? {
+            val match = Regex("""(\d{1,2})\s*[:：]\s*(\d{1,2})""").find(text.trim()) ?: return null
+            val hour = match.groupValues[1].toIntOrNull() ?: return null
+            val minute = match.groupValues[2].toIntOrNull() ?: return null
+            if (hour !in 0..23 || minute !in 0..59) return null
+            return hour * 60 + minute
+        }
+
+        fun formatClock(minutes: Int): String = "%02d:%02d".format(minutes / 60, minutes % 60)
+    }
+}

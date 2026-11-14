@@ -1,0 +1,516 @@
+package com.myfriend.app.data.local
+
+import androidx.room.Database
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+
+@Database(
+    entities = [
+        PersonaEntity::class,
+        PersonaRevisionEntity::class,
+        PersonaPresetEntity::class,
+        ApiConfigEntity::class,
+        ChatSessionEntity::class,
+        MessageEntity::class,
+        MemoryEntity::class,
+        MemoryEchoEntity::class,
+        PersonaPendingPatchEntity::class,
+        ProactiveRuleEntity::class,
+        AgentIntentEntity::class,
+        AgentTickEntity::class,
+        MemoryConsolidationEntity::class,
+        ApiUsageEntity::class,
+        MemoryTermEntity::class,
+        MemoryVersionEntity::class,
+        MemoryVectorEntity::class
+    ],
+    version = 10,
+    // 把每一版表结构导出成 json，落到 app/schemas/ 下。
+    // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
+    exportSchema = true
+)
+@TypeConverters(Converters::class)
+abstract class MyFriendDatabase : RoomDatabase() {
+    abstract fun personaDao(): PersonaDao
+    abstract fun revisionDao(): PersonaRevisionDao
+    abstract fun presetDao(): PersonaPresetDao
+    abstract fun apiConfigDao(): ApiConfigDao
+    abstract fun chatSessionDao(): ChatSessionDao
+    abstract fun messageDao(): MessageDao
+    abstract fun memoryDao(): MemoryDao
+    abstract fun proactiveRuleDao(): ProactiveRuleDao
+    abstract fun memoryEchoDao(): MemoryEchoDao
+    abstract fun personaPendingPatchDao(): PersonaPendingPatchDao
+    abstract fun agentIntentDao(): AgentIntentDao
+    abstract fun agentTickDao(): AgentTickDao
+    abstract fun memoryConsolidationDao(): MemoryConsolidationDao
+    abstract fun apiUsageDao(): ApiUsageDao
+    abstract fun memoryTermDao(): MemoryTermDao
+    abstract fun memoryVersionDao(): MemoryVersionDao
+    abstract fun memoryVectorDao(): MemoryVectorDao
+
+    companion object {
+        const val NAME = "myfriend.db"
+
+        /**
+         * v10：一人一段会话。
+         *
+         * 用户明确要求「只保留最新那段，其余直接删除」，所以这是一次**有意的数据损失**，
+         * 不做什么「先备份到影子表」的额外机制：影子表只会让用户在若干年后发现一堆自己不知道的旧会话。
+         *
+         * 迁移顺序是有讲究的：
+         * 1. 先补齐新列（人格细分、会话覆盖、消息已读），这样后面删数据时表结构已经稳定；
+         * 2. 删「非最新」会话的消息与摘要（摘要在会话行上，随会话一起走）；
+         * 3. 把规则 / 念头 / 记忆里指向被删会话的 `sessionId` 置空——规则、念头、记忆本身属于人格，
+         *    它们不该因为会话被并掉就一起消失；
+         * 4. 给保留下来的那段补默认 API 配置；
+         * 5. 最后才建唯一索引：先删干净再建，否则任何一个人格有两段会话都会让迁移当场失败。
+         *
+         * 排序键按规格用 `COALESCE(lastMessageAt, updatedAt)`；完全相同的两段用 rowid 兜底，
+         * 保证「保留哪一段」是确定的，不会因为 SQLite 的查询计划变化而在不同手机上留下不同的人。
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // ---- 1. 人格的 1.9 细分字段 -------------------------------------
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `traits` TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `likes` TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `behaviors` TEXT NOT NULL DEFAULT '[]'")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `backstory` TEXT")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `quirks` TEXT")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `proactiveLevel` INTEGER NOT NULL DEFAULT 3")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `memoryRetention` INTEGER NOT NULL DEFAULT 3")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `extractionEvery` INTEGER NOT NULL DEFAULT 6")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `sleepEnabled` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `wakeThreshold` INTEGER NOT NULL DEFAULT 6")
+                db.execSQL("ALTER TABLE `personas` ADD COLUMN `dndOnSleep` INTEGER NOT NULL DEFAULT 0")
+
+                // ---- 2. 会话级覆盖 + 消息已读 -----------------------------------
+                db.execSQL("ALTER TABLE `chat_sessions` ADD COLUMN `memoryRetentionOverride` INTEGER")
+                db.execSQL("ALTER TABLE `chat_sessions` ADD COLUMN `extractionEveryOverride` INTEGER")
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `readAt` INTEGER")
+                // 「按人看用量」要按 sessionId 聚合；老库没有这个索引，顺手补上。
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_api_usage_sessionId_at` ON `api_usage` (`sessionId`, `at`)")
+
+                // ---- 3. 每个 persona 只留最新一段 ------------------------------
+                // 这条子查询选的是「存在比它更新的一段」的会话，也就是要删的那些。
+                val staleSessions = """
+                    SELECT s.id FROM `chat_sessions` s WHERE EXISTS (
+                        SELECT 1 FROM `chat_sessions` t WHERE t.personaId = s.personaId AND (
+                            COALESCE(t.lastMessageAt, t.updatedAt) > COALESCE(s.lastMessageAt, s.updatedAt)
+                            OR (
+                                COALESCE(t.lastMessageAt, t.updatedAt) = COALESCE(s.lastMessageAt, s.updatedAt)
+                                AND t.rowid > s.rowid
+                            )
+                        )
+                    )
+                """.trimIndent()
+
+                db.execSQL("DELETE FROM `messages` WHERE `sessionId` IN ($staleSessions)")
+                db.execSQL("UPDATE `proactive_rules` SET `sessionId` = NULL WHERE `sessionId` IN ($staleSessions)")
+                db.execSQL("UPDATE `agent_intents` SET `sessionId` = NULL WHERE `sessionId` IN ($staleSessions)")
+                db.execSQL("UPDATE `persona_pending_patches` SET `sessionId` = NULL WHERE `sessionId` IN ($staleSessions)")
+                db.execSQL("UPDATE `memories` SET `sourceSessionId` = NULL WHERE `sourceSessionId` IN ($staleSessions)")
+                db.execSQL("DELETE FROM `chat_sessions` WHERE `id` IN ($staleSessions)")
+
+                // ---- 4. 保留段的 apiConfigId 为空时补默认配置 --------------------
+                // 优先人格自己的默认配置，其次这台手机上最近改过的那条；都没有就保持 NULL，
+                // 界面上会提示「请先选择 API 配置」，而不是硬塞一条不存在的 id。
+                db.execSQL(
+                    """
+                    UPDATE `chat_sessions` SET `apiConfigId` = COALESCE(
+                        (SELECT p.`defaultApiConfigId` FROM `personas` p WHERE p.`id` = `chat_sessions`.`personaId`),
+                        (SELECT c.`id` FROM `api_configs` c ORDER BY c.`updatedAt` DESC LIMIT 1)
+                    ) WHERE `apiConfigId` IS NULL
+                    """.trimIndent()
+                )
+
+                // ---- 5. 唯一索引（先删旧索引，再建唯一索引） --------------------
+                db.execSQL("DROP INDEX IF EXISTS `index_chat_sessions_personaId`")
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_chat_sessions_personaId_unique` " +
+                        "ON `chat_sessions` (`personaId`)"
+                )
+            }
+        }
+
+        /**
+         * v9：彻底移除原生同步模式后，api_configs 与 chat_sessions 里那几列只服务于旧链路的死字段。
+         *
+         * Room 的表校验要求「实体声明的列」和「数据库里的列」完全一致，多出来的列会被判成
+         * `Migration didn't properly handle`；而 minSdk 26 上 `DROP COLUMN` 又不可靠。
+         * 所以这里走 SQLite 的标准做法：建一张没有死列的新表、原样把数据抄过去、换名、补索引。
+         * 全程在一个事务里（Room 跑 Migration 时自带事务），任何一步失败都会整体回滚，
+         * 不会出现「列删了一半、记忆也没了」的中间态。
+         *
+         * 被删的列：API 配置的 3 列（模式、地址、路径），会话的 6 列（同步状态、已同步版本、
+         * 同步用记忆哈希、服务端会话 ID、最近一次同步错误与时间）。其中唯一的「用户数据」
+         * 是同步状态，它只对已经不存在的那条链路有意义，删掉不影响人格、记忆、对话与设置。
+         */
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `api_configs_new` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `provider` TEXT NOT NULL,
+                        `baseUrl` TEXT NOT NULL,
+                        `apiKeyCipher` TEXT,
+                        `model` TEXT NOT NULL,
+                        `customHeadersJson` TEXT NOT NULL,
+                        `allowInsecureHttp` INTEGER NOT NULL,
+                        `temperature` REAL,
+                        `topP` REAL,
+                        `maxOutputTokens` INTEGER,
+                        `frequencyPenalty` REAL,
+                        `presencePenalty` REAL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `webToolsEnabled` INTEGER NOT NULL DEFAULT 0,
+                        `webToolsBaseUrl` TEXT NOT NULL DEFAULT '',
+                        `webToolsApiKeyCipher` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO `api_configs_new` (
+                        `id`, `name`, `provider`, `baseUrl`, `apiKeyCipher`, `model`, `customHeadersJson`,
+                        `allowInsecureHttp`, `temperature`, `topP`, `maxOutputTokens`, `frequencyPenalty`,
+                        `presencePenalty`, `createdAt`, `updatedAt`, `webToolsEnabled`, `webToolsBaseUrl`,
+                        `webToolsApiKeyCipher`
+                    ) SELECT
+                        `id`, `name`, `provider`, `baseUrl`, `apiKeyCipher`, `model`, `customHeadersJson`,
+                        `allowInsecureHttp`, `temperature`, `topP`, `maxOutputTokens`, `frequencyPenalty`,
+                        `presencePenalty`, `createdAt`, `updatedAt`, `webToolsEnabled`, `webToolsBaseUrl`,
+                        `webToolsApiKeyCipher`
+                    FROM `api_configs`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `api_configs`")
+                db.execSQL("ALTER TABLE `api_configs_new` RENAME TO `api_configs`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_api_configs_updatedAt` ON `api_configs` (`updatedAt`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `chat_sessions_new` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `apiConfigId` TEXT,
+                        `model` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `lastMessagePreview` TEXT,
+                        `lastMessageAt` INTEGER,
+                        `unreadCount` INTEGER NOT NULL,
+                        `pinned` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        `lastPersonaVersion` INTEGER NOT NULL,
+                        `lastMemoryExtractedCount` INTEGER NOT NULL,
+                        `historySummary` TEXT,
+                        `historySummarizedUpTo` INTEGER,
+                        `historySummaryAt` INTEGER,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT INTO `chat_sessions_new` (
+                        `id`, `personaId`, `apiConfigId`, `model`, `title`, `lastMessagePreview`,
+                        `lastMessageAt`, `unreadCount`, `pinned`, `createdAt`, `updatedAt`,
+                        `lastPersonaVersion`, `lastMemoryExtractedCount`, `historySummary`,
+                        `historySummarizedUpTo`, `historySummaryAt`
+                    ) SELECT
+                        `id`, `personaId`, `apiConfigId`, `model`, `title`, `lastMessagePreview`,
+                        `lastMessageAt`, `unreadCount`, `pinned`, `createdAt`, `updatedAt`,
+                        `lastPersonaVersion`, `lastMemoryExtractedCount`, `historySummary`,
+                        `historySummarizedUpTo`, `historySummaryAt`
+                    FROM `chat_sessions`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `chat_sessions`")
+                db.execSQL("ALTER TABLE `chat_sessions_new` RENAME TO `chat_sessions`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_sessions_personaId` ON `chat_sessions` (`personaId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_sessions_lastMessageAt` ON `chat_sessions` (`lastMessageAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_chat_sessions_pinned` ON `chat_sessions` (`pinned`)")
+            }
+        }
+
+        /** v8：本地向量索引 + 会话历史压缩（滚动摘要）。 */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE chat_sessions ADD COLUMN historySummary TEXT")
+                db.execSQL("ALTER TABLE chat_sessions ADD COLUMN historySummarizedUpTo INTEGER")
+                db.execSQL("ALTER TABLE chat_sessions ADD COLUMN historySummaryAt INTEGER")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `memory_vectors` (
+                        `memoryId` TEXT NOT NULL,
+                        `provider` TEXT NOT NULL,
+                        `dim` INTEGER NOT NULL,
+                        `vector` BLOB NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`memoryId`, `provider`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_vectors_provider` ON `memory_vectors` (`provider`)")
+            }
+        }
+
+        /** v7：用量记账、记忆倒排索引、回忆重构留痕、记忆的结构化字段。 */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE memories ADD COLUMN tags TEXT")
+                db.execSQL("ALTER TABLE memories ADD COLUMN happenedAt INTEGER")
+                db.execSQL("ALTER TABLE memories ADD COLUMN originalContent TEXT")
+                db.execSQL("ALTER TABLE memories ADD COLUMN driftCount INTEGER NOT NULL DEFAULT 0")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `api_usage` (
+                        `id` TEXT NOT NULL,
+                        `at` INTEGER NOT NULL,
+                        `kind` TEXT NOT NULL,
+                        `personaId` TEXT,
+                        `sessionId` TEXT,
+                        `modelName` TEXT,
+                        `promptTokens` INTEGER NOT NULL,
+                        `completionTokens` INTEGER NOT NULL,
+                        `costMicroUsd` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_api_usage_at` ON `api_usage` (`at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_api_usage_kind_at` ON `api_usage` (`kind`, `at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_api_usage_personaId_at` ON `api_usage` (`personaId`, `at`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `memory_terms` (
+                        `memoryId` TEXT NOT NULL,
+                        `term` TEXT NOT NULL,
+                        `weight` REAL NOT NULL,
+                        PRIMARY KEY(`memoryId`, `term`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_terms_term` ON `memory_terms` (`term`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `memory_versions` (
+                        `id` TEXT NOT NULL,
+                        `memoryId` TEXT NOT NULL,
+                        `at` INTEGER NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `beforeContent` TEXT,
+                        `reason` TEXT,
+                        `moodLabel` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_versions_memoryId_at` ON `memory_versions` (`memoryId`, `at`)")
+            }
+        }
+
+        /** v6：记忆的生命周期——状态、分量、归档时间，以及每日整理的留痕。 */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE memories ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'")
+                db.execSQL("ALTER TABLE memories ADD COLUMN strength REAL NOT NULL DEFAULT 1.0")
+                db.execSQL("ALTER TABLE memories ADD COLUMN archivedAt INTEGER")
+                db.execSQL("ALTER TABLE memories ADD COLUMN consolidatedAt INTEGER")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `memory_consolidations` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `at` INTEGER NOT NULL,
+                        `kept` INTEGER NOT NULL,
+                        `merged` INTEGER NOT NULL,
+                        `archived` INTEGER NOT NULL,
+                        `forgotten` INTEGER NOT NULL,
+                        `summary` TEXT NOT NULL,
+                        `modelName` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_consolidations_personaId_at` ON `memory_consolidations` (`personaId`, `at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_consolidations_at` ON `memory_consolidations` (`at`)")
+            }
+        }
+
+        /** v5：心情——此刻的一个词、强度、原因，以及上次变化的时间。 */
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE personas ADD COLUMN mood TEXT")
+                db.execSQL("ALTER TABLE personas ADD COLUMN moodIntensity INTEGER")
+                db.execSQL("ALTER TABLE personas ADD COLUMN moodReason TEXT")
+                db.execSQL("ALTER TABLE personas ADD COLUMN moodUpdatedAt INTEGER")
+                db.execSQL("ALTER TABLE personas ADD COLUMN moodNudgedAt INTEGER")
+            }
+        }
+
+        /** v4：自主循环——意向（时间窗口）与每次思考的留痕。 */
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `agent_intents` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `sessionId` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `earliestAt` INTEGER NOT NULL,
+                        `latestAt` INTEGER NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `hint` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `ruleId` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `sentAt` INTEGER,
+                        `lastError` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_agent_intents_personaId_status` ON `agent_intents` (`personaId`, `status`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_agent_intents_earliestAt` ON `agent_intents` (`earliestAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_agent_intents_latestAt` ON `agent_intents` (`latestAt`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `agent_ticks` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `at` INTEGER NOT NULL,
+                        `thought` TEXT NOT NULL,
+                        `actionJson` TEXT NOT NULL,
+                        `outcome` TEXT NOT NULL,
+                        `messageId` TEXT,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_agent_ticks_personaId_at` ON `agent_ticks` (`personaId`, `at`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_agent_ticks_at` ON `agent_ticks` (`at`)")
+            }
+        }
+
+        /** v3：人设卡、联网工具配置、工具调用痕迹、记忆抽屉与回声、待确认人设补丁。 */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE personas ADD COLUMN personaCardJson TEXT")
+                db.execSQL("ALTER TABLE personas ADD COLUMN quietSleepMinutes INTEGER")
+                db.execSQL("ALTER TABLE personas ADD COLUMN quietWakeMinutes INTEGER")
+
+                db.execSQL("ALTER TABLE api_configs ADD COLUMN webToolsEnabled INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE api_configs ADD COLUMN webToolsBaseUrl TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE api_configs ADD COLUMN webToolsApiKeyCipher TEXT")
+
+                db.execSQL("ALTER TABLE messages ADD COLUMN toolTraceJson TEXT")
+
+                db.execSQL("ALTER TABLE memories ADD COLUMN drawer TEXT")
+                db.execSQL("ALTER TABLE memories ADD COLUMN sourceQuote TEXT")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `memory_echoes` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `drawer` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `importance` INTEGER NOT NULL,
+                        `sourceQuote` TEXT NOT NULL,
+                        `categoryName` TEXT NOT NULL,
+                        `confidence` REAL NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `lastSeenAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_echoes_personaId_drawer` ON `memory_echoes` (`personaId`, `drawer`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_memory_echoes_createdAt` ON `memory_echoes` (`createdAt`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `persona_pending_patches` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `sessionId` TEXT,
+                        `patchJson` TEXT NOT NULL,
+                        `summary` TEXT NOT NULL,
+                        `reason` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_persona_pending_patches_personaId` ON `persona_pending_patches` (`personaId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_persona_pending_patches_createdAt` ON `persona_pending_patches` (`createdAt`)")
+            }
+        }
+
+        /** v2：新增自定义预设、主动唤醒规则，以及消息图片附件列。 */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE messages ADD COLUMN attachmentsJson TEXT")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `persona_presets` (
+                        `id` TEXT NOT NULL,
+                        `name` TEXT NOT NULL,
+                        `description` TEXT NOT NULL,
+                        `prompt` TEXT NOT NULL,
+                        `category` TEXT NOT NULL,
+                        `avatarUri` TEXT,
+                        `avatarSeed` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_persona_presets_updatedAt` ON `persona_presets` (`updatedAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_persona_presets_category` ON `persona_presets` (`category`)")
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `proactive_rules` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `sessionId` TEXT,
+                        `kind` TEXT NOT NULL,
+                        `timeOfDayMinutes` INTEGER,
+                        `intervalMinutes` INTEGER,
+                        `hint` TEXT NOT NULL,
+                        `note` TEXT NOT NULL,
+                        `enabled` INTEGER NOT NULL,
+                        `pending` INTEGER NOT NULL,
+                        `source` TEXT NOT NULL,
+                        `nextTriggerAt` INTEGER NOT NULL,
+                        `lastTriggeredAt` INTEGER,
+                        `lastError` TEXT,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proactive_rules_personaId` ON `proactive_rules` (`personaId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proactive_rules_nextTriggerAt` ON `proactive_rules` (`nextTriggerAt`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_proactive_rules_enabled` ON `proactive_rules` (`enabled`)")
+            }
+        }
+    }
+}

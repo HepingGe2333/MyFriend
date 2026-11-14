@@ -1,0 +1,40 @@
+# ---- 本地产物：一律不进仓库 ----
+.tooling/
+.git-ssh/
+dist/
+*.apk
+*.aab
+*.ipa
+docs/screenshots/
+
+# ---- Android / Gradle ----
+.gradle/
+.kotlin/
+build/
+app/build/
+captures/
+local.properties
+keystore.properties
+*.jks
+*.keystore
+*.iml
+.idea/
+
+# ---- iOS / Xcode ----
+.build/
+DerivedData/
+*.xcuserdatad/
+*.xcuserdata/
+*.xcuserstate
+*.swiftpm/
+.swiftpm/
+
+# ---- 运行期与调试产物 ----
+*.log
+debug.log
+/tmp/
+
+# ---- 系统与编辑器 ----
+.DS_Store
+.vscode/
+*.swp
