@@ -1,5 +1,9 @@
 # Roadmap 1.4：每个时刻都有心情
 
+> **历史设计记录**：本文是当时那一版的行为规格与验收表，保留下来供追溯设计取舍；
+> 当前行为以 [README](../../README.md)、[ARCHITECTURE](../ARCHITECTURE.md) 与代码为准。
+
+
 > 注：本文记录的是当时版本的设计与实现；「原生 Harness」模式已在 1.8 移除，只保留无状态兼容，相关描述不再适用于当前代码。
 
 1.3 的他一直醒着，也知道自己想做什么；但温度是恒定的——刚被安慰过，和刚被怼完，语气差不多。1.4 给他加一层**会自己变的心情**：每一刻都有一个词、一种浓度、一句为什么，它常驻在提示词里影响语气，会随时间自己淡下去，也能被他自己改掉。
@@ -18,19 +22,19 @@
 
 - **聊天标题栏常驻一枚胶囊**：模型名左侧，5 个点表示浓度 + 一个词；颜色随心情正负变化——负面偏暖红、低能量偏土黄、正面偏绿、中性灰。刚认识时是「平静」。
 
-![聊天标题栏的心情胶囊](screenshots/mood-chip.png)
+![聊天标题栏的心情胶囊](../screenshots/mood-chip.png)
 
 - **说一句带情绪的话，他可能顺手改心情**：气泡下方出现标题「心情变了」、副标题形如「有点低落（3/5） · 听你说累，我这边也跟着安静下来」的动作卡片，标题栏胶囊同时变成「有点低落」。
 
-![模型调用 set_mood 之后的动作卡片](screenshots/mood-tool-trace.png)
+![模型调用 set_mood 之后的动作卡片](../screenshots/mood-tool-trace.png)
 
 - **「主动唤醒」页多一张「他此刻的心情」**：胶囊 + 一句原因。只展示，不提供手动调节——心情是他自己的状态，不是用户填的表。
 
-![主动唤醒页的心情卡片](screenshots/mood-card.png)
+![主动唤醒页的心情卡片](../screenshots/mood-card.png)
 
 - **说够几句话之后，提示词末尾会多一段「## 心里那句话」**：引导他回看「现在我的心情变得……？」，真的变了就自己调用 `set_mood`，没变就别动。
 
-![提示词末尾的引导词](screenshots/mood-reflection.png)
+![提示词末尾的引导词](../screenshots/mood-reflection.png)
 
 - 界面上的胶囊不解释、不弹窗、不提问。心情是背景信息，不该抢走对话本身。
 
@@ -71,9 +75,9 @@
 
 | 位置 | 代码 | 注入什么 |
 | --- | --- | --- |
-| 聊天（无状态与 Harness 两种模式） | [`ChatRepository.kt`](../app/src/main/java/com/myfriend/app/data/repo/ChatRepository.kt) | `promptLine()`；到点时把 `reflectionNudge()` 追加在系统提示词末尾「## 心里那句话」 |
-| 主动开口 | [`ProactiveRepository.kt`](../app/src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt) | `promptLine()` |
-| 后台自主思考 | [`AgentLoop.kt`](../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) | `promptLine()`，另有 `mood` 动作可改 |
+| 聊天（无状态与 Harness 两种模式） | [`ChatRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ChatRepository.kt) | `promptLine()`；到点时把 `reflectionNudge()` 追加在系统提示词末尾「## 心里那句话」 |
+| 主动开口 | [`ProactiveRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt) | `promptLine()` |
+| 后台自主思考 | [`AgentLoop.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) | `promptLine()`，另有 `mood` 动作可改 |
 
 ### 6. 界面
 
@@ -89,15 +93,15 @@
 
 | 关注点 | 代码 |
 | --- | --- |
-| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../app/src/main/java/com/myfriend/app/domain/Mood.kt) |
-| 心情的存取与引导 | [`MoodRepository.kt`](../app/src/main/java/com/myfriend/app/data/repo/MoodRepository.kt) |
-| 表结构与迁移 | [`Entities.kt`](../app/src/main/java/com/myfriend/app/data/local/Entities.kt)、[`Daos.kt`](../app/src/main/java/com/myfriend/app/data/local/Daos.kt)、[`MyFriendDatabase.kt`](../app/src/main/java/com/myfriend/app/data/local/MyFriendDatabase.kt) |
-| 聊天工具 `set_mood` | [`ToolProtocol.kt`](../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt)、[`ToolExecutor.kt`](../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |
-| 后台 `mood` 动作 | [`AgentActions.kt`](../app/src/main/java/com/myfriend/app/domain/AgentActions.kt)、[`AgentLoop.kt`](../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) |
-| 胶囊 / 一行心情 | [`MoodChip.kt`](../app/src/main/java/com/myfriend/app/ui/components/MoodChip.kt) |
-| 聊天标题栏 | [`ChatViewModel.kt`](../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt)、[`ChatScreen.kt`](../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatScreen.kt) |
-| 主动唤醒页的心情卡片 | [`ProactiveScreen.kt`](../app/src/main/java/com/myfriend/app/ui/screens/proactive/ProactiveScreen.kt) |
-| 单测 | [`MoodTest.kt`](../app/src/test/java/com/myfriend/app/domain/MoodTest.kt) |
+| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Mood.kt) |
+| 心情的存取与引导 | [`MoodRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MoodRepository.kt) |
+| 表结构与迁移 | [`Entities.kt`](../../app/src/main/java/com/myfriend/app/data/local/Entities.kt)、[`Daos.kt`](../../app/src/main/java/com/myfriend/app/data/local/Daos.kt)、[`MyFriendDatabase.kt`](../../app/src/main/java/com/myfriend/app/data/local/MyFriendDatabase.kt) |
+| 聊天工具 `set_mood` | [`ToolProtocol.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt)、[`ToolExecutor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |
+| 后台 `mood` 动作 | [`AgentActions.kt`](../../app/src/main/java/com/myfriend/app/domain/AgentActions.kt)、[`AgentLoop.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) |
+| 胶囊 / 一行心情 | [`MoodChip.kt`](../../app/src/main/java/com/myfriend/app/ui/components/MoodChip.kt) |
+| 聊天标题栏 | [`ChatViewModel.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt)、[`ChatScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatScreen.kt) |
+| 主动唤醒页的心情卡片 | [`ProactiveScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/proactive/ProactiveScreen.kt) |
+| 单测 | [`MoodTest.kt`](../../app/src/test/java/com/myfriend/app/domain/MoodTest.kt) |
 
 ## 四、验收
 

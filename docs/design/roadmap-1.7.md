@@ -1,5 +1,9 @@
 # Roadmap 1.7：先把他当人，再把地基擦干净
 
+> **历史设计记录**：本文是当时那一版的行为规格与验收表，保留下来供追溯设计取舍；
+> 当前行为以 [README](../../README.md)、[ARCHITECTURE](../ARCHITECTURE.md) 与代码为准。
+
+
 1.5、1.6 是两层叠加：记忆会变旧、会被想起、会被此刻的心情轻轻改写，界面第一次有「他此刻」，还能把他带走。代价是并行开发留下的毛边——同一个界面里两套通知 id、预算闸有的地方走 DI 有的地方直接 new、字符串一半在 `strings.xml` 一半硬编码。
 
 1.7 先还这些债，然后只做一件跟「人感」有关的事：**让他发来的链接点得开，而且是在应用里开**，像微信内置的那个小浏览器。其余改动都往「他自己会想」这个方向挪一寸：冲动改成一条先降后升的心跳曲线（每半分钟一拍，中不中他一律自己判断做不做），提供程序侧多一层本地向量检索，长会话不再靠截断而靠「收成一段记忆」。
@@ -9,7 +13,7 @@
 ## 一、目标
 
 - **并行开发的债一次清完**：`NotificationIds` 单点生成、预算闸统一走 `ApiBudget` 注入、可用字符串进 `strings.xml`、迁移链守卫与 schema 版本守卫都进测试，全量单测从 551 涨到 **570（32 个测试类）** 并全绿。
-- **点得开**：所有会话消息里的链接（带协议的地址、裸域名、Markdown 的 `[标题](地址)`）一律蓝色下划线，点一下**在应用里**打开，不是跳系统浏览器；长按仍然叫出消息菜单，滚动、选字、返回都不受影响。
+- **点得开**：所有会话消息里的链接（带协议的地址、裸域名、Markdown 的 Markdown 链接语法）一律蓝色下划线，点一下**在应用里**打开，不是跳系统浏览器；长按仍然叫出消息菜单，滚动、选字、返回都不受影响。
 - **环境自知**：他自己那一轮的提示词里写清「现在几点、星期几、你的作息、你此刻在做什么、你今天的状态」，让他像一个知道自己在什么光景里的人那样开口。
 - **心跳取代定时器**：每 30 秒一拍，概率是一条 U 形曲线（刚互动完最安静 → 一个人待久了慢慢变想 → 三小时后封顶 0.85），会话与触发后重置，心情越浓概率越大；**中了也只是叫他去「想一想」，说什么、做不做仍由他自己决定**。
 - **检索多一层语义**：本地 384 维哈希嵌入 + 余弦重排，纯离线、零依赖、确定性；换实现靠 `provider` 字段自然失效。
@@ -18,13 +22,13 @@
 ## 二、用户看到什么
 
 - **他发来的链接是蓝的**：地址、裸域名、`[一份更短的说明](https://…)` 这种 Markdown 链接，显示的都只是能读的文字，颜色统一 `#2C7DBE` + 下划线。
-![聊天里的蓝色链接](screenshots/link-in-chat.png)
+![聊天里的蓝色链接](../screenshots/link-in-chat.png)
 
 - **点一下就在应用里看**：顶部是网页自己的标题（取不到就退回域名），下面一行小字「他发给你的链接」，右上角两个动作——「在系统浏览器打开」和「复制链接」。加载有细进度条，返回键优先在网页里往回退，退到头才离开这个页面。
-![应用内浏览器](screenshots/in-app-browser.png)
+![应用内浏览器](../screenshots/in-app-browser.png)
 
 - **长按还是那个菜单**：复制 / 重新生成 / 删除这条消息；长按正文和长按气泡空白处一样都叫得出来。菜单干净，不会同时弹出系统选字工具条。
-![长按消息的菜单](screenshots/message-menu.png)
+![长按消息的菜单](../screenshots/message-menu.png)
 
 - **心跳在界面上完全看不见**：没有频率、概率、开关，也没有「他刚刚想了想」的流水。用户能感觉到的只有「他有时候会突然想起我」，以及他自己留下的一句「刚才翻了翻……」
 
@@ -34,10 +38,10 @@
 
 | 债 | 1.6 的样子 | 1.7 的做法 |
 | --- | --- | --- |
-| 通知 id | `ProactiveNotifier` / `AgentNotifier` / `ChatNotifier` 各算一份 | [`NotificationIds.kt`](../app/src/main/java/com/myfriend/app/util/NotificationIds.kt) 一处生成：64 位 FNV-1a 折叠进固定区段（会话 `0x0C00_0000`、摘要 `0x0D00_0000`），常驻通知 `0x001F_2E3D` 单独一段 |
-| 预算闸 | 有的调用点直接 `new`，有的走 DI，超支判定两套 | 全部走 [`ApiBudget`](../app/src/main/java/com/myfriend/app/data/repo/ApiBudget.kt)（Hilt 单例），`ApiCost.budgetVerdict` 是唯一的判定入口 |
-| 字符串 | 界面文案一半硬编码 | 通知、用量、备份、清空数据这些「一句话就是产品」的文案进 [`strings.xml`](../app/src/main/res/values/strings.xml)（62 条）；长句仍留在 Kotlin 里，因为它们是函数而不是模板 |
-| 迁移防线 | 只有 androidTest 里的迁移测试 | 另加一条 JVM 守卫（[`SchemaVersionTest`](../app/src/test/java/com/myfriend/app/data/local/SchemaVersionTest.kt)）：DB 版本号、`schemas/` 里的 json、迁移注册三处必须对齐 |
+| 通知 id | `ProactiveNotifier` / `AgentNotifier` / `ChatNotifier` 各算一份 | [`NotificationIds.kt`](../../app/src/main/java/com/myfriend/app/util/NotificationIds.kt) 一处生成：64 位 FNV-1a 折叠进固定区段（会话 `0x0C00_0000`、摘要 `0x0D00_0000`），常驻通知 `0x001F_2E3D` 单独一段 |
+| 预算闸 | 有的调用点直接 `new`，有的走 DI，超支判定两套 | 全部走 [`ApiBudget` `ApiBudget.kt`（Hilt 单例），`ApiCost.budgetVerdict` 是唯一的判定入口 |
+| 字符串 | 界面文案一半硬编码 | 通知、用量、备份、清空数据这些「一句话就是产品」的文案进 [`strings.xml`](../../app/src/main/res/values/strings.xml)（62 条）；长句仍留在 Kotlin 里，因为它们是函数而不是模板 |
+| 迁移防线 | 只有 androidTest 里的迁移测试 | 另加一条 JVM 守卫（[`SchemaVersionTest`](../../app/src/test/java/com/myfriend/app/data/local/SchemaVersionTest.kt)）：DB 版本号、`schemas/` 里的 json、迁移注册三处必须对齐 |
 | 向量补建有硬顶 | 补建只读前 500 条（按重要度排序），第 501 条之后永远没有向量；全库「够数」判断会让进程每次启动都重读 500 行正文 | 补建改成「先问还有谁缺向量，再补一批」，循环到问不出东西（`MemoryDao.idsMissingVectors` + `byIds`，一批 64 条、最多 40 轮）；删掉不可靠的算术快路径 |
 | 链接误触 | `getOffsetForPosition` 会把任意一点吸附到最近的字符，点在行尾留白或两行之间也可能「命中链接」 | 命中后再核对触点是否落在该字的包围盒里（±8dp 容差） |
 | 备份格式漏了滚动摘要 | 1.7 新增的 `historySummary` 没进备份契约，换端接回来会突然忘掉聊过的事 | `BackupSession` 增加 `summary` / `summarizedUpTo` / `summaryAt` 三个可空字段（向后兼容）；导入只接受「有正文且压到某一条」的完整组合；Android 与 iOS 共用 `fixtures/backup/*.json` 做双向验证 |
@@ -48,7 +52,7 @@
 
 ### 2. 点得开：链接与内置浏览器
 
-**识别**（[`LinkDetector.kt`](../app/src/main/java/com/myfriend/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
+**识别**（[`LinkDetector.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
 
 | 形态 | 例子 | 点击区域 |
 | --- | --- | --- |
@@ -58,7 +62,7 @@
 
 几条克制的规则：中文标点（`，。！？`）、成对的右括号、句末的点会被剔出地址；`javascript:` / `file:` / `content:` / `intent:` / `data:` 一律拒绝；`.md`、`.png` 这类看起来像文件名的后缀不点亮；单条地址上限 2048 字符，流式输出截断到一半的地址也能安全处理（多识别一段正文比点错更糟）。
 
-**渲染**（[`MarkdownText.kt`](../app/src/main/java/com/myfriend/app/ui/components/MarkdownText.kt)）：`buildInline` 在着色之外给链接登记 `LinkAnnotation.Clickable`（tag 就是地址）。点击判定**不用** Compose 自带的那条路，理由写在代码里：
+**渲染**（[`MarkdownText.kt`](../../app/src/main/java/com/myfriend/app/ui/components/MarkdownText.kt)）：`buildInline` 在着色之外给链接登记 `LinkAnnotation.Clickable`（tag 就是地址）。点击判定**不用** Compose 自带的那条路，理由写在代码里：
 
 - 带链接的 `AnnotatedString` 会让 `Text` 在内部接一层手势，它在 Initial 阶段就把按下事件吃掉；
 - 于是外面气泡的 `combinedClickable` 再也收不到「按在文字上」的长按，而且它会把「按住—松手」一律当成点击——长按叫菜单时浏览器跟着弹出来。
@@ -67,7 +71,7 @@
 
 **长按**：因为上面那层事件被 Text 吃掉了，正文自己补一条长按（`awaitLongPressOrCancellation`），叫出和气泡空白处一样的消息菜单。聊天气泡同时传 `selectable = false`——`SelectionContainer` 在这里只会带来第二套菜单（系统选字工具条），而「复制整条」在消息菜单里、复制代码片段在代码块右上角。
 
-**打开**（[`InAppBrowserScreen.kt`](../app/src/main/java/com/myfriend/app/ui/screens/browser/InAppBrowserScreen.kt)、路由 `browser?url={url}`）：
+**打开**（[`InAppBrowserScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/browser/InAppBrowserScreen.kt)、路由 `browser?url={url}`）：
 
 | 关注点 | 行为 |
 | --- | --- |
@@ -81,7 +85,7 @@
 
 ### 3. 环境自知
 
-他自己那一轮的 `system` 提示词由 [`AgentPromptBuilder`](../app/src/main/java/com/myfriend/app/domain/AgentActions.kt) 拼，1.7 在「处境」里补了四行（[`AgentLoop.buildContext`](../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt)）：
+他自己那一轮的 `system` 提示词由 [`AgentPromptBuilder`](../../app/src/main/java/com/myfriend/app/domain/AgentActions.kt) 拼，1.7 在「处境」里补了四行（[`AgentLoop.buildContext`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt)）：
 
 ```
 现在：2026-11-14 星期四 03:05（深夜）
@@ -95,7 +99,7 @@
 
 ### 4. 心跳：冲动什么时候来
 
-[`Heartbeat.kt`](../app/src/main/java/com/myfriend/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../app/src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt) 负责读库与执行。
+[`Heartbeat.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt) 负责读库与执行。
 
 ```
 p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
@@ -112,7 +116,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 | 心情放大 | 1.15 / 1.35 / 1.55（强度 3/4/5） | 高兴和难过都会让人想找人说说话，平静不放大 |
 | 夹取 | 0.02 ～ 0.90 | 再低留一点念想，再高也不到「一定」 |
 
-**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../app/src/main/java/com/myfriend/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
+**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
 
 每拍的顺序（先门槛、后掷骰子，省电也省额度）：
 
@@ -131,11 +135,11 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 5. 向量检索
 
-[`LocalEmbedding.kt`](../app/src/main/java/com/myfriend/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
+[`LocalEmbedding.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
 
 它**不是**神经网络 embedding——没有模型文件、不下载任何东西。做法是「字 n-gram 的带符号哈希」：
 
-1. 复用 [`ChineseTerms`](../app/src/main/java/com/myfriend/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
+1. 复用 [`ChineseTerms`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
 2. 相邻二元组拼出字三元组（「项目」+「目压」→「项目压」），不重新扫正文；
 3. 没有语料库统计 DF，就用长度做静态先验：单字 0.8、二元组 1.0、三元组更高；
 4. 亚线性 TF（`1 + ln(1 + w)`），避免长记忆被一个高频词主导；
@@ -143,7 +147,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 所以它捕捉的是**字面近似的语义**：换一种说法只要还共享一部分字（「项目压力大」/「工作上的压力」共享「压力」），向量就会靠近；「我哥」/「家兄」这种一个字都不沾的抓不到。真模型换来的收益在这个场景（几百条几十字的中文短句 + 查询就是用户当下那句话）不值得 50–300MB 的包体和一次下载等待。
 
-[`MemoryVectorIndex.kt`](../app/src/main/java/com/myfriend/app/data/repo/MemoryVectorIndex.kt) 负责写与查：
+[`MemoryVectorIndex.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryVectorIndex.kt) 负责写与查：
 
 | 关注点 | 行为 |
 | --- | --- |
@@ -157,7 +161,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 6. 长会话的「滚动记忆」
 
-[`HistoryCompression.kt`](../app/src/main/java/com/myfriend/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../app/src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt) 负责执行。
+[`HistoryCompression.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt) 负责执行。
 
 | 参数 | 值 | 意思 |
 | --- | --- | --- |
@@ -185,8 +189,8 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 | 项 | 怎么验证 | 状态 |
 | --- | --- | --- |
-| 链接点得开 | 模拟器里点「https://example.com/reading」与「[一份更短的说明](https://example.com/brief)」，都在应用内打开并显示网页标题 | ✅（[link-in-chat.png](screenshots/link-in-chat.png)、[in-app-browser.png](screenshots/in-app-browser.png)） |
-| 长按不误触 | 长按带链接的正文 → 只出消息菜单，不开浏览器、不出系统选字工具条 | ✅（[message-menu.png](screenshots/message-menu.png)） |
+| 链接点得开 | 模拟器里点「https://example.com/reading」与「[一份更短的说明](https://example.com/brief)」，都在应用内打开并显示网页标题 | ✅（[link-in-chat.png](../screenshots/link-in-chat.png)、[in-app-browser.png](../screenshots/in-app-browser.png)） |
+| 长按不误触 | 长按带链接的正文 → 只出消息菜单，不开浏览器、不出系统选字工具条 | ✅（[message-menu.png](../screenshots/message-menu.png)） |
 | 点空白不误触 | 点正文里的非链接文字 → 什么都不发生 | ✅ |
 | 心跳不会变成推送 | 30 秒一拍、命中后重置、5 分钟下限、睡着/额度/上限都不掷 | ✅（`HeartbeatTest` 34 条） |
 | 向量索引真的在库里 | 升级后 `memory_vectors` 行数与记忆数一致，provider 全是 `local-hash-v1` | ✅（模拟器 `sqlite3` 核对：6 条记忆 / 6 条向量） |

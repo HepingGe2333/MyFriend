@@ -29,6 +29,12 @@ DerivedData/
 *.swiftpm/
 .swiftpm/
 
+# ---- Agent workspace（自动化产物，一律不进仓库；约定见 AGENTS.md） ----
+/.agents/
+/.scratch/
+/workspace/
+*.agent-notes.md
+
 # ---- 运行期与调试产物 ----
 *.log
 debug.log

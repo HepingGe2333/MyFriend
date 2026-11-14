@@ -6,7 +6,7 @@ the Android app, one in `ios/MyFriendKit` — read the *same files* and feed the
 implementations. If one side changes behavior without the other, one of the two suites goes red on
 the next test run.
 
-The product spec (`docs/ROADMAP-1.9.md`) stays the source of truth for *what should happen*. These
+The product spec (`docs/design/roadmap-1.9.md`) stays the source of truth for *what should happen*. These
 fixtures pin down the concrete values that both implementations must produce for that spec.
 
 ## Layout
@@ -31,7 +31,7 @@ Every file is plain JSON. A file looks like this:
   "version": "0.10.0",
   "title": "睡眠 / 免打扰 / 唤醒阈值判定",
   "authority": "android",
-  "authorityNote": "规格见 docs/ROADMAP-1.9.md §六；…",
+  "authorityNote": "规格见 docs/design/roadmap-1.9.md §六；…",
   "kotlin": { "file": "app/src/main/java/com/myfriend/app/domain/SleepPolicy.kt",
               "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake）" },
   "swift":  { "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/SleepSchedule.swift",
@@ -97,10 +97,7 @@ Top-level fields (all required except `tolerance`):
 Android (JUnit 4, `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt`):
 
 ```bash
-export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home \
-  ANDROID_HOME=$PWD/.tooling/android-sdk ANDROID_USER_HOME=$PWD/.tooling/android-user \
-  GRADLE_USER_HOME=$PWD/.tooling/build-home TMPDIR=$PWD/.tooling/tmp
-./.tooling/gradle-8.9/bin/gradle -p . :app:testDebugUnitTest \
+./gradlew -p . :app:testDebugUnitTest \
   --tests com.myfriend.app.spec.AgentCoreSpecTest --console=plain
 ```
 

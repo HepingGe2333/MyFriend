@@ -151,7 +151,7 @@ export BUNDLE_ID=com.yourname.myfriend      # 可省略，默认 com.myfriend.ap
 ## 1.9：他是联系人，不是一个 API
 
 1.9 的目标是「把设置项从产品里拿掉，把决定权交回给模型与人格」。与 Android 完全同构，
-字段名、枚举值、算法与文案都以 `docs/ROADMAP-1.9.md` 为准。iOS 这边落成了这些：
+字段名、枚举值、算法与文案都以 `docs/design/roadmap-1.9.md` 为准。iOS 这边落成了这些：
 
 | 改动 | 位置 / 说明 |
 | --- | --- |

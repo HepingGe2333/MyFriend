@@ -52,22 +52,21 @@ From the repository root:
 
 ```bash
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home
-export GRADLE_USER_HOME=$PWD/.tooling/build-home TMPDIR=$PWD/.tooling/tmp
 
-./.tooling/gradle-8.9/bin/gradle :agentd:run --args="--port 8788"
+./gradlew :agentd:run --args="--port 8788"
 ```
 
 Or build a runnable distribution:
 
 ```bash
-./.tooling/gradle-8.9/bin/gradle :agentd:installDist
+./gradlew :agentd:installDist
 agentd/build/install/agentd/bin/agentd --port 8788
 ```
 
 Or build the self-contained jar (Kotlin stdlib + agentcore bundled, `Main-Class` set):
 
 ```bash
-./.tooling/gradle-8.9/bin/gradle :agentd:fatJar
+./gradlew :agentd:fatJar
 java -jar agentd/build/libs/agentd-all.jar --port 8788
 ```
 
@@ -128,10 +127,10 @@ It is a **build switch**, not a user-visible setting (release builds stay in-pro
 
 ```bash
 # default: in-process, no network involved
-./.tooling/gradle-8.9/bin/gradle :app:assembleDebug
+./gradlew :app:assembleDebug
 
 # remote mode: sleep / defer / proactive-cap / tool-args POST to agentd
-./.tooling/gradle-8.9/bin/gradle :app:assembleDebug \
+./gradlew :app:assembleDebug \
   -PagentCoreRemote=true \
   -PagentCoreBaseUrl=http://10.0.2.2:8788
 ```
@@ -153,7 +152,7 @@ Optional end-to-end check against this service (runs the real `RemoteAgentCoreCl
 `:app`, no fallback allowed):
 
 ```bash
-./.tooling/gradle-8.9/bin/gradle :app:testDebugUnitTest \
+./gradlew :app:testDebugUnitTest \
   --tests "com.myfriend.app.core.AgentCoreRemoteE2ETest" \
   -PagentCoreE2eUrl=http://127.0.0.1:8788 --rerun
 ```
@@ -356,7 +355,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 ## Tests
 
 ```bash
-./.tooling/gradle-8.9/bin/gradle :agentcore:test :agentd:test
+./gradlew :agentcore:test :agentd:test
 ```
 
 - `:agentcore` — 47 tests. `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json`

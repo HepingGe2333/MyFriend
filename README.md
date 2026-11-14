@@ -12,7 +12,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.11.1`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
+| 版本 | `0.11.2`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
 | 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
 | 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
@@ -47,7 +47,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 ## 设计立场
 
-项目的大部分取舍来自同一条约束：**界面面对的是一个联系人，不是一台可调参的机器人。** 记忆开关、回复节奏、每日主动次数、月度额度这类旋钮被刻意移除，相关决定交给人格字段与模型（`defer_reply`、睡眠与唤醒阈值、`proactiveLevel` 等）。这条立场写进了 [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) 的规格与删除清单，并在 [CONTRIBUTING.md](CONTRIBUTING.md) 里作为评审约束；架构层面的取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
+项目的大部分取舍来自同一条约束：**界面面对的是一个联系人，不是一台可调参的机器人。** 记忆开关、回复节奏、每日主动次数、月度额度这类旋钮被刻意移除，相关决定交给人格字段与模型（`defer_reply`、睡眠与唤醒阈值、`proactiveLevel` 等）。这条立场写进了 [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) 的规格与删除清单，并在 [CONTRIBUTING.md](CONTRIBUTING.md) 里作为评审约束；架构层面的取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 架构与技术栈
 
@@ -131,17 +131,17 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 
 ## 文档
 
+完整索引见 [docs/README.md](docs/README.md)。最常看的几份：
+
 | 文档 | 内容 |
 | --- | --- |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [EN](docs/ARCHITECTURE.en.md) | 分层、数据流、跨端契约与关键取舍 |
-| [docs/I18N.md](docs/I18N.md) · [EN](docs/I18N.en.md) | 双语方案、资源位置、新增文案规则、不翻译的内容 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · [EN](docs/ARCHITECTURE.en.md) | 分层、数据流、跨端契约、agent 核心的三种形态 |
+| [docs/I18N.md](docs/I18N.md) · [EN](docs/I18N.en.md) | 双语方案、资源位置、新增文案规则 |
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) · [EN](docs/CHANGELOG.en.md) | 每个版本的实际变更 |
-| [docs/VERSIONING.md](docs/VERSIONING.md) · [EN](docs/VERSIONING.en.md) | 版本号规则、构建号与 schema 的关系、发版清单 |
-| [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | 两端哪些必须一致、哪些受平台限制、iOS 仍缺什么 |
-| [docs/audits/](docs/audits/README.md) | 独立审计报告（每版的 P0/P1/P2 发现、已修复与已接受的取舍） |
-| [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | 0.9.0（旧编号 1.9.0）的规格、删除清单与验收表 |
-| [docs/ROADMAP-1.7.md](docs/ROADMAP-1.7.md) | 链接与内置浏览器、心跳曲线、向量检索、长会话压缩 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) · [EN](CONTRIBUTING.en.md) | 环境、代码风格、提交规范、数据与文案改动流程 |
+| [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | 两端哪些必须一致、哪些受平台限制 |
+| [docs/audits/](docs/audits/README.md) | 独立审计记录与已接受的取舍 |
+| [docs/design/](docs/design/roadmap-1.9.md) | 历史设计记录（0.9.0 之前的行为规格，供追溯） |
+| [CONTRIBUTING.md](CONTRIBUTING.md) · [EN](CONTRIBUTING.en.md) | 环境、代码风格、提交规范、发版流程 |
 
 ## 已知限制
 

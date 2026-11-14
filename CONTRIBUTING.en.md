@@ -10,8 +10,8 @@ This document is for contributors who plan to send code, documentation or transl
 | --- | --- |
 | [README.en.md](README.en.md) | Positioning, build commands, known limitations |
 | [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) | Layers, data flow, cross-platform contracts |
-| [docs/VERSIONING.en.md](docs/VERSIONING.en.md) | Version numbers, build numbers vs. schema, release checklist |
-| [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | Specification and acceptance table for current behaviour; source of the "deliberately removed" list |
+| [docs/README.md](docs/README.md) | Documentation index (including contracts and sub-project docs) |
+| [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) | Historical behaviour spec and acceptance table for 0.9.0; source of the "deliberately removed" list |
 | [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | What must match across platforms, platform limits, known iOS gaps |
 | [docs/I18N.en.md](docs/I18N.en.md) | String and localisation rules |
 
@@ -59,7 +59,7 @@ cd ios/MyFriendKit && swift test --disable-sandbox --filter BackupInteropTests
 
 - **Android**: Kotlin + Compose, `kotlin.code.style=official`. Algorithms and boundary conditions belong in pure `domain/` functions with unit tests, not inside Composables; Composables only own state and layout.
 - **iOS**: Swift 5.9. `ios/MyFriendKit` must not import any UI framework; the SwiftUI layer must not reimplement domain logic and should reuse Kit types directly.
-- **Comments**: keep them in Chinese and explain *why*, not *what*. Numbers such as thresholds, clamp ranges and time windows should point at the specification section in a comment (for example a section of `docs/ROADMAP-1.9.md`).
+- **Comments**: keep them in Chinese and explain *why*, not *what*. Numbers such as thresholds, clamp ranges and time windows should point at the specification section in a comment (for example a section of `docs/design/roadmap-1.9.md`).
 - **Dependencies**: no new Android third-party library without discussion; iOS stays free of third-party dependencies; `harness/` stays dependency-free.
 - **Tests**: new pure logic requires unit tests; follow existing naming (Android `XxxTest.kt`, iOS `XxxTests.swift`).
 
@@ -104,7 +104,7 @@ The following never enter the repository (already excluded by `.gitignore`; do n
 - any API key, `keystore.properties`, `*.jks` / `*.keystore`, `local.properties`;
 - `dist/`, APK / AAB / IPA, `app/build/`, `.gradle/`, `ios/.build/`;
 - `docs/screenshots/` and any other screenshots (the repository does not publish screenshots, and docs must not reference image files);
-- `.tooling/` (local toolchain, SDK, caches).
+- Local toolchain/cache directories (for example an SDK or Gradle cache placed inside the checkout).
 - Do not change `LICENSE` without discussion; license changes are a maintainer decision.
 
 ## Data structure changes
@@ -118,7 +118,7 @@ The database schema is currently **v10** and the backup format is **v2**. The wo
 5. **Backup**: decide whether field additions/removals affect `BackupCodec`. If they do, bump `formatVersion`, change both `BackupCodec.*` implementations together, and **regenerate** `fixtures/backup/android-export-v2.json` and `ios-export-v2.json`. v1 samples are inputs only and are never rewritten.
 6. **Verify**: `BackupFixtureTest` (Android) and `BackupInteropTests` (iOS) must both pass, and old backups must still load.
 
-Field names, enum values and defaults follow [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) and the two `BackupCodec` implementations; field names must be identical on both sides.
+Field names, enum values and defaults follow [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) and the two `BackupCodec` implementations; field names must be identical on both sides.
 
 ## Strings and i18n
 
@@ -142,11 +142,11 @@ The following capabilities were **deliberately removed**; they are not backlog i
 - TTS voice, persona store;
 - confirmation dialogs for the persona's own decisions (not replying, sleeping, staying silent).
 
-The full removal list and rationale are in section one of [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md).
+The full removal list and rationale are in section one of [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md).
 
 ## Versioning and releases
 
-Summary of the rules (full text in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)):
+The scheme is deliberately simple and predictable during the beta:
 
 - The major version stays `0` during the beta; small changes increment the last digit (`0.10.0` → `0.10.1`), large changes increment the middle digit and reset the last (`0.9.1` → `0.10.0`).
 - `versionCode` and `CURRENT_PROJECT_VERSION` increment on every release and stay equal; the schema version is independent of the app version.

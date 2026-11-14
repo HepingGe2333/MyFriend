@@ -187,7 +187,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				/* Debug 用 Info-Debug.plist（多开 NSAllowsArbitraryLoads 供本机参考服务联调）；Release 用 Config/Info.plist（只留 NSAllowsLocalNetworking）。0.10.2 审计 P1-6。 */
@@ -196,7 +196,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.11.1;
+				MARKETING_VERSION = 0.11.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.myfriend.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -210,7 +210,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CURRENT_PROJECT_VERSION = 16;
+				CURRENT_PROJECT_VERSION = 17;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = Config/Info.plist;
@@ -218,7 +218,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.11.1;
+				MARKETING_VERSION = 0.11.2;
 				PRODUCT_BUNDLE_IDENTIFIER = com.myfriend.app.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

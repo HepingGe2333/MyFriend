@@ -2,7 +2,7 @@
 
 > English version: [CHANGELOG.en.md](CHANGELOG.en.md)
 
-版本号规则见 [VERSIONING.md](VERSIONING.md)：内测阶段主版本固定为 `0`，小改动末尾 +1，大改动中间 +1。
+版本号规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)：内测阶段主版本固定为 `0`，小改动末尾 +1，大改动中间 +1。
 
 > 编号说明：`0.9.0` 之前的版本用的是旧编号（`1.0.0`–`1.8.0`）。开源发布时把当时的最新版 `1.9.0`
 > 改成了 `0.9.0`，更早的版本保留旧编号只在下面这张表里留档。
@@ -21,6 +21,45 @@
 | `0.9.0` | 把设置项从产品里拿掉：一人一段会话、已读回执、`defer_reply`、睡眠与唤醒阈值、人格细分字段、并发闸 ≤3、只统计 token |
 | `0.9.1` | 两端可选头像（自己 + 他）、iOS 补齐落后 Android 的能力、内存占用优化 |
 | `0.10.0` | 英文 UI 与双语资源守卫、跨端 agent 契约用例与 agentd 服务骨架、文档中英双语化 |
+
+---
+
+## 0.11.2
+
+小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。
+版本 `0.11.2`，两端构建号 **17**；schema 仍 v10、备份仍 v2；**没有代码行为变化**。
+
+### 文档结构
+
+- 新增根目录 **`AGENTS.md`**：唯一一份面向 AI 编码代理与自动化的操作说明（哪些目录是产物、版本号要填在哪里、
+  工作区构建命令、子代理分工约定、数据/契约改动清单、审计流程、完成标准）。它被明确标注为**不是项目文档**。
+- 删除 `docs/VERSIONING.md` / `.en.md`：版本号规则这类「告诉代理怎么改」的内容并入 `AGENTS.md`；
+  面向维护者的版本策略与发版清单留在 `CONTRIBUTING` 的「版本号与发版」一节。
+- 新增 **`docs/README.md`**：面向人的文档总索引（项目文档 / 跨端契约 / 子项目文档 / 贡献流程约定）。
+- `docs/ROADMAP-1.x.md` 移到 **`docs/design/`** 并加「历史设计记录」标注：它们是当时那一版的行为规格，
+  保留供追溯设计取舍，不再被当成当前行为说明。
+- `docs/audits/README.md` 重写为面向读者的「审计记录」：怎么读严重度、每份报告修在哪个版本、以及
+  **已接受的取舍**；「怎么发起一次审计」的流程性内容移到 `AGENTS.md`。
+
+### 文档清洁
+
+- 公开文档里不再出现工作区路径与只在本机可用的命令（`.tooling/` 下的 Gradle、本机 SDK/JDK 路径、
+  本机模拟器名）。`agentd/README.md` 与 `spec/agent-core/README.md` 的构建命令统一为 `./gradlew`。
+- `CONTRIBUTING` 里「不要提交」清单改写为面向贡献者的说法（本地工具链/缓存目录），不再指向某个具体工作区目录。
+- 新增 `.github/`：PR 模板（平台勾选、双端测试、数据结构/备份/文案改动清单）与 Bug / Feature issue 模板
+  （含「是否符合项目设计立场」一栏，避免反复讨论已刻意移除的旋钮）。
+- `.gitignore` 增加 agent workspace 约定段（`/.agents/`、`/.scratch/`、`/workspace/`、`*.agent-notes.md`），
+  并保留原有对 `.tooling/`、`dist/`、`docs/screenshots/`、构建缓存的忽略。
+
+### 版本与发布
+
+- `versionCode` / `CURRENT_PROJECT_VERSION` 同步为 **17**，`versionName` / `MARKETING_VERSION` 为 `0.11.2`。
+- 本版打 tag `v0.11.2` 并在 GitHub Release 附本更新日志（`prerelease`）。
+
+### 测试
+
+无代码改动，测试数量与 0.11.1 相同：Android 970（91 类）、`:agentcore` 47、`:agentd` 34、iOS 1187；
+两端的 Debug/Release 构建与 `lintDebug` 在本版提交前重新跑过。
 
 ---
 
@@ -98,7 +137,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 
 大改动：**agent 决策层收敛成一份实现（`:agentcore`），两端客户端都走客户端/服务端分层**；
 同时把三份审计里剩下的 P2 项清完。版本 `0.11.0`，两端构建号 **15**，schema 仍 **v10**、备份仍 **v2**。
-（按维护者要求，本版**不创建发布 tag**。）
+（该版本未创建发布 tag。）
 
 ### 架构：一份决策实现 + 客户端/服务端分层
 
@@ -341,7 +380,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 ### 契约测试暴露并修掉的两端不一致
 
 契约用例写完之后，两端有 10 处实现细节并不一致（数值、边界、脏数据降级各有各的做法）。处理原则：以
-`docs/ROADMAP-1.9.md` 的规格为准，两边都合理时以 Android 为准并对齐 Swift。主要几条：
+`docs/design/roadmap-1.9.md` 的规格为准，两边都合理时以 Android 为准并对齐 Swift。主要几条：
 
 | 项目 | 修复前 | 修复后 |
 | --- | --- | --- |
@@ -425,7 +464,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 
 - 版本号 `0.9.1`，Android `versionCode 11`、iOS `CURRENT_PROJECT_VERSION 11`（两端构建号相等，schema 仍是 v10）。
 - 关于页、备份 `appVersion` 都从构建号派生，不再手写版本字符串。
-- 开源准备：Apache-2.0、Gradle Wrapper、`.gitignore`（排除工具链与构建产物）、`CONTRIBUTING.md`、`docs/VERSIONING.md`。
+- 开源准备：Apache-2.0、Gradle Wrapper、`.gitignore`（排除工具链与构建产物）、`CONTRIBUTING.md`、`CONTRIBUTING.md`。
 
 ---
 
@@ -448,4 +487,4 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 
 ## 更早的版本
 
-旧编号时代的详细设计文档仍在 `docs/` 下：[ROADMAP-1.2](ROADMAP-1.2.md)、[ROADMAP-1.3](ROADMAP-1.3.md)、[ROADMAP-1.4](ROADMAP-1.4.md)、[ROADMAP-1.5](ROADMAP-1.5.md)、[ROADMAP-1.6](ROADMAP-1.6.md)、[ROADMAP-1.7](ROADMAP-1.7.md)、[ROADMAP-1.9](ROADMAP-1.9.md)（= 0.9.0）。
+旧编号时代的详细设计文档仍在 `docs/` 下：[ROADMAP-1.2](design/roadmap-1.2.md)、[ROADMAP-1.3](design/roadmap-1.3.md)、[ROADMAP-1.4](design/roadmap-1.4.md)、[ROADMAP-1.5](design/roadmap-1.5.md)、[ROADMAP-1.6](design/roadmap-1.6.md)、[ROADMAP-1.7](design/roadmap-1.7.md)、[ROADMAP-1.9](design/roadmap-1.9.md)（= 0.9.0）。

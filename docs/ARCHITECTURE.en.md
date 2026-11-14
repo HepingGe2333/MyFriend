@@ -91,7 +91,7 @@ sequenceDiagram
 Three things that are easy to get wrong:
 
 1. **Every LLM call must go through the concurrency gate** (chat, memory extraction, consolidation, scoring, heartbeat, compression, web tools). Background work that cannot get a slot must give up and log — never queue the user behind maintenance.
-2. **`readAt` and "will he answer" are different things**: read ≠ will reply; with do-not-disturb even the read receipt is not written (see `docs/ROADMAP-1.9.md` §6).
+2. **`readAt` and "will he answer" are different things**: read ≠ will reply; with do-not-disturb even the read receipt is not written (see `docs/design/roadmap-1.9.md` §6).
 3. **Tool calls and the final reply share one stream**: the model may talk while calling a tool, or call a tool and say nothing (`defer_reply`).
 
 ## 4. Why there are two implementations
@@ -105,7 +105,7 @@ Three things that are easy to get wrong:
 So both sides implement it, held together by three mechanisms:
 
 1. **Backup fixtures** — `fixtures/backup/` (v1 read-only samples + the v2 contract); each platform has a test reading the same files;
-2. **Written specs** — `docs/ROADMAP-1.9.md` and friends pin down behaviours, numbers and copy, with acceptance tables;
+2. **Written specs** — `docs/design/roadmap-1.9.md` and friends pin down behaviours, numbers and copy, with acceptance tables;
 3. **Shared conformance cases** (new in 0.10.0) — `spec/agent-core/cases/*.json`; each platform asserts its own implementation against the same JSON.
 
 ## 5. The agent core: one implementation, three runtime shapes
@@ -195,7 +195,7 @@ Signal for continuing: when the case suite grows to "every behaviour change touc
 
 - **Schema v10** — both platforms keep `user_version` in sync; `chat_sessions.personaId` is unique (one session per persona). Migrations are additive; Android verifies the exported Room schema in tests, iOS has matching migration tests.
 - **Backup v2** — `format="myfriend.backup"`, `formatVersion=2`, `apiKeysOmitted=true`; v1 backups remain readable. Image binaries, avatar files and API keys are never included.
-- Versioning rules: [`VERSIONING.md`](VERSIONING.md). `versionCode` and iOS `CURRENT_PROJECT_VERSION` stay equal and are decoupled from the schema version (schema increments only on table changes).
+- Versioning rules: [`CONTRIBUTING.md`](../CONTRIBUTING.md). `versionCode` and iOS `CURRENT_PROJECT_VERSION` stay equal and are decoupled from the schema version (schema increments only on table changes).
 
 ## 8. Internationalization
 

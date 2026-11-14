@@ -2,7 +2,7 @@
 
 > 中文版：[CHANGELOG.md](CHANGELOG.md)
 
-Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the major version stays `0`, small changes increment the last digit, large changes increment the middle digit.
+Version rules live in [CONTRIBUTING.en.md](../CONTRIBUTING.en.md): during the beta the major version stays `0`, small changes increment the last digit, large changes increment the middle digit.
 
 > A note on numbering: versions before `0.9.0` used the old scheme (`1.0.0`–`1.8.0`). At open-source release the then-latest `1.9.0` was renamed to `0.9.0`; earlier versions keep their old numbers in the table below for reference only.
 
@@ -20,6 +20,50 @@ Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the 
 | `0.9.0` | Removed settings from the product: one conversation per persona, read receipts, `defer_reply`, sleep and wake thresholds, structured persona fields, concurrency gate ≤3, token-only usage |
 | `0.9.1` | Optional avatars on both platforms (you and him), iOS caught up with Android, memory footprint work |
 | `0.10.0` | English UI and bilingual resource guards, cross-platform agent contract cases and the agentd service skeleton, bilingual documentation |
+
+---
+
+## 0.11.2
+
+A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans
+workspace traces out of the published docs. Version `0.11.2`, build numbers **17**; schema stays v10, backup format stays
+v2; **no behaviour changes**.
+
+### Documentation structure
+
+- New **`AGENTS.md`** at the repository root: the single place for AI agents and automation — which directories are
+  artefacts, where a version bump has to be applied, workspace build commands, parallel-work conventions, the
+  data/contract checklist, the audit procedure and the definition of done. It is explicitly marked as *not* project
+  documentation.
+- Removed `docs/VERSIONING.md` / `.en.md`: "how an agent should bump the version" moved into `AGENTS.md`; the
+  maintainer-facing policy and release checklist stay in the "Versioning and releases" section of `CONTRIBUTING`.
+- New **`docs/README.md`**: a human-facing index (project docs, cross-platform contracts, sub-project docs, doc-writing
+  rules).
+- `docs/ROADMAP-1.x.md` moved to **`docs/design/`** with a "historical design record" banner: they describe the behaviour
+  spec of a past release, kept for tracing decisions, not as current documentation.
+- `docs/audits/README.md` rewritten for readers: how to read the severity levels, which release fixed which report, and
+  the **accepted risks**. The "how to run an audit" procedure moved to `AGENTS.md`.
+
+### Documentation hygiene
+
+- Public docs no longer contain workspace paths or machine-only commands (`.tooling/` Gradle, local SDK/JDK paths, local
+  simulator names). Build commands in `agentd/README.md` and `spec/agent-core/README.md` now use `./gradlew`.
+- The "do not commit" list in `CONTRIBUTING` is phrased for contributors (local toolchain/cache directories) instead of
+  pointing at a specific workspace directory.
+- Added `.github/`: a PR template (platforms, both test suites, data/backup/string checklists) and bug/feature issue
+  templates (including "does it conflict with the design stance?" to avoid re-litigating deliberately removed knobs).
+- `.gitignore` gained an agent-workspace block (`/.agents/`, `/.scratch/`, `/workspace/`, `*.agent-notes.md`) while
+  keeping the existing ignores for `.tooling/`, `dist/`, `docs/screenshots/` and build caches.
+
+### Version and release
+
+- `versionCode` / `CURRENT_PROJECT_VERSION` are **17**; `versionName` / `MARKETING_VERSION` are `0.11.2`.
+- Tagged `v0.11.2` with this changelog as the GitHub Release body (`prerelease`).
+
+### Tests
+
+No code changes, so the counts match 0.11.1: Android 970 (91 classes), `:agentcore` 47, `:agentd` 34, iOS 1187. Both
+platforms' Debug/Release builds and `lintDebug` were re-run before committing this release.
 
 ---
 
@@ -110,7 +154,7 @@ GitHub Release**.)
 
 A large release: **the agent decision layer becomes a single implementation (`:agentcore`) and both clients sit behind a
 client/server boundary**, plus the remaining P2 items from the audits. Version `0.11.0`, build numbers **15**, schema stays
-**v10**, backup format stays **v2**. (Per the maintainer's request this release is **not tagged**.)
+**v10**, backup format stays **v2**. (This release was not tagged.)
 
 ### Architecture: one decision implementation + client/server layering
 
@@ -366,7 +410,7 @@ Version `0.10.0` (a large change: internationalisation plus a cross-platform age
 ### Divergences the contract uncovered
 
 Writing the cases revealed ten places where the two implementations quietly disagreed. The rule: the spec in
-`docs/ROADMAP-1.9.md` wins; where both were reasonable, Android was treated as the reference and Swift was aligned.
+`docs/design/roadmap-1.9.md` wins; where both were reasonable, Android was treated as the reference and Swift was aligned.
 
 | Item | Before | After |
 | --- | --- | --- |
@@ -441,7 +485,7 @@ The first minor release of the beta. Three things: **you and he can both have a 
 
 - Version `0.9.1`, Android `versionCode 11`, iOS `CURRENT_PROJECT_VERSION 11` (equal build numbers, schema still v10).
 - The About screen and the backup's `appVersion` derive from the build number instead of hand-written version strings.
-- Open-source preparation: Apache-2.0, Gradle Wrapper, `.gitignore` (toolchain and build artifacts excluded), `CONTRIBUTING.md`, `docs/VERSIONING.md`.
+- Open-source preparation: Apache-2.0, Gradle Wrapper, `.gitignore` (toolchain and build artifacts excluded), `CONTRIBUTING.md`, `CONTRIBUTING.md`.
 
 ---
 
@@ -464,4 +508,4 @@ Before `0.9.0` the UI exposed memory switches, reply pacing, a monthly budget an
 
 ## Earlier versions
 
-Design documents from the old numbering era are still under `docs/`: [ROADMAP-1.2](ROADMAP-1.2.md), [ROADMAP-1.3](ROADMAP-1.3.md), [ROADMAP-1.4](ROADMAP-1.4.md), [ROADMAP-1.5](ROADMAP-1.5.md), [ROADMAP-1.6](ROADMAP-1.6.md), [ROADMAP-1.7](ROADMAP-1.7.md), [ROADMAP-1.9](ROADMAP-1.9.md) (= 0.9.0).
+Design documents from the old numbering era are still under `docs/`: [ROADMAP-1.2](design/roadmap-1.2.md), [ROADMAP-1.3](design/roadmap-1.3.md), [ROADMAP-1.4](design/roadmap-1.4.md), [ROADMAP-1.5](design/roadmap-1.5.md), [ROADMAP-1.6](design/roadmap-1.6.md), [ROADMAP-1.7](design/roadmap-1.7.md), [ROADMAP-1.9](design/roadmap-1.9.md) (= 0.9.0).

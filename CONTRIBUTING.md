@@ -10,8 +10,8 @@
 | --- | --- |
 | [README.md](README.md) | 项目定位、构建命令、已知限制 |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层、数据流、跨端契约 |
-| [docs/VERSIONING.md](docs/VERSIONING.md) | 版本号、构建号与 schema 的关系、发版清单 |
-| [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | 当前行为的规格与验收表；也是「刻意删除清单」的出处 |
+| [docs/README.md](docs/README.md) | 文档总索引（含跨端契约与子项目文档） |
+| [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) | 0.9.0 的历史行为规格与验收表；「刻意删除清单」的出处 |
 | [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | 两端必须一致的部分、平台限制、iOS 已知缺口 |
 | [docs/I18N.md](docs/I18N.md) | 文案与本地化规则 |
 
@@ -59,7 +59,7 @@ cd ios/MyFriendKit && swift test --disable-sandbox --filter BackupInteropTests
 
 - **Android**：Kotlin + Compose，`kotlin.code.style=official`。算法与边界条件放在 `domain/` 的纯函数里并配单元测试，不要埋进 Composable；Composable 只负责状态与布局。
 - **iOS**：Swift 5.9。`ios/MyFriendKit` 不允许依赖任何 UI 框架；SwiftUI 层不重复实现领域逻辑，直接复用 Kit 中的类型。
-- **注释**：保持中文，写「为什么」而不是「做了什么」。阈值、夹取范围、时间窗口一类数字，应在注释里指向规格条目（例如 `docs/ROADMAP-1.9.md` 的对应小节）。
+- **注释**：保持中文，写「为什么」而不是「做了什么」。阈值、夹取范围、时间窗口一类数字，应在注释里指向规格条目（例如 `docs/design/roadmap-1.9.md` 的对应小节）。
 - **依赖**：Android 不新增未经讨论的第三方库；iOS 保持零第三方依赖；`harness/` 保持零依赖。
 - **测试**：新增纯逻辑必须配单元测试；测试命名与既有文件保持一致（Android `XxxTest.kt`，iOS `XxxTests.swift`）。
 
@@ -104,7 +104,7 @@ MemoryRepository.getRelevant 之前读 getForPersona，
 - 任何 API Key、`keystore.properties`、`*.jks` / `*.keystore`、`local.properties`；
 - `dist/`、APK / AAB / IPA、`app/build/`、`.gradle/`、`ios/.build/`；
 - `docs/screenshots/` 与其它截图（仓库不发布截图，文档里也不要引用图片文件）；
-- `.tooling/`（本地工具链、SDK、缓存）。
+- 本地工具链与缓存目录（例如把 SDK、Gradle 缓存放在仓库内时产生的目录）。
 - 未经讨论不要改 `LICENSE`；修改许可证需要维护者决定。
 
 ## 数据结构改动
@@ -118,7 +118,7 @@ MemoryRepository.getRelevant 之前读 getForPersona，
 5. **备份**：字段增删要判断是否影响 `BackupCodec`。影响则 `formatVersion` +1，两端 `BackupCodec.*` 一起改，并**重新生成** `fixtures/backup/android-export-v2.json` 与 `ios-export-v2.json`。v1 样本只作为输入，永不重写。
 6. **验证**：`BackupFixtureTest`（Android）与 `BackupInteropTests`（iOS）必须同时绿；再确认旧备份仍能读入。
 
-字段命名、枚举取值与默认值以 [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) 与两端 `BackupCodec` 为准；两端字段名必须逐字相同。
+字段命名、枚举取值与默认值以 [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) 与两端 `BackupCodec` 为准；两端字段名必须逐字相同。
 
 ## 文案与 i18n
 
@@ -142,18 +142,18 @@ MemoryRepository.getRelevant 之前读 getForPersona，
 - TTS 语音、人格商店；
 - 对人格自身决定（不回、睡觉、沉默）的确认弹窗。
 
-完整删除清单与原因见 [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) 第一节。
+完整删除清单与原因见 [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) 第一节。
 
 ## 版本号与发版
 
-规则摘要（全文见 [docs/VERSIONING.md](docs/VERSIONING.md)）：
+版本号在内测阶段刻意保持简单、可预期：
 
 - 内测阶段主版本号固定为 `0`；小改动末尾 +1（`0.10.0` → `0.10.1`），大改动中间 +1、末尾归零（`0.9.1` → `0.10.0`）。
 - `versionCode` 与 `CURRENT_PROJECT_VERSION` 每次发布 +1 且保持相等；schema 版本与 App 版本没有对应关系。
 
 发版清单：
 
-1. 改版本号（**4 处**）：`app/build.gradle.kts` 的 `versionCode` / `versionName`；`ios/MyFriend.xcodeproj/project.pbxproj` 的 `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION`；`docs/CHANGELOG.md` 新条目；`README.md` 顶部的项目状态。
+1. 改版本号与状态（**4 处**）：`app/build.gradle.kts` 的 `versionCode` / `versionName`；`ios/MyFriend.xcodeproj/project.pbxproj` 的 `CURRENT_PROJECT_VERSION` / `MARKETING_VERSION`；`docs/CHANGELOG.md` 新条目；`README.md` 顶部的项目状态。
 2. 同步双语镜像：`docs/CHANGELOG.en.md`、`README.en.md`（及对应英文文档若版本相关）。
 3. 跑两端测试：`./gradlew :app:testDebugUnitTest`、`cd ios/MyFriendKit && swift test --disable-sandbox`；schema 或备份有改动时补跑迁移测试与 fixture 测试。
 4. 确认两端都能构建：`./gradlew :app:assembleDebug` 与 `xcodebuild ... build`。

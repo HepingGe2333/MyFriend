@@ -90,7 +90,7 @@ sequenceDiagram
 三个容易写错的地方：
 
 1. **并发闸必须包住所有 LLM 调用**（聊天、抽记忆、整理、打分、心跳、压缩、联网工具）。后台任务拿不到槽位应当**放弃并记日志**，而不是排队等用户。
-2. **`readAt` 与「回不回」是两件事**：已读 ≠ 会回；免打扰时连已读都不写（见 `docs/ROADMAP-1.9.md` §六）。
+2. **`readAt` 与「回不回」是两件事**：已读 ≠ 会回；免打扰时连已读都不写（见 `docs/design/roadmap-1.9.md` §六）。
 3. **工具调用与最终回复是同一条流**：模型可以边说边调工具，也可以只调工具不说话（`defer_reply`）。
 
 ## 4. 为什么两端是两份实现
@@ -106,7 +106,7 @@ sequenceDiagram
 所以两端各写一份，但用三样东西把它们钉在一起：
 
 1. **备份互通夹具**：`fixtures/backup/`（v1 只读样例 + v2 契约），两端各有一个测试读同一批文件；
-2. **规格文档**：`docs/ROADMAP-1.9.md` 这类「行为规格 + 验收表」，数字与文案逐条写死；
+2. **规格文档**：`docs/design/roadmap-1.9.md` 这类「行为规格 + 验收表」，数字与文案逐条写死；
 3. **共享用例**（0.10.0 新增）：`spec/agent-core/cases/*.json`，两端各有一个测试读同一批 JSON 断言自己的实现。
 
 ## 5. Agent 核心：一份实现，三种运行形态
@@ -193,7 +193,7 @@ flowchart TB
   迁移只增不减，Android 的 Room 导出 schema 在测试里校验，iOS 侧有对应的迁移测试。
 - **备份 v2**：`format="myfriend.backup"`、`formatVersion=2`、`apiKeysOmitted=true`；v1 备份仍可读。
   图片二进制、头像文件、API Key **不进备份**。
-- 版本规则见 [`VERSIONING.md`](VERSIONING.md)；`versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等，
+- 版本规则见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)；`versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等，
   与 schema 版本解耦（schema 只在表结构变化时 +1）。
 
 ## 8. 国际化

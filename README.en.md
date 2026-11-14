@@ -12,7 +12,7 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 | Item | Value |
 | --- | --- |
-| Version | `0.11.1` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
+| Version | `0.11.2` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
 | Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
 | Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
@@ -47,7 +47,7 @@ The two platforms are not strictly feature-for-feature equal; platform limits an
 
 ## Design stance
 
-Most decisions in this project follow one constraint: **the interface faces a contact, not a robot with dials.** Memory switches, reply pacing, daily proactive limits and monthly budgets were removed on purpose; those decisions now belong to persona fields and the model (`defer_reply`, sleep and wake thresholds, `proactiveLevel`). The stance is specified, together with the deletion list, in [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md); it is enforced as a review constraint in [CONTRIBUTING.en.md](CONTRIBUTING.en.md), and the architectural trade-offs live in [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md).
+Most decisions in this project follow one constraint: **the interface faces a contact, not a robot with dials.** Memory switches, reply pacing, daily proactive limits and monthly budgets were removed on purpose; those decisions now belong to persona fields and the model (`defer_reply`, sleep and wake thresholds, `proactiveLevel`). The stance is specified, together with the deletion list, in [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md); it is enforced as a review constraint in [CONTRIBUTING.en.md](CONTRIBUTING.en.md), and the architectural trade-offs live in [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md).
 
 ## Architecture & stack
 
@@ -131,17 +131,17 @@ The server understands `remember` / `recall` / `set_mood` / `web_search` / `myfr
 
 ## Documentation
 
+The full index is [docs/README.md](docs/README.md) (in Chinese); the documents most people need:
+
 | Document | Contents |
 | --- | --- |
-| [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) · [中文](docs/ARCHITECTURE.md) | Layers, data flow, cross-platform contracts, key trade-offs |
-| [docs/I18N.en.md](docs/I18N.en.md) · [中文](docs/I18N.md) | Bilingual strategy, resource locations, rules for new strings, what is not translated |
+| [docs/ARCHITECTURE.en.md](docs/ARCHITECTURE.en.md) · [中文](docs/ARCHITECTURE.md) | Layers, data flow, cross-platform contracts, the three shapes of the agent core |
+| [docs/I18N.en.md](docs/I18N.en.md) · [中文](docs/I18N.md) | Bilingual strategy, resource locations, rules for new strings |
 | [docs/CHANGELOG.en.md](docs/CHANGELOG.en.md) · [中文](docs/CHANGELOG.md) | What actually changed in each version |
-| [docs/VERSIONING.en.md](docs/VERSIONING.en.md) · [中文](docs/VERSIONING.md) | Version rules, build-number/schema relation, release checklist |
-| [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | What must match across platforms, what is platform-limited, what iOS still lacks |
-| [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | Specification, deletion list and acceptance table for 0.9.0 (formerly 1.9.0) |
-| [docs/ROADMAP-1.7.md](docs/ROADMAP-1.7.md) | Links and in-app browser, heartbeat curve, vector retrieval, long-conversation compression |
-| [CONTRIBUTING.en.md](CONTRIBUTING.en.md) · [中文](CONTRIBUTING.md) | Environment, code style, commit conventions, data and string workflows |
-| [docs/audits/](docs/audits/README.md) | Independent audit reports (P0/P1/P2 findings, fixes and accepted risks per version) |
+| [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | What must match across platforms, what is platform-limited |
+| [docs/audits/](docs/audits/README.md) | Audit records and accepted risks |
+| [docs/design/](docs/design/roadmap-1.9.md) | Historical design records (behaviour specs from before 0.9.0) |
+| [CONTRIBUTING.en.md](CONTRIBUTING.en.md) · [中文](CONTRIBUTING.md) | Environment, code style, commit conventions, release process |
 
 ## Known limitations
 
