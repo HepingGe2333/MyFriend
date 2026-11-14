@@ -133,6 +133,21 @@ export BUNDLE_ID=com.yourname.myfriend      # 可省略，默认 com.myfriend.ap
 `NSLocalNetworkUsageDescription`——首次访问局域网时系统会弹一次权限，选「允许」。
 **正式发布前**应把这两项改回 HTTPS-only。
 
+## 0.9.1：头像、图片、工具与主动唤醒
+
+这一版把 iOS 落后 Android 的部分补齐了，并且两端都能选头像。要点：
+
+| 能力 | 位置 / 说明 |
+| --- | --- |
+| **图片消息** | `Support/Attachments.swift`（与 Android `Attachments.kt` 逐字段一致）+ `Support/MediaStorage.swift`（长边 1600 / JPEG 0.85 / ≤800KB，按显示尺寸解码）+ `Views/Chat/ChatImageBubble.swift`（气泡与全屏查看）；文件缺失显示「图片已不在本机」 |
+| **头像** | `Views/Shared/MFAvatar.swift` 统一渲染；人格头像存沙盒并落库，`SettingsStore.myAvatarUri` 存「我的头像」（只存本机，不进备份） |
+| **聊天侧工具执行器** | `Services/ToolExecutor.swift`：`think` / `web_search` / `web_fetch` / `remember` / `update_persona` / `set_quiet_hours`（含 `dnd`）/ `set_mood` / `recall` / `defer_reply`，参数夹取与 `【工具结果】` 回灌对齐 Android；`Net/WebToolsClient.swift` 走 DeepSeek 联网工具 |
+| **主动唤醒** | `Services/ProactiveRuleService.swift` 落库 + `Views/Proactive/ProactiveListScreen.swift`（列表 / 开关 / 下次触发 / 删除 / 手动新建） |
+| **历史压缩** | `Services/HistoryCompressionService.swift`：最近 24 条逐字保留、够 12 条或 24000 字压一段、原文不删，带拒收守卫与启动自检 |
+| **人设卡** | `Domain/PersonaCard.swift` + `Services/PersonaCardRepository.swift`，编辑页可结构化编辑并进提示词 |
+| **通知与后台** | `App/AppNotifications.swift`（锁屏不露正文、点开进聊天）+ `App/BackgroundScheduler.swift`（`BGAppRefreshTask` / `BGProcessingTask` 注册，回到前台补算一次） |
+| **内存** | 图片按显示尺寸解码 + `NSCache`（`min(物理内存×10%, 48MB)`，内存警告清空）；只给最近 2 条带图消息解 data URL |
+
 ## 1.9：他是联系人，不是一个 API
 
 1.9 的目标是「把设置项从产品里拿掉，把决定权交回给模型与人格」。与 Android 完全同构，
@@ -159,7 +174,7 @@ v1 备份仍然能被 1.9 读回来，读回来时同样按「一人一段」只
 
 ### 版本
 
-- `MARKETING_VERSION = 1.9.0`、`CURRENT_PROJECT_VERSION = 10`（与数据库 schema v10 对齐）。
+- `MARKETING_VERSION = 0.9.1`、`CURRENT_PROJECT_VERSION = 11`（两端构建号相等；数据库 schema 仍是 v10）。
 
 ## 后台行为（和 Android 不一样的地方）
 
@@ -175,7 +190,7 @@ iOS 不允许常驻后台进程。这里能做到的是：
 
 ## 已验证
 
-- `swift test --disable-sandbox`：**653 条单测**全绿（域算法 / 数据 / 备份 / 网络 / 聊天 / 服务），
+- `swift test --disable-sandbox`：**810 条单测**全绿（域算法 / 数据 / 备份 / 网络 / 聊天 / 服务 / 工具 / 附件），
   其中 1.9 新增：并发闸、`defer_reply`、睡眠阈值、主动上限、备份 v2 往返 + v1 兼容、
   schema v8→v10 迁移（一人一段）、「消失的设置」源码守卫；
 - 备份双向互通：`android-export-v2.json` ↔ `ios-export-v2.json`
