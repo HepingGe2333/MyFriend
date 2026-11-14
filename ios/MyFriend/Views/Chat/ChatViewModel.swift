@@ -221,7 +221,7 @@ final class ChatViewModel: ObservableObject {
         // 会话绑定哪个配置由装配层负责（`AppEnvironment` 建会话时写 `apiConfigId`）。
         guard env.resolvedChatConfig() != nil else {
             hasApiConfig = false
-            showToast("先去设置里配一个 API")
+            showToast(L("先去设置里配一个 API"))
             return
         }
         draft = ""
@@ -238,7 +238,7 @@ final class ChatViewModel: ObservableObject {
         guard let env, !isGenerating else { return }
         guard env.resolvedChatConfig() != nil else {
             hasApiConfig = false
-            showToast("先去设置里配一个 API")
+            showToast(L("先去设置里配一个 API"))
             return
         }
         let stream = env.chat.regenerate(sessionId: sessionId)
@@ -343,9 +343,9 @@ final class ChatViewModel: ObservableObject {
             MediaStorage.shared.deleteAttachments(in: message.attachmentsJson)
             try refreshSessionPreview(env)
             reloadMessages()
-            showToast("已删除这条消息")
+            showToast(L("已删除这条消息"))
         } catch {
-            showToast("删除失败：\(error.localizedDescription)")
+            showToast(Lf("删除失败：%@", error.localizedDescription))
         }
     }
 
@@ -360,15 +360,15 @@ final class ChatViewModel: ObservableObject {
             MediaStorage.shared.delete(images)
             try refreshSessionPreview(env)
             reloadMessages()
-            showToast("上下文已清空")
+            showToast(L("上下文已清空"))
         } catch {
-            showToast("清空失败：\(error.localizedDescription)")
+            showToast(Lf("清空失败：%@", error.localizedDescription))
         }
     }
 
     func copy(_ text: String) {
         UIPasteboard.general.string = text
-        showToast("已复制")
+        showToast(L("已复制"))
     }
 
     /// 会话摘要栏（首页那一行预览）跟着消息走。
@@ -382,7 +382,7 @@ final class ChatViewModel: ObservableObject {
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         current.lastMessagePreview = flattened.isEmpty
-            ? (latest?.status == .error ? "回复失败" : nil)
+            ? (latest?.status == .error ? L("回复失败") : nil)
             : String(flattened.prefix(100))
         current.lastMessageAt = latest?.createdAt
         current.updatedAt = DomainClock.nowMillis
@@ -410,7 +410,7 @@ final class ChatViewModel: ObservableObject {
     private static func describe(_ error: Error) -> String {
         if let api = error as? ApiException { return api.message }
         let localized = (error as NSError).localizedDescription
-        return localized.isEmpty ? "生成失败" : localized
+        return localized.isEmpty ? L("生成失败") : localized
     }
 
     // MARK: - 列表条目（日期分隔条 + 消息）

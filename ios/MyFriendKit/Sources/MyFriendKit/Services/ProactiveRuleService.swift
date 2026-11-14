@@ -131,7 +131,7 @@ public enum ProactiveProtocol {
         let kindText = string(root, "kind")?.lowercased() ?? ""
         let note = String((string(root, "note") ?? "").prefix(120))
         let hint = String((string(root, "hint") ?? "").prefix(600))
-        let defaultNote = "主动开口，用你的方式关心对方此刻的状态。"
+        let defaultNote = String(localized: "主动开口，用你的方式关心对方此刻的状态。")
         switch kindText {
         case "daily", "daily_time", "daily_time_of_day", "once":
             // 1.9 语义里 kind 只有 daily / interval；模型偶尔写 once（「就这一次」），
@@ -141,7 +141,9 @@ public enum ProactiveProtocol {
                 kind: .daily,
                 timeOfDayMinutes: minutes,
                 intervalMinutes: nil,
-                note: note.isEmpty ? "每天 \(formatTimeOfDay(minutes)) 主动问候" : note,
+                note: note.isEmpty
+                    ? String(format: String(localized: "每天 %@ 主动问候"), formatTimeOfDay(minutes))
+                    : note,
                 hint: hint.isEmpty ? defaultNote : hint
             )
         case "interval", "every", "interval_hours":
@@ -151,7 +153,9 @@ public enum ProactiveProtocol {
                 kind: .interval,
                 timeOfDayMinutes: nil,
                 intervalMinutes: hours * 60,
-                note: note.isEmpty ? "每 \(hours) 小时主动关心一次" : note,
+                note: note.isEmpty
+                    ? String(format: String(localized: "每 %d 小时主动关心一次"), hours)
+                    : note,
                 hint: hint.isEmpty ? defaultNote : hint
             )
         default:
@@ -493,10 +497,10 @@ public enum ProactiveRuleError: Error, LocalizedError, Equatable {
 
     public var errorDescription: String? {
         switch self {
-        case .personaNotFound: return "找不到这个人格"
-        case .missingTime: return "每天固定的规则要写明时间（HH:mm）"
-        case .badInterval: return "间隔至少要 15 分钟"
-        case .unparsableProposal: return "这段提案看不懂，没有建规则"
+        case .personaNotFound: return String(localized: "找不到这个人格")
+        case .missingTime: return String(localized: "每天固定的规则要写明时间（HH:mm）")
+        case .badInterval: return String(localized: "间隔至少要 15 分钟")
+        case .unparsableProposal: return String(localized: "这段提案看不懂，没有建规则")
         }
     }
 }
@@ -545,7 +549,7 @@ public struct ProactiveRulePresentation: Equatable, Sendable {
 /// 规则 → 列表行。文案与 Android `ProactiveScreen.kt` 里那几句一致（「下次大概 … 前后」「现在关着」）。
 public enum ProactiveRulePresenter {
 
-    public static let emptyNoteFallback = "主动问候"
+    public static let emptyNoteFallback = String(localized: "主动问候")
 
     /// 单条映射。
     public static func present(
@@ -559,13 +563,13 @@ public enum ProactiveRulePresenter {
         return ProactiveRulePresentation(
             id: rule.id,
             personaName: (personaName ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "他" : personaName!.trimmingCharacters(in: .whitespacesAndNewlines),
+                ? String(localized: "他") : personaName!.trimmingCharacters(in: .whitespacesAndNewlines),
             note: note.isEmpty ? emptyNoteFallback : note,
             hint: hint,
             kindLabel: kindLabel(rule),
             scheduleLabel: scheduleLabel(rule),
             nextLabel: nextLabel(rule, now: now, calendar: calendar),
-            sourceLabel: rule.source == .ai ? "他自己安排的" : "你设的",
+            sourceLabel: rule.source == .ai ? String(localized: "他自己安排的") : String(localized: "你设的"),
             enabled: rule.enabled,
             nextTriggerAt: rule.nextTriggerAt
         )
@@ -592,8 +596,8 @@ public enum ProactiveRulePresenter {
 
     static func kindLabel(_ rule: ProactiveRuleEntity) -> String {
         switch rule.kind {
-        case .daily: return "每天"
-        case .interval: return "间隔"
+        case .daily: return String(localized: "每天")
+        case .interval: return String(localized: "间隔")
         }
     }
 
@@ -601,13 +605,13 @@ public enum ProactiveRulePresenter {
         switch rule.kind {
         case .daily:
             let minutes = rule.timeOfDayMinutes ?? 0
-            return "每天 \(ProactiveProtocol.formatTimeOfDay(minutes))"
+            return String(format: String(localized: "每天 %@"), ProactiveProtocol.formatTimeOfDay(minutes))
         case .interval:
             let minutes = rule.intervalMinutes ?? 0
             if minutes > 0, minutes % 60 == 0 {
-                return "每 \(minutes / 60) 小时"
+                return String(format: String(localized: "每 %d 小时"), minutes / 60)
             }
-            return "每 \(minutes) 分钟"
+            return String(format: String(localized: "每 %d 分钟"), minutes)
         }
     }
 
@@ -616,19 +620,23 @@ public enum ProactiveRulePresenter {
         now: Int64,
         calendar: Calendar
     ) -> String {
-        guard rule.enabled else { return "现在关着" }
-        guard rule.nextTriggerAt > 0 else { return "下次时间还没排定" }
+        guard rule.enabled else { return String(localized: "现在关着") }
+        guard rule.nextTriggerAt > 0 else { return String(localized: "下次时间还没排定") }
         let next = rule.nextTriggerAt
         let day: String
         if ServiceTime.startOfDay(next, calendar: calendar) == ServiceTime.startOfDay(now, calendar: calendar) {
-            day = "今天"
+            day = String(localized: "今天")
         } else if ServiceTime.startOfDay(next, calendar: calendar)
             == ServiceTime.startOfDay(now, calendar: calendar) + 24 * 60 * 60_000 {
-            day = "明天"
+            day = String(localized: "明天")
         } else {
             day = formatDay(next, calendar: calendar)
         }
-        return "下次大概 \(day) \(ProactiveProtocol.formatTimeOfDay(minuteOfDay(next, calendar: calendar))) 前后"
+        return String(
+            format: String(localized: "下次大概 %@ %@ 前后"),
+            day,
+            ProactiveProtocol.formatTimeOfDay(minuteOfDay(next, calendar: calendar))
+        )
     }
 
     static func minuteOfDay(_ millis: Int64, calendar: Calendar) -> Int {
@@ -638,7 +646,10 @@ public enum ProactiveRulePresenter {
 
     static func formatDay(_ millis: Int64, calendar: Calendar) -> String {
         let date = Date(timeIntervalSince1970: Double(millis) / 1000)
-        let components = calendar.dateComponents([.month, .day], from: date)
-        return "\(components.month ?? 1)月\(components.day ?? 1)日"
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.calendar = calendar
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter.string(from: date)
     }
 }

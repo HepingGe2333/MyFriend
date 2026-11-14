@@ -60,7 +60,7 @@ struct MFAvatar: View {
 
     /// 我的头像（你）。
     init(myAvatarUri: String?, size: CGFloat = 44) {
-        self.name = "我"
+        self.name = L("我")
         self.avatarUri = myAvatarUri
         self.avatarSeed = 0
         self.mood = nil
@@ -140,8 +140,8 @@ struct MFAvatar: View {
 
     private var accessibilityText: String {
         switch style {
-        case .persona: return name.isEmpty ? "他的头像" : "\(name)的头像"
-        case .me: return "我的头像"
+        case .persona: return name.isEmpty ? L("他的头像") : Lf("%@的头像", name)
+        case .me: return L("我的头像")
         }
     }
 }

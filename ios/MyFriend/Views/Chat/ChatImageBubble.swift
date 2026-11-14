@@ -62,7 +62,7 @@ struct ChatAttachmentsView: View {
             .contentShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text("图片，点开看大图"))
+        .accessibilityLabel(Text(L("图片，点开看大图")))
     }
 
     /// 按附件记录的真实像素宽高算缩略图占位（没有宽高时按 4:3）。
@@ -140,7 +140,7 @@ struct ChatImageViewer: View {
             .buttonStyle(.plain)
             .padding(.top, 8)
             .padding(.trailing, 14)
-            .accessibilityLabel(Text("关闭"))
+            .accessibilityLabel(Text(L("关闭")))
         }
         .statusBarHidden(true)
     }
@@ -170,7 +170,7 @@ private struct ZoomableAttachmentImage: View {
                         VStack(spacing: 8) {
                             Image(systemName: "photo.badge.exclamationmark")
                                 .font(.system(size: 34, weight: .light))
-                            Text("图片已不在本机")
+                            Text(L("图片已不在本机"))
                                 .font(.footnote)
                         }
                         .foregroundStyle(.white.opacity(0.75))

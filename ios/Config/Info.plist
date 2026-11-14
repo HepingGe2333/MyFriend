@@ -2,8 +2,16 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<!-- 中文是开发语言（base）：系统里没有 zh-Hans / en 时回落中文。 -->
 	<key>CFBundleDevelopmentRegion</key>
-	<string>zh_CN</string>
+	<string>zh-Hans</string>
+	<!-- 声明支持的语言：iOS 的「设置 → App → 语言」里才会出现中文 / English 两项。
+	     语言跟随系统（或用户在这里的 per-app 选择），App 内没有语言开关。 -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
 	<key>CFBundleDisplayName</key>
 	<string>MyFriend</string>
 	<key>CFBundleExecutable</key>

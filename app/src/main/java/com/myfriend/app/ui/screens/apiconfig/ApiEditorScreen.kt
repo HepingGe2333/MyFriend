@@ -63,6 +63,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
@@ -128,10 +131,10 @@ fun ApiEditorScreen(
                             Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
                         }
-                        Text(if (state.testing) "测试中" else "测试连接")
+                        Text(stringResource(if (state.testing) R.string.api_testing else R.string.api_test_connection))
                     }
                     PrimaryButton(
-                        text = if (state.isNew) "保存配置" else "保存更改",
+                        text = stringResource(if (state.isNew) R.string.api_save_new else R.string.api_save_changes),
                         onClick = viewModel::save,
                         loading = state.saving,
                         modifier = Modifier.weight(1f),
@@ -143,8 +146,8 @@ fun ApiEditorScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = if (state.isNew) "添加 API" else "编辑 API",
-                subtitle = "密钥仅保存在本机 Keystore",
+                title = stringResource(if (state.isNew) R.string.api_title_add else R.string.api_title_edit),
+                subtitle = stringResource(R.string.api_subtitle_key_local),
                 navigation = { BackNavigation(onBack) }
             )
             if (state.loading) {
@@ -159,13 +162,13 @@ fun ApiEditorScreen(
                         .padding(horizontal = 20.dp)
                         .padding(bottom = 20.dp)
                 ) {
-                    SectionLabel("服务商")
+                    SectionLabel(stringResource(R.string.api_section_provider))
                     Row(
                         Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         ProviderOption(
-                            label = "OpenAI 兼容",
+                            label = stringResource(R.string.api_provider_openai_compatible),
                             selected = state.provider == ProviderType.OPENAI,
                             available = true,
                             onClick = { viewModel.setProvider(ProviderType.OPENAI) }
@@ -184,18 +187,18 @@ fun ApiEditorScreen(
                         )
                     }
                     Text(
-                        "Gemini 与 Claude 的原生适配接口已预留，当前版本请使用 OpenAI 兼容端点。",
+                        stringResource(R.string.api_provider_hint),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp, start = 4.dp)
                     )
 
-                    SectionLabel("连接")
+                    SectionLabel(stringResource(R.string.api_section_connection))
                     StyledOutlinedField(
                         value = state.name,
                         onValueChange = { value -> viewModel.update { it.copy(name = value.take(60)) } },
-                        label = "配置名称",
-                        placeholder = "例如：DeepSeek 主力"
+                        label = stringResource(R.string.api_field_name),
+                        placeholder = stringResource(R.string.api_field_name_placeholder)
                     )
                     Spacer(Modifier.height(14.dp))
                     StyledOutlinedField(
@@ -203,14 +206,18 @@ fun ApiEditorScreen(
                         onValueChange = { value -> viewModel.update { it.copy(baseUrl = value.trim()) } },
                         label = "Base URL",
                         placeholder = "https://api.openai.com/v1",
-                        supportingText = "兼容 /chat/completions 与 /models 接口；通常包含 /v1。"
+                        supportingText = stringResource(R.string.api_field_base_url_hint)
                     )
                     Spacer(Modifier.height(14.dp))
                     StyledOutlinedField(
                         value = state.apiKey,
                         onValueChange = { value -> viewModel.update { it.copy(apiKey = value.trim()) } },
                         label = "API Key",
-                        placeholder = if (state.hasExistingKey) "已加密保存 · 留空不修改" else "sk-…",
+                        placeholder = if (state.hasExistingKey) {
+                            stringResource(R.string.api_field_key_stored_placeholder)
+                        } else {
+                            "sk-…"
+                        },
                         visualTransformation = if (keyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         leadingIcon = {
                             Icon(Icons.Outlined.Key, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -219,7 +226,11 @@ fun ApiEditorScreen(
                             IconButton(onClick = { keyVisible = !keyVisible }) {
                                 Icon(
                                     if (keyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                    contentDescription = if (keyVisible) "隐藏密钥" else "显示密钥",
+                                    contentDescription = if (keyVisible) {
+                                        stringResource(R.string.api_key_hide)
+                                    } else {
+                                        stringResource(R.string.api_key_show)
+                                    },
                                     modifier = Modifier.size(18.dp),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -230,21 +241,26 @@ fun ApiEditorScreen(
                     StyledOutlinedField(
                         value = state.model,
                         onValueChange = { value -> viewModel.update { it.copy(model = value.take(160)) } },
-                        label = "模型 ID",
+                        label = stringResource(R.string.api_field_model_id),
                         placeholder = "gpt-4o-mini / deepseek-chat / …",
                         trailingIcon = {
                             IconButton(onClick = viewModel::fetchModels, enabled = !state.fetchingModels) {
                                 if (state.fetchingModels) {
                                     CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 1.8.dp)
                                 } else {
-                                    Icon(Icons.Outlined.Refresh, contentDescription = "获取模型列表", modifier = Modifier.size(18.dp), tint = LocalAccentColor.current)
+                                    Icon(
+                                        Icons.Outlined.Refresh,
+                                        contentDescription = stringResource(R.string.api_fetch_models),
+                                        modifier = Modifier.size(18.dp),
+                                        tint = LocalAccentColor.current
+                                    )
                                 }
                             }
                         },
-                        supportingText = "可以手动填写任意模型 ID，也可以从服务端获取列表。"
+                        supportingText = stringResource(R.string.api_field_model_hint)
                     )
 
-                    SectionLabel("推理参数")
+                    SectionLabel(stringResource(R.string.api_section_parameters))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -253,7 +269,7 @@ fun ApiEditorScreen(
                     ) {
                         Column(Modifier.padding(16.dp)) {
                             Text(
-                                "留空表示使用模型默认值，请求时不会发送该参数。",
+                                stringResource(R.string.api_parameters_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -287,7 +303,7 @@ fun ApiEditorScreen(
                                         value = state.maxOutputTokens,
                                         onValueChange = { value -> viewModel.update { it.copy(maxOutputTokens = value.filter { ch -> ch.isDigit() }) } },
                                         label = "Max Output Tokens",
-                                        placeholder = "模型默认",
+                                        placeholder = stringResource(R.string.api_placeholder_model_default),
                                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                                         modifier = Modifier.weight(1f)
                                     )
@@ -309,7 +325,7 @@ fun ApiEditorScreen(
                                     value = state.presencePenalty,
                                     onValueChange = { value -> viewModel.update { it.copy(presencePenalty = value.numeric()) } },
                                     label = "Presence Penalty",
-                                    placeholder = "-2 – 2（留空使用默认）",
+                                    placeholder = stringResource(R.string.api_placeholder_penalty),
                                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
                                 )
                             }
@@ -318,24 +334,24 @@ fun ApiEditorScreen(
                                 TextButton(onClick = viewModel::resetParameters, contentPadding = PaddingValues(horizontal = 2.dp)) {
                                     Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
                                     Spacer(Modifier.width(4.dp))
-                                    Text("恢复模型默认参数")
+                                    Text(stringResource(R.string.api_reset_parameters))
                                 }
                                 Spacer(Modifier.weight(1f))
-                                TextPill("服务商能力自动适配")
+                                TextPill(stringResource(R.string.api_capabilities_auto))
                             }
                         }
                     }
 
-                    SectionLabel("人格注入")
+                    SectionLabel(stringResource(R.string.api_section_persona))
                     Text(
-                        "人格提示词与长期记忆每轮随 system 消息一起发送，不需要额外的同步接口。",
+                        stringResource(R.string.api_persona_hint),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                     )
 
                     if (state.provider == ProviderType.OPENAI) {
-                        SectionLabel("联网工具")
+                        SectionLabel(stringResource(R.string.api_section_web_tools))
                         Surface(
                             shape = RoundedCornerShape(20.dp),
                             color = MaterialTheme.colorScheme.surface,
@@ -345,10 +361,10 @@ fun ApiEditorScreen(
                             Column(Modifier.padding(16.dp)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Column(Modifier.weight(1f)) {
-                                        Text("联网（DeepSeek 搜索 / 抓取）", style = MaterialTheme.typography.bodyMedium)
+                                        Text(stringResource(R.string.api_web_tools_title), style = MaterialTheme.typography.bodyMedium)
                                         Spacer(Modifier.height(3.dp))
                                         Text(
-                                            "开启后他可以在需要时自己查资料；按成功请求计费（\$0.75 / 千次）。",
+                                            stringResource(R.string.api_web_tools_hint),
                                             style = MaterialTheme.typography.bodySmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -364,9 +380,9 @@ fun ApiEditorScreen(
                                     StyledOutlinedField(
                                         value = state.webToolsBaseUrl,
                                         onValueChange = { value -> viewModel.update { it.copy(webToolsBaseUrl = value.trim()) } },
-                                        label = "联网地址",
+                                        label = stringResource(R.string.api_field_web_base_url),
                                         placeholder = "https://api.deepseek.com",
-                                        supportingText = "留空使用 DeepSeek 官方地址"
+                                        supportingText = stringResource(R.string.api_field_web_base_url_hint)
                                     )
                                     Spacer(Modifier.height(14.dp))
                                     StyledOutlinedField(
@@ -374,15 +390,19 @@ fun ApiEditorScreen(
                                         onValueChange = { value ->
                                             viewModel.update { it.copy(webToolsApiKey = value.trim(), webToolsKeyCleared = false) }
                                         },
-                                        label = "联网专用 Key",
-                                        placeholder = "留空则复用上面的 API Key",
+                                        label = stringResource(R.string.api_field_web_key),
+                                        placeholder = stringResource(R.string.api_field_web_key_placeholder),
                                         singleLine = true,
                                         visualTransformation = if (webToolsKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                         trailingIcon = {
                                             IconButton(onClick = { webToolsKeyVisible = !webToolsKeyVisible }) {
                                                 Icon(
                                                     if (webToolsKeyVisible) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                                                    contentDescription = if (webToolsKeyVisible) "隐藏联网密钥" else "显示联网密钥",
+                                                    contentDescription = if (webToolsKeyVisible) {
+                                                        stringResource(R.string.api_web_key_hide)
+                                                    } else {
+                                                        stringResource(R.string.api_web_key_show)
+                                                    },
                                                     modifier = Modifier.size(18.dp),
                                                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
@@ -392,7 +412,11 @@ fun ApiEditorScreen(
                                     Spacer(Modifier.height(6.dp))
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Text(
-                                            if (state.webToolsKeyStored) "已加密保存" else "将随配置一起加密保存",
+                                            if (state.webToolsKeyStored) {
+                                                stringResource(R.string.api_web_key_stored)
+                                            } else {
+                                                stringResource(R.string.api_web_key_will_store)
+                                            },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -402,7 +426,7 @@ fun ApiEditorScreen(
                                                 onClick = viewModel::clearWebToolsKey,
                                                 contentPadding = PaddingValues(horizontal = 4.dp)
                                             ) {
-                                                Text("清除", style = MaterialTheme.typography.labelSmall)
+                                                Text(stringResource(R.string.api_clear), style = MaterialTheme.typography.labelSmall)
                                             }
                                         }
                                     }
@@ -411,7 +435,7 @@ fun ApiEditorScreen(
                         }
                     }
 
-                    SectionLabel("高级")
+                    SectionLabel(stringResource(R.string.api_section_advanced))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -429,9 +453,13 @@ fun ApiEditorScreen(
                                 Icon(Icons.Outlined.Tune, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(Modifier.width(10.dp))
                                 Column(Modifier.weight(1f)) {
-                                    Text("自定义 Headers", style = MaterialTheme.typography.bodyMedium)
+                                    Text(stringResource(R.string.api_custom_headers_title), style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        if (state.customHeadersJson.isBlank()) "未设置" else "已设置 JSON",
+                                        if (state.customHeadersJson.isBlank()) {
+                                            stringResource(R.string.api_custom_headers_not_set)
+                                        } else {
+                                            stringResource(R.string.api_custom_headers_set)
+                                        },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -452,7 +480,7 @@ fun ApiEditorScreen(
                                         singleLine = false,
                                         minLines = 3,
                                         maxLines = 8,
-                                        supportingText = "必须是字符串键值对。若自定义 Authorization，将优先于 API Key。"
+                                        supportingText = stringResource(R.string.api_custom_headers_hint)
                                     )
                                 }
                                 Spacer(Modifier.height(10.dp))
@@ -464,9 +492,9 @@ fun ApiEditorScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("允许不安全 HTTP", style = MaterialTheme.typography.bodyMedium)
+                                    Text(stringResource(R.string.api_allow_insecure_title), style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        "仅用于本地调试。开启后允许明文连接，存在密钥泄露风险。",
+                                        stringResource(R.string.api_allow_insecure_hint),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = if (state.allowInsecureHttp) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -479,7 +507,7 @@ fun ApiEditorScreen(
                         }
                     }
                     Text(
-                        "网络安全：默认拒绝 http://。API Key 不会出现在日志中；导出人格预设时也不会包含密钥。",
+                        stringResource(R.string.api_security_note),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(16.dp, 10.dp, 4.dp, 0.dp)
@@ -525,7 +553,7 @@ private fun ProviderOption(label: String, selected: Boolean, available: Boolean,
             )
             if (!available) {
                 Spacer(Modifier.width(5.dp))
-                Text("预留", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
+                Text(stringResource(R.string.api_provider_reserved), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
             }
         }
     }
@@ -550,13 +578,16 @@ private fun ModelPickerSheet(
         dragHandle = { BottomSheetHandle() }
     ) {
         Column(Modifier.padding(bottom = 20.dp)) {
-            BottomSheetTitle("选择模型", "共 ${models.size} 个可用模型")
+            BottomSheetTitle(
+                stringResource(R.string.api_model_picker_title),
+                pluralStringResource(R.plurals.api_model_picker_subtitle, models.size, models.size)
+            )
             Box(Modifier.padding(horizontal = 24.dp, vertical = 10.dp)) {
                 StyledOutlinedField(
                     value = query,
                     onValueChange = { query = it },
-                    label = "筛选模型",
-                    placeholder = "输入名称过滤"
+                    label = stringResource(R.string.api_model_filter_label),
+                    placeholder = stringResource(R.string.api_model_filter_placeholder)
                 )
             }
             LazyColumn(Modifier.fillMaxWidth().height(420.dp)) {
@@ -580,7 +611,7 @@ private fun ModelPickerSheet(
                 if (filtered.isEmpty()) {
                     item {
                         Text(
-                            "没有匹配的模型",
+                            stringResource(R.string.api_model_filter_empty),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(24.dp)

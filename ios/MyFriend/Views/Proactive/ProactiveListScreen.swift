@@ -45,7 +45,7 @@ struct ProactiveListScreen: View {
             .padding(.bottom, 40)
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle("主动唤醒")
+        .navigationTitle(L("主动唤醒"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
@@ -55,7 +55,7 @@ struct ProactiveListScreen: View {
                     Image(systemName: "plus")
                 }
                 .disabled(personas.isEmpty)
-                .accessibilityLabel("新建主动唤醒")
+                .accessibilityLabel(L("新建主动唤醒"))
             }
         }
         .sheet(isPresented: $showingCreate) {
@@ -68,19 +68,19 @@ struct ProactiveListScreen: View {
         }
         .mfAlert($banner)
         .confirmationDialog(
-            pendingDelete.map { _ in "删除这条规则？" } ?? "",
+            pendingDelete.map { _ in L("删除这条规则？") } ?? "",
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { presented in if !presented { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) {
+            Button(L("删除"), role: .destructive) {
                 guard let rule = pendingDelete else { return }
                 pendingDelete = nil
                 delete(rule)
             }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(L("取消"), role: .cancel) { pendingDelete = nil }
         } message: {
             Text(deleteMessage)
         }
@@ -99,11 +99,11 @@ struct ProactiveListScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text("他会主动来找你")
+            Text(L("他会主动来找你"))
                 .font(.system(.title3, design: .serif))
             Text(rules.isEmpty
-                 ? "还没有节奏。设一个时间，或者直接在聊天里说个大概时间。"
-                 : "\(enabledCount) 条开着 · 共 \(rules.count) 条；时间是一段窗口，不是闹钟。")
+                 ? L("还没有节奏。设一个时间，或者直接在聊天里说个大概时间。")
+                 : Lf("%d 条开着 · 共 %d 条；时间是一段窗口，不是闹钟。", enabledCount, rules.count))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -113,7 +113,7 @@ struct ProactiveListScreen: View {
 
     private var deleteMessage: String {
         guard let rule = pendingDelete else { return "" }
-        return "\(rule.note)\n删除后不再按这个节奏找你，已经聊过的内容都会留着。"
+        return Lf("%@\n删除后不再按这个节奏找你，已经聊过的内容都会留着。", rule.note)
     }
 
     // MARK: - 空态
@@ -125,11 +125,11 @@ struct ProactiveListScreen: View {
                     Image(systemName: "alarm")
                         .font(.system(size: 16))
                         .foregroundStyle(accent)
-                    Text("还没有主动唤醒规则")
+                    Text(L("还没有主动唤醒规则"))
                         .font(.system(.body, design: .serif))
                 }
-                Text("设一个时间，或直接在聊天里说个大概时间，他会自己安排。"
-                     + "不喜欢随时关掉。")
+                Text(L("设一个时间，或直接在聊天里说个大概时间，他会自己安排。")
+                     + LText.sentenceSeparator + L("不喜欢随时关掉。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -181,12 +181,12 @@ struct ProactiveListScreen: View {
             Button {
                 setEnabled(rule, enabled: !rule.enabled)
             } label: {
-                Label(rule.enabled ? "先关掉" : "打开", systemImage: rule.enabled ? "pause.circle" : "play.circle")
+                Label(rule.enabled ? L("先关掉") : L("打开"), systemImage: rule.enabled ? "pause.circle" : "play.circle")
             }
             Button(role: .destructive) {
                 pendingDelete = rule
             } label: {
-                Label("删除", systemImage: "trash")
+                Label(L("删除"), systemImage: "trash")
             }
         }
     }
@@ -195,8 +195,8 @@ struct ProactiveListScreen: View {
 
     private var footnote: some View {
         MFNote(
-            text: "规则到点后他仍然可以决定这次不说话——人不是闹钟。"
-                + "iOS 不保证后台准时：系统可能很久才给一次机会，所以「下次大概」只表示他最早会在那时想到你。",
+            text: L("规则到点后他仍然可以决定这次不说话——人不是闹钟。")
+                + LText.sentenceSeparator + L("iOS 不保证后台准时：系统可能很久才给一次机会，所以「下次大概」只表示他最早会在那时想到你。"),
             icon: "clock"
         )
     }
@@ -211,7 +211,7 @@ struct ProactiveListScreen: View {
 
     private func setEnabled(_ rule: ProactiveRulePresentation, enabled: Bool) {
         guard env.proactiveRules.setEnabled(id: rule.id, enabled: enabled) else {
-            banner = MFAlert(title: "没改成功", message: "这条规则可能已经被删掉了。")
+            banner = MFAlert(title: L("没改成功"), message: L("这条规则可能已经被删掉了。"))
             reload()
             return
         }
@@ -233,13 +233,13 @@ struct ProactiveListScreen: View {
             showingCreate = false
             reload()
         case .failure(let error):
-            banner = MFAlert(title: "没建成", message: error.localizedDescription)
+            banner = MFAlert(title: L("没建成"), message: error.localizedDescription)
         }
     }
 
     private func delete(_ rule: ProactiveRulePresentation) {
         guard env.proactiveRules.delete(id: rule.id) else {
-            banner = MFAlert(title: "没删掉", message: "这条规则可能已经被删掉了。")
+            banner = MFAlert(title: L("没删掉"), message: L("这条规则可能已经被删掉了。"))
             reload()
             return
         }
@@ -289,8 +289,8 @@ struct ProactiveRuleEditorSheet: View {
         NavigationStack {
             Form {
                 if personas.count > 1 {
-                    Section("谁") {
-                        Picker("联系人", selection: $personaId) {
+                    Section(L("谁")) {
+                        Picker(L("联系人"), selection: $personaId) {
                             ForEach(personas, id: \.id) { persona in
                                 Text(persona.name).tag(persona.id)
                             }
@@ -299,43 +299,43 @@ struct ProactiveRuleEditorSheet: View {
                 }
 
                 Section {
-                    Picker("触发方式", selection: $kind) {
-                        Text("每天固定时刻").tag(ProactiveKind.daily)
-                        Text("每隔几小时").tag(ProactiveKind.interval)
+                    Picker(L("触发方式"), selection: $kind) {
+                        Text(L("每天固定时刻")).tag(ProactiveKind.daily)
+                        Text(L("每隔几小时")).tag(ProactiveKind.interval)
                     }
                     .pickerStyle(.segmented)
 
                     if kind == .daily {
-                        DatePicker("时间", selection: $time, displayedComponents: .hourAndMinute)
+                        DatePicker(L("时间"), selection: $time, displayedComponents: .hourAndMinute)
                     } else {
-                        Stepper("间隔 \(intervalHours) 小时", value: $intervalHours, in: 1...24)
+                        Stepper(Lcount("间隔 %d 小时", intervalHours), value: $intervalHours, in: 1...24)
                     }
                 } header: {
-                    Text("什么时候")
+                    Text(L("什么时候"))
                 } footer: {
                     Text(kind == .daily
-                         ? "到点不一定准时：你看到的是一个窗口。"
-                         : "间隔太短会显得像查岗，1–24 小时比较像人。")
+                         ? L("到点不一定准时：你看到的是一个窗口。")
+                         : L("间隔太短会显得像查岗，1–24 小时比较像人。"))
                 }
 
                 Section {
-                    TextField("例如：睡前问候（可留空）", text: $note)
-                    TextField("例如：像往常一样轻声问他今天过得怎么样（可留空）", text: $hint, axis: .vertical)
+                    TextField(L("例如：睡前问候（可留空）"), text: $note)
+                    TextField(L("例如：像往常一样轻声问他今天过得怎么样（可留空）"), text: $hint, axis: .vertical)
                         .lineLimit(2...4)
                 } header: {
-                    Text("说什么")
+                    Text(L("说什么"))
                 } footer: {
-                    Text("到点那句话由他自己按人格写，这里只影响语气与角度。")
+                    Text(L("到点那句话由他自己按人格写，这里只影响语气与角度。"))
                 }
             }
-            .navigationTitle("新建主动唤醒")
+            .navigationTitle(L("新建主动唤醒"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
+                    Button(L("取消")) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("创建") {
+                    Button(L("创建")) {
                         onCreate(draft)
                     }
                     .disabled(personaId.isEmpty)

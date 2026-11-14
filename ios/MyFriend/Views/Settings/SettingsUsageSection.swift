@@ -20,7 +20,7 @@ struct SettingsUsageSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "用量")
+            MFSectionTitle(text: L("用量"))
 
             MFCard {
                 VStack(alignment: .leading, spacing: 5) {
@@ -36,7 +36,7 @@ struct SettingsUsageSection: View {
                 if !totals.byKind.isEmpty {
                     MFRowDivider(leadingInset: 0)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("按用途")
+                        Text(L("按用途"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 8)
@@ -45,7 +45,7 @@ struct SettingsUsageSection: View {
                                 Text(bucket.label)
                                     .font(.footnote)
                                 Spacer(minLength: 6)
-                                Text("\(bucket.calls) 次 · \(tokenText(bucket.totalTokens))")
+                                Text(Lcount("%d 次调用", bucket.calls) + " · " + tokenText(bucket.totalTokens))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -58,7 +58,7 @@ struct SettingsUsageSection: View {
                 if !totals.bySession.isEmpty {
                     MFRowDivider(leadingInset: 0)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("按人（前 \(UsageTotals.bySessionLimit) 名）")
+                        Text(Lf("按人（前 %d 名）", UsageTotals.bySessionLimit))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 8)
@@ -78,7 +78,7 @@ struct SettingsUsageSection: View {
                     .padding(.bottom, 6)
                 }
 
-                MFNote(text: "只记在本机，不上传。这里只有 token：这一版不再有额度，也不会因为用量拦下任何请求。")
+                MFNote(text: L("只记在本机，不上传。这里只有 token：这一版不再有额度，也不会因为用量拦下任何请求。"))
             }
         }
         .onAppear(perform: reload)
@@ -87,15 +87,15 @@ struct SettingsUsageSection: View {
     // MARK: - 文案
 
     private var headlineText: String {
-        if totals.isEmpty { return "他这个月还没用过模型" }
-        return "他这个月一共用了 \(tokenText(totals.totalTokens)) tokens"
+        if totals.isEmpty { return L("他这个月还没用过") }
+        return Lf("他这个月一共用了 %@ tokens", tokenText(totals.totalTokens))
     }
 
     private var detailText: String {
-        if totals.isEmpty { return "等他开口说话，这里会慢慢有数。" }
+        if totals.isEmpty { return L("等他开口说话，这里会慢慢有数。") }
         let reads = tokenText(totals.promptTokens)
         let writes = tokenText(totals.completionTokens)
-        return "一共 \(totals.calls) 次调用 · 读了 \(reads) · 写了 \(writes)"
+        return Lf("一共 %d 次调用 · 读了 %@ · 写了 %@", totals.calls, reads, writes)
     }
 
     private func nameOf(_ bucket: SessionUsage) -> String {
@@ -103,13 +103,13 @@ struct SettingsUsageSection: View {
             return name
         }
         // 会话还在、人格名字还没读到（或者人格已经被删了）：说一句人话，别露出 uuid。
-        return bucket.personaId == nil ? "已经删掉的人" : "一个人"
+        return bucket.personaId == nil ? L("已经删掉的人") : L("一个人")
     }
 
     private func tokenText(_ value: Int64) -> String {
-        if value >= 10_000 {
-            return String(format: "%.1f 万", Double(value) / 10_000)
-        }
+        // 不按「万」这种中文单位换算：K/M 在中英两边都读得通，也不用为语言换除数。
+        if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
+        if value >= 10_000 { return String(format: "%.1fK", Double(value) / 1_000) }
         return "\(value)"
     }
 

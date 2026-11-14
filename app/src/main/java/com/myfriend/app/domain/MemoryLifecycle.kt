@@ -211,8 +211,12 @@ object MemoryLifecycle {
      *
      * 步长按「距上次整理（没有就按创建）多少天」算，至少算一天，最多 [MAX_DECAY_DAYS] 天；
      * 重要度越高掉得越慢（重要的事本来就该更抗时间）。
+     *
+     * @param retentionFactor 记性系数（人格的 `memoryRetention`，见 [retentionFactor]）。
+     *   只缩放「每天掉多少」，不改判定阈值：调大调小都不会让某件具体的事突然消失，
+     *   只会改变它淡下去的速度（规格 §三「记性 1–5」）。默认 1.0 = 中立，老调用点行为不变。
      */
-    fun decayStep(memory: MemoryLifecycleState, now: Long): Double {
+    fun decayStep(memory: MemoryLifecycleState, now: Long, retentionFactor: Double = 1.0): Double {
         // 归档了就不再衰减，它的去留只由 nextStatus 的「很旧 + 很低」判断。
         if (memory.tier == MemoryTier.ARCHIVED) return 0.0
 
@@ -222,10 +226,27 @@ object MemoryLifecycle {
         // 整理一天一次；即使同一秒内被调度两次，也只按一天算，避免重复扣。
         val steps = if (elapsed < 1.0) 1.0 else elapsed.coerceAtMost(MAX_DECAY_DAYS)
 
-        val decay = DECAY_PER_DAY * decayRate(memory.importance) * drawerDecayRate(memory.drawer) * steps
+        val factor = if (retentionFactor.isFinite() && retentionFactor > 0.0) retentionFactor else 1.0
+        val decay = DECAY_PER_DAY * decayRate(memory.importance) * drawerDecayRate(memory.drawer) *
+            steps * factor
         val heal = healAmount(memory, now)
         val next = (current - decay + heal).coerceIn(0.0, 1.0)
         return if (memory.pinned) max(next, PINNED_FLOOR) else next
+    }
+
+    /**
+     * 记性（`memoryRetention` 1–5）换算成衰减系数：记性越好掉得越慢。
+     *
+     * 这五个数和 iOS 端（`PersonaEntity.memoryDecayFactor`）一致，所以它也在契约用例里：
+     * 1 → ×1.6、2 → ×1.3、3 → ×1.0、4 → ×0.75、5 → ×0.5。
+     * 越界值先夹进 1..5，不让脏数据把「记性」放大成无限或归零。
+     */
+    fun retentionFactor(retention: Int): Double = when (retention.coerceIn(1, 5)) {
+        1 -> 1.6
+        2 -> 1.3
+        3 -> 1.0
+        4 -> 0.75
+        else -> 0.5
     }
 
     /**
@@ -282,8 +303,8 @@ object MemoryLifecycle {
     }
 
     /** 整理器只调这一个入口：先算衰减，再决定处置方式。 */
-    fun dailyUpdate(memory: MemoryLifecycleState, now: Long): LifecycleUpdate {
-        val strength = decayStep(memory, now)
+    fun dailyUpdate(memory: MemoryLifecycleState, now: Long, retentionFactor: Double = 1.0): LifecycleUpdate {
+        val strength = decayStep(memory, now, retentionFactor)
         return LifecycleUpdate(nextStatus(memory, strength, now), strength)
     }
 

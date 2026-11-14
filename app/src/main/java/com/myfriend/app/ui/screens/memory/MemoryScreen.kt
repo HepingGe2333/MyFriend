@@ -1,5 +1,8 @@
 package com.myfriend.app.ui.screens.memory
 
+import androidx.compose.ui.platform.LocalContext
+import com.myfriend.app.util.androidStringLookup
+import androidx.annotation.StringRes
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -56,11 +59,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.MemoryCategory
 import com.myfriend.app.data.local.MemoryConsolidationEntity
 import com.myfriend.app.data.local.MemoryEntity
@@ -83,6 +89,7 @@ fun MemoryScreen(
     viewModel: MemoryViewModel = hiltViewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val personaName = state.persona?.name
     val snackbar = remember { SnackbarHostState() }
     var showEditor by remember { mutableStateOf(false) }
     var editingMemory by remember { mutableStateOf<MemoryEntity?>(null) }
@@ -109,21 +116,22 @@ fun MemoryScreen(
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.size(58.dp)
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "添加记忆", modifier = Modifier.size(25.dp))
+                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.memory_add_content_desc), modifier = Modifier.size(25.dp))
             }
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "长期记忆",
-                subtitle = state.persona?.name?.let { "关于你与 $it 之间记住的事" } ?: "人格的长期记忆",
+                title = stringResource(R.string.memory_header_title),
+                subtitle = personaName?.let { stringResource(R.string.memory_header_subtitle, it) }
+                    ?: stringResource(R.string.memory_header_subtitle_fallback),
                 navigation = { BackNavigation(onBack) },
                 actions = {
                     IconButton(onClick = viewModel::extractFromChats, enabled = !state.extracting) {
                         if (state.extracting) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 1.8.dp, color = LocalAccentColor.current)
                         } else {
-                            Icon(Icons.Outlined.AutoAwesome, contentDescription = "从最近对话整理记忆", tint = MaterialTheme.colorScheme.onBackground)
+                            Icon(Icons.Outlined.AutoAwesome, contentDescription = stringResource(R.string.memory_extract_content_desc), tint = MaterialTheme.colorScheme.onBackground)
                         }
                     }
                 }
@@ -146,12 +154,12 @@ fun MemoryScreen(
                                 Column(Modifier.weight(1f)) {
                                     Text(persona.name, style = MaterialTheme.typography.titleMedium)
                                     Text(
-                                        "${state.tierCounts.active} 条还在用 · 共 ${state.memories.size} 条长期记忆",
+                                        stringResource(R.string.memory_summary, state.tierCounts.active, state.memories.size),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
-                                TextPill("注入中", selected = true)
+                                TextPill(stringResource(R.string.memory_pill_injecting), selected = true)
                             }
                         }
                     }
@@ -180,7 +188,7 @@ fun MemoryScreen(
                         ) {
                             Icon(Icons.Outlined.Memory, contentDescription = null, tint = LocalAccentColor.current, modifier = Modifier.size(18.dp))
                             Text(
-                                "记忆只属于这个人物人格，不会发送给其他 API。每轮对话都会把相关记忆随人格一起注入。",
+                                stringResource(R.string.memory_scope_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -191,14 +199,14 @@ fun MemoryScreen(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.Memory,
-                            title = "还没有记忆",
-                            description = "在聊天中自然相处，或点击右上角的星芒从最近对话中整理。也可以手动添加一件想让它记住的事。",
+                            title = stringResource(R.string.memory_empty_title),
+                            description = stringResource(R.string.memory_empty_description),
                             modifier = Modifier.padding(top = 20.dp),
                             action = {
                                 TextButton(onClick = viewModel::extractFromChats) {
                                     Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(5.dp))
-                                    Text("从最近对话整理")
+                                    Text(stringResource(R.string.memory_extract_action))
                                 }
                             }
                         )
@@ -215,10 +223,10 @@ fun MemoryScreen(
                     state.sections.forEach { section ->
                         item(key = "section-${section.drawer.name}") {
                             SectionLabel(
-                                section.title,
+                                stringResource(section.titleRes),
                                 trailing = {
                                     Text(
-                                        "${section.memories.size} 条",
+                                        pluralStringResource(R.plurals.memory_count, section.memories.size, section.memories.size),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                     )
@@ -228,7 +236,7 @@ fun MemoryScreen(
                         if (section.memories.isEmpty()) {
                             item(key = "empty-${section.drawer.name}") {
                                 Text(
-                                    section.emptyHint,
+                                    stringResource(section.emptyHintRes),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                                     modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 8.dp)
@@ -272,9 +280,9 @@ fun MemoryScreen(
 
     deletingMemory?.let { memory ->
         ConfirmDialog(
-            title = "删除这条记忆？",
-            message = "「${memory.content.take(80)}」将从该人格的长期记忆中移除。",
-            confirmText = "删除",
+            title = stringResource(R.string.memory_delete_title),
+            message = stringResource(R.string.memory_delete_message, memory.content.take(80)),
+            confirmText = stringResource(R.string.memory_delete_confirm),
             destructive = true,
             onConfirm = {
                 viewModel.deleteMemory(memory)
@@ -305,11 +313,11 @@ private fun MemoryFilterRow(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextPill("全部", selected = filter == null, onClick = { onFilter(null) })
+            TextPill(stringResource(R.string.memory_filter_all), selected = filter == null, onClick = { onFilter(null) })
             // 枚举顺序是 SELF/USER/EVENT，这里按产品顺序「关于你 → 他 → 经历」排。
             memoryFilterOrder.forEach { drawer ->
                 TextPill(
-                    memoryDrawerPillLabel(drawer),
+                    stringResource(memoryDrawerPillLabelRes(drawer)),
                     selected = filter == drawer,
                     onClick = { onFilter(drawer) }
                 )
@@ -318,7 +326,7 @@ private fun MemoryFilterRow(
         IconButton(onClick = onToggleSort, modifier = Modifier.size(34.dp)) {
             Icon(
                 Icons.Outlined.SwapVert,
-                contentDescription = "当前按${sort.label}排序，点击切换",
+                contentDescription = stringResource(R.string.memory_sort_content_desc, stringResource(sort.labelRes)),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp)
             )
@@ -345,34 +353,37 @@ private fun MemoryHealthCard(
         Column(Modifier.padding(start = 16.dp, end = 10.dp, top = 14.dp, bottom = 8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "记忆的健康",
+                    stringResource(R.string.memory_health_title),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Medium
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${counts.total} 条",
+                    pluralStringResource(R.plurals.memory_count, counts.total, counts.total),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
             }
             Spacer(Modifier.height(12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TierCount("还在用", counts.active, LocalAccentColor.current)
-                TierCount("沉下去了", counts.dormant, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f))
-                TierCount("已归档", counts.archived, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f))
+                TierCount(stringResource(R.string.memory_tier_active), counts.active, LocalAccentColor.current)
+                TierCount(stringResource(R.string.memory_tier_dormant), counts.dormant, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f))
+                TierCount(stringResource(R.string.memory_tier_archived), counts.archived, MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f))
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "沉下去的不再优先被想起，还会被关键词捞回来；归档的不参与上下文，只有他认真回忆（recall 3）时才可能翻到。",
+                stringResource(R.string.memory_health_explanation),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
             )
             Spacer(Modifier.height(10.dp))
             Text(
                 lastConsolidation?.let {
-                    MemoryHealthText.lastRunLine(it.at, it.kept, it.merged, it.archived, it.forgotten)
-                } ?: "还没整理过",
+                    MemoryHealthText.lastRunLine(
+                        it.at, it.kept, it.merged, it.archived, it.forgotten,
+                        strings = androidStringLookup(LocalContext.current)
+                    )
+                } ?: stringResource(R.string.memory_never_consolidated),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -391,7 +402,7 @@ private fun MemoryHealthCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text("排队中…", style = MaterialTheme.typography.labelMedium)
+                        Text(stringResource(R.string.memory_queued), style = MaterialTheme.typography.labelMedium)
                     } else if (consolidating) {
                         CircularProgressIndicator(
                             Modifier.size(13.dp),
@@ -399,7 +410,7 @@ private fun MemoryHealthCard(
                             color = LocalAccentColor.current
                         )
                         Spacer(Modifier.width(6.dp))
-                        Text("整理中…", style = MaterialTheme.typography.labelMedium)
+                        Text(stringResource(R.string.memory_consolidating), style = MaterialTheme.typography.labelMedium)
                     } else {
                         Icon(
                             Icons.Outlined.AutoAwesome,
@@ -407,7 +418,7 @@ private fun MemoryHealthCard(
                             modifier = Modifier.size(15.dp)
                         )
                         Spacer(Modifier.width(5.dp))
-                        Text("现在整理一次", style = MaterialTheme.typography.labelMedium)
+                        Text(stringResource(R.string.memory_consolidate_now), style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -461,7 +472,7 @@ private fun MemoryCard(
         Column(Modifier.padding(start = 15.dp, end = 6.dp, top = 12.dp, bottom = 11.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    categoryLabel(memory.category),
+                    stringResource(categoryLabelRes(memory.category)),
                     style = MaterialTheme.typography.labelSmall,
                     color = categoryColor(memory.category).copy(alpha = if (tier == MemoryTier.ACTIVE) 1f else 0.65f)
                 )
@@ -476,42 +487,44 @@ private fun MemoryCard(
                 }
                 Spacer(Modifier.weight(1f))
                 if (tier != MemoryTier.ACTIVE) {
-                    Text(
-                        tierTagLabel(tier),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
-                    )
+                    tierTagLabelRes(tier)?.let { tagRes ->
+                        Text(
+                            stringResource(tagRes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
+                        )
+                    }
                     Spacer(Modifier.width(6.dp))
                 }
                 if (memory.pinned) {
                     Icon(
                         Icons.Outlined.PushPin,
-                        contentDescription = "一直记着",
+                        contentDescription = stringResource(R.string.memory_pinned),
                         modifier = Modifier.size(13.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
                     )
                     Spacer(Modifier.width(3.dp))
                     Text(
-                        "一直记着",
+                        stringResource(R.string.memory_pinned),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
                     )
                 }
                 Box {
                     IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "更多", modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.memory_more), modifier = Modifier.size(17.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("编辑") }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.memory_edit)) }, leadingIcon = { Icon(Icons.Outlined.Edit, null) }, onClick = {
                             menuOpen = false
                             onEdit()
                         })
-                        DropdownMenuItem(text = { Text(if (memory.pinned) "取消固定" else "固定为重要") }, leadingIcon = { Icon(Icons.Outlined.PushPin, null) }, onClick = {
+                        DropdownMenuItem(text = { Text(if (memory.pinned) stringResource(R.string.memory_unpin) else stringResource(R.string.memory_pin)) }, leadingIcon = { Icon(Icons.Outlined.PushPin, null) }, onClick = {
                             menuOpen = false
                             onPin()
                         })
                         DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.memory_delete_confirm), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 menuOpen = false
@@ -540,7 +553,7 @@ private fun MemoryCard(
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                formatFullDateTime(memory.updatedAt),
+                formatFullDateTime(LocalContext.current, memory.updatedAt),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (tier == MemoryTier.ACTIVE) 0.55f else 0.35f)
             )
@@ -548,7 +561,7 @@ private fun MemoryCard(
             if (tier == MemoryTier.ARCHIVED) {
                 Spacer(Modifier.height(3.dp))
                 Text(
-                    "只有他认真回忆时才可能翻到",
+                    stringResource(R.string.memory_archived_hint),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
                     modifier = Modifier.padding(end = 9.dp)
@@ -571,20 +584,20 @@ private fun MemoryEditorDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(26.dp),
         containerColor = MaterialTheme.colorScheme.surface,
-        title = { Text(if (memory == null) "添加记忆" else "编辑记忆") },
+        title = { Text(if (memory == null) stringResource(R.string.memory_add_title) else stringResource(R.string.memory_edit_title)) },
         text = {
             Column {
                 StyledOutlinedField(
                     value = content,
                     onValueChange = { content = it.take(2000) },
-                    label = "它应该记住什么",
-                    placeholder = "例如：对方喜欢在夜里散步，讨厌被追问。",
+                    label = stringResource(R.string.memory_editor_content_label),
+                    placeholder = stringResource(R.string.memory_editor_content_placeholder),
                     singleLine = false,
                     minLines = 3,
                     maxLines = 6
                 )
                 Spacer(Modifier.height(12.dp))
-                Text("分类", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(stringResource(R.string.memory_editor_category), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(
                     Modifier
                         .horizontalScroll(rememberScrollState())
@@ -593,7 +606,7 @@ private fun MemoryEditorDialog(
                 ) {
                     MemoryCategory.entries.forEach { item ->
                         TextPill(
-                            categoryLabel(item),
+                            stringResource(categoryLabelRes(item)),
                             selected = category == item,
                             onClick = { category = item }
                         )
@@ -601,7 +614,7 @@ private fun MemoryEditorDialog(
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("重要度", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.memory_editor_importance), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.width(10.dp))
                     repeat(5) { index ->
                         val star = index + 1
@@ -611,7 +624,7 @@ private fun MemoryEditorDialog(
                         ) {
                             Icon(
                                 Icons.Rounded.Star,
-                                contentDescription = "$star 星",
+                                contentDescription = pluralStringResource(R.plurals.memory_star_rating, star, star),
                                 tint = if (star <= importance) LocalAccentColor.current else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.25f),
                                 modifier = Modifier.size(18.dp)
                             )
@@ -624,47 +637,52 @@ private fun MemoryEditorDialog(
             TextButton(
                 onClick = { onSave(content, category, importance) },
                 enabled = content.isNotBlank()
-            ) { Text(if (memory == null) "记住" else "保存") }
+            ) { Text(if (memory == null) stringResource(R.string.memory_editor_remember_button) else stringResource(R.string.memory_editor_save_button)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.memory_cancel)) } }
     )
 }
 
-private fun memoryDrawerPillLabel(drawer: MemoryDrawer): String = when (drawer) {
-    MemoryDrawer.USER -> "关于你"
-    MemoryDrawer.SELF -> "他"
-    MemoryDrawer.EVENT -> "经历"
+@StringRes
+private fun memoryDrawerPillLabelRes(drawer: MemoryDrawer): Int = when (drawer) {
+    MemoryDrawer.USER -> R.string.memory_drawer_user
+    MemoryDrawer.SELF -> R.string.memory_drawer_self_pill
+    MemoryDrawer.EVENT -> R.string.memory_drawer_event_pill
 }
 
 private val memoryFilterOrder = listOf(MemoryDrawer.USER, MemoryDrawer.SELF, MemoryDrawer.EVENT)
 
 /** 来源可追溯：优先显示触发这条记忆的原话，没有原话时说明是手动添加还是对话整理。 */
+@Composable
 private fun memorySourceLabel(memory: MemoryEntity): String {
     val quote = memory.sourceQuote?.trim().orEmpty()
     return when {
         quote.isNotEmpty() -> {
             val head = quote.take(40)
-            if (quote.length > head.length) "来自：$head…" else "来自：$head"
+            if (quote.length > head.length) stringResource(R.string.memory_source_quote_more, head)
+            else stringResource(R.string.memory_source_quote, head)
         }
 
-        memory.sourceSessionId == null -> "手动添加"
-        else -> "来自对话"
+        memory.sourceSessionId == null -> stringResource(R.string.memory_source_manual)
+        else -> stringResource(R.string.memory_source_conversation)
     }
 }
 
-private fun categoryLabel(category: MemoryCategory): String = when (category) {
-    MemoryCategory.FACT -> "事实"
-    MemoryCategory.PREFERENCE -> "偏好"
-    MemoryCategory.EVENT -> "经历"
-    MemoryCategory.RELATIONSHIP -> "关系"
-    MemoryCategory.OTHER -> "其他"
+@StringRes
+private fun categoryLabelRes(category: MemoryCategory): Int = when (category) {
+    MemoryCategory.FACT -> R.string.memory_category_fact
+    MemoryCategory.PREFERENCE -> R.string.memory_category_preference
+    MemoryCategory.EVENT -> R.string.memory_category_event
+    MemoryCategory.RELATIONSHIP -> R.string.memory_category_relationship
+    MemoryCategory.OTHER -> R.string.memory_category_other
 }
 
 /** 行尾的一点点标记：只在不是「还在用」时才出现，不提数字、不加颜色。 */
-private fun tierTagLabel(tier: MemoryTier): String = when (tier) {
-    MemoryTier.ACTIVE -> ""
-    MemoryTier.DORMANT -> "沉睡"
-    MemoryTier.ARCHIVED -> "归档"
+@StringRes
+private fun tierTagLabelRes(tier: MemoryTier): Int? = when (tier) {
+    MemoryTier.ACTIVE -> null
+    MemoryTier.DORMANT -> R.string.memory_tier_tag_dormant
+    MemoryTier.ARCHIVED -> R.string.memory_tier_tag_archived
 }
 
 @Composable

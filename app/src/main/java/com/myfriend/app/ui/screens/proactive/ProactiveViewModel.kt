@@ -1,8 +1,10 @@
 package com.myfriend.app.ui.screens.proactive
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.AgentIntentEntity
 import com.myfriend.app.data.local.AgentTickEntity
 import com.myfriend.app.data.local.PersonaEntity
@@ -16,6 +18,7 @@ import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.domain.MoodState
 import com.myfriend.app.domain.Presence
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,7 +43,10 @@ data class ProactiveUiState(
     /** 他给自己留的念头（还没到窗口 / 正在窗口里）。 */
     val intents: List<AgentIntentEntity> = emptyList()
 ) {
-    fun personaName(id: String): String = personas.firstOrNull { it.id == id }?.name ?: "未命名人格"
+    /** 没有名字时用资源里的兜底称呼；需要 Context 才能取串，所以由调用方传进来。 */
+    fun personaName(id: String, context: Context): String =
+        personas.firstOrNull { it.id == id }?.name
+            ?: context.getString(R.string.proactive_persona_unnamed)
     fun persona(id: String): PersonaEntity? = personas.firstOrNull { it.id == id }
 }
 
@@ -51,6 +57,7 @@ sealed interface ProactiveEvent {
 @HiltViewModel
 class ProactiveViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val context: Context,
     private val proactiveRepository: ProactiveRepository,
     private val intentRepository: AgentIntentRepository,
     private val personaRepository: PersonaRepository,
@@ -139,9 +146,13 @@ class ProactiveViewModel @Inject constructor(
                 note = note
             )
             result.onSuccess {
-                message.value = if (notificationPermissionGranted) "主动唤醒已开启" else "规则已开启，开启通知权限后才能收到提醒"
+                message.value = if (notificationPermissionGranted) {
+                    context.getString(R.string.proactive_created_on)
+                } else {
+                    context.getString(R.string.proactive_created_permission_needed)
+                }
             }.onFailure { error ->
-                message.value = error.message ?: "创建失败"
+                message.value = error.message ?: context.getString(R.string.proactive_create_failed)
             }
         }
     }
@@ -149,8 +160,8 @@ class ProactiveViewModel @Inject constructor(
     fun confirm(ruleId: String) {
         viewModelScope.launch {
             proactiveRepository.confirm(ruleId)
-                .onSuccess { message.value = "主动唤醒已开启" }
-                .onFailure { message.value = it.message ?: "开启失败" }
+                .onSuccess { message.value = context.getString(R.string.proactive_created_on) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_enable_failed) }
         }
     }
 
@@ -169,31 +180,35 @@ class ProactiveViewModel @Inject constructor(
     fun setEnabled(rule: ProactiveRuleEntity, enabled: Boolean) {
         viewModelScope.launch {
             proactiveRepository.setEnabled(rule.id, enabled)
-                .onSuccess { message.value = if (enabled) "已开启" else "已暂停" }
-                .onFailure { message.value = it.message ?: "操作失败" }
+                .onSuccess {
+                    message.value = context.getString(
+                        if (enabled) R.string.proactive_enabled else R.string.proactive_paused
+                    )
+                }
+                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_toggle_failed) }
         }
     }
 
     fun triggerNow(ruleId: String) {
         viewModelScope.launch {
-            message.value = "正在让 TA 开口…"
+            message.value = context.getString(R.string.proactive_trigger_running)
             proactiveRepository.triggerNow(ruleId)
-                .onSuccess { message.value = "已经发了一条，去会话里看看" }
-                .onFailure { message.value = it.message ?: "这次没能发出去" }
+                .onSuccess { message.value = context.getString(R.string.proactive_trigger_sent) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.proactive_trigger_failed) }
         }
     }
 
     fun delete(ruleId: String) {
         viewModelScope.launch {
             proactiveRepository.delete(ruleId)
-            message.value = "规则已删除"
+            message.value = context.getString(R.string.proactive_deleted)
         }
     }
 
     fun openChat(rule: ProactiveRuleEntity) {
         val sessionId = rule.sessionId
         if (sessionId == null) {
-            message.value = "这条规则会在触发时自动创建会话"
+            message.value = context.getString(R.string.proactive_no_session_yet)
             return
         }
         viewModelScope.launch { events.send(ProactiveEvent.OpenChat(sessionId)) }

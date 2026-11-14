@@ -63,51 +63,53 @@ public enum BackupCodec {
     /// 文案照抄 Android：用户看见的是同一句话，两端客服/帮助文档不用分裂。
     public static func decode(_ raw: String?) -> BackupDecodeResult {
         guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .failure(reason: "这个文件是空的，里面没有他。")
+            return .failure(reason: String(localized: "这个文件是空的，里面没有他。"))
         }
         guard let root = JSONValueParser.object(from: raw) else {
-            return .failure(reason: "这个文件读不出来：不是一份有效的备份 JSON。")
+            return .failure(reason: String(localized: "这个文件读不出来：不是一份有效的备份 JSON。"))
         }
 
         var warnings: [String] = []
 
         if let format = root.rawText("format"), format != formatName {
-            return .failure(reason: "这不是 MyFriend 的备份文件（format：\(format)）。")
+            return .failure(reason: String(format: String(localized: "这不是 MyFriend 的备份文件（format：%@）。"), format))
         }
 
         let version = root.rawInt("formatVersion") ?? formatVersion
         if version > formatVersion {
             return .failure(
-                reason: "这份备份来自更新版本的 MyFriend（格式 v\(version)），当前只认到 v\(formatVersion)。"
-                    + "先升级 App，再把他接回来；旧版本硬读会把记忆读歪。"
+                reason: String(
+                    format: String(localized: "这份备份来自更新版本的 MyFriend（格式 v%d），当前只认到 v%d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。"),
+                    version, formatVersion
+                )
             )
         }
         if version < formatVersion {
-            warnings.append("备份格式是 v\(version)，已按 v\(formatVersion) 尽力读出来")
+            warnings.append(String(format: String(localized: "备份格式是 v%d，已按 v%d 尽力读出来"), version, formatVersion))
         }
         // v1 → v2 的两处变化值得跟用户说一句：多会话会合并、旧开关不再生效。
         if version < 2 {
-            warnings.append("这是 1.9 之前的备份：记忆与节奏的旧开关不再生效，一人只保留最新的一段对话")
+            warnings.append(String(localized: "这是 1.9 之前的备份：记忆与节奏的旧开关不再生效，一人只保留最新的一段对话"))
         }
 
-        let personas = decodeList(root, key: "personas", label: "人格", warnings: &warnings,
+        let personas = decodeList(root, key: "personas", label: String(localized: "人格"), warnings: &warnings,
                                   id: { $0.id }, build: BackupPersona.init(json:))
-        let memories = decodeList(root, key: "memories", label: "记忆", warnings: &warnings,
+        let memories = decodeList(root, key: "memories", label: String(localized: "记忆"), warnings: &warnings,
                                   id: { $0.id }, build: BackupMemory.init(json:))
-        let sessions = decodeList(root, key: "sessions", label: "对话", warnings: &warnings,
+        let sessions = decodeList(root, key: "sessions", label: String(localized: "对话"), warnings: &warnings,
                                   id: { $0.id }, build: BackupSession.init(json:))
-        let messages = decodeList(root, key: "messages", label: "消息", warnings: &warnings,
+        let messages = decodeList(root, key: "messages", label: String(localized: "消息"), warnings: &warnings,
                                   id: { $0.id }, build: BackupMessage.init(json:))
-        let presets = decodeList(root, key: "presets", label: "预设", warnings: &warnings,
+        let presets = decodeList(root, key: "presets", label: String(localized: "预设"), warnings: &warnings,
                                  id: { $0.id }, build: BackupPreset.init(json:))
-        let rules = decodeList(root, key: "proactiveRules", label: "主动节奏", warnings: &warnings,
+        let rules = decodeList(root, key: "proactiveRules", label: String(localized: "主动节奏"), warnings: &warnings,
                                id: { $0.id }, build: BackupProactiveRule.init(json:))
-        let intents = decodeList(root, key: "agentIntents", label: "念头", warnings: &warnings,
+        let intents = decodeList(root, key: "agentIntents", label: String(localized: "念头"), warnings: &warnings,
                                  id: { $0.id }, build: BackupAgentIntent.init(json:))
-        let consolidations = decodeList(root, key: "memoryConsolidations", label: "整理记录",
+        let consolidations = decodeList(root, key: "memoryConsolidations", label: String(localized: "整理记录"),
                                         warnings: &warnings, id: { $0.id },
                                         build: BackupMemoryConsolidation.init(json:))
-        let configs = decodeList(root, key: "apiConfigs", label: "API 配置", warnings: &warnings,
+        let configs = decodeList(root, key: "apiConfigs", label: String(localized: "API 配置"), warnings: &warnings,
                                  id: { $0.id }, build: BackupApiConfig.init(json:))
 
         let settings = decodeSettings(root, warnings: &warnings)
@@ -133,7 +135,7 @@ public enum BackupCodec {
         )
 
         if BackupPreview.from(bundle).isEmpty {
-            warnings.append("这份备份里没有他：既没有人格也没有记忆和对话")
+            warnings.append(String(localized: "这份备份里没有他：既没有人格也没有记忆和对话"))
         }
         return .success(bundle, warnings: warnings)
     }
@@ -155,7 +157,7 @@ public enum BackupCodec {
         guard let element = root[key] else { return [] }
         if element.isNull { return [] }
         guard case .array(let items) = element else {
-            warnings.append("备份里的「\(key)」不是列表，这一段已跳过")
+            warnings.append(String(format: String(localized: "备份里的「%@」不是列表，这一段已跳过"), key))
             return []
         }
 
@@ -173,7 +175,7 @@ public enum BackupCodec {
             }
         }
         if dropped > 0 {
-            warnings.append("\(label) 里有 \(dropped) 条读不出来，已跳过")
+            warnings.append(String(format: String(localized: "%@ 里有 %d 条读不出来，已跳过"), label, dropped))
         }
 
         let valid = decoded.filter {
@@ -181,7 +183,7 @@ public enum BackupCodec {
         }
         let blank = decoded.count - valid.count
         if blank > 0 {
-            warnings.append("\(label) 里有 \(blank) 条没写 id，已跳过")
+            warnings.append(String(format: String(localized: "%@ 里有 %d 条没写 id，已跳过"), label, blank))
         }
         return valid
     }
@@ -193,13 +195,13 @@ public enum BackupCodec {
     ) -> BackupSettings? {
         guard let element = root["settings"], !element.isNull else { return nil }
         guard case .object(let object) = element else {
-            warnings.append("设置这一段读不出来，接回来时设置页保持原样")
+            warnings.append(String(localized: "设置这一段读不出来，接回来时设置页保持原样"))
             return nil
         }
         do {
             return try BackupSettings(json: object)
         } catch {
-            warnings.append("设置这一段读不出来，接回来时设置页保持原样")
+            warnings.append(String(localized: "设置这一段读不出来，接回来时设置页保持原样"))
             return nil
         }
     }
@@ -213,7 +215,7 @@ public enum BackupCodecError: Error, LocalizedError, CustomStringConvertible {
     public var description: String {
         switch self {
         case .notUTF8:
-            return "备份编码失败：内容不是合法的 UTF-8"
+            return String(localized: "备份编码失败：内容不是合法的 UTF-8")
         }
     }
 }

@@ -24,12 +24,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.myfriend.app.R
 import com.myfriend.app.ui.theme.avatarPalette
 
 /**
@@ -61,12 +63,12 @@ fun PersonaAvatar(
         size = size,
         modifier = modifier,
         ringColor = ringColor,
-        contentDescription = "$name 的头像",
+        contentDescription = stringResource(R.string.common_avatar_content_description, name),
         background = Brush.linearGradient(listOf(palette.first, palette.second)),
         badgePadding = 2.dp
     ) {
         Text(
-            text = name.trim().take(1).ifBlank { "友" },
+            text = name.trim().take(1).ifBlank { stringResource(R.string.common_avatar_initial) },
             color = Color.White.copy(alpha = 0.96f),
             fontWeight = FontWeight.SemiBold,
             fontSize = (size.value * 0.38f).sp
@@ -91,7 +93,7 @@ fun UserAvatar(
         size = size,
         modifier = modifier,
         ringColor = null,
-        contentDescription = "我的头像",
+        contentDescription = stringResource(R.string.common_user_avatar_content_description),
         background = Brush.linearGradient(
             listOf(
                 MaterialTheme.colorScheme.surfaceVariant,

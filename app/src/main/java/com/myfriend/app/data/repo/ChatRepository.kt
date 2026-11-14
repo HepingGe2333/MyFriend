@@ -2,6 +2,7 @@ package com.myfriend.app.data.repo
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.myfriend.app.R
 import com.myfriend.app.data.local.AgentTickDao
 import com.myfriend.app.data.local.AgentTickEntity
 import com.myfriend.app.data.local.ApiConfigDao
@@ -23,6 +24,7 @@ import com.myfriend.app.domain.ChatExport
 import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.domain.GenerationEvent
 import com.myfriend.app.domain.HistoryCompression
+import com.myfriend.app.domain.LanguageDirective
 import com.myfriend.app.domain.LlmLane
 import com.myfriend.app.domain.MoodRecovery
 import com.myfriend.app.domain.MessageAttachment
@@ -282,7 +284,10 @@ class ChatRepository @Inject constructor(
         val sleepDecision = evaluateSleep(persona, sessionId, now0)
         if (sleepDecision.asleep && !sleepDecision.woken) {
             // 他确实看到了（已读），但这会儿不会回。界面只显示「已读」，不显示任何解释。
-            runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
+            // 免打扰是例外：连「已读」都不留 —— 那是「他不想被打扰」的一部分（规格 §6.2）。
+            if (sleepDecision.marksRead) {
+                runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
+            }
             emit(GenerationEvent.Silent)
             return@flow
         }
@@ -902,6 +907,13 @@ class ChatRepository @Inject constructor(
             append("\n\n")
             append(ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled))
             append(moodNudge)
+            // 最后一节：用对方的语言回答。脚手架保持中文，这一节跟着 App 语言走。
+            append(
+                LanguageDirective.section(
+                    appContext.getString(R.string.prompt_language_directive),
+                    LanguageDirective.languageName()
+                )
+            )
         }
         return listOf(WireMessage("system", system)) + trimmed
     }

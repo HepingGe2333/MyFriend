@@ -42,9 +42,9 @@ android {
         applicationId = "com.myfriend.app"
         minSdk = 26
         targetSdk = 35
-        // 内测版本号：1.9.0 → 0.9.0，本次 0.9.1。versionCode 只增不减，升级路径才不会断。
-        versionCode = 11
-        versionName = "0.9.1"
+        // 内测版本号：1.9.0 → 0.9.0 → 0.9.1，本次 0.10.0。versionCode 只增不减，升级路径才不会断。
+        versionCode = 12
+        versionName = "0.10.0"
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

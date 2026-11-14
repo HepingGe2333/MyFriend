@@ -12,9 +12,9 @@ object DeferReply {
     /** 工具名（与 ToolCatalog 一致）：模型调用它，就表示这一轮选择不回。 */
     const val TOOL_NAME = "defer_reply"
 
-    const val DEFAULT_MINUTES = 45
-    const val MIN_MINUTES = 5
-    const val MAX_MINUTES = 720
+    const val DEFAULT_MINUTES = ToolArgClamp.MINUTES_DEFAULT
+    const val MIN_MINUTES = ToolArgClamp.MINUTES_MIN
+    const val MAX_MINUTES = ToolArgClamp.MINUTES_MAX
     const val MAX_REASON_CHARS = 80
 
     /** 到点后给他留的决策窗口：不是闹钟，到点只是「可以开始想这件事了」。 */
@@ -38,7 +38,7 @@ object DeferReply {
         toolNames.any { it.trim().equals(TOOL_NAME, ignoreCase = true) }
 
     fun plan(minutes: Int?, reason: String?, now: Long): Plan {
-        val safeMinutes = (minutes ?: DEFAULT_MINUTES).coerceIn(MIN_MINUTES, MAX_MINUTES)
+        val safeMinutes = ToolArgClamp.clampDeferMinutes(minutes ?: DEFAULT_MINUTES)
         val cleanReason = reason?.trim()?.take(MAX_REASON_CHARS).orEmpty()
         val earliest = now + safeMinutes * 60_000L
         return Plan(

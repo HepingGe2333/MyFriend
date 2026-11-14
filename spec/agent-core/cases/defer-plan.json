@@ -1,0 +1,157 @@
+{
+  "contract": "agent-core/defer-plan",
+  "version": "0.10.0",
+  "title": "defer_reply 时间计划（缺省 45，夹 5–720，窗口 +30 分钟）",
+  "authority": "android",
+  "authorityNote": "规格见 docs/ROADMAP-1.9.md §四；Android 的 DeferReply.plan 是权威实现，iOS 已对齐到同一个纯函数。",
+  "kotlin": {
+    "file": "app/src/main/java/com/myfriend/app/domain/DeferReply.kt",
+    "symbol": "DeferReply.plan"
+  },
+  "swift": {
+    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/DeferReply.swift",
+    "symbol": "DeferReply.plan"
+  },
+  "inputSpec": {
+    "minutes": "模型给的分钟数，可空（空 = 缺省 45）",
+    "reason": "模型给的理由，可空；会 trim 并截到 80 字",
+    "now": "现在（毫秒时间戳）；由调用方显式传入"
+  },
+  "cases": [
+    {
+      "name": "defaults-are-45-and-no-reason",
+      "why": "minutes/reason 都缺省",
+      "input": {
+        "minutes": null,
+        "reason": null,
+        "now": 1700000000000
+      },
+      "expect": {
+        "minutes": 45,
+        "reason": "",
+        "earliestAt": 1700002700000,
+        "latestAt": 1700004500000
+      }
+    },
+    {
+      "name": "minimum-5-is-kept",
+      "why": "下界本身合法",
+      "input": {
+        "minutes": 5,
+        "reason": "缓一缓",
+        "now": 0
+      },
+      "expect": {
+        "minutes": 5,
+        "reason": "缓一缓",
+        "earliestAt": 300000,
+        "latestAt": 2100000
+      }
+    },
+    {
+      "name": "maximum-720-is-kept",
+      "why": "上界本身合法",
+      "input": {
+        "minutes": 720,
+        "reason": null,
+        "now": 0
+      },
+      "expect": {
+        "minutes": 720,
+        "reason": "",
+        "earliestAt": 43200000,
+        "latestAt": 45000000
+      }
+    },
+    {
+      "name": "below-min-clamps",
+      "why": "0/4 都夹到 5",
+      "input": {
+        "minutes": 0,
+        "reason": null,
+        "now": 1000
+      },
+      "expect": {
+        "minutes": 5,
+        "reason": "",
+        "earliestAt": 301000,
+        "latestAt": 2101000
+      }
+    },
+    {
+      "name": "negative-clamps",
+      "why": "负数夹到 5",
+      "input": {
+        "minutes": -120,
+        "reason": null,
+        "now": 1000
+      },
+      "expect": {
+        "minutes": 5,
+        "reason": "",
+        "earliestAt": 301000,
+        "latestAt": 2101000
+      }
+    },
+    {
+      "name": "above-max-clamps",
+      "why": "3000 分钟夹到 720",
+      "input": {
+        "minutes": 3000,
+        "reason": null,
+        "now": 0
+      },
+      "expect": {
+        "minutes": 720,
+        "reason": "",
+        "earliestAt": 43200000,
+        "latestAt": 45000000
+      }
+    },
+    {
+      "name": "reason-is-trimmed",
+      "why": "首尾空白不进日志",
+      "input": {
+        "minutes": 90,
+        "reason": "  现在不想说话  ",
+        "now": 0
+      },
+      "expect": {
+        "minutes": 90,
+        "reason": "现在不想说话",
+        "earliestAt": 5400000,
+        "latestAt": 7200000
+      }
+    },
+    {
+      "name": "reason-is-truncated-to-80",
+      "why": "超过 80 字只留前 80",
+      "input": {
+        "minutes": 30,
+        "reason": "啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊",
+        "now": 0
+      },
+      "expect": {
+        "minutes": 30,
+        "reason": "啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊",
+        "earliestAt": 1800000,
+        "latestAt": 3600000
+      }
+    },
+    {
+      "name": "blank-reason-stays-empty",
+      "why": "空白理由清洗后为空",
+      "input": {
+        "minutes": 45,
+        "reason": "   ",
+        "now": 12345
+      },
+      "expect": {
+        "minutes": 45,
+        "reason": "",
+        "earliestAt": 2712345,
+        "latestAt": 4512345
+      }
+    }
+  ]
+}

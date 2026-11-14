@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MessageEntity
@@ -241,7 +242,7 @@ class ChatViewModel @Inject constructor(
                 MediaStorage.persistChatImage(context, uri).getOrNull()
             }
             if (added.isEmpty()) {
-                ephemeral.update { it.copy(snackbar = "图片读取失败，请换一张试试") }
+                ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_image_load_failed)) }
                 return@launch
             }
             ephemeral.update { state ->
@@ -285,7 +286,7 @@ class ChatViewModel @Inject constructor(
         if ((text.isBlank() && images.isEmpty()) || ephemeral.value.isGenerating || operationInFlight) return
         val current = uiState.value
         if (current.config == null) {
-            ephemeral.update { it.copy(showConfigPicker = true, snackbar = "请先为这段对话选择 API 配置") }
+            ephemeral.update { it.copy(showConfigPicker = true, snackbar = context.getString(R.string.chat_select_config_first)) }
             return
         }
         viewModelScope.launch {
@@ -296,7 +297,7 @@ class ChatViewModel @Inject constructor(
                 val result = chatRepository.sendUserMessage(sessionId, text, images)
                 if (result.isFailure) {
                     ephemeral.update {
-                        it.copy(snackbar = result.exceptionOrNull()?.message ?: "发送失败")
+                        it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_send_failed))
                     }
                     return@launch
                 }
@@ -376,7 +377,7 @@ class ChatViewModel @Inject constructor(
                     it.copy(
                         isGenerating = false,
                         streamingText = "",
-                        snackbar = error.message ?: "生成失败"
+                        snackbar = error.message ?: context.getString(R.string.chat_generation_failed)
                     )
                 }
             }
@@ -397,7 +398,7 @@ class ChatViewModel @Inject constructor(
                 memoryJob?.join()
                 val result = chatRepository.prepareRegeneration(sessionId)
                 if (result.isFailure) {
-                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: "无法重新生成") }
+                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_regenerate_failed)) }
                     return@launch
                 }
                 startGeneration(HumanTiming.REGENERATE_MS)
@@ -416,7 +417,7 @@ class ChatViewModel @Inject constructor(
                 memoryJob?.join()
                 val result = chatRepository.editUserMessage(sessionId, messageId, content)
                 if (result.isFailure) {
-                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: "编辑失败") }
+                    ephemeral.update { it.copy(snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_edit_failed)) }
                     return@launch
                 }
                 startGeneration(HumanTiming.REGENERATE_MS)
@@ -429,7 +430,7 @@ class ChatViewModel @Inject constructor(
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             chatRepository.deleteMessage(messageId)
-                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: "删除失败") } }
+                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: context.getString(R.string.chat_delete_failed)) } }
         }
     }
 
@@ -440,7 +441,7 @@ class ChatViewModel @Inject constructor(
             val result = chatRepository.clearContext(sessionId)
             ephemeral.update {
                 it.copy(
-                    snackbar = result.exceptionOrNull()?.message ?: "上下文已清空"
+                    snackbar = result.exceptionOrNull()?.message ?: context.getString(R.string.chat_context_cleared)
                 )
             }
         }
@@ -451,14 +452,14 @@ class ChatViewModel @Inject constructor(
             val bound = chatRepository.bindSessionConfig(sessionId, configId)
             if (bound.isFailure) {
                 ephemeral.update {
-                    it.copy(showConfigPicker = false, snackbar = bound.exceptionOrNull()?.message ?: "绑定失败")
+                    it.copy(showConfigPicker = false, snackbar = bound.exceptionOrNull()?.message ?: context.getString(R.string.chat_bind_failed))
                 }
                 return@launch
             }
             ephemeral.update {
                 it.copy(
                     showConfigPicker = false,
-                    snackbar = "API 已就绪"
+                    snackbar = context.getString(R.string.chat_api_ready)
                 )
             }
         }
@@ -479,7 +480,7 @@ class ChatViewModel @Inject constructor(
                 eventsChannel.send(ChatEvent.OpenSession(result.session.id))
             } else {
                 ephemeral.update {
-                    it.copy(switchingPersona = false, snackbar = result.message ?: "人格切换失败，请重试")
+                    it.copy(switchingPersona = false, snackbar = result.message ?: context.getString(R.string.chat_persona_switch_failed))
                 }
             }
         }
@@ -489,7 +490,7 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val result = chatRepository.exportSession(sessionId)
             result.onSuccess { eventsChannel.send(ChatEvent.ExportReady(it)) }
-                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: "导出失败") } }
+                .onFailure { error -> ephemeral.update { it.copy(snackbar = error.message ?: context.getString(R.string.chat_export_failed)) } }
         }
     }
 
@@ -498,7 +499,7 @@ class ChatViewModel @Inject constructor(
         val result = proactiveRepository.createFromProposal(personaId, sessionId, proposal)
         result.onSuccess {
             // 不再需要用户批准：他直接安排好了，这里只是告诉他一声。
-            ephemeral.update { it.copy(snackbar = "他给自己安排了一件事，不喜欢可以关掉") }
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_proactive_scheduled)) }
         }
     }
 
@@ -515,8 +516,13 @@ class ChatViewModel @Inject constructor(
             if (extraction.added > 0) {
                 ephemeral.update { it.copy(snackbar = extraction.message) }
             }
-        }.onFailure {
-            if (!silent) ephemeral.update { state -> state.copy(snackbar = "记忆整理失败：${it.message ?: "未知错误"}") }
+        }.onFailure { error ->
+            if (!silent) {
+                val reason = error.message ?: context.getString(R.string.chat_unknown_error)
+                ephemeral.update { state ->
+                    state.copy(snackbar = context.getString(R.string.chat_memory_failed, reason))
+                }
+            }
         }
     }
 

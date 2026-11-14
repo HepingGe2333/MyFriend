@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.myfriend.app.R
 import com.myfriend.app.domain.LinkDetector
 import com.myfriend.app.domain.LinkKind
 import com.myfriend.app.domain.LinkSpan
@@ -578,7 +580,9 @@ private fun CodeBlockView(block: MarkdownBlock.CodeBlock, color: Color, backgrou
                 ) { isCopied ->
                     Icon(
                         imageVector = if (isCopied) Icons.Rounded.Check else Icons.Outlined.ContentCopy,
-                        contentDescription = if (isCopied) "已复制" else "复制代码",
+                        contentDescription = stringResource(
+                            if (isCopied) R.string.common_code_copied else R.string.common_code_copy
+                        ),
                         tint = color.copy(alpha = 0.6f),
                         modifier = Modifier.size(15.dp)
                     )

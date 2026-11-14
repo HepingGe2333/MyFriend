@@ -70,11 +70,15 @@ final class SleepScheduleTests: XCTestCase {
         XCTAssertEqual(SleepSchedule.wakeClockText(sleeper), "07:00")
     }
 
-    /// 睡醒同一个点 = 没排作息：不能因为一条脏数据让他整天装睡。
-    func testSameSleepAndWakeMeansAwake() {
+    /// 睡醒同一个点 = 没排作息：退回默认 23:30–08:00，而不是「整天装睡」或「永远不睡」。
+    ///
+    /// 0.10.0 起与 Kotlin `SleepPolicy.window` 对齐（此前 iOS 在这里选择「永远不睡」，
+    /// 同一份脏数据两端结论不同）。
+    func testSameSleepAndWakeFallsBackToDefaultWindow() {
         let broken = persona(sleep: 8 * 60, wake: 8 * 60)
         XCTAssertFalse(SleepSchedule.isAsleep(broken, minuteOfDay: 8 * 60))
-        XCTAssertFalse(SleepSchedule.isAsleep(broken, minuteOfDay: 3 * 60))
+        XCTAssertTrue(SleepSchedule.isAsleep(broken, minuteOfDay: 3 * 60), "退回默认窗口后凌晨 3 点在睡")
+        XCTAssertEqual(SleepSchedule.wakeClockText(broken), "08:00")
     }
 
     // MARK: - 免打扰 / 唤醒阈值
@@ -137,11 +141,11 @@ final class SleepScheduleTests: XCTestCase {
 
     // MARK: - 被叫醒之后的心情
 
-    /// 负面心情直接回到「平静」；其它心情只把强度压一档（§6.2）。
+    /// 负面心情回到「平静」；任何心情的强度都只压一档（§6.2 的字面语义，与 Android 一致）。
     func testMoodAfterWaking() {
         let negative = SleepGate.moodAfterWaking(label: "低落", intensity: 4)
         XCTAssertEqual(negative.label, MoodLexicon.BASELINE)
-        XCTAssertEqual(negative.intensity, 1)
+        XCTAssertEqual(negative.intensity, 3, "强度 4 → 3；负面词只换标签，不把强度归 1")
 
         let positive = SleepGate.moodAfterWaking(label: "雀跃", intensity: 4)
         XCTAssertEqual(positive.label, "雀跃")

@@ -63,12 +63,12 @@ struct MemoryListScreen: View {
                                     Button {
                                         togglePin(memory)
                                     } label: {
-                                        Label(memory.pinned ? "取消固定" : "固定为重要", systemImage: "pin")
+                                        Label(memory.pinned ? L("取消固定") : L("固定为重要"), systemImage: "pin")
                                     }
                                     Button(role: .destructive) {
                                         pendingDelete = memory
                                     } label: {
-                                        Label("删除这条记忆", systemImage: "trash")
+                                        Label(L("删除这条记忆"), systemImage: "trash")
                                     }
                                 }
                             }
@@ -82,7 +82,7 @@ struct MemoryListScreen: View {
             .padding(.vertical, 16)
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle("记忆")
+        .navigationTitle(L("记忆"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .mfAlert($banner)
@@ -92,17 +92,17 @@ struct MemoryListScreen: View {
             }
         }
         .confirmationDialog(
-            "忘掉这一条？",
+            L("忘掉这一条？"),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { presented in if !presented { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("忘掉", role: .destructive) { deletePending() }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(L("忘掉"), role: .destructive) { deletePending() }
+            Button(L("取消"), role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("这条记忆会连同它的索引一起删掉，之后聊天里不会再被想起。")
+            Text(L("这条记忆会连同它的索引一起删掉，之后聊天里不会再被想起。"))
         }
     }
 
@@ -111,22 +111,22 @@ struct MemoryListScreen: View {
     private var healthCard: some View {
         MFCard {
             HStack(alignment: .firstTextBaseline) {
-                Text("记忆的健康")
+                Text(L("记忆的健康"))
                     .font(.system(.body, design: .serif))
                 Spacer()
-                Text("\(counts.total) 条")
+                Text(Lcount("%d 条记忆", counts.total))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             HStack(spacing: 8) {
-                tierCount("还在用", counts.active, color: accent)
-                tierCount("沉下去了", counts.dormant, color: .secondary)
-                tierCount("已归档", counts.archived, color: .secondary.opacity(0.7))
+                tierCount(L("还在用"), counts.active, color: accent)
+                tierCount(L("沉下去了"), counts.dormant, color: .secondary)
+                tierCount(L("已归档"), counts.archived, color: .secondary.opacity(0.7))
             }
             .padding(.top, 12)
 
-            Text("沉下去的不再优先被想起，关键词命中时还能捞回来；归档的不进上下文，只有他认真回忆时才可能翻到。")
+            Text(L("沉下去的不再优先被想起，关键词命中时还能捞回来；归档的不进上下文，只有他认真回忆时才可能翻到。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -154,7 +154,7 @@ struct MemoryListScreen: View {
                         } else {
                             Image(systemName: "wand.and.stars")
                         }
-                        Text(consolidation.isRunning ? "整理中…" : "现在整理一次")
+                        Text(consolidation.isRunning ? L("整理中…") : L("现在整理一次"))
                     }
                     .font(.footnote)
                 }
@@ -167,7 +167,7 @@ struct MemoryListScreen: View {
                 MFNote(text: message, icon: "checkmark.circle")
             }
 
-            MFNote(text: "iOS 没有 WorkManager：关掉 App 之后只能等系统有空跑一次，这里的手动入口随时能用。")
+            MFNote(text: L("iOS 没有 WorkManager：关掉 App 之后只能等系统有空跑一次，这里的手动入口随时能用。"))
         }
     }
 
@@ -186,8 +186,8 @@ struct MemoryListScreen: View {
     private var groupingBar: some View {
         MFChoiceBar(
             options: [
-                (Grouping.importance, "按重要度"),
-                (Grouping.time, "按时间")
+                (Grouping.importance, L("按重要度")),
+                (Grouping.time, L("按时间"))
             ],
             selection: $grouping,
             accent: accent
@@ -218,7 +218,7 @@ struct MemoryListScreen: View {
                     .background(accent.opacity(0.12), in: Capsule())
 
                 if memory.pinned {
-                    Label("一直记着", systemImage: "pin.fill")
+                    Label(L("一直记着"), systemImage: "pin.fill")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -257,7 +257,7 @@ struct MemoryListScreen: View {
                     }
                 }
                 Spacer(minLength: 4)
-                Text("被想起 \(memory.useCount) 次")
+                Text(Lcount("被想起 %d 次", memory.useCount))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -319,11 +319,11 @@ struct MemoryListScreen: View {
             let pinned = memories.filter { $0.pinned }
             let rest = memories.filter { !$0.pinned }
             let buckets: [(String, [MemoryEntity])] = [
-                ("一直记着", pinned),
-                ("最要紧的", rest.filter { $0.importance >= 5 }),
-                ("要紧的", rest.filter { $0.importance == 4 }),
-                ("平平常常", rest.filter { $0.importance == 3 }),
-                ("轻的", rest.filter { $0.importance <= 2 })
+                (L("一直记着"), pinned),
+                (L("最要紧的"), rest.filter { $0.importance >= 5 }),
+                (L("要紧的"), rest.filter { $0.importance == 4 }),
+                (L("平平常常"), rest.filter { $0.importance == 3 }),
+                (L("轻的"), rest.filter { $0.importance <= 2 })
             ]
             return buckets.filter { !$0.1.isEmpty }.map { MemoryGroup(title: $0.0, items: $0.1) }
 
@@ -347,10 +347,10 @@ struct MemoryListScreen: View {
                 }
             }
             let buckets: [(String, [MemoryEntity])] = [
-                ("今天", today),
-                ("这一周", thisWeek),
-                ("这个月", thisMonth),
-                ("更早", earlier)
+                (L("今天"), today),
+                (L("这一周"), thisWeek),
+                (L("这个月"), thisMonth),
+                (L("更早"), earlier)
             ]
             return buckets.filter { !$0.1.isEmpty }.map { MemoryGroup(title: $0.0, items: $0.1) }
         }
@@ -360,9 +360,9 @@ struct MemoryListScreen: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("还没有记忆")
+            Text(L("还没有记忆"))
                 .font(.system(.body, design: .serif))
-            Text("在聊天里自然相处，他会自己记下值得记的事；也可以点下面手动记一件想让他记住的事。")
+            Text(L("在聊天里自然相处，他会自己记下值得记的事；也可以点下面手动记一件想让他记住的事。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -378,7 +378,7 @@ struct MemoryListScreen: View {
             HStack(spacing: 10) {
                 Image(systemName: "plus.circle")
                     .font(.system(size: 16))
-                Text("手动记一件事")
+                Text(L("手动记一件事"))
                     .font(.system(.body, design: .serif))
                 Spacer()
             }

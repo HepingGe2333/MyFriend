@@ -38,7 +38,8 @@
     <string name="backup_busy">正在整理他的东西，稍等一下……</string>
     <string name="backup_error_pack">打包失败，没能把他带走</string>
     <string name="backup_error_unwritable">无法写入这个位置</string>
-    <string name="backup_success">已经把他带走了%1$s。放在安全的地方。</string>
+    <string name="backup_success">已经把他带走了。放在安全的地方。</string>
+    <string name="backup_success_named">已经把他带走了：%1$s。放在安全的地方。</string>
     <string name="backup_error_write">没能写进那个文件：%1$s</string>
     <string name="backup_error_unreadable">这个文件读不出来，换一份试试</string>
     <string name="backup_dialog_title_empty">这份备份里没有他</string>
@@ -62,4 +63,1057 @@
     <string name="wipe_confirm_title">删除全部本地数据？</string>
     <string name="wipe_confirm_message">这将永久删除所有人物人格、聊天记录、长期记忆、版本历史、自定义预设、主动唤醒规则、API 配置与设置。此操作无法撤销；想留个底的话，先把他带走。</string>
     <string name="wipe_confirm_action">全部删除</string>
+    <!-- 提示词脚手架里的一节：让「他」用对方的语言说话（模型面向，但语言名跟着 App 语言走） -->
+    <string name="prompt_language_directive">## 语言\n对方现在用%1$s跟你说话。请用同一种语言回答，专有名词可以保留原文。</string>
+
+    <!-- 时间/日期：格式化模式与「今天/昨天」都从这里取，不在 Kotlin 里手写中文后缀 -->
+    <string name="common_today">今天</string>
+    <string name="common_yesterday">昨天</string>
+    <string name="common_clock_pattern">HH:mm</string>
+    <string name="common_month_day_pattern">M\'月\'d\'日\'</string>
+    <string name="common_year_month_day_pattern">yyyy\'年\'M\'月\'d\'日\'</string>
+    <string name="common_datetime_full_pattern">yyyy\'年\'M\'月\'d\'日\' HH:mm</string>
+
+    <!-- 头像/聊天图片处理失败时给用户看的那一句 -->
+    <string name="media_error_bad_size">图片尺寸异常，换一张试试</string>
+    <string name="media_error_too_big_to_compress">这张图片压不进 200KB，换一张试试</string>
+    <string name="media_error_empty">图片为空</string>
+    <string name="media_error_over_20mb">图片超过 20 MB，请选择更小的图片</string>
+    <string name="media_error_process_failed">图片处理失败</string>
+    <string name="media_error_unreadable">无法读取图片</string>
+
+    <!-- 记忆健康卡片与整理结果 -->
+    <string name="memory_health_last_run">上次整理：%1$s</string>
+    <string name="memory_health_last_run_counts">上次整理：%1$s · %2$s</string>
+    <string name="memory_health_counts_separator">、</string>
+    <string name="memory_health_counts_separator_clause">，</string>
+    <string name="memory_health_kept">留下 %1$d 条</string>
+    <string name="memory_health_merged">并掉 %1$d 条</string>
+    <string name="memory_health_archived">移出 %1$d 条</string>
+    <string name="memory_health_forgotten">忘掉 %1$d 条</string>
+    <string name="memory_health_manual_done">整理完了：%1$s</string>
+    <string name="memory_health_manual_nothing">整理完了：这次没怎么动，让它自己慢慢变淡</string>
+    <string name="memory_health_manual_empty">整理完了：这次没有需要整理的东西</string>
+    <string name="memory_health_manual_disabled">还没整理：记忆整理现在是关着的</string>
+    <string name="memory_health_manual_failed">这次没能整理，明天它自己会再试一次</string>
+    <string name="memory_health_manual_unknown">整理结束了，回来看看记忆有什么变化</string>
+    <string name="memory_health_today">今天 %1$s</string>
+    <string name="memory_health_yesterday">昨天 %1$s</string>
+    <string name="memory_health_day_clock">%1$s %2$s</string>
+
+    <!-- 用量里的「万 / k」：中文按万、英语按千，除数跟着语言走 -->
+    <integer name="usage_tokens_compact_divisor">10000</integer>
+
+
+
+    <!-- ===== API 配置 / 应用内浏览器 ===== -->
+<!-- API 编辑页 -->
+    <string name="api_testing">测试中</string>
+    <string name="api_test_connection">测试连接</string>
+    <string name="api_save_new">保存配置</string>
+    <string name="api_save_changes">保存更改</string>
+    <string name="api_title_add">添加 API</string>
+    <string name="api_title_edit">编辑 API</string>
+    <string name="api_subtitle_key_local">密钥仅保存在本机 Keystore</string>
+    <string name="api_section_provider">服务商</string>
+    <string name="api_provider_openai_compatible">OpenAI 兼容</string>
+    <string name="api_provider_hint">Gemini 与 Claude 的原生适配接口已预留，当前版本请使用 OpenAI 兼容端点。</string>
+    <string name="api_provider_reserved">预留</string>
+    <string name="api_section_connection">连接</string>
+    <string name="api_field_name">配置名称</string>
+    <string name="api_field_name_placeholder">例如：DeepSeek 主力</string>
+    <string name="api_field_base_url_hint">兼容 /chat/completions 与 /models 接口；通常包含 /v1。</string>
+    <string name="api_field_key_stored_placeholder">已加密保存 · 留空不修改</string>
+    <string name="api_key_hide">隐藏密钥</string>
+    <string name="api_key_show">显示密钥</string>
+    <string name="api_field_model_id">模型 ID</string>
+    <string name="api_fetch_models">获取模型列表</string>
+    <string name="api_field_model_hint">可以手动填写任意模型 ID，也可以从服务端获取列表。</string>
+    <string name="api_section_parameters">推理参数</string>
+    <string name="api_parameters_hint">留空表示使用模型默认值，请求时不会发送该参数。</string>
+    <string name="api_placeholder_model_default">模型默认</string>
+    <string name="api_placeholder_penalty">-2 – 2（留空使用默认）</string>
+    <string name="api_reset_parameters">恢复模型默认参数</string>
+    <string name="api_reset_parameters_done">已恢复模型默认参数</string>
+    <string name="api_capabilities_auto">服务商能力自动适配</string>
+    <string name="api_section_persona">人格注入</string>
+    <string name="api_persona_hint">人格提示词与长期记忆每轮随 system 消息一起发送，不需要额外的同步接口。</string>
+    <string name="api_section_web_tools">联网工具</string>
+    <string name="api_web_tools_title">联网（DeepSeek 搜索 / 抓取）</string>
+    <string name="api_web_tools_hint">开启后他可以在需要时自己查资料；按成功请求计费（$0.75 / 千次）。</string>
+    <string name="api_field_web_base_url">联网地址</string>
+    <string name="api_field_web_base_url_hint">留空使用 DeepSeek 官方地址</string>
+    <string name="api_field_web_key">联网专用 Key</string>
+    <string name="api_field_web_key_placeholder">留空则复用上面的 API Key</string>
+    <string name="api_web_key_hide">隐藏联网密钥</string>
+    <string name="api_web_key_show">显示联网密钥</string>
+    <string name="api_web_key_stored">已加密保存</string>
+    <string name="api_web_key_will_store">将随配置一起加密保存</string>
+    <string name="api_clear">清除</string>
+    <string name="api_section_advanced">高级</string>
+    <string name="api_custom_headers_title">自定义 Headers</string>
+    <string name="api_custom_headers_not_set">未设置</string>
+    <string name="api_custom_headers_set">已设置 JSON</string>
+    <string name="api_custom_headers_hint">必须是字符串键值对。若自定义 Authorization，将优先于 API Key。</string>
+    <string name="api_allow_insecure_title">允许不安全 HTTP</string>
+    <string name="api_allow_insecure_hint">仅用于本地调试。开启后允许明文连接，存在密钥泄露风险。</string>
+    <string name="api_security_note">网络安全：默认拒绝 http://。API Key 不会出现在日志中；导出人格预设时也不会包含密钥。</string>
+    <string name="api_model_picker_title">选择模型</string>
+    <plurals name="api_model_picker_subtitle">
+        <item quantity="other">共 %1$d 个可用模型</item>
+    </plurals>
+    <string name="api_model_filter_label">筛选模型</string>
+    <string name="api_model_filter_placeholder">输入名称过滤</string>
+    <string name="api_model_filter_empty">没有匹配的模型</string>
+    <string name="api_error_config_not_found">API 配置不存在</string>
+    <string name="api_error_save_failed">保存失败</string>
+    <string name="api_error_connect_failed">连接失败：%1$s</string>
+    <string name="api_error_fetch_models_failed">获取模型失败：%1$s</string>
+    <string name="api_error_unknown">未知错误</string>
+    <string name="api_models_empty_hint">服务未返回模型列表，可以手动填写模型 ID</string>
+
+    <!-- API 列表页 -->
+    <string name="api_list_add_content_desc">添加 API 配置</string>
+    <string name="api_list_title">API 配置</string>
+    <string name="api_list_subtitle">可绑定任意 OpenAI 兼容服务</string>
+    <string name="api_list_security_title">密钥留在本机</string>
+    <string name="api_list_security_desc">API Key 使用 Android Keystore 加密保存，不写入日志，也不会随预设导出。默认仅允许 HTTPS。</string>
+    <string name="api_list_empty_title">还没有 API 配置</string>
+    <string name="api_list_empty_desc">添加 OpenAI、DeepSeek、OpenRouter 或任何兼容 Chat Completions 的服务。</string>
+    <string name="api_delete_title">删除「%1$s」？</string>
+    <string name="api_delete_message">使用该配置的会话会保留聊天记录，但需要重新选择 API 才能继续对话。API Key 将从本机移除。</string>
+    <string name="api_delete">删除</string>
+    <string name="api_more">更多</string>
+    <string name="api_edit">编辑</string>
+    <string name="api_duplicate">复制配置</string>
+    <string name="api_key_not_set">未设置密钥</string>
+    <string name="api_key_stored">密钥已加密保存</string>
+    <string name="api_list_duplicated">配置已复制</string>
+    <string name="api_list_duplicate_failed">复制失败</string>
+    <string name="api_list_deleted">配置已删除，相关会话需重新选择 API</string>
+    <string name="api_list_delete_failed">删除失败</string>
+
+    <!-- 应用内浏览器 -->
+    <string name="browser_title_fallback">打开链接</string>
+    <string name="browser_subtitle">他发给你的链接</string>
+    <string name="browser_open_in_system">在系统浏览器打开</string>
+    <string name="browser_copy_link">复制链接</string>
+    <string name="browser_link_copied">链接已复制</string>
+    <string name="browser_open_failed_copy_hint">没能打开，可以先复制链接</string>
+    <string name="browser_error_title">这个页面打不开</string>
+    <string name="browser_error_invalid_url">这个地址不太对，没能在应用里打开。</string>
+    <string name="browser_failure_initial">这个页面没能打开</string>
+    <string name="browser_open_in_system_button">用系统浏览器打开</string>
+    <string name="browser_retry">再试一次</string>
+    <string name="browser_http_error">网页返回了 %1$d</string>
+    <string name="browser_http_error_with_reason">网页返回了 %1$d（%2$s）</string>
+    <string name="browser_err_host_lookup">没找到这个地址，可能是域名写错了。</string>
+    <string name="browser_err_connect">连不上这个页面，网络可能不太稳。</string>
+    <string name="browser_err_timeout">页面响应太慢，没能加载出来。</string>
+    <string name="browser_err_unsupported_scheme">这个地址应用里打不开。</string>
+    <string name="browser_err_ssl">这个页面的安全连接没建立起来。</string>
+    <string name="browser_err_generic">这个页面没能打开，网络或者地址可能有问题。</string>
+
+    <!-- ===== 聊天 / 首页 / 搜索 ===== -->
+<!-- 聊天页：标题栏与基础动作 -->
+    <string name="chat_back">返回</string>
+    <string name="chat_more">更多</string>
+    <string name="chat_title">对话</string>
+    <string name="chat_typing">正在输入</string>
+    <string name="chat_latest">最新</string>
+    <string name="chat_scroll_to_bottom">回到底部</string>
+
+    <!-- 聊天页：更多菜单 -->
+    <string name="chat_menu_switch_persona">切换人格</string>
+    <string name="chat_clear_context_menu">清空上下文</string>
+    <string name="chat_menu_export">导出对话</string>
+    <string name="chat_menu_delete">删除对话</string>
+
+    <!-- 聊天页：导出 -->
+    <string name="chat_export_success">对话已导出</string>
+    <string name="chat_export_failed">导出失败</string>
+    <string name="chat_export_failed_reason">导出失败：%1$s</string>
+    <string name="chat_export_error_unwritable">无法写入文件</string>
+
+    <!-- 聊天页：确认对话框与长按菜单 -->
+    <string name="chat_cancel">取消</string>
+    <string name="chat_delete">删除</string>
+    <string name="chat_clear_context_action">清空</string>
+    <string name="chat_copy">复制</string>
+    <string name="chat_copied">已复制</string>
+    <string name="chat_regenerate">重新生成</string>
+    <string name="chat_your_message">你的消息</string>
+    <string name="chat_reply">回复</string>
+    <string name="chat_empty_message">空消息</string>
+    <string name="chat_edit_title">编辑消息</string>
+    <string name="chat_edit_save">保存并重新生成</string>
+    <string name="chat_edit_and_resend">编辑并重新请求</string>
+    <string name="chat_delete_message">删除这条消息</string>
+    <string name="chat_delete_message_title">删除这条消息？</string>
+    <string name="chat_delete_message_body">删除后将重新计算对话摘要，此操作无法撤销。</string>
+    <string name="chat_clear_context_title">清空上下文？</string>
+    <string name="chat_clear_context_body">这段对话的所有消息将被删除。人格设定与长期记忆会保留。</string>
+    <string name="chat_delete_conversation_title">删除整段对话？</string>
+    <string name="chat_delete_conversation_body">所有聊天消息将被永久删除，此操作无法撤销。</string>
+
+    <!-- 聊天页：API 配置提示 -->
+    <string name="chat_no_config_message">为这段对话选择一个 API 配置</string>
+    <string name="chat_choose">选择</string>
+    <string name="chat_add">添加</string>
+    <string name="chat_select_config_first">请先为这段对话选择 API 配置</string>
+    <string name="chat_config_picker_title">选择 API 配置</string>
+    <string name="chat_config_picker_subtitle">人格提示词只会发送给绑定的服务端</string>
+    <string name="chat_config_empty_title">还没有 API 配置</string>
+    <string name="chat_config_empty_desc">添加一个 OpenAI 兼容的服务，然后回到对话继续。</string>
+    <string name="chat_config_add">添加 API 配置</string>
+    <string name="chat_config_manage">管理 API 配置</string>
+    <string name="chat_bind_failed">绑定失败</string>
+    <string name="chat_api_ready">API 已就绪</string>
+
+    <!-- 聊天页：空会话 -->
+    <string name="chat_empty_fallback_description">开始一段新的对话。</string>
+    <string name="chat_suggestion_1">嗨，今天过得怎么样？</string>
+    <string name="chat_suggestion_2">陪我待一会儿</string>
+    <string name="chat_suggestion_3">我最近有件事想和你说</string>
+    <string name="chat_local_only">对话仅保存在本机</string>
+
+    <!-- 聊天页：消息气泡状态 -->
+    <string name="chat_generation_failed">生成失败</string>
+    <string name="chat_unknown_error">未知错误</string>
+    <string name="chat_status_stopped">"已停止 · "</string>
+    <string name="chat_status_edited">"已编辑 · "</string>
+    <string name="chat_status_read">" · 已读"</string>
+    <string name="chat_image_message">图片消息</string>
+    <string name="chat_image">图片</string>
+
+    <!-- 聊天页：动作痕迹 -->
+    <string name="chat_trace_busy">正在忙</string>
+    <string name="chat_trace_title">动作痕迹</string>
+    <string name="chat_trace_collapse">收起动作痕迹</string>
+    <string name="chat_trace_expand">展开动作痕迹</string>
+    <string name="chat_trace_failed">失败</string>
+
+    <!-- 聊天页：输入区与图片附件 -->
+    <string name="chat_placeholder_no_config">选择 API 配置后开始对话</string>
+    <string name="chat_placeholder_with_images">说点什么，或直接发送图片…</string>
+    <string name="chat_placeholder">说点什么…</string>
+    <string name="chat_send">发送</string>
+    <string name="chat_send_image">发送图片</string>
+    <string name="chat_remove_image">移除图片</string>
+    <string name="chat_pending_image">待发送图片</string>
+
+    <!-- 聊天页：后台引导卡片 -->
+    <string name="chat_background_tip_title">把他留在后台</string>
+    <string name="chat_background_tip_body">他会在后台继续想事情，偶尔主动找你；关掉的话他只在应用打开时存在。</string>
+    <string name="chat_background_tip_settings">去设置</string>
+    <string name="chat_background_tip_dismiss">知道了</string>
+
+
+    <!-- 聊天页：人格资料与切换 -->
+    <string name="chat_persona_category_unknown">未分类</string>
+    <string name="chat_profile_api_label">当前 API</string>
+    <string name="chat_not_bound">未绑定</string>
+    <string name="chat_profile_model_label">模型</string>
+    <string name="chat_not_set">未设置</string>
+    <string name="chat_profile_injection_label">人格注入</string>
+    <string name="chat_profile_injection_value">每轮随 system 一起发送</string>
+    <string name="chat_profile_session_label">会话</string>
+    <string name="chat_profile_session_value">本地会话 %1$s</string>
+    <string name="chat_profile_prompt_label">人格提示词</string>
+    <string name="chat_profile_prompt_value">%1$d 字符 · 完整保存</string>
+    <string name="chat_profile_edit">编辑人格与提示词</string>
+    <string name="chat_profile_memory">长期记忆</string>
+    <string name="chat_profile_evolution">人格进化与版本保留</string>
+    <string name="chat_profile_proactive">主动唤醒规则</string>
+    <string name="chat_profile_switch">切换到其他已有人格</string>
+    <string name="chat_persona_picker_subtitle">会恢复到该人格最近的会话，并带上完整人格与记忆</string>
+    <string name="chat_persona_switching">正在切换人格…</string>
+
+    <!-- ChatViewModel：snackbar 与错误提示 -->
+    <string name="chat_image_load_failed">图片读取失败，请换一张试试</string>
+    <string name="chat_send_failed">发送失败</string>
+    <string name="chat_regenerate_failed">无法重新生成</string>
+    <string name="chat_edit_failed">编辑失败</string>
+    <string name="chat_delete_failed">删除失败</string>
+    <string name="chat_context_cleared">上下文已清空</string>
+    <string name="chat_persona_switch_failed">人格切换失败，请重试</string>
+    <string name="chat_proactive_scheduled">他给自己安排了一件事，不喜欢可以关掉</string>
+    <string name="chat_memory_failed">记忆整理失败：%1$s</string>
+
+    <!-- 首页：联系人列表 -->
+    <string name="home_new_persona">新建人格</string>
+    <string name="home_subtitle">他就在这儿，点一个名字说话</string>
+    <string name="home_search">搜索</string>
+    <string name="home_settings">设置</string>
+    <string name="home_manage">管理</string>
+    <string name="home_empty_title">从一个名字开始</string>
+    <string name="home_empty_desc">新建一个联系人。他会是独立的一个人：有自己的性格、记性和作息。</string>
+    <string name="home_delete_title">删除「%1$s」？</string>
+    <string name="home_delete_body">他的消息、记忆、念头和规则都会从这台手机上永久删除，此操作无法撤销。</string>
+    <string name="home_delete">删除</string>
+    <string name="home_no_messages">还没有说过话</string>
+    <string name="home_open_failed">打不开这个联系人，请重试</string>
+    <string name="home_deleted">联系人已删除</string>
+    <string name="home_delete_failed">删除失败</string>
+
+    <!-- 搜索页 -->
+    <string name="search_placeholder">搜索会话与聊天记录</string>
+    <string name="search_clear">清除</string>
+    <string name="search_empty_title">搜索你说过的话</string>
+    <string name="search_empty_desc">按人格名字或对话内容查找。输入关键词后，会同时搜索会话标题与消息正文。</string>
+    <string name="search_no_results_title">没有找到「%1$s」</string>
+    <string name="search_no_results_desc">试试更短的词，或者换个说法——你们聊过的原话不一定是这样写的。</string>
+    <string name="search_section_sessions">会话</string>
+    <string name="search_section_messages">消息</string>
+    <string name="search_no_preview">暂无消息</string>
+    <string name="search_session_subtitle">%1$s · %2$s</string>
+
+    <!-- ===== 记忆 ===== -->
+<!-- MemoryScreen: header -->
+    <string name="memory_header_title">长期记忆</string>
+    <string name="memory_header_subtitle">关于你与 %1$s 之间记住的事</string>
+    <string name="memory_header_subtitle_fallback">人格的长期记忆</string>
+    <string name="memory_add_content_desc">添加记忆</string>
+    <string name="memory_extract_content_desc">从最近对话整理记忆</string>
+    <string name="memory_summary">%1$d 条还在用 · 共 %2$d 条长期记忆</string>
+    <string name="memory_pill_injecting">注入中</string>
+    <string name="memory_scope_hint">记忆只属于这个人物人格，不会发送给其他 API。每轮对话都会把相关记忆随人格一起注入。</string>
+
+    <!-- MemoryScreen: empty state -->
+    <string name="memory_empty_title">还没有记忆</string>
+    <string name="memory_empty_description">在聊天中自然相处，或点击右上角的星芒从最近对话中整理。也可以手动添加一件想让它记住的事。</string>
+    <string name="memory_extract_action">从最近对话整理</string>
+
+    <!-- MemoryScreen: 删除确认 -->
+    <string name="memory_delete_title">删除这条记忆？</string>
+    <string name="memory_delete_message">「%1$s」将从该人格的长期记忆中移除。</string>
+    <string name="memory_delete_confirm">删除</string>
+
+    <!-- MemoryScreen: 筛选与排序 -->
+    <string name="memory_filter_all">全部</string>
+    <string name="memory_sort_content_desc">当前按%1$s排序，点击切换</string>
+    <string name="memory_sort_importance">重要度</string>
+    <string name="memory_sort_time">时间</string>
+
+    <!-- MemoryScreen: 记忆的健康卡片 -->
+    <string name="memory_health_title">记忆的健康</string>
+    <string name="memory_tier_active">还在用</string>
+    <string name="memory_tier_dormant">沉下去了</string>
+    <string name="memory_tier_archived">已归档</string>
+    <string name="memory_health_explanation">沉下去的不再优先被想起，还会被关键词捞回来；归档的不参与上下文，只有他认真回忆（recall 3）时才可能翻到。</string>
+    <string name="memory_never_consolidated">还没整理过</string>
+    <string name="memory_queued">排队中…</string>
+    <string name="memory_consolidating">整理中…</string>
+    <string name="memory_consolidate_now">现在整理一次</string>
+
+    <!-- MemoryScreen: 记忆卡片 -->
+    <string name="memory_pinned">一直记着</string>
+    <string name="memory_more">更多</string>
+    <string name="memory_edit">编辑</string>
+    <string name="memory_unpin">取消固定</string>
+    <string name="memory_pin">固定为重要</string>
+    <string name="memory_archived_hint">只有他认真回忆时才可能翻到</string>
+    <string name="memory_tier_tag_dormant">沉睡</string>
+    <string name="memory_tier_tag_archived">归档</string>
+    <string name="memory_source_quote_more">来自：%1$s…</string>
+    <string name="memory_source_quote">来自：%1$s</string>
+    <string name="memory_source_manual">手动添加</string>
+    <string name="memory_source_conversation">来自对话</string>
+
+    <!-- MemoryScreen: 抽屉分组与分类 -->
+    <string name="memory_drawer_user">关于你</string>
+    <string name="memory_drawer_self">他是什么样的人</string>
+    <string name="memory_drawer_event">共同经历与约定</string>
+    <string name="memory_drawer_self_pill">他</string>
+    <string name="memory_drawer_event_pill">经历</string>
+    <string name="memory_empty_hint_user">还没有关于你的记忆</string>
+    <string name="memory_empty_hint_self">等他更了解自己一点</string>
+    <string name="memory_empty_hint_event">还没有共同经历或约定</string>
+    <string name="memory_category_fact">事实</string>
+    <string name="memory_category_preference">偏好</string>
+    <string name="memory_category_event">经历</string>
+    <string name="memory_category_relationship">关系</string>
+    <string name="memory_category_other">其他</string>
+
+    <!-- MemoryScreen: 编辑对话框 -->
+    <string name="memory_add_title">添加记忆</string>
+    <string name="memory_edit_title">编辑记忆</string>
+    <string name="memory_editor_content_label">它应该记住什么</string>
+    <string name="memory_editor_content_placeholder">例如：对方喜欢在夜里散步，讨厌被追问。</string>
+    <string name="memory_editor_category">分类</string>
+    <string name="memory_editor_importance">重要度</string>
+    <string name="memory_editor_remember_button">记住</string>
+    <string name="memory_editor_save_button">保存</string>
+    <string name="memory_cancel">取消</string>
+
+    <!-- MemoryViewModel: snackbar 与行内提示 -->
+    <string name="memory_added">记忆已添加</string>
+    <string name="memory_add_failed">添加失败</string>
+    <string name="memory_updated">记忆已更新</string>
+    <string name="memory_update_failed">更新失败</string>
+    <string name="memory_deleted">记忆已删除</string>
+    <string name="memory_extract_failed">整理失败：%1$s</string>
+    <string name="memory_extract_failed_detail">请检查该人格最近会话的 API 配置</string>
+    <string name="memory_enqueue_failed">这次没能排上整理任务，稍后再试一次</string>
+    <string name="memory_queue_failed">这次没跑起来，再点一次试试</string>
+
+    <!-- 数量 -->
+    <plurals name="memory_count">
+        <item quantity="other">%1$d 条</item>
+    </plurals>
+    <plurals name="memory_star_rating">
+        <item quantity="other">%1$d 星</item>
+    </plurals>
+
+    <!-- ===== 人格列表与编辑 ===== -->
+<!-- PersonaEditorScreen: 顶部/底栏/头像 -->
+    <string name="persona_editor_avatar_save_failed">头像保存失败</string>
+    <string name="persona_editor_create">创建人格</string>
+    <string name="persona_editor_save_changes">保存更改</string>
+    <string name="persona_editor_title_new">新人格</string>
+    <string name="persona_editor_title_edit">编辑人格</string>
+    <string name="persona_editor_subtitle_default">默认人格</string>
+    <string name="persona_editor_avatar_fallback_name">新</string>
+    <string name="persona_editor_avatar_change_cd">更换头像</string>
+    <string name="persona_editor_avatar_pick">选一张</string>
+    <string name="persona_editor_avatar_replace">换一张</string>
+    <string name="persona_editor_avatar_reset">恢复默认</string>
+
+    <!-- PersonaEditorScreen: 名字 / 简介 -->
+    <string name="persona_editor_name_label">名字</string>
+    <string name="persona_editor_name_placeholder">它会如何称呼自己</string>
+    <string name="persona_editor_description_label">简介</string>
+    <string name="persona_editor_description_placeholder">一句话描述这个人的气质</string>
+
+    <!-- PersonaEditorScreen: 提示词全文（高级） -->
+    <string name="persona_editor_prompt_section">提示词全文（高级）</string>
+    <plurals name="persona_editor_prompt_chars">
+        <item quantity="other">%1$d 字符</item>
+    </plurals>
+    <string name="persona_editor_prompt_empty_hint">写下它的性格、说话方式、边界与相处原则。长文本会完整保存，不会被自动缩写或改写。</string>
+    <string name="persona_editor_prompt_focus_edit">专注编辑</string>
+    <string name="persona_editor_prompt_verbatim">完整原文保存</string>
+    <string name="persona_editor_prompt_version_note">修改提示词会产生新版本，并保留上一版。下一轮对话会自动使用新版本。</string>
+
+    <!-- PersonaEditorScreen: API 与模型 -->
+    <string name="persona_editor_api_section">API 与模型</string>
+    <string name="persona_editor_api_bound_label">绑定的 API</string>
+    <string name="persona_editor_api_bound_value">%1$s · %2$s</string>
+    <string name="persona_editor_api_unbound_value">未绑定（每个会话仍可单独选择）</string>
+    <string name="persona_editor_model_override_label">模型覆盖（可选）</string>
+    <string name="persona_editor_model_override_placeholder">留空使用 API 配置中的模型</string>
+    <string name="persona_editor_model_override_support">人格可以独立使用某个模型 ID，不改变 API 配置的默认模型。</string>
+    <string name="persona_editor_add_api_config">还没有 API 配置，去添加一个</string>
+
+    <!-- PersonaEditorScreen: 放弃修改确认 -->
+    <string name="persona_editor_discard_title">放弃未保存的修改？</string>
+    <string name="persona_editor_discard_message">当前的人格信息与提示词改动尚未保存。</string>
+    <string name="persona_editor_discard_confirm">放弃</string>
+
+    <!-- PersonaEditorScreen: 性格与设定 -->
+    <string name="persona_editor_profile_section">性格与设定</string>
+    <string name="persona_editor_profile_hint">这些会拼进系统提示词的「你是谁」一节：性格 / 喜欢 / 习惯 / 过去 / 设定。没填的不会占位。</string>
+    <string name="persona_editor_traits_label">性格（最多 6 个，用、分隔）</string>
+    <string name="persona_editor_traits_placeholder">慢热、嘴硬心软</string>
+    <!-- 列表字段在输入框里回显时的分隔符（只影响显示，解析两种都认） -->
+    <string name="persona_editor_list_separator">、</string>
+    <string name="persona_editor_likes_label">喜欢的事（最多 8 个，用、分隔）</string>
+    <string name="persona_editor_likes_placeholder">夜里散步、喝冰美式</string>
+    <string name="persona_editor_behaviors_label">行为方式 / 习惯（最多 6 个，用、分隔）</string>
+    <string name="persona_editor_behaviors_placeholder">先听完再给建议、不追问</string>
+    <string name="persona_editor_backstory_label">成长经历 / 过去（最多 600 字）</string>
+    <string name="persona_editor_backstory_placeholder">小时候在南方长大，后来一个人搬到北方……</string>
+    <string name="persona_editor_quirks_label">个人设定：称呼、口头禅、忌讳（最多 300 字）</string>
+    <string name="persona_editor_quirks_placeholder">叫你「阿岚」；不说「加油」；不喜欢被安排</string>
+
+    <!-- PersonaEditorScreen: 主动程度 / 记性 / 抽记忆 / 睡觉 -->
+    <string name="persona_editor_proactive_title">主动程度</string>
+    <string name="persona_editor_proactive_value">%1$d · %2$s</string>
+    <string name="persona_editor_memory_title">记性</string>
+    <string name="persona_editor_memory_level_1">1 · 忘得快，只记得最近的事</string>
+    <string name="persona_editor_memory_level_2">2 · 记得住大概</string>
+    <string name="persona_editor_memory_level_3">3 · 普通的记性</string>
+    <string name="persona_editor_memory_level_4">4 · 记得很细</string>
+    <string name="persona_editor_memory_level_5">5 · 什么都记得</string>
+    <string name="persona_editor_extraction_title">抽记忆频率</string>
+    <string name="persona_editor_extraction_value">每 %1$d 条消息抽一次</string>
+    <string name="persona_editor_sleep_title">他会不会主动睡觉</string>
+    <string name="persona_editor_sleep_on">到点会睡，睡着时消息留着；叫得够多会醒。</string>
+    <string name="persona_editor_sleep_off">他不睡觉，任何时间都会回。</string>
+    <string name="persona_editor_sleep_at_label">几点睡</string>
+    <string name="persona_editor_wake_at_label">几点醒</string>
+    <string name="persona_editor_wake_threshold_title">睡眠唤醒阈值</string>
+    <plurals name="persona_editor_wake_threshold_value">
+        <item quantity="other">连着 %1$d 条消息会把他叫醒</item>
+    </plurals>
+
+    <!-- PersonaEditorScreen: 性格 / 喜欢 预设词条（也是落库的候选值） -->
+    <string name="persona_trait_preset_slow_warm">慢热</string>
+    <string name="persona_trait_preset_prickly_soft">嘴硬心软</string>
+    <string name="persona_trait_preset_quiet">话少</string>
+    <string name="persona_trait_preset_sensitive">敏感</string>
+    <string name="persona_trait_preset_jokes">爱开玩笑</string>
+    <string name="persona_trait_preset_stubborn">固执</string>
+    <string name="persona_trait_preset_gentle">温柔</string>
+    <string name="persona_trait_preset_direct">直接</string>
+    <string name="persona_trait_preset_clingy">黏人</string>
+    <string name="persona_trait_preset_independent">独立</string>
+    <string name="persona_likes_preset_night_walks">夜里散步</string>
+    <string name="persona_likes_preset_iced_americano">喝冰美式</string>
+    <string name="persona_likes_preset_old_songs">听老歌</string>
+    <string name="persona_likes_preset_movies">看电影</string>
+    <string name="persona_likes_preset_cooking">做饭</string>
+    <string name="persona_likes_preset_rainy_days">下雨天</string>
+    <string name="persona_likes_preset_cats">猫</string>
+    <string name="persona_likes_preset_travel">旅行</string>
+
+    <!-- PersonaEditorScreen: 分类（落库值的中文常量，界面显示走映射） -->
+    <string name="persona_editor_category_section">分类</string>
+    <string name="persona_editor_category_custom_label">自定义分类</string>
+    <string name="persona_category_daily_chat">日常聊天</string>
+    <string name="persona_category_roleplay">角色扮演</string>
+    <string name="persona_category_study">学习</string>
+    <string name="persona_category_coding">编程</string>
+    <string name="persona_category_writing">创意写作</string>
+    <string name="persona_category_work">工作</string>
+
+    <!-- PersonaEditorScreen: 人格卡 -->
+    <string name="persona_editor_card_section">人格卡</string>
+    <string name="persona_editor_card_status_optional">可选</string>
+    <string name="persona_editor_card_status_filled">已填写</string>
+    <string name="persona_editor_card_hint">人格卡会被拆成几段喂给他：稳定的说话策略放进系统提示，其余按字数预算进入当前对话。留空就用提示词原文。</string>
+    <string name="persona_editor_card_structured_title">结构化设定</string>
+    <string name="persona_editor_card_structured_subtitle">身份 · 声音 · 性格 · 在意的事 · 边界 · 生活 · 你们之间</string>
+    <string name="persona_editor_card_collapse_cd">收起人格卡</string>
+    <string name="persona_editor_card_expand_cd">展开人格卡</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 身份 -->
+    <string name="persona_editor_group_identity">身份</string>
+    <string name="persona_editor_card_name_placeholder">卡片里它自己的名字</string>
+    <string name="persona_editor_age_label">年龄感</string>
+    <string name="persona_editor_age_placeholder">例如：二十多岁</string>
+    <string name="persona_editor_role_label">身份 / 职业</string>
+    <string name="persona_editor_role_placeholder">例如：开旧书店的人</string>
+    <string name="persona_editor_relation_label">和你的关系</string>
+    <string name="persona_editor_relation_placeholder">例如：认识很多年的朋友</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 声音 -->
+    <string name="persona_editor_group_voice">声音</string>
+    <string name="persona_editor_pace_label">语速</string>
+    <string name="persona_editor_pace_placeholder">例如：慢，偶尔停下来想想</string>
+    <string name="persona_editor_sentence_label">句子长度</string>
+    <string name="persona_editor_sentence_placeholder">例如：短句，一次说一两句</string>
+    <string name="persona_editor_catchphrases_label">口头禅（逗号分隔）</string>
+    <string name="persona_editor_catchphrases_placeholder">例如：嗯，那就这样</string>
+    <string name="persona_editor_address_label">怎么称呼你</string>
+    <string name="persona_editor_address_placeholder">例如：喊你名字的后两个字</string>
+    <string name="persona_editor_voice_quirks_label">语气小习惯</string>
+    <string name="persona_editor_voice_quirks_placeholder">例如：少用感叹号，爱用省略号</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 性格特征 -->
+    <string name="persona_editor_group_traits">性格特征</string>
+    <string name="persona_editor_traits_empty">还没有性格标签。添加后可以单独调每个特质的强度。</string>
+    <string name="persona_editor_trait_add">添加一条</string>
+    <string name="persona_editor_trait_name_label">特质</string>
+    <string name="persona_editor_trait_name_placeholder">例如：嘴硬心软</string>
+    <string name="persona_editor_trait_delete_cd">删除这条性格</string>
+    <string name="persona_editor_trait_strength">强度</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 价值观 / 边界 -->
+    <string name="persona_editor_group_values">价值观</string>
+    <string name="persona_editor_values_label">价值观（逗号分隔）</string>
+    <string name="persona_editor_values_placeholder">例如：真诚，不敷衍</string>
+    <string name="persona_editor_group_boundaries">边界</string>
+    <string name="persona_editor_boundaries_label">边界（逗号分隔）</string>
+    <string name="persona_editor_boundaries_placeholder">例如：不评判你的选择，不假装记得没说过的事</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 生活 -->
+    <string name="persona_editor_group_life">生活</string>
+    <string name="persona_editor_schedule_label">作息</string>
+    <string name="persona_editor_schedule_placeholder">例如：凌晨两点睡，中午起</string>
+    <string name="persona_editor_doing_label">最近在忙</string>
+    <string name="persona_editor_doing_placeholder">例如：把店里的旧书重新分类</string>
+    <string name="persona_editor_cares_label">在意的事</string>
+    <string name="persona_editor_cares_placeholder">例如：你最近睡得好不好</string>
+
+    <!-- PersonaEditorScreen: 人格卡 · 你们之间 -->
+    <string name="persona_editor_group_bond">你们之间</string>
+    <string name="persona_editor_bond_label">对你的认知与变化</string>
+    <string name="persona_editor_bond_placeholder">它怎么理解你、这段关系里发生过什么、现在有什么不一样</string>
+    <string name="persona_editor_bond_support">他自己想通了什么会直接写在这里，改动都有版本可回滚。</string>
+
+    <!-- PersonaEditorScreen: 绑定 API 配置弹层 -->
+    <string name="persona_editor_api_sheet_title">绑定 API 配置</string>
+    <string name="persona_editor_api_sheet_subtitle">绑定后，他的那一段会话会默认使用它</string>
+    <string name="persona_editor_api_none">不绑定</string>
+
+    <!-- PersonaEditorScreen: 提示词全屏编辑 -->
+    <string name="persona_editor_prompt_screen_title">人格提示词</string>
+    <plurals name="persona_editor_prompt_screen_meta">
+        <item quantity="other">%1$d 字符 · 原文完整保存</item>
+    </plurals>
+    <string name="persona_editor_copy_all">复制全文</string>
+    <string name="persona_editor_copied_notice">已复制全文</string>
+    <string name="persona_editor_paste">粘贴</string>
+    <string name="persona_editor_pasted_notice">已粘贴到末尾</string>
+    <string name="persona_editor_restore_last">恢复上次版本</string>
+    <string name="persona_editor_restored_notice">已恢复上次保存的版本</string>
+    <string name="persona_editor_prompt_editor_placeholder">在这里写下完整人格设定…\n\n可以包含身份、性格、说话方式、价值观、边界与相处原则。不会自动截断。</string>
+    <string name="persona_editor_done">完成</string>
+    <string name="persona_editor_cancel">取消</string>
+    <string name="persona_editor_save_draft">保存到草稿</string>
+
+    <!-- PersonaEditorViewModel -->
+    <string name="persona_editor_persona_missing">人格不存在</string>
+    <string name="persona_editor_name_required">请填写人格名称</string>
+    <string name="persona_editor_prompt_required">请写下人格提示词，或从历史版本恢复</string>
+    <string name="persona_editor_save_failed">保存失败</string>
+    <string name="persona_editor_card_save_failed">人格已保存，但人格卡写入失败：%1$s</string>
+    <string name="persona_editor_unknown_error">未知错误</string>
+
+    <!-- PersonaListScreen: 顶部与空状态 -->
+    <string name="persona_list_create_cd">创建人格</string>
+    <string name="persona_list_title">人格</string>
+    <string name="persona_list_subtitle">每个人格拥有独立的提示词、记忆与上下文</string>
+    <string name="persona_list_presets_cd">预设库</string>
+    <string name="persona_list_import_cd">导入人格</string>
+    <string name="persona_list_export_all_cd">导出全部人格</string>
+    <string name="persona_list_banner">人格提示词会完整保存。每次对话都以 system 消息把完整人格注入，不需要单独的同步步骤。</string>
+    <string name="persona_list_filter_all">全部</string>
+    <string name="persona_list_empty_title">没有找到人格</string>
+    <string name="persona_list_empty_desc_new">创建一个人格，写下它的性格与说话方式。</string>
+    <string name="persona_list_empty_desc_filtered">这个分类下还没有人格。</string>
+
+    <!-- PersonaListScreen: 删除确认 -->
+    <string name="persona_list_delete_title">删除「%1$s」？</string>
+    <string name="persona_list_delete_message">你们的那段会话、聊天记录、长期记忆与历史版本都会被永久删除。API 配置会被保留。</string>
+    <string name="persona_list_delete_confirm">删除</string>
+
+    <!-- PersonaListScreen: 人格卡片 -->
+    <string name="persona_list_default_badge">默认</string>
+    <string name="persona_list_no_description">尚未填写简介</string>
+    <string name="persona_list_uncategorized">未分类</string>
+    <string name="persona_list_api_unbound">未绑定 API</string>
+    <string name="persona_list_api_bound_value">%1$s · %2$s</string>
+    <string name="persona_list_more_cd">更多操作</string>
+    <string name="persona_list_menu_edit">编辑人格</string>
+    <string name="persona_list_menu_set_default">设为默认</string>
+    <string name="persona_list_menu_duplicate">复制</string>
+    <string name="persona_list_menu_save_preset">保存为预设</string>
+    <string name="persona_list_menu_export_json">导出 JSON</string>
+    <string name="persona_list_menu_delete">删除</string>
+    <plurals name="persona_list_prompt_chars">
+        <item quantity="other">%1$d 字符提示词</item>
+    </plurals>
+    <string name="persona_list_version">版本 v%1$d</string>
+
+    <!-- PersonaListScreen: 导入导出提示 -->
+    <string name="persona_list_exported">人格预设已导出</string>
+    <string name="persona_list_export_failed_detail">导出失败：%1$s</string>
+    <string name="persona_list_read_failed">读取失败：%1$s</string>
+    <string name="persona_list_cannot_write_file">无法写入文件</string>
+    <string name="persona_list_cannot_read_file">无法读取文件</string>
+
+    <!-- PersonaListViewModel -->
+    <string name="persona_list_preset_saved">已保存到预设库</string>
+    <string name="persona_list_preset_save_failed">保存到预设库失败</string>
+    <string name="persona_list_default_set">已设为默认人格</string>
+    <string name="persona_list_default_set_failed">设置失败</string>
+    <string name="persona_list_duplicated">人格已复制</string>
+    <string name="persona_list_duplicate_failed">复制失败</string>
+    <string name="persona_list_deleted">人格已删除</string>
+    <string name="persona_list_delete_failed">删除失败</string>
+    <string name="persona_list_export_failed">导出失败</string>
+    <string name="persona_list_import_failed">导入失败：%1$s</string>
+    <string name="persona_list_import_bad_format">文件格式不正确</string>
+
+    <!-- ===== 预设 ===== -->
+<!-- PresetListScreen: 头部与提示 -->
+    <string name="preset_list_title">预设库</string>
+    <string name="preset_list_subtitle">可复用的提示词模板，用来快速生成新人格</string>
+    <string name="preset_new">新建预设</string>
+    <string name="preset_edit">编辑预设</string>
+    <string name="preset_import">导入预设</string>
+    <string name="preset_export_all">导出全部预设</string>
+    <string name="preset_info_hint">预设只是模板：用预设创建人格后，人格拥有独立的提示词、记忆与上下文，之后对人格的修改不会影响预设。</string>
+    <string name="preset_category_all">全部</string>
+
+    <!-- PresetListScreen: 空状态 / 删除确认 / 菜单 -->
+    <string name="preset_empty_title">预设库还是空的</string>
+    <string name="preset_empty_desc">把常用的人格设定存成预设，下次用一键生成新人格；也可以从人格详情里保存为预设。</string>
+    <string name="preset_delete_title">删除预设「%1$s」？</string>
+    <string name="preset_delete_message">已经用它创建的人格不会受影响，只是以后不能再从这里新建。</string>
+    <string name="preset_delete">删除</string>
+    <string name="preset_more">更多</string>
+    <string name="preset_create_persona">用这个预设创建人格</string>
+    <string name="preset_duplicate">复制</string>
+    <string name="preset_export_json">导出 JSON</string>
+
+    <!-- PresetListScreen: 导入导出提示 -->
+    <string name="preset_create_persona_short">用此预设新建</string>
+    <string name="preset_export_done">预设已导出</string>
+    <string name="preset_export_error_detail">导出失败：%1$s</string>
+    <string name="preset_read_error_detail">读取失败：%1$s</string>
+    <string name="preset_write_unavailable">无法写入文件</string>
+    <string name="preset_read_unavailable">无法读取文件</string>
+
+    <!-- PresetEditorScreen -->
+    <string name="preset_editor_subtitle">预设是可复用的提示词模板</string>
+    <string name="preset_editor_loading">载入中…</string>
+    <string name="preset_avatar_initial">预</string>
+    <string name="preset_editor_name_label">预设名称</string>
+    <string name="preset_editor_description_label">简介</string>
+    <string name="preset_editor_category_section">分类</string>
+    <string name="preset_editor_prompt_section">人格提示词</string>
+    <string name="preset_editor_prompt_label">写下这个人格是谁、如何说话</string>
+    <string name="preset_editor_prompt_hint">用预设创建人格时，提示词会完整复制到新人格，预设本身不会被修改。</string>
+    <string name="preset_editor_saving">保存中…</string>
+    <string name="preset_editor_save">保存预设</string>
+
+    <!-- 分类（落库值，界面显示映射） -->
+    <string name="preset_category_daily_chat">日常聊天</string>
+    <string name="preset_category_roleplay">角色扮演</string>
+    <string name="preset_category_study">学习</string>
+    <string name="preset_category_coding">编程</string>
+    <string name="preset_category_writing">创意写作</string>
+    <string name="preset_category_general">通用</string>
+
+    <!-- PresetListViewModel / PresetEditorViewModel -->
+    <string name="preset_duplicated">已复制为新预设</string>
+    <string name="preset_duplicate_failed">复制失败</string>
+    <string name="preset_deleted">预设已删除</string>
+    <string name="preset_create_persona_failed">创建人格失败</string>
+    <string name="preset_export_error">导出失败</string>
+    <string name="preset_import_failed">导入失败</string>
+    <string name="preset_editor_not_found">预设不存在，可能已被删除</string>
+    <string name="preset_editor_name_required">请填写预设名称</string>
+    <string name="preset_editor_prompt_required">预设需要包含人格提示词</string>
+    <string name="preset_editor_save_failed">保存失败</string>
+
+    <!-- ui/components: Common.kt / Avatar.kt / MarkdownText.kt -->
+    <string name="common_back">返回</string>
+    <string name="common_confirm">确认</string>
+    <string name="common_cancel">取消</string>
+    <string name="common_avatar_content_description">%1$s 的头像</string>
+    <string name="common_user_avatar_content_description">我的头像</string>
+    <string name="common_avatar_initial">友</string>
+    <string name="common_code_copied">已复制</string>
+    <string name="common_code_copy">复制代码</string>
+
+    <!-- 数量：字符数（plurals） -->
+    <plurals name="preset_prompt_chars">
+        <item quantity="other">%1$d 字符提示词</item>
+    </plurals>
+    <plurals name="preset_editor_prompt_chars">
+        <item quantity="other">%1$d 字符</item>
+    </plurals>
+
+    <!-- ===== 主动唤醒 / 成长 ===== -->
+<!-- ProactiveScreen: 页头 -->
+    <string name="proactive_title">主动唤醒</string>
+    <string name="proactive_subtitle">他会按自己的节奏来找你</string>
+    <string name="proactive_intro_body">他会按自己的节奏来找你；时间不是准点，是一段窗口。你也可以在聊天里说个大概时间，他会自己安排，不用你批准；不喜欢随时关掉。</string>
+
+    <!-- ProactiveScreen: 通知权限与空状态 -->
+    <string name="proactive_fab_new">新建主动唤醒</string>
+    <string name="proactive_permission_body">还没有通知权限，到点消息只会留在会话里，点这里开启通知</string>
+    <string name="proactive_empty_title">还没有主动唤醒规则</string>
+    <string name="proactive_empty_description">设一个时间，或直接在聊天里说个大概时间，他会自己安排。</string>
+
+    <!-- ProactiveScreen: 删除确认 -->
+    <string name="proactive_delete_title">删除这条规则？</string>
+    <string name="proactive_delete_message">%1$s\n删除后不再主动发消息，已产生的对话会保留。</string>
+    <string name="proactive_delete_confirm">删除</string>
+
+    <!-- ProactiveScreen: 规则卡片 -->
+    <string name="proactive_source_agent">他自己安排的</string>
+    <string name="proactive_source_user">你设的</string>
+    <string name="proactive_next_trigger">下次大概 %1$s 前后</string>
+    <string name="proactive_next_off">现在关着</string>
+    <string name="proactive_rule_persona_fallback">人格</string>
+    <string name="proactive_rule_meta">%1$s · %2$s · %3$s</string>
+    <string name="proactive_more">更多</string>
+    <string name="proactive_try_now">现在试一次</string>
+    <string name="proactive_menu_delete">删除</string>
+    <string name="proactive_agent_hint">你不喜欢可以随时关掉</string>
+    <string name="proactive_last_error">上次没发出去：%1$s</string>
+
+    <!-- ProactiveScreen: 新建规则弹窗 -->
+    <string name="proactive_dialog_title_new">新建主动唤醒</string>
+    <string name="proactive_no_persona">还没有人格，先创建一个人格再来设置。</string>
+    <string name="proactive_section_persona">人格</string>
+    <string name="proactive_section_trigger">触发方式</string>
+    <string name="proactive_kind_daily">每天固定时刻</string>
+    <string name="proactive_kind_interval">每隔几小时</string>
+    <string name="proactive_field_time_label">时间（24 小时制，如 22:30）</string>
+    <string name="proactive_field_time_error">请输入 HH:mm 格式的时间</string>
+    <string name="proactive_field_interval_label">间隔小时数（1-24）</string>
+    <string name="proactive_field_note_label">备注（可留空）</string>
+    <string name="proactive_field_note_placeholder">例如：睡前问候</string>
+    <string name="proactive_field_hint_label">开口时的指引（可留空）</string>
+    <string name="proactive_field_hint_placeholder">例如：像往常一样轻声问对方今天过得怎么样</string>
+    <string name="proactive_dialog_footnote">到点消息由人格自己写，指引只影响它的语气与角度。</string>
+    <string name="proactive_create">创建</string>
+    <string name="proactive_cancel">取消</string>
+
+    <!-- ProactiveScreen: 他此刻 -->
+    <string name="proactive_mood_title">他此刻</string>
+    <string name="proactive_mood_unsaid">看得出来有点浓，但他没细说为什么。</string>
+
+    <!-- ProactiveScreen: 他给自己留的念头 -->
+    <string name="proactive_intents_title">他给自己留的念头</string>
+    <string name="proactive_intents_note">不是准点，是一段「差不多那会儿」。窗口过了就算了。</string>
+    <string name="proactive_intent_window_around">%1$s 前后</string>
+    <string name="proactive_intent_default_note">想找他说句话</string>
+
+    <!-- ProactiveScreen: 他最近在想什么 -->
+    <string name="proactive_thoughts_title">他最近在想什么</string>
+    <string name="proactive_thought_empty">（没留下想法）</string>
+    <string name="proactive_thought_outcome_empty">什么都没做</string>
+
+    <!-- ProactiveViewModel: 提示语 -->
+    <string name="proactive_persona_unnamed">未命名人格</string>
+    <string name="proactive_created_on">主动唤醒已开启</string>
+    <string name="proactive_created_permission_needed">规则已开启，开启通知权限后才能收到提醒</string>
+    <string name="proactive_create_failed">创建失败</string>
+    <string name="proactive_enable_failed">开启失败</string>
+    <string name="proactive_enabled">已开启</string>
+    <string name="proactive_paused">已暂停</string>
+    <string name="proactive_toggle_failed">操作失败</string>
+    <string name="proactive_trigger_running">正在让 TA 开口…</string>
+    <string name="proactive_trigger_sent">已经发了一条，去会话里看看</string>
+    <string name="proactive_trigger_failed">这次没能发出去</string>
+    <string name="proactive_deleted">规则已删除</string>
+    <string name="proactive_no_session_yet">这条规则会在触发时自动创建会话</string>
+
+    <!-- EvolutionScreen: 页头 -->
+    <string name="evolution_title">人格进化</string>
+    <string name="evolution_subtitle">在保留核心的前提下，自然生长</string>
+
+    <!-- EvolutionScreen: 概览卡 -->
+    <plurals name="evolution_char_count">
+        <item quantity="other">%1$d 字符</item>
+    </plurals>
+    <plurals name="evolution_revision_count">
+        <item quantity="other">%1$d 个保留版本</item>
+    </plurals>
+    <string name="evolution_intro_body">人格进化会读取当前提示词、长期记忆和最近的对话，生成一份完整的进化提案。只有你确认后才会应用，旧版本会一直保留。</string>
+    <string name="evolution_generate">生成进化提案</string>
+    <string name="evolution_generating">正在理解你们的关系…</string>
+    <string name="evolution_cancel_generate">取消生成</string>
+
+    <!-- EvolutionScreen: 进化提案卡 -->
+    <string name="evolution_proposal_section">进化提案</string>
+    <string name="evolution_proposal_direction">进化方向</string>
+    <string name="evolution_proposal_view_full">查看完整提案</string>
+    <string name="evolution_proposal_viewer_title">进化后的人格提示词</string>
+    <string name="evolution_shrink_warning">这份提案比当前提示词短很多（%1$d / %2$d 字符），可能丢失原有的核心设定。建议先查看完整提案。</string>
+    <string name="evolution_discard">放弃</string>
+    <string name="evolution_accept">接受并保留旧版本</string>
+    <string name="evolution_accepting">应用中…</string>
+
+    <!-- EvolutionScreen: 历史版本 -->
+    <string name="evolution_revisions_section">人格保留 · 历史版本</string>
+    <string name="evolution_revisions_empty">暂无历史版本。人格首次保存后会自动保留快照。</string>
+    <string name="evolution_revision_viewer_title">版本 v%1$d 提示词</string>
+    <string name="evolution_revision_current">当前</string>
+    <plurals name="evolution_revision_meta">
+        <item quantity="other">%1$s · %2$d 字符</item>
+    </plurals>
+    <string name="evolution_view">查看</string>
+    <string name="evolution_restore_version">恢复此版本</string>
+
+    <!-- EvolutionScreen: 确认弹窗 -->
+    <string name="evolution_accept_confirm_title">应用这次进化？</string>
+    <string name="evolution_accept_confirm_message">当前版本 v%1$d 会被完整保留。应用后会生成新版本，下一轮对话就会用上。</string>
+    <string name="evolution_accept_confirm_action">应用进化</string>
+    <string name="evolution_restore_confirm_title">恢复到 v%1$d？</string>
+    <string name="evolution_restore_confirm_message">当前版本会先被保存为历史版本，然后应用 v%1$d 的完整人格提示词与资料。</string>
+    <string name="evolution_restore_confirm_action">恢复</string>
+    <string name="evolution_cancel">取消</string>
+
+    <!-- EvolutionScreen: 提示词查看器 -->
+    <string name="evolution_close">关闭</string>
+    <string name="evolution_copy_all">复制全文</string>
+    <plurals name="evolution_prompt_viewer_meta">
+        <item quantity="other">%1$d 字符 · 完整原文</item>
+    </plurals>
+
+    <!-- EvolutionViewModel: 提示语 -->
+    <string name="evolution_generate_failed">生成进化提案失败</string>
+    <string name="evolution_applied">人格已进化。旧版本已保留，下一轮对话就会用上新版本。</string>
+    <string name="evolution_accept_failed">应用进化失败</string>
+    <string name="evolution_restored">已恢复 v%1$d 的人格内容，并生成新版本</string>
+    <string name="evolution_restore_failed">恢复失败</string>
+
+    <!-- ===== 设置 / 关于 ===== -->
+<!-- 设置页标题 -->
+    <string name="settings_title">设置</string>
+    <string name="settings_subtitle">让 MyFriend 更像你的地方</string>
+    <string name="settings_summary">%1$s · %2$s</string>
+    <plurals name="settings_persona_count">
+        <item quantity="other">%1$d 个人格</item>
+    </plurals>
+    <plurals name="settings_api_count">
+        <item quantity="other">%1$d 个 API 配置</item>
+    </plurals>
+
+    <!-- 外观 -->
+    <string name="settings_section_appearance">外观</string>
+    <string name="settings_my_avatar">我的头像</string>
+    <string name="settings_my_avatar_desc">聊天里显示在你这边；图片不跟着备份走</string>
+    <string name="settings_restore_default">恢复默认</string>
+    <string name="settings_theme_mode">主题模式</string>
+    <string name="settings_theme_mode_desc">浅色、深色或跟随系统</string>
+    <string name="settings_theme_system">跟随系统</string>
+    <string name="settings_theme_light">浅色</string>
+    <string name="settings_theme_dark">深色</string>
+    <string name="settings_accent_color">主题色</string>
+    <string name="settings_accent_color_desc">用于发送气泡、按钮与高亮</string>
+    <string name="settings_custom_color_cd">自定义颜色</string>
+    <string name="settings_custom_accent_label">自定义主题色</string>
+    <string name="settings_apply">应用</string>
+    <string name="settings_font_size">字体大小</string>
+    <string name="settings_font_size_desc">只影响文字，不改变界面布局</string>
+    <string name="settings_bubble_style">聊天气泡样式</string>
+    <string name="settings_bubble_style_desc">气泡圆角与留白密度</string>
+    <string name="settings_bubble_soft">柔和</string>
+    <string name="settings_bubble_compact">紧凑</string>
+    <string name="settings_bubble_outlined">描边</string>
+    <string name="settings_animations">界面动画</string>
+    <string name="settings_animations_desc">关闭后页面与气泡过渡更克制</string>
+    <string name="settings_haptics">触感反馈</string>
+    <string name="settings_haptics_desc">长按与操作时的轻微振动</string>
+
+    <!-- 让他在后台活着 -->
+    <string name="settings_section_background">让他在后台活着</string>
+    <string name="settings_agent_loop">常驻后台</string>
+    <string name="settings_agent_loop_desc">关掉他就只在应用打开时存在；开着时他会在后台继续想事情，偶尔主动找你。</string>
+    <string name="settings_notification_permission">通知权限</string>
+    <string name="settings_notification_permission_desc">没有通知权限，他找到你时你是看不到的。</string>
+    <string name="settings_notification_on">已开启</string>
+    <string name="settings_notification_off">未开启</string>
+    <string name="settings_battery_limit">后台运行限制</string>
+    <string name="settings_battery_limit_desc">系统为了省电会冻结后台应用；允许后他才能一直待着。</string>
+    <string name="settings_battery_allowed">已允许</string>
+    <string name="settings_battery_restricted">受限</string>
+    <string name="settings_background_note">部分品牌手机还需要在系统设置里允许自启动 / 后台活动，否则他可能被系统冻结。</string>
+    <string name="settings_open_app_settings">去应用设置</string>
+
+    <!-- 聊天背景 -->
+    <string name="settings_section_chat_background">聊天背景</string>
+    <string name="settings_solid_background">纯色背景</string>
+    <string name="settings_solid_background_desc_image">当前使用自定义图片，颜色仅在移除图片后生效</string>
+    <string name="settings_solid_background_desc_color">选择聊天画布的颜色</string>
+    <string name="settings_background_default">默认</string>
+    <string name="settings_pick_background_image">选择背景图片</string>
+    <string name="settings_remove_image">移除图片</string>
+
+    <!-- API 配置入口 -->
+    <string name="settings_api_title">API 配置</string>
+    <string name="settings_api_desc">Base URL、密钥、模型与推理参数</string>
+
+    <!-- 数据与安全 -->
+    <string name="settings_section_data_security">数据与安全</string>
+    <string name="settings_export_chats_title">导出全部聊天记录</string>
+    <string name="settings_export_chats_desc">JSON 文件，不包含 API Key</string>
+    <string name="settings_clear_chats_title">清空全部聊天与记忆</string>
+    <string name="settings_clear_chats_desc">保留人格与 API 配置</string>
+    <string name="settings_wipe_title">删除全部本地数据</string>
+    <string name="settings_wipe_desc">人格、会话、记忆、预设、主动唤醒规则、API 配置与设置全部移除</string>
+    <string name="settings_security_note">API Key 由 Android Keystore 加密保存，不写入日志或崩溃报告。默认只允许 HTTPS；对话记录仅保存在本机。</string>
+    <string name="settings_about_entry">关于 MyFriend</string>
+    <string name="settings_selected_cd">已选择</string>
+
+    <!-- 设置页的提示与失败 -->
+    <string name="settings_error_background_image">背景图片保存失败</string>
+    <string name="settings_error_avatar">头像保存失败</string>
+    <string name="settings_error_unwritable_file">无法写入文件</string>
+    <string name="settings_export_success">聊天记录已导出</string>
+    <string name="settings_export_failed">导出失败：%1$s</string>
+    <string name="settings_error_export">导出失败</string>
+    <string name="settings_cleared_chats">所有聊天与记忆已清空</string>
+    <string name="settings_error_clear">清空失败</string>
+    <string name="settings_wiped">所有本地数据已删除</string>
+    <string name="settings_error_delete">删除失败</string>
+    <string name="settings_error_import">没能把他接回来；这台手机上的内容没有变</string>
+    <string name="settings_error_save">设置保存失败</string>
+
+    <!-- 关于页 -->
+    <string name="about_title">关于</string>
+    <string name="about_tagline">一个安静的、可以长期相处的地方。\n每个人格都拥有独立的提示词、记忆与对话。</string>
+    <string name="about_section_memory">它会如何记住你</string>
+    <string name="about_memory_body">人格会从对话中整理稳定的长期记忆，并可在“长期记忆”中查看、修改或删除。人格进化由你确认后才会应用，所有历史版本都会完整保留。</string>
+    <string name="about_section_privacy">隐私与安全</string>
+    <string name="about_privacy_keys">API Key 使用 Android Keystore 加密，仅保存在本机；默认只允许 HTTPS；密钥不会写入日志，也不会包含在人格或聊天导出文件中。</string>
+    <string name="about_privacy_memory">人格提示词与长期记忆只会发送给该人格绑定的 API，每轮对话通过 system message 注入。</string>
+    <string name="about_closing">聊天数据只属于你。</string>
+
+    <!-- 主动程度 1–5 的人话解释：中文与 ProactiveLevel.description 逐字一致（跨端 spec 用那一份） -->
+    <string name="proactive_level_1">很少主动。你不找他，他基本不会来打扰。</string>
+    <string name="proactive_level_2">偶尔想起你。忙起来就顾不上了。</string>
+    <string name="proactive_level_3">会主动，但有分寸。大多数日子会来找你说一句话。</string>
+    <string name="proactive_level_4">比较黏人。隔一阵子就想知道你在做什么。</string>
+    <string name="proactive_level_5">很黏你。一天里会好几次想找你说话。</string>
+    <!-- 他此刻在做什么 & 多久以前：domain/Presence 只给「是哪一种」，句子在这里 -->
+    <string name="presence_line">%1$s · %2$s</string>
+    <string name="presence_asleep">睡着了</string>
+    <string name="presence_asleep_wake">睡着了 · %1$s 醒</string>
+    <string name="presence_just_woke">刚醒</string>
+    <string name="presence_writing">在写东西</string>
+    <string name="presence_browsing">在翻东西</string>
+    <string name="presence_thinking">在想事情</string>
+    <string name="presence_waiting">过一会儿想找你</string>
+    <string name="presence_away">在忙别的</string>
+    <string name="presence_idle">在发呆</string>
+    <string name="presence_ago_just_now">刚刚</string>
+    <plurals name="presence_ago_minutes">
+        <item quantity="other">%1$d 分钟前</item>
+    </plurals>
+    <plurals name="presence_ago_hours">
+        <item quantity="other">%1$d 小时前</item>
+    </plurals>
+    <string name="presence_ago_yesterday">昨天</string>
+    <plurals name="presence_ago_days">
+        <item quantity="other">%1$d 天前</item>
+    </plurals>
+    <string name="presence_ago_last_week">上周</string>
+    <plurals name="presence_ago_weeks">
+        <item quantity="other">%1$d 周前</item>
+    </plurals>
+    <plurals name="presence_ago_months">
+        <item quantity="other">%1$d 个月前</item>
+    </plurals>
+    <string name="presence_ago_long_ago">很久以前</string>
+
+    <!-- 心情词表（MoodLexicon 里固定的那些词）；模型自造的怪词原样显示 -->
+    <string name="mood_label_calm">平静</string>
+    <string name="mood_label_relaxed">放松</string>
+    <string name="mood_label_gentle">温柔</string>
+    <string name="mood_label_elated">雀跃</string>
+    <string name="mood_label_happy">开心</string>
+    <string name="mood_label_excited">兴奋</string>
+    <string name="mood_label_looking_forward">期待</string>
+    <string name="mood_label_missing_you">想念</string>
+    <string name="mood_label_a_little_tired">有点累</string>
+    <string name="mood_label_worn_out">疲惫</string>
+    <string name="mood_label_sleepy">犯困</string>
+    <string name="mood_label_low">低落</string>
+    <string name="mood_label_sad">难过</string>
+    <string name="mood_label_restless">心烦</string>
+    <string name="mood_label_uneasy">不安</string>
+    <string name="mood_label_a_little_hurt">有点委屈</string>
+    <string name="mood_label_guilty">愧疚</string>
+    <!-- 用量「按用途 / 按人」：用途是稳定值，说法在这里 -->
+    <string name="usage_kind_chat">聊天</string>
+    <string name="usage_kind_consolidation">整理记忆</string>
+    <string name="usage_kind_scoring">判断值不值得记</string>
+    <string name="usage_kind_agent">自己待着时想事情</string>
+    <string name="usage_kind_recall">回忆你说过的事</string>
+    <string name="usage_kind_extraction">从聊天里记东西</string>
+    <string name="usage_kind_reconsolidation">想起旧事</string>
+    <string name="usage_kind_history">压缩长对话</string>
+    <string name="usage_kind_unknown">其他</string>
+    <string name="usage_session_other">其他</string>
+    <string name="usage_session_unknown">未知联系人</string>
 </resources>

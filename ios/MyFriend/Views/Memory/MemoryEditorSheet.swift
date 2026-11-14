@@ -27,16 +27,16 @@ struct MemoryEditorSheet: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("手动记一件事")
+                    Text(L("手动记一件事"))
                         .font(.system(.title3, design: .serif))
                     Spacer()
-                    Button("取消") { dismiss() }
+                    Button(L("取消")) { dismiss() }
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
 
                 MFCard {
-                    Text("他应该记住什么")
+                    Text(L("他应该记住什么"))
                         .font(.footnote.weight(.medium))
                     TextEditor(text: $content)
                         .font(.system(.body, design: .serif))
@@ -48,14 +48,14 @@ struct MemoryEditorSheet: View {
                                 .fill(Color.secondary.opacity(0.06))
                         )
                         .padding(.top, 6)
-                    Text("例如：对方喜欢在夜里散步，讨厌被追问。")
+                    Text(L("例如：对方喜欢在夜里散步，讨厌被追问。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 6)
                 }
 
                 MFCard {
-                    Text("分类")
+                    Text(L("分类"))
                         .font(.footnote.weight(.medium))
                     MFChoiceBar(
                         options: MemoryCategory.allCases.map { ($0, MFMemoryText.categoryLabel($0)) },
@@ -63,7 +63,7 @@ struct MemoryEditorSheet: View {
                         accent: accent
                     )
                     .padding(.top, 8)
-                    Text("分类决定它进哪个抽屉：关于你、关于他自己，还是你们之间的经历。")
+                    Text(L("分类决定它进哪个抽屉：关于你、关于他自己，还是你们之间的经历。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 8)
@@ -72,9 +72,9 @@ struct MemoryEditorSheet: View {
                 MFCard {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("重要度")
+                            Text(L("重要度"))
                                 .font(.footnote.weight(.medium))
-                            Text("越重要越不容易淡下去。")
+                            Text(L("越重要越不容易淡下去。"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -93,7 +93,7 @@ struct MemoryEditorSheet: View {
                 }
 
                 Button(action: save) {
-                    Text("记住")
+                    Text(L("记住"))
                         .font(.system(.body, design: .serif))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)
@@ -107,7 +107,7 @@ struct MemoryEditorSheet: View {
                 .disabled(!canSave)
 
                 if personaId == nil {
-                    Text("还没有人格，先建一个再记。")
+                    Text(L("还没有人格，先建一个再记。"))
                         .font(.caption)
                         .foregroundStyle(MFUI.danger)
                 }
@@ -121,7 +121,7 @@ struct MemoryEditorSheet: View {
 
     private func save() {
         guard let personaId else {
-            banner = MFAlert(title: "还没有人格", message: "先建一个人格，再往他的记忆里记东西。")
+            banner = MFAlert(title: L("还没有人格"), message: L("先建一个人格，再往他的记忆里记东西。"))
             return
         }
         let result = env.memoryRepository.addDetailed(
@@ -135,7 +135,7 @@ struct MemoryEditorSheet: View {
             onSaved()
             dismiss()
         case .failure(let error):
-            banner = MFAlert(title: "没能记住", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能记住"), message: error.localizedDescription)
         }
     }
 }

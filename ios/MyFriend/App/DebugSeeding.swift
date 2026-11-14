@@ -196,9 +196,13 @@ enum DebugSeeding {
             log("[debug] scenario \(scenario)：作息 \(persona.quietSleepMinutes!)–\(persona.quietWakeMinutes!)，免打扰=\(persona.dndOnSleep)")
         case "awake":
             // 「他不睡觉，任何时间都会回」：用来把上一个 asleep 场景复原。
-            persona.sleepEnabled = false
-            try? env.stores.personas.upsert(persona)
-            log("[debug] scenario awake：他不睡，随时会回")
+            // 这是三个人格之后的行为：只唤醒第一个不够——`MYFRIEND_DEBUG_SEND` 发的是「最近那段会话」，
+            // 可能属于另一个人。全部复原，截图/验收才可预期。
+            for var person in personas {
+                person.sleepEnabled = false
+                try? env.stores.personas.upsert(person)
+            }
+            log("[debug] scenario awake：\(personas.count) 个人都不睡，随时会回")
         case "defer":
             log("[debug] scenario defer：等模拟服务端回 defer_reply")
         default:

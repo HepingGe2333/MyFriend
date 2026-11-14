@@ -43,11 +43,23 @@ public enum MemoryDrawer: String, CaseIterable, Sendable {
     }
 
     /// 抽屉是「他记得的是关于谁的」，比数据库里的 category 更接近人话。
+    ///
+    /// 这个字符串也会进提示词（`Recall` 的 `source`），所以保持中文、不当界面文案用；
+    /// 界面上要显示时用 `displayLabel`。
     public var label: String {
         switch self {
         case .selfDrawer: return "关于他自己"
         case .user: return "关于对方"
         case .event: return "你们之间的经历"
+        }
+    }
+
+    /// 界面显示用的抽屉名（跟随界面语言）。数据与提示词里仍然用 `label` / `rawValue`。
+    public var displayLabel: String {
+        switch self {
+        case .selfDrawer: return String(localized: "关于他自己")
+        case .user: return String(localized: "关于对方")
+        case .event: return String(localized: "你们之间的经历")
         }
     }
 }

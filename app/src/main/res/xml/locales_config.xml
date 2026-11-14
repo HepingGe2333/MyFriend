@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  应用语言（Android 13+ per-app language）：只声明支持的语言，不加应用内切换入口。
+  中文是默认语言（values/），英语在 values-en/。
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="zh" />
+    <locale android:name="en" />
+</locale-config>

@@ -167,7 +167,7 @@ struct ChatBubbleRow: View {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.circle")
                     .font(.system(size: 12))
-                Text("生成失败")
+                Text(L("生成失败"))
                     .font(.caption.weight(.medium))
             }
             .foregroundStyle(usesAccentFill ? Color.white : Color.red)
@@ -183,7 +183,7 @@ struct ChatBubbleRow: View {
                 Button(action: onRegenerate) {
                     HStack(spacing: 5) {
                         Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
-                        Text("重新生成").font(.caption)
+                        Text(L("重新生成")).font(.caption)
                     }
                     .foregroundStyle(usesAccentFill ? Color.white : MFTheme.defaultAccent)
                     .padding(.top, 2)
@@ -212,7 +212,7 @@ struct ChatBubbleRow: View {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkles")
                         .font(.system(size: 10))
-                    Text("· " + (ToolTraceCodec.summarize(traces).isEmpty ? "动作痕迹" : ToolTraceCodec.summarize(traces)))
+                    Text("· " + (ToolTraceCodec.summarize(traces).isEmpty ? L("动作痕迹") : ToolTraceCodec.summarize(traces)))
                         .font(.caption2)
                         .lineLimit(1)
                     Image(systemName: traceExpanded ? "chevron.up" : "chevron.down")
@@ -222,7 +222,7 @@ struct ChatBubbleRow: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text(traceExpanded ? "收起动作痕迹" : "展开动作痕迹"))
+            .accessibilityLabel(Text(traceExpanded ? L("收起动作痕迹") : L("展开动作痕迹")))
 
             if traceExpanded {
                 ChatToolTraceDetail(items: traces, tint: traceTint)
@@ -235,16 +235,16 @@ struct ChatBubbleRow: View {
     private var footer: some View {
         HStack(spacing: 4) {
             if message.status == .stopped {
-                Text("已停止 ·")
+                Text(L("已停止 ·"))
             }
             if message.edited {
-                Text("已编辑 ·")
+                Text(L("已编辑 ·"))
             }
             Text(MFDate.time(message.createdAt))
             // 「已读」只在他这一轮没回的时候出现：那是一个**信号**，不是每条消息的装饰。
             if showsRead {
-                Text("· 已读")
-                    .accessibilityLabel(Text("已读"))
+                Text(L("· 已读"))
+                    .accessibilityLabel(Text(L("已读")))
             }
         }
         .font(.caption2)
@@ -257,16 +257,16 @@ struct ChatBubbleRow: View {
     private var menu: some View {
         if !message.content.isEmpty {
             Button(action: onCopy) {
-                Label("复制", systemImage: "doc.on.doc")
+                Label(L("复制"), systemImage: "doc.on.doc")
             }
         }
         if isLatestAssistant {
             Button(action: onRegenerate) {
-                Label("重新生成", systemImage: "arrow.clockwise")
+                Label(L("重新生成"), systemImage: "arrow.clockwise")
             }
         }
         Button(role: .destructive, action: onDelete) {
-            Label("删除这条消息", systemImage: "trash")
+            Label(L("删除这条消息"), systemImage: "trash")
         }
     }
 }
@@ -325,7 +325,7 @@ struct ChatStreamingBubble: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "sparkles").font(.system(size: 10))
-                    Text(ToolTraceCodec.summarize(traces).isEmpty ? "正在忙" : ToolTraceCodec.summarize(traces))
+                    Text(ToolTraceCodec.summarize(traces).isEmpty ? L("正在忙") : ToolTraceCodec.summarize(traces))
                         .font(.caption2)
                         .lineLimit(1)
                     Image(systemName: tracesExpanded ? "chevron.up" : "chevron.down")
@@ -373,7 +373,7 @@ struct ChatToolTraceDetail: View {
     private func headline(_ item: ToolTraceItem) -> String {
         var parts: [String] = [item.title.isEmpty ? item.name : item.title]
         if let subtitle = item.subtitle, !subtitle.isEmpty { parts.append(subtitle) }
-        if !item.ok { parts.append("失败") }
+        if !item.ok { parts.append(L("失败")) }
         return parts.joined(separator: " · ")
     }
 }
@@ -404,7 +404,7 @@ struct ChatTypingDots: View {
         }
         .frame(height: 20)
         .onAppear { if animationsEnabled { animate = true } }
-        .accessibilityLabel(Text("正在输入"))
+        .accessibilityLabel(Text(L("正在输入")))
     }
 }
 

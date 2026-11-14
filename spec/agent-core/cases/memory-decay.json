@@ -1,0 +1,512 @@
+{
+  "contract": "agent-core/memory-decay",
+  "version": "0.10.0",
+  "title": "记忆衰减、retention 系数与生命周期处置",
+  "authority": "android",
+  "authorityNote": "规格见 docs/ROADMAP-1.9.md §三；Android MemoryLifecycle 是权威。0.10.0 之前 Android 没有实现 memoryRetention 对衰减速度的影响、iOS 有，已按 §三 补齐 Android。",
+  "kotlin": {
+    "file": "app/src/main/java/com/myfriend/app/domain/MemoryLifecycle.kt",
+    "symbol": "MemoryLifecycle.effectiveStrength / decayStep / retentionFactor / nextStatus"
+  },
+  "swift": {
+    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/MemoryLifecycle.swift",
+    "symbol": "MemoryLifecycle.effectiveStrength / decayStep / retentionFactor / nextStatus"
+  },
+  "tolerance": 1e-09,
+  "inputSpec": {
+    "tier": "ACTIVE / DORMANT / ARCHIVED",
+    "pinned": "是否被用户钉住",
+    "importance": "1–5，越界夹取",
+    "useCount": "被用次数",
+    "lastUsedAt": "上次被用（毫秒，0 = 没有）",
+    "createdAt": "创建时间（毫秒，0 = 没有）",
+    "strength": "当前分量 0..1",
+    "lastConsolidatedAt": "上次整理（毫秒，0 = 没有）",
+    "drawer": "SELF / USER / EVENT",
+    "now": "现在（毫秒）",
+    "retention": "memoryRetention 1–5，可空（空 = 1.0 系数）",
+    "statusStrength": "可选：只测 nextStatus 时显式给的分量"
+  },
+  "cases": [
+    {
+      "name": "effective-strength-baseline",
+      "why": "当前分量 1、重要度 3、没时间/没被用 → 0.55",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "effectiveStrength": 0.55
+      }
+    },
+    {
+      "name": "effective-strength-freshness-and-usage",
+      "why": "45 天没被用（半衰期 45 天）+ 用满 5 次",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 5,
+        "useCount": 5,
+        "lastUsedAt": 1696112000000,
+        "createdAt": 1696112000000,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "effectiveStrength": 0.8735758882342884
+      }
+    },
+    {
+      "name": "archived-is-zero",
+      "why": "归档的记忆不参与上下文",
+      "input": {
+        "tier": "ARCHIVED",
+        "pinned": false,
+        "importance": 5,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "effectiveStrength": 0.0
+      }
+    },
+    {
+      "name": "pinned-floor",
+      "why": "被钉住的分量不低于 0.55",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": true,
+        "importance": 1,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 0.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "effectiveStrength": 0.55
+      }
+    },
+    {
+      "name": "decay-one-day-event",
+      "why": "一天一小步：0.045",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "decayStep": 0.955
+      }
+    },
+    {
+      "name": "decay-caps-at-14-days",
+      "why": "一次最多补算 14 天",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1691360000000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "decayStep": 0.37
+      }
+    },
+    {
+      "name": "decay-retention-1-fast",
+      "why": "记性 1 → ×1.6",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": 1
+      },
+      "expect": {
+        "decayStep": 0.928,
+        "retentionFactor": 1.6
+      }
+    },
+    {
+      "name": "decay-retention-4-slow",
+      "why": "记性 4 → ×0.75",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": 4
+      },
+      "expect": {
+        "decayStep": 0.96625,
+        "retentionFactor": 0.75
+      }
+    },
+    {
+      "name": "retention-0-clamps-to-1",
+      "why": "越界按 1 处理",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": 0
+      },
+      "expect": {
+        "decayStep": 0.928,
+        "retentionFactor": 1.6
+      }
+    },
+    {
+      "name": "retention-9-clamps-to-5",
+      "why": "越界按 5 处理",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": 9
+      },
+      "expect": {
+        "decayStep": 0.9775,
+        "retentionFactor": 0.5
+      }
+    },
+    {
+      "name": "recent-use-heals",
+      "why": "最近 7 天内被用过会回血",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 1699913600000,
+        "createdAt": 1699913600000,
+        "strength": 0.5,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "decayStep": 0.5192857142857144
+      }
+    },
+    {
+      "name": "drawer-user-decays-slower",
+      "why": "关于对方的事实 ×0.55",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "USER",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "decayStep": 0.97525
+      }
+    },
+    {
+      "name": "drawer-self-decays-middle",
+      "why": "关于他自己 ×0.8",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 1699913600000,
+        "drawer": "SELF",
+        "now": 1700000000000,
+        "retention": null
+      },
+      "expect": {
+        "decayStep": 0.964
+      }
+    },
+    {
+      "name": "active-low-demotes-dormant",
+      "why": "≤0.45 往下一层",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.45
+      },
+      "expect": {
+        "action": {
+          "type": "demote",
+          "to": "DORMANT",
+          "strength": 0.45
+        }
+      }
+    },
+    {
+      "name": "active-above-threshold-keeps",
+      "why": "0.46 还在用",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.46
+      },
+      "expect": {
+        "action": {
+          "type": "keep"
+        }
+      }
+    },
+    {
+      "name": "dormant-very-low-archives",
+      "why": "≤0.20 归档",
+      "input": {
+        "tier": "DORMANT",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.2
+      },
+      "expect": {
+        "action": {
+          "type": "demote",
+          "to": "ARCHIVED",
+          "strength": 0.2
+        }
+      }
+    },
+    {
+      "name": "dormant-recovered-promotes",
+      "why": "≥0.55 回到 ACTIVE",
+      "input": {
+        "tier": "DORMANT",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.6
+      },
+      "expect": {
+        "action": {
+          "type": "promote",
+          "strength": 0.6
+        }
+      }
+    },
+    {
+      "name": "dormant-middle-keeps",
+      "why": "0.50 在归档线与回升线之间，先留着",
+      "input": {
+        "tier": "DORMANT",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.5
+      },
+      "expect": {
+        "action": {
+          "type": "keep"
+        }
+      }
+    },
+    {
+      "name": "dormant-old-and-faint-forgets",
+      "why": "≤0.08 且 200 天没被提起 → 真删",
+      "input": {
+        "tier": "DORMANT",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 1682720000000,
+        "createdAt": 0,
+        "strength": 0.05,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.05
+      },
+      "expect": {
+        "action": {
+          "type": "forget",
+          "reason": "分量只剩 5%，又已经 200.0 天没被提起"
+        }
+      }
+    },
+    {
+      "name": "archived-old-and-faint-forgets",
+      "why": "归档层同样只忘「很旧 + 很低」",
+      "input": {
+        "tier": "ARCHIVED",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 1682720000000,
+        "createdAt": 0,
+        "strength": 0.05,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.05
+      },
+      "expect": {
+        "action": {
+          "type": "forget",
+          "reason": "归档已超过 180 天，分量只剩 5%"
+        }
+      }
+    },
+    {
+      "name": "pinned-never-demotes",
+      "why": "钉住的永远 keep",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": true,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 0,
+        "createdAt": 0,
+        "strength": 1.0,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.0
+      },
+      "expect": {
+        "action": {
+          "type": "keep"
+        }
+      }
+    },
+    {
+      "name": "active-very-low-but-not-old-demotes",
+      "why": "遗忘判断在沉底之后：先沉底，不删",
+      "input": {
+        "tier": "ACTIVE",
+        "pinned": false,
+        "importance": 3,
+        "useCount": 0,
+        "lastUsedAt": 1699913600000,
+        "createdAt": 0,
+        "strength": 0.05,
+        "lastConsolidatedAt": 0,
+        "drawer": "EVENT",
+        "now": 1700000000000,
+        "retention": null,
+        "statusStrength": 0.05
+      },
+      "expect": {
+        "action": {
+          "type": "demote",
+          "to": "DORMANT",
+          "strength": 0.05
+        }
+      }
+    }
+  ]
+}

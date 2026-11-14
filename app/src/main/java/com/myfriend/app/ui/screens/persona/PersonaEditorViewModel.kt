@@ -1,8 +1,10 @@
 package com.myfriend.app.ui.screens.persona
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.PersonaCardRepository
@@ -14,6 +16,7 @@ import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.PersonaDraft
 import com.myfriend.app.domain.PersonaTrait
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,7 +69,8 @@ data class PersonaForm(
                 .filter { it.isNotEmpty() }
                 .distinct()
 
-        fun joinList(items: List<String>): String = items.joinToString("、")
+        /** [separator] 是界面上回显用的分隔符（中英文不同），解析时两种都认。 */
+        fun joinList(items: List<String>, separator: String): String = items.joinToString(separator)
     }
 }
 
@@ -98,7 +102,8 @@ class PersonaEditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val personaRepository: PersonaRepository,
     private val personaCardRepository: PersonaCardRepository,
-    apiConfigRepository: ApiConfigRepository
+    apiConfigRepository: ApiConfigRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val personaId: String? = savedStateHandle.get<String>("personaId")?.takeIf { it.isNotBlank() }
     private val _state = MutableStateFlow(PersonaEditorUiState(personaId = personaId, isNew = personaId == null))
@@ -111,7 +116,7 @@ class PersonaEditorViewModel @Inject constructor(
             if (personaId != null) {
                 val persona = personaRepository.getById(personaId)
                 if (persona == null) {
-                    events.send(PersonaEditorEvent.Message("人格不存在"))
+                    events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_persona_missing)))
                     _state.update { it.copy(loading = false) }
                 } else {
                     val form = PersonaForm(
@@ -123,9 +128,18 @@ class PersonaEditorViewModel @Inject constructor(
                         category = persona.category,
                         defaultApiConfigId = persona.defaultApiConfigId,
                         modelOverride = persona.modelOverride.orEmpty(),
-                        traitsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.traits)),
-                        likesText = PersonaForm.joinList(PersonaProfile.decodeList(persona.likes)),
-                        behaviorsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.behaviors)),
+                        traitsText = PersonaForm.joinList(
+                            PersonaProfile.decodeList(persona.traits),
+                            context.getString(R.string.persona_editor_list_separator)
+                        ),
+                        likesText = PersonaForm.joinList(
+                            PersonaProfile.decodeList(persona.likes),
+                            context.getString(R.string.persona_editor_list_separator)
+                        ),
+                        behaviorsText = PersonaForm.joinList(
+                            PersonaProfile.decodeList(persona.behaviors),
+                            context.getString(R.string.persona_editor_list_separator)
+                        ),
                         backstory = persona.backstory.orEmpty(),
                         quirks = persona.quirks.orEmpty(),
                         proactiveLevel = ProactiveLevel.normalize(persona.proactiveLevel),
@@ -211,11 +225,15 @@ class PersonaEditorViewModel @Inject constructor(
         if (current.saving) return
         val form = current.form
         if (form.name.isBlank()) {
-            viewModelScope.launch { events.send(PersonaEditorEvent.Message("请填写人格名称")) }
+            viewModelScope.launch {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_name_required)))
+            }
             return
         }
         if (form.prompt.isBlank()) {
-            viewModelScope.launch { events.send(PersonaEditorEvent.Message("请写下人格提示词，或从历史版本恢复")) }
+            viewModelScope.launch {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_prompt_required)))
+            }
             return
         }
         viewModelScope.launch {
@@ -247,7 +265,11 @@ class PersonaEditorViewModel @Inject constructor(
             )
             if (result.isFailure) {
                 _state.update { it.copy(saving = false) }
-                events.send(PersonaEditorEvent.Message(result.exceptionOrNull()?.message ?: "保存失败"))
+                events.send(
+                    PersonaEditorEvent.Message(
+                        result.exceptionOrNull()?.message ?: context.getString(R.string.persona_editor_save_failed)
+                    )
+                )
                 return@launch
             }
             val id = result.getOrThrow()
@@ -261,7 +283,11 @@ class PersonaEditorViewModel @Inject constructor(
                     _state.update { it.copy(saving = false) }
                     events.send(
                         PersonaEditorEvent.Message(
-                            "人格已保存，但人格卡写入失败：${cardResult.exceptionOrNull()?.message ?: "未知错误"}"
+                            context.getString(
+                                R.string.persona_editor_card_save_failed,
+                                cardResult.exceptionOrNull()?.message
+                                    ?: context.getString(R.string.persona_editor_unknown_error)
+                            )
                         )
                     )
                     events.send(PersonaEditorEvent.Saved(id))

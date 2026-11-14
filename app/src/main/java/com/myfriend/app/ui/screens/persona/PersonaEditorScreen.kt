@@ -75,6 +75,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -86,6 +88,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.ui.zIndex
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaTrait
@@ -128,7 +131,11 @@ fun PersonaEditorScreen(
             scope.launch {
                 MediaStorage.persistAvatar(context, uri)
                     .onSuccess { viewModel.setAvatarUri(it) }
-                    .onFailure { snackbar.showSnackbar(it.message ?: "头像保存失败") }
+                    .onFailure {
+                        snackbar.showSnackbar(
+                            it.message ?: context.getString(R.string.persona_editor_avatar_save_failed)
+                        )
+                    }
             }
         }
     }
@@ -162,7 +169,8 @@ fun PersonaEditorScreen(
                         .padding(horizontal = 20.dp, vertical = 10.dp)
                 ) {
                     PrimaryButton(
-                        text = if (state.isNew) "创建人格" else "保存更改",
+                        text = if (state.isNew) stringResource(R.string.persona_editor_create)
+                        else stringResource(R.string.persona_editor_save_changes),
                         onClick = viewModel::save,
                         loading = state.saving,
                         enabled = !state.loading
@@ -177,8 +185,9 @@ fun PersonaEditorScreen(
                 .padding(padding)
         ) {
             AppHeader(
-                title = if (state.isNew) "新人格" else "编辑人格",
-                subtitle = if (state.isDefault) "默认人格" else null,
+                title = if (state.isNew) stringResource(R.string.persona_editor_title_new)
+                else stringResource(R.string.persona_editor_title_edit),
+                subtitle = if (state.isDefault) stringResource(R.string.persona_editor_subtitle_default) else null,
                 navigation = { BackNavigation(::requestBack) }
             )
             if (state.loading) {
@@ -208,15 +217,15 @@ fun PersonaEditorScreen(
                     StyledOutlinedField(
                         value = state.form.name,
                         onValueChange = { value -> viewModel.update { it.copy(name = value.take(80)) } },
-                        label = "名字",
-                        placeholder = "它会如何称呼自己"
+                        label = stringResource(R.string.persona_editor_name_label),
+                        placeholder = stringResource(R.string.persona_editor_name_placeholder)
                     )
                     Spacer(Modifier.height(14.dp))
                     StyledOutlinedField(
                         value = state.form.description,
                         onValueChange = { value -> viewModel.update { it.copy(description = value.take(600)) } },
-                        label = "简介",
-                        placeholder = "一句话描述这个人的气质",
+                        label = stringResource(R.string.persona_editor_description_label),
+                        placeholder = stringResource(R.string.persona_editor_description_placeholder),
                         singleLine = false,
                         minLines = 2,
                         maxLines = 4
@@ -231,9 +240,13 @@ fun PersonaEditorScreen(
                         onForm = { transform -> viewModel.update(transform) }
                     )
                     Spacer(Modifier.height(20.dp))
-                    SectionLabel("提示词全文（高级）", trailing = {
+                    SectionLabel(stringResource(R.string.persona_editor_prompt_section), trailing = {
                         Text(
-                            "${state.form.prompt.length} 字符",
+                            pluralStringResource(
+                                R.plurals.persona_editor_prompt_chars,
+                                state.form.prompt.length,
+                                state.form.prompt.length
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -247,7 +260,7 @@ fun PersonaEditorScreen(
                         Column(Modifier.padding(16.dp)) {
                             if (state.form.prompt.isBlank()) {
                                 Text(
-                                    "写下它的性格、说话方式、边界与相处原则。长文本会完整保存，不会被自动缩写或改写。",
+                                    stringResource(R.string.persona_editor_prompt_empty_hint),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -270,11 +283,11 @@ fun PersonaEditorScreen(
                                 ) {
                                     Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
                                     Spacer(Modifier.width(5.dp))
-                                    Text("专注编辑")
+                                    Text(stringResource(R.string.persona_editor_prompt_focus_edit))
                                 }
                                 Spacer(Modifier.weight(1f))
                                 Text(
-                                    "完整原文保存",
+                                    stringResource(R.string.persona_editor_prompt_verbatim),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
@@ -282,7 +295,7 @@ fun PersonaEditorScreen(
                         }
                     }
                     Text(
-                        "修改提示词会产生新版本，并保留上一版。下一轮对话会自动使用新版本。",
+                        stringResource(R.string.persona_editor_prompt_version_note),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 8.dp, start = 4.dp, end = 4.dp)
@@ -296,7 +309,7 @@ fun PersonaEditorScreen(
                         onRemoveTrait = viewModel::removeTrait
                     )
 
-                    SectionLabel("API 与模型")
+                    SectionLabel(stringResource(R.string.persona_editor_api_section))
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surface,
@@ -312,9 +325,14 @@ fun PersonaEditorScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(Modifier.weight(1f)) {
-                                    Text("绑定的 API", style = MaterialTheme.typography.bodyMedium)
                                     Text(
-                                        state.boundConfig?.let { "${it.name} · ${it.model}" } ?: "未绑定（每个会话仍可单独选择）",
+                                        stringResource(R.string.persona_editor_api_bound_label),
+                                        style = MaterialTheme.typography.bodyMedium
+                                    )
+                                    Text(
+                                        state.boundConfig?.let {
+                                            stringResource(R.string.persona_editor_api_bound_value, it.name, it.model)
+                                        } ?: stringResource(R.string.persona_editor_api_unbound_value),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                         maxLines = 1,
@@ -333,16 +351,17 @@ fun PersonaEditorScreen(
                                 StyledOutlinedField(
                                     value = state.form.modelOverride,
                                     onValueChange = { value -> viewModel.update { it.copy(modelOverride = value.take(160)) } },
-                                    label = "模型覆盖（可选）",
-                                    placeholder = state.boundConfig?.model ?: "留空使用 API 配置中的模型",
-                                    supportingText = "人格可以独立使用某个模型 ID，不改变 API 配置的默认模型。"
+                                    label = stringResource(R.string.persona_editor_model_override_label),
+                                    placeholder = state.boundConfig?.model
+                                        ?: stringResource(R.string.persona_editor_model_override_placeholder),
+                                    supportingText = stringResource(R.string.persona_editor_model_override_support)
                                 )
                             }
                         }
                     }
                     if (state.configs.isEmpty()) {
                         TextButton(onClick = onOpenApiConfigs, contentPadding = PaddingValues(horizontal = 4.dp, vertical = 6.dp)) {
-                            Text("还没有 API 配置，去添加一个")
+                            Text(stringResource(R.string.persona_editor_add_api_config))
                         }
                     }
                     Spacer(Modifier.height(12.dp))
@@ -379,9 +398,9 @@ fun PersonaEditorScreen(
 
     if (showDiscardConfirm) {
         ConfirmDialog(
-            title = "放弃未保存的修改？",
-            message = "当前的人格信息与提示词改动尚未保存。",
-            confirmText = "放弃",
+            title = stringResource(R.string.persona_editor_discard_title),
+            message = stringResource(R.string.persona_editor_discard_message),
+            confirmText = stringResource(R.string.persona_editor_discard_confirm),
             destructive = true,
             onConfirm = {
                 showDiscardConfirm = false
@@ -406,9 +425,32 @@ private fun ContactProfileSection(
     form: PersonaForm,
     onForm: ((PersonaForm) -> PersonaForm) -> Unit
 ) {
-    SectionLabel("性格与设定")
+    SectionLabel(stringResource(R.string.persona_editor_profile_section))
+    val listSeparator = stringResource(R.string.persona_editor_list_separator)
+    val traitPresets = listOf(
+        stringResource(R.string.persona_trait_preset_slow_warm),
+        stringResource(R.string.persona_trait_preset_prickly_soft),
+        stringResource(R.string.persona_trait_preset_quiet),
+        stringResource(R.string.persona_trait_preset_sensitive),
+        stringResource(R.string.persona_trait_preset_jokes),
+        stringResource(R.string.persona_trait_preset_stubborn),
+        stringResource(R.string.persona_trait_preset_gentle),
+        stringResource(R.string.persona_trait_preset_direct),
+        stringResource(R.string.persona_trait_preset_clingy),
+        stringResource(R.string.persona_trait_preset_independent)
+    )
+    val likePresets = listOf(
+        stringResource(R.string.persona_likes_preset_night_walks),
+        stringResource(R.string.persona_likes_preset_iced_americano),
+        stringResource(R.string.persona_likes_preset_old_songs),
+        stringResource(R.string.persona_likes_preset_movies),
+        stringResource(R.string.persona_likes_preset_cooking),
+        stringResource(R.string.persona_likes_preset_rainy_days),
+        stringResource(R.string.persona_likes_preset_cats),
+        stringResource(R.string.persona_likes_preset_travel)
+    )
     Text(
-        "这些会拼进系统提示词的「你是谁」一节：性格 / 喜欢 / 习惯 / 过去 / 设定。没填的不会占位。",
+        stringResource(R.string.persona_editor_profile_hint),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 8.dp)
@@ -421,40 +463,40 @@ private fun ContactProfileSection(
     ) {
         Column(Modifier.padding(16.dp)) {
             ProfileListField(
-                label = "性格（最多 6 个，用、分隔）",
-                placeholder = "慢热、嘴硬心软",
+                label = stringResource(R.string.persona_editor_traits_label),
+                placeholder = stringResource(R.string.persona_editor_traits_placeholder),
                 value = form.traitsText,
                 onChange = { value -> onForm { it.copy(traitsText = value.take(120)) } },
-                presets = TRAIT_PRESETS,
+                presets = traitPresets,
                 selected = form.traits,
                 max = 6,
                 onTogglePreset = { trait ->
                     val current = form.traits.toMutableList()
                     if (current.contains(trait)) current.remove(trait) else if (current.size < 6) current.add(trait)
-                    onForm { it.copy(traitsText = PersonaForm.joinList(current)) }
+                    onForm { it.copy(traitsText = PersonaForm.joinList(current, listSeparator)) }
                 }
             )
             Spacer(Modifier.height(12.dp))
             ProfileListField(
-                label = "喜欢的事（最多 8 个，用、分隔）",
-                placeholder = "夜里散步、喝冰美式",
+                label = stringResource(R.string.persona_editor_likes_label),
+                placeholder = stringResource(R.string.persona_editor_likes_placeholder),
                 value = form.likesText,
                 onChange = { value -> onForm { it.copy(likesText = value.take(160)) } },
-                presets = LIKES_PRESETS,
+                presets = likePresets,
                 selected = form.likes,
                 max = 8,
                 onTogglePreset = { item ->
                     val current = form.likes.toMutableList()
                     if (current.contains(item)) current.remove(item) else if (current.size < 8) current.add(item)
-                    onForm { it.copy(likesText = PersonaForm.joinList(current)) }
+                    onForm { it.copy(likesText = PersonaForm.joinList(current, listSeparator)) }
                 }
             )
             Spacer(Modifier.height(12.dp))
             StyledOutlinedField(
                 value = form.behaviorsText,
                 onValueChange = { value -> onForm { it.copy(behaviorsText = value.take(160)) } },
-                label = "行为方式 / 习惯（最多 6 个，用、分隔）",
-                placeholder = "先听完再给建议、不追问",
+                label = stringResource(R.string.persona_editor_behaviors_label),
+                placeholder = stringResource(R.string.persona_editor_behaviors_placeholder),
                 singleLine = false,
                 minLines = 2,
                 maxLines = 3
@@ -463,8 +505,8 @@ private fun ContactProfileSection(
             StyledOutlinedField(
                 value = form.backstory,
                 onValueChange = { value -> onForm { it.copy(backstory = value.take(600)) } },
-                label = "成长经历 / 过去（最多 600 字）",
-                placeholder = "小时候在南方长大，后来一个人搬到北方……",
+                label = stringResource(R.string.persona_editor_backstory_label),
+                placeholder = stringResource(R.string.persona_editor_backstory_placeholder),
                 singleLine = false,
                 minLines = 3,
                 maxLines = 8
@@ -473,8 +515,8 @@ private fun ContactProfileSection(
             StyledOutlinedField(
                 value = form.quirks,
                 onValueChange = { value -> onForm { it.copy(quirks = value.take(300)) } },
-                label = "个人设定：称呼、口头禅、忌讳（最多 300 字）",
-                placeholder = "叫你「阿岚」；不说「加油」；不喜欢被安排",
+                label = stringResource(R.string.persona_editor_quirks_label),
+                placeholder = stringResource(R.string.persona_editor_quirks_placeholder),
                 singleLine = false,
                 minLines = 2,
                 maxLines = 6
@@ -482,15 +524,19 @@ private fun ContactProfileSection(
 
             Spacer(Modifier.height(18.dp))
             ProfileSlider(
-                title = "主动程度",
-                valueText = "${form.proactiveLevel} · ${ProactiveLevel.description(form.proactiveLevel)}",
+                title = stringResource(R.string.persona_editor_proactive_title),
+                valueText = stringResource(
+                    R.string.persona_editor_proactive_value,
+                    form.proactiveLevel,
+                    stringResource(proactiveLevelDescriptionRes(form.proactiveLevel))
+                ),
                 value = form.proactiveLevel.toFloat(),
                 valueRange = 1f..5f,
                 steps = 3,
                 onChange = { raw -> onForm { it.copy(proactiveLevel = raw.roundToInt().coerceIn(1, 5)) } }
             )
             ProfileSlider(
-                title = "记性",
+                title = stringResource(R.string.persona_editor_memory_title),
                 valueText = memoryRetentionText(form.memoryRetention),
                 value = form.memoryRetention.toFloat(),
                 valueRange = 1f..5f,
@@ -498,8 +544,8 @@ private fun ContactProfileSection(
                 onChange = { raw -> onForm { it.copy(memoryRetention = raw.roundToInt().coerceIn(1, 5)) } }
             )
             ProfileSlider(
-                title = "抽记忆频率",
-                valueText = "每 ${form.extractionEvery} 条消息抽一次",
+                title = stringResource(R.string.persona_editor_extraction_title),
+                valueText = stringResource(R.string.persona_editor_extraction_value, form.extractionEvery),
                 value = form.extractionEvery.toFloat(),
                 valueRange = 3f..12f,
                 steps = 8,
@@ -508,9 +554,13 @@ private fun ContactProfileSection(
 
             Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("他会不会主动睡觉", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        if (form.sleepEnabled) "到点会睡，睡着时消息留着；叫得够多会醒。" else "他不睡觉，任何时间都会回。",
+                        stringResource(R.string.persona_editor_sleep_title),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        if (form.sleepEnabled) stringResource(R.string.persona_editor_sleep_on)
+                        else stringResource(R.string.persona_editor_sleep_off),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -530,21 +580,25 @@ private fun ContactProfileSection(
                     StyledOutlinedField(
                         value = form.sleepAt,
                         onValueChange = { value -> onForm { it.copy(sleepAt = value.take(5)) } },
-                        label = "几点睡",
+                        label = stringResource(R.string.persona_editor_sleep_at_label),
                         placeholder = "23:30",
                         modifier = Modifier.weight(1f)
                     )
                     StyledOutlinedField(
                         value = form.wakeAt,
                         onValueChange = { value -> onForm { it.copy(wakeAt = value.take(5)) } },
-                        label = "几点醒",
+                        label = stringResource(R.string.persona_editor_wake_at_label),
                         placeholder = "08:00",
                         modifier = Modifier.weight(1f)
                     )
                 }
                 ProfileSlider(
-                    title = "睡眠唤醒阈值",
-                    valueText = "连着 ${form.wakeThreshold} 条消息会把他叫醒",
+                    title = stringResource(R.string.persona_editor_wake_threshold_title),
+                    valueText = pluralStringResource(
+                        R.plurals.persona_editor_wake_threshold_value,
+                        form.wakeThreshold,
+                        form.wakeThreshold
+                    ),
                     value = form.wakeThreshold.toFloat(),
                     valueRange = 1f..20f,
                     steps = 18,
@@ -622,16 +676,32 @@ private fun ProfileSlider(
     }
 }
 
+@Composable
 private fun memoryRetentionText(level: Int): String = when (level.coerceIn(1, 5)) {
-    1 -> "1 · 忘得快，只记得最近的事"
-    2 -> "2 · 记得住大概"
-    3 -> "3 · 普通的记性"
-    4 -> "4 · 记得很细"
-    else -> "5 · 什么都记得"
+    1 -> stringResource(R.string.persona_editor_memory_level_1)
+    2 -> stringResource(R.string.persona_editor_memory_level_2)
+    3 -> stringResource(R.string.persona_editor_memory_level_3)
+    4 -> stringResource(R.string.persona_editor_memory_level_4)
+    else -> stringResource(R.string.persona_editor_memory_level_5)
 }
 
-private val TRAIT_PRESETS = listOf("慢热", "嘴硬心软", "话少", "敏感", "爱开玩笑", "固执", "温柔", "直接", "黏人", "独立")
-private val LIKES_PRESETS = listOf("夜里散步", "喝冰美式", "听老歌", "看电影", "做饭", "下雨天", "猫", "旅行")
+/**
+ * 分类候选。这些是**落库值**（和库里的旧数据对得上），所以常量保持中文不动，
+ * 界面上显示的那一份走 [personaCategoryLabel] 映射。
+ */
+private val CATEGORY_SUGGESTIONS = listOf("日常聊天", "角色扮演", "学习", "编程", "创意写作", "工作")
+
+/** 已知的分类落库值映射成本地化文案；用户自己敲的分类原样显示。 */
+@Composable
+internal fun personaCategoryLabel(value: String): String = when (value) {
+    "日常聊天" -> stringResource(R.string.persona_category_daily_chat)
+    "角色扮演" -> stringResource(R.string.persona_category_roleplay)
+    "学习" -> stringResource(R.string.persona_category_study)
+    "编程" -> stringResource(R.string.persona_category_coding)
+    "创意写作" -> stringResource(R.string.persona_category_writing)
+    "工作" -> stringResource(R.string.persona_category_work)
+    else -> value
+}
 
 @Composable
 private fun AvatarSection(
@@ -648,7 +718,7 @@ private fun AvatarSection(
             PersonaAvatar(
                 state.form.avatarUri,
                 state.form.avatarSeed,
-                state.form.name.ifBlank { "新" },
+                state.form.name.ifBlank { stringResource(R.string.persona_editor_avatar_fallback_name) },
                 size = 92.dp,
                 ringColor = LocalAccentColor.current.copy(alpha = 0.45f)
             )
@@ -661,18 +731,29 @@ private fun AvatarSection(
                     .clickable(onClick = onPick),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Outlined.PhotoCamera, contentDescription = "更换头像", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurface)
+                Icon(
+                    Icons.Outlined.PhotoCamera,
+                    contentDescription = stringResource(R.string.persona_editor_avatar_change_cd),
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
             }
         }
         Spacer(Modifier.height(10.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             TextButton(onClick = onPick, contentPadding = PaddingValues(horizontal = 8.dp)) {
-                Text(if (state.form.avatarUri == null) "选一张" else "换一张")
+                Text(
+                    if (state.form.avatarUri == null) stringResource(R.string.persona_editor_avatar_pick)
+                    else stringResource(R.string.persona_editor_avatar_replace)
+                )
             }
             if (state.form.avatarUri != null) {
                 TextButton(onClick = onRemove, contentPadding = PaddingValues(horizontal = 8.dp)) {
                     // 「恢复默认」而不是「移除」：默认不是空白，是这个人的色块 + 首字。
-                    Text("恢复默认", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        stringResource(R.string.persona_editor_avatar_reset),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -707,21 +788,20 @@ private fun AvatarSection(
 
 @Composable
 private fun CategorySection(category: String, onCategory: (String) -> Unit) {
-    val suggestions = listOf("日常聊天", "角色扮演", "学习", "编程", "创意写作", "工作")
-    SectionLabel("分类")
+    SectionLabel(stringResource(R.string.persona_editor_category_section))
     Row(
         Modifier.horizontalScroll(rememberScrollState()),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        suggestions.forEach { item ->
-            TextPill(item, selected = category == item, onClick = { onCategory(item) })
+        CATEGORY_SUGGESTIONS.forEach { item ->
+            TextPill(personaCategoryLabel(item), selected = category == item, onClick = { onCategory(item) })
         }
     }
     Spacer(Modifier.height(10.dp))
     StyledOutlinedField(
         value = category,
         onValueChange = onCategory,
-        label = "自定义分类",
+        label = stringResource(R.string.persona_editor_category_custom_label),
         singleLine = true
     )
 }
@@ -764,7 +844,8 @@ private fun CommaListField(
     label: String,
     placeholder: String
 ) {
-    var text by rememberSaveable { mutableStateOf(values.joinToString("，")) }
+    val separator = stringResource(R.string.persona_editor_list_separator)
+    var text by rememberSaveable { mutableStateOf(values.joinToString(separator)) }
     StyledOutlinedField(
         value = text,
         onValueChange = { raw ->
@@ -786,17 +867,18 @@ private fun PersonaCardSection(
 ) {
     var expanded by rememberSaveable { mutableStateOf(!card.isEmpty()) }
     SectionLabel(
-        "人格卡",
+        stringResource(R.string.persona_editor_card_section),
         trailing = {
             Text(
-                if (card.isEmpty()) "可选" else "已填写",
+                if (card.isEmpty()) stringResource(R.string.persona_editor_card_status_optional)
+                else stringResource(R.string.persona_editor_card_status_filled),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
     )
     Text(
-        "人格卡会被拆成几段喂给他：稳定的说话策略放进系统提示，其余按字数预算进入当前对话。留空就用提示词原文。",
+        stringResource(R.string.persona_editor_card_hint),
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(start = 4.dp, end = 4.dp, bottom = 8.dp)
@@ -819,9 +901,12 @@ private fun PersonaCardSection(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text("结构化设定", style = MaterialTheme.typography.bodyMedium)
                     Text(
-                        "身份 · 声音 · 性格 · 在意的事 · 边界 · 生活 · 你们之间",
+                        stringResource(R.string.persona_editor_card_structured_title),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        stringResource(R.string.persona_editor_card_structured_subtitle),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -830,7 +915,8 @@ private fun PersonaCardSection(
                 }
                 Icon(
                     if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "收起人格卡" else "展开人格卡",
+                    contentDescription = if (expanded) stringResource(R.string.persona_editor_card_collapse_cd)
+                    else stringResource(R.string.persona_editor_card_expand_cd),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 6.dp).size(18.dp)
                 )
@@ -844,14 +930,14 @@ private fun PersonaCardSection(
                 )
                 Column(Modifier.padding(start = 16.dp, end = 16.dp, top = 0.dp, bottom = 16.dp)) {
                     // ---------------------------------------------------- 身份
-                    CardGroupLabel("身份")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_identity))
                     StyledOutlinedField(
                         value = card.identity.name,
                         onValueChange = { value ->
                             onCard { it.copy(identity = it.identity.copy(name = value.take(40))) }
                         },
-                        label = "名字",
-                        placeholder = "卡片里它自己的名字"
+                        label = stringResource(R.string.persona_editor_name_label),
+                        placeholder = stringResource(R.string.persona_editor_card_name_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -859,8 +945,8 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(identity = it.identity.copy(age = value.take(40))) }
                         },
-                        label = "年龄感",
-                        placeholder = "例如：二十多岁"
+                        label = stringResource(R.string.persona_editor_age_label),
+                        placeholder = stringResource(R.string.persona_editor_age_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -868,8 +954,8 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(identity = it.identity.copy(role = value.take(80))) }
                         },
-                        label = "身份 / 职业",
-                        placeholder = "例如：开旧书店的人"
+                        label = stringResource(R.string.persona_editor_role_label),
+                        placeholder = stringResource(R.string.persona_editor_role_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -877,19 +963,19 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(identity = it.identity.copy(relation = value.take(40))) }
                         },
-                        label = "和你的关系",
-                        placeholder = "例如：认识很多年的朋友"
+                        label = stringResource(R.string.persona_editor_relation_label),
+                        placeholder = stringResource(R.string.persona_editor_relation_placeholder)
                     )
 
                     // ---------------------------------------------------- 声音
-                    CardGroupLabel("声音")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_voice))
                     StyledOutlinedField(
                         value = card.voice.pace,
                         onValueChange = { value ->
                             onCard { it.copy(voice = it.voice.copy(pace = value.take(240))) }
                         },
-                        label = "语速",
-                        placeholder = "例如：慢，偶尔停下来想想"
+                        label = stringResource(R.string.persona_editor_pace_label),
+                        placeholder = stringResource(R.string.persona_editor_pace_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -897,8 +983,8 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(voice = it.voice.copy(sentence = value.take(240))) }
                         },
-                        label = "句子长度",
-                        placeholder = "例如：短句，一次说一两句"
+                        label = stringResource(R.string.persona_editor_sentence_label),
+                        placeholder = stringResource(R.string.persona_editor_sentence_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     CommaListField(
@@ -906,8 +992,8 @@ private fun PersonaCardSection(
                         onValues = { list ->
                             onCard { it.copy(voice = it.voice.copy(catchphrases = list)) }
                         },
-                        label = "口头禅（逗号分隔）",
-                        placeholder = "例如：嗯，那就这样"
+                        label = stringResource(R.string.persona_editor_catchphrases_label),
+                        placeholder = stringResource(R.string.persona_editor_catchphrases_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -915,8 +1001,8 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(voice = it.voice.copy(address = value.take(40))) }
                         },
-                        label = "怎么称呼你",
-                        placeholder = "例如：喊你名字的后两个字"
+                        label = stringResource(R.string.persona_editor_address_label),
+                        placeholder = stringResource(R.string.persona_editor_address_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -924,15 +1010,15 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(voice = it.voice.copy(quirks = value.take(240))) }
                         },
-                        label = "语气小习惯",
-                        placeholder = "例如：少用感叹号，爱用省略号"
+                        label = stringResource(R.string.persona_editor_voice_quirks_label),
+                        placeholder = stringResource(R.string.persona_editor_voice_quirks_placeholder)
                     )
 
                     // ---------------------------------------------------- 性格
-                    CardGroupLabel("性格特征")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_traits))
                     if (card.traits.isEmpty()) {
                         Text(
-                            "还没有性格标签。添加后可以单独调每个特质的强度。",
+                            stringResource(R.string.persona_editor_traits_empty),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(start = 2.dp, bottom = 2.dp)
@@ -950,34 +1036,34 @@ private fun PersonaCardSection(
                         onClick = onAddTrait,
                         contentPadding = PaddingValues(horizontal = 2.dp)
                     ) {
-                        Text("添加一条")
+                        Text(stringResource(R.string.persona_editor_trait_add))
                     }
 
                     // ---------------------------------------------------- 价值观 / 边界
-                    CardGroupLabel("价值观")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_values))
                     CommaListField(
                         values = card.values,
                         onValues = { list -> onCard { it.copy(values = list) } },
-                        label = "价值观（逗号分隔）",
-                        placeholder = "例如：真诚，不敷衍"
+                        label = stringResource(R.string.persona_editor_values_label),
+                        placeholder = stringResource(R.string.persona_editor_values_placeholder)
                     )
-                    CardGroupLabel("边界")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_boundaries))
                     CommaListField(
                         values = card.boundaries,
                         onValues = { list -> onCard { it.copy(boundaries = list) } },
-                        label = "边界（逗号分隔）",
-                        placeholder = "例如：不评判你的选择，不假装记得没说过的事"
+                        label = stringResource(R.string.persona_editor_boundaries_label),
+                        placeholder = stringResource(R.string.persona_editor_boundaries_placeholder)
                     )
 
                     // ---------------------------------------------------- 生活
-                    CardGroupLabel("生活")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_life))
                     StyledOutlinedField(
                         value = card.life.schedule,
                         onValueChange = { value ->
                             onCard { it.copy(life = it.life.copy(schedule = value.take(240))) }
                         },
-                        label = "作息",
-                        placeholder = "例如：凌晨两点睡，中午起"
+                        label = stringResource(R.string.persona_editor_schedule_label),
+                        placeholder = stringResource(R.string.persona_editor_schedule_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -985,8 +1071,8 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(life = it.life.copy(doing = value.take(240))) }
                         },
-                        label = "最近在忙",
-                        placeholder = "例如：把店里的旧书重新分类"
+                        label = stringResource(R.string.persona_editor_doing_label),
+                        placeholder = stringResource(R.string.persona_editor_doing_placeholder)
                     )
                     Spacer(Modifier.height(10.dp))
                     StyledOutlinedField(
@@ -994,21 +1080,21 @@ private fun PersonaCardSection(
                         onValueChange = { value ->
                             onCard { it.copy(life = it.life.copy(caresAbout = value.take(240))) }
                         },
-                        label = "在意的事",
-                        placeholder = "例如：你最近睡得好不好"
+                        label = stringResource(R.string.persona_editor_cares_label),
+                        placeholder = stringResource(R.string.persona_editor_cares_placeholder)
                     )
 
                     // ---------------------------------------------------- 你们之间
-                    CardGroupLabel("你们之间")
+                    CardGroupLabel(stringResource(R.string.persona_editor_group_bond))
                     StyledOutlinedField(
                         value = card.bond,
                         onValueChange = { value -> onCard { it.copy(bond = value.take(2000)) } },
-                        label = "对你的认知与变化",
-                        placeholder = "它怎么理解你、这段关系里发生过什么、现在有什么不一样",
+                        label = stringResource(R.string.persona_editor_bond_label),
+                        placeholder = stringResource(R.string.persona_editor_bond_placeholder),
                         singleLine = false,
                         minLines = 3,
                         maxLines = 6,
-                        supportingText = "他自己想通了什么会直接写在这里，改动都有版本可回滚。"
+                        supportingText = stringResource(R.string.persona_editor_bond_support)
                     )
                 }
             }
@@ -1027,14 +1113,14 @@ private fun TraitRow(
             StyledOutlinedField(
                 value = trait.name,
                 onValueChange = { value -> onChange(trait.copy(name = value.take(40))) },
-                label = "特质",
-                placeholder = "例如：嘴硬心软",
+                label = stringResource(R.string.persona_editor_trait_name_label),
+                placeholder = stringResource(R.string.persona_editor_trait_name_placeholder),
                 modifier = Modifier.weight(1f)
             )
             IconButton(onClick = onRemove) {
                 Icon(
                     Icons.Outlined.Close,
-                    contentDescription = "删除这条性格",
+                    contentDescription = stringResource(R.string.persona_editor_trait_delete_cd),
                     modifier = Modifier.size(18.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -1045,7 +1131,7 @@ private fun TraitRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                "强度",
+                stringResource(R.string.persona_editor_trait_strength),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1080,7 +1166,10 @@ private fun ApiPickerSheet(
         dragHandle = { BottomSheetHandle() }
     ) {
         Column(Modifier.padding(bottom = 28.dp)) {
-            BottomSheetTitle("绑定 API 配置", "绑定后，他的那一段会话会默认使用它")
+            BottomSheetTitle(
+                stringResource(R.string.persona_editor_api_sheet_title),
+                stringResource(R.string.persona_editor_api_sheet_subtitle)
+            )
             Spacer(Modifier.height(8.dp))
             Row(
                 Modifier
@@ -1091,7 +1180,7 @@ private fun ApiPickerSheet(
             ) {
                 Icon(Icons.Outlined.RemoveCircleOutline, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.width(12.dp))
-                Text("不绑定", style = MaterialTheme.typography.bodyLarge)
+                Text(stringResource(R.string.persona_editor_api_none), style = MaterialTheme.typography.bodyLarge)
                 Spacer(Modifier.weight(1f))
                 if (selectedId == null) Icon(Icons.Outlined.Check, contentDescription = null, tint = LocalAccentColor.current)
             }
@@ -1132,6 +1221,7 @@ private fun PromptFullScreenEditor(
         mutableStateOf(TextFieldValue(initialValue, TextRange(0)))
     }
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var notice by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(notice) {
         if (notice != null) {
@@ -1155,17 +1245,26 @@ private fun PromptFullScreenEditor(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(onClick = onDismiss) {
-                        Icon(Icons.Outlined.Close, contentDescription = "取消")
+                        Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.persona_editor_cancel))
                     }
                     Column(Modifier.weight(1f)) {
-                        Text("人格提示词", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${value.text.length} 字符 · 原文完整保存",
+                            stringResource(R.string.persona_editor_prompt_screen_title),
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                        Text(
+                            pluralStringResource(
+                                R.plurals.persona_editor_prompt_screen_meta,
+                                value.text.length,
+                                value.text.length
+                            ),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    TextButton(onClick = { onApply(value.text) }) { Text("完成") }
+                    TextButton(onClick = { onApply(value.text) }) {
+                        Text(stringResource(R.string.persona_editor_done))
+                    }
                 }
                 Row(
                     Modifier
@@ -1176,33 +1275,33 @@ private fun PromptFullScreenEditor(
                 ) {
                     TextButton(onClick = {
                         clipboard.setText(androidx.compose.ui.text.AnnotatedString(value.text))
-                        notice = "已复制全文"
+                        notice = context.getString(R.string.persona_editor_copied_notice)
                     }) {
                         Icon(Icons.Outlined.ContentCopy, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text("复制全文")
+                        Text(stringResource(R.string.persona_editor_copy_all))
                     }
                     TextButton(onClick = {
                         val pasted = clipboard.getText()?.text.orEmpty()
                         if (pasted.isNotBlank()) {
                             val combined = if (value.text.isBlank()) pasted else value.text + "\n" + pasted
                             value = TextFieldValue(combined, TextRange(combined.length))
-                            notice = "已粘贴到末尾"
+                            notice = context.getString(R.string.persona_editor_pasted_notice)
                         }
                     }) {
                         Icon(Icons.Outlined.ContentPaste, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text("粘贴")
+                        Text(stringResource(R.string.persona_editor_paste))
                     }
                     TextButton(onClick = {
                         if (savedValue.isNotBlank()) {
                             value = TextFieldValue(savedValue, TextRange(savedValue.length))
-                            notice = "已恢复上次保存的版本"
+                            notice = context.getString(R.string.persona_editor_restored_notice)
                         }
                     }) {
                         Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(15.dp))
                         Spacer(Modifier.width(5.dp))
-                        Text("恢复上次版本")
+                        Text(stringResource(R.string.persona_editor_restore_last))
                     }
                 }
                 Box(
@@ -1217,7 +1316,7 @@ private fun PromptFullScreenEditor(
                 ) {
                     if (value.text.isEmpty()) {
                         Text(
-                            "在这里写下完整人格设定…\n\n可以包含身份、性格、说话方式、价值观、边界与相处原则。不会自动截断。",
+                            stringResource(R.string.persona_editor_prompt_editor_placeholder),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
                         )
@@ -1256,7 +1355,12 @@ private fun PromptFullScreenEditor(
                         color = MaterialTheme.colorScheme.surfaceVariant,
                         modifier = Modifier.weight(1f).height(48.dp)
                     ) {
-                        Box(contentAlignment = Alignment.Center) { Text("取消", style = MaterialTheme.typography.labelLarge) }
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(
+                                stringResource(R.string.persona_editor_cancel),
+                                style = MaterialTheme.typography.labelLarge
+                            )
+                        }
                     }
                     Surface(
                         onClick = { onApply(value.text) },
@@ -1265,7 +1369,11 @@ private fun PromptFullScreenEditor(
                         modifier = Modifier.weight(1f).height(48.dp)
                     ) {
                         Box(contentAlignment = Alignment.Center) {
-                            Text("保存到草稿", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onPrimary)
+                            Text(
+                                stringResource(R.string.persona_editor_save_draft),
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.onPrimary
+                            )
                         }
                     }
                 }

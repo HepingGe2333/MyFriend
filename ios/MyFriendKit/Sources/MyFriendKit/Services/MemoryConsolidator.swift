@@ -144,7 +144,7 @@ public final class MemoryConsolidator {
             return ConsolidationResult(
                 personaId: personaId,
                 status: .failed,
-                summary: String("整理记忆时出错了：\(error.localizedDescription)".prefix(120)),
+                summary: String(String(format: String(localized: "整理记忆时出错了：%@"), error.localizedDescription).prefix(120)),
                 at: at
             )
         }
@@ -191,7 +191,7 @@ public final class MemoryConsolidator {
             return ConsolidationResult(
                 personaId: persona.id,
                 status: .failed,
-                summary: String("整理记忆时出错了：\(error.localizedDescription)".prefix(120)),
+                summary: String(String(format: String(localized: "整理记忆时出错了：%@"), error.localizedDescription).prefix(120)),
                 at: now,
                 modelName: model
             )

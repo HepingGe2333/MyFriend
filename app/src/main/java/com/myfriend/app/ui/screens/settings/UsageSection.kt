@@ -13,12 +13,14 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.integerResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.myfriend.app.R
 import com.myfriend.app.data.repo.KindUsage
 import com.myfriend.app.data.repo.SessionUsage
+import com.myfriend.app.domain.UsageKind
 import com.myfriend.app.data.repo.UsageTotals
 import com.myfriend.app.ui.components.SectionLabel
 import com.myfriend.app.ui.components.SettingCard
@@ -91,7 +93,7 @@ private fun KindUsageLine(bucket: KindUsage) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            bucket.label,
+            usageKindLabel(bucket.kind),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
@@ -113,7 +115,7 @@ private fun SessionUsageLine(item: SessionUsage) {
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Text(
-            item.label,
+            sessionLabel(item),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f)
@@ -144,13 +146,50 @@ private fun usageDetail(totals: UsageTotals): String {
     )
 }
 
-/** 大数字说人话：12345 → 1.2 万。 */
+/**
+ * 大数字说人话，单位跟着语言走：中文 12345 → 1.2 万，英文 → 12.3k。
+ *
+ * 除数也放在资源里（`usage_tokens_compact_divisor`），不在这里写死 10000：
+ * 中文习惯按万，英语习惯按千，换个说法不用改代码。
+ */
+/**
+ * 「按用途」那一列：用途是 [UsageKind] 里的稳定值，说法在资源里。
+ *
+ * 不用 [KindUsage.label]：那是给日志和旧调用方的一句中文，界面要能跟着 App 语言走。
+ */
+@Composable
+private fun usageKindLabel(kind: String): String = stringResource(
+    when (kind) {
+        UsageKind.CHAT -> R.string.usage_kind_chat
+        UsageKind.CONSOLIDATION -> R.string.usage_kind_consolidation
+        UsageKind.SCORING -> R.string.usage_kind_scoring
+        UsageKind.AGENT -> R.string.usage_kind_agent
+        UsageKind.RECALL -> R.string.usage_kind_recall
+        UsageKind.EXTRACTION -> R.string.usage_kind_extraction
+        UsageKind.RECONSOLIDATION -> R.string.usage_kind_reconsolidation
+        UsageKind.HISTORY -> R.string.usage_kind_history
+        else -> R.string.usage_kind_unknown
+    }
+)
+
+/** 「按人」那一列：有名字就写名字，没名字（人格删了 / 老数据）说一句人话。 */
+@Composable
+private fun sessionLabel(item: SessionUsage): String = when {
+    item.sessionId.isNullOrBlank() -> stringResource(R.string.usage_session_other)
+    item.nameless -> stringResource(R.string.usage_session_unknown)
+    else -> item.label
+}
+
 @Composable
 private fun formatTokens(value: Long): String = when {
     value <= 0L -> "0"
     value < 10_000L -> value.toString()
-    else -> stringResource(
-        R.string.usage_tokens_ten_thousand,
-        String.format(Locale.US, "%.1f", value / 10_000.0).trimEnd('0').trimEnd('.')
-    )
+    else -> {
+        val divisor = integerResource(R.integer.usage_tokens_compact_divisor).coerceAtLeast(1)
+        val scaled = value.toDouble() / divisor
+        stringResource(
+            R.string.usage_tokens_ten_thousand,
+            String.format(Locale.getDefault(), "%.1f", scaled).trimEnd('0').trimEnd('.')
+        )
+    }
 }

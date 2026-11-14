@@ -899,7 +899,7 @@ public enum PersonaCardPrompt {
 /// 坏 JSON 返回原卡，保证打补丁失败不会破坏已有的人设。
 public enum PersonaCardPatch {
 
-    private static let fallbackSummary = "调整了人设"
+    private static let fallbackSummary = String(localized: "调整了人设")
     private static let summaryMax = 60
 
     /// 把 JSON 补丁应用到人设卡上。坏 JSON / 非对象一律返回原卡。
@@ -974,40 +974,46 @@ public enum PersonaCardPatch {
     public static func summarize(_ patchJson: String) -> String {
         guard let root = jsonObject(patchJson) else { return fallbackSummary }
         var parts: [String] = []
+        // 摘要里的固定词都跟随界面语言；用户填的标签原样保留。
+        let itemSeparator = String(localized: "、")
 
         if let obj = objectOrNil(root, "identity") {
             let label: String?
             if textOrNil(obj, "name") != nil {
-                label = "名字"
+                label = String(localized: "名字")
             } else if textOrNil(obj, "role") != nil {
-                label = "身份"
+                label = String(localized: "身份")
             } else if textOrNil(obj, "age") != nil {
-                label = "年龄感"
+                label = String(localized: "年龄感")
             } else if textOrNil(obj, "relation") != nil {
-                label = "关系"
+                label = String(localized: "关系")
             } else {
                 label = nil
             }
-            if let label { parts.append("身份·\(label)") }
+            if let label {
+                parts.append(String(format: String(localized: "身份·%@"), label))
+            }
         }
 
         if let obj = objectOrNil(root, "voice") {
             // 只挑一个最能代表这次改动的点，保持摘要是一行。
             let label: String?
             if textOrNil(obj, "address") != nil {
-                label = "称呼"
+                label = String(localized: "称呼")
             } else if textOrNil(obj, "pace") != nil {
-                label = "语速"
+                label = String(localized: "语速")
             } else if stringListOrNil(obj, "catchphrases") != nil {
-                label = "口头禅"
+                label = String(localized: "口头禅")
             } else if textOrNil(obj, "sentence") != nil {
-                label = "句子长短"
+                label = String(localized: "句子长短")
             } else if textOrNil(obj, "quirks") != nil {
-                label = "小习惯"
+                label = String(localized: "小习惯")
             } else {
                 label = nil
             }
-            if let label { parts.append("说话习惯·\(label)") }
+            if let label {
+                parts.append(String(format: String(localized: "说话习惯·%@"), label))
+            }
         }
 
         if let array = arrayOrNil(root, "traits") {
@@ -1016,17 +1022,20 @@ public enum PersonaCardPatch {
                 return textOrNil(obj, "name")
             }
             if !names.isEmpty {
-                parts.append("性格·" + names.prefix(3).joined(separator: "、"))
+                parts.append(String(
+                    format: String(localized: "性格·%@"),
+                    names.prefix(3).joined(separator: itemSeparator)
+                ))
             }
         }
 
-        if stringListOrNil(root, "values") != nil { parts.append("在意的事") }
-        if stringListOrNil(root, "boundaries") != nil { parts.append("边界") }
-        if objectOrNil(root, "life") != nil { parts.append("生活") }
-        if textOrNil(root, "bond") != nil { parts.append("你们之间") }
+        if stringListOrNil(root, "values") != nil { parts.append(String(localized: "在意的事")) }
+        if stringListOrNil(root, "boundaries") != nil { parts.append(String(localized: "边界")) }
+        if objectOrNil(root, "life") != nil { parts.append(String(localized: "生活")) }
+        if textOrNil(root, "bond") != nil { parts.append(String(localized: "你们之间")) }
 
         if parts.isEmpty { return fallbackSummary }
-        let summary = parts.joined(separator: "、")
+        let summary = parts.joined(separator: itemSeparator)
         if summary.count > summaryMax {
             return String(summary.prefix(summaryMax - 1)) + "…"
         }

@@ -113,6 +113,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
@@ -132,6 +133,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
+import com.myfriend.app.R
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MessageEntity
@@ -166,7 +168,6 @@ import com.myfriend.app.ui.theme.LocalAnimationsEnabled
 import com.myfriend.app.ui.theme.LocalAppDark
 import com.myfriend.app.util.dayLabel
 import com.myfriend.app.util.formatClock
-import com.myfriend.app.util.formatFullDateTime
 import com.myfriend.app.util.isSameDay
 import com.myfriend.app.data.repo.ProactiveProtocol
 import kotlinx.coroutines.delay
@@ -228,14 +229,14 @@ fun ChatScreen(
             runCatching {
                 context.contentResolver.openOutputStream(uri)?.use { stream ->
                     stream.write(file.content.toByteArray(Charsets.UTF_8))
-                } ?: error("无法写入文件")
+                } ?: error(context.getString(R.string.chat_export_error_unwritable))
             }.onSuccess {
                 coroutineScope.launch {
-                    snackbarHostState.showSnackbar("对话已导出", duration = SnackbarDuration.Short)
+                    snackbarHostState.showSnackbar(context.getString(R.string.chat_export_success), duration = SnackbarDuration.Short)
                 }
             }.onFailure {
                 coroutineScope.launch {
-                    snackbarHostState.showSnackbar("导出失败：${it.message}", duration = SnackbarDuration.Long)
+                    snackbarHostState.showSnackbar(context.getString(R.string.chat_export_failed_reason, it.message.orEmpty()), duration = SnackbarDuration.Long)
                 }
             }
         }
@@ -351,19 +352,19 @@ fun ChatScreen(
                 .padding(top = 54.dp, end = 12.dp)
                 .align(Alignment.TopEnd)
         ) {
-            DropdownItem("切换人格") {
+            DropdownItem(stringResource(R.string.chat_menu_switch_persona)) {
                 showMenu = false
                 viewModel.openPersonaPicker()
             }
-            DropdownItem("清空上下文") {
+            DropdownItem(stringResource(R.string.chat_clear_context_menu)) {
                 showMenu = false
                 showClearConfirm = true
             }
-            DropdownItem("导出对话") {
+            DropdownItem(stringResource(R.string.chat_menu_export)) {
                 showMenu = false
                 viewModel.exportChat()
             }
-            DropdownItem("删除对话", destructive = true) {
+            DropdownItem(stringResource(R.string.chat_menu_delete), destructive = true) {
                 showMenu = false
                 showDeleteConfirm = true
             }
@@ -428,7 +429,7 @@ fun ChatScreen(
             onCopy = {
                 clipboard.setText(AnnotatedString(message.content))
                 selectedMessage = null
-                coroutineScope.launch { snackbarHostState.showSnackbar("已复制") }
+                coroutineScope.launch { snackbarHostState.showSnackbar(context.getString(R.string.chat_copied)) }
             },
             onEdit = {
                 selectedMessage = null
@@ -451,12 +452,12 @@ fun ChatScreen(
             onDismissRequest = { editMessage = null },
             shape = RoundedCornerShape(26.dp),
             containerColor = MaterialTheme.colorScheme.surface,
-            title = { Text("编辑消息") },
+            title = { Text(stringResource(R.string.chat_edit_title)) },
             text = {
                 StyledOutlinedField(
                     value = value,
                     onValueChange = { value = it },
-                    label = "你的消息",
+                    label = stringResource(R.string.chat_your_message),
                     singleLine = false,
                     minLines = 3,
                     maxLines = 10
@@ -466,17 +467,17 @@ fun ChatScreen(
                 TextButton(onClick = {
                     viewModel.editUserMessage(message.id, value)
                     editMessage = null
-                }, enabled = value.isNotBlank()) { Text("保存并重新生成") }
+                }, enabled = value.isNotBlank()) { Text(stringResource(R.string.chat_edit_save)) }
             },
-            dismissButton = { TextButton(onClick = { editMessage = null }) { Text("取消") } }
+            dismissButton = { TextButton(onClick = { editMessage = null }) { Text(stringResource(R.string.chat_cancel)) } }
         )
     }
 
     deleteMessage?.let { message ->
         ConfirmDialog(
-            title = "删除这条消息？",
-            message = "删除后将重新计算对话摘要，此操作无法撤销。",
-            confirmText = "删除",
+            title = stringResource(R.string.chat_delete_message_title),
+            message = stringResource(R.string.chat_delete_message_body),
+            confirmText = stringResource(R.string.chat_delete),
             destructive = true,
             onConfirm = {
                 viewModel.deleteMessage(message.id)
@@ -488,9 +489,9 @@ fun ChatScreen(
 
     if (showClearConfirm) {
         ConfirmDialog(
-            title = "清空上下文？",
-            message = "这段对话的所有消息将被删除。人格设定与长期记忆会保留。",
-            confirmText = "清空",
+            title = stringResource(R.string.chat_clear_context_title),
+            message = stringResource(R.string.chat_clear_context_body),
+            confirmText = stringResource(R.string.chat_clear_context_action),
             destructive = true,
             onConfirm = {
                 showClearConfirm = false
@@ -506,9 +507,9 @@ fun ChatScreen(
 
     if (showDeleteConfirm) {
         ConfirmDialog(
-            title = "删除整段对话？",
-            message = "所有聊天消息将被永久删除，此操作无法撤销。",
-            confirmText = "删除",
+            title = stringResource(R.string.chat_delete_conversation_title),
+            message = stringResource(R.string.chat_delete_conversation_body),
+            confirmText = stringResource(R.string.chat_delete),
             destructive = true,
             onConfirm = {
                 showDeleteConfirm = false
@@ -622,7 +623,7 @@ private fun ChatTopBar(
         ) {
             CircleIconButton(
                 icon = Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "返回",
+                contentDescription = stringResource(R.string.chat_back),
                 onClick = onBack,
                 modifier = Modifier.size(40.dp)
             )
@@ -679,12 +680,12 @@ private fun ChatTopBar(
                         }
                     }
                 } else {
-                    Text("对话", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.chat_title), style = MaterialTheme.typography.titleMedium)
                 }
             }
             CircleIconButton(
                 icon = Icons.Outlined.MoreVert,
-                contentDescription = "更多",
+                contentDescription = stringResource(R.string.chat_more),
                 onClick = onOpenMenu,
                 modifier = Modifier.size(40.dp)
             )
@@ -702,7 +703,7 @@ private fun TypingSubtitle() {
     val transition = rememberInfiniteTransition(label = "typing-subtitle")
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            "正在输入",
+            stringResource(R.string.chat_typing),
             style = MaterialTheme.typography.labelSmall,
             color = accent.copy(alpha = 0.95f)
         )
@@ -746,13 +747,17 @@ private fun NoConfigBanner(
         ) {
             Icon(Icons.Outlined.Settings, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(
-                "为这段对话选择一个 API 配置",
+                stringResource(R.string.chat_no_config_message),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.weight(1f)
             )
             TextButton(onClick = if (configsAvailable) onChoose else onAdd) {
-                Text(if (configsAvailable) "选择" else "添加", style = MaterialTheme.typography.labelMedium)
+                Text(
+                    if (configsAvailable) stringResource(R.string.chat_choose)
+                    else stringResource(R.string.chat_add),
+                    style = MaterialTheme.typography.labelMedium
+                )
             }
         }
     }
@@ -769,16 +774,17 @@ private fun ChatMessageList(
     onOpenLink: (String) -> Unit
 ) {
     val listState = rememberLazyListState()
+    val context = LocalContext.current
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     val coroutineScope = rememberCoroutineScope()
     var autoFollow by remember { mutableStateOf(true) }
-    val displayItems = remember(state.messages) {
+    val displayItems = remember(state.messages, context) {
         buildList {
             var previousTimestamp: Long? = null
             state.messages.forEach { message ->
                 val previous = previousTimestamp
                 if (previous == null || !isSameDay(previous, message.createdAt)) {
-                    add(ChatDisplayItem.Date(dayLabel(message.createdAt), dayLabel(message.createdAt) + message.createdAt))
+                    add(ChatDisplayItem.Date(dayLabel(context, message.createdAt), dayLabel(context, message.createdAt) + message.createdAt))
                 }
                 add(ChatDisplayItem.Message(message))
                 previousTimestamp = message.createdAt
@@ -897,9 +903,9 @@ private fun ChatMessageList(
                         Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Outlined.ExpandMore, contentDescription = "回到底部", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Outlined.ExpandMore, contentDescription = stringResource(R.string.chat_scroll_to_bottom), modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         Spacer(Modifier.width(4.dp))
-                        Text("最新", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.chat_latest), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -922,14 +928,19 @@ private fun EmptyConversation(state: ChatUiState, onSuggestion: (String) -> Unit
         Spacer(Modifier.height(18.dp))
         Text(persona.name, style = MaterialTheme.typography.headlineSmall)
         Spacer(Modifier.height(7.dp))
+        val emptyDescription = stringResource(R.string.chat_empty_fallback_description)
         Text(
-            text = persona.description.ifBlank { "开始一段新的对话。" },
+            text = persona.description.ifBlank { emptyDescription },
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
         Spacer(Modifier.height(24.dp))
-        val suggestions = listOf("嗨，今天过得怎么样？", "陪我待一会儿", "我最近有件事想和你说")
+        val suggestions = listOf(
+            stringResource(R.string.chat_suggestion_1),
+            stringResource(R.string.chat_suggestion_2),
+            stringResource(R.string.chat_suggestion_3)
+        )
         suggestions.forEach { suggestion ->
             Surface(
                 onClick = { onSuggestion(suggestion) },
@@ -948,7 +959,7 @@ private fun EmptyConversation(state: ChatUiState, onSuggestion: (String) -> Unit
         }
         Spacer(Modifier.height(18.dp))
         Text(
-            "对话仅保存在本机",
+            stringResource(R.string.chat_local_only),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
         )
@@ -1069,7 +1080,7 @@ private fun MessageBubble(
                     )
                     AsyncImage(
                         model = imageRequest,
-                        contentDescription = "图片消息",
+                        contentDescription = stringResource(R.string.chat_image_message),
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .padding(bottom = if (imageOnly) 2.dp else 6.dp)
@@ -1110,7 +1121,7 @@ private fun MessageBubble(
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    "生成失败",
+                                    stringResource(R.string.chat_generation_failed),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = if (outgoing && !isOutlined) contentColor else MaterialTheme.colorScheme.onErrorContainer
                                 )
@@ -1120,7 +1131,7 @@ private fun MessageBubble(
                             else MaterialTheme.colorScheme.onErrorContainer).copy(alpha = 0.85f)
                             // 报错里偶尔带着地址（比如某个服务给的提示），同样点得开
                             InlineText(
-                                raw = message.errorMessage ?: "未知错误",
+                                raw = message.errorMessage ?: stringResource(R.string.chat_unknown_error),
                                 color = errorTint,
                                 codeBackground = Color.Transparent,
                                 isOutgoing = outgoing && !isOutlined,
@@ -1140,7 +1151,7 @@ private fun MessageBubble(
                         ) {
                             Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = contentColor)
                             Spacer(Modifier.width(5.dp))
-                            Text("重新生成", style = MaterialTheme.typography.labelSmall, color = contentColor)
+                            Text(stringResource(R.string.chat_regenerate), style = MaterialTheme.typography.labelSmall, color = contentColor)
                         }
                     }
                 }
@@ -1181,26 +1192,26 @@ private fun MessageBubble(
                 ) {
                     if (message.status == MessageStatus.STOPPED) {
                         Text(
-                            "已停止 · ",
+                            stringResource(R.string.chat_status_stopped),
                             style = MaterialTheme.typography.labelSmall,
                             color = contentColor.copy(alpha = 0.62f)
                         )
                     }
                     if (message.edited) {
                         Text(
-                            "已编辑 · ",
+                            stringResource(R.string.chat_status_edited),
                             style = MaterialTheme.typography.labelSmall,
                             color = contentColor.copy(alpha = 0.62f)
                         )
                     }
                     Text(
-                        text = formatClock(message.createdAt),
+                        text = formatClock(LocalContext.current, message.createdAt),
                         style = MaterialTheme.typography.labelSmall,
                         color = contentColor.copy(alpha = 0.62f)
                     )
                     if (outgoing && showRead) {
                         Text(
-                            " · 已读",
+                            stringResource(R.string.chat_status_read),
                             style = MaterialTheme.typography.labelSmall,
                             color = contentColor.copy(alpha = 0.62f)
                         )
@@ -1275,7 +1286,7 @@ private fun StreamingTraceRow(
     onToggle: () -> Unit
 ) {
     val tint = MaterialTheme.colorScheme.onSurfaceVariant
-    val summary = ToolTraceCodec.summarize(items).ifBlank { "正在忙" }
+    val summary = ToolTraceCodec.summarize(items).ifBlank { stringResource(R.string.chat_trace_busy) }
     Column(Modifier.widthIn(max = 460.dp)) {
         Surface(
             shape = RoundedCornerShape(50),
@@ -1305,7 +1316,8 @@ private fun StreamingTraceRow(
                 Spacer(Modifier.width(2.dp))
                 Icon(
                     imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-                    contentDescription = if (expanded) "收起动作痕迹" else "展开动作痕迹",
+                    contentDescription = if (expanded) stringResource(R.string.chat_trace_collapse)
+                else stringResource(R.string.chat_trace_expand),
                     modifier = Modifier.size(13.dp),
                     tint = tint.copy(alpha = 0.7f)
                 )
@@ -1345,7 +1357,7 @@ private fun ToolTraceRow(
         )
         Spacer(Modifier.width(5.dp))
         Text(
-            text = "· " + ToolTraceCodec.summarize(items).ifBlank { "动作痕迹" },
+            text = "· " + ToolTraceCodec.summarize(items).ifBlank { stringResource(R.string.chat_trace_title) },
             style = MaterialTheme.typography.labelSmall,
             color = tint,
             maxLines = 1,
@@ -1354,7 +1366,8 @@ private fun ToolTraceRow(
         Spacer(Modifier.width(3.dp))
         Icon(
             imageVector = if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
-            contentDescription = if (expanded) "收起动作痕迹" else "展开动作痕迹",
+            contentDescription = if (expanded) stringResource(R.string.chat_trace_collapse)
+                else stringResource(R.string.chat_trace_expand),
             modifier = Modifier.size(14.dp),
             tint = tint
         )
@@ -1379,10 +1392,12 @@ private fun ToolTraceDetail(
     ) {
         items.forEach { item ->
             val itemColor = if (item.ok) tint.copy(alpha = 0.92f) else errorColor
+            // 「失败」两个字同样走资源，所以先取出来，避免在纯列表拼接里调 Composable。
+            val failedLabel = stringResource(R.string.chat_trace_failed)
             val headline = buildList {
                 add(item.title.ifBlank { item.name })
                 item.subtitle?.takeIf { it.isNotBlank() }?.let { add(it) }
-                if (!item.ok) add("失败")
+                if (!item.ok) add(failedLabel)
             }.filter { it.isNotBlank() }.joinToString(" · ")
             Column {
                 Text(
@@ -1507,7 +1522,7 @@ private fun Composer(
                             )
                             AsyncImage(
                                 model = pendingRequest,
-                                contentDescription = "待发送图片",
+                                contentDescription = stringResource(R.string.chat_pending_image),
                                 contentScale = ContentScale.Crop,
                                 modifier = Modifier
                                     .size(62.dp)
@@ -1528,7 +1543,7 @@ private fun Composer(
                             ) {
                                 Icon(
                                     Icons.Rounded.Close,
-                                    contentDescription = "移除图片",
+                                    contentDescription = stringResource(R.string.chat_remove_image),
                                     tint = Color.White,
                                     modifier = Modifier.size(12.dp)
                                 )
@@ -1552,7 +1567,7 @@ private fun Composer(
                     ) {
                         Icon(
                             Icons.Outlined.Image,
-                            contentDescription = "发送图片",
+                            contentDescription = stringResource(R.string.chat_send_image),
                             tint = if (state.canSend) MaterialTheme.colorScheme.onSurfaceVariant
                             else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             modifier = Modifier.size(22.dp)
@@ -1577,9 +1592,9 @@ private fun Composer(
                         if (value.text.isEmpty()) {
                             Text(
                                 text = when {
-                                    state.config == null -> "选择 API 配置后开始对话"
-                                    state.images.isNotEmpty() -> "说点什么，或直接发送图片…"
-                                    else -> "说点什么…"
+                                    state.config == null -> stringResource(R.string.chat_placeholder_no_config)
+                                    state.images.isNotEmpty() -> stringResource(R.string.chat_placeholder_with_images)
+                                    else -> stringResource(R.string.chat_placeholder)
                                 },
                                 style = MaterialTheme.typography.bodyLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f)
@@ -1627,7 +1642,7 @@ private fun Composer(
                     } else {
                         Icon(
                             Icons.Rounded.ArrowUpward,
-                            contentDescription = "发送",
+                            contentDescription = stringResource(R.string.chat_send),
                             tint = if (enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
                             modifier = Modifier.size(21.dp)
                         )
@@ -1666,14 +1681,14 @@ private fun BackgroundTipBanner(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "把他留在后台",
+                    stringResource(R.string.chat_background_tip_title),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurface
                 )
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "他会在后台继续想事情，偶尔主动找你；关掉的话他只在应用打开时存在。",
+                stringResource(R.string.chat_background_tip_body),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -1681,12 +1696,12 @@ private fun BackgroundTipBanner(
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 if (onOpenSettings != null) {
                     TextButton(onClick = onOpenSettings) {
-                        Text("去设置", style = MaterialTheme.typography.labelMedium)
+                        Text(stringResource(R.string.chat_background_tip_settings), style = MaterialTheme.typography.labelMedium)
                     }
                 }
                 TextButton(onClick = onDismiss) {
                     Text(
-                        "知道了",
+                        stringResource(R.string.chat_background_tip_dismiss),
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -1720,7 +1735,7 @@ private fun ImageViewerDialog(attachment: MessageAttachment, onDismiss: () -> Un
             }
             AsyncImage(
                 model = viewerRequest,
-                contentDescription = "图片",
+                contentDescription = stringResource(R.string.chat_image),
                 contentScale = ContentScale.Fit,
                 modifier = Modifier.fillMaxWidth()
             )
@@ -1772,7 +1787,7 @@ private fun ProfileSheet(
                     Text(persona.name, style = MaterialTheme.typography.headlineSmall)
                     Spacer(Modifier.height(2.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        TextPill(persona.category.ifBlank { "未分类" })
+                        TextPill(persona.category.ifBlank { stringResource(R.string.chat_persona_category_unknown) })
                         TextPill("v${persona.version}")
                     }
                 }
@@ -1785,18 +1800,30 @@ private fun ProfileSheet(
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp)
                 )
             }
-            SettingLine("当前 API", configName ?: "未绑定")
-            SettingLine("模型", configModel?.ifBlank { "未设置" } ?: "未设置")
-            SettingLine("人格注入", "每轮随 system 一起发送")
-            SettingLine("会话", "本地会话 ${session.id.take(8)}")
-            SettingLine("人格提示词", "${persona.prompt.length} 字符 · 完整保存")
+            SettingLine(stringResource(R.string.chat_profile_api_label), configName ?: stringResource(R.string.chat_not_bound))
+            SettingLine(
+                stringResource(R.string.chat_profile_model_label),
+                configModel?.ifBlank { stringResource(R.string.chat_not_set) } ?: stringResource(R.string.chat_not_set)
+            )
+            SettingLine(
+                stringResource(R.string.chat_profile_injection_label),
+                stringResource(R.string.chat_profile_injection_value)
+            )
+            SettingLine(
+                stringResource(R.string.chat_profile_session_label),
+                stringResource(R.string.chat_profile_session_value, session.id.take(8))
+            )
+            SettingLine(
+                stringResource(R.string.chat_profile_prompt_label),
+                stringResource(R.string.chat_profile_prompt_value, persona.prompt.length)
+            )
             Spacer(Modifier.height(10.dp))
             HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-            SheetActionRow(Icons.Outlined.PersonOutline, "编辑人格与提示词", onClick = onEdit)
-            SheetActionRow(Icons.Outlined.Memory, "长期记忆", onClick = onMemory)
-            SheetActionRow(Icons.Outlined.AutoAwesome, "人格进化与版本保留", onClick = onEvolution)
-            SheetActionRow(Icons.Outlined.Alarm, "主动唤醒规则", onClick = onProactive)
-            SheetActionRow(Icons.Outlined.Sync, "切换到其他已有人格", onClick = onSwitchPersona)
+            SheetActionRow(Icons.Outlined.PersonOutline, stringResource(R.string.chat_profile_edit), onClick = onEdit)
+            SheetActionRow(Icons.Outlined.Memory, stringResource(R.string.chat_profile_memory), onClick = onMemory)
+            SheetActionRow(Icons.Outlined.AutoAwesome, stringResource(R.string.chat_profile_evolution), onClick = onEvolution)
+            SheetActionRow(Icons.Outlined.Alarm, stringResource(R.string.chat_profile_proactive), onClick = onProactive)
+            SheetActionRow(Icons.Outlined.Sync, stringResource(R.string.chat_profile_switch), onClick = onSwitchPersona)
         }
     }
 }
@@ -1838,20 +1865,23 @@ private fun ConfigPickerSheet(
         dragHandle = { BottomSheetHandle() }
     ) {
         Column(Modifier.padding(bottom = 28.dp)) {
-            BottomSheetTitle("选择 API 配置", "人格提示词只会发送给绑定的服务端")
+            BottomSheetTitle(
+                stringResource(R.string.chat_config_picker_title),
+                stringResource(R.string.chat_config_picker_subtitle)
+            )
             Spacer(Modifier.height(10.dp))
             if (state.apiConfigs.isEmpty()) {
                 Column(Modifier.padding(horizontal = 24.dp, vertical = 20.dp)) {
-                    Text("还没有 API 配置", style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.chat_config_empty_title), style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(6.dp))
                     Text(
-                        "添加一个 OpenAI 兼容的服务，然后回到对话继续。",
+                        stringResource(R.string.chat_config_empty_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(16.dp))
                     TextButton(onClick = onAddConfig, contentPadding = PaddingValues(0.dp)) {
-                        Text("添加 API 配置")
+                        Text(stringResource(R.string.chat_config_add))
                     }
                 }
             } else {
@@ -1889,7 +1919,7 @@ private fun ConfigPickerSheet(
                 TextButton(
                     onClick = onAddConfig,
                     modifier = Modifier.padding(horizontal = 18.dp, vertical = 4.dp)
-                ) { Text("管理 API 配置") }
+                ) { Text(stringResource(R.string.chat_config_manage)) }
             }
         }
     }
@@ -1911,7 +1941,10 @@ private fun PersonaPickerSheet(
         dragHandle = { BottomSheetHandle() }
     ) {
         Column(Modifier.padding(bottom = 28.dp)) {
-            BottomSheetTitle("切换人格", "会恢复到该人格最近的会话，并带上完整人格与记忆")
+            BottomSheetTitle(
+                stringResource(R.string.chat_menu_switch_persona),
+                stringResource(R.string.chat_persona_picker_subtitle)
+            )
             Spacer(Modifier.height(8.dp))
             if (state.switchingPersona) {
                 Row(
@@ -1922,7 +1955,7 @@ private fun PersonaPickerSheet(
                 ) {
                     CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp, color = LocalAccentColor.current)
                     Spacer(Modifier.width(10.dp))
-                    Text("正在切换人格…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(stringResource(R.string.chat_persona_switching), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             state.personas.forEach { persona ->
@@ -1973,9 +2006,12 @@ private fun MessageActionSheet(
         dragHandle = { BottomSheetHandle() }
     ) {
         Column(Modifier.padding(bottom = 28.dp)) {
-            BottomSheetTitle(if (message.role == MessageRole.USER) "你的消息" else "回复")
+            BottomSheetTitle(
+                if (message.role == MessageRole.USER) stringResource(R.string.chat_your_message)
+                else stringResource(R.string.chat_reply)
+            )
             Text(
-                message.content.take(160).ifBlank { message.errorMessage ?: "空消息" },
+                message.content.take(160).ifBlank { message.errorMessage ?: stringResource(R.string.chat_empty_message) },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 3,
@@ -1983,13 +2019,18 @@ private fun MessageActionSheet(
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
             )
             Spacer(Modifier.height(6.dp))
-            SheetActionRow(Icons.Outlined.ContentCopy, "复制", onClick = onCopy)
+            SheetActionRow(Icons.Outlined.ContentCopy, stringResource(R.string.chat_copy), onClick = onCopy)
             if (message.role == MessageRole.USER) {
-                SheetActionRow(Icons.Outlined.Edit, "编辑并重新请求", onClick = onEdit)
+                SheetActionRow(Icons.Outlined.Edit, stringResource(R.string.chat_edit_and_resend), onClick = onEdit)
             } else if (isLastAssistant) {
-                SheetActionRow(Icons.Outlined.Refresh, "重新生成", onClick = onRegenerate)
+                SheetActionRow(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), onClick = onRegenerate)
             }
-            SheetActionRow(Icons.Outlined.DeleteOutline, "删除这条消息", danger = true, onClick = onDelete)
+            SheetActionRow(
+                Icons.Outlined.DeleteOutline,
+                stringResource(R.string.chat_delete_message),
+                danger = true,
+                onClick = onDelete
+            )
         }
     }
 }

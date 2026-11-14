@@ -1,7 +1,9 @@
 package com.myfriend.app.ui.screens.persona
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
@@ -9,6 +11,7 @@ import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.data.repo.PresetRepository
 import com.myfriend.app.domain.ExportFile
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -42,7 +45,8 @@ sealed interface PersonaListEvent {
 class PersonaListViewModel @Inject constructor(
     private val personaRepository: PersonaRepository,
     private val presetRepository: PresetRepository,
-    apiConfigRepository: ApiConfigRepository
+    apiConfigRepository: ApiConfigRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val category = MutableStateFlow<String?>(null)
     private val busy = MutableStateFlow(false)
@@ -71,8 +75,8 @@ class PersonaListViewModel @Inject constructor(
     fun saveAsPreset(personaId: String) {
         viewModelScope.launch {
             presetRepository.savePersonaAsPreset(personaId)
-                .onSuccess { message.value = "已保存到预设库" }
-                .onFailure { message.value = it.message ?: "保存到预设库失败" }
+                .onSuccess { message.value = context.getString(R.string.persona_list_preset_saved) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_preset_save_failed) }
         }
     }
 
@@ -80,8 +84,8 @@ class PersonaListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             personaRepository.setDefault(personaId)
-                .onSuccess { message.value = "已设为默认人格" }
-                .onFailure { message.value = it.message ?: "设置失败" }
+                .onSuccess { message.value = context.getString(R.string.persona_list_default_set) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_default_set_failed) }
             busy.value = false
         }
     }
@@ -90,8 +94,8 @@ class PersonaListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             personaRepository.duplicate(personaId)
-                .onSuccess { message.value = "人格已复制" }
-                .onFailure { message.value = it.message ?: "复制失败" }
+                .onSuccess { message.value = context.getString(R.string.persona_list_duplicated) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_duplicate_failed) }
             busy.value = false
         }
     }
@@ -100,8 +104,8 @@ class PersonaListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             runCatching { personaRepository.delete(personaId) }
-                .onSuccess { message.value = "人格已删除" }
-                .onFailure { message.value = it.message ?: "删除失败" }
+                .onSuccess { message.value = context.getString(R.string.persona_list_deleted) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_delete_failed) }
             busy.value = false
         }
     }
@@ -111,7 +115,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.exportPersonas()
                 .onSuccess { events.send(PersonaListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: "导出失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_export_failed) }
             busy.value = false
         }
     }
@@ -121,7 +125,7 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.exportPersonas(listOf(personaId))
                 .onSuccess { events.send(PersonaListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: "导出失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.persona_list_export_failed) }
             busy.value = false
         }
     }
@@ -131,7 +135,12 @@ class PersonaListViewModel @Inject constructor(
             busy.value = true
             personaRepository.importPersonas(raw)
                 .onSuccess { message.value = it.message }
-                .onFailure { message.value = "导入失败：${it.message ?: "文件格式不正确"}" }
+                .onFailure {
+                    message.value = context.getString(
+                        R.string.persona_list_import_failed,
+                        it.message ?: context.getString(R.string.persona_list_import_bad_format)
+                    )
+                }
             busy.value = false
         }
     }

@@ -1,5 +1,6 @@
 package com.myfriend.app.ui.screens.browser
 
+import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
@@ -44,12 +45,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.myfriend.app.R
 import com.myfriend.app.domain.LinkDetector
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
@@ -87,7 +90,7 @@ fun InAppBrowserScreen(
     var currentUrl by remember { mutableStateOf(initialUrl ?: url) }
     var progress by remember { mutableIntStateOf(0) }
     var failed by remember { mutableStateOf(false) }
-    var failureReason by remember { mutableStateOf("这个页面没能打开") }
+    var failureReason by remember { mutableStateOf<String?>(null) }
 
     fun notify(message: String) {
         scope.launch { snackbar.showSnackbar(message) }
@@ -96,7 +99,7 @@ fun InAppBrowserScreen(
     fun openInSystem(target: String) {
         val intent = Intent(Intent.ACTION_VIEW, Uri.parse(target))
         runCatching { context.startActivity(intent) }
-            .onFailure { notify("没能打开，可以先复制链接") }
+            .onFailure { notify(context.getString(R.string.browser_open_failed_copy_hint)) }
     }
 
     BackHandler {
@@ -106,7 +109,7 @@ fun InAppBrowserScreen(
 
     val title = pageTitle?.takeIf { it.isNotBlank() }
         ?: hostOf(currentUrl)
-        ?: "打开链接"
+        ?: stringResource(R.string.browser_title_fallback)
 
     Column(
         Modifier
@@ -115,23 +118,23 @@ fun InAppBrowserScreen(
     ) {
         AppHeader(
             title = title,
-            subtitle = "他发给你的链接",
+            subtitle = stringResource(R.string.browser_subtitle),
             navigation = { BackNavigation(onBack) },
             actions = {
                 IconButton(onClick = { openInSystem(currentUrl) }) {
                     Icon(
                         Icons.Outlined.OpenInBrowser,
-                        contentDescription = "在系统浏览器打开",
+                        contentDescription = stringResource(R.string.browser_open_in_system),
                         tint = MaterialTheme.colorScheme.onBackground
                     )
                 }
                 IconButton(onClick = {
                     clipboard.setText(AnnotatedString(currentUrl))
-                    notify("链接已复制")
+                    notify(context.getString(R.string.browser_link_copied))
                 }) {
                     Icon(
                         Icons.Outlined.ContentCopy,
-                        contentDescription = "复制链接",
+                        contentDescription = stringResource(R.string.browser_copy_link),
                         tint = MaterialTheme.colorScheme.onBackground
                     )
                 }
@@ -153,6 +156,7 @@ fun InAppBrowserScreen(
                             // 长按只保留系统默认的选字：不挂下载图片、自定义菜单、新窗口这些多余的入口
                             isLongClickable = true
                             webViewClient = InAppWebViewClient(
+                                context = context,
                                 onStarted = { startedUrl ->
                                     failed = false
                                     progress = 0
@@ -203,16 +207,16 @@ fun InAppBrowserScreen(
                 ) {
                     EmptyState(
                         icon = Icons.Outlined.Language,
-                        title = "这个页面打不开",
+                        title = stringResource(R.string.browser_error_title),
                         description = if (initialUrl == null) {
-                            "这个地址不太对，没能在应用里打开。"
+                            stringResource(R.string.browser_error_invalid_url)
                         } else {
-                            failureReason
+                            failureReason ?: stringResource(R.string.browser_failure_initial)
                         },
                         action = {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 SecondaryButton(
-                                    text = "用系统浏览器打开",
+                                    text = stringResource(R.string.browser_open_in_system_button),
                                     onClick = { openInSystem(currentUrl) }
                                 )
                                 if (initialUrl != null) {
@@ -221,7 +225,7 @@ fun InAppBrowserScreen(
                                         failed = false
                                         webView?.reload()
                                     }) {
-                                        Text("再试一次", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        Text(stringResource(R.string.browser_retry), color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                 }
                             }
@@ -272,6 +276,7 @@ fun InAppBrowserScreen(
  * 网页里点的 http/https 原地加载，其它 scheme（打电话、邮件、应用唤起）交给系统。
  */
 private class InAppWebViewClient(
+    private val context: Context,
     private val onStarted: (String?) -> Unit,
     private val onFinished: (String?) -> Unit,
     private val onMainFrameError: (String) -> Unit,
@@ -315,7 +320,7 @@ private class InAppWebViewClient(
         error: WebResourceError
     ) {
         super.onReceivedError(view, request, error)
-        if (request.isForMainFrame) onMainFrameError(describeError(error))
+        if (request.isForMainFrame) onMainFrameError(describeError(context, error))
     }
 
     /**
@@ -334,7 +339,11 @@ private class InAppWebViewClient(
         if (status < 400) return
         val reason = errorResponse.reasonPhrase?.takeIf { it.isNotBlank() }
         onMainFrameError(
-            if (reason == null) "网页返回了 $status" else "网页返回了 $status（$reason）"
+            if (reason == null) {
+                context.getString(R.string.browser_http_error, status)
+            } else {
+                context.getString(R.string.browser_http_error_with_reason, status, reason)
+            }
         )
     }
 }
@@ -382,13 +391,13 @@ private fun WebView.applyRestrictedSettings() {
     settings.displayZoomControls = false
 }
 
-private fun describeError(error: WebResourceError): String = when (error.errorCode) {
-    WebViewClient.ERROR_HOST_LOOKUP -> "没找到这个地址，可能是域名写错了。"
-    WebViewClient.ERROR_CONNECT -> "连不上这个页面，网络可能不太稳。"
-    WebViewClient.ERROR_TIMEOUT -> "页面响应太慢，没能加载出来。"
-    WebViewClient.ERROR_UNSUPPORTED_SCHEME -> "这个地址应用里打不开。"
-    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> "这个页面的安全连接没建立起来。"
-    else -> "这个页面没能打开，网络或者地址可能有问题。"
+private fun describeError(context: Context, error: WebResourceError): String = when (error.errorCode) {
+    WebViewClient.ERROR_HOST_LOOKUP -> context.getString(R.string.browser_err_host_lookup)
+    WebViewClient.ERROR_CONNECT -> context.getString(R.string.browser_err_connect)
+    WebViewClient.ERROR_TIMEOUT -> context.getString(R.string.browser_err_timeout)
+    WebViewClient.ERROR_UNSUPPORTED_SCHEME -> context.getString(R.string.browser_err_unsupported_scheme)
+    WebViewClient.ERROR_FAILED_SSL_HANDSHAKE -> context.getString(R.string.browser_err_ssl)
+    else -> context.getString(R.string.browser_err_generic)
 }
 
 private fun hostOf(url: String?): String? {

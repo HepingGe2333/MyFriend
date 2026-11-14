@@ -3,6 +3,7 @@ package com.myfriend.app.ui.screens.settings
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.prefs.AppSettings
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.prefs.SettingsRepository
@@ -135,7 +136,7 @@ class SettingsViewModel @Inject constructor(
             busy.value = true
             chatRepository.exportAllChats()
                 .onSuccess { events.send(SettingsEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: "导出失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_export) }
             busy.value = false
         }
     }
@@ -144,8 +145,8 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             runCatching { chatRepository.clearAllChatData() }
-                .onSuccess { message.value = "所有聊天与记忆已清空" }
-                .onFailure { message.value = it.message ?: "清空失败" }
+                .onSuccess { message.value = context.getString(R.string.settings_cleared_chats) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_clear) }
             busy.value = false
         }
     }
@@ -161,8 +162,8 @@ class SettingsViewModel @Inject constructor(
                 presetRepository.wipeAll()
                 MediaStorage.clear(context)
                 settingsRepository.resetAll()
-            }.onSuccess { message.value = "所有本地数据已删除" }
-                .onFailure { message.value = it.message ?: "删除失败" }
+            }.onSuccess { message.value = context.getString(R.string.settings_wiped) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.settings_error_delete) }
             busy.value = false
         }
     }
@@ -222,12 +223,18 @@ class SettingsViewModel @Inject constructor(
                     message.value = summary.describe()
                     dismissBackupPreview()
                 }
-                .onFailure { message.value = it.message ?: "没能把他接回来；这台手机上的内容没有变" }
+                .onFailure {
+                    message.value = it.message ?: context.getString(R.string.settings_error_import)
+                }
             backupBusy.value = false
         }
     }
 
     private fun launchSetting(block: suspend () -> Unit) {
-        viewModelScope.launch { runCatching { block() }.onFailure { message.value = it.message ?: "设置保存失败" } }
+        viewModelScope.launch {
+            runCatching { block() }.onFailure {
+                message.value = it.message ?: context.getString(R.string.settings_error_save)
+            }
+        }
     }
 }

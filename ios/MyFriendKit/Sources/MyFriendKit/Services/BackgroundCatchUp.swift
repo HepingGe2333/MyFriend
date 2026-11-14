@@ -160,10 +160,12 @@ public struct LocalNotificationContent: Equatable, Sendable {
         hasAttachments: Bool = false
     ) -> LocalNotificationContent {
         let name = personaName.trimmingCharacters(in: .whitespacesAndNewlines)
-        let display = name.isEmpty ? "他" : name
+        let display = name.isEmpty ? String(localized: "他") : name
         return LocalNotificationContent(
             title: display,
-            body: hasAttachments ? "给你发来一张图片" : "给你发来一条消息",
+            body: hasAttachments
+                ? String(localized: "给你发来一张图片")
+                : String(localized: "给你发来一条消息"),
             threadId: "myfriend.\(personaId)",
             sessionId: sessionId,
             personaId: personaId

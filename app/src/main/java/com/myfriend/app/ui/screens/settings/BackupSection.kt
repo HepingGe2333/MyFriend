@@ -175,7 +175,10 @@ fun rememberBackupTransfer(
                     }
                     onMessage(
                         written.fold(
-                            { context.getString(R.string.backup_success, fileName?.let { "：$it" } ?: "") },
+                            {
+                                if (fileName.isNullOrBlank()) context.getString(R.string.backup_success)
+                                else context.getString(R.string.backup_success_named, fileName)
+                            },
                             { context.getString(R.string.backup_error_write, it.message.orEmpty()) }
                         )
                     )

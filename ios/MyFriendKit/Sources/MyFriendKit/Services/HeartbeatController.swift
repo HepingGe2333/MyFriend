@@ -142,12 +142,13 @@ public final class HeartbeatController {
 
         // 概率是「每分钟」的，心跳是离散采样：换算成这一拍的概率再掷。
         // 拿的是上一次真正决定的节拍间隔（低电量时是 2 分钟），不是写死的 30 秒。
+        // 主动程度不只改「每天最多几次」，也改「多久想一次」：1 冷淡、5 黏（与 Android 一致）。
         let perMinute = Heartbeat.probability(
             minutesSinceReset: minutes,
             mood: snapshot.mood,
             now: at,
             hourOfDay: ServiceTime.hourOfDay(at)
-        )
+        ) * ProactiveLevel.heartbeatWeight(persona.proactiveLevel)
         let perBeat = Heartbeat.perBeatProbability(perMinute: perMinute, intervalMinutes: intervalMinutes())
         if !Heartbeat.shouldFire(probability: perBeat, roll: dice) { return Beat(why: "") }
 

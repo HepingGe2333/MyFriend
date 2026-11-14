@@ -108,30 +108,30 @@ struct ChatScreen: View {
             )
         }
         .confirmationDialog(
-            "清空这段对话？",
+            L("清空这段对话？"),
             isPresented: $confirmClear,
             titleVisibility: .visible
         ) {
-            Button("清空上下文", role: .destructive) { model.clearContext() }
-            Button("取消", role: .cancel) {}
+            Button(L("清空上下文"), role: .destructive) { model.clearContext() }
+            Button(L("取消"), role: .cancel) {}
         } message: {
-            Text("这段对话的消息会被删除。人格设定与长期记忆都会保留。")
+            Text(L("这段对话的消息会被删除。人格设定与长期记忆都会保留。"))
         }
         .confirmationDialog(
-            "删除这条消息？",
+            L("删除这条消息？"),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { if !$0 { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) {
+            Button(L("删除"), role: .destructive) {
                 if let message = pendingDelete { model.delete(message) }
                 pendingDelete = nil
             }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(L("取消"), role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("删除后无法撤销。")
+            Text(L("删除后无法撤销。"))
         }
         .overlay(alignment: .bottom) { toastView }
         .animation(.easeInOut(duration: 0.18), value: model.toast)
@@ -186,7 +186,7 @@ struct ChatScreen: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityLabel(Text("返回"))
+            .accessibilityLabel(Text(L("返回")))
 
             Button {
                 showProfile = true
@@ -200,7 +200,7 @@ struct ChatScreen: View {
                             .frame(width: 38, height: 38)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(model.persona?.name ?? "对话")
+                        Text(model.persona?.name ?? L("对话"))
                             .font(.system(.headline, design: .serif))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
@@ -210,7 +210,7 @@ struct ChatScreen: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint(Text("打开会话资料"))
+            .accessibilityHint(Text(L("打开会话资料")))
 
             Spacer(minLength: 4)
 
@@ -218,23 +218,23 @@ struct ChatScreen: View {
                 Button {
                     showProfile = true
                 } label: {
-                    Label("会话资料", systemImage: "info.circle")
+                    Label(L("会话资料"), systemImage: "info.circle")
                 }
                 Button {
                     destination = .memories
                 } label: {
-                    Label("长期记忆", systemImage: "brain")
+                    Label(L("长期记忆"), systemImage: "brain")
                 }
                 Button {
                     destination = .settings
                 } label: {
-                    Label("API 设置", systemImage: "gearshape")
+                    Label(L("API 设置"), systemImage: "gearshape")
                 }
                 Divider()
                 Button(role: .destructive) {
                     confirmClear = true
                 } label: {
-                    Label("清空上下文", systemImage: "trash")
+                    Label(L("清空上下文"), systemImage: "trash")
                 }
                 .disabled(model.messages.isEmpty || model.isGenerating)
             } label: {
@@ -243,7 +243,7 @@ struct ChatScreen: View {
                     .frame(width: 38, height: 38)
                     .contentShape(Rectangle())
             }
-            .accessibilityLabel(Text("更多"))
+            .accessibilityLabel(Text(L("更多")))
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
@@ -254,7 +254,7 @@ struct ChatScreen: View {
     @ViewBuilder
     private var subtitle: some View {
         if model.isGenerating {
-            Text(model.isStopping ? "正在停下…" : "正在输入…")
+            Text(model.isStopping ? L("正在停下…") : L("正在输入…"))
                 .font(.caption2)
                 .foregroundStyle(accent)
         } else {
@@ -364,7 +364,7 @@ struct ChatScreen: View {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
-                    Text("最新")
+                    Text(L("最新"))
                         .font(.caption2)
                 }
                 .foregroundStyle(.secondary)
@@ -376,7 +376,7 @@ struct ChatScreen: View {
             .buttonStyle(.plain)
             .padding(.trailing, 4)
             .padding(.bottom, 10)
-            .accessibilityLabel(Text("回到最新消息"))
+            .accessibilityLabel(Text(L("回到最新消息")))
         }
     }
 
@@ -389,18 +389,18 @@ struct ChatScreen: View {
                     .padding(.bottom, 4)
                 Text(persona.name)
                     .font(.system(.title2, design: .serif))
-                Text(persona.description.isEmpty ? "开始一段新的对话。" : persona.description)
+                Text(persona.description.isEmpty ? L("开始一段新的对话。") : persona.description)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal, 12)
             } else {
-                Text("开始一段新的对话")
+                Text(L("开始一段新的对话"))
                     .font(.system(.title3, design: .serif))
             }
 
             VStack(spacing: 8) {
-                ForEach(["嗨，今天过得怎么样？", "陪我待一会儿", "我最近有件事想和你说"], id: \.self) { suggestion in
+                ForEach([L("嗨，今天过得怎么样？"), L("陪我待一会儿"), L("我最近有件事想和你说")], id: \.self) { suggestion in
                     Button {
                         model.draft = suggestion
                         composerFocused = true
@@ -424,7 +424,7 @@ struct ChatScreen: View {
             }
             .padding(.top, 8)
 
-            Text("对话仅保存在本机")
+            Text(L("对话仅保存在本机"))
                 .font(.caption2)
                 .foregroundStyle(.secondary.opacity(0.7))
                 .padding(.top, 6)
@@ -513,8 +513,8 @@ struct ChatScreen: View {
     }
 
     private var composerPlaceholder: String {
-        if !model.hasApiConfig { return "先去设置里配一个 API" }
-        return "说点什么…"
+        if !model.hasApiConfig { return L("先去设置里配一个 API") }
+        return L("说点什么…")
     }
 
     // MARK: - 发图片
@@ -542,7 +542,7 @@ struct ChatScreen: View {
                 .contentShape(Circle())
         }
         .disabled(!enabled)
-        .accessibilityLabel(Text("从相册选一张图"))
+        .accessibilityLabel(Text(L("从相册选一张图")))
         .onChange(of: pickedItems) { items in
             importPickedImages(items)
         }
@@ -572,7 +572,7 @@ struct ChatScreen: View {
                             }
                             .buttonStyle(.plain)
                             .offset(x: 5, y: -5)
-                            .accessibilityLabel(Text("撤掉这张图"))
+                            .accessibilityLabel(Text(L("撤掉这张图")))
                         }
                     }
                 }
@@ -628,7 +628,7 @@ struct ChatScreen: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityLabel(Text(stopping ? "停止生成" : "发送"))
+        .accessibilityLabel(Text(stopping ? L("停止生成") : L("发送")))
     }
 
     private var noConfigBar: some View {
@@ -636,12 +636,12 @@ struct ChatScreen: View {
             Image(systemName: "key")
                 .font(.system(size: 14))
                 .foregroundStyle(.secondary)
-            Text("先去设置里配一个 API")
+            Text(L("先去设置里配一个 API"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             NavigationLink(value: Route.settings) {
-                Text("去设置")
+                Text(L("去设置"))
                     .font(.footnote.weight(.medium))
                     .foregroundStyle(MFTheme.defaultAccent)
             }
@@ -718,7 +718,7 @@ struct ChatMoodCapsule: View {
                             .frame(width: intensity >= 4 ? 4 : 3, height: intensity >= 4 ? 4 : 3)
                     }
                 }
-                Text(mood.label.isEmpty ? MoodLexicon.BASELINE : mood.label)
+                Text(MoodLexicon.displayLabel(mood.label.isEmpty ? MoodLexicon.BASELINE : mood.label))
                     .font(.caption2)
                     .foregroundStyle(tint)
                     .lineLimit(1)
@@ -726,7 +726,7 @@ struct ChatMoodCapsule: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 3)
             .background(Color.primary.opacity(0.06), in: Capsule())
-            .accessibilityLabel(Text("他现在的心情：\(mood.label)"))
+            .accessibilityLabel(Text(Lf("他现在的心情：%@", MoodLexicon.displayLabel(mood.label))))
         }
     }
 
@@ -770,7 +770,7 @@ struct ChatProfileSheet: View {
                     header
                     infoCard
                     actions
-                    Text("所有对话只保存在这台设备上。")
+                    Text(L("所有对话只保存在这台设备上。"))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -779,11 +779,11 @@ struct ChatProfileSheet: View {
                 .padding(MFTheme.gutter)
             }
             .background(MFTheme.canvas(scheme).ignoresSafeArea())
-            .navigationTitle("会话资料")
+            .navigationTitle(L("会话资料"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button(L("完成")) { dismiss() }
                 }
             }
         }
@@ -797,7 +797,7 @@ struct ChatProfileSheet: View {
                     Text(persona.name)
                         .font(.system(.title3, design: .serif))
                     HStack(spacing: 6) {
-                        Text(persona.category.isEmpty ? "未分类" : persona.category)
+                        Text(persona.category.isEmpty ? L("未分类") : persona.category)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                         Text("v\(persona.version)")
@@ -806,7 +806,7 @@ struct ChatProfileSheet: View {
                     }
                 }
             } else {
-                Text("对话")
+                Text(L("对话"))
                     .font(.system(.title3, design: .serif))
             }
             Spacer(minLength: 0)
@@ -820,11 +820,11 @@ struct ChatProfileSheet: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            row("当前 API", config?.name ?? "未绑定")
-            row("模型", modelName)
-            row("这段对话", session?.title.isEmpty == false ? session!.title : "新的对话")
-            row("消息", "\(messageCount) 条")
-            row("他的心情", mood.isEmpty() ? MoodLexicon.BASELINE : mood.display())
+            row(L("当前 API"), config?.name ?? L("未绑定"))
+            row(L("模型"), modelName)
+            row(L("这段对话"), session?.title.isEmpty == false ? session!.title : L("新的对话"))
+            row(L("消息"), Lcount("%d 条消息", messageCount))
+            row(L("他的心情"), mood.isEmpty() ? MoodLexicon.displayLabel(MoodLexicon.BASELINE) : mood.display())
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -837,7 +837,7 @@ struct ChatProfileSheet: View {
     private var modelName: String {
         if let override = session?.model, !override.isEmpty { return override }
         if let model = config?.model, !model.isEmpty { return model }
-        return "未设置"
+        return L("未设置")
     }
 
     private func row(_ label: String, _ value: String) -> some View {
@@ -856,12 +856,12 @@ struct ChatProfileSheet: View {
 
     private var actions: some View {
         VStack(spacing: 0) {
-            actionRow("长期记忆", icon: "brain", action: onOpenMemories)
+            actionRow(L("长期记忆"), icon: "brain", action: onOpenMemories)
             Rectangle()
                 .fill(Color.primary.opacity(0.06))
                 .frame(height: 0.5)
                 .padding(.leading, 44)
-            actionRow("API 设置", icon: "gearshape", action: onOpenSettings)
+            actionRow(L("API 设置"), icon: "gearshape", action: onOpenSettings)
         }
         .background(
             scheme == .dark ? Color.white.opacity(0.05) : Color.white,

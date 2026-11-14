@@ -213,6 +213,21 @@ public enum MemoryLifecycle {
         return min(Swift.max(score, 0.0), 1.0)
     }
 
+    /// 记性（`memoryRetention` 1–5）换算成衰减系数：记性越好掉得越慢。
+    ///
+    /// 这五个数与 Kotlin `MemoryLifecycle.retentionFactor` 一致
+    /// （`spec/agent-core/cases/memory-decay.json` 钉住）：1 → ×1.6、2 → ×1.3、
+    /// 3 → ×1.0、4 → ×0.75、5 → ×0.5。越界值先夹进 1..5。
+    public static func retentionFactor(_ retention: Int) -> Double {
+        switch min(Swift.max(retention, 1), 5) {
+        case 1: return 1.6
+        case 2: return 1.3
+        case 3: return 1.0
+        case 4: return 0.75
+        default: return 0.5
+        }
+    }
+
     /// 每天一次的衰减：没被用过的一天要掉一点，最近被用过的会回血。
     ///
     /// 步长按「距上次整理（没有就按创建）多少天」算，至少算一天，最多 `MAX_DECAY_DAYS` 天；

@@ -37,9 +37,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
 import com.myfriend.app.ui.components.PersonaAvatar
@@ -49,6 +52,7 @@ import com.myfriend.app.ui.components.StyledOutlinedField
 import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.ui.theme.avatarPalette
 
+// 分类是落库的数据值，界面显示时通过 presetCategoryLabel() 映射，常量保持原样。
 private val categoryOptions = listOf("日常聊天", "角色扮演", "学习", "编程", "创意写作", "通用")
 
 @Composable
@@ -75,13 +79,17 @@ fun PresetEditorScreen(
             .background(MaterialTheme.colorScheme.background)
     ) {
         AppHeader(
-            title = if (state.isNew) "新建预设" else "编辑预设",
-            subtitle = "预设是可复用的提示词模板",
+            title = if (state.isNew) stringResource(R.string.preset_new) else stringResource(R.string.preset_edit),
+            subtitle = stringResource(R.string.preset_editor_subtitle),
             navigation = { BackNavigation(onBack) }
         )
         if (!state.loaded) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("载入中…", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(
+                    stringResource(R.string.preset_editor_loading),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
             return@Column
         }
@@ -96,7 +104,7 @@ fun PresetEditorScreen(
                 PersonaAvatar(
                     avatarUri = null,
                     seed = state.form.avatarSeed,
-                    name = state.form.name.ifBlank { "预" },
+                    name = state.form.name.ifBlank { stringResource(R.string.preset_avatar_initial) },
                     size = 82.dp
                 )
             }
@@ -135,25 +143,25 @@ fun PresetEditorScreen(
             StyledOutlinedField(
                 value = state.form.name,
                 onValueChange = { value -> viewModel.update { it.copy(name = value.take(60)) } },
-                label = "预设名称",
+                label = stringResource(R.string.preset_editor_name_label),
                 singleLine = true
             )
             Spacer(Modifier.height(12.dp))
             StyledOutlinedField(
                 value = state.form.description,
                 onValueChange = { value -> viewModel.update { it.copy(description = value.take(300)) } },
-                label = "简介",
+                label = stringResource(R.string.preset_editor_description_label),
                 singleLine = false,
                 minLines = 2,
                 maxLines = 3
             )
             Spacer(Modifier.height(16.dp))
-            SectionLabel("分类")
+            SectionLabel(stringResource(R.string.preset_editor_category_section))
             Spacer(Modifier.height(8.dp))
             LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(categoryOptions) { option ->
                     TextPill(
-                        text = option,
+                        text = presetCategoryLabel(option),
                         selected = state.form.category == option,
                         onClick = { viewModel.update { it.copy(category = option) } }
                     )
@@ -161,9 +169,16 @@ fun PresetEditorScreen(
             }
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                SectionLabel("人格提示词", modifier = Modifier.weight(1f))
+                SectionLabel(
+                    stringResource(R.string.preset_editor_prompt_section),
+                    modifier = Modifier.weight(1f)
+                )
                 Text(
-                    "${state.form.prompt.length} 字符",
+                    pluralStringResource(
+                        R.plurals.preset_editor_prompt_chars,
+                        state.form.prompt.length,
+                        state.form.prompt.length
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -177,7 +192,7 @@ fun PresetEditorScreen(
                 StyledOutlinedField(
                     value = state.form.prompt,
                     onValueChange = { value -> viewModel.update { it.copy(prompt = value.take(120_000)) } },
-                    label = "写下这个人格是谁、如何说话",
+                    label = stringResource(R.string.preset_editor_prompt_label),
                     singleLine = false,
                     minLines = 10,
                     maxLines = 24,
@@ -186,7 +201,7 @@ fun PresetEditorScreen(
             }
             Spacer(Modifier.height(10.dp))
             Text(
-                "用预设创建人格时，提示词会完整复制到新人格，预设本身不会被修改。",
+                stringResource(R.string.preset_editor_prompt_hint),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -195,7 +210,11 @@ fun PresetEditorScreen(
         Surface(color = MaterialTheme.colorScheme.background) {
             Box(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp)) {
                 PrimaryButton(
-                    text = if (state.saving) "保存中…" else "保存预设",
+                    text = if (state.saving) {
+                        stringResource(R.string.preset_editor_saving)
+                    } else {
+                        stringResource(R.string.preset_editor_save)
+                    },
                     enabled = !state.saving && state.form.name.isNotBlank() && state.form.prompt.isNotBlank(),
                     loading = state.saving,
                     onClick = viewModel::save

@@ -106,7 +106,7 @@ public final class ToolExecutor: ToolRunning {
             return think(invocation)
         default:
             // 不认识就明确说，不假装做过：模型要能知道这条路走不通。
-            return failure(invocation, "不认识这个工具：\(name)")
+            return failure(invocation, String(format: String(localized: "不认识这个工具：%@"), name))
         }
     }
 
@@ -118,7 +118,7 @@ public final class ToolExecutor: ToolRunning {
     /// 语气会跟着变。所以这里只做规整，不评判心情合不合理。
     private func setMood(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
         let raw = (invocation.argument("mood") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if raw.isEmpty { return failure(invocation, "没有写是什么心情") }
+        if raw.isEmpty { return failure(invocation, String(localized: "没有写是什么心情")) }
         let rawIntensity = invocation.intArgument("intensity", default: 0)
         let intensity = (1...5).contains(rawIntensity) ? rawIntensity : nil
         let reason = String((invocation.argument("reason") ?? "")
@@ -127,7 +127,7 @@ public final class ToolExecutor: ToolRunning {
             personaId: persona.id, label: raw, intensity: intensity,
             reason: reason, now: now
         ) else {
-            return failure(invocation, "找不到这个人格")
+            return failure(invocation, String(localized: "找不到这个人格"))
         }
         let tail: String
         if MoodLexicon.isNegative(state.label) {
@@ -146,7 +146,7 @@ public final class ToolExecutor: ToolRunning {
         modelText += "。\(tail)对方不知道你记了心情，也不用主动汇报，接着把话说完就行。"
         return success(
             invocation,
-            title: "心情变了",
+            title: String(localized: "心情变了"),
             subtitle: state.display(),
             detail: state.display(),
             modelText: modelText
@@ -160,9 +160,9 @@ public final class ToolExecutor: ToolRunning {
         let question = (invocation.argument("question") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         return success(
             invocation,
-            title: "想了想",
+            title: String(localized: "想了想"),
             subtitle: question.isEmpty ? nil : String(question.prefix(28)),
-            detail: question.isEmpty ? "（没有写具体问题，就是想清楚再答）" : question,
+            detail: question.isEmpty ? String(localized: "（没有写具体问题，就是想清楚再答）") : question,
             modelText: "（可以慢慢想。想清楚以后，直接用你自己的语气把话说完，不用把思考过程念给对方。）"
         )
     }
@@ -175,11 +175,11 @@ public final class ToolExecutor: ToolRunning {
         sessionId: String
     ) async -> ToolResult {
         let query = (invocation.argument("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if query.isEmpty { return failure(invocation, "没有给出要查的内容") }
+        if query.isEmpty { return failure(invocation, String(localized: "没有给出要查的内容")) }
         guard let access = webAccess(persona: persona, sessionId: sessionId) else {
-            return failure(invocation, "这个人格还没有开启联网")
+            return failure(invocation, String(localized: "这个人格还没有开启联网"))
         }
-        let count = min(max(invocation.intArgument("count", default: 6), 1), 12)
+        let count = ToolArgClamp.clampCount(invocation.intArgument("count", default: ToolArgClamp.countDefault))
         do {
             let hits = try await webTools.search(
                 query: String(query.prefix(128)),
@@ -190,10 +190,10 @@ public final class ToolExecutor: ToolRunning {
                 return ToolResult(
                     invocation: invocation,
                     ok: true,
-                    summary: "没查到什么",
+                    summary: String(localized: "没查到什么"),
                     contentForModel: "没有搜到结果，换个说法或换关键词再试。",
-                    traceTitle: "联网搜索",
-                    traceDetail: "没有搜到结果"
+                    traceTitle: String(localized: "联网搜索"),
+                    traceDetail: String(localized: "没有搜到结果")
                 )
             }
             return ToolResult(
@@ -201,7 +201,7 @@ public final class ToolExecutor: ToolRunning {
                 ok: true,
                 summary: String(query.prefix(40)),
                 contentForModel: Self.renderHits(hits),
-                traceTitle: "联网搜索",
+                traceTitle: String(localized: "联网搜索"),
                 traceDetail: hits.prefix(4).map { hit in
                     var line = hit.title.isEmpty ? hit.url : hit.title
                     if let site = hit.siteName, !site.isEmpty { line += " · \(site)" }
@@ -224,9 +224,9 @@ public final class ToolExecutor: ToolRunning {
         sessionId: String
     ) async -> ToolResult {
         let url = (invocation.argument("url") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if url.isEmpty { return failure(invocation, "没有给出要读的链接") }
+        if url.isEmpty { return failure(invocation, String(localized: "没有给出要读的链接")) }
         guard let access = webAccess(persona: persona, sessionId: sessionId) else {
-            return failure(invocation, "这个人格还没有开启联网")
+            return failure(invocation, String(localized: "这个人格还没有开启联网"))
         }
         do {
             let page = try await webTools.fetch(url: url, access: access)
@@ -237,7 +237,7 @@ public final class ToolExecutor: ToolRunning {
                 ok: true,
                 summary: String(title.prefix(40)),
                 contentForModel: "《\(title)》\n\(page.url)\n\n\(body)",
-                traceTitle: "读了网页",
+                traceTitle: String(localized: "读了网页"),
                 traceDetail: String(body.prefix(400))
             )
         } catch let webFailure as WebToolsFailure {
@@ -298,14 +298,16 @@ public final class ToolExecutor: ToolRunning {
         now: Int64
     ) -> ToolResult {
         let content = (invocation.argument("content") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if content.isEmpty { return failure(invocation, "没有给出要记住的内容") }
+        if content.isEmpty { return failure(invocation, String(localized: "没有给出要记住的内容")) }
         let drawer: MemoryDrawer
         switch (invocation.argument("drawer") ?? "").uppercased() {
         case "SELF": drawer = .selfDrawer
         case "EVENT": drawer = .event
         default: drawer = .user
         }
-        let importance = min(max(invocation.intArgument("importance", default: 3), 1), 5)
+        let importance = ToolArgClamp.clampImportance(
+            invocation.intArgument("importance", default: ToolArgClamp.importanceDefault)
+        )
         let candidate = MemoryCandidate(
             content: content,
             drawer: drawer,
@@ -332,10 +334,10 @@ public final class ToolExecutor: ToolRunning {
             return ToolResult(
                 invocation: invocation,
                 ok: true,
-                summary: "这次先不记",
+                summary: String(localized: "这次先不记"),
                 contentForModel: "这件事不必写进长期记忆（\(reason)），自然聊过去就好。",
-                traceTitle: "想了想要不要记",
-                traceDetail: "这次先不记：\(reason)"
+                traceTitle: String(localized: "想了想要不要记"),
+                traceDetail: String(format: String(localized: "这次先不记：%@"), reason)
             )
         case .echo(let kept):
             echoes.insertAll([MemoryEcho(
@@ -352,9 +354,9 @@ public final class ToolExecutor: ToolRunning {
             )])
             return success(
                 invocation,
-                title: "记下了（还在确认）",
+                title: String(localized: "记下了（还在确认）"),
                 subtitle: String(kept.content.prefix(40)),
-                detail: "第一次听到，先放在心里；再提到一次就会真正记住。",
+                detail: String(localized: "第一次听到，先放在心里；再提到一次就会真正记住。"),
                 modelText: "已记下：「\(String(kept.content.prefix(80)))」。这还只是印象，不用反复确认。"
             )
         case .promote(let kept, let mergeIntoId):
@@ -378,12 +380,12 @@ public final class ToolExecutor: ToolRunning {
             switch written {
             case .failure(let error):
                 log("[tool] remember 落库失败：\(error.localizedDescription)")
-                return failure(invocation, "这次没记下来：\(Self.userFacing(error))")
+                return failure(invocation, String(format: String(localized: "这次没记下来：%@"), Self.userFacing(error)))
             case .success:
                 if let mergeIntoId { memory.deleteById(mergeIntoId) }
                 return success(
                     invocation,
-                    title: "记住了",
+                    title: String(localized: "记住了"),
                     subtitle: String(text.prefix(40)),
                     detail: String(text.prefix(300)),
                     modelText: "已写进长期记忆：「\(String(text.prefix(120)))」。"
@@ -393,9 +395,9 @@ public final class ToolExecutor: ToolRunning {
             _ = memory.reinforce(memoryId: id, appendedText: appendedText, importance: candidate.importance)
             return success(
                 invocation,
-                title: "又确认了一次",
+                title: String(localized: "又确认了一次"),
                 subtitle: String(candidate.content.prefix(40)),
-                detail: appendedText ?? "这条记忆更牢了。",
+                detail: appendedText ?? String(localized: "这条记忆更牢了。"),
                 modelText: "这条你已经提过，我加固了一下印象。"
             )
         }
@@ -429,7 +431,7 @@ public final class ToolExecutor: ToolRunning {
     /// 所以空结果也返回 ok = true，只把不同的说法交给模型，免得它以为工具坏了去反复重试。
     private func recall(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
         let query = (invocation.argument("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        if query.isEmpty { return failure(invocation, "没说要回忆什么") }
+        if query.isEmpty { return failure(invocation, String(localized: "没说要回忆什么")) }
         // depth 宽松解析：字符串（1/2/3、quick/normal/deep、中文别名）和数字都认，缺省认真回忆。
         let depth: RecallDepth
         if let text = invocation.argument("depth") {
@@ -440,16 +442,18 @@ public final class ToolExecutor: ToolRunning {
         let outcome = recallService.recall(personaId: persona.id, query: query, depth: depth, now: now)
         let detail: String
         if outcome.isEmpty {
-            detail = "（\(depth.label)）翻了一遍，没有找到"
+            detail = String(format: String(localized: "（%@）翻了一遍，没有找到"), depth.displayLabel)
         } else {
             detail = outcome.hits.map { hit in
-                "（\(Recall.sourceLabel(hit, now: now))）\(String(hit.text.prefix(80)))"
+                "（\(Recall.displaySourceLabel(hit, now: now))）\(String(hit.text.prefix(80)))"
             }.joined(separator: "\n")
         }
         return success(
             invocation,
-            title: "回想了一下",
-            subtitle: outcome.isEmpty ? "翻了翻，没想起什么" : "翻了翻记忆 · \(outcome.hits.count) 条",
+            title: String(localized: "回想了一下"),
+            subtitle: outcome.isEmpty
+                ? String(localized: "翻了翻，没想起什么")
+                : String(format: String(localized: "翻了翻记忆 · %d 条"), outcome.hits.count),
             detail: String(detail.prefix(600)),
             modelText: outcome.rendered
         )
@@ -472,35 +476,35 @@ public final class ToolExecutor: ToolRunning {
         }
         if patchJson.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             || patchJson.trimmingCharacters(in: .whitespacesAndNewlines) == "{}" {
-            return failure(invocation, "没有给出要改的内容")
+            return failure(invocation, String(localized: "没有给出要改的内容"))
         }
         // 旧人格只有一整段提示词：readCard 会临时拆出一张卡，不落库也不报错。
         let card = personaCards.readCard(persona)
         if card.isEmpty {
-            return failure(invocation, "这个人格还没有人设，先别改")
+            return failure(invocation, String(localized: "这个人格还没有人设，先别改"))
         }
         let reason = String((invocation.argument("reason") ?? "").prefix(200))
         switch personaCards.applyPatch(personaId: persona.id, patchJson: patchJson, reason: reason) {
         case .failure(let error):
-            return failure(invocation, error.localizedDescription.isEmpty ? "这次没改成功" : error.localizedDescription)
+            return failure(invocation, error.localizedDescription.isEmpty ? String(localized: "这次没改成功") : error.localizedDescription)
         case .success(let changed):
             let summary = PersonaCardPatch.summarize(patchJson)
             if !changed {
                 // 本来就是这样：不算错，也别让他一直重试。
                 return success(
                     invocation,
-                    title: "想了想，没有改",
-                    subtitle: "这处本来就是这样",
-                    detail: "这处设定本来就是你说的样子，不用改。",
+                    title: String(localized: "想了想，没有改"),
+                    subtitle: String(localized: "这处本来就是这样"),
+                    detail: String(localized: "这处设定本来就是你说的样子，不用改。"),
                     modelText: "这处设定你已经是这样了，不用改；也别再重复调用。"
                 )
             }
             var detail = summary
-            if !reason.isEmpty { detail += "\n原因：\(reason)" }
-            detail += "\n已经生效，改动进了版本历史。"
+            if !reason.isEmpty { detail += "\n" + String(format: String(localized: "原因：%@"), reason) }
+            detail += "\n" + String(localized: "已经生效，改动进了版本历史。")
             return success(
                 invocation,
-                title: "调整了自己的人设",
+                title: String(localized: "调整了自己的人设"),
                 subtitle: summary,
                 detail: detail,
                 modelText: "你已经把「\(summary)」写进自己的人设，从现在开始就按这个来。不用向对方请示，也不必解释这是改动。"
@@ -512,17 +516,17 @@ public final class ToolExecutor: ToolRunning {
 
     private func setQuietHours(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
         guard let sleep = ProactiveProtocol.parseTimeOfDay(invocation.argument("sleep_at")) else {
-            return failure(invocation, "睡觉时间要写成 HH:mm")
+            return failure(invocation, String(localized: "睡觉时间要写成 HH:mm"))
         }
         guard let wake = ProactiveProtocol.parseTimeOfDay(invocation.argument("wake_at")) else {
-            return failure(invocation, "起床时间要写成 HH:mm")
+            return failure(invocation, String(localized: "起床时间要写成 HH:mm"))
         }
         let reason = String((invocation.argument("reason") ?? "").prefix(160))
         switch personaCards.setQuietHours(
             personaId: persona.id, sleepMinutes: sleep, wakeMinutes: wake, reason: reason
         ) {
         case .failure(let error):
-            return failure(invocation, error.localizedDescription.isEmpty ? "这次没安排上" : error.localizedDescription)
+            return failure(invocation, error.localizedDescription.isEmpty ? String(localized: "这次没安排上") : error.localizedDescription)
         case .success:
             break
         }
@@ -533,20 +537,34 @@ public final class ToolExecutor: ToolRunning {
                 log("[tool] set_dnd 失败：\(error.localizedDescription)")
             }
         }
+        // 界面用的一行（跟随界面语言）与提示词用的一行（脚手架保持中文）分开：
+        // 否则英文界面下模型会在中文提示词里读到一句英文。
         let dndLine: String
+        let dndPromptLine: String
         switch dnd {
-        case .some(true): dndLine = "\n睡前会开免打扰：睡着时不会被消息叫醒。"
-        case .some(false): dndLine = "\n睡前不开免打扰：睡着时被连着叫几条会醒。"
-        case .none: dndLine = ""
+        case .some(true):
+            dndLine = "\n" + String(localized: "睡前会开免打扰：睡着时不会被消息叫醒。")
+            dndPromptLine = "\n睡前会开免打扰：睡着时不会被消息叫醒。"
+        case .some(false):
+            dndLine = "\n" + String(localized: "睡前不开免打扰：睡着时被连着叫几条会醒。")
+            dndPromptLine = "\n睡前不开免打扰：睡着时被连着叫几条会醒。"
+        case .none:
+            dndLine = ""
+            dndPromptLine = ""
         }
-        let clock = "\(ProactiveProtocol.formatTimeOfDay(sleep)) 睡 · \(ProactiveProtocol.formatTimeOfDay(wake)) 起"
-        let detail = (reason.isEmpty ? "这段时间他不会主动来打扰。" : "\(reason)\n这段时间他不会主动来打扰。") + dndLine
+        let clock = String(
+            format: String(localized: "%@ 睡 · %@ 起"),
+            ProactiveProtocol.formatTimeOfDay(sleep),
+            ProactiveProtocol.formatTimeOfDay(wake)
+        )
+        let quietDetail = String(localized: "这段时间他不会主动来打扰。")
+        let detail = (reason.isEmpty ? quietDetail : "\(reason)\n" + quietDetail) + dndLine
         return success(
             invocation,
-            title: "安排了自己的作息",
+            title: String(localized: "安排了自己的作息"),
             subtitle: clock,
             detail: detail,
-            modelText: "作息已记下：\(ProactiveProtocol.formatTimeOfDay(sleep)) 到 \(ProactiveProtocol.formatTimeOfDay(wake)) 是你的休息时间，这段时间不会有主动消息。\(dndLine)"
+            modelText: "作息已记下：\(ProactiveProtocol.formatTimeOfDay(sleep)) 到 \(ProactiveProtocol.formatTimeOfDay(wake)) 是你的休息时间，这段时间不会有主动消息。\(dndPromptLine)"
         )
     }
 
@@ -563,17 +581,15 @@ public final class ToolExecutor: ToolRunning {
         sessionId: String,
         now: Int64
     ) -> ToolResult {
-        let minutes = min(max(invocation.intArgument("minutes", default: ChatRhythmService.defaultDeferMinutes),
-                             ChatRhythmService.deferMinutesRange.lowerBound),
-                          ChatRhythmService.deferMinutesRange.upperBound)
-        let reason = String((invocation.argument("reason") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(ChatRhythmService.deferReasonMax))
-        let earliest = now + Int64(minutes) * 60_000
+        let plan = DeferReply.plan(
+            minutes: invocation.intArgument("minutes", default: DeferReply.defaultMinutes),
+            reason: invocation.argument("reason"),
+            now: now
+        )
         let window = AgentWindow(
-            earliestAt: earliest,
-            latestAt: earliest + Int64(ChatRhythmService.deferWindowMinutes) * 60_000,
-            note: reason.isEmpty ? "刚才没说话，过一会儿再看看" : reason,
+            earliestAt: plan.earliestAt,
+            latestAt: plan.latestAt,
+            note: plan.reason.isEmpty ? "刚才没说话，过一会儿再看看" : plan.reason,
             hint: "到点以后你自己决定要不要开口；不想说也可以继续沉默"
         )
         _ = intents.plan(
@@ -589,10 +605,14 @@ public final class ToolExecutor: ToolRunning {
         _ = try? stores.messages.markUserMessagesRead(sessionId: sessionId, at: now)
         return success(
             invocation,
-            title: "决定先不回",
+            title: String(localized: "决定先不回"),
             subtitle: nil,
-            detail: "过 \(minutes) 分钟再想这件事\(reason.isEmpty ? "" : "（\(reason)）")",
-            modelText: "好的，这一轮不回复。不要再输出任何文字，也不要解释；对方会看到「已读」，过了 \(minutes) 分钟你会再想起这件事。"
+            detail: String(
+                format: String(localized: "过 %d 分钟再想这件事%@"),
+                plan.minutes,
+                plan.reason.isEmpty ? "" : String(format: String(localized: "（%@）"), plan.reason)
+            ),
+            modelText: "好的，这一轮不回复。不要再输出任何文字，也不要解释；对方会看到「已读」，过了 \(plan.minutes) 分钟你会再想起这件事。"
         )
     }
 
@@ -633,7 +653,7 @@ public final class ToolExecutor: ToolRunning {
         if let api = error as? ApiException { return api.message }
         if let failure = error as? CompletionFailure { return failure.message }
         let localized = (error as NSError).localizedDescription
-        return localized.isEmpty ? "工具调用失败" : localized
+        return localized.isEmpty ? String(localized: "工具调用失败") : localized
     }
 
     /// 参数 JSON → 对象（坏数据返回 nil，不抛）。

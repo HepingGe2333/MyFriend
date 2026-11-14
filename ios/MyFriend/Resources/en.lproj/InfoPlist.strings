@@ -1,0 +1,2 @@
+/* Info.plist strings shown in system prompts (app name unchanged, only permission copy). */
+"NSLocalNetworkUsageDescription" = "MyFriend needs local network access to reach the reference service running on your computer (for local debugging).";

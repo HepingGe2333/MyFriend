@@ -7,6 +7,7 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
+import com.myfriend.app.R
 import com.myfriend.app.domain.AvatarImagePolicy
 import com.myfriend.app.domain.MessageAttachment
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +43,7 @@ object MediaStorage {
             val target = AvatarImagePolicy.targetSize(decoded.width, decoded.height)
             if (target.width <= 0 || target.height <= 0) {
                 decoded.recycle()
-                error("图片尺寸异常，换一张试试")
+                error(context.getString(R.string.media_error_bad_size))
             }
             val scaled = if (decoded.width == target.width && decoded.height == target.height) {
                 decoded
@@ -63,7 +64,7 @@ object MediaStorage {
             scaled.recycle()
             if (!AvatarImagePolicy.fits(written)) {
                 targetFile.delete()
-                error("这张图片压不进 200KB，换一张试试")
+                error(context.getString(R.string.media_error_too_big_to_compress))
             }
             Uri.fromFile(targetFile).toString()
         }
@@ -86,7 +87,7 @@ object MediaStorage {
      * （不像 BitmapFactory 那样先解一张大的再缩）。旧版本退回 inSampleSize + 精确缩放。
      */
     private fun decodeAvatarBitmap(context: Context, source: Uri): Bitmap {
-        val bounds = readImageBounds(context, source) ?: error("无法读取图片")
+        val bounds = readImageBounds(context, source) ?: error(context.getString(R.string.media_error_unreadable))
         val target = AvatarImagePolicy.targetSize(bounds.first, bounds.second)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && target.width > 0) {
             return ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, source)) { decoder, _, _ ->
@@ -102,7 +103,7 @@ object MediaStorage {
         }
         return context.contentResolver.openInputStream(source)?.use {
             BitmapFactory.decodeStream(it, null, options)
-        } ?: error("无法读取图片")
+        } ?: error(context.getString(R.string.media_error_unreadable))
     }
 
     suspend fun persistImage(context: Context, source: Uri, kind: String): Result<String> = withContext(Dispatchers.IO) {
@@ -112,13 +113,13 @@ object MediaStorage {
             context.contentResolver.openInputStream(source)?.use { input ->
                 target.outputStream().use { output ->
                     val copied = input.copyTo(output)
-                    if (copied <= 0L) error("图片为空")
+                    if (copied <= 0L) error(context.getString(R.string.media_error_empty))
                     if (copied > MAX_BYTES) {
                         target.delete()
-                        error("图片超过 20 MB，请选择更小的图片")
+                        error(context.getString(R.string.media_error_over_20mb))
                     }
                 }
-            } ?: error("无法读取图片")
+            } ?: error(context.getString(R.string.media_error_unreadable))
             Uri.fromFile(target).toString()
         }
     }
@@ -144,7 +145,7 @@ object MediaStorage {
                 bitmap.recycle()
                 if (written <= 0L) {
                     target.delete()
-                    error("图片处理失败")
+                    error(context.getString(R.string.media_error_process_failed))
                 }
                 MessageAttachment(
                     uri = Uri.fromFile(target).toString(),
@@ -198,7 +199,7 @@ object MediaStorage {
         while (longest / sample > MAX_IMAGE_DIMENSION * 2) sample *= 2
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         return context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, options) }
-            ?: error("无法读取图片")
+            ?: error(context.getString(R.string.media_error_unreadable))
     }
 
     private fun writeBitmap(bitmap: Bitmap, target: File, usePng: Boolean, quality: Int): Long {

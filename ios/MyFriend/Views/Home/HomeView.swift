@@ -51,26 +51,26 @@ struct HomeView: View {
         .onAppear(perform: reload)
         .onChange(of: env.currentSettings.activePersonaId) { _ in reload() }
         .refreshable { reload() }
-        .alert("出了点问题", isPresented: Binding(
+        .alert(L("出了点问题"), isPresented: Binding(
             get: { errorText != nil },
             set: { if !$0 { errorText = nil } }
         )) {
-            Button("知道了", role: .cancel) { errorText = nil }
+            Button(L("知道了"), role: .cancel) { errorText = nil }
         } message: {
             Text(errorText ?? "")
         }
         .confirmationDialog(
-            pendingDelete.map { "删除「\($0.name)」？" } ?? "删除这个人？",
+            pendingDelete.map { Lf("删除「%@」？", $0.name) } ?? L("删除这个人？"),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { presented in if !presented { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) { deletePending() }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(L("删除"), role: .destructive) { deletePending() }
+            Button(L("取消"), role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("他的聊天、记忆与主动节奏都会一起删掉，这段关系没法恢复。至少留着一个人。")
+            Text(L("他的聊天、记忆与主动节奏都会一起删掉，这段关系没法恢复。至少留着一个人。"))
         }
     }
 
@@ -88,16 +88,16 @@ struct HomeView: View {
                         .foregroundStyle(.primary)
                 }
                 .padding(.leading, 18)
-                .accessibilityLabel(Text("管理联系人"))
+                .accessibilityLabel(Text(L("管理联系人")))
                 NavigationLink(value: Route.settings) {
                     Image(systemName: "gearshape")
                         .font(.system(size: 18))
                         .foregroundStyle(.primary)
                 }
                 .padding(.leading, 16)
-                .accessibilityLabel(Text("设置"))
+                .accessibilityLabel(Text(L("设置")))
             }
-            Text("留一处安静的地方，慢慢说话")
+            Text(L("留一处安静的地方，慢慢说话"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
@@ -119,15 +119,15 @@ struct HomeView: View {
                     Button {
                         open(contact)
                     } label: {
-                        Label("去找他", systemImage: "bubble.left")
+                        Label(L("去找他"), systemImage: "bubble.left")
                     }
                     NavigationLink(destination: PersonaEditorScreen(personaId: contact.persona.id)) {
-                        Label("编辑这个人", systemImage: "pencil")
+                        Label(L("编辑这个人"), systemImage: "pencil")
                     }
                     Button(role: .destructive) {
                         askDelete(contact.persona)
                     } label: {
-                        Label("删除这个人", systemImage: "trash")
+                        Label(L("删除这个人"), systemImage: "trash")
                     }
                 }
                 if contact.id != contacts.last?.id {
@@ -151,7 +151,7 @@ struct HomeView: View {
                         .font(.system(.body, design: .serif))
                         .lineLimit(1)
                     if contact.persona.id == env.currentSettings.activePersonaId {
-                        Text("正在聊")
+                        Text(L("正在聊"))
                             .font(.caption2)
                             .foregroundStyle(MFTheme.defaultAccent)
                     }
@@ -178,7 +178,7 @@ struct HomeView: View {
                     }
                 }
                 if let mood = contact.persona.mood, !mood.isEmpty {
-                    Text("此刻：\(mood)")
+                    Text(Lf("此刻：%@", mood))
                         .font(.caption2)
                         .foregroundStyle(MFTheme.defaultAccent.opacity(0.85))
                         .lineLimit(1)
@@ -191,18 +191,18 @@ struct HomeView: View {
     }
 
     private func preview(_ contact: Contact) -> String {
-        guard let session = contact.session else { return "还没有说过话" }
+        guard let session = contact.session else { return L("还没有说过话") }
         let text = (session.lastMessagePreview ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        return text.isEmpty ? "还没有说过话" : text
+        return text.isEmpty ? L("还没有说过话") : text
     }
 
     // MARK: - 空状态
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("这里还没有人")
+            Text(L("这里还没有人"))
                 .font(.system(.body, design: .serif))
-            Text("点右下角的「+」，先给自己建一个联系人：写下他是谁、怎么说话，然后跟他说第一句。")
+            Text(L("点右下角的「+」，先给自己建一个联系人：写下他是谁、怎么说话，然后跟他说第一句。"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -225,7 +225,7 @@ struct HomeView: View {
         .buttonStyle(.plain)
         .padding(.trailing, 20)
         .padding(.bottom, 24)
-        .accessibilityLabel(Text("新建联系人"))
+        .accessibilityLabel(Text(L("新建联系人")))
     }
 
     // MARK: - 动作
@@ -251,7 +251,7 @@ struct HomeView: View {
     /// 点一行 = 去找他。会话不存在就顺手建一段（一人一段，§二）。
     private func open(_ contact: Contact) {
         guard let session = env.session(forPersona: contact.persona.id) else {
-            errorText = "这段对话没建成，检查一下本地存储空间。"
+            errorText = L("这段对话没建成，检查一下本地存储空间。")
             return
         }
         env.updateSettings { $0.activePersonaId = contact.persona.id }
@@ -265,7 +265,7 @@ struct HomeView: View {
 
     private func askDelete(_ persona: PersonaEntity) {
         guard contacts.count > 1 else {
-            errorText = "至少要留着一个人。想换掉的话，先新建一个，再回来删这个。"
+            errorText = L("至少要留着一个人。想换掉的话，先新建一个，再回来删这个。")
             return
         }
         pendingDelete = persona

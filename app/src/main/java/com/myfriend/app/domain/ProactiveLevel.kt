@@ -34,7 +34,12 @@ object ProactiveLevel {
         else -> 1.30
     }
 
-    /** 编辑页滑杆下面那句人话，和 iOS 必须一字不差。 */
+    /**
+     * 编辑页滑杆下面那句人话，和 iOS 必须一字不差。
+     *
+     * 这句是跨端 spec 的一部分（见 `spec/AgentCoreSpecTest`），也是 `domain/` 里唯一的一份：
+     * 界面显示走 `ui/screens/persona/ProactiveLevelText.kt` 的资源版本，那边中文与此逐字一致、英文在 values-en。
+     */
     fun description(level: Int): String = when (normalize(level)) {
         1 -> "很少主动。你不找他，他基本不会来打扰。"
         2 -> "偶尔想起你。忙起来就顾不上了。"

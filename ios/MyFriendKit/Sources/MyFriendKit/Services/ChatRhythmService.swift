@@ -29,12 +29,15 @@ public protocol ChatRhythmHandling: AnyObject {
 public final class ChatRhythmService: ChatRhythmHandling {
 
     /// `defer_reply` 的分钟数缺省与夹取范围（规格 §四：缺省 45，夹在 5–720）。
-    public static let defaultDeferMinutes = 45
-    public static let deferMinutesRange = 5...720
+    ///
+    /// 值本身住在 `Domain/DeferReply.swift`（纯函数，契约用例直接调它）；
+    /// 这里保留同名的转发常量，避免现有调用点/测试被迫一起改。
+    public static let defaultDeferMinutes = DeferReply.defaultMinutes
+    public static let deferMinutesRange = DeferReply.minMinutes...DeferReply.maxMinutes
     /// 念头窗口的跨度：到点之后的半小时内都算「合适的时机」。
-    public static let deferWindowMinutes = 30
+    public static let deferWindowMinutes = DeferReply.windowMinutes
     /// reason 只进日志与「他最近在想什么」，所以限长 80 字。
-    public static let deferReasonMax = 80
+    public static let deferReasonMax = DeferReply.maxReasonChars
 
     private let stores: DatabaseStores
     private let mood: MoodRepository
@@ -96,15 +99,12 @@ public final class ChatRhythmService: ChatRhythmHandling {
     /// - 由心跳在到点时再问他一次，他仍然可以选择继续沉默。
     public func handleDeferredReply(personaId: String, sessionId: String,
                                     minutes: Int, reason: String, at: Int64) {
-        let clamped = min(max(minutes, Self.deferMinutesRange.lowerBound),
-                          Self.deferMinutesRange.upperBound)
-        let note = String(reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(Self.deferReasonMax))
-        let earliest = at + Int64(clamped) * 60_000
+        // 夹取 / trim / 窗口计算全部收在 `DeferReply.plan`：纯函数，契约用例钉住同一组边界。
+        let plan = DeferReply.plan(minutes: minutes, reason: reason, now: at)
         let window = AgentWindow(
-            earliestAt: earliest,
-            latestAt: earliest + Int64(Self.deferWindowMinutes) * 60_000,
-            note: note.isEmpty ? "刚才没说话，过一会儿再看看" : note,
+            earliestAt: plan.earliestAt,
+            latestAt: plan.latestAt,
+            note: plan.reason.isEmpty ? "刚才没说话，过一会儿再看看" : plan.reason,
             hint: "他刚才自己选择先不说；现在如果你还想说，就用你自己的语气开口，别解释刚才为什么没回"
         )
         _ = intents.plan(

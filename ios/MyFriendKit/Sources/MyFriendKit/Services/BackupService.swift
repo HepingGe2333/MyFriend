@@ -80,12 +80,26 @@ public struct ImportSummary: Equatable, Sendable {
 
     /// 「把他接回来了：3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话」。
     public func describe() -> String {
-        var text = mode == .replace ? "照备份重新接回了他" : "把他接回来了"
-        text += "：\(personas) 个人格 · \(memories) 条记忆 · \(sessions) 段对话 · \(messages) 句话"
-        if rules > 0 { text += " · \(rules) 条主动节奏" }
-        if presets > 0 { text += " · \(presets) 个预设" }
-        if skipped > 0 { text += "；有 \(skipped) 条没接回来" }
-        if !warnings.isEmpty { text += "；" + warnings.joined(separator: "；") }
+        var text = mode == .replace
+            ? String(localized: "照备份重新接回了他")
+            : String(localized: "把他接回来了")
+        text += String(
+            format: String(localized: "：%d 个人格 · %d 条记忆 · %d 段对话 · %d 句话"),
+            personas, memories, sessions, messages
+        )
+        if rules > 0 {
+            text += String(format: String(localized: " · %d 条主动节奏"), rules)
+        }
+        if presets > 0 {
+            text += String(format: String(localized: " · %d 个预设"), presets)
+        }
+        if skipped > 0 {
+            text += String(format: String(localized: "；有 %d 条没接回来"), skipped)
+        }
+        if !warnings.isEmpty {
+            let separator = String(localized: "；")
+            text += separator + warnings.joined(separator: separator)
+        }
         return text
     }
 }
@@ -182,7 +196,7 @@ public final class BackupService {
         let encoded = try BackupCodec.encode(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if BackupCodec.containsSecretField(encoded) {
-            throw BackupImportError("备份里出现了密钥字段，已中止导出")
+            throw BackupImportError(String(localized: "备份里出现了密钥字段，已中止导出"))
         }
         return encoded
     }
@@ -232,7 +246,7 @@ public final class BackupService {
         // 这不是「优化」：`chat_sessions.personaId` 上有唯一索引，不合并就会直接写失败。
         let (keptSessions, droppedSessions) = Self.oneSessionPerPersona(bundle.sessions)
         if droppedSessions > 0 {
-            warnings.append("备份里有 \(droppedSessions) 段多余的对话：一人只留最新的一段，其余没有接回来")
+            warnings.append(String(format: String(localized: "备份里有 %d 段多余的对话：一人只留最新的一段，其余没有接回来"), droppedSessions))
         }
 
         // 合并模式下还要处理「同一个人在本机已经有另一段对话」：唯一索引不允许两段，
@@ -258,9 +272,10 @@ public final class BackupService {
             sessions.append(entity)
         }
         if mergedSessions > 0 {
-            warnings.append(
-                "有 \(mergedSessions) 段对话和本机已有的对话属于同一个人：已经并进本机那段里，接回来以后还是同一段"
-            )
+            warnings.append(String(
+                format: String(localized: "有 %d 段对话和本机已有的对话属于同一个人：已经并进本机那段里，接回来以后还是同一段"),
+                mergedSessions
+            ))
         }
         let presets = bundle.presets.map(Self.toEntity)
         let rules = bundle.proactiveRules.map(Self.toEntity)
@@ -288,7 +303,7 @@ public final class BackupService {
             !($0.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
         if messagesWithAttachments > 0 {
-            warnings.append("有 \(messagesWithAttachments) 句话原本带着图片，图片没有跟着备份走，现在只剩文字")
+            warnings.append(String(format: String(localized: "有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字"), messagesWithAttachments))
         }
 
         try stores.database.inTransaction {
@@ -348,15 +363,16 @@ public final class BackupService {
             return true
         }.count
         if configsMissingKey > 0 {
-            warnings.append(
-                "有 \(configsMissingKey) 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好"
-            )
+            warnings.append(String(
+                format: String(localized: "有 %d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好"),
+                configsMissingKey
+            ))
         }
 
         if let backupSettings = bundle.settings {
             restoreSettings(backupSettings, warnings: &warnings)
         } else {
-            warnings.append("这份备份里没有设置，设置页保持你现在的样子")
+            warnings.append(String(localized: "这份备份里没有设置，设置页保持你现在的样子"))
         }
 
         return ImportSummary(
@@ -379,7 +395,7 @@ public final class BackupService {
         var restored = settings.load().applying(backup)
         // 「正在聊的人」必须真的存在：备份里选中的那个人格可能没在这一次接回来的内容里。
         if let active = restored.activePersonaId, ((try? stores.personas.byId(active)) ?? nil) == nil {
-            warnings.append("备份里选中的那个人格不在这份备份里，已把「正在聊的人」交还给默认人格")
+            warnings.append(String(localized: "备份里选中的那个人格不在这份备份里，已把「正在聊的人」交还给默认人格"))
             restored.activePersonaId = nil
         }
         settings.save(restored)
@@ -677,7 +693,7 @@ public final class BackupService {
     static func toNewEntity(_ imported: BackupApiConfig, now: Int64) -> ApiConfigEntity {
         ApiConfigEntity(
             id: imported.id,
-            name: imported.name.isEmpty ? "接回来的配置" : imported.name,
+            name: imported.name.isEmpty ? String(localized: "接回来的配置") : imported.name,
             provider: ProviderType(stored: imported.provider),
             baseUrl: imported.baseUrl,
             apiKeyCipher: nil,

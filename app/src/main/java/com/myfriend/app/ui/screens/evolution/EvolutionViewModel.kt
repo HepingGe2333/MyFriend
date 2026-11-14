@@ -1,14 +1,17 @@
 package com.myfriend.app.ui.screens.evolution
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaRevisionEntity
 import com.myfriend.app.data.repo.EvolutionRepository
 import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.domain.EvolutionProposal
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +34,7 @@ data class EvolutionUiState(
 @HiltViewModel
 class EvolutionViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
+    @ApplicationContext private val context: Context,
     private val personaRepository: PersonaRepository,
     private val evolutionRepository: EvolutionRepository
 ) : ViewModel() {
@@ -73,7 +77,7 @@ class EvolutionViewModel @Inject constructor(
             proposal.value = null
             evolutionRepository.generateProposal(personaId)
                 .onSuccess { proposal.value = it }
-                .onFailure { message.value = it.message ?: "生成进化提案失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_generate_failed) }
             generating.value = false
         }
     }
@@ -95,9 +99,9 @@ class EvolutionViewModel @Inject constructor(
             personaRepository.acceptEvolution(personaId, proposal.prompt, proposal.summary)
                 .onSuccess {
                     this@EvolutionViewModel.proposal.value = null
-                    message.value = "人格已进化。旧版本已保留，下一轮对话就会用上新版本。"
+                    message.value = context.getString(R.string.evolution_applied)
                 }
-                .onFailure { message.value = it.message ?: "应用进化失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_accept_failed) }
             accepting.value = false
         }
     }
@@ -107,8 +111,8 @@ class EvolutionViewModel @Inject constructor(
         viewModelScope.launch {
             restoringId.value = revision.id
             personaRepository.restoreRevision(personaId, revision.id)
-                .onSuccess { message.value = "已恢复 v${revision.version} 的人格内容，并生成新版本" }
-                .onFailure { message.value = it.message ?: "恢复失败" }
+                .onSuccess { message.value = context.getString(R.string.evolution_restored, revision.version) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.evolution_restore_failed) }
             restoringId.value = null
         }
     }

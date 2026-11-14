@@ -40,7 +40,7 @@ struct BackupScreen: View {
             .padding(.vertical, 16)
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle("备份")
+        .navigationTitle(L("备份"))
         .navigationBarTitleDisplayMode(.inline)
         .mfAlert($banner)
         .fileExporter(
@@ -83,7 +83,7 @@ struct BackupScreen: View {
             ),
             titleVisibility: .visible
         ) {
-            Button(pendingAction?.confirmTitle ?? "确定", role: .destructive) {
+            Button(pendingAction?.confirmTitle ?? L("确定"), role: .destructive) {
                 guard let action = pendingAction else { return }
                 pendingAction = nil
                 switch action {
@@ -91,7 +91,7 @@ struct BackupScreen: View {
                 case .clearAll: clearAll()
                 }
             }
-            Button("取消", role: .cancel) { pendingAction = nil }
+            Button(L("取消"), role: .cancel) { pendingAction = nil }
         } message: {
             Text(pendingAction?.message ?? "")
         }
@@ -101,11 +101,11 @@ struct BackupScreen: View {
 
     private var introCard: some View {
         MFCard {
-            Text("他不是一份数据，是一个陪你聊过很久的人。")
+            Text(L("他不是一份数据，是一个陪你聊过很久的人。"))
                 .font(.system(.body, design: .serif))
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("把他带走，会把人格、你们聊过的每一句、他记得的事、他给自己定的规矩和能带走的设置，一起打包成一份 JSON。换手机、重装 App 之后，用下面「从备份里接他回来」把他接回原处。")
+            Text(L("把他带走，会把人格、你们聊过的每一句、他记得的事、他给自己定的规矩和能带走的设置，一起打包成一份 JSON。换手机、重装 App 之后，用下面「从备份里接他回来」把他接回原处。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -114,7 +114,7 @@ struct BackupScreen: View {
             if busy {
                 HStack(spacing: 8) {
                     ProgressView().scaleEffect(0.75)
-                    Text("正在整理他的东西，稍等一下……")
+                    Text(L("正在整理他的东西，稍等一下……"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -130,8 +130,8 @@ struct BackupScreen: View {
             Button(action: startExport) {
                 transferRow(
                     icon: "square.and.arrow.up",
-                    title: "把他带走",
-                    subtitle: "选一个位置，把这份 JSON 存起来"
+                    title: L("把他带走"),
+                    subtitle: L("选一个位置，把这份 JSON 存起来")
                 )
             }
             .buttonStyle(.plain)
@@ -144,8 +144,8 @@ struct BackupScreen: View {
             } label: {
                 transferRow(
                     icon: "square.and.arrow.down",
-                    title: "从备份里接他回来",
-                    subtitle: "先看看这份备份里有什么，再决定合并还是替换"
+                    title: L("从备份里接他回来"),
+                    subtitle: L("先看看这份备份里有什么，再决定合并还是替换")
                 )
             }
             .buttonStyle(.plain)
@@ -180,13 +180,13 @@ struct BackupScreen: View {
 
     private var honestyCard: some View {
         MFCard {
-            Text("哪些东西没跟着走")
+            Text(L("哪些东西没跟着走"))
                 .font(.system(.body, design: .serif))
                 .padding(.bottom, 8)
 
-            honestyRow(icon: "key", text: "API Key 不在备份里。它存在这台手机的 Keychain 里，从来不进文件；接回来以后在「API 配置」里重新填一次就好。")
-            honestyRow(icon: "photo", text: "图片没有跟着备份走。备份里只有文字，那些带图片的消息会剩下「（发来一张图片）」这行字；头像也一样，换台手机之后会变回名字的首字。")
-            honestyRow(icon: "iphone", text: "聊天背景图的路径是这台手机上的本地路径，换机之后会失效，需要重新选一次。")
+            honestyRow(icon: "key", text: L("API Key 不在备份里。它存在这台手机的 Keychain 里，从来不进文件；接回来以后在「API 配置」里重新填一次就好。"))
+            honestyRow(icon: "photo", text: L("图片没有跟着备份走。备份里只有文字，那些带图片的消息会剩下「（发来一张图片）」这行字；头像也一样，换台手机之后会变回名字的首字。"))
+            honestyRow(icon: "iphone", text: L("聊天背景图的路径是这台手机上的本地路径，换机之后会失效，需要重新选一次。"))
         }
     }
 
@@ -209,12 +209,12 @@ struct BackupScreen: View {
 
     private var dangerCard: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "危险区")
+            MFSectionTitle(text: L("危险区"))
 
             MFCard {
-                Text("清空之前，先把他带走。")
+                Text(L("清空之前，先把他带走。"))
                     .font(.system(.body, design: .serif))
-                Text("删掉以后，那些对话和他记住的事就真的没有了；先留一份备份，随时能接回来。")
+                Text(L("删掉以后，那些对话和他记住的事就真的没有了；先留一份备份，随时能接回来。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -224,7 +224,7 @@ struct BackupScreen: View {
                     HStack(spacing: 8) {
                         Image(systemName: "square.and.arrow.up")
                             .font(.system(size: 13))
-                        Text("先把他带走")
+                        Text(L("先把他带走"))
                             .font(.footnote)
                     }
                     .foregroundStyle(accent)
@@ -239,7 +239,7 @@ struct BackupScreen: View {
                 Button {
                     pendingAction = .clearChats
                 } label: {
-                    dangerRow(icon: "trash", title: "清空全部聊天与记忆", subtitle: "保留人格与 API 配置")
+                    dangerRow(icon: "trash", title: L("清空全部聊天与记忆"), subtitle: L("保留人格与 API 配置"))
                 }
                 .buttonStyle(.plain)
 
@@ -248,7 +248,7 @@ struct BackupScreen: View {
                 Button {
                     pendingAction = .clearAll
                 } label: {
-                    dangerRow(icon: "delete.left", title: "删除全部本地数据", subtitle: "人格、记忆、配置与设置一起删")
+                    dangerRow(icon: "delete.left", title: L("删除全部本地数据"), subtitle: L("人格、记忆、配置与设置一起删"))
                 }
                 .buttonStyle(.plain)
             }
@@ -296,7 +296,7 @@ struct BackupScreen: View {
                     exportingDocument = BackupJSONDocument(text: text)
                     exporting = true
                 case .failure(let error):
-                    banner = MFAlert(title: "没能把他带走", message: error.localizedDescription)
+                    banner = MFAlert(title: L("没能把他带走"), message: error.localizedDescription)
                 }
             }
         }
@@ -306,13 +306,13 @@ struct BackupScreen: View {
         switch result {
         case .success(let url):
             banner = MFAlert(
-                title: "已经把他带走了",
-                message: "已经把他带走了：\(url.lastPathComponent)。放在安全的地方，换手机的时候还能接回来。"
+                title: L("已经把他带走了"),
+                message: Lf("已经把他带走了：%@。放在安全的地方，换手机的时候还能接回来。", url.lastPathComponent)
             )
         case .failure(let error):
             let nsError = error as NSError
             if nsError.code == NSUserCancelledError { return }
-            banner = MFAlert(title: "没能写进文件", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能写进文件"), message: error.localizedDescription)
         }
         exportingDocument = nil
     }
@@ -324,7 +324,7 @@ struct BackupScreen: View {
         case .failure(let error):
             let nsError = error as NSError
             if nsError.code == NSUserCancelledError { return }
-            banner = MFAlert(title: "这个文件读不出来", message: error.localizedDescription)
+            banner = MFAlert(title: L("这个文件读不出来"), message: error.localizedDescription)
         case .success(let urls):
             guard let url = urls.first else { return }
             let scoped = url.startAccessingSecurityScopedResource()
@@ -334,7 +334,7 @@ struct BackupScreen: View {
                 let decoded = env.backup.preview(fileText: text)
                 switch decoded {
                 case .failure(let reason):
-                    banner = MFAlert(title: "这份备份读不出来", message: reason)
+                    banner = MFAlert(title: L("这份备份读不出来"), message: reason)
                 case .success(let bundle, let warnings):
                     pendingImportText = text
                     pendingPreview = BackupPreview.from(bundle)
@@ -343,8 +343,8 @@ struct BackupScreen: View {
                 }
             } catch {
                 banner = MFAlert(
-                    title: "这个文件读不出来",
-                    message: "换一份之前带走的备份试试。这份文件没有写进任何东西。"
+                    title: L("这个文件读不出来"),
+                    message: L("换一份之前带走的备份试试。这份文件没有写进任何东西。")
                 )
             }
         }
@@ -370,13 +370,13 @@ struct BackupScreen: View {
                     // 否则主题 / 正在聊的人还挂着导入前的那份。
                     env.reloadSettings()
                     banner = MFAlert(
-                        title: mode == .replace ? "照备份重新接回了他" : "把他接回来了",
+                        title: mode == .replace ? L("照备份重新接回了他") : L("把他接回来了"),
                         message: summary.describe()
                     )
                 case .failure(let error):
                     banner = MFAlert(
-                        title: "没能接回来",
-                        message: "\(error.localizedDescription)。这台手机上的东西一个都没动。"
+                        title: L("没能接回来"),
+                        message: Lf("%@。这台手机上的东西一个都没动。", error.localizedDescription)
                     )
                 }
             }
@@ -388,16 +388,16 @@ struct BackupScreen: View {
     private func clearChats() {
         do {
             let summary = try env.dataReset.clearChats()
-            banner = MFAlert(title: "清空了", message: summary.describeChats())
+            banner = MFAlert(title: L("清空了"), message: summary.describeChats())
         } catch {
-            banner = MFAlert(title: "没能清空", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能清空"), message: error.localizedDescription)
         }
     }
 
     private func clearAll() {
         let summary = env.dataReset.clearAll()
         env.reloadSettings()
-        banner = MFAlert(title: "都删掉了", message: summary.describeAll())
+        banner = MFAlert(title: L("都删掉了"), message: summary.describeAll())
     }
 
     private enum PendingAction {
@@ -406,24 +406,24 @@ struct BackupScreen: View {
 
         var title: String {
             switch self {
-            case .clearChats: return "清空全部聊天与记忆？"
-            case .clearAll: return "删除全部本地数据？"
+            case .clearChats: return L("清空全部聊天与记忆？")
+            case .clearAll: return L("删除全部本地数据？")
             }
         }
 
         var confirmTitle: String {
             switch self {
-            case .clearChats: return "清空"
-            case .clearAll: return "全部删除"
+            case .clearChats: return L("清空")
+            case .clearAll: return L("全部删除")
             }
         }
 
         var message: String {
             switch self {
             case .clearChats:
-                return "所有会话、消息和长期记忆会被删除。人格与 API 配置会留着。这个动作没法撤销——想留个底的话，先把他带走。"
+                return L("所有会话、消息和长期记忆会被删除。人格与 API 配置会留着。这个动作没法撤销——想留个底的话，先把他带走。")
             case .clearAll:
-                return "人格、聊天、记忆、预设、主动节奏、API 配置与设置都会删掉，App 回到刚装上的样子。"
+                return L("人格、聊天、记忆、预设、主动节奏、API 配置与设置都会删掉，App 回到刚装上的样子。")
             }
         }
     }
@@ -468,11 +468,11 @@ private struct BackupPreviewSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Text(preview.isEmpty ? "这份备份里没有他" : "备份里有什么")
+                Text(preview.isEmpty ? L("这份备份里没有他") : L("备份里有什么"))
                     .font(.system(.title3, design: .serif))
 
                 if preview.isEmpty {
-                    Text("换一份之前带走的备份试试。这份文件没有写进任何东西。")
+                    Text(L("换一份之前带走的备份试试。这份文件没有写进任何东西。"))
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -488,31 +488,31 @@ private struct BackupPreviewSheet: View {
                     }
 
                     MFCard {
-                        Text("两种接法")
+                        Text(L("两种接法"))
                             .font(.system(.footnote, design: .serif))
                             .padding(.bottom, 6)
-                        Text("合并：同一条用备份里的更新，这台手机上多出来的留着。")
+                        Text(L("合并：同一条用备份里的更新，这台手机上多出来的留着。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("替换：先清空这台手机上的他，再照备份接回来。")
+                        Text(L("替换：先清空这台手机上的他，再照备份接回来。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 4)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("API 配置和密钥不在这份备份里，所以两种方式都不会动你存的 Key。")
+                        Text(L("API 配置和密钥不在这份备份里，所以两种方式都不会动你存的 Key。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 8)
                             .fixedSize(horizontal: false, vertical: true)
                         if preview.apiConfigs > 0 {
-                            Text("备份里另有 \(preview.apiConfigs) 个 API 配置的空壳（地址与模型，不含密钥）。")
+                            Text(Lcount("备份里另有 %d 个 API 配置的空壳（地址与模型，不含密钥）。", preview.apiConfigs))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .padding(.top, 4)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text("图片没有跟着备份走：带图片的消息只会剩下文字，头像也会变回名字首字。")
+                        Text(L("图片没有跟着备份走：带图片的消息只会剩下文字，头像也会变回名字首字。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 4)
@@ -521,7 +521,7 @@ private struct BackupPreviewSheet: View {
 
                     if !warnings.isEmpty {
                         MFCard {
-                            Text("接的时候要注意")
+                            Text(L("接的时候要注意"))
                                 .font(.system(.footnote, design: .serif))
                             ForEach(warnings, id: \.self) { warning in
                                 Text("· \(warning)")
@@ -539,7 +539,7 @@ private struct BackupPreviewSheet: View {
                         Button {
                             onImport(.merge)
                         } label: {
-                            Text("合并")
+                            Text(L("合并"))
                                 .font(.system(.body, design: .serif))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
@@ -554,7 +554,7 @@ private struct BackupPreviewSheet: View {
                         Button {
                             onImport(.replace)
                         } label: {
-                            Text("替换")
+                            Text(L("替换"))
                                 .font(.system(.body, design: .serif))
                                 .foregroundStyle(.white)
                                 .frame(maxWidth: .infinity)
@@ -568,7 +568,7 @@ private struct BackupPreviewSheet: View {
                     }
 
                     Button(action: onCancel) {
-                        Text(preview.isEmpty ? "好" : "取消")
+                        Text(preview.isEmpty ? L("好") : L("取消"))
                             .font(.footnote)
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)

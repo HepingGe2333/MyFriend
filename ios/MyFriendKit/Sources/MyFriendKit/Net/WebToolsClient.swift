@@ -107,25 +107,25 @@ public enum WebToolsFailure: Error, LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .invalidBaseUrl:
-            return "联网工具地址不是合法的 http/https 链接"
+            return String(localized: "联网工具地址不是合法的 http/https 链接")
         case .invalidUrl:
-            return "这个链接不是合法的 http/https 链接"
+            return String(localized: "这个链接不是合法的 http/https 链接")
         case .emptyQuery:
-            return "搜索关键词不能为空"
+            return String(localized: "搜索关键词不能为空")
         case .missingAPIKey:
-            return "还没有填联网工具需要的 API Key"
+            return String(localized: "还没有填联网工具需要的 API Key")
         case let .http(_, message):
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "联网工具请求失败，请稍后再试" : trimmed
+            return trimmed.isEmpty ? String(localized: "联网工具请求失败，请稍后再试") : trimmed
         case let .network(message):
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
-            return trimmed.isEmpty ? "联网工具请求失败，请检查网络后重试" : trimmed
+            return trimmed.isEmpty ? String(localized: "联网工具请求失败，请检查网络后重试") : trimmed
         }
     }
 
     /// 工具执行器要把它原样回灌给模型，所以给一个「一句人话」的取值（永不为 nil）。
     public var message: String {
-        errorDescription ?? "联网工具调用失败，请稍后再试"
+        errorDescription ?? String(localized: "联网工具调用失败，请稍后再试")
     }
 }
 

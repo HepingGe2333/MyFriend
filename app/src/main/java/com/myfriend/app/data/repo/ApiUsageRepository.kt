@@ -29,7 +29,12 @@ data class SessionUsage(
     val label: String,
     val calls: Int,
     val promptTokens: Long,
-    val completionTokens: Long
+    val completionTokens: Long,
+    /**
+     * 这一行是不是「没名字」的兜底行（人格被删了，或者老数据没有 sessionId）。
+     * 界面按它换成自己语言的说法，[label] 只留给日志和旧调用方。
+     */
+    val nameless: Boolean = false
 ) {
     val totalTokens: Long get() = promptTokens + completionTokens
 }
@@ -159,13 +164,14 @@ class ApiUsageRepository @Inject constructor(
     ): Flow<List<SessionUsage>> =
         dao.observeBySession(ApiCost.monthStart(now), limit).map { rows ->
             rows.map { row ->
+                val name = row.personaName?.takeIf { it.isNotBlank() }
                 SessionUsage(
                     sessionId = row.sessionId,
-                    label = row.personaName?.takeIf { it.isNotBlank() }
-                        ?: if (row.sessionId.isNullOrBlank()) "其他" else "未知联系人",
+                    label = name ?: if (row.sessionId.isNullOrBlank()) "其他" else "未知联系人",
                     calls = row.calls,
                     promptTokens = row.promptTokens,
-                    completionTokens = row.completionTokens
+                    completionTokens = row.completionTokens,
+                    nameless = name == null
                 )
             }
         }

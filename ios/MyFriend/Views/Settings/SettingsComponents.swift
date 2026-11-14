@@ -35,7 +35,7 @@ enum MFUI {
 enum MFProviderLabel {
     static func text(_ provider: ProviderType) -> String {
         switch provider {
-        case .openai: return "OpenAI 兼容"
+        case .openai: return L("OpenAI 兼容")
         case .gemini: return "Gemini"
         case .claude: return "Claude"
         }
@@ -270,7 +270,7 @@ extension View {
             ),
             presenting: alert.wrappedValue
         ) { _ in
-            Button("知道了", role: .cancel) {}
+            Button(L("知道了"), role: .cancel) {}
         } message: { item in
             Text(item.message)
         }

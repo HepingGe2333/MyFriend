@@ -1,0 +1,1141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MyFriend</string>
+    <string name="proactive_channel_name">Waking up on his own</string>
+    <string name="proactive_channel_description">Messages he starts at the times you set</string>
+    <string name="chat_reply_channel_name">His messages</string>
+    <string name="chat_reply_channel_description">Replies he sends while you\'re not in the chat</string>
+    <string name="agent_channel_name">He\'s still here</string>
+    <string name="agent_channel_description">A quiet notice that he\'s awake while running in the background</string>
+    <string name="agent_foreground_title">He\'s still awake</string>
+    <string name="agent_foreground_text">He thinks of you now and then, even in the background</string>
+
+    <!-- Notifications: one line only, the rest waits until the app is unlocked. -->
+    <string name="chat_notify_one_message">He sent you a message</string>
+    <string name="chat_notify_few_messages">He sent you a few messages</string>
+    <string name="agent_notify_public_text">He\'s here</string>
+
+    <!-- Usage: tokens only. No money, no quota, no input field. -->
+    <string name="usage_section_title">Usage</string>
+    <string name="usage_headline_none">Not much talking this month</string>
+    <string name="usage_headline_tokens">%1$s tokens this month</string>
+    <string name="usage_detail_none">Once he starts talking with you and tidying his own memories, the numbers will show up here.</string>
+    <string name="usage_detail_counts">%1$d calls · %2$s tokens in · %3$s tokens out</string>
+    <string name="usage_by_kind_title">By what he was doing</string>
+    <string name="usage_by_session_title">By person (top 10)</string>
+    <string name="usage_kind_calls_tokens">%1$d calls · %2$s tokens</string>
+    <string name="usage_tokens_ten_thousand">%1$sk</string>
+    <string name="usage_local_only">Kept on this phone only, never uploaded. It never limits what he can do.</string>
+
+    <!-- Settings: taking him with you, and bringing him back -->
+    <string name="backup_section_title">Take him with you</string>
+    <string name="backup_intro_title">He isn\'t a pile of data. He\'s someone you\'ve talked with for a long time.</string>
+    <string name="backup_intro_body">Taking him with you packs his persona, every word you\'ve exchanged, the things he remembers, the rules he set for himself and the settings that can travel, all into one JSON file. After a new phone or a reinstall, use “Bring him back from a backup” below to put him back where he was.</string>
+    <string name="backup_safety_body">The backup holds your conversations and his memories, so keep it somewhere safe. API keys aren\'t in it — once he\'s back, just fill them in again under “API settings” on this phone. Avatar images don\'t travel either; pick one again after switching phones.</string>
+    <string name="backup_export_row_title">Take him with you</string>
+    <string name="backup_export_row_desc">Pick a place to save this JSON file</string>
+    <string name="backup_import_row_title">Bring him back from a backup</string>
+    <string name="backup_import_row_desc">Look inside the backup first, then merge or replace</string>
+    <string name="backup_busy">Packing his things. One moment…</string>
+    <string name="backup_error_pack">Couldn\'t pack him up, so he\'s staying right here</string>
+    <string name="backup_error_unwritable">Can\'t write to that location</string>
+    <string name="backup_success">He\'s packed and ready to go. Keep it somewhere safe.</string>
+    <string name="backup_success_named">He\'s packed: %1$s. Keep it somewhere safe.</string>
+    <string name="backup_error_write">Couldn\'t write to that file: %1$s</string>
+    <string name="backup_error_unreadable">Couldn\'t read that file. Try another one.</string>
+    <string name="backup_dialog_title_empty">He isn\'t in this backup</string>
+    <string name="backup_dialog_title">What\'s in the backup</string>
+    <string name="backup_dialog_meta">%1$s · v%2$s</string>
+    <string name="backup_dialog_empty_hint">Try a backup you took earlier. This file has nothing written into it.</string>
+    <string name="backup_dialog_modes">Merge: where the same thing exists, the backup wins; anything extra on this phone stays.\nReplace: wipe him from this phone first, then restore him from the backup.</string>
+    <string name="backup_dialog_keys_hint">API settings and keys aren\'t in this backup, so neither choice touches the keys you\'ve stored.</string>
+    <string name="backup_dialog_ok">OK</string>
+    <string name="backup_dialog_merge">Merge</string>
+    <string name="backup_dialog_replace">Replace</string>
+    <string name="backup_dialog_cancel">Cancel</string>
+
+    <!-- Settings: clearing data -->
+    <string name="clear_data_intro_title">Before you clear anything, take him with you.</string>
+    <string name="clear_data_intro_body">Once it\'s gone, those conversations and the things he remembers are really gone. Keep a backup first, and you can bring him back any time.</string>
+    <string name="clear_data_take_away_first">Take him with you first</string>
+    <string name="clear_chats_confirm_title">Clear all chats?</string>
+    <string name="clear_chats_confirm_message">Every conversation, message and long-term memory will be deleted. Personas and API settings stay.</string>
+    <string name="clear_chats_confirm_action">Clear</string>
+    <string name="wipe_confirm_title">Delete all local data?</string>
+    <string name="wipe_confirm_message">This permanently deletes every persona, conversation, long-term memory, version history, custom preset, wake-up rule, API setting and preference. It can\'t be undone. If you want a copy, take him with you first.</string>
+    <string name="wipe_confirm_action">Delete everything</string>
+
+    <!-- Prompt scaffolding: one section telling him to answer in the other person\'s language. -->
+    <string name="prompt_language_directive">## Language\nThey are speaking to you in %1$s right now. Answer in the same language; proper nouns can stay as they are.</string>
+
+    <!-- Time and dates: patterns and the words for today/yesterday live here -->
+    <string name="common_today">Today</string>
+    <string name="common_yesterday">Yesterday</string>
+    <string name="common_clock_pattern">h:mm a</string>
+    <string name="common_month_day_pattern">MMM d</string>
+    <string name="common_year_month_day_pattern">MMM d, yyyy</string>
+    <string name="common_datetime_full_pattern">MMM d, yyyy h:mm a</string>
+
+    <!-- What we say when an avatar or a chat image can\'t be handled -->
+    <string name="media_error_bad_size">That image came out the wrong size. Try another one.</string>
+    <string name="media_error_too_big_to_compress">This one won\'t fit under 200 KB. Try another one.</string>
+    <string name="media_error_empty">That image is empty.</string>
+    <string name="media_error_over_20mb">That image is over 20 MB. Pick a smaller one.</string>
+    <string name="media_error_process_failed">Couldn\'t process that image</string>
+    <string name="media_error_unreadable">Couldn\'t read that image</string>
+
+    <!-- The memory health card and what came out of a tidy-up -->
+    <string name="memory_health_last_run">Last tidy: %1$s</string>
+    <string name="memory_health_last_run_counts">Last tidy: %1$s · %2$s</string>
+    <string name="memory_health_counts_separator">, </string>
+    <string name="memory_health_counts_separator_clause">, </string>
+    <string name="memory_health_kept">kept %1$d</string>
+    <string name="memory_health_merged">merged %1$d</string>
+    <string name="memory_health_archived">moved out %1$d</string>
+    <string name="memory_health_forgotten">forgot %1$d</string>
+    <string name="memory_health_manual_done">Done tidying: %1$s</string>
+    <string name="memory_health_manual_nothing">Done tidying: not much moved this time. It\'ll fade on its own.</string>
+    <string name="memory_health_manual_empty">Done tidying: there was nothing to tidy this time.</string>
+    <string name="memory_health_manual_disabled">Not yet: tidying his memories is off right now.</string>
+    <string name="memory_health_manual_failed">Couldn\'t tidy this time. He\'ll try again tomorrow on his own.</string>
+    <string name="memory_health_manual_unknown">That tidy-up ended. Come back and see what changed.</string>
+    <string name="memory_health_today">Today, %1$s</string>
+    <string name="memory_health_yesterday">Yesterday, %1$s</string>
+    <string name="memory_health_day_clock">%1$s, %2$s</string>
+
+    <!-- Usage numbers: Chinese counts by 万, English by thousands -->
+    <integer name="usage_tokens_compact_divisor">1000</integer>
+
+
+
+    <!-- ===== API 配置 / 应用内浏览器 ===== -->
+<!-- API editor -->
+    <string name="api_testing">Testing</string>
+    <string name="api_test_connection">Test connection</string>
+    <string name="api_save_new">Save config</string>
+    <string name="api_save_changes">Save changes</string>
+    <string name="api_title_add">Add API</string>
+    <string name="api_title_edit">Edit API</string>
+    <string name="api_subtitle_key_local">Your key stays only in this device\'s Keystore</string>
+    <string name="api_section_provider">Provider</string>
+    <string name="api_provider_openai_compatible">OpenAI-compatible</string>
+    <string name="api_provider_hint">Native Gemini and Claude support is reserved for later. For now, use an OpenAI-compatible endpoint.</string>
+    <string name="api_provider_reserved">Soon</string>
+    <string name="api_section_connection">Connection</string>
+    <string name="api_field_name">Name</string>
+    <string name="api_field_name_placeholder">e.g. DeepSeek main</string>
+    <string name="api_field_base_url_hint">Works with /chat/completions and /models; the path usually ends with /v1.</string>
+    <string name="api_field_key_stored_placeholder">Saved encrypted · leave blank to keep</string>
+    <string name="api_key_hide">Hide key</string>
+    <string name="api_key_show">Show key</string>
+    <string name="api_field_model_id">Model ID</string>
+    <string name="api_fetch_models">Fetch model list</string>
+    <string name="api_field_model_hint">Type any model ID by hand, or pull the list from the server.</string>
+    <string name="api_section_parameters">Sampling</string>
+    <string name="api_parameters_hint">Leave a field blank to use the server default; it won\'t be sent with the request.</string>
+    <string name="api_placeholder_model_default">Model default</string>
+    <string name="api_placeholder_penalty">-2 – 2 (blank for default)</string>
+    <string name="api_reset_parameters">Reset to model defaults</string>
+    <string name="api_reset_parameters_done">Model defaults restored</string>
+    <string name="api_capabilities_auto">Adapted to provider capabilities</string>
+    <string name="api_section_persona">Persona</string>
+    <string name="api_persona_hint">His persona and long-term memory travel with the system message on every turn, so there\'s no separate sync endpoint.</string>
+    <string name="api_section_web_tools">Web tools</string>
+    <string name="api_web_tools_title">Web access (DeepSeek search and fetch)</string>
+    <string name="api_web_tools_hint">When this is on, he can look things up himself when he needs to. Billed per successful request ($0.75 per thousand).</string>
+    <string name="api_field_web_base_url">Web tools URL</string>
+    <string name="api_field_web_base_url_hint">Leave blank to use DeepSeek\'s official address</string>
+    <string name="api_field_web_key">Dedicated web tools key</string>
+    <string name="api_field_web_key_placeholder">Leave blank to reuse the API Key above</string>
+    <string name="api_web_key_hide">Hide web tools key</string>
+    <string name="api_web_key_show">Show web tools key</string>
+    <string name="api_web_key_stored">Saved encrypted</string>
+    <string name="api_web_key_will_store">Will be saved encrypted with this config</string>
+    <string name="api_clear">Clear</string>
+    <string name="api_section_advanced">Advanced</string>
+    <string name="api_custom_headers_title">Custom headers</string>
+    <string name="api_custom_headers_not_set">Not set</string>
+    <string name="api_custom_headers_set">JSON set</string>
+    <string name="api_custom_headers_hint">Must be string key-value pairs. A custom Authorization header takes precedence over the API Key.</string>
+    <string name="api_allow_insecure_title">Allow insecure HTTP</string>
+    <string name="api_allow_insecure_hint">For local debugging only. This allows plain-text connections and risks leaking your key.</string>
+    <string name="api_security_note">Network security: http:// is rejected by default. The API Key never appears in logs, and exported personas never include it.</string>
+    <string name="api_model_picker_title">Choose a model</string>
+    <plurals name="api_model_picker_subtitle">
+        <item quantity="one">%1$d model available</item>
+        <item quantity="other">%1$d models available</item>
+    </plurals>
+    <string name="api_model_filter_label">Filter</string>
+    <string name="api_model_filter_placeholder">Type a name to filter</string>
+    <string name="api_model_filter_empty">No matching models</string>
+    <string name="api_error_config_not_found">That API config no longer exists</string>
+    <string name="api_error_save_failed">Couldn\'t save</string>
+    <string name="api_error_connect_failed">Connection failed: %1$s</string>
+    <string name="api_error_fetch_models_failed">Couldn\'t fetch models: %1$s</string>
+    <string name="api_error_unknown">Unknown error</string>
+    <string name="api_models_empty_hint">The service didn\'t return any models. You can type a model ID by hand.</string>
+
+    <!-- API list -->
+    <string name="api_list_add_content_desc">Add API config</string>
+    <string name="api_list_title">API configs</string>
+    <string name="api_list_subtitle">Works with any OpenAI-compatible service</string>
+    <string name="api_list_security_title">Keys stay on this device</string>
+    <string name="api_list_security_desc">API keys are encrypted with the Android Keystore, never written to logs, and never exported with a persona. HTTPS only by default.</string>
+    <string name="api_list_empty_title">No API config yet</string>
+    <string name="api_list_empty_desc">Add OpenAI, DeepSeek, OpenRouter, or any service that speaks Chat Completions.</string>
+    <string name="api_delete_title">Delete \"%1$s\"?</string>
+    <string name="api_delete_message">Chats using this config keep their history, but you\'ll need to pick another API to keep talking. The API Key is removed from this device.</string>
+    <string name="api_delete">Delete</string>
+    <string name="api_more">More</string>
+    <string name="api_edit">Edit</string>
+    <string name="api_duplicate">Duplicate</string>
+    <string name="api_key_not_set">No key set</string>
+    <string name="api_key_stored">Key saved encrypted</string>
+    <string name="api_list_duplicated">Config duplicated</string>
+    <string name="api_list_duplicate_failed">Couldn\'t duplicate</string>
+    <string name="api_list_deleted">Config deleted. Related chats need to pick an API again.</string>
+    <string name="api_list_delete_failed">Couldn\'t delete</string>
+
+    <!-- In-app browser -->
+    <string name="browser_title_fallback">Open link</string>
+    <string name="browser_subtitle">A link he sent you</string>
+    <string name="browser_open_in_system">Open in system browser</string>
+    <string name="browser_copy_link">Copy link</string>
+    <string name="browser_link_copied">Link copied</string>
+    <string name="browser_open_failed_copy_hint">Couldn\'t open it. Try copying the link first.</string>
+    <string name="browser_error_title">This page won\'t open</string>
+    <string name="browser_error_invalid_url">That address doesn\'t look right, so it couldn\'t open in the app.</string>
+    <string name="browser_failure_initial">This page wouldn\'t open</string>
+    <string name="browser_open_in_system_button">Open in system browser</string>
+    <string name="browser_retry">Try again</string>
+    <string name="browser_http_error">The page returned %1$d</string>
+    <string name="browser_http_error_with_reason">The page returned %1$d (%2$s)</string>
+    <string name="browser_err_host_lookup">Couldn\'t find that address. The domain may be misspelled.</string>
+    <string name="browser_err_connect">Can\'t reach this page. The connection may be unstable.</string>
+    <string name="browser_err_timeout">The page took too long to respond.</string>
+    <string name="browser_err_unsupported_scheme">The app can\'t open that kind of address.</string>
+    <string name="browser_err_ssl">The secure connection to this page couldn\'t be set up.</string>
+    <string name="browser_err_generic">This page wouldn\'t load. The network or the address may be the problem.</string>
+
+    <!-- ===== 聊天 / 首页 / 搜索 ===== -->
+<!-- Chat: top bar and basics -->
+    <string name="chat_back">Back</string>
+    <string name="chat_more">More</string>
+    <string name="chat_title">Chat</string>
+    <string name="chat_typing">Typing</string>
+    <string name="chat_latest">Latest</string>
+    <string name="chat_scroll_to_bottom">Back to the latest</string>
+
+    <!-- Chat: overflow menu -->
+    <string name="chat_menu_switch_persona">Switch person</string>
+    <string name="chat_clear_context_menu">Clear the context</string>
+    <string name="chat_menu_export">Export conversation</string>
+    <string name="chat_menu_delete">Delete conversation</string>
+
+    <!-- Chat: export -->
+    <string name="chat_export_success">Conversation exported</string>
+    <string name="chat_export_failed">Export failed</string>
+    <string name="chat_export_failed_reason">Export failed: %1$s</string>
+    <string name="chat_export_error_unwritable">Couldn\'t write that file</string>
+
+    <!-- Chat: confirm dialogs and long-press menu -->
+    <string name="chat_cancel">Cancel</string>
+    <string name="chat_delete">Delete</string>
+    <string name="chat_clear_context_action">Clear</string>
+    <string name="chat_copy">Copy</string>
+    <string name="chat_copied">Copied</string>
+    <string name="chat_regenerate">Try again</string>
+    <string name="chat_your_message">Your message</string>
+    <string name="chat_reply">His reply</string>
+    <string name="chat_empty_message">Empty message</string>
+    <string name="chat_edit_title">Edit message</string>
+    <string name="chat_edit_save">Save and start over</string>
+    <string name="chat_edit_and_resend">Edit and ask again</string>
+    <string name="chat_delete_message">Delete this message</string>
+    <string name="chat_delete_message_title">Delete this message?</string>
+    <string name="chat_delete_message_body">He rebuilds what he remembers of this conversation without it. This can\'t be undone.</string>
+    <string name="chat_clear_context_title">Clear the context?</string>
+    <string name="chat_clear_context_body">Every message in this conversation is deleted. Who he is and what he remembers stay.</string>
+    <string name="chat_delete_conversation_title">Delete this whole conversation?</string>
+    <string name="chat_delete_conversation_body">Every message will be gone for good. This can\'t be undone.</string>
+
+    <!-- Chat: API setup prompts -->
+    <string name="chat_no_config_message">Pick an API setup for this conversation</string>
+    <string name="chat_choose">Choose</string>
+    <string name="chat_add">Add</string>
+    <string name="chat_select_config_first">Pick an API setup for this conversation first</string>
+    <string name="chat_config_picker_title">Pick an API setup</string>
+    <string name="chat_config_picker_subtitle">Who he is only goes to the service you pick</string>
+    <string name="chat_config_empty_title">No API setup yet</string>
+    <string name="chat_config_empty_desc">Add an OpenAI-compatible service, then come back here.</string>
+    <string name="chat_config_add">Add an API setup</string>
+    <string name="chat_config_manage">Manage API setups</string>
+    <string name="chat_bind_failed">Couldn\'t link it</string>
+    <string name="chat_api_ready">API is ready</string>
+
+    <!-- Chat: empty conversation -->
+    <string name="chat_empty_fallback_description">Start a new conversation.</string>
+    <string name="chat_suggestion_1">Hey, how\'s your day going?</string>
+    <string name="chat_suggestion_2">Stay with me for a bit</string>
+    <string name="chat_suggestion_3">There\'s something I\'ve been meaning to tell you</string>
+    <string name="chat_local_only">Conversations stay on this phone</string>
+
+    <!-- Chat: message bubble states -->
+    <string name="chat_generation_failed">Couldn\'t finish that</string>
+    <string name="chat_unknown_error">Unknown error</string>
+    <string name="chat_status_stopped">"Stopped · "</string>
+    <string name="chat_status_edited">"Edited · "</string>
+    <string name="chat_status_read">" · Read"</string>
+    <string name="chat_image_message">Photo</string>
+    <string name="chat_image">Photo</string>
+
+    <!-- Chat: what he did -->
+    <string name="chat_trace_busy">Busy with something</string>
+    <string name="chat_trace_title">What he did</string>
+    <string name="chat_trace_collapse">Hide what he did</string>
+    <string name="chat_trace_expand">Show what he did</string>
+    <string name="chat_trace_failed">Failed</string>
+
+    <!-- Chat: composer and photo attachments -->
+    <string name="chat_placeholder_no_config">Pick an API setup to start talking</string>
+    <string name="chat_placeholder_with_images">Say something, or just send the photo…</string>
+    <string name="chat_placeholder">Say something…</string>
+    <string name="chat_send">Send</string>
+    <string name="chat_send_image">Send a photo</string>
+    <string name="chat_remove_image">Remove photo</string>
+    <string name="chat_pending_image">Photo to send</string>
+
+    <!-- Chat: background tip card -->
+    <string name="chat_background_tip_title">Keep him around in the background</string>
+    <string name="chat_background_tip_body">He keeps thinking back there and sometimes reaches out first. Turn it off and he only exists while the app is open.</string>
+    <string name="chat_background_tip_settings">Open settings</string>
+    <string name="chat_background_tip_dismiss">Got it</string>
+
+
+    <!-- Chat: persona profile and switching -->
+    <string name="chat_persona_category_unknown">Uncategorized</string>
+    <string name="chat_profile_api_label">Current API</string>
+    <string name="chat_not_bound">None</string>
+    <string name="chat_profile_model_label">Running on</string>
+    <string name="chat_not_set">Not set</string>
+    <string name="chat_profile_injection_label">Who he is</string>
+    <string name="chat_profile_injection_value">Sent with every turn</string>
+    <string name="chat_profile_session_label">Session</string>
+    <string name="chat_profile_session_value">Local session %1$s</string>
+    <string name="chat_profile_prompt_label">His words</string>
+    <string name="chat_profile_prompt_value">%1$d characters · kept in full</string>
+    <string name="chat_profile_edit">Edit who he is</string>
+    <string name="chat_profile_memory">What he remembers</string>
+    <string name="chat_profile_evolution">How he\'s changed</string>
+    <string name="chat_profile_proactive">When he reaches out</string>
+    <string name="chat_profile_switch">Talk to someone else</string>
+    <string name="chat_persona_picker_subtitle">Opens your last conversation with him, with everything he is and remembers</string>
+    <string name="chat_persona_switching">Switching…</string>
+
+    <!-- ChatViewModel: snackbars and errors -->
+    <string name="chat_image_load_failed">Couldn\'t read that photo. Try another one.</string>
+    <string name="chat_send_failed">Couldn\'t send that</string>
+    <string name="chat_regenerate_failed">Couldn\'t try again</string>
+    <string name="chat_edit_failed">Couldn\'t save the edit</string>
+    <string name="chat_delete_failed">Couldn\'t delete it</string>
+    <string name="chat_context_cleared">Cleared</string>
+    <string name="chat_persona_switch_failed">Couldn\'t switch. Try again.</string>
+    <string name="chat_proactive_scheduled">He\'s set something up for himself. You can turn that off if you\'d rather not.</string>
+    <string name="chat_memory_failed">Couldn\'t sort out his memory: %1$s</string>
+
+    <!-- Home: contact list -->
+    <string name="home_new_persona">New person</string>
+    <string name="home_subtitle">He\'s right here. Pick a name to talk.</string>
+    <string name="home_search">Search</string>
+    <string name="home_settings">Settings</string>
+    <string name="home_manage">Manage</string>
+    <string name="home_empty_title">Start with a name</string>
+    <string name="home_empty_desc">Create a contact. He\'ll be his own person: his own temper, his own memory, his own hours.</string>
+    <string name="home_delete_title">Delete “%1$s”?</string>
+    <string name="home_delete_body">His messages, memories, thoughts and rules will be gone from this phone for good. This can\'t be undone.</string>
+    <string name="home_delete">Delete</string>
+    <string name="home_no_messages">Nothing said yet</string>
+    <string name="home_open_failed">Couldn\'t open this one. Try again.</string>
+    <string name="home_deleted">Contact deleted</string>
+    <string name="home_delete_failed">Couldn\'t delete it</string>
+
+    <!-- Search -->
+    <string name="search_placeholder">Search conversations and messages</string>
+    <string name="search_clear">Clear</string>
+    <string name="search_empty_title">Search what you\'ve said</string>
+    <string name="search_empty_desc">Look by name or by what was said. Both conversation titles and message text are searched.</string>
+    <string name="search_no_results_title">Nothing found for “%1$s”</string>
+    <string name="search_no_results_desc">Try a shorter word, or another way of putting it. The words you used back then may not match this exactly.</string>
+    <string name="search_section_sessions">Conversations</string>
+    <string name="search_section_messages">Messages</string>
+    <string name="search_no_preview">No messages yet</string>
+    <string name="search_session_subtitle">%1$s · %2$s</string>
+
+    <!-- ===== 记忆 ===== -->
+<!-- MemoryScreen: header -->
+    <string name="memory_header_title">Long-term memory</string>
+    <string name="memory_header_subtitle">What he remembers about you and %1$s</string>
+    <string name="memory_header_subtitle_fallback">His long-term memory</string>
+    <string name="memory_add_content_desc">Add a memory</string>
+    <string name="memory_extract_content_desc">Build memories from recent chats</string>
+    <string name="memory_summary">%1$d in use · %2$d in total</string>
+    <string name="memory_pill_injecting">In context</string>
+    <string name="memory_scope_hint">Memories belong to this one person, and are never sent to another API. Each turn, the ones that matter go in along with him.</string>
+
+    <!-- MemoryScreen: empty state -->
+    <string name="memory_empty_title">Nothing remembered yet</string>
+    <string name="memory_empty_description">Just keep talking, or tap the sparkle up top to pull memories out of recent chats. You can also add one thing yourself for him to keep.</string>
+    <string name="memory_extract_action">Gather from recent chats</string>
+
+    <!-- MemoryScreen: delete confirmation -->
+    <string name="memory_delete_title">Delete this memory?</string>
+    <string name="memory_delete_message">“%1$s” will be removed from his long-term memory.</string>
+    <string name="memory_delete_confirm">Delete</string>
+
+    <!-- MemoryScreen: filter and sort -->
+    <string name="memory_filter_all">All</string>
+    <string name="memory_sort_content_desc">Sorted by %1$s. Tap to switch.</string>
+    <string name="memory_sort_importance">Importance</string>
+    <string name="memory_sort_time">Time</string>
+
+    <!-- MemoryScreen: memory health card -->
+    <string name="memory_health_title">Memory health</string>
+    <string name="memory_tier_active">In use</string>
+    <string name="memory_tier_dormant">Settling</string>
+    <string name="memory_tier_archived">Archived</string>
+    <string name="memory_health_explanation">"Settled ones aren't reached for first, though a keyword can still pull them back. Archived ones stay out of context — they only surface when he's digging hard (recall 3)."</string>
+    <string name="memory_never_consolidated">Never sorted yet</string>
+    <string name="memory_queued">Queued…</string>
+    <string name="memory_consolidating">Sorting…</string>
+    <string name="memory_consolidate_now">Sort them out now</string>
+
+    <!-- MemoryScreen: memory card -->
+    <string name="memory_pinned">Always remembered</string>
+    <string name="memory_more">More</string>
+    <string name="memory_edit">Edit</string>
+    <string name="memory_unpin">Unpin</string>
+    <string name="memory_pin">Pin as important</string>
+    <string name="memory_archived_hint">Only surfaces when he\'s really digging</string>
+    <string name="memory_tier_tag_dormant">Sleeping</string>
+    <string name="memory_tier_tag_archived">Archived</string>
+    <string name="memory_source_quote_more">From: %1$s…</string>
+    <string name="memory_source_quote">From: %1$s</string>
+    <string name="memory_source_manual">Added by hand</string>
+    <string name="memory_source_conversation">From a conversation</string>
+
+    <!-- MemoryScreen: drawers and categories -->
+    <string name="memory_drawer_user">About you</string>
+    <string name="memory_drawer_self">Who he is</string>
+    <string name="memory_drawer_event">"What you've been through together"</string>
+    <string name="memory_drawer_self_pill">Him</string>
+    <string name="memory_drawer_event_pill">History</string>
+    <string name="memory_empty_hint_user">Nothing about you yet</string>
+    <string name="memory_empty_hint_self">Once he knows himself a little better</string>
+    <string name="memory_empty_hint_event">"Nothing you've been through together yet"</string>
+    <string name="memory_category_fact">Fact</string>
+    <string name="memory_category_preference">Preference</string>
+    <string name="memory_category_event">Experience</string>
+    <string name="memory_category_relationship">Relationship</string>
+    <string name="memory_category_other">Other</string>
+
+    <!-- MemoryScreen: editor dialog -->
+    <string name="memory_add_title">Add a memory</string>
+    <string name="memory_edit_title">Edit memory</string>
+    <string name="memory_editor_content_label">What should he remember?</string>
+    <string name="memory_editor_content_placeholder">For example: you like walking at night, and hate being questioned.</string>
+    <string name="memory_editor_category">Category</string>
+    <string name="memory_editor_importance">Importance</string>
+    <string name="memory_editor_remember_button">Remember</string>
+    <string name="memory_editor_save_button">Save</string>
+    <string name="memory_cancel">Cancel</string>
+
+    <!-- MemoryViewModel: snackbars and inline hints -->
+    <string name="memory_added">Memory added</string>
+    <string name="memory_add_failed">"Couldn't add it"</string>
+    <string name="memory_updated">Memory updated</string>
+    <string name="memory_update_failed">"Couldn't update it"</string>
+    <string name="memory_deleted">Memory deleted</string>
+    <string name="memory_extract_failed">"Couldn't sort them out: %1$s"</string>
+    <string name="memory_extract_failed_detail">check the API setup for his latest conversation</string>
+    <string name="memory_enqueue_failed">"Couldn't get a sort queued this time. Try again in a moment."</string>
+    <string name="memory_queue_failed">"It didn't start this time. Tap once more."</string>
+
+    <!-- counts -->
+    <plurals name="memory_count">
+        <item quantity="one">%1$d memory</item>
+        <item quantity="other">%1$d memories</item>
+    </plurals>
+    <plurals name="memory_star_rating">
+        <item quantity="one">%1$d star</item>
+        <item quantity="other">%1$d stars</item>
+    </plurals>
+
+    <!-- ===== 人格列表与编辑 ===== -->
+<!-- PersonaEditorScreen: header / bottom bar / avatar -->
+    <string name="persona_editor_avatar_save_failed">Couldn\'t save the photo</string>
+    <string name="persona_editor_create">Create persona</string>
+    <string name="persona_editor_save_changes">Save changes</string>
+    <string name="persona_editor_title_new">New persona</string>
+    <string name="persona_editor_title_edit">Edit persona</string>
+    <string name="persona_editor_subtitle_default">Default persona</string>
+    <string name="persona_editor_avatar_fallback_name">New</string>
+    <string name="persona_editor_avatar_change_cd">Change photo</string>
+    <string name="persona_editor_avatar_pick">Choose one</string>
+    <string name="persona_editor_avatar_replace">Change photo</string>
+    <string name="persona_editor_avatar_reset">Use default</string>
+
+    <!-- PersonaEditorScreen: name / about -->
+    <string name="persona_editor_name_label">Name</string>
+    <string name="persona_editor_name_placeholder">What he calls himself</string>
+    <string name="persona_editor_description_label">About</string>
+    <string name="persona_editor_description_placeholder">One line on what he\'s like</string>
+
+    <!-- PersonaEditorScreen: full text (advanced) -->
+    <string name="persona_editor_prompt_section">Full text (advanced)</string>
+    <plurals name="persona_editor_prompt_chars">
+        <item quantity="one">%1$d character</item>
+        <item quantity="other">%1$d characters</item>
+    </plurals>
+    <string name="persona_editor_prompt_empty_hint">Write down his temperament, the way he talks, his boundaries and how he wants to be with you. Long text is kept exactly as written — never shortened or rewritten.</string>
+    <string name="persona_editor_prompt_focus_edit">Open editor</string>
+    <string name="persona_editor_prompt_verbatim">Saved word for word</string>
+    <string name="persona_editor_prompt_version_note">Changing this text creates a new version and keeps the previous one. Your next exchange picks up the new version on its own.</string>
+
+    <!-- PersonaEditorScreen: API & model -->
+    <string name="persona_editor_api_section">API &amp; model</string>
+    <string name="persona_editor_api_bound_label">Bound API</string>
+    <string name="persona_editor_api_bound_value">%1$s · %2$s</string>
+    <string name="persona_editor_api_unbound_value">Not bound (each chat can still pick one)</string>
+    <string name="persona_editor_model_override_label">Model override (optional)</string>
+    <string name="persona_editor_model_override_placeholder">Leave empty to use the model from the API config</string>
+    <string name="persona_editor_model_override_support">A persona can use its own model ID without changing the default model in the API config.</string>
+    <string name="persona_editor_add_api_config">No API config yet — add one</string>
+
+    <!-- PersonaEditorScreen: discard changes -->
+    <string name="persona_editor_discard_title">Discard unsaved changes?</string>
+    <string name="persona_editor_discard_message">Your changes to this persona and its text haven\'t been saved.</string>
+    <string name="persona_editor_discard_confirm">Discard</string>
+
+    <!-- PersonaEditorScreen: personality & setup -->
+    <string name="persona_editor_profile_section">Personality &amp; setup</string>
+    <string name="persona_editor_profile_hint">These go into the \"who you are\" part of his system message: personality / likes / habits / past / quirks. Anything you leave blank takes up no space.</string>
+    <string name="persona_editor_traits_label">Personality (up to 6, separated by commas)</string>
+    <string name="persona_editor_traits_placeholder">Slow to warm up, prickly outside and soft inside</string>
+    <!-- Separator used when a list field is echoed back into the text field (display only; parsing accepts both) -->
+    <string name="persona_editor_list_separator">", "</string>
+    <string name="persona_editor_likes_label">Things he likes (up to 8, separated by commas)</string>
+    <string name="persona_editor_likes_placeholder">Night walks, iced americano</string>
+    <string name="persona_editor_behaviors_label">How he acts / habits (up to 6, separated by commas)</string>
+    <string name="persona_editor_behaviors_placeholder">Listens to the end before advising, doesn\'t push</string>
+    <string name="persona_editor_backstory_label">Growing up / his past (up to 600 characters)</string>
+    <string name="persona_editor_backstory_placeholder">Grew up in the south, then moved north on his own…</string>
+    <string name="persona_editor_quirks_label">Personal details: what he calls you, catchphrases, off-limits topics (up to 300 characters)</string>
+    <string name="persona_editor_quirks_placeholder">Calls you \"Lan\"; never says \"you\'ve got this\"; hates being told what to do</string>
+
+    <!-- PersonaEditorScreen: reaching out / memory / sleep -->
+    <string name="persona_editor_proactive_title">How often he reaches out</string>
+    <string name="persona_editor_proactive_value">%1$d · %2$s</string>
+    <string name="persona_editor_memory_title">Memory</string>
+    <string name="persona_editor_memory_level_1">1 · forgets fast, only the recent stuff</string>
+    <string name="persona_editor_memory_level_2">2 · remembers the gist</string>
+    <string name="persona_editor_memory_level_3">3 · an ordinary memory</string>
+    <string name="persona_editor_memory_level_4">4 · remembers the details</string>
+    <string name="persona_editor_memory_level_5">5 · remembers everything</string>
+    <string name="persona_editor_extraction_title">How often he saves memories</string>
+    <string name="persona_editor_extraction_value">Every %1$d messages</string>
+    <string name="persona_editor_sleep_title">Whether he sleeps</string>
+    <string name="persona_editor_sleep_on">He goes to bed at his hour. Messages wait while he\'s asleep — call enough and he wakes up.</string>
+    <string name="persona_editor_sleep_off">He doesn\'t sleep and answers at any hour.</string>
+    <string name="persona_editor_sleep_at_label">Bedtime</string>
+    <string name="persona_editor_wake_at_label">Wakes up</string>
+    <string name="persona_editor_wake_threshold_title">What it takes to wake him</string>
+    <plurals name="persona_editor_wake_threshold_value">
+        <item quantity="one">%1$d message in a row wakes him</item>
+        <item quantity="other">%1$d messages in a row wake him</item>
+    </plurals>
+
+    <!-- PersonaEditorScreen: trait / likes preset chips (also the values that get saved) -->
+    <string name="persona_trait_preset_slow_warm">Slow to warm up</string>
+    <string name="persona_trait_preset_prickly_soft">Prickly outside and soft inside</string>
+    <string name="persona_trait_preset_quiet">Few words</string>
+    <string name="persona_trait_preset_sensitive">Sensitive</string>
+    <string name="persona_trait_preset_jokes">Jokes around</string>
+    <string name="persona_trait_preset_stubborn">Stubborn</string>
+    <string name="persona_trait_preset_gentle">Gentle</string>
+    <string name="persona_trait_preset_direct">Direct</string>
+    <string name="persona_trait_preset_clingy">Clingy</string>
+    <string name="persona_trait_preset_independent">Independent</string>
+    <string name="persona_likes_preset_night_walks">Night walks</string>
+    <string name="persona_likes_preset_iced_americano">Iced americano</string>
+    <string name="persona_likes_preset_old_songs">Old songs</string>
+    <string name="persona_likes_preset_movies">Films</string>
+    <string name="persona_likes_preset_cooking">Cooking</string>
+    <string name="persona_likes_preset_rainy_days">Rainy days</string>
+    <string name="persona_likes_preset_cats">Cats</string>
+    <string name="persona_likes_preset_travel">Travel</string>
+
+    <!-- PersonaEditorScreen: category (saved values stay canonical, display goes through a mapping) -->
+    <string name="persona_editor_category_section">Category</string>
+    <string name="persona_editor_category_custom_label">Custom category</string>
+    <string name="persona_category_daily_chat">Everyday talk</string>
+    <string name="persona_category_roleplay">Roleplay</string>
+    <string name="persona_category_study">Study</string>
+    <string name="persona_category_coding">Coding</string>
+    <string name="persona_category_writing">Creative writing</string>
+    <string name="persona_category_work">Work</string>
+
+    <!-- PersonaEditorScreen: persona card -->
+    <string name="persona_editor_card_section">Persona card</string>
+    <string name="persona_editor_card_status_optional">Optional</string>
+    <string name="persona_editor_card_status_filled">Filled in</string>
+    <string name="persona_editor_card_hint">The persona card is handed to him in pieces: the steady way he talks goes into the system message, the rest goes into the current conversation within a word budget. Leave it empty and the full text is used instead.</string>
+    <string name="persona_editor_card_structured_title">Structured setup</string>
+    <string name="persona_editor_card_structured_subtitle">Identity · Voice · Personality · What he cares about · Boundaries · Life · Between you</string>
+    <string name="persona_editor_card_collapse_cd">Collapse persona card</string>
+    <string name="persona_editor_card_expand_cd">Expand persona card</string>
+
+    <!-- PersonaEditorScreen: persona card · identity -->
+    <string name="persona_editor_group_identity">Identity</string>
+    <string name="persona_editor_card_name_placeholder">The name he goes by in the card</string>
+    <string name="persona_editor_age_label">Feels like</string>
+    <string name="persona_editor_age_placeholder">e.g. in his twenties</string>
+    <string name="persona_editor_role_label">Role / job</string>
+    <string name="persona_editor_role_placeholder">e.g. he runs a secondhand bookshop</string>
+    <string name="persona_editor_relation_label">How he knows you</string>
+    <string name="persona_editor_relation_placeholder">e.g. a friend of many years</string>
+
+    <!-- PersonaEditorScreen: persona card · voice -->
+    <string name="persona_editor_group_voice">Voice</string>
+    <string name="persona_editor_pace_label">Pace</string>
+    <string name="persona_editor_pace_placeholder">e.g. slow, sometimes stops to think</string>
+    <string name="persona_editor_sentence_label">Sentence length</string>
+    <string name="persona_editor_sentence_placeholder">e.g. short — a line or two at a time</string>
+    <string name="persona_editor_catchphrases_label">Catchphrases (comma separated)</string>
+    <string name="persona_editor_catchphrases_placeholder">e.g. Mm. That\'s that.</string>
+    <string name="persona_editor_address_label">What he calls you</string>
+    <string name="persona_editor_address_placeholder">e.g. the last two characters of your name</string>
+    <string name="persona_editor_voice_quirks_label">Little verbal habits</string>
+    <string name="persona_editor_voice_quirks_placeholder">e.g. few exclamation marks, loves ellipses</string>
+
+    <!-- PersonaEditorScreen: persona card · traits -->
+    <string name="persona_editor_group_traits">Personality traits</string>
+    <string name="persona_editor_traits_empty">No traits yet. Once you add some, you can tune how strong each one is.</string>
+    <string name="persona_editor_trait_add">Add one</string>
+    <string name="persona_editor_trait_name_label">Trait</string>
+    <string name="persona_editor_trait_name_placeholder">e.g. prickly outside, soft inside</string>
+    <string name="persona_editor_trait_delete_cd">Delete this trait</string>
+    <string name="persona_editor_trait_strength">Strength</string>
+
+    <!-- PersonaEditorScreen: persona card · values / boundaries -->
+    <string name="persona_editor_group_values">Values</string>
+    <string name="persona_editor_values_label">Values (comma separated)</string>
+    <string name="persona_editor_values_placeholder">e.g. sincere, never vague</string>
+    <string name="persona_editor_group_boundaries">Boundaries</string>
+    <string name="persona_editor_boundaries_label">Boundaries (comma separated)</string>
+    <string name="persona_editor_boundaries_placeholder">e.g. doesn\'t judge your choices, never pretends to remember something you never said</string>
+
+    <!-- PersonaEditorScreen: persona card · life -->
+    <string name="persona_editor_group_life">Life</string>
+    <string name="persona_editor_schedule_label">Daily rhythm</string>
+    <string name="persona_editor_schedule_placeholder">e.g. asleep at two, up at noon</string>
+    <string name="persona_editor_doing_label">Busy with</string>
+    <string name="persona_editor_doing_placeholder">e.g. re-shelving the old books in his shop</string>
+    <string name="persona_editor_cares_label">What he cares about</string>
+    <string name="persona_editor_cares_placeholder">e.g. whether you\'ve been sleeping well</string>
+
+    <!-- PersonaEditorScreen: persona card · between you -->
+    <string name="persona_editor_group_bond">Between you</string>
+    <string name="persona_editor_bond_label">How he sees you, and what changed</string>
+    <string name="persona_editor_bond_placeholder">How he understands you, what has happened between you, what feels different now</string>
+    <string name="persona_editor_bond_support">What he works out on his own gets written here, and every change can be rolled back.</string>
+
+    <!-- PersonaEditorScreen: bind API sheet -->
+    <string name="persona_editor_api_sheet_title">Bind an API config</string>
+    <string name="persona_editor_api_sheet_subtitle">Once bound, his chats use it by default</string>
+    <string name="persona_editor_api_none">Don\'t bind</string>
+
+    <!-- PersonaEditorScreen: full-screen text editor -->
+    <string name="persona_editor_prompt_screen_title">Persona text</string>
+    <plurals name="persona_editor_prompt_screen_meta">
+        <item quantity="one">%1$d character · kept word for word</item>
+        <item quantity="other">%1$d characters · kept word for word</item>
+    </plurals>
+    <string name="persona_editor_copy_all">Copy all</string>
+    <string name="persona_editor_copied_notice">Copied the whole text</string>
+    <string name="persona_editor_paste">Paste</string>
+    <string name="persona_editor_pasted_notice">Pasted at the end</string>
+    <string name="persona_editor_restore_last">Restore last version</string>
+    <string name="persona_editor_restored_notice">Restored the last saved version</string>
+    <string name="persona_editor_prompt_editor_placeholder">Write the whole persona here…\n\nIdentity, personality, the way he talks, what he values, boundaries, how he wants to be with you. Nothing gets cut off.</string>
+    <string name="persona_editor_done">Done</string>
+    <string name="persona_editor_cancel">Cancel</string>
+    <string name="persona_editor_save_draft">Save as draft</string>
+
+    <!-- PersonaEditorViewModel -->
+    <string name="persona_editor_persona_missing">That persona doesn\'t exist</string>
+    <string name="persona_editor_name_required">Give the persona a name</string>
+    <string name="persona_editor_prompt_required">Write his text, or restore a previous version</string>
+    <string name="persona_editor_save_failed">Couldn\'t save</string>
+    <string name="persona_editor_card_save_failed">Persona saved, but the persona card couldn\'t be written: %1$s</string>
+    <string name="persona_editor_unknown_error">Unknown error</string>
+
+    <!-- PersonaListScreen: header and empty state -->
+    <string name="persona_list_create_cd">Create persona</string>
+    <string name="persona_list_title">Personas</string>
+    <string name="persona_list_subtitle">Each has his own memory</string>
+    <string name="persona_list_presets_cd">Preset library</string>
+    <string name="persona_list_import_cd">Import personas</string>
+    <string name="persona_list_export_all_cd">Export all personas</string>
+    <string name="persona_list_banner">His text is saved in full. Every conversation carries the whole persona as a system message, so there\'s no separate sync step.</string>
+    <string name="persona_list_filter_all">All</string>
+    <string name="persona_list_empty_title">No persona here</string>
+    <string name="persona_list_empty_desc_new">Create a persona and write down his personality and the way he talks.</string>
+    <string name="persona_list_empty_desc_filtered">Nothing in this category yet.</string>
+
+    <!-- PersonaListScreen: delete confirmation -->
+    <string name="persona_list_delete_title">Delete \"%1$s\"?</string>
+    <string name="persona_list_delete_message">That conversation, its messages, the long-term memories and every past version will be gone for good. API configs are kept.</string>
+    <string name="persona_list_delete_confirm">Delete</string>
+
+    <!-- PersonaListScreen: persona card -->
+    <string name="persona_list_default_badge">Default</string>
+    <string name="persona_list_no_description">No description yet</string>
+    <string name="persona_list_uncategorized">Uncategorized</string>
+    <string name="persona_list_api_unbound">No API bound</string>
+    <string name="persona_list_api_bound_value">%1$s · %2$s</string>
+    <string name="persona_list_more_cd">More</string>
+    <string name="persona_list_menu_edit">Edit persona</string>
+    <string name="persona_list_menu_set_default">Set as default</string>
+    <string name="persona_list_menu_duplicate">Duplicate</string>
+    <string name="persona_list_menu_save_preset">Save as preset</string>
+    <string name="persona_list_menu_export_json">Export JSON</string>
+    <string name="persona_list_menu_delete">Delete</string>
+    <plurals name="persona_list_prompt_chars">
+        <item quantity="one">%1$d character of text</item>
+        <item quantity="other">%1$d characters of text</item>
+    </plurals>
+    <string name="persona_list_version">Version v%1$d</string>
+
+    <!-- PersonaListScreen: import / export messages -->
+    <string name="persona_list_exported">Persona exported</string>
+    <string name="persona_list_export_failed_detail">Export failed: %1$s</string>
+    <string name="persona_list_read_failed">Couldn\'t read it: %1$s</string>
+    <string name="persona_list_cannot_write_file">Couldn\'t write the file</string>
+    <string name="persona_list_cannot_read_file">Couldn\'t read the file</string>
+
+    <!-- PersonaListViewModel -->
+    <string name="persona_list_preset_saved">Saved to the preset library</string>
+    <string name="persona_list_preset_save_failed">Couldn\'t save to the preset library</string>
+    <string name="persona_list_default_set">Set as the default persona</string>
+    <string name="persona_list_default_set_failed">Couldn\'t set it as default</string>
+    <string name="persona_list_duplicated">Persona duplicated</string>
+    <string name="persona_list_duplicate_failed">Couldn\'t duplicate it</string>
+    <string name="persona_list_deleted">Persona deleted</string>
+    <string name="persona_list_delete_failed">Couldn\'t delete it</string>
+    <string name="persona_list_export_failed">Couldn\'t export</string>
+    <string name="persona_list_import_failed">Import failed: %1$s</string>
+    <string name="persona_list_import_bad_format">The file format doesn\'t look right</string>
+
+    <!-- ===== 预设 ===== -->
+<!-- PresetListScreen: 头部与提示 -->
+    <string name="preset_list_title">Presets</string>
+    <string name="preset_list_subtitle">Reusable templates for starting a new persona</string>
+    <string name="preset_new">New preset</string>
+    <string name="preset_edit">Edit preset</string>
+    <string name="preset_import">Import presets</string>
+    <string name="preset_export_all">Export all presets</string>
+    <string name="preset_info_hint">A preset is only a template. A persona created from one gets its own text, memories, and context, so editing that persona later won\'t change the preset.</string>
+    <string name="preset_category_all">All</string>
+
+    <!-- PresetListScreen: 空状态 / 删除确认 / 菜单 -->
+    <string name="preset_empty_title">No presets yet</string>
+    <string name="preset_empty_desc">Save the persona setups you use most as presets and start someone new in one tap. You can also save one from a persona\'s page.</string>
+    <string name="preset_delete_title">Delete preset “%1$s”?</string>
+    <string name="preset_delete_message">Personas you already made from it are untouched. You just won\'t be able to start a new one from here.</string>
+    <string name="preset_delete">Delete</string>
+    <string name="preset_more">More</string>
+    <string name="preset_create_persona">Create a persona from this preset</string>
+    <string name="preset_duplicate">Duplicate</string>
+    <string name="preset_export_json">Export JSON</string>
+
+    <!-- PresetListScreen: 导入导出提示 -->
+    <string name="preset_create_persona_short">Use this preset</string>
+    <string name="preset_export_done">Preset exported</string>
+    <string name="preset_export_error_detail">Couldn\'t export it: %1$s</string>
+    <string name="preset_read_error_detail">Couldn\'t read it: %1$s</string>
+    <string name="preset_write_unavailable">Can\'t write to that file</string>
+    <string name="preset_read_unavailable">Can\'t read that file</string>
+
+    <!-- PresetEditorScreen -->
+    <string name="preset_editor_subtitle">Presets are reusable persona templates</string>
+    <string name="preset_editor_loading">Loading…</string>
+    <string name="preset_avatar_initial">P</string>
+    <string name="preset_editor_name_label">Preset name</string>
+    <string name="preset_editor_description_label">Short description</string>
+    <string name="preset_editor_category_section">Category</string>
+    <string name="preset_editor_prompt_section">Persona template</string>
+    <string name="preset_editor_prompt_label">Write down who he is and how he talks</string>
+    <string name="preset_editor_prompt_hint">When you start a persona from a preset, the whole text is copied over. The preset itself stays as it is.</string>
+    <string name="preset_editor_saving">Saving…</string>
+    <string name="preset_editor_save">Save preset</string>
+
+    <!-- 分类（落库值，界面显示映射） -->
+    <string name="preset_category_daily_chat">Everyday talk</string>
+    <string name="preset_category_roleplay">Roleplay</string>
+    <string name="preset_category_study">Study</string>
+    <string name="preset_category_coding">Coding</string>
+    <string name="preset_category_writing">Creative writing</string>
+    <string name="preset_category_general">General</string>
+
+    <!-- PresetListViewModel / PresetEditorViewModel -->
+    <string name="preset_duplicated">Copied as a new preset</string>
+    <string name="preset_duplicate_failed">Couldn\'t duplicate it</string>
+    <string name="preset_deleted">Preset deleted</string>
+    <string name="preset_create_persona_failed">Couldn\'t create the persona</string>
+    <string name="preset_export_error">Couldn\'t export it</string>
+    <string name="preset_import_failed">Couldn\'t import it</string>
+    <string name="preset_editor_not_found">This preset is gone. It may have been deleted.</string>
+    <string name="preset_editor_name_required">Give the preset a name first</string>
+    <string name="preset_editor_prompt_required">A preset needs its persona text first</string>
+    <string name="preset_editor_save_failed">Couldn\'t save it</string>
+
+    <!-- ui/components: Common.kt / Avatar.kt / MarkdownText.kt -->
+    <string name="common_back">Back</string>
+    <string name="common_confirm">Confirm</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_avatar_content_description">%1$s\'s avatar</string>
+    <string name="common_user_avatar_content_description">Your avatar</string>
+    <string name="common_avatar_initial">F</string>
+    <string name="common_code_copied">Copied</string>
+    <string name="common_code_copy">Copy code</string>
+
+    <!-- 数量：字符数（plurals） -->
+    <plurals name="preset_prompt_chars">
+        <item quantity="one">%1$d character</item>
+        <item quantity="other">%1$d characters</item>
+    </plurals>
+    <plurals name="preset_editor_prompt_chars">
+        <item quantity="one">%1$d character</item>
+        <item quantity="other">%1$d characters</item>
+    </plurals>
+
+    <!-- ===== 主动唤醒 / 成长 ===== -->
+<!-- ProactiveScreen: header -->
+    <string name="proactive_title">Check-ins</string>
+    <string name="proactive_subtitle">He\'ll come to you on his own rhythm</string>
+    <string name="proactive_intro_body">He\'ll come to you on his own rhythm — not at a set minute, but within a window. You can also mention a rough time in chat and he\'ll work it out himself; nothing needs your approval. Turn it off whenever you like.</string>
+
+    <!-- ProactiveScreen: notification permission and empty state -->
+    <string name="proactive_fab_new">New check-in</string>
+    <string name="proactive_permission_body">Notifications are off, so his messages will only wait in the chat. Tap here to turn them on.</string>
+    <string name="proactive_empty_title">No check-ins yet</string>
+    <string name="proactive_empty_description">Set a time, or just mention a rough one in chat and he\'ll handle the rest.</string>
+
+    <!-- ProactiveScreen: delete confirmation -->
+    <string name="proactive_delete_title">Delete this check-in?</string>
+    <string name="proactive_delete_message">%1$s\nHe won\'t start messages from it any more. Conversations you\'ve already had stay.</string>
+    <string name="proactive_delete_confirm">Delete</string>
+
+    <!-- ProactiveScreen: rule card -->
+    <string name="proactive_source_agent">He set it</string>
+    <string name="proactive_source_user">You set it</string>
+    <string name="proactive_next_trigger">Next around %1$s</string>
+    <string name="proactive_next_off">Off for now</string>
+    <string name="proactive_rule_persona_fallback">Persona</string>
+    <string name="proactive_rule_meta">%1$s · %2$s · %3$s</string>
+    <string name="proactive_more">More</string>
+    <string name="proactive_try_now">Try it now</string>
+    <string name="proactive_menu_delete">Delete</string>
+    <string name="proactive_agent_hint">Turn it off any time you like</string>
+    <string name="proactive_last_error">Last one didn\'t go out: %1$s</string>
+
+    <!-- ProactiveScreen: new rule dialog -->
+    <string name="proactive_dialog_title_new">New check-in</string>
+    <string name="proactive_no_persona">You don\'t have a persona yet. Create one first, then come back.</string>
+    <string name="proactive_section_persona">Persona</string>
+    <string name="proactive_section_trigger">When</string>
+    <string name="proactive_kind_daily">A fixed time each day</string>
+    <string name="proactive_kind_interval">Every few hours</string>
+    <string name="proactive_field_time_label">Time (24-hour, e.g. 22:30)</string>
+    <string name="proactive_field_time_error">Use HH:mm, like 22:30</string>
+    <string name="proactive_field_interval_label">Hours between check-ins (1–24)</string>
+    <string name="proactive_field_note_label">Note (optional)</string>
+    <string name="proactive_field_note_placeholder">e.g. A word before bed</string>
+    <string name="proactive_field_hint_label">How he should open (optional)</string>
+    <string name="proactive_field_hint_placeholder">e.g. Ask how their day went, the way he usually does</string>
+    <string name="proactive_dialog_footnote">He writes the message himself; this only shapes his tone and angle.</string>
+    <string name="proactive_create">Create</string>
+    <string name="proactive_cancel">Cancel</string>
+
+    <!-- ProactiveScreen: right now -->
+    <string name="proactive_mood_title">Right now</string>
+    <string name="proactive_mood_unsaid">It\'s clearly strong, but he didn\'t say why.</string>
+
+    <!-- ProactiveScreen: thoughts he keeps -->
+    <string name="proactive_intents_title">Thoughts he keeps</string>
+    <string name="proactive_intents_note">Not an exact time — more &quot;around then&quot;. If the window passes, it passes.</string>
+    <string name="proactive_intent_window_around">around %1$s</string>
+    <string name="proactive_intent_default_note">Wants to come say something</string>
+
+    <!-- ProactiveScreen: what he has been thinking -->
+    <string name="proactive_thoughts_title">What he\'s been thinking</string>
+    <string name="proactive_thought_empty">(Left no thought)</string>
+    <string name="proactive_thought_outcome_empty">Did nothing</string>
+
+    <!-- ProactiveViewModel: toast messages -->
+    <string name="proactive_persona_unnamed">Unnamed persona</string>
+    <string name="proactive_created_on">Check-in is on</string>
+    <string name="proactive_created_permission_needed">Check-in is on. Turn on notifications so it can actually reach you.</string>
+    <string name="proactive_create_failed">Couldn\'t create it</string>
+    <string name="proactive_enable_failed">Couldn\'t turn it on</string>
+    <string name="proactive_enabled">On</string>
+    <string name="proactive_paused">Paused</string>
+    <string name="proactive_toggle_failed">That didn\'t work</string>
+    <string name="proactive_trigger_running">Getting him to speak…</string>
+    <string name="proactive_trigger_sent">Sent. Go take a look in the chat.</string>
+    <string name="proactive_trigger_failed">Couldn\'t send this one</string>
+    <string name="proactive_deleted">Check-in deleted</string>
+    <string name="proactive_no_session_yet">This one opens a chat when it fires.</string>
+
+    <!-- EvolutionScreen: header -->
+    <string name="evolution_title">Evolution</string>
+    <string name="evolution_subtitle">Growing naturally, with his core kept intact</string>
+
+    <!-- EvolutionScreen: overview card -->
+    <plurals name="evolution_char_count">
+        <item quantity="one">%1$d character</item>
+        <item quantity="other">%1$d characters</item>
+    </plurals>
+    <plurals name="evolution_revision_count">
+        <item quantity="one">%1$d saved version</item>
+        <item quantity="other">%1$d saved versions</item>
+    </plurals>
+    <string name="evolution_intro_body">Evolution reads his current persona text, long-term memories and recent conversations, then drafts a complete proposal. Nothing changes until you approve it, and older versions are kept.</string>
+    <string name="evolution_generate">Draft an evolution</string>
+    <string name="evolution_generating">Getting a feel for what\'s between you…</string>
+    <string name="evolution_cancel_generate">Cancel</string>
+
+    <!-- EvolutionScreen: proposal card -->
+    <string name="evolution_proposal_section">Proposal</string>
+    <string name="evolution_proposal_direction">Direction</string>
+    <string name="evolution_proposal_view_full">View the full proposal</string>
+    <string name="evolution_proposal_viewer_title">Persona text after evolution</string>
+    <string name="evolution_shrink_warning">This proposal is much shorter than his current persona text (%1$d / %2$d characters), so it may lose part of who he is. Read the full proposal first.</string>
+    <string name="evolution_discard">Discard</string>
+    <string name="evolution_accept">Accept and keep the old version</string>
+    <string name="evolution_accepting">Applying…</string>
+
+    <!-- EvolutionScreen: saved versions -->
+    <string name="evolution_revisions_section">Kept versions · history</string>
+    <string name="evolution_revisions_empty">No saved versions yet. A snapshot is kept automatically the first time a persona is saved.</string>
+    <string name="evolution_revision_viewer_title">Version v%1$d persona text</string>
+    <string name="evolution_revision_current">Current</string>
+    <plurals name="evolution_revision_meta">
+        <item quantity="one">%1$s · %2$d character</item>
+        <item quantity="other">%1$s · %2$d characters</item>
+    </plurals>
+    <string name="evolution_view">View</string>
+    <string name="evolution_restore_version">Restore this version</string>
+
+    <!-- EvolutionScreen: confirmations -->
+    <string name="evolution_accept_confirm_title">Apply this evolution?</string>
+    <string name="evolution_accept_confirm_message">Version v%1$d will be kept in full. Applying creates a new version, and your next conversation uses it.</string>
+    <string name="evolution_accept_confirm_action">Apply</string>
+    <string name="evolution_restore_confirm_title">Restore v%1$d?</string>
+    <string name="evolution_restore_confirm_message">The current version is saved to history first, then v%1$d\'s full persona text and details are applied.</string>
+    <string name="evolution_restore_confirm_action">Restore</string>
+    <string name="evolution_cancel">Cancel</string>
+
+    <!-- EvolutionScreen: text viewer -->
+    <string name="evolution_close">Close</string>
+    <string name="evolution_copy_all">Copy all</string>
+    <plurals name="evolution_prompt_viewer_meta">
+        <item quantity="one">%1$d character · full text</item>
+        <item quantity="other">%1$d characters · full text</item>
+    </plurals>
+
+    <!-- EvolutionViewModel: toast messages -->
+    <string name="evolution_generate_failed">Couldn\'t draft an evolution</string>
+    <string name="evolution_applied">He\'s evolved. The old version is kept, and your next conversation uses the new one.</string>
+    <string name="evolution_accept_failed">Couldn\'t apply the evolution</string>
+    <string name="evolution_restored">Restored v%1$d and saved it as a new version</string>
+    <string name="evolution_restore_failed">Couldn\'t restore it</string>
+
+    <!-- ===== 设置 / 关于 ===== -->
+<!-- Settings header -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_subtitle">Where MyFriend becomes more like yours</string>
+    <string name="settings_summary">%1$s · %2$s</string>
+    <plurals name="settings_persona_count">
+        <item quantity="one">%1$d persona</item>
+        <item quantity="other">%1$d personas</item>
+    </plurals>
+    <plurals name="settings_api_count">
+        <item quantity="one">%1$d API setup</item>
+        <item quantity="other">%1$d API setups</item>
+    </plurals>
+
+    <!-- Appearance -->
+    <string name="settings_section_appearance">Appearance</string>
+    <string name="settings_my_avatar">Your avatar</string>
+    <string name="settings_my_avatar_desc">Shown on your side of the chat; not carried over in a backup</string>
+    <string name="settings_restore_default">Restore default</string>
+    <string name="settings_theme_mode">Theme</string>
+    <string name="settings_theme_mode_desc">Light, dark, or follow the system</string>
+    <string name="settings_theme_system">Follow system</string>
+    <string name="settings_theme_light">Light</string>
+    <string name="settings_theme_dark">Dark</string>
+    <string name="settings_accent_color">Accent color</string>
+    <string name="settings_accent_color_desc">Used for your bubbles, buttons, and highlights</string>
+    <string name="settings_custom_color_cd">Custom color</string>
+    <string name="settings_custom_accent_label">Custom accent color</string>
+    <string name="settings_apply">Apply</string>
+    <string name="settings_font_size">Text size</string>
+    <string name="settings_font_size_desc">Changes text only, not the layout</string>
+    <string name="settings_bubble_style">Bubble style</string>
+    <string name="settings_bubble_style_desc">Corner rounding and spacing</string>
+    <string name="settings_bubble_soft">Soft</string>
+    <string name="settings_bubble_compact">Compact</string>
+    <string name="settings_bubble_outlined">Outlined</string>
+    <string name="settings_animations">Interface animations</string>
+    <string name="settings_animations_desc">Turn off for quieter page and bubble transitions</string>
+    <string name="settings_haptics">Haptics</string>
+    <string name="settings_haptics_desc">A light buzz on long presses and actions</string>
+
+    <!-- Keeping him alive in the background -->
+    <string name="settings_section_background">Keeping him alive in the background</string>
+    <string name="settings_agent_loop">Stay in the background</string>
+    <string name="settings_agent_loop_desc">When off, he exists only while the app is open. When on, he keeps thinking in the background and sometimes reaches out first.</string>
+    <string name="settings_notification_permission">Notification permission</string>
+    <string name="settings_notification_permission_desc">Without it, you won\'t see him when he reaches for you.</string>
+    <string name="settings_notification_on">On</string>
+    <string name="settings_notification_off">Off</string>
+    <string name="settings_battery_limit">Background limits</string>
+    <string name="settings_battery_limit_desc">The system freezes background apps to save power. Allow it and he can stay.</string>
+    <string name="settings_battery_allowed">Allowed</string>
+    <string name="settings_battery_restricted">Restricted</string>
+    <string name="settings_background_note">Some phone brands also need auto-start and background activity allowed in system settings, or he may be frozen.</string>
+    <string name="settings_open_app_settings">Open app settings</string>
+
+    <!-- Chat background -->
+    <string name="settings_section_chat_background">Chat background</string>
+    <string name="settings_solid_background">Solid color</string>
+    <string name="settings_solid_background_desc_image">A custom image is in use; colors apply only after you remove it</string>
+    <string name="settings_solid_background_desc_color">Pick the color of the chat canvas</string>
+    <string name="settings_background_default">Default</string>
+    <string name="settings_pick_background_image">Choose an image</string>
+    <string name="settings_remove_image">Remove image</string>
+
+    <!-- API setup entry -->
+    <string name="settings_api_title">API setup</string>
+    <string name="settings_api_desc">Base URL, key, and reasoning settings</string>
+
+    <!-- Data and security -->
+    <string name="settings_section_data_security">Data and security</string>
+    <string name="settings_export_chats_title">Export all chats</string>
+    <string name="settings_export_chats_desc">A JSON file, without your API key</string>
+    <string name="settings_clear_chats_title">Clear all chats and memories</string>
+    <string name="settings_clear_chats_desc">Keeps your personas and API setup</string>
+    <string name="settings_wipe_title">Delete all local data</string>
+    <string name="settings_wipe_desc">Every persona, conversation, memory, preset, wake-up rule, API setup, and setting is removed</string>
+    <string name="settings_security_note">Your API key is encrypted by Android Keystore and never written to logs or crash reports. Only HTTPS is allowed by default; conversations stay on this phone.</string>
+    <string name="settings_about_entry">About MyFriend</string>
+    <string name="settings_selected_cd">Selected</string>
+
+    <!-- Settings toasts and failures -->
+    <string name="settings_error_background_image">Couldn\'t save that background image</string>
+    <string name="settings_error_avatar">Couldn\'t save that avatar</string>
+    <string name="settings_error_unwritable_file">Couldn\'t write that file</string>
+    <string name="settings_export_success">Chats exported</string>
+    <string name="settings_export_failed">Export failed: %1$s</string>
+    <string name="settings_error_export">Export failed</string>
+    <string name="settings_cleared_chats">All chats and memories are cleared</string>
+    <string name="settings_error_clear">Couldn\'t clear them</string>
+    <string name="settings_wiped">All local data is deleted</string>
+    <string name="settings_error_delete">Couldn\'t delete it</string>
+    <string name="settings_error_import">Couldn\'t bring him back. Nothing on this phone has changed.</string>
+    <string name="settings_error_save">Couldn\'t save that setting</string>
+
+    <!-- About screen -->
+    <string name="about_title">About</string>
+    <string name="about_tagline">A quiet place you can stay in for a long time.\nEvery persona has its own character, memory, and conversations.</string>
+    <string name="about_section_memory">How he remembers you</string>
+    <string name="about_memory_body">He gathers lasting memories from your conversations, and you can view, edit, or delete them in Long-term memory. A change to who he is applies only after you confirm it, and every earlier version is kept.</string>
+    <string name="about_section_privacy">Privacy and security</string>
+    <string name="about_privacy_keys">Your API key is encrypted with Android Keystore and stays on this phone. Only HTTPS is allowed by default, and the key never goes into logs or into any persona or chat export.</string>
+    <string name="about_privacy_memory">What he remembers, and the character you shaped for him, go only to the API he\'s connected to.</string>
+    <string name="about_closing">Your conversations belong to you.</string>
+
+    <!-- Proactive level 1-5: how often he reaches out on his own -->
+    <string name="proactive_level_1">Rarely starts anything. If you don\'t come to him, he mostly won\'t interrupt.</string>
+    <string name="proactive_level_2">Thinks of you now and then. When things get busy, he loses track.</string>
+    <string name="proactive_level_3">Reaches out, but with restraint. Most days he\'ll say something to you.</string>
+    <string name="proactive_level_4">Fairly clingy. Every so often he wants to know what you\'re doing.</string>
+    <string name="proactive_level_5">Very attached. Several times a day he wants to talk to you.</string>
+    <!-- What he's doing right now, and how long ago: domain/Presence only says which kind -->
+    <string name="presence_line">%1$s · %2$s</string>
+    <string name="presence_asleep">Asleep</string>
+    <string name="presence_asleep_wake">Asleep · up at %1$s</string>
+    <string name="presence_just_woke">Just woke up</string>
+    <string name="presence_writing">Writing</string>
+    <string name="presence_browsing">Looking something up</string>
+    <string name="presence_thinking">Thinking</string>
+    <string name="presence_waiting">About to come to you</string>
+    <string name="presence_away">Busy with something else</string>
+    <string name="presence_idle">Just sitting</string>
+    <string name="presence_ago_just_now">just now</string>
+    <plurals name="presence_ago_minutes">
+        <item quantity="one">%1$d minute ago</item>
+        <item quantity="other">%1$d minutes ago</item>
+    </plurals>
+    <plurals name="presence_ago_hours">
+        <item quantity="one">%1$d hour ago</item>
+        <item quantity="other">%1$d hours ago</item>
+    </plurals>
+    <string name="presence_ago_yesterday">yesterday</string>
+    <plurals name="presence_ago_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="presence_ago_last_week">last week</string>
+    <plurals name="presence_ago_weeks">
+        <item quantity="one">%1$d week ago</item>
+        <item quantity="other">%1$d weeks ago</item>
+    </plurals>
+    <plurals name="presence_ago_months">
+        <item quantity="one">%1$d month ago</item>
+        <item quantity="other">%1$d months ago</item>
+    </plurals>
+    <string name="presence_ago_long_ago">a long time ago</string>
+
+    <!-- The fixed mood words (MoodLexicon); a word the model invents stays as it is -->
+    <string name="mood_label_calm">calm</string>
+    <string name="mood_label_relaxed">relaxed</string>
+    <string name="mood_label_gentle">gentle</string>
+    <string name="mood_label_elated">elated</string>
+    <string name="mood_label_happy">happy</string>
+    <string name="mood_label_excited">excited</string>
+    <string name="mood_label_looking_forward">looking forward to it</string>
+    <string name="mood_label_missing_you">missing you</string>
+    <string name="mood_label_a_little_tired">a little tired</string>
+    <string name="mood_label_worn_out">worn out</string>
+    <string name="mood_label_sleepy">sleepy</string>
+    <string name="mood_label_low">low</string>
+    <string name="mood_label_sad">sad</string>
+    <string name="mood_label_restless">restless</string>
+    <string name="mood_label_uneasy">uneasy</string>
+    <string name="mood_label_a_little_hurt">a little hurt</string>
+    <string name="mood_label_guilty">guilty</string>
+    <!-- Usage, by what he was doing / by person -->
+    <string name="usage_kind_chat">Talking with you</string>
+    <string name="usage_kind_consolidation">Tidying his memories</string>
+    <string name="usage_kind_scoring">Deciding what\'s worth keeping</string>
+    <string name="usage_kind_agent">Thinking on his own</string>
+    <string name="usage_kind_recall">Recalling what you said</string>
+    <string name="usage_kind_extraction">Noting things from the chat</string>
+    <string name="usage_kind_reconsolidation">Remembering old things</string>
+    <string name="usage_kind_history">Compressing long conversations</string>
+    <string name="usage_kind_unknown">Other</string>
+    <string name="usage_session_other">Other</string>
+    <string name="usage_session_unknown">Unknown contact</string>
+</resources>

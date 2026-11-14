@@ -1,13 +1,16 @@
 package com.myfriend.app.ui.screens.apiconfig
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.domain.ApiConfigDraft
 import com.myfriend.app.network.ProviderCapabilities
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,7 +62,8 @@ sealed interface ApiEditorEvent {
 @HiltViewModel
 class ApiEditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val repository: ApiConfigRepository
+    private val repository: ApiConfigRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val configId: String? = savedStateHandle.get<String>("configId")?.takeIf { it.isNotBlank() }
     private val _state = MutableStateFlow(ApiEditorUiState(apiConfigId = configId, isNew = configId == null))
@@ -75,7 +79,7 @@ class ApiEditorViewModel @Inject constructor(
             } else {
                 val config = repository.getById(configId)
                 if (config == null) {
-                    events.send(ApiEditorEvent.Message("API 配置不存在"))
+                    events.send(ApiEditorEvent.Message(context.getString(R.string.api_error_config_not_found)))
                     _state.update { it.copy(loading = false) }
                 } else {
                     _state.update {
@@ -134,7 +138,7 @@ class ApiEditorViewModel @Inject constructor(
                 presencePenalty = ""
             )
         }
-        viewModelScope.launch { events.send(ApiEditorEvent.Message("已恢复模型默认参数")) }
+        viewModelScope.launch { events.send(ApiEditorEvent.Message(context.getString(R.string.api_reset_parameters_done))) }
     }
 
     fun save() {
@@ -151,7 +155,7 @@ class ApiEditorViewModel @Inject constructor(
             )
             _state.update { it.copy(saving = false) }
             result.onSuccess { events.send(ApiEditorEvent.Saved(it)) }
-                .onFailure { events.send(ApiEditorEvent.Message(it.message ?: "保存失败")) }
+                .onFailure { events.send(ApiEditorEvent.Message(it.message ?: context.getString(R.string.api_error_save_failed))) }
         }
     }
 
@@ -167,7 +171,10 @@ class ApiEditorViewModel @Inject constructor(
             _state.update { it.copy(testing = true) }
             repository.testDraft(current.toDraft())
                 .onSuccess { events.send(ApiEditorEvent.Message(it.message)) }
-                .onFailure { events.send(ApiEditorEvent.Message("连接失败：${it.message ?: "未知错误"}")) }
+                .onFailure {
+                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    events.send(ApiEditorEvent.Message(context.getString(R.string.api_error_connect_failed, reason)))
+                }
             _state.update { it.copy(testing = false) }
         }
     }
@@ -180,12 +187,15 @@ class ApiEditorViewModel @Inject constructor(
             repository.fetchModelsForDraft(current.toDraft())
                 .onSuccess { models ->
                     if (models.isEmpty()) {
-                        events.send(ApiEditorEvent.Message("服务未返回模型列表，可以手动填写模型 ID"))
+                        events.send(ApiEditorEvent.Message(context.getString(R.string.api_models_empty_hint)))
                     } else {
                         _state.update { it.copy(models = models, showModelPicker = true) }
                     }
                 }
-                .onFailure { events.send(ApiEditorEvent.Message("获取模型失败：${it.message ?: "未知错误"}")) }
+                .onFailure {
+                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    events.send(ApiEditorEvent.Message(context.getString(R.string.api_error_fetch_models_failed, reason)))
+                }
             _state.update { it.copy(fetchingModels = false) }
         }
     }

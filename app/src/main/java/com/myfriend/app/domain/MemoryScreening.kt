@@ -9,8 +9,8 @@ import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
-/** 三个抽屉：他是什么样的人 / 关于你 / 共同经历与约定 */
-enum class MemoryDrawer { SELF, USER, EVENT }
+// `MemoryDrawer` 已经搬到同包的 `MemoryDrawer.kt`：它是纯枚举，不该跟着本文件一起
+// 依赖 kotlinx-serialization（`agentd/` 要零依赖复用纯领域代码）。这里不再重复声明。
 
 /** 一行已有记忆的最小视图（不要依赖 Room 实体，便于单测） */
 data class MemoryRow(

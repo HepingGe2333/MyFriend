@@ -13,6 +13,7 @@ import com.myfriend.app.data.local.PersonaPendingPatchEntity
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.AgentWindow
 import com.myfriend.app.domain.DeferReply
+import com.myfriend.app.domain.ToolArgClamp
 import com.myfriend.app.domain.MemoryCandidate
 import com.myfriend.app.domain.MemoryDecision
 import com.myfriend.app.domain.MemoryDrawer
@@ -165,7 +166,7 @@ class ToolExecutor @Inject constructor(
                 baseUrl = access.baseUrl,
                 apiKey = access.apiKey,
                 query = query.take(128),
-                count = invocation.intArgument("count", 6).coerceIn(1, 12),
+                count = ToolArgClamp.clampCount(invocation.intArgument("count", ToolArgClamp.COUNT_DEFAULT)),
                 allowInsecureHttp = access.allowInsecureHttp
             )
             if (hits.isEmpty()) {
@@ -304,7 +305,9 @@ class ToolExecutor @Inject constructor(
             "EVENT" -> MemoryDrawer.EVENT
             else -> MemoryDrawer.USER
         }
-        val importance = invocation.intArgument("importance", 3).coerceIn(1, 5)
+        val importance = ToolArgClamp.clampImportance(
+            invocation.intArgument("importance", ToolArgClamp.IMPORTANCE_DEFAULT)
+        )
         val candidate = MemoryCandidate(
             content = content,
             drawer = drawer,

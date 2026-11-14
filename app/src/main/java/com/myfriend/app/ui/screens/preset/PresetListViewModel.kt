@@ -1,11 +1,14 @@
 package com.myfriend.app.ui.screens.preset
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaPresetEntity
 import com.myfriend.app.data.repo.PresetRepository
 import com.myfriend.app.domain.ExportFile
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -37,7 +40,8 @@ sealed interface PresetListEvent {
 
 @HiltViewModel
 class PresetListViewModel @Inject constructor(
-    private val presetRepository: PresetRepository
+    private val presetRepository: PresetRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val category = MutableStateFlow<String?>(null)
@@ -75,8 +79,8 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             presetRepository.duplicate(presetId)
-                .onSuccess { message.value = "已复制为新预设" }
-                .onFailure { message.value = it.message ?: "复制失败" }
+                .onSuccess { message.value = context.getString(R.string.preset_duplicated) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.preset_duplicate_failed) }
             busy.value = false
         }
     }
@@ -84,7 +88,7 @@ class PresetListViewModel @Inject constructor(
     fun delete(presetId: String) {
         viewModelScope.launch {
             presetRepository.delete(presetId)
-            message.value = "预设已删除"
+            message.value = context.getString(R.string.preset_deleted)
         }
     }
 
@@ -98,7 +102,7 @@ class PresetListViewModel @Inject constructor(
                 }
                 .onFailure {
                     busy.value = false
-                    message.value = it.message ?: "创建人格失败"
+                    message.value = it.message ?: context.getString(R.string.preset_create_persona_failed)
                 }
         }
     }
@@ -107,7 +111,7 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             presetRepository.exportOne(presetId)
                 .onSuccess { events.send(PresetListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: "导出失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.preset_export_error) }
         }
     }
 
@@ -115,7 +119,7 @@ class PresetListViewModel @Inject constructor(
         viewModelScope.launch {
             presetRepository.exportAll()
                 .onSuccess { events.send(PresetListEvent.ExportReady(it)) }
-                .onFailure { message.value = it.message ?: "导出失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.preset_export_error) }
         }
     }
 
@@ -124,7 +128,7 @@ class PresetListViewModel @Inject constructor(
             busy.value = true
             presetRepository.import(raw)
                 .onSuccess { message.value = it.message }
-                .onFailure { message.value = it.message ?: "导入失败" }
+                .onFailure { message.value = it.message ?: context.getString(R.string.preset_import_failed) }
             busy.value = false
         }
     }

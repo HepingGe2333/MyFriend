@@ -235,7 +235,7 @@ struct ChatCodeBlockView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text(copied ? "已复制" : "复制代码"))
+                .accessibilityLabel(Text(copied ? L("已复制") : L("复制代码")))
             }
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(code)

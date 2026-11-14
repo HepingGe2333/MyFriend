@@ -86,6 +86,49 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(PromptBuilder.presenceBlock(detail: "他在发呆"), "\n\n## 你此刻的状态\n他在发呆")
     }
 
+    // MARK: - 「## 语言」小节（0.10.0）
+
+    /// 中文界面：指令是中文模板 + 语言名「中文」，压在 system 最后。
+    func testLanguageSectionChinese() {
+        let directive = String(
+            format: "## 语言\n对方现在用%1$@跟你说话。请用同一种语言回答，专有名词可以保留原文。",
+            "中文"
+        )
+        var input = fullInput()
+        input.languageDirective = directive
+        let text = PromptBuilder.systemPrompt(input)
+        XCTAssertTrue(text.hasSuffix("\n\n" + directive), "语言小节应完整压轴：\(String(text.suffix(140)))")
+        XCTAssertTrue(text.contains("## 语言\n对方现在用中文跟你说话。"))
+        XCTAssertEqual(PromptBuilder.languageSection(directive), "\n\n" + directive)
+    }
+
+    /// 英文界面：指令跟着界面语言换成英文模板，语言名是「English」——与 Android 对齐。
+    func testLanguageSectionEnglish() {
+        let directive = String(
+            format: "## Language\nThey are speaking to you in %1$@ right now. Answer in the same language; proper nouns can stay as they are.",
+            "English"
+        )
+        var input = fullInput()
+        input.languageDirective = directive
+        let text = PromptBuilder.systemPrompt(input)
+        XCTAssertTrue(
+            text.hasSuffix("\n\n## Language\nThey are speaking to you in English right now." +
+                           " Answer in the same language; proper nouns can stay as they are."),
+            "英文界面下语言小节格式变了：\(String(text.suffix(160)))"
+        )
+        // 前面的人格 / 记忆段落不受影响（脚手架主体仍是原来那些中文段落）。
+        XCTAssertTrue(text.contains("## 你记得的事"))
+    }
+
+    /// 没传指令（老调用点、测试）：不加小节，也不会留下空标题。
+    func testLanguageSectionOmittedWhenDirectiveEmpty() {
+        var input = fullInput()
+        input.languageDirective = ""
+        XCTAssertEqual(PromptBuilder.languageSection(""), "")
+        XCTAssertFalse(PromptBuilder.systemPrompt(input).contains("## 语言"))
+        XCTAssertEqual(PromptBuilder.languageSection("   "), "")
+    }
+
     // MARK: - 历史
 
     private func message(_ role: MessageRole, _ content: String, at: Int64,

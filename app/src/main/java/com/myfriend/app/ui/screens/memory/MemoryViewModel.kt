@@ -1,11 +1,14 @@
 package com.myfriend.app.ui.screens.memory
 
+import com.myfriend.app.util.androidStringLookup
 import android.content.Context
+import androidx.annotation.StringRes
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.myfriend.app.R
 import com.myfriend.app.data.local.MemoryCategory
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryConsolidationEntity
@@ -34,16 +37,16 @@ import java.util.UUID
 import javax.inject.Inject
 
 /** 列表排序方式：重要度沿用数据库默认顺序，时间只看最近更新。固定永远排最前。 */
-enum class MemorySort(val label: String) {
-    IMPORTANCE("重要度"),
-    TIME("时间")
+enum class MemorySort(@StringRes val labelRes: Int) {
+    IMPORTANCE(R.string.memory_sort_importance),
+    TIME(R.string.memory_sort_time)
 }
 
 /** 一个抽屉在当前筛选/排序下要显示的一段。 */
 data class MemoryDrawerSection(
     val drawer: MemoryDrawer,
-    val title: String,
-    val emptyHint: String,
+    @StringRes val titleRes: Int,
+    @StringRes val emptyHintRes: Int,
     val memories: List<MemoryEntity>
 )
 
@@ -91,16 +94,18 @@ data class MemoryUiState(
 /** 抽屉固定顺序：关于你 → 他是什么样的人 → 共同经历与约定。 */
 private val MEMORY_DRAWER_ORDER = listOf(MemoryDrawer.USER, MemoryDrawer.SELF, MemoryDrawer.EVENT)
 
-private fun drawerTitle(drawer: MemoryDrawer): String = when (drawer) {
-    MemoryDrawer.USER -> "关于你"
-    MemoryDrawer.SELF -> "他是什么样的人"
-    MemoryDrawer.EVENT -> "共同经历与约定"
+@StringRes
+private fun drawerTitle(drawer: MemoryDrawer): Int = when (drawer) {
+    MemoryDrawer.USER -> R.string.memory_drawer_user
+    MemoryDrawer.SELF -> R.string.memory_drawer_self
+    MemoryDrawer.EVENT -> R.string.memory_drawer_event
 }
 
-private fun drawerEmptyHint(drawer: MemoryDrawer): String = when (drawer) {
-    MemoryDrawer.USER -> "还没有关于你的记忆"
-    MemoryDrawer.SELF -> "等他更了解自己一点"
-    MemoryDrawer.EVENT -> "还没有共同经历或约定"
+@StringRes
+private fun drawerEmptyHint(drawer: MemoryDrawer): Int = when (drawer) {
+    MemoryDrawer.USER -> R.string.memory_empty_hint_user
+    MemoryDrawer.SELF -> R.string.memory_empty_hint_self
+    MemoryDrawer.EVENT -> R.string.memory_empty_hint_event
 }
 
 /** 优先用落库的 drawer，解析失败或为空时按 category 推断。 */
@@ -135,8 +140,8 @@ private data class MemoryContent(
             .map { drawer ->
                 MemoryDrawerSection(
                     drawer = drawer,
-                    title = drawerTitle(drawer),
-                    emptyHint = drawerEmptyHint(drawer),
+                    titleRes = drawerTitle(drawer),
+                    emptyHintRes = drawerEmptyHint(drawer),
                     memories = ordered.filter { it.drawerOrInferred() == drawer }
                 )
             }
@@ -257,23 +262,23 @@ class MemoryViewModel @Inject constructor(
     fun addMemory(content: String, category: MemoryCategory, importance: Int) {
         viewModelScope.launch {
             memoryRepository.add(personaId, content, category, importance)
-                .onSuccess { message.value = "记忆已添加" }
-                .onFailure { message.value = it.message ?: "添加失败" }
+                .onSuccess { message.value = context.getString(R.string.memory_added) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.memory_add_failed) }
         }
     }
 
     fun updateMemory(memory: MemoryEntity, content: String, category: MemoryCategory, importance: Int) {
         viewModelScope.launch {
             memoryRepository.update(memory, content, category, importance)
-                .onSuccess { message.value = "记忆已更新" }
-                .onFailure { message.value = it.message ?: "更新失败" }
+                .onSuccess { message.value = context.getString(R.string.memory_updated) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.memory_update_failed) }
         }
     }
 
     fun deleteMemory(memory: MemoryEntity) {
         viewModelScope.launch {
             memoryRepository.delete(memory)
-            message.value = "记忆已删除"
+            message.value = context.getString(R.string.memory_deleted)
         }
     }
 
@@ -289,7 +294,10 @@ class MemoryViewModel @Inject constructor(
             extracting.value = true
             memoryRepository.extractFromLatestSession(personaId)
                 .onSuccess { message.value = it.message }
-                .onFailure { message.value = "整理失败：${it.message ?: "请检查该人格最近会话的 API 配置"}" }
+                .onFailure {
+                    val detail = it.message ?: context.getString(R.string.memory_extract_failed_detail)
+                    message.value = context.getString(R.string.memory_extract_failed, detail)
+                }
             extracting.value = false
         }
     }
@@ -304,7 +312,7 @@ class MemoryViewModel @Inject constructor(
         if (consolidating.value) return
         val manager = workManager
         if (manager == null) {
-            message.value = "这次没能排上整理任务，稍后再试一次"
+            message.value = context.getString(R.string.memory_enqueue_failed)
             return
         }
         MemoryConsolidationWorker.enqueueOneTime(context)
@@ -315,7 +323,7 @@ class MemoryViewModel @Inject constructor(
                 val infos = runCatching {
                     manager.getWorkInfosForUniqueWorkFlow(MemoryConsolidationWorker.WORK_NAME_MANUAL).first()
                 }.getOrDefault(emptyList())
-                if (infos.isEmpty()) message.value = "这次没能排上整理任务，稍后再试一次"
+                if (infos.isEmpty()) message.value = context.getString(R.string.memory_enqueue_failed)
             }
         }
     }
@@ -377,7 +385,7 @@ class MemoryViewModel @Inject constructor(
             if (!consolidationQueued.value) return@launch
             runCatching { workManager?.cancelUniqueWork(MemoryConsolidationWorker.WORK_NAME_MANUAL) }
             resetManualState()
-            message.value = "这次没跑起来，再点一次试试"
+            message.value = context.getString(R.string.memory_queue_failed)
         }
     }
 
@@ -399,7 +407,8 @@ class MemoryViewModel @Inject constructor(
             kept = data.getInt(MemoryConsolidationWorker.KEY_KEPT, 0),
             merged = data.getInt(MemoryConsolidationWorker.KEY_MERGED, 0),
             archived = data.getInt(MemoryConsolidationWorker.KEY_ARCHIVED, 0),
-            forgotten = data.getInt(MemoryConsolidationWorker.KEY_FORGOTTEN, 0)
+            forgotten = data.getInt(MemoryConsolidationWorker.KEY_FORGOTTEN, 0),
+            strings = androidStringLookup(context)
         )
     }
 

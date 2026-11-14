@@ -82,7 +82,14 @@ data class Presence(
     val text: String = "",
     val detail: String = "",
     val sinceAt: Long = 0L,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    /**
+     * 睡着时「几点醒」的原文（如 "23:30"）；界面要用它拼自己语言的那一句。
+     *
+     * [text] 是给中文看的整句，界面不再直接用它（英语要能说 "Asleep · up at 23:30"）；
+     * 但纯 Kotlin 的测试与工具侧仍然只认 [text]。
+     */
+    val wakeText: String? = null
 ) {
 
     /** 有没有内容可显示：没有的话界面就整行不画。 */
@@ -191,7 +198,8 @@ object PresenceDeriver {
                     ?: "睡着了",
                 detail = "他把这段时间设成了休息，消息会留着，醒了再看。",
                 sinceMinutes = null,
-                now = now
+                now = now,
+                wakeText = input.sleepWakeText?.takeIf { it.isNotBlank() }
             )
 
             sinceWake != null && sinceWake <= PresenceRules.JUST_WOKE_MINUTES -> presence(
@@ -301,7 +309,8 @@ object PresenceDeriver {
         text: String,
         detail: String,
         sinceMinutes: Int?,
-        now: Long
+        now: Long,
+        wakeText: String? = null
     ): Presence {
         val sinceAt = if (sinceMinutes == null) {
             0L
@@ -315,7 +324,14 @@ object PresenceDeriver {
                 else -> raw
             }
         }
-        return Presence(kind = kind, text = text, detail = detail, sinceAt = sinceAt, updatedAt = now)
+        return Presence(
+            kind = kind,
+            text = text,
+            detail = detail,
+            sinceAt = sinceAt,
+            updatedAt = now,
+            wakeText = wakeText
+        )
     }
 }
 

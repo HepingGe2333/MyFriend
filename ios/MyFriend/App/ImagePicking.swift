@@ -19,7 +19,7 @@ enum ImageImport {
     /// 单张：聊天图（长边 ≤ 1600、≤ 800KB）或头像（长边 ≤ 512、≤ 400KB）。
     static func importOne(_ item: PhotosPickerItem, kind: MediaKind) async -> Outcome {
         guard let data = try? await item.loadTransferable(type: Data.self) else {
-            return .failure("读不出这张图片，换一张试试")
+            return .failure(L("读不出这张图片，换一张试试"))
         }
         do {
             let attachment = try await save(data: data, kind: kind)
@@ -59,6 +59,6 @@ enum ImageImport {
         if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty {
             return localized
         }
-        return "图片没能存到本机"
+        return L("图片没能存到本机")
     }
 }

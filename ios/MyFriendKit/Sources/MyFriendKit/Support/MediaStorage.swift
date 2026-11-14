@@ -306,10 +306,10 @@ public final class MediaStorage {
 
         public var errorDescription: String? {
             switch self {
-            case .emptyImage: return "这张图片是空的"
-            case .tooLarge: return "图片超过 20 MB，请换一张小一点的"
-            case .unreadable: return "读不出这张图片，换一张试试"
-            case .writeFailed: return "图片没能存到本机"
+            case .emptyImage: return String(localized: "这张图片是空的")
+            case .tooLarge: return String(localized: "图片超过 20 MB，请换一张小一点的")
+            case .unreadable: return String(localized: "读不出这张图片，换一张试试")
+            case .writeFailed: return String(localized: "图片没能存到本机")
             }
         }
     }

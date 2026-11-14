@@ -47,6 +47,9 @@ public struct SystemPromptInput {
     public var proactiveCapability: String
     /// 工具能力说明（`ToolCatalog.capabilityPrompt(webEnabled:)`）。
     public var toolsCapability: String
+    /// 「## 语言」小节的完整文本（模板由 App 层按界面语言从资源里取，见 `AppLanguage.languageDirective`）。
+    /// 空串 = 不加这一节（老调用点与测试不用改签名）。
+    public var languageDirective: String
 
     public init(
         personaText: String = "",
@@ -57,7 +60,8 @@ public struct SystemPromptInput {
         presenceBlock: String = "",
         moodNudgeBlock: String = "",
         proactiveCapability: String = ProactiveCapabilityPrompt.text,
-        toolsCapability: String = ToolCatalog.capabilityPrompt()
+        toolsCapability: String = ToolCatalog.capabilityPrompt(),
+        languageDirective: String = ""
     ) {
         self.personaText = personaText
         self.memoriesBlock = memoriesBlock
@@ -68,6 +72,7 @@ public struct SystemPromptInput {
         self.moodNudgeBlock = moodNudgeBlock
         self.proactiveCapability = proactiveCapability
         self.toolsCapability = toolsCapability
+        self.languageDirective = languageDirective
     }
 }
 
@@ -114,7 +119,23 @@ public enum PromptBuilder {
         text += "\n\n"
         text += input.toolsCapability
         text += input.moodNudgeBlock
+        text += languageSection(input.languageDirective)
         return text
+    }
+
+    /// 「用对方的语言回答」这一节。
+    ///
+    /// 为什么放在最后一节：前面的段落都是「他是谁 / 他记得什么 / 他能做什么」，
+    /// 「怎么说」属于输出规则，压在尾巴上模型更容易当成指令而不是设定。
+    ///
+    /// **指令本身随界面语言本地化**（与 Android `LanguageDirective.section` 对齐）：
+    /// 中文界面发 `## 语言` + 中文说明，英文界面发 `## Language` + 英文说明。
+    /// Kit 不读资源、也不读 `Locale`：模板由 App 层取好、拼好语言名再传进来，
+    /// 这样「模板内容」归资源守卫管、「拼在 system 末尾」归这里管，两边都能单测。
+    public static func languageSection(_ directive: String) -> String {
+        let trimmed = directive.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return "\n\n" + trimmed
     }
 
     // MARK: - 人格小节（1.9）

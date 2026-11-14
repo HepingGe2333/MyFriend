@@ -229,10 +229,10 @@ final class ChatRhythmTests: XCTestCase {
 
         let assistant = try XCTUnwrap(try messages().last { $0.role == .assistant })
         XCTAssertEqual(assistant.content, "……几点了")
-        // 心情：负面 → 平静，强度 1。
+        // 心情：负面 → 平静；强度只减一档（4 → 3），不额外归 1（§6.2 字面语义，与 Android 一致）。
         let persona = try XCTUnwrap(try db.stores.personas.byId(personaId))
         XCTAssertEqual(persona.mood, MoodLexicon.BASELINE)
-        XCTAssertEqual(persona.moodIntensity, 1)
+        XCTAssertEqual(persona.moodIntensity, 3)
         // tick：留一句「被你叫醒了」，这是「他被吵醒」唯一的证据。
         let tick = try XCTUnwrap(ticks.latest(personaId: personaId))
         XCTAssertTrue(tick.outcome.contains("被你叫醒了"))

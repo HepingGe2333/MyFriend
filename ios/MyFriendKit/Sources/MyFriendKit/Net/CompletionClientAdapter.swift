@@ -65,7 +65,7 @@ public final class CompletionClientAdapter: CompletionClient {
             throw CompletionFailure(api.message)
         } catch {
             let message = (error as NSError).localizedDescription
-            throw CompletionFailure(message.isEmpty ? "调用失败" : message)
+            throw CompletionFailure(message.isEmpty ? String(localized: "调用失败") : message)
         }
     }
 

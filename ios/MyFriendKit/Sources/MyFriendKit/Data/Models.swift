@@ -334,8 +334,7 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 为什么就是它本身：这一版把「每天最多主动几次」这个设置删掉了，档位就是次数，
     /// 用户能理解的还是「他黏不黏」这件事，而不是一个数字输入框。
     public var proactiveDailyCap: Int {
-        min(max(proactiveLevel, PersonaFieldLimits.levelRange.lowerBound),
-            PersonaFieldLimits.levelRange.upperBound)
+        ProactiveLevel.dailyCap(proactiveLevel)
     }
 
     /// 记性对记忆衰减的系数：记性越好衰减越慢（1 → ×1.6，3 → ×1.0，5 → ×0.5）。
@@ -343,13 +342,7 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 只影响「淡下去的速度」，不影响写入与召回排序，所以它是一个安全的旋钮：
     /// 调大调小都不会让他突然忘掉某件具体的事，只是忘得更快或更慢。
     public var memoryDecayFactor: Double {
-        switch min(max(memoryRetention, 1), 5) {
-        case 1: return 1.6
-        case 2: return 1.3
-        case 3: return 1.0
-        case 4: return 0.75
-        default: return 0.5
-        }
+        MemoryLifecycle.retentionFactor(memoryRetention)
     }
 }
 

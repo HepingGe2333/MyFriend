@@ -37,10 +37,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.myfriend.app.R
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.ui.theme.brandTextStyle
 
@@ -96,7 +98,7 @@ fun BackNavigation(onBack: () -> Unit) {
     IconButton(onClick = onBack, modifier = Modifier.size(40.dp)) {
         Icon(
             imageVector = Icons.AutoMirrored.Rounded.ArrowBackIos,
-            contentDescription = "返回",
+            contentDescription = stringResource(R.string.common_back),
             tint = MaterialTheme.colorScheme.onBackground,
             modifier = Modifier.size(19.dp)
         )
@@ -358,8 +360,8 @@ fun EmptyState(
 fun ConfirmDialog(
     title: String,
     message: String,
-    confirmText: String = "确认",
-    dismissText: String = "取消",
+    confirmText: String = stringResource(R.string.common_confirm),
+    dismissText: String = stringResource(R.string.common_cancel),
     destructive: Boolean = false,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit

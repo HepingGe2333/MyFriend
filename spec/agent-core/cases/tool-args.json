@@ -1,0 +1,278 @@
+{
+  "contract": "agent-core/tool-args",
+  "version": "0.10.0",
+  "title": "工具参数夹取（importance 1–5、count 1–12、minutes 5–720）",
+  "authority": "android",
+  "authorityNote": "数值边界来自 docs/ROADMAP-1.9.md §四 与两端工具 schema；Android ToolArgClamp 是权威、两端已共用同一组常量。",
+  "kotlin": {
+    "file": "app/src/main/java/com/myfriend/app/domain/ToolArgClamp.kt",
+    "symbol": "ToolArgClamp.clampImportance / clampCount / clampDeferMinutes"
+  },
+  "swift": {
+    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/ToolArgClamp.swift",
+    "symbol": "ToolArgClamp.clampImportance / clampCount / clampDeferMinutes"
+  },
+  "inputSpec": {
+    "tool": "remember / web_search / defer_reply",
+    "args": "模型给的原始参数对象；只夹已知数值键，其余键原样保留"
+  },
+  "cases": [
+    {
+      "name": "remember-importance-above-max",
+      "input": {
+        "tool": "remember",
+        "args": {
+          "content": "她妹妹叫小雨",
+          "drawer": "USER",
+          "importance": 9
+        }
+      },
+      "expect": {
+        "args": {
+          "content": "她妹妹叫小雨",
+          "drawer": "USER",
+          "importance": 5
+        }
+      }
+    },
+    {
+      "name": "remember-importance-below-min",
+      "input": {
+        "tool": "remember",
+        "args": {
+          "content": "她说怕冷",
+          "drawer": "USER",
+          "importance": 0
+        }
+      },
+      "expect": {
+        "args": {
+          "content": "她说怕冷",
+          "drawer": "USER",
+          "importance": 1
+        }
+      }
+    },
+    {
+      "name": "remember-importance-negative",
+      "input": {
+        "tool": "remember",
+        "args": {
+          "content": "她喜欢夜里散步",
+          "drawer": "USER",
+          "importance": -3
+        }
+      },
+      "expect": {
+        "args": {
+          "content": "她喜欢夜里散步",
+          "drawer": "USER",
+          "importance": 1
+        }
+      }
+    },
+    {
+      "name": "remember-importance-default",
+      "input": {
+        "tool": "remember",
+        "args": {
+          "content": "她下周考试",
+          "drawer": "EVENT"
+        }
+      },
+      "expect": {
+        "args": {
+          "content": "她下周考试",
+          "drawer": "EVENT",
+          "importance": 3
+        }
+      }
+    },
+    {
+      "name": "remember-importance-in-range",
+      "input": {
+        "tool": "remember",
+        "args": {
+          "content": "她生日是 3 月 2 日",
+          "drawer": "USER",
+          "importance": 4
+        }
+      },
+      "expect": {
+        "args": {
+          "content": "她生日是 3 月 2 日",
+          "drawer": "USER",
+          "importance": 4
+        }
+      }
+    },
+    {
+      "name": "web-search-count-above-max",
+      "input": {
+        "tool": "web_search",
+        "args": {
+          "query": "明天的天气",
+          "count": 50
+        }
+      },
+      "expect": {
+        "args": {
+          "query": "明天的天气",
+          "count": 12
+        }
+      }
+    },
+    {
+      "name": "web-search-count-below-min",
+      "input": {
+        "tool": "web_search",
+        "args": {
+          "query": "下周的展会",
+          "count": 0
+        }
+      },
+      "expect": {
+        "args": {
+          "query": "下周的展会",
+          "count": 1
+        }
+      }
+    },
+    {
+      "name": "web-search-count-default",
+      "input": {
+        "tool": "web_search",
+        "args": {
+          "query": "附近的咖啡店"
+        }
+      },
+      "expect": {
+        "args": {
+          "query": "附近的咖啡店",
+          "count": 6
+        }
+      }
+    },
+    {
+      "name": "web-search-count-in-range",
+      "input": {
+        "tool": "web_search",
+        "args": {
+          "query": "有什么新电影",
+          "count": 3
+        }
+      },
+      "expect": {
+        "args": {
+          "query": "有什么新电影",
+          "count": 3
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-above-max",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": 9999,
+          "reason": "现在不想说话"
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 720,
+          "reason": "现在不想说话"
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-below-min",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": 0,
+          "reason": "缓一缓"
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 5,
+          "reason": "缓一缓"
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-negative",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": -30,
+          "reason": "不知道怎么接"
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 5,
+          "reason": "不知道怎么接"
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-default",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "reason": "想等自己缓一缓"
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 45,
+          "reason": "想等自己缓一缓"
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-in-range",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": 90
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 90
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-max-boundary",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": 720
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 720
+        }
+      }
+    },
+    {
+      "name": "defer-minutes-min-boundary",
+      "input": {
+        "tool": "defer_reply",
+        "args": {
+          "minutes": 5
+        }
+      },
+      "expect": {
+        "args": {
+          "minutes": 5
+        }
+      }
+    }
+  ]
+}

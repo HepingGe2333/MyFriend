@@ -11,8 +11,14 @@ public enum BackupDateFormatting {
 
     /// 「2026年11月14日 01:40」；`at <= 0` 表示时间不详。
     public static func moment(_ at: Int64) -> String {
-        guard at > 0 else { return "时间不详" }
-        return formatter("yyyy年M月d日 HH:mm", locale: "zh_CN").string(from: date(millis: at))
+        guard at > 0 else { return String(localized: "时间不详") }
+        // 跟着界面语言走：中文是「2026年11月14日 01:40」，英文是 "Nov 14, 2026 at 1:40 AM"。
+        let formatter = DateFormatter()
+        formatter.locale = Locale.current
+        formatter.timeZone = TimeZone.current
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date(millis: at))
     }
 
     /// 备份文件名里的时间戳：`20261114-0140`。

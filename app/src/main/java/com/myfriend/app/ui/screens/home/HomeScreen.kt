@@ -2,6 +2,7 @@
 
 package com.myfriend.app.ui.screens.home
 
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
@@ -48,12 +49,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.CircleIconButton
@@ -118,7 +121,7 @@ fun HomeScreen(
                     .padding(end = 4.dp, bottom = 8.dp)
                     .size(58.dp)
             ) {
-                Icon(Icons.Rounded.Add, contentDescription = "新建人格", modifier = Modifier.size(26.dp))
+                Icon(Icons.Rounded.Add, contentDescription = stringResource(R.string.home_new_persona), modifier = Modifier.size(26.dp))
             }
         }
     ) { padding ->
@@ -137,11 +140,11 @@ fun HomeScreen(
             Column(Modifier.fillMaxSize().padding(padding)) {
                 AppHeader(
                     title = "MyFriend",
-                    subtitle = "他就在这儿，点一个名字说话",
+                    subtitle = stringResource(R.string.home_subtitle),
                     brand = true,
                     actions = {
-                        CircleIconButton(Icons.Outlined.Search, "搜索", onOpenSearch)
-                        CircleIconButton(Icons.Rounded.Settings, "设置", onOpenSettings)
+                        CircleIconButton(Icons.Outlined.Search, stringResource(R.string.home_search), onOpenSearch)
+                        CircleIconButton(Icons.Rounded.Settings, stringResource(R.string.home_settings), onOpenSettings)
                     }
                 )
                 Row(
@@ -166,7 +169,7 @@ fun HomeScreen(
                         )
                         Spacer(Modifier.width(4.dp))
                         Text(
-                            "管理",
+                            stringResource(R.string.home_manage),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -175,12 +178,12 @@ fun HomeScreen(
                 if (state.contacts.isEmpty()) {
                     EmptyState(
                         icon = Icons.Outlined.PersonOutline,
-                        title = "从一个名字开始",
-                        description = "新建一个联系人。他会是独立的一个人：有自己的性格、记性和作息。",
+                        title = stringResource(R.string.home_empty_title),
+                        description = stringResource(R.string.home_empty_desc),
                         modifier = Modifier.padding(top = 28.dp),
                         action = {
                             com.myfriend.app.ui.components.PrimaryButton(
-                                text = "新建人格",
+                                text = stringResource(R.string.home_new_persona),
                                 onClick = onCreatePersona,
                                 modifier = Modifier.width(230.dp)
                             )
@@ -210,9 +213,9 @@ fun HomeScreen(
 
     pendingDelete?.let { item ->
         ConfirmDialog(
-            title = "删除「${item.persona.name}」？",
-            message = "他的消息、记忆、念头和规则都会从这台手机上永久删除，此操作无法撤销。",
-            confirmText = "删除",
+            title = stringResource(R.string.home_delete_title, item.persona.name),
+            message = stringResource(R.string.home_delete_body),
+            confirmText = stringResource(R.string.home_delete),
             destructive = true,
             onConfirm = {
                 viewModel.deleteContact(item.persona.id)
@@ -232,6 +235,7 @@ private fun ContactRow(
     onLongClick: () -> Unit
 ) {
     val persona = item.persona
+    val noMessagePreview = stringResource(R.string.home_no_messages)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -266,7 +270,7 @@ private fun ContactRow(
                 )
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    text = formatShortDate(item.time),
+                    text = formatShortDate(LocalContext.current, item.time),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
                 )
@@ -274,7 +278,7 @@ private fun ContactRow(
             Spacer(Modifier.height(4.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = item.preview,
+                    text = item.preview.ifBlank { noMessagePreview },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

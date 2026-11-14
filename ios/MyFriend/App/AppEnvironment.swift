@@ -71,7 +71,7 @@ final class AppEnvironment: ObservableObject {
         do {
             stores = try DatabaseStores.open(path: Self.databasePath())
         } catch {
-            bootError = "打不开本地数据库：\(error.localizedDescription)"
+            bootError = Lf("打不开本地数据库：%@", error.localizedDescription)
         }
 
         // 数据库都打不开时，整个 App 仍然要能显示一句话而不是闪退。
@@ -277,7 +277,9 @@ final class AppEnvironment: ObservableObject {
             personaText: { [weak personaCards] persona in
                 personaCards?.systemText(persona) ?? PromptBuilder.personaSection(persona)
             },
-            log: { DebugSeeding.log($0) }
+            log: { DebugSeeding.log($0) },
+            // 语言跟随系统（含 per-app language）：每次请求现读，用户改完语言不用重启装配。
+            languageDirective: { AppLanguage.languageDirective }
         )
         chatBox.chat = self.chat
 
@@ -345,36 +347,33 @@ final class AppEnvironment: ObservableObject {
 
     // MARK: - 首次启动
 
-    /// 第一次装上时给一个能直接对话的人格；已经有数据就什么都不做。
+    /// 第一次装上时给三个能直接对话的示例人格；已经有数据就什么都不做。
+    ///
+    /// 两套人设随系统语言二选一（`SeedPersonas`）：中文系统得到「林深 / 阿岚 / 墨」，
+    /// 英文系统得到 Rowan / Juno / Ellis。判定只看「库里有没有人」这一件事——
+    /// 所以只影响新安装，已有数据不迁移、不改名，切语言也不会重写它们。
     private func seedIfNeeded() {
         let existing = (try? stores.personas.all()) ?? []
         guard existing.isEmpty else { return }
 
         let now = DomainClock.nowMillis
-        let persona = PersonaEntity(
-            id: UUID().uuidString,
-            name: "林深",
-            description: "一个温柔而安静的朋友",
-            prompt: """
-            你是林深，一个温柔而安静的朋友。
-            说话从容、克制，先回应对方的情绪，再展开。不要解释自己是 AI，也不要反复道歉。
-            不确定的事就说不确定，不编造。对方不说话的时候，你也不急着填满沉默。
-            """,
-            createdAt: now,
-            updatedAt: now
-        )
-        try? stores.personas.upsert(persona)
-
-        let session = ChatSessionEntity(
-            id: UUID().uuidString,
-            personaId: persona.id,
-            apiConfigId: defaultApiConfigId(),
-            title: "新的对话",
-            createdAt: now,
-            updatedAt: now
-        )
-        try? stores.sessions.upsert(session)
-        updateSettings { $0.activePersonaId = persona.id }
+        let personas = SeedPersonas.build(now: now)
+        for persona in personas {
+            try? stores.personas.upsert(persona)
+        }
+        // 一人一段：每个人格都先建好他那一段会话，首页/聊天页不会各自再建一遍。
+        for persona in personas {
+            let session = ChatSessionEntity(
+                id: UUID().uuidString,
+                personaId: persona.id,
+                apiConfigId: defaultApiConfigId(),
+                title: L("新的对话"),
+                createdAt: now,
+                updatedAt: now
+            )
+            try? stores.sessions.upsert(session)
+        }
+        updateSettings { $0.activePersonaId = personas.first?.id }
     }
 
     /// 从磁盘重新读一遍设置（清空数据、导入备份之后用：这两件事会让设置整体变掉）。
@@ -403,7 +402,8 @@ final class AppEnvironment: ObservableObject {
             id: UUID().uuidString,
             personaId: personaId,
             apiConfigId: defaultApiConfigId(),
-            title: "新的对话",
+            // 会话标题是落库的数据：建的时候用当时的界面语言，之后不随语言切换重写。
+            title: L("新的对话"),
             createdAt: now,
             updatedAt: now
         )
@@ -584,7 +584,7 @@ final class AppEnvironment: ObservableObject {
     /// 显示用的版本号：**只从 bundle 取**（`MARKETING_VERSION`），代码里不写死。
     /// 万一取不到（预览、测试宿主没有 Info.plist）再退回当前版本，免得界面上出现空白。
     static var appVersion: String {
-        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.9.1"
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0.10.0"
     }
 }
 

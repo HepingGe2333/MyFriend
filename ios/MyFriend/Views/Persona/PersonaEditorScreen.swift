@@ -76,11 +76,11 @@ struct PersonaEditorScreen: View {
             .padding(.vertical, 16)
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle(isNew ? "新联系人" : "编辑联系人")
+        .navigationTitle(isNew ? L("新联系人") : L("编辑联系人"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("保存") { save() }
+                Button(L("保存")) { save() }
                     .fontWeight(.medium)
                     .disabled(!canSave)
             }
@@ -97,16 +97,16 @@ struct PersonaEditorScreen: View {
 
             MFRowDivider(leadingInset: 0)
 
-            FieldCaption("名字", hint: "他会怎么称呼自己。")
-            TextField("比如：林深", text: $name)
+            FieldCaption(L("名字"), hint: L("他会怎么称呼自己。"))
+            TextField(L("比如：林深"), text: $name)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
                 .padding(.horizontal, 10)
                 .background(fieldBackground)
                 .padding(.bottom, 14)
 
-            FieldCaption("一句话介绍", hint: "给别人看的一句话，也能帮他记住自己是谁。")
-            TextField("比如：一个温柔而安静的朋友", text: $summary)
+            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也能帮他记住自己是谁。"))
+            TextField(L("比如：一个温柔而安静的朋友"), text: $summary)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
                 .padding(.horizontal, 10)
@@ -123,9 +123,9 @@ struct PersonaEditorScreen: View {
     private var avatarRow: some View {
         HStack(alignment: .top, spacing: 14) {
             MFAvatar(
-                personaName: trimmedName.isEmpty ? "他" : trimmedName,
+                personaName: trimmedName.isEmpty ? L("他") : trimmedName,
                 avatarUri: avatarUri,
-                avatarSeed: avatarSeed == 0 ? Self.avatarSeed(for: trimmedName.isEmpty ? "他" : trimmedName) : avatarSeed,
+                avatarSeed: avatarSeed == 0 ? Self.avatarSeed(for: trimmedName.isEmpty ? L("他") : trimmedName) : avatarSeed,
                 size: 62
             )
             .overlay(alignment: .bottomTrailing) {
@@ -138,18 +138,18 @@ struct PersonaEditorScreen: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("头像")
+                Text(L("头像"))
                     .font(.system(.body, design: .serif))
                 Text(avatarUri == nil
-                     ? "没选就先用名字的首字。"
-                     : "这张图只存在这台手机上，不跟着备份走。")
+                     ? L("没选就先用名字的首字。")
+                     : L("这张图只存在这台手机上，不跟着备份走。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(spacing: 14) {
                     PhotosPicker(selection: $avatarPick, matching: .images, photoLibrary: .shared()) {
-                        Text(avatarUri == nil ? "从相册选一张" : "换一张")
+                        Text(avatarUri == nil ? L("从相册选一张") : L("换一张"))
                             .font(.caption.weight(.medium))
                             .foregroundStyle(accent)
                     }
@@ -159,7 +159,7 @@ struct PersonaEditorScreen: View {
                     }
 
                     if avatarUri != nil {
-                        Button("恢复默认") { removeAvatar() }
+                        Button(L("恢复默认")) { removeAvatar() }
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .buttonStyle(.plain)
@@ -182,7 +182,7 @@ struct PersonaEditorScreen: View {
             case .success(let attachment):
                 avatarUri = attachment.uri
             case .failure(let message):
-                banner = MFAlert(title: "这张图用不了", message: message)
+                banner = MFAlert(title: L("这张图用不了"), message: message)
             }
         }
     }
@@ -200,8 +200,8 @@ struct PersonaEditorScreen: View {
     private var characterCard: some View {
         MFCard {
             TagEditor(
-                title: "性格",
-                hint: "他是怎样的人。点一个加上，也可以自己写。最多 \(PersonaFieldLimits.maxTraits) 个。",
+                title: L("性格"),
+                hint: Lf("他是怎样的人。点一个加上，也可以自己写。最多 %d 个。", PersonaFieldLimits.maxTraits),
                 suggestions: Self.traitSuggestions,
                 limit: PersonaFieldLimits.maxTraits,
                 values: $traits,
@@ -211,8 +211,8 @@ struct PersonaEditorScreen: View {
             MFRowDivider(leadingInset: 0)
 
             TagEditor(
-                title: "喜欢的事",
-                hint: "他乐意做的事、爱聊的话题。最多 \(PersonaFieldLimits.maxLikes) 个。",
+                title: L("喜欢的事"),
+                hint: Lf("他乐意做的事、爱聊的话题。最多 %d 个。", PersonaFieldLimits.maxLikes),
                 suggestions: Self.likeSuggestions,
                 limit: PersonaFieldLimits.maxLikes,
                 values: $likes,
@@ -222,8 +222,8 @@ struct PersonaEditorScreen: View {
             MFRowDivider(leadingInset: 0)
 
             TagEditor(
-                title: "行为方式",
-                hint: "他习惯怎么相处，比如「先听完再给建议」。最多 \(PersonaFieldLimits.maxBehaviors) 个。",
+                title: L("行为方式"),
+                hint: Lf("他习惯怎么相处，比如「先听完再给建议」。最多 %d 个。", PersonaFieldLimits.maxBehaviors),
                 suggestions: Self.behaviorSuggestions,
                 limit: PersonaFieldLimits.maxBehaviors,
                 values: $behaviors,
@@ -236,7 +236,7 @@ struct PersonaEditorScreen: View {
 
     private var storyCard: some View {
         MFCard {
-            FieldCaption("成长经历", hint: "他过去发生过什么。≤ \(PersonaFieldLimits.backstoryMax) 字。")
+            FieldCaption(L("成长经历"), hint: Lf("他过去发生过什么。≤ %d 字。", PersonaFieldLimits.backstoryMax))
             TextEditor(text: $backstory)
                 .font(.system(.body, design: .serif))
                 .scrollContentBackground(.hidden)
@@ -251,7 +251,7 @@ struct PersonaEditorScreen: View {
                 }
                 .padding(.bottom, 14)
 
-            FieldCaption("个人设定", hint: "称呼、口头禅、忌讳这些细节。≤ \(PersonaFieldLimits.quirksMax) 字。")
+            FieldCaption(L("个人设定"), hint: Lf("称呼、口头禅、忌讳这些细节。≤ %d 字。", PersonaFieldLimits.quirksMax))
             TextEditor(text: $quirks)
                 .font(.system(.body, design: .serif))
                 .scrollContentBackground(.hidden)
@@ -275,11 +275,11 @@ struct PersonaEditorScreen: View {
             } label: {
                 HStack(alignment: .center, spacing: 8) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("人设卡")
+                        Text(L("人设卡"))
                             .font(.system(.body, design: .serif))
                         Text(card.isEmpty
-                             ? "可选：空着就继续用提示词全文"
-                             : "身份 · 说话方式 · 性格 · 在意的事 · 边界 · 生活 · 你们之间")
+                             ? L("可选：空着就继续用提示词全文")
+                             : L("身份 · 说话方式 · 性格 · 在意的事 · 边界 · 生活 · 你们之间"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -302,45 +302,45 @@ struct PersonaEditorScreen: View {
 
     private var cardEditor: some View {
         VStack(alignment: .leading, spacing: 14) {
-            MFNote(text: "填了卡，他的人格就按这些字段来：系统提示里只放一条短策略，正文按预算进对话。保存时提示词全文会被卡的镜像替换；卡空着就继续用你手写的那段。")
+            MFNote(text: L("填了卡，他的人格就按这些字段来：系统提示里只放一条短策略，正文按预算进对话。保存时提示词全文会被卡的镜像替换；卡空着就继续用你手写的那段。"))
                 .padding(.top, 10)
 
-            cardGroupLabel("身份")
+            cardGroupLabel(L("身份"))
             cardIdentityFields
 
-            cardGroupLabel("说话方式")
+            cardGroupLabel(L("说话方式"))
             cardVoiceFields
 
-            cardGroupLabel("性格标签")
+            cardGroupLabel(L("性格标签"))
             cardTraitsEditor
 
-            cardGroupLabel("在意的事")
+            cardGroupLabel(L("在意的事"))
             TagEditor(
-                title: "他在意的事",
-                hint: "他看重什么、会为什么认真。最多 \(PersonaCardLimits.maxListItems) 条。",
+                title: L("他在意的事"),
+                hint: Lf("他看重什么、会为什么认真。最多 %d 条。", PersonaCardLimits.maxListItems),
                 suggestions: [],
                 limit: PersonaCardLimits.maxListItems,
                 values: $card.values,
                 accent: accent
             )
 
-            cardGroupLabel("边界")
+            cardGroupLabel(L("边界"))
             TagEditor(
-                title: "他不会做的事",
-                hint: "明确的边界，比如「不假装记得没说过的事」。最多 \(PersonaCardLimits.maxListItems) 条。",
+                title: L("他不会做的事"),
+                hint: Lf("明确的边界，比如「不假装记得没说过的事」。最多 %d 条。", PersonaCardLimits.maxListItems),
                 suggestions: [],
                 limit: PersonaCardLimits.maxListItems,
                 values: $card.boundaries,
                 accent: accent
             )
 
-            cardGroupLabel("生活")
+            cardGroupLabel(L("生活"))
             cardLifeFields
 
-            cardGroupLabel("你们之间")
+            cardGroupLabel(L("你们之间"))
             cardField(
-                "他对你的认知与变化",
-                hint: "他怎么理解你、这段关系里发生过什么。≤ \(PersonaCardLimits.bondMax) 字。",
+                L("他对你的认知与变化"),
+                hint: Lf("他怎么理解你、这段关系里发生过什么。≤ %d 字。", PersonaCardLimits.bondMax),
                 text: cardText(\.bond, limit: PersonaCardLimits.bondMax),
                 minHeight: 110
             )
@@ -352,24 +352,24 @@ struct PersonaEditorScreen: View {
     private var cardIdentityFields: some View {
         VStack(alignment: .leading, spacing: 12) {
             cardField(
-                "名字",
-                hint: "人设卡里他自己的名字。留空时用「身份 / 职业」当称呼。",
-                placeholder: "比如：林岸",
+                L("名字"),
+                hint: L("人设卡里他自己的名字。留空时用「身份 / 职业」当称呼。"),
+                placeholder: L("比如：林岸"),
                 text: cardText(\.identity.name, limit: PersonaCardLimits.nameMax)
             )
             cardField(
-                "年龄感",
-                placeholder: "比如：二十多岁",
+                L("年龄感"),
+                placeholder: L("比如：二十多岁"),
                 text: cardText(\.identity.age, limit: PersonaCardLimits.nameMax)
             )
             cardField(
-                "身份 / 职业",
-                placeholder: "比如：开旧书店的人",
+                L("身份 / 职业"),
+                placeholder: L("比如：开旧书店的人"),
                 text: cardText(\.identity.role, limit: PersonaCardLimits.roleMax)
             )
             cardField(
-                "和你的关系",
-                placeholder: "比如：认识很多年的朋友",
+                L("和你的关系"),
+                placeholder: L("比如：认识很多年的朋友"),
                 text: cardText(\.identity.relation, limit: PersonaCardLimits.nameMax)
             )
         }
@@ -378,31 +378,31 @@ struct PersonaEditorScreen: View {
     private var cardVoiceFields: some View {
         VStack(alignment: .leading, spacing: 12) {
             cardField(
-                "语速",
-                placeholder: "比如：慢，偶尔停下来想想",
+                L("语速"),
+                placeholder: L("比如：慢，偶尔停下来想想"),
                 text: cardText(\.voice.pace, limit: PersonaCardLimits.fieldMax)
             )
             cardField(
-                "句子长短",
-                placeholder: "比如：短句，一次说一两句",
+                L("句子长短"),
+                placeholder: L("比如：短句，一次说一两句"),
                 text: cardText(\.voice.sentence, limit: PersonaCardLimits.fieldMax)
             )
             TagEditor(
-                title: "口头禅",
-                hint: "他常挂在嘴边的短句。最多 \(PersonaCardLimits.maxListItems) 条。",
+                title: L("口头禅"),
+                hint: Lf("他常挂在嘴边的短句。最多 %d 条。", PersonaCardLimits.maxListItems),
                 suggestions: [],
                 limit: PersonaCardLimits.maxListItems,
                 values: $card.voice.catchphrases,
                 accent: accent
             )
             cardField(
-                "怎么称呼你",
-                placeholder: "比如：喊你名字的后两个字",
+                L("怎么称呼你"),
+                placeholder: L("比如：喊你名字的后两个字"),
                 text: cardText(\.voice.address, limit: PersonaCardLimits.nameMax)
             )
             cardField(
-                "语气小习惯",
-                placeholder: "比如：少用感叹号，爱用省略号",
+                L("语气小习惯"),
+                placeholder: L("比如：少用感叹号，爱用省略号"),
                 text: cardText(\.voice.quirks, limit: PersonaCardLimits.fieldMax)
             )
         }
@@ -411,18 +411,18 @@ struct PersonaEditorScreen: View {
     private var cardLifeFields: some View {
         VStack(alignment: .leading, spacing: 12) {
             cardField(
-                "作息",
-                placeholder: "比如：凌晨两点睡，中午起",
+                L("作息"),
+                placeholder: L("比如：凌晨两点睡，中午起"),
                 text: cardText(\.life.schedule, limit: PersonaCardLimits.fieldMax)
             )
             cardField(
-                "现在在",
-                placeholder: "比如：把店里的旧书重新分类",
+                L("现在在"),
+                placeholder: L("比如：把店里的旧书重新分类"),
                 text: cardText(\.life.doing, limit: PersonaCardLimits.fieldMax)
             )
             cardField(
-                "最近在意",
-                placeholder: "比如：你最近睡得好不好",
+                L("最近在意"),
+                placeholder: L("比如：你最近睡得好不好"),
                 text: cardText(\.life.caresAbout, limit: PersonaCardLimits.fieldMax)
             )
         }
@@ -431,7 +431,7 @@ struct PersonaEditorScreen: View {
     private var cardTraitsEditor: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("他有哪些性格，以及有多强（0–1）")
+                Text(L("他有哪些性格，以及有多强（0–1）"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer(minLength: 4)
@@ -440,7 +440,7 @@ struct PersonaEditorScreen: View {
                     .foregroundStyle(.secondary)
             }
             if card.traits.isEmpty {
-                Text("还没有标签。")
+                Text(L("还没有标签。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -454,7 +454,7 @@ struct PersonaEditorScreen: View {
                     HStack(spacing: 4) {
                         Image(systemName: "plus")
                             .font(.system(size: 10, weight: .bold))
-                        Text("添加一条")
+                        Text(L("添加一条"))
                     }
                     .font(.footnote)
                     .foregroundStyle(accent)
@@ -467,7 +467,7 @@ struct PersonaEditorScreen: View {
     private func cardTraitRow(_ index: Int) -> some View {
         VStack(spacing: 8) {
             HStack(spacing: 8) {
-                TextField("比如：嘴硬心软", text: cardTraitNameBinding(index))
+                TextField(L("比如：嘴硬心软"), text: cardTraitNameBinding(index))
                     .textFieldStyle(.plain)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 10)
@@ -480,10 +480,10 @@ struct PersonaEditorScreen: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text("删掉这个性格"))
+                .accessibilityLabel(Text(L("删掉这个性格")))
             }
             HStack(spacing: 8) {
-                Text("强度")
+                Text(L("强度"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Slider(value: cardTraitStrengthBinding(index), in: 0...1)
@@ -587,7 +587,7 @@ struct PersonaEditorScreen: View {
     private var behaviorCard: some View {
         MFCard {
             LevelSliderRow(
-                title: "主动程度",
+                title: L("主动程度"),
                 hint: Self.proactiveLevelText(proactiveLevel),
                 value: Binding(
                     get: { Double(proactiveLevel) },
@@ -601,7 +601,7 @@ struct PersonaEditorScreen: View {
             MFRowDivider(leadingInset: 0)
 
             LevelSliderRow(
-                title: "记性",
+                title: L("记性"),
                 hint: Self.memoryRetentionText(memoryRetention),
                 value: Binding(
                     get: { Double(memoryRetention) },
@@ -615,8 +615,8 @@ struct PersonaEditorScreen: View {
             MFRowDivider(leadingInset: 0)
 
             LevelSliderRow(
-                title: "多久记一次",
-                hint: "每聊 \(extractionEvery) 条消息，他会在后台回头看一眼，把值得记的事记下来。",
+                title: L("多久记一次"),
+                hint: Lf("每聊 %d 条消息，他会在后台回头看一眼，把值得记的事记下来。", extractionEvery),
                 value: Binding(
                     get: { Double(extractionEvery) },
                     set: { extractionEvery = Int($0.rounded()) }
@@ -634,11 +634,11 @@ struct PersonaEditorScreen: View {
         MFCard {
             Toggle(isOn: $sleepEnabled) {
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("他会自己睡觉")
+                    Text(L("他会自己睡觉"))
                         .font(.system(.body, design: .serif))
                     Text(sleepEnabled
-                         ? "到点就去睡。睡着时你发消息他多半不回，除非连着叫醒他几次。"
-                         : "他不睡，任何时间都会回你。")
+                         ? L("到点就去睡。睡着时你发消息他多半不回，除非连着叫醒他几次。")
+                         : L("他不睡，任何时间都会回你。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -650,32 +650,30 @@ struct PersonaEditorScreen: View {
                 MFRowDivider(leadingInset: 0)
 
                 HStack {
-                    Text("几点睡")
+                    Text(L("几点睡"))
                         .font(.system(.body, design: .serif))
                     Spacer()
                     DatePicker("", selection: $sleepTime, displayedComponents: .hourAndMinute)
                         .labelsHidden()
-                        .environment(\.locale, Locale(identifier: "zh_CN"))
                 }
                 .padding(.vertical, 8)
 
                 MFRowDivider(leadingInset: 0)
 
                 HStack {
-                    Text("几点醒")
+                    Text(L("几点醒"))
                         .font(.system(.body, design: .serif))
                     Spacer()
                     DatePicker("", selection: $wakeTime, displayedComponents: .hourAndMinute)
                         .labelsHidden()
-                        .environment(\.locale, Locale(identifier: "zh_CN"))
                 }
                 .padding(.vertical, 8)
 
                 MFRowDivider(leadingInset: 0)
 
                 LevelSliderRow(
-                    title: "叫醒他要几条消息",
-                    hint: "睡着的时候，你连着发满 \(wakeThreshold) 条，他会被叫醒（并有点不好意思）。1–20。",
+                    title: L("叫醒他要几条消息"),
+                    hint: Lf("睡着的时候，你连着发满 %d 条，他会被叫醒（并有点不好意思）。1–20。", wakeThreshold),
                     value: Binding(
                         get: { Double(wakeThreshold) },
                         set: { wakeThreshold = Int($0.rounded()) }
@@ -692,15 +690,15 @@ struct PersonaEditorScreen: View {
                         .font(.system(size: 13))
                         .foregroundStyle(.secondary)
                     Text(dndOnSleep
-                         ? "睡前免打扰：开着（他自己选的）。睡着时你发什么都叫不醒他，消息留到醒了再看。"
-                         : "睡前免打扰：关着（他自己选的）。睡着时连着发几条能把他叫醒。")
+                         ? L("睡前免打扰：开着（他自己选的）。睡着时你发什么都叫不醒他，消息留到醒了再看。")
+                         : L("睡前免打扰：关着（他自己选的）。睡着时连着发几条能把他叫醒。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(.vertical, 10)
 
-                MFNote(text: "现在：\(clock(sleepMinutes)) 睡 → \(clock(wakeMinutes)) 醒")
+                MFNote(text: Lf("现在：%@ 睡 → %@ 醒", clock(sleepMinutes), clock(wakeMinutes)))
             }
         }
     }
@@ -714,9 +712,9 @@ struct PersonaEditorScreen: View {
             } label: {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("提示词全文（高级）")
+                        Text(L("提示词全文（高级）"))
                             .font(.system(.body, design: .serif))
-                        Text("上面那些字段会被拼成小节，接在这一段后面。")
+                        Text(L("上面那些字段会被拼成小节，接在这一段后面。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -732,11 +730,11 @@ struct PersonaEditorScreen: View {
             if promptExpanded {
                 MFRowDivider(leadingInset: 0)
                 HStack(alignment: .firstTextBaseline) {
-                    Text("他是谁、怎么说话、什么不做。原文会完整保存。")
+                    Text(L("他是谁、怎么说话、什么不做。原文会完整保存。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(prompt.count) 字")
+                    Text(Lcount("%d 字", prompt.count))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -752,7 +750,7 @@ struct PersonaEditorScreen: View {
 
                 MFRowDivider(leadingInset: 0)
 
-                FieldCaption("模型覆盖（可留空）", hint: "留空就用 API 配置里的模型；填了只对这个人生效。")
+                FieldCaption(L("模型覆盖（可留空）"), hint: L("留空就用 API 配置里的模型；填了只对这个人生效。"))
                 TextField(modelHint, text: $modelOverride)
                     .textFieldStyle(.plain)
                     .textInputAutocapitalization(.never)
@@ -761,16 +759,16 @@ struct PersonaEditorScreen: View {
                     .padding(.horizontal, 10)
                     .background(fieldBackground)
 
-                MFNote(text: "改完之后版本号会 +1，方便你在备份里分辨是哪一版的他。")
+                MFNote(text: L("改完之后版本号会 +1，方便你在备份里分辨是哪一版的他。"))
             }
         }
     }
 
     private var modelHint: String {
         if let model = env.activeApiConfig?.model, !model.isEmpty {
-            return "留空使用 \(model)"
+            return Lf("留空使用 %@", model)
         }
-        return "留空使用 API 配置中的模型"
+        return L("留空使用 API 配置中的模型")
     }
 
     // MARK: - 载入与保存
@@ -875,11 +873,11 @@ struct PersonaEditorScreen: View {
                     boundaries: finalCard.boundaries,
                     life: finalCard.life,
                     bond: finalCard.bond,
-                    reason: "编辑人设卡"
+                    reason: L("编辑人设卡")
                 ) {
                     banner = MFAlert(
-                        title: "人设卡没写进去",
-                        message: "人格已经保存了，但结构化人设卡写入失败：\(error.localizedDescription)"
+                        title: L("人设卡没写进去"),
+                        message: Lf("人格已经保存了，但结构化人设卡写入失败：%@", error.localizedDescription)
                     )
                     return
                 }
@@ -897,7 +895,7 @@ struct PersonaEditorScreen: View {
             }
             dismiss()
         } catch {
-            banner = MFAlert(title: "没能保存", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能保存"), message: error.localizedDescription)
         }
     }
 
@@ -917,33 +915,33 @@ struct PersonaEditorScreen: View {
 
     private static func proactiveLevelText(_ level: Int) -> String {
         switch min(max(level, 1), 5) {
-        case 1: return "很少主动。他会等你来找他。"
-        case 2: return "偶尔主动，大部分时候安静待着。"
-        case 3: return "普通朋友的分寸：想起你的时候会来找你。"
-        case 4: return "比较黏，一天会主动找你几次。"
-        default: return "很黏。他几乎一有空就想跟你说话。"
+        case 1: return L("很少主动。他会等你来找他。")
+        case 2: return L("偶尔主动，大部分时候安静待着。")
+        case 3: return L("普通朋友的分寸：想起你的时候会来找你。")
+        case 4: return L("比较黏，一天会主动找你几次。")
+        default: return L("很黏。他几乎一有空就想跟你说话。")
         }
     }
 
     private static func memoryRetentionText(_ level: Int) -> String {
         switch min(max(level, 1), 5) {
-        case 1: return "忘得快：很久以前的事会慢慢淡掉。"
-        case 2: return "记性一般。"
-        case 3: return "正常记性：重要的事记得住。"
-        case 4: return "记性好，很久以前提过的事都还在。"
-        default: return "什么都记得，包括你随口说过的话。"
+        case 1: return L("忘得快：很久以前的事会慢慢淡掉。")
+        case 2: return L("记性一般。")
+        case 3: return L("正常记性：重要的事记得住。")
+        case 4: return L("记性好，很久以前提过的事都还在。")
+        default: return L("什么都记得，包括你随口说过的话。")
         }
     }
 
     private static let traitSuggestions = [
-        "慢热", "嘴硬心软", "话少", "爱开玩笑", "安静", "容易吃醋",
-        "理性", "爱撒娇", "倔", "温柔", "怕冷", "好奇心重"
+        L("慢热"), L("嘴硬心软"), L("话少"), L("爱开玩笑"), L("安静"), L("容易吃醋"),
+        L("理性"), L("爱撒娇"), L("倔"), L("温柔"), L("怕冷"), L("好奇心重")
     ]
     private static let likeSuggestions = [
-        "夜里散步", "旧书", "下雨天", "咖啡", "猫", "听歌", "做饭", "看球"
+        L("夜里散步"), L("旧书"), L("下雨天"), L("咖啡"), L("猫"), L("听歌"), L("做饭"), L("看球")
     ]
     private static let behaviorSuggestions = [
-        "先听完再给建议", "不主动打断", "有话直说", "拐弯抹角", "先道歉再讲道理", "只在深夜说真心话"
+        L("先听完再给建议"), L("不主动打断"), L("有话直说"), L("拐弯抹角"), L("先道歉再讲道理"), L("只在深夜说真心话")
     ]
 
     /// 头像底色的种子：与名字绑定、与进程无关（`hashValue` 每次启动都会变，不能用）。
@@ -1036,7 +1034,7 @@ private struct TagEditor: View {
             }
 
             HStack(spacing: 8) {
-                TextField("自己写一个", text: $draft)
+                TextField(L("自己写一个"), text: $draft)
                     .font(.footnote)
                     .focused($draftFocused)
                     .onSubmit { add(draft) }
@@ -1046,7 +1044,7 @@ private struct TagEditor: View {
                         RoundedRectangle(cornerRadius: 9, style: .continuous)
                             .fill(Color.secondary.opacity(0.08))
                     )
-                Button("加上") { add(draft) }
+                Button(L("加上")) { add(draft) }
                     .font(.footnote)
                     .tint(accent)
                     .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || values.count >= limit)
@@ -1096,7 +1094,7 @@ private struct FlowingTags: View {
                     .background(accent.opacity(0.12), in: Capsule())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(Text("去掉 \(tag)"))
+                .accessibilityLabel(Text(Lf("去掉 %@", tag)))
             }
         }
     }

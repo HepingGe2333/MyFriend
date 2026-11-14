@@ -26,7 +26,7 @@ public enum PersonaCardRepositoryError: Error, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case .personaNotFound: return "人格不存在"
+        case .personaNotFound: return String(localized: "人格不存在")
         }
     }
 }

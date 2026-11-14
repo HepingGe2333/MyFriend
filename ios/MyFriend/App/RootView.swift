@@ -56,7 +56,7 @@ private struct BootFailureView: View {
             Image(systemName: "exclamationmark.triangle")
                 .font(.system(size: 34, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("打不开他")
+            Text(L("打不开他"))
                 .font(.system(.title3, design: .serif))
             Text(message)
                 .font(.footnote)

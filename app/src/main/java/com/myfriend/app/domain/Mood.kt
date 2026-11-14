@@ -193,9 +193,12 @@ object MoodRecovery {
         val label = if (state.isEmpty() || MoodLexicon.isNegative(state.label)) {
             MoodLexicon.BASELINE
         } else {
-            state.label
+            // 与 iOS `SleepGate.moodAfterWaking` 对齐：先归一化，避免「 雀跃 」这种带空白的词原样落库。
+            MoodLexicon.normalize(state.label)
         }
-        val intensity = (state.intensity - 1).coerceAtLeast(1)
+        // 心情强度的定义域是 1..5（规格 §三）。这里上下都夹一次：
+        // 脏数据（0 / 9）不该让「被叫醒」这条路径写出一条越界的强度。
+        val intensity = (state.intensity - 1).coerceIn(1, 5)
         return MoodState(
             label = label,
             intensity = intensity,

@@ -512,18 +512,18 @@ public enum ToolProtocol {
         }()
         let title: String
         switch result.invocation.name {
-        case ToolCatalog.think: title = "想了想"
-        case ToolCatalog.webSearch: title = "联网搜索"
-        case ToolCatalog.webFetch: title = "读了网页"
-        case ToolCatalog.remember: title = "记住了一件事"
-        case ToolCatalog.updatePersona: title = "调整了自己的人设"
-        case ToolCatalog.setQuietHours: title = "安排了自己的作息"
-        case ToolCatalog.setMood: title = "心情变了"
-        case ToolCatalog.recall: title = "回想了一下"
-        case ToolCatalog.deferReply: title = "这次先没说话"
+        case ToolCatalog.think: title = String(localized: "想了想")
+        case ToolCatalog.webSearch: title = String(localized: "联网搜索")
+        case ToolCatalog.webFetch: title = String(localized: "读了网页")
+        case ToolCatalog.remember: title = String(localized: "记住了一件事")
+        case ToolCatalog.updatePersona: title = String(localized: "调整了自己的人设")
+        case ToolCatalog.setQuietHours: title = String(localized: "安排了自己的作息")
+        case ToolCatalog.setMood: title = String(localized: "心情变了")
+        case ToolCatalog.recall: title = String(localized: "回想了一下")
+        case ToolCatalog.deferReply: title = String(localized: "这次先没说话")
         default:
             let name = result.invocation.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            title = name.isEmpty ? "动作" : name
+            title = name.isEmpty ? String(localized: "动作") : name
         }
         if result.invocation.name == ToolCatalog.think { return (title, nil) }
         return (title, subtitle)
@@ -714,7 +714,7 @@ public enum ToolTraceCodec {
         }
         return order.map { title in
             let count = counts[title] ?? 1
-            return count > 1 ? "\(title) \(count) 次" : title
+            return count > 1 ? String(format: String(localized: "%@ %d 次"), title, count) : title
         }.joined(separator: " · ")
     }
 }

@@ -1,5 +1,6 @@
 package com.myfriend.app.ui.screens.search
 
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -51,6 +52,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -61,6 +63,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.repo.MessageSearchHit
 import com.myfriend.app.data.repo.SessionSearchHit
 import com.myfriend.app.ui.components.BackNavigation
@@ -124,7 +127,7 @@ fun SearchScreen(
                         Box(Modifier.weight(1f)) {
                             if (fieldValue.text.isEmpty()) {
                                 Text(
-                                    "搜索会话与聊天记录",
+                                    stringResource(R.string.search_placeholder),
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                 )
@@ -150,7 +153,7 @@ fun SearchScreen(
                                 fieldValue = TextFieldValue("")
                                 viewModel.updateQuery("")
                             }, modifier = Modifier.size(28.dp)) {
-                                Icon(Icons.Outlined.Close, contentDescription = "清除", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.search_clear), modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
@@ -162,16 +165,16 @@ fun SearchScreen(
                 state.query.isBlank() -> {
                     EmptyState(
                         icon = Icons.Outlined.Search,
-                        title = "搜索你说过的话",
-                        description = "按人格名字或对话内容查找。输入关键词后，会同时搜索会话标题与消息正文。",
+                        title = stringResource(R.string.search_empty_title),
+                        description = stringResource(R.string.search_empty_desc),
                         modifier = Modifier.padding(top = 40.dp)
                     )
                 }
                 !hasResults -> {
                     EmptyState(
                         icon = Icons.Outlined.SearchOff,
-                        title = "没有找到「${state.query}」",
-                        description = "试试更短的词，或者换个说法——你们聊过的原话不一定是这样写的。",
+                        title = stringResource(R.string.search_no_results_title, state.query),
+                        description = stringResource(R.string.search_no_results_desc),
                         modifier = Modifier.padding(top = 40.dp)
                     )
                 }
@@ -181,13 +184,13 @@ fun SearchScreen(
                         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)
                     ) {
                         if (state.results.sessions.isNotEmpty()) {
-                            item { SectionLabel("会话") }
+                            item { SectionLabel(stringResource(R.string.search_section_sessions)) }
                             items(state.results.sessions, key = { "s-${it.sessionId}" }) { hit ->
                                 SessionSearchRow(hit, state.query) { onOpenSession(hit.sessionId) }
                             }
                         }
                         if (state.results.messages.isNotEmpty()) {
-                            item { SectionLabel("消息") }
+                            item { SectionLabel(stringResource(R.string.search_section_messages)) }
                             items(state.results.messages, key = { "m-${it.sessionId}-${it.createdAt}-${it.content.hashCode()}" }) { hit ->
                                 MessageSearchRow(hit, state.query) {
                                     keyboard?.hide()
@@ -217,7 +220,11 @@ private fun SessionSearchRow(hit: SessionSearchHit, query: String, onClick: () -
         Column(Modifier.weight(1f)) {
             Text(highlight(hit.title, query), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                "${hit.personaName} · ${hit.preview ?: "暂无消息"}",
+                stringResource(
+                    R.string.search_session_subtitle,
+                    hit.personaName,
+                    hit.preview ?: stringResource(R.string.search_no_preview)
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -226,7 +233,7 @@ private fun SessionSearchRow(hit: SessionSearchHit, query: String, onClick: () -
         }
         if (hit.lastMessageAt != null) {
             Text(
-                formatShortDate(hit.lastMessageAt),
+                formatShortDate(LocalContext.current, hit.lastMessageAt),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
@@ -258,7 +265,7 @@ private fun MessageSearchRow(hit: MessageSearchHit, query: String, onClick: () -
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f)
                 )
-                Text(formatShortDate(hit.createdAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
+                Text(formatShortDate(LocalContext.current, hit.createdAt), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
             }
             Spacer(Modifier.height(4.dp))
             Text(

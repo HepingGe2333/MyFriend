@@ -24,12 +24,21 @@ public enum RecallDepth: Int, CaseIterable {
     /// 数字档位（1/2/3）：给模型和参数解析用。和 Kotlin 的 `val level: Int` 一致。
     public var level: Int { rawValue }
 
-    /// 给模型看的档位名字。
+    /// 给模型看的档位名字（也会进提示词，所以保持中文）。
     public var label: String {
         switch self {
         case .quick: return "随口想想"
         case .normal: return "认真回忆"
         case .deep: return "翻箱倒柜"
+        }
+    }
+
+    /// 界面显示用的档位名（跟随界面语言）。提示词里仍用 `label`。
+    public var displayLabel: String {
+        switch self {
+        case .quick: return String(localized: "随口想想")
+        case .normal: return String(localized: "认真回忆")
+        case .deep: return String(localized: "翻箱倒柜")
         }
     }
 
@@ -449,6 +458,57 @@ public enum Recall {
         let note = hit.note.trimmed
         if !note.isEmpty { parts.append(note) }
         return parts.joined(separator: " · ")
+    }
+
+    /// 界面显示用的来源行：与 `sourceLabel` 同结构，但每个固定词都跟随界面语言。
+    /// 记忆正文、聊天标题、抽屉名（`hit.source`）属于数据，原样保留。
+    public static func displaySourceLabel(_ hit: RecallHit, now: Int64 = DomainClock.nowMillis) -> String {
+        var parts: [String] = [displayKindLabel(hit.kind), displayDateLabel(at: hit.at, now: now)]
+        let source = hit.source.trimmed
+        if !source.isEmpty { parts.append(displaySourceName(source)) }
+        let note = hit.note.trimmed
+        if !note.isEmpty { parts.append(displayNote(note)) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 抽屉名是固定词表（存库与提示词里仍是中文），界面显示时翻一下。
+    static func displaySourceName(_ source: String) -> String {
+        switch source {
+        case "关于他自己": return String(localized: "关于他自己")
+        case "关于对方": return String(localized: "关于对方")
+        case "你们之间的经历": return String(localized: "你们之间的经历")
+        default: return String(source.prefix(30))
+        }
+    }
+
+    /// 「归档」那条说明是固定文案；其它 note 属于数据，原样保留。
+    static func displayNote(_ note: String) -> String {
+        note == ARCHIVED_NOTE ? String(localized: "这是很久以前的事，他不太确定了") : note
+    }
+
+    static func displayKindLabel(_ kind: RecallKind) -> String {
+        switch kind {
+        case .memory: return String(localized: "记忆")
+        case .chat: return String(localized: "聊天")
+        case .browsing: return String(localized: "他自己看到的")
+        }
+    }
+
+    /// 界面显示用的相对日期（提示词里仍用 `dateLabel`）。
+    public static func displayDateLabel(at: Int64, now: Int64 = DomainClock.nowMillis) -> String {
+        if at <= 0 { return String(localized: "很久以前") }
+        let delta = Swift.max(now - at, 0)
+        let minutes = delta / 60_000
+        if minutes < 1 { return String(localized: "刚刚") }
+        if minutes < 60 { return String(format: String(localized: "%d 分钟前"), minutes) }
+        let days = delta / DAY_MILLIS
+        if days <= 0 { return String(localized: "今天") }
+        if days == 1 { return String(localized: "昨天") }
+        if days == 2 { return String(localized: "前天") }
+        if days < 7 { return String(format: String(localized: "%d 天前"), days) }
+        if days < 30 { return String(format: String(localized: "%d 周前"), days / 7) }
+        if days < 365 { return String(format: String(localized: "%d 个月前"), days / 30) }
+        return String(format: String(localized: "%d 年前"), days / 365)
     }
 
     /// 中文相对日期：刚刚 / N 分钟前 / 今天 / 昨天 / 前天 / N 天前 / N 周前 / N 个月前 / N 年前。

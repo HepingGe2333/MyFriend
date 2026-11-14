@@ -75,6 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -152,7 +153,11 @@ fun SettingsScreen(
             scope.launch {
                 com.myfriend.app.util.MediaStorage.persistImage(context, uri, "background")
                     .onSuccess { viewModel.setChatBackgroundImage(it) }
-                    .onFailure { snackbar.showSnackbar(it.message ?: "背景图片保存失败") }
+                    .onFailure {
+                        snackbar.showSnackbar(
+                            it.message ?: context.getString(R.string.settings_error_background_image)
+                        )
+                    }
             }
         }
     }
@@ -162,7 +167,11 @@ fun SettingsScreen(
             scope.launch {
                 com.myfriend.app.util.MediaStorage.persistAvatar(context, uri)
                     .onSuccess { viewModel.setUserAvatar(it) }
-                    .onFailure { snackbar.showSnackbar(it.message ?: "头像保存失败") }
+                    .onFailure {
+                        snackbar.showSnackbar(
+                            it.message ?: context.getString(R.string.settings_error_avatar)
+                        )
+                    }
             }
         }
     }
@@ -173,10 +182,15 @@ fun SettingsScreen(
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { it.write(file.content.toByteArray()) }
-                            ?: error("无法写入文件")
+                            ?: error(context.getString(R.string.settings_error_unwritable_file))
                     }
                 }
-                snackbar.showSnackbar(result.fold({ "聊天记录已导出" }, { "导出失败：${it.message}" }))
+                snackbar.showSnackbar(
+                    result.fold(
+                        { context.getString(R.string.settings_export_success) },
+                        { context.getString(R.string.settings_export_failed, it.message.orEmpty()) }
+                    )
+                )
             }
         }
         pendingExport = null
@@ -205,8 +219,8 @@ fun SettingsScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "设置",
-                subtitle = "让 MyFriend 更像你的地方",
+                title = stringResource(R.string.settings_title),
+                subtitle = stringResource(R.string.settings_subtitle),
                 navigation = { BackNavigation(onBack) }
             )
             Column(
@@ -234,9 +248,21 @@ fun SettingsScreen(
                         }
                         Spacer(Modifier.width(13.dp))
                         Column(Modifier.weight(1f)) {
-                            Text("MyFriend", style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.app_name), style = MaterialTheme.typography.titleMedium)
                             Text(
-                                "${state.personaCount} 个人格 · ${state.apiCount} 个 API 配置",
+                                stringResource(
+                                    R.string.settings_summary,
+                                    pluralStringResource(
+                                        R.plurals.settings_persona_count,
+                                        state.personaCount,
+                                        state.personaCount
+                                    ),
+                                    pluralStringResource(
+                                        R.plurals.settings_api_count,
+                                        state.apiCount,
+                                        state.apiCount
+                                    )
+                                ),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -245,13 +271,13 @@ fun SettingsScreen(
                     }
                 }
 
-                SectionLabel("外观")
+                SectionLabel(stringResource(R.string.settings_section_appearance))
                 SettingCard {
                     // 「我的头像」是安静的：一行预览 + 点一下换图，没有单独的设置页，
                     // 也没有「确定要移除吗」这种弹窗——恢复默认只是一个普通按钮。
                     SettingRow(
-                        title = "我的头像",
-                        description = "聊天里显示在你这边；图片不跟着备份走",
+                        title = stringResource(R.string.settings_my_avatar),
+                        description = stringResource(R.string.settings_my_avatar_desc),
                         icon = Icons.Outlined.PersonOutline,
                         trailing = {
                             UserAvatar(
@@ -273,7 +299,7 @@ fun SettingsScreen(
                         ) {
                             TextButton(onClick = { viewModel.setUserAvatar(null) }) {
                                 Text(
-                                    "恢复默认",
+                                    stringResource(R.string.settings_restore_default),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -281,8 +307,8 @@ fun SettingsScreen(
                         }
                     }
                     SettingRow(
-                        title = "主题模式",
-                        description = "浅色、深色或跟随系统",
+                        title = stringResource(R.string.settings_theme_mode),
+                        description = stringResource(R.string.settings_theme_mode_desc),
                         icon = Icons.Outlined.SettingsBrightness,
                         trailing = { Text(themeLabel(state.settings.themeMode), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                     )
@@ -291,8 +317,8 @@ fun SettingsScreen(
                         onSelect = viewModel::setThemeMode
                     )
                     SettingRow(
-                        title = "主题色",
-                        description = "用于发送气泡、按钮与高亮",
+                        title = stringResource(R.string.settings_accent_color),
+                        description = stringResource(R.string.settings_accent_color_desc),
                         icon = Icons.Outlined.Palette,
                         showDivider = false
                     )
@@ -318,7 +344,12 @@ fun SettingsScreen(
                                 .clickable { customHex = "" },
                             contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Outlined.Tune, contentDescription = "自定义颜色", modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                Icons.Outlined.Tune,
+                                contentDescription = stringResource(R.string.settings_custom_color_cd),
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                     if (customHex.isEmpty() && state.settings.accentColor !in accentChoices) {
@@ -332,7 +363,7 @@ fun SettingsScreen(
                         StyledOutlinedField(
                             value = customHex,
                             onValueChange = { customHex = it.take(9) },
-                            label = "自定义主题色",
+                            label = stringResource(R.string.settings_custom_accent_label),
                             placeholder = "#C76F4E",
                             modifier = Modifier.weight(1f)
                         )
@@ -341,11 +372,11 @@ fun SettingsScreen(
                                 parseColor(customHex)?.let { viewModel.setAccentColor(it) }
                             },
                             enabled = parseColor(customHex) != null
-                        ) { Text("应用") }
+                        ) { Text(stringResource(R.string.settings_apply)) }
                     }
                     SettingRow(
-                        title = "字体大小",
-                        description = "只影响文字，不改变界面布局",
+                        title = stringResource(R.string.settings_font_size),
+                        description = stringResource(R.string.settings_font_size_desc),
                         icon = Icons.Outlined.AutoAwesome,
                         trailing = {
                             Text("${(state.settings.fontScale * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -370,8 +401,8 @@ fun SettingsScreen(
                         Text("A", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     SettingRow(
-                        title = "聊天气泡样式",
-                        description = "气泡圆角与留白密度",
+                        title = stringResource(R.string.settings_bubble_style),
+                        description = stringResource(R.string.settings_bubble_style_desc),
                         icon = Icons.Outlined.ChatBubbleOutline,
                         showDivider = false
                     )
@@ -391,8 +422,8 @@ fun SettingsScreen(
                         }
                     }
                     SettingRow(
-                        title = "界面动画",
-                        description = "关闭后页面与气泡过渡更克制",
+                        title = stringResource(R.string.settings_animations),
+                        description = stringResource(R.string.settings_animations_desc),
                         icon = Icons.Outlined.Tune,
                         trailing = {
                             Switch(
@@ -403,8 +434,8 @@ fun SettingsScreen(
                         }
                     )
                     SettingRow(
-                        title = "触感反馈",
-                        description = "长按与操作时的轻微振动",
+                        title = stringResource(R.string.settings_haptics),
+                        description = stringResource(R.string.settings_haptics_desc),
                         icon = Icons.Outlined.Vibration,
                         trailing = {
                             Switch(
@@ -417,11 +448,11 @@ fun SettingsScreen(
                     )
                 }
 
-                SectionLabel("让他在后台活着")
+                SectionLabel(stringResource(R.string.settings_section_background))
                 SettingCard {
                     SettingRow(
-                        title = "常驻后台",
-                        description = "关掉他就只在应用打开时存在；开着时他会在后台继续想事情，偶尔主动找你。",
+                        title = stringResource(R.string.settings_agent_loop),
+                        description = stringResource(R.string.settings_agent_loop_desc),
                         icon = Icons.Outlined.NightsStay,
                         trailing = {
                             Switch(
@@ -433,12 +464,15 @@ fun SettingsScreen(
                         showDivider = true
                     )
                     SettingRow(
-                        title = "通知权限",
-                        description = "没有通知权限，他找到你时你是看不到的。",
+                        title = stringResource(R.string.settings_notification_permission),
+                        description = stringResource(R.string.settings_notification_permission_desc),
                         icon = Icons.Outlined.NotificationsNone,
                         trailing = {
                             Text(
-                                if (notificationsGranted) "已开启" else "未开启",
+                                stringResource(
+                                    if (notificationsGranted) R.string.settings_notification_on
+                                    else R.string.settings_notification_off
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = if (notificationsGranted) MaterialTheme.colorScheme.onSurfaceVariant
                                 else MaterialTheme.colorScheme.error
@@ -450,12 +484,15 @@ fun SettingsScreen(
                         showDivider = true
                     )
                     SettingRow(
-                        title = "后台运行限制",
-                        description = "系统为了省电会冻结后台应用；允许后他才能一直待着。",
+                        title = stringResource(R.string.settings_battery_limit),
+                        description = stringResource(R.string.settings_battery_limit_desc),
                         icon = Icons.Outlined.BatterySaver,
                         trailing = {
                             Text(
-                                if (batteryUnrestricted) "已允许" else "受限",
+                                stringResource(
+                                    if (batteryUnrestricted) R.string.settings_battery_allowed
+                                    else R.string.settings_battery_restricted
+                                ),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = if (batteryUnrestricted) MaterialTheme.colorScheme.onSurfaceVariant
                                 else MaterialTheme.colorScheme.error
@@ -471,14 +508,14 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.Top
                     ) {
                         Text(
-                            "部分品牌手机还需要在系统设置里允许自启动 / 后台活动，否则他可能被系统冻结。",
+                            stringResource(R.string.settings_background_note),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.weight(1f)
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            "去应用设置",
+                            stringResource(R.string.settings_open_app_settings),
                             style = MaterialTheme.typography.labelSmall,
                             color = LocalAccentColor.current,
                             modifier = Modifier
@@ -491,11 +528,14 @@ fun SettingsScreen(
 
                 UsageSection(totals = state.usage)
 
-                SectionLabel("聊天背景")
+                SectionLabel(stringResource(R.string.settings_section_chat_background))
                 SettingCard {
                     SettingRow(
-                        title = "纯色背景",
-                        description = if (state.settings.chatBackgroundImageUri != null) "当前使用自定义图片，颜色仅在移除图片后生效" else "选择聊天画布的颜色",
+                        title = stringResource(R.string.settings_solid_background),
+                        description = stringResource(
+                            if (state.settings.chatBackgroundImageUri != null) R.string.settings_solid_background_desc_image
+                            else R.string.settings_solid_background_desc_color
+                        ),
                         icon = Icons.Outlined.Image,
                         showDivider = false
                     )
@@ -514,7 +554,7 @@ fun SettingsScreen(
                             modifier = Modifier.size(36.dp)
                         ) {
                             Box(contentAlignment = Alignment.Center) {
-                                Text("默认", style = MaterialTheme.typography.labelSmall, fontSize = 8.sp)
+                                Text(stringResource(R.string.settings_background_default), style = MaterialTheme.typography.labelSmall, fontSize = 8.sp)
                             }
                         }
                         backgroundChoices.forEach { colorValue ->
@@ -537,22 +577,22 @@ fun SettingsScreen(
                         ) {
                             Icon(Icons.Outlined.PhotoCamera, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(Modifier.width(5.dp))
-                            Text("选择背景图片")
+                            Text(stringResource(R.string.settings_pick_background_image))
                         }
                         Spacer(Modifier.weight(1f))
                         if (state.settings.chatBackgroundImageUri != null) {
                             TextButton(onClick = { viewModel.setChatBackgroundImage(null) }) {
-                                Text("移除图片", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(stringResource(R.string.settings_remove_image), color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
                     }
                 }
 
-                SectionLabel("API 配置")
+                SectionLabel(stringResource(R.string.settings_api_title))
                 SettingCard {
                     SettingRow(
-                        title = "API 配置",
-                        description = "Base URL、密钥、模型与推理参数",
+                        title = stringResource(R.string.settings_api_title),
+                        description = stringResource(R.string.settings_api_desc),
                         icon = Icons.Outlined.Security,
                         trailing = { Text("${state.apiCount}", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) },
                         onClick = onOpenApiConfigs,
@@ -567,7 +607,7 @@ fun SettingsScreen(
                     onDismissPreview = viewModel::dismissBackupPreview
                 )
 
-                SectionLabel("数据与安全")
+                SectionLabel(stringResource(R.string.settings_section_data_security))
                 SettingCard {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
                         Text(
@@ -587,22 +627,22 @@ fun SettingsScreen(
                         ) { Text(stringResource(R.string.clear_data_take_away_first)) }
                     }
                     SettingRow(
-                        title = "导出全部聊天记录",
-                        description = "JSON 文件，不包含 API Key",
+                        title = stringResource(R.string.settings_export_chats_title),
+                        description = stringResource(R.string.settings_export_chats_desc),
                         icon = Icons.Outlined.FileDownload,
                         onClick = viewModel::exportAllChats,
                         showDivider = true
                     )
                     SettingRow(
-                        title = "清空全部聊天与记忆",
-                        description = "保留人格与 API 配置",
+                        title = stringResource(R.string.settings_clear_chats_title),
+                        description = stringResource(R.string.settings_clear_chats_desc),
                         icon = Icons.Outlined.CleaningServices,
                         onClick = { showClearChatsConfirm = true },
                         showDivider = true
                     )
                     SettingRow(
-                        title = "删除全部本地数据",
-                        description = "人格、会话、记忆、预设、主动唤醒规则、API 配置与设置全部移除",
+                        title = stringResource(R.string.settings_wipe_title),
+                        description = stringResource(R.string.settings_wipe_desc),
                         icon = Icons.Outlined.DeleteForever,
                         danger = true,
                         onClick = { showWipeConfirm = true },
@@ -610,13 +650,13 @@ fun SettingsScreen(
                     )
                 }
                 Text(
-                    "API Key 由 Android Keystore 加密保存，不写入日志或崩溃报告。默认只允许 HTTPS；对话记录仅保存在本机。",
+                    stringResource(R.string.settings_security_note),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp)
                 )
                 TextButton(onClick = onOpenAbout, modifier = Modifier.padding(horizontal = 2.dp)) {
-                    Text("关于 MyFriend")
+                    Text(stringResource(R.string.settings_about_entry))
                 }
                 Spacer(Modifier.height(30.dp))
             }
@@ -660,21 +700,21 @@ private fun ThemeModeRow(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         ThemeOption(
-            label = "跟随系统",
+            label = themeLabel(ThemeMode.SYSTEM),
             icon = Icons.Outlined.SettingsBrightness,
             selected = selected == ThemeMode.SYSTEM,
             onClick = { onSelect(ThemeMode.SYSTEM) },
             modifier = Modifier.weight(1f)
         )
         ThemeOption(
-            label = "浅色",
+            label = themeLabel(ThemeMode.LIGHT),
             icon = Icons.Outlined.LightMode,
             selected = selected == ThemeMode.LIGHT,
             onClick = { onSelect(ThemeMode.LIGHT) },
             modifier = Modifier.weight(1f)
         )
         ThemeOption(
-            label = "深色",
+            label = themeLabel(ThemeMode.DARK),
             icon = Icons.Outlined.DarkMode,
             selected = selected == ThemeMode.DARK,
             onClick = { onSelect(ThemeMode.DARK) },
@@ -728,7 +768,12 @@ private fun AccentSwatch(color: Color, selected: Boolean, onClick: () -> Unit) {
         contentAlignment = Alignment.Center
     ) {
         if (selected) {
-            Icon(Icons.Rounded.Check, contentDescription = "已选择", tint = Color.White, modifier = Modifier.size(17.dp))
+            Icon(
+                Icons.Rounded.Check,
+                contentDescription = stringResource(R.string.settings_selected_cd),
+                tint = Color.White,
+                modifier = Modifier.size(17.dp)
+            )
         }
     }
 }
@@ -791,9 +836,9 @@ private fun BubbleStyleOption(
             Spacer(Modifier.height(7.dp))
             Text(
                 when (style) {
-                    BubbleStyle.SOFT -> "柔和"
-                    BubbleStyle.COMPACT -> "紧凑"
-                    BubbleStyle.OUTLINED -> "描边"
+                    BubbleStyle.SOFT -> stringResource(R.string.settings_bubble_soft)
+                    BubbleStyle.COMPACT -> stringResource(R.string.settings_bubble_compact)
+                    BubbleStyle.OUTLINED -> stringResource(R.string.settings_bubble_outlined)
                 },
                 style = MaterialTheme.typography.labelSmall,
                 color = if (selected) LocalAccentColor.current else MaterialTheme.colorScheme.onSurfaceVariant
@@ -839,10 +884,11 @@ private fun switchColors() = SwitchDefaults.colors(
     uncheckedTrackColor = MaterialTheme.colorScheme.surfaceVariant
 )
 
+@Composable
 private fun themeLabel(mode: ThemeMode): String = when (mode) {
-    ThemeMode.SYSTEM -> "跟随系统"
-    ThemeMode.LIGHT -> "浅色"
-    ThemeMode.DARK -> "深色"
+    ThemeMode.SYSTEM -> stringResource(R.string.settings_theme_system)
+    ThemeMode.LIGHT -> stringResource(R.string.settings_theme_light)
+    ThemeMode.DARK -> stringResource(R.string.settings_theme_dark)
 }
 
 private fun parseColor(value: String): Long? {

@@ -67,7 +67,7 @@ struct SettingsScreen: View {
                 }
             }
         }
-        .navigationTitle("设置")
+        .navigationTitle(L("设置"))
         .navigationBarTitleDisplayMode(.inline)
         .mfAlert($banner)
         .confirmationDialog(
@@ -78,12 +78,12 @@ struct SettingsScreen: View {
             ),
             titleVisibility: .visible
         ) {
-            Button(pendingAction?.confirmTitle ?? "确定", role: .destructive) {
+            Button(pendingAction?.confirmTitle ?? L("确定"), role: .destructive) {
                 guard let action = pendingAction else { return }
                 pendingAction = nil
                 perform(action)
             }
-            Button("取消", role: .cancel) { pendingAction = nil }
+            Button(L("取消"), role: .cancel) { pendingAction = nil }
         } message: {
             Text(pendingAction?.message ?? "")
         }
@@ -101,7 +101,7 @@ struct SettingsScreen: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Text("留一处安静的地方，慢慢说话")
+            Text(L("留一处安静的地方，慢慢说话"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             Text(summaryLine)
@@ -114,23 +114,28 @@ struct SettingsScreen: View {
 
     private var summaryLine: String {
         let memoryCount = (try? env.stores.memories.count()) ?? 0
-        return "\(personas.count) 个人 · \(configs.count) 个 API 配置 · \(memoryCount) 条记忆"
+        // 三段各自处理单复数，再拼起来；不要把三个数字塞进一句话里（英语的单复数会顾此失彼）。
+        return [
+            Lcount("%d 个人", personas.count),
+            Lcount("%d 个 API 配置", configs.count),
+            Lcount("%d 条记忆", memoryCount)
+        ].joined(separator: " · ")
     }
 
     // MARK: - 外观
 
     private var appearanceSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "外观")
+            MFSectionTitle(text: L("外观"))
 
             MFCard {
                 VStack(alignment: .leading, spacing: 8) {
-                    MFRowTitle("主题", hint: "跟随系统最省心；浅色与深色只影响这套界面。")
+                    MFRowTitle(L("主题"), hint: L("跟随系统最省心；浅色与深色只影响这套界面。"))
                     MFChoiceBar(
                         options: [
-                            (ThemeMode.system, "跟随系统"),
-                            (ThemeMode.light, "浅色"),
-                            (ThemeMode.dark, "深色")
+                            (ThemeMode.system, L("跟随系统")),
+                            (ThemeMode.light, L("浅色")),
+                            (ThemeMode.dark, L("深色"))
                         ],
                         selection: binding(\.themeMode),
                         accent: accent
@@ -140,13 +145,13 @@ struct SettingsScreen: View {
                 MFRowDivider(leadingInset: 0)
 
                 VStack(alignment: .leading, spacing: 10) {
-                    MFRowTitle("主色", hint: "用在发送气泡、按钮与高亮上。")
+                    MFRowTitle(L("主色"), hint: L("用在发送气泡、按钮与高亮上。"))
                     HStack(spacing: 10) {
                         ForEach(MFUI.accentChoices, id: \.self) { argb in
                             accentDot(argb)
                         }
                         Spacer(minLength: 0)
-                        ColorPicker("自定义主色", selection: accentBinding, supportsOpacity: false)
+                        ColorPicker(L("自定义主色"), selection: accentBinding, supportsOpacity: false)
                             .labelsHidden()
                     }
                 }
@@ -156,7 +161,7 @@ struct SettingsScreen: View {
 
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
-                        Text("字号")
+                        Text(L("字号"))
                             .font(.system(.body, design: .serif))
                         Spacer()
                         Text("\(Int((settings.fontScale * 100).rounded()))%")
@@ -169,7 +174,7 @@ struct SettingsScreen: View {
                             .tint(accent)
                         Text("A").font(.system(size: 18)).foregroundStyle(.secondary)
                     }
-                    Text("只改字的大小，不改布局。0.85 到 1.3 之间。")
+                    Text(L("只改字的大小，不改布局。0.85 到 1.3 之间。"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -178,12 +183,12 @@ struct SettingsScreen: View {
                 MFRowDivider(leadingInset: 0)
 
                 VStack(alignment: .leading, spacing: 8) {
-                    MFRowTitle("气泡样式", hint: "圆角与留白密度。")
+                    MFRowTitle(L("气泡样式"), hint: L("圆角与留白密度。"))
                     MFChoiceBar(
                         options: [
-                            (BubbleStyle.soft, "柔和"),
-                            (BubbleStyle.compact, "紧凑"),
-                            (BubbleStyle.outlined, "描边")
+                            (BubbleStyle.soft, L("柔和")),
+                            (BubbleStyle.compact, L("紧凑")),
+                            (BubbleStyle.outlined, L("描边"))
                         ],
                         selection: binding(\.bubbleStyle),
                         accent: accent
@@ -195,16 +200,16 @@ struct SettingsScreen: View {
 
                 MFToggleRow(
                     icon: "sparkles",
-                    title: "界面动画",
-                    subtitle: "关掉后页面与气泡的过渡更克制。",
+                    title: L("界面动画"),
+                    subtitle: L("关掉后页面与气泡的过渡更克制。"),
                     isOn: binding(\.animationsEnabled),
                     tint: accent
                 )
                 MFRowDivider()
                 MFToggleRow(
                     icon: "hand.tap",
-                    title: "触感反馈",
-                    subtitle: "长按、切人格时的轻微振动。",
+                    title: L("触感反馈"),
+                    subtitle: L("长按、切人格时的轻微振动。"),
                     isOn: binding(\.hapticsEnabled),
                     tint: accent
                 )
@@ -234,21 +239,21 @@ struct SettingsScreen: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text("主色"))
+        .accessibilityLabel(Text(L("主色")))
     }
 
     // MARK: - API 配置
 
     private var apiSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "API 配置")
+            MFSectionTitle(text: L("API 配置"))
 
             MFCard(padding: 6) {
                 if configs.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("还没有 API 配置")
+                        Text(L("还没有 API 配置"))
                             .font(.system(.body, design: .serif))
-                        Text("没有它他就没法开口说话。填一个 OpenAI 兼容的服务就行：OpenAI、DeepSeek、OpenRouter 都可以。")
+                        Text(L("没有它他就没法开口说话。填一个 OpenAI 兼容的服务就行：OpenAI、DeepSeek、OpenRouter 都可以。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -265,7 +270,7 @@ struct SettingsScreen: View {
                             Button {
                                 pendingAction = .deleteConfig(config)
                             } label: {
-                                Label("删除这个配置", systemImage: "trash")
+                                Label(L("删除这个配置"), systemImage: "trash")
                             }
                         }
                         MFRowDivider(leadingInset: 52)
@@ -277,7 +282,7 @@ struct SettingsScreen: View {
                         Image(systemName: "plus.circle")
                             .font(.system(size: 16))
                             .foregroundStyle(accent)
-                        Text("添加 API 配置")
+                        Text(L("添加 API 配置"))
                             .font(.system(.body, design: .serif))
                             .foregroundStyle(accent)
                         Spacer()
@@ -289,7 +294,7 @@ struct SettingsScreen: View {
                 .buttonStyle(.plain)
             }
 
-            MFNote(text: "Key 存在这台手机的 Keychain 里：不进备份、不进数据库，也不会显示回来。")
+            MFNote(text: L("Key 存在这台手机的 Keychain 里：不进备份、不进数据库，也不会显示回来。"))
         }
     }
 
@@ -301,11 +306,11 @@ struct SettingsScreen: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
-                    Text(config.name.isEmpty ? "未命名配置" : config.name)
+                    Text(config.name.isEmpty ? L("未命名配置") : config.name)
                         .font(.system(.body, design: .serif))
                         .lineLimit(1)
                     if config.id == env.activeApiConfig?.id {
-                        Text("默认")
+                        Text(L("默认"))
                             .font(.caption2)
                             .foregroundStyle(accent)
                             .padding(.horizontal, 5)
@@ -334,7 +339,7 @@ struct SettingsScreen: View {
     /// 人格是「他是谁」这件事，属于设置，不属于每天要看的那个列表。
     private var personaSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "联系人")
+            MFSectionTitle(text: L("联系人"))
 
             MFCard(padding: 6) {
                 NavigationLink(value: Route.personas) {
@@ -344,9 +349,9 @@ struct SettingsScreen: View {
                             .foregroundStyle(accent)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("管理联系人（\(personas.count) 个）")
+                            Text(Lcount("管理联系人（%d 个）", personas.count))
                                 .font(.system(.body, design: .serif))
-                            Text("改他的性格、记性、作息；也可以新建或删除一个人。")
+                            Text(L("改他的性格、记性、作息；也可以新建或删除一个人。"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -370,9 +375,9 @@ struct SettingsScreen: View {
                             .foregroundStyle(accent)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("他记得的事")
+                            Text(L("他记得的事"))
                                 .font(.system(.body, design: .serif))
-                            Text("记忆一直在自己整理：留下重要的，把不重要的慢慢淡下去。")
+                            Text(L("记忆一直在自己整理：留下重要的，把不重要的慢慢淡下去。"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -392,7 +397,7 @@ struct SettingsScreen: View {
                 myAvatarRow
             }
 
-            MFNote(text: "这一版不再有「记忆开关」和「回复节奏」：他记不记得、什么时候回，都由他自己决定。")
+            MFNote(text: L("这一版不再有「记忆开关」和「回复节奏」：他记不记得、什么时候回，都由他自己决定。"))
         }
     }
 
@@ -406,11 +411,11 @@ struct SettingsScreen: View {
             MFAvatar(myAvatarUri: settings.myAvatarUri, size: 30)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("我的头像")
+                Text(L("我的头像"))
                     .font(.system(.body, design: .serif))
                 Text(settings.myAvatarUri == nil
-                     ? "给自己选一张；聊天里你那一侧会显示。"
-                     : "只在你自己那一侧显示。图片不跟着备份走。")
+                     ? L("给自己选一张；聊天里你那一侧会显示。")
+                     : L("只在你自己那一侧显示。图片不跟着备份走。"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -420,13 +425,13 @@ struct SettingsScreen: View {
 
             HStack(spacing: 12) {
                 if settings.myAvatarUri != nil {
-                    Button("移除") { removeMyAvatar() }
+                    Button(L("移除")) { removeMyAvatar() }
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .buttonStyle(.plain)
                 }
                 PhotosPicker(selection: $myAvatarPick, matching: .images, photoLibrary: .shared()) {
-                    Text(settings.myAvatarUri == nil ? "选择" : "换一张")
+                    Text(settings.myAvatarUri == nil ? L("选择") : L("换一张"))
                         .font(.caption.weight(.medium))
                         .foregroundStyle(accent)
                 }
@@ -452,7 +457,7 @@ struct SettingsScreen: View {
                 // 换下来的旧图删掉；只删我们自己目录里的文件。
                 MediaStorage.shared.deleteFileIfOwned(previous)
             case .failure(let message):
-                banner = MFAlert(title: "这张图用不了", message: message)
+                banner = MFAlert(title: L("这张图用不了"), message: message)
             }
         }
     }
@@ -467,13 +472,13 @@ struct SettingsScreen: View {
 
     private var proactiveSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "主动")
+            MFSectionTitle(text: L("主动"))
 
             MFCard {
                 MFToggleRow(
                     icon: "bolt.heart",
-                    title: "常驻思考",
-                    subtitle: "开着的时候，他会在前台每 30 秒想一次事情，进后台后登记一次机会式刷新。",
+                    title: L("常驻思考"),
+                    subtitle: L("开着的时候，他会在前台每 30 秒想一次事情，进后台后登记一次机会式刷新。"),
                     isOn: binding(\.agentLoopEnabled),
                     tint: accent
                 )
@@ -485,9 +490,9 @@ struct SettingsScreen: View {
                             .foregroundStyle(accent)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("主动唤醒")
+                            Text(L("主动唤醒"))
                                 .font(.system(.body, design: .serif))
-                            Text("他会按自己的节奏来找你；时间不是准点，是一段窗口。")
+                            Text(L("他会按自己的节奏来找你；时间不是准点，是一段窗口。"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -503,9 +508,9 @@ struct SettingsScreen: View {
                 .buttonStyle(.plain)
 
                 MFNote(
-                    text: "每天最多主动几次，现在由他自己决定（联系人 → 主动程度）。"
-                        + "iOS 不保证后台准时：系统可能几十分钟到几小时才给一次机会，也可能一天都不给。"
-                        + "所以他有时候像睡着了——不是不理你。"
+                    text: L("每天最多主动几次，现在由他自己决定（联系人 → 主动程度）。")
+                        + LText.sentenceSeparator + L("iOS 不保证后台准时：系统可能几十分钟到几小时才给一次机会，也可能一天都不给。")
+                        + LText.sentenceSeparator + L("所以他有时候像睡着了——不是不理你。")
                 )
             }
         }
@@ -516,7 +521,7 @@ struct SettingsScreen: View {
 
     private var backupSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "备份")
+            MFSectionTitle(text: L("备份"))
 
             MFCard(padding: 6) {
                 NavigationLink(value: Route.backups) {
@@ -526,9 +531,9 @@ struct SettingsScreen: View {
                             .foregroundStyle(accent)
                             .frame(width: 22)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("把他带走 / 接他回来")
+                            Text(L("把他带走 / 接他回来"))
                                 .font(.system(.body, design: .serif))
-                            Text("一份 JSON，装着他、你们的对话和他记得的事。密钥不在里面。")
+                            Text(L("一份 JSON，装着他、你们的对话和他记得的事。密钥不在里面。"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -550,10 +555,10 @@ struct SettingsScreen: View {
 
     private var dangerSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            MFSectionTitle(text: "危险区")
+            MFSectionTitle(text: L("危险区"))
 
             MFCard {
-                MFNote(text: "清空之前，先把他带走。删掉的东西不会自己回来。", icon: "exclamationmark.triangle")
+                MFNote(text: L("清空之前，先把他带走。删掉的东西不会自己回来。"), icon: "exclamationmark.triangle")
 
                 Button {
                     pendingAction = .clearChats
@@ -562,7 +567,7 @@ struct SettingsScreen: View {
                         Image(systemName: "trash")
                             .font(.system(size: 14))
                             .frame(width: 22)
-                        Text("清空全部聊天与记忆")
+                        Text(L("清空全部聊天与记忆"))
                             .font(.system(.body, design: .serif))
                         Spacer()
                     }
@@ -581,7 +586,7 @@ struct SettingsScreen: View {
                         Image(systemName: "delete.left")
                             .font(.system(size: 14))
                             .frame(width: 22)
-                        Text("删除全部本地数据")
+                        Text(L("删除全部本地数据"))
                             .font(.system(.body, design: .serif))
                         Spacer()
                     }
@@ -592,7 +597,7 @@ struct SettingsScreen: View {
                 .buttonStyle(.plain)
 
                 MFNote(
-                    text: "「清空」只清会话、消息与记忆，人格和 API 配置留着；「删除全部」会连人格、配置与设置一起删，App 回到刚装上的样子。"
+                    text: L("「清空」只清会话、消息与记忆，人格和 API 配置留着；「删除全部」会连人格、配置与设置一起删，App 回到刚装上的样子。")
                 )
             }
         }
@@ -600,10 +605,10 @@ struct SettingsScreen: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("关于 MyFriend")
+            Text(L("关于 MyFriend"))
                 .font(.system(.footnote, design: .serif))
                 .foregroundStyle(.secondary)
-            Text("他在这台手机上的一切都只存在这台手机上：对话、记忆、用量都不上传。")
+            Text(L("他在这台手机上的一切都只存在这台手机上：对话、记忆、用量都不上传。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -662,11 +667,11 @@ struct SettingsScreen: View {
             try? env.apiKeys.deleteKeys(for: config.id)
             reload()
             banner = MFAlert(
-                title: "删掉了",
-                message: "「\(config.name.isEmpty ? "这个配置" : config.name)」已经从这台手机上删掉。"
+                title: L("删掉了"),
+                message: Lf("「%@」已经从这台手机上删掉。", config.name.isEmpty ? L("这个配置") : config.name)
             )
         } catch {
-            banner = MFAlert(title: "没能删掉", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
         }
     }
 
@@ -678,9 +683,9 @@ struct SettingsScreen: View {
             let summary = try env.dataReset.clearChats()
             MediaStorage.shared.delete(images)
             reload()
-            banner = MFAlert(title: "清空了", message: summary.describeChats())
+            banner = MFAlert(title: L("清空了"), message: summary.describeChats())
         } catch {
-            banner = MFAlert(title: "没能清空", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能清空"), message: error.localizedDescription)
         }
     }
 
@@ -692,7 +697,7 @@ struct SettingsScreen: View {
         // 否则界面上还挂着已经不存在的人格与主题。
         env.reloadSettings()
         reload()
-        banner = MFAlert(title: "都删掉了", message: summary.describeAll())
+        banner = MFAlert(title: L("都删掉了"), message: summary.describeAll())
     }
 
     /// 三颗会删东西的按钮共用同一个 `confirmationDialog`。
@@ -707,31 +712,31 @@ struct SettingsScreen: View {
         var title: String {
             switch self {
             case .deleteConfig(let config):
-                let name = config.name.isEmpty ? "这个配置" : config.name
-                return "删除「\(name)」？"
+                let name = config.name.isEmpty ? L("这个配置") : config.name
+                return Lf("删除「%@」？", name)
             case .clearChats:
-                return "清空全部聊天与记忆？"
+                return L("清空全部聊天与记忆？")
             case .clearAll:
-                return "删除全部本地数据？"
+                return L("删除全部本地数据？")
             }
         }
 
         var confirmTitle: String {
             switch self {
-            case .deleteConfig: return "删除"
-            case .clearChats: return "清空"
-            case .clearAll: return "全部删除"
+            case .deleteConfig: return L("删除")
+            case .clearChats: return L("清空")
+            case .clearAll: return L("全部删除")
             }
         }
 
         var message: String {
             switch self {
             case .deleteConfig:
-                return "这台手机上存的 Key 也会一起删掉。备份里本来就没有密钥，删了就只能重新填一次。"
+                return L("这台手机上存的 Key 也会一起删掉。备份里本来就没有密钥，删了就只能重新填一次。")
             case .clearChats:
-                return "所有会话、消息和长期记忆会被删除。人格与 API 配置会留着。这个动作没法撤销——想留个底的话，先把他带走。"
+                return L("所有会话、消息和长期记忆会被删除。人格与 API 配置会留着。这个动作没法撤销——想留个底的话，先把他带走。")
             case .clearAll:
-                return "人格、聊天、记忆、预设、主动节奏、API 配置与设置都会删掉，App 回到刚装上的样子。想留个底的话，先用上面的「把他带走」。"
+                return L("人格、聊天、记忆、预设、主动节奏、API 配置与设置都会删掉，App 回到刚装上的样子。想留个底的话，先用上面的「把他带走」。")
             }
         }
     }

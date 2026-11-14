@@ -39,12 +39,12 @@ struct PersonaListScreen: View {
                             Button {
                                 makeDefault(persona)
                             } label: {
-                                Label("设为默认", systemImage: "checkmark.circle")
+                                Label(L("设为默认"), systemImage: "checkmark.circle")
                             }
                             Button(role: .destructive) {
                                 askDelete(persona)
                             } label: {
-                                Label("删除", systemImage: "trash")
+                                Label(L("删除"), systemImage: "trash")
                             }
                         }
                     }
@@ -56,22 +56,22 @@ struct PersonaListScreen: View {
             .padding(.vertical, 16)
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle("人格")
+        .navigationTitle(L("人格"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .mfAlert($banner)
         .confirmationDialog(
-            pendingDelete.map { "删除「\($0.name)」？" } ?? "删除这个人格？",
+            pendingDelete.map { Lf("删除「%@」？", $0.name) } ?? L("删除这个人格？"),
             isPresented: Binding(
                 get: { pendingDelete != nil },
                 set: { presented in if !presented { pendingDelete = nil } }
             ),
             titleVisibility: .visible
         ) {
-            Button("删除", role: .destructive) { deletePending() }
-            Button("取消", role: .cancel) { pendingDelete = nil }
+            Button(L("删除"), role: .destructive) { deletePending() }
+            Button(L("取消"), role: .cancel) { pendingDelete = nil }
         } message: {
-            Text("这个人的聊天、记忆与主动节奏都会一起删掉。至少留着一个人格。")
+            Text(L("这个人的聊天、记忆与主动节奏都会一起删掉。至少留着一个人格。"))
         }
     }
 
@@ -79,9 +79,9 @@ struct PersonaListScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("人格")
+            Text(L("人格"))
                 .font(.system(size: 26, weight: .bold, design: .serif))
-            Text("每个人格拥有独立的提示词、记忆与上下文。点一个改，长按可以设为默认或删除。")
+            Text(L("每个人格拥有独立的提示词、记忆与上下文。点一个改，长按可以设为默认或删除。"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -102,7 +102,7 @@ struct PersonaListScreen: View {
                         .font(.system(.title3, design: .serif))
                         .lineLimit(1)
                     if persona.isDefault || active {
-                        Text(persona.isDefault ? "默认" : "正在聊")
+                        Text(persona.isDefault ? L("默认") : L("正在聊"))
                             .font(.caption2)
                             .foregroundStyle(accent)
                             .padding(.horizontal, 6)
@@ -112,7 +112,7 @@ struct PersonaListScreen: View {
                     Spacer(minLength: 4)
                 }
 
-                Text(persona.description.isEmpty ? "还没有简介" : persona.description)
+                Text(persona.description.isEmpty ? L("还没有简介") : persona.description)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -165,9 +165,9 @@ struct PersonaListScreen: View {
 
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("还没有人格")
+            Text(L("还没有人格"))
                 .font(.system(.body, design: .serif))
-            Text("创建一个人格，写下他的性格与说话方式，然后就可以开始说话了。")
+            Text(L("创建一个人格，写下他的性格与说话方式，然后就可以开始说话了。"))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -181,7 +181,7 @@ struct PersonaListScreen: View {
             HStack(spacing: 10) {
                 Image(systemName: "plus.circle")
                     .font(.system(size: 16))
-                Text("新建一个人格")
+                Text(L("新建一个人格"))
                     .font(.system(.body, design: .serif))
                 Spacer()
             }
@@ -217,17 +217,17 @@ struct PersonaListScreen: View {
             try env.stores.personas.upsert(updated)
             env.updateSettings { $0.activePersonaId = persona.id }
             reload()
-            banner = MFAlert(title: "换过来了", message: "接下来先跟你说话的是「\(persona.name)」。")
+            banner = MFAlert(title: L("换过来了"), message: Lf("接下来先跟你说话的是「%@」。", persona.name))
         } catch {
-            banner = MFAlert(title: "没能切换", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能切换"), message: error.localizedDescription)
         }
     }
 
     private func askDelete(_ persona: PersonaEntity) {
         guard personas.count > 1 else {
             banner = MFAlert(
-                title: "先留着他",
-                message: "至少要留着一个人格。想换掉的话，先新建一个，再回来删这个。"
+                title: L("先留着他"),
+                message: L("至少要留着一个人格。想换掉的话，先新建一个，再回来删这个。")
             )
             return
         }
@@ -245,9 +245,9 @@ struct PersonaListScreen: View {
                 env.updateSettings { $0.activePersonaId = next }
             }
             reload()
-            banner = MFAlert(title: "删掉了", message: "「\(persona.name)」和他的聊天、记忆都删掉了。")
+            banner = MFAlert(title: L("删掉了"), message: Lf("「%@」和他的聊天、记忆都删掉了。", persona.name))
         } catch {
-            banner = MFAlert(title: "没能删掉", message: error.localizedDescription)
+            banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
         }
     }
 }

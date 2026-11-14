@@ -1,11 +1,14 @@
 package com.myfriend.app.ui.screens.preset
 
+import android.content.Context
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.repo.PresetDraft
 import com.myfriend.app.data.repo.PresetRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +40,8 @@ sealed interface PresetEditorEvent {
 @HiltViewModel
 class PresetEditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
-    private val presetRepository: PresetRepository
+    private val presetRepository: PresetRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
 
     private val presetId: String? = savedStateHandle.get<String>("presetId")?.takeIf { it.isNotBlank() }
@@ -68,7 +72,7 @@ class PresetEditorViewModel @Inject constructor(
                     }
                 } else {
                     _state.update { it.copy(loaded = true) }
-                    events.send(PresetEditorEvent.Message("预设不存在，可能已被删除"))
+                    events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_not_found)))
                 }
             }
         }
@@ -83,11 +87,11 @@ class PresetEditorViewModel @Inject constructor(
         if (current.saving) return
         val form = current.form
         if (form.name.isBlank()) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message("请填写预设名称")) }
+            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_name_required))) }
             return
         }
         if (form.prompt.isBlank()) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message("预设需要包含人格提示词")) }
+            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_prompt_required))) }
             return
         }
         viewModelScope.launch {
@@ -105,7 +109,7 @@ class PresetEditorViewModel @Inject constructor(
             )
             _state.update { it.copy(saving = false) }
             result.onSuccess { events.send(PresetEditorEvent.Saved(it)) }
-                .onFailure { events.send(PresetEditorEvent.Message(it.message ?: "保存失败")) }
+                .onFailure { events.send(PresetEditorEvent.Message(it.message ?: context.getString(R.string.preset_editor_save_failed))) }
         }
     }
 }

@@ -35,22 +35,22 @@ struct MemoryDetailScreen: View {
                 .padding(.horizontal, MFTheme.gutter)
                 .padding(.vertical, 16)
             } else {
-                Text("这条记忆已经不在库里了。")
+                Text(L("这条记忆已经不在库里了。"))
                     .font(.system(.body, design: .serif))
                     .foregroundStyle(.secondary)
                     .padding(24)
             }
         }
         .background(MFTheme.canvas(scheme).ignoresSafeArea())
-        .navigationTitle("他记得的事")
+        .navigationTitle(L("他记得的事"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
         .mfAlert($banner)
-        .confirmationDialog("忘掉这一条？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-            Button("忘掉", role: .destructive, action: deleteMemory)
-            Button("取消", role: .cancel) {}
+        .confirmationDialog(L("忘掉这一条？"), isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+            Button(L("忘掉"), role: .destructive, action: deleteMemory)
+            Button(L("取消"), role: .cancel) {}
         } message: {
-            Text("删掉以后聊天里不会再被想起。固定过的记忆也一样会消失。")
+            Text(L("删掉以后聊天里不会再被想起。固定过的记忆也一样会消失。"))
         }
     }
 
@@ -70,7 +70,7 @@ struct MemoryDetailScreen: View {
                     .padding(.vertical, 1)
                     .background(accent.opacity(0.12), in: Capsule())
                 if memory.pinned {
-                    Label("一直记着", systemImage: "pin.fill")
+                    Label(L("一直记着"), systemImage: "pin.fill")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -90,7 +90,7 @@ struct MemoryDetailScreen: View {
                 .padding(.top, 12)
 
             HStack(spacing: 8) {
-                Text("分量 \(Int((min(max(memory.strength, 0), 1)) * 100))%")
+                Text(Lf("分量 %d%%", Int((min(max(memory.strength, 0), 1)) * 100)))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -148,11 +148,11 @@ struct MemoryDetailScreen: View {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                Text("第一次被写下来时")
+                Text(L("第一次被写下来时"))
                     .font(.system(.footnote, design: .serif))
                 Spacer()
                 if memory.driftCount > 0 {
-                    Text("改写 \(memory.driftCount) 次")
+                    Text(Lcount("改写 %d 次", memory.driftCount))
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -165,7 +165,7 @@ struct MemoryDetailScreen: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.top, 8)
 
-            MFNote(text: "回忆不是回放：每次被想起，措辞都可能被当时的心情改写一点。原文留在这里当锚点。")
+            MFNote(text: L("回忆不是回放：每次被想起，措辞都可能被当时的心情改写一点。原文留在这里当锚点。"))
         }
     }
 
@@ -173,23 +173,23 @@ struct MemoryDetailScreen: View {
 
     private func factsCard(_ memory: MemoryEntity) -> some View {
         MFCard {
-            Text("关于这条记忆")
+            Text(L("关于这条记忆"))
                 .font(.system(.body, design: .serif))
                 .padding(.bottom, 6)
 
-            factRow("分类", MFMemoryText.categoryLabel(memory.category))
-            factRow("被想起", "\(memory.useCount) 次")
-            factRow("上次被想起", memory.lastUsedAt > 0 ? MFDate.relative(memory.lastUsedAt) : "还没被想起过")
-            factRow("记下来", MFDate.relative(memory.createdAt))
-            factRow("最近改动", MFDate.relative(memory.updatedAt))
+            factRow(L("分类"), MFMemoryText.categoryLabel(memory.category))
+            factRow(L("被想起"), Lcount("%d 次", memory.useCount))
+            factRow(L("上次被想起"), memory.lastUsedAt > 0 ? MFDate.relative(memory.lastUsedAt) : L("还没被想起过"))
+            factRow(L("记下来"), MFDate.relative(memory.createdAt))
+            factRow(L("最近改动"), MFDate.relative(memory.updatedAt))
             if let happenedAt = memory.happenedAt, happenedAt > 0 {
-                factRow("事情发生", MFDate.day(happenedAt))
+                factRow(L("事情发生"), MFDate.day(happenedAt))
             }
             if let consolidatedAt = memory.consolidatedAt, consolidatedAt > 0 {
-                factRow("上次整理", MFDate.relative(consolidatedAt))
+                factRow(L("上次整理"), MFDate.relative(consolidatedAt))
             }
             if let archivedAt = memory.archivedAt, archivedAt > 0 {
-                factRow("归档于", MFDate.relative(archivedAt))
+                factRow(L("归档于"), MFDate.relative(archivedAt))
             }
         }
     }
@@ -209,7 +209,7 @@ struct MemoryDetailScreen: View {
 
     private func quoteCard(_ quote: String) -> some View {
         MFCard {
-            Text("它是从这句话里来的")
+            Text(L("它是从这句话里来的"))
                 .font(.system(.footnote, design: .serif))
             Text(quote)
                 .font(.system(.callout, design: .serif))
@@ -232,7 +232,7 @@ struct MemoryDetailScreen: View {
                     Image(systemName: memory.pinned ? "pin.slash" : "pin")
                         .font(.system(size: 14))
                         .frame(width: 22)
-                    Text(memory.pinned ? "取消固定" : "固定为重要")
+                    Text(memory.pinned ? L("取消固定") : L("固定为重要"))
                         .font(.system(.body, design: .serif))
                     Spacer()
                 }
@@ -250,7 +250,7 @@ struct MemoryDetailScreen: View {
                     Image(systemName: "trash")
                         .font(.system(size: 14))
                         .frame(width: 22)
-                    Text("忘掉这一条")
+                    Text(L("忘掉这一条"))
                         .font(.system(.body, design: .serif))
                     Spacer()
                 }

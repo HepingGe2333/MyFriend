@@ -102,7 +102,7 @@ struct AttachmentPlaceholder: View {
                     .font(.system(size: iconSize, weight: .light))
                     .foregroundStyle(.secondary)
                 if missing && !compact {
-                    Text("图片已不在本机")
+                    Text(L("图片已不在本机"))
                         .font(.system(size: textSize))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)

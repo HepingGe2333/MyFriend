@@ -2,6 +2,7 @@
 
 package com.myfriend.app.ui.screens.evolution
 
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -55,6 +56,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -62,6 +65,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaRevisionEntity
 import com.myfriend.app.domain.EvolutionProposal
 import com.myfriend.app.ui.components.AppHeader
@@ -99,8 +103,8 @@ fun EvolutionScreen(
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "人格进化",
-                subtitle = "在保留核心的前提下，自然生长",
+                title = stringResource(R.string.evolution_title),
+                subtitle = stringResource(R.string.evolution_subtitle),
                 navigation = { BackNavigation(onBack) }
             )
             LazyColumn(
@@ -139,18 +143,34 @@ fun EvolutionScreen(
                                 }
                                 Spacer(Modifier.height(12.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    TextPill("${persona.prompt.length} 字符")
-                                    TextPill("${state.revisions.size} 个保留版本")
+                                    TextPill(
+                                        pluralStringResource(
+                                            R.plurals.evolution_char_count,
+                                            persona.prompt.length,
+                                            persona.prompt.length
+                                        )
+                                    )
+                                    TextPill(
+                                        pluralStringResource(
+                                            R.plurals.evolution_revision_count,
+                                            state.revisions.size,
+                                            state.revisions.size
+                                        )
+                                    )
                                 }
                                 Spacer(Modifier.height(14.dp))
                                 Text(
-                                    "人格进化会读取当前提示词、长期记忆和最近的对话，生成一份完整的进化提案。只有你确认后才会应用，旧版本会一直保留。",
+                                    stringResource(R.string.evolution_intro_body),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                                 Spacer(Modifier.height(14.dp))
                                 PrimaryButton(
-                                    text = if (state.generating) "正在理解你们的关系…" else "生成进化提案",
+                                    text = if (state.generating) {
+                                        stringResource(R.string.evolution_generating)
+                                    } else {
+                                        stringResource(R.string.evolution_generate)
+                                    },
                                     onClick = viewModel::generateProposal,
                                     loading = state.generating,
                                     enabled = !state.generating
@@ -159,7 +179,7 @@ fun EvolutionScreen(
                                     TextButton(
                                         onClick = viewModel::cancelProposal,
                                         modifier = Modifier.padding(top = 4.dp)
-                                    ) { Text("取消生成") }
+                                    ) { Text(stringResource(R.string.evolution_cancel_generate)) }
                                 }
                             }
                         }
@@ -167,22 +187,23 @@ fun EvolutionScreen(
                 }
                 if (state.proposal != null) {
                     item {
-                        SectionLabel("进化提案")
+                        SectionLabel(stringResource(R.string.evolution_proposal_section))
+                        val viewerTitle = stringResource(R.string.evolution_proposal_viewer_title)
                         ProposalCard(
                             proposal = state.proposal!!,
                             accepting = state.accepting,
                             currentPromptChars = state.persona?.prompt?.length ?: 0,
-                            onView = { viewingPrompt = "进化后的人格提示词" to state.proposal!!.prompt },
+                            onView = { viewingPrompt = viewerTitle to state.proposal!!.prompt },
                             onAccept = { acceptingProposal = state.proposal },
                             onDiscard = viewModel::discardProposal
                         )
                     }
                 }
-                item { SectionLabel("人格保留 · 历史版本") }
+                item { SectionLabel(stringResource(R.string.evolution_revisions_section)) }
                 if (state.revisions.isEmpty()) {
                     item {
                         Text(
-                            "暂无历史版本。人格首次保存后会自动保留快照。",
+                            stringResource(R.string.evolution_revisions_empty),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(horizontal = 4.dp, vertical = 12.dp)
@@ -190,11 +211,15 @@ fun EvolutionScreen(
                     }
                 } else {
                     items(state.revisions, key = { it.id }) { revision ->
+                        val viewerTitle = stringResource(
+                            R.string.evolution_revision_viewer_title,
+                            revision.version
+                        )
                         RevisionCard(
                             revision = revision,
                             isCurrent = revision.version == state.persona?.version,
                             restoring = state.restoringId == revision.id,
-                            onView = { viewingPrompt = "版本 v${revision.version} 提示词" to revision.prompt },
+                            onView = { viewingPrompt = viewerTitle to revision.prompt },
                             onRestore = { restoringRevision = revision }
                         )
                         Spacer(Modifier.height(8.dp))
@@ -218,9 +243,13 @@ fun EvolutionScreen(
 
     acceptingProposal?.let { proposal ->
         ConfirmDialog(
-            title = "应用这次进化？",
-            message = "当前版本 v${state.persona?.version ?: 0} 会被完整保留。应用后会生成新版本，下一轮对话就会用上。",
-            confirmText = "应用进化",
+            title = stringResource(R.string.evolution_accept_confirm_title),
+            message = stringResource(
+                R.string.evolution_accept_confirm_message,
+                state.persona?.version ?: 0
+            ),
+            confirmText = stringResource(R.string.evolution_accept_confirm_action),
+            dismissText = stringResource(R.string.evolution_cancel),
             onConfirm = {
                 viewModel.acceptProposal(proposal)
                 acceptingProposal = null
@@ -231,9 +260,10 @@ fun EvolutionScreen(
 
     restoringRevision?.let { revision ->
         ConfirmDialog(
-            title = "恢复到 v${revision.version}？",
-            message = "当前版本会先被保存为历史版本，然后应用 v${revision.version} 的完整人格提示词与资料。",
-            confirmText = "恢复",
+            title = stringResource(R.string.evolution_restore_confirm_title, revision.version),
+            message = stringResource(R.string.evolution_restore_confirm_message, revision.version),
+            confirmText = stringResource(R.string.evolution_restore_confirm_action),
+            dismissText = stringResource(R.string.evolution_cancel),
             onConfirm = {
                 viewModel.restoreRevision(revision)
                 restoringRevision = null
@@ -266,7 +296,7 @@ private fun ProposalCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = LocalAccentColor.current, modifier = Modifier.size(19.dp))
                 Spacer(Modifier.width(8.dp))
-                Text("进化方向", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.evolution_proposal_direction), style = MaterialTheme.typography.titleSmall)
             }
             Spacer(Modifier.height(7.dp))
             Text(
@@ -286,7 +316,7 @@ private fun ProposalCard(
             TextButton(onClick = onView, contentPadding = PaddingValues(horizontal = 2.dp)) {
                 Icon(Icons.Outlined.Visibility, contentDescription = null, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(5.dp))
-                Text("查看完整提案")
+                Text(stringResource(R.string.evolution_proposal_view_full))
             }
             if (shrinkWarning) {
                 Spacer(Modifier.height(4.dp))
@@ -299,7 +329,11 @@ private fun ProposalCard(
                     )
                     Spacer(Modifier.width(6.dp))
                     Text(
-                        "这份提案比当前提示词短很多（${proposal.prompt.length} / $currentPromptChars 字符），可能丢失原有的核心设定。建议先查看完整提案。",
+                        stringResource(
+                            R.string.evolution_shrink_warning,
+                            proposal.prompt.length,
+                            currentPromptChars
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error
                     )
@@ -307,9 +341,15 @@ private fun ProposalCard(
             }
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onDiscard, enabled = !accepting) { Text("放弃") }
+                TextButton(onClick = onDiscard, enabled = !accepting) {
+                    Text(stringResource(R.string.evolution_discard))
+                }
                 PrimaryButton(
-                    text = if (accepting) "应用中…" else "接受并保留旧版本",
+                    text = if (accepting) {
+                        stringResource(R.string.evolution_accepting)
+                    } else {
+                        stringResource(R.string.evolution_accept)
+                    },
                     onClick = onAccept,
                     loading = accepting,
                     modifier = Modifier.weight(1f),
@@ -341,10 +381,10 @@ private fun RevisionCard(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("v${revision.version}", style = MaterialTheme.typography.titleSmall)
                 Spacer(Modifier.width(8.dp))
-                if (isCurrent) TextPill("当前", selected = true)
+                if (isCurrent) TextPill(stringResource(R.string.evolution_revision_current), selected = true)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    formatFullDateTime(revision.createdAt),
+                    formatFullDateTime(LocalContext.current, revision.createdAt),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.65f)
                 )
@@ -357,7 +397,12 @@ private fun RevisionCard(
             )
             Spacer(Modifier.height(3.dp))
             Text(
-                "${revision.name} · ${revision.prompt.length} 字符",
+                pluralStringResource(
+                    R.plurals.evolution_revision_meta,
+                    revision.prompt.length,
+                    revision.name,
+                    revision.prompt.length
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
             )
@@ -366,7 +411,7 @@ private fun RevisionCard(
                 TextButton(onClick = onView, contentPadding = PaddingValues(horizontal = 4.dp)) {
                     Icon(Icons.Outlined.Visibility, contentDescription = null, modifier = Modifier.size(14.dp))
                     Spacer(Modifier.width(4.dp))
-                    Text("查看")
+                    Text(stringResource(R.string.evolution_view))
                 }
                 if (!isCurrent) {
                     TextButton(onClick = onRestore, enabled = !restoring, contentPadding = PaddingValues(horizontal = 4.dp)) {
@@ -376,7 +421,7 @@ private fun RevisionCard(
                             Icon(Icons.Outlined.Restore, contentDescription = null, modifier = Modifier.size(14.dp))
                         }
                         Spacer(Modifier.width(4.dp))
-                        Text("恢复此版本")
+                        Text(stringResource(R.string.evolution_restore_version))
                     }
                 }
             }
@@ -409,12 +454,22 @@ private fun PromptViewerDialog(
                         .padding(horizontal = 8.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = "关闭") }
+                    IconButton(onClick = onDismiss) { Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.evolution_close)) }
                     Column(Modifier.weight(1f)) {
                         Text(title, style = MaterialTheme.typography.titleMedium)
-                        Text("${prompt.length} 字符 · 完整原文", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            pluralStringResource(
+                                R.plurals.evolution_prompt_viewer_meta,
+                                prompt.length,
+                                prompt.length
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    IconButton(onClick = onCopy) { Icon(Icons.Outlined.ContentCopy, contentDescription = "复制全文") }
+                    IconButton(onClick = onCopy) {
+                        Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.evolution_copy_all))
+                    }
                 }
                 Column(
                     Modifier

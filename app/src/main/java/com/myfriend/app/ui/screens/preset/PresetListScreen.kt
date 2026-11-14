@@ -54,11 +54,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaPresetEntity
 import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.ui.components.AppHeader
@@ -94,10 +97,15 @@ fun PresetListScreen(
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { it.write(file.content.toByteArray()) }
-                            ?: error("无法写入文件")
+                            ?: error(context.getString(R.string.preset_write_unavailable))
                     }
                 }
-                snackbar.showSnackbar(result.fold({ "预设已导出" }, { "导出失败：${it.message}" }))
+                snackbar.showSnackbar(
+                    result.fold(
+                        { context.getString(R.string.preset_export_done) },
+                        { context.getString(R.string.preset_export_error_detail, it.message.orEmpty()) }
+                    )
+                )
             }
         }
         pendingExport = null
@@ -108,11 +116,15 @@ fun PresetListScreen(
                 val text = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                            ?: error("无法读取文件")
+                            ?: error(context.getString(R.string.preset_read_unavailable))
                     }
                 }
                 text.onSuccess { viewModel.import(it) }
-                    .onFailure { snackbar.showSnackbar("读取失败：${it.message}") }
+                    .onFailure {
+                        snackbar.showSnackbar(
+                            context.getString(R.string.preset_read_error_detail, it.message.orEmpty())
+                        )
+                    }
             }
         }
     }
@@ -147,24 +159,24 @@ fun PresetListScreen(
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.size(58.dp)
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "新建预设", modifier = Modifier.size(26.dp))
+                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.preset_new), modifier = Modifier.size(26.dp))
             }
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "预设库",
-                subtitle = "可复用的提示词模板，用来快速生成新人格",
+                title = stringResource(R.string.preset_list_title),
+                subtitle = stringResource(R.string.preset_list_subtitle),
                 navigation = { BackNavigation(onBack) },
                 actions = {
                     CircleIconButton(
                         Icons.Outlined.FileUpload,
-                        "导入预设",
+                        stringResource(R.string.preset_import),
                         onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }
                     )
                     CircleIconButton(
                         Icons.Outlined.FileDownload,
-                        "导出全部预设",
+                        stringResource(R.string.preset_export_all),
                         onClick = { viewModel.exportAll() }
                     )
                 }
@@ -191,7 +203,7 @@ fun PresetListScreen(
                                 modifier = Modifier.size(19.dp)
                             )
                             Text(
-                                "预设只是模板：用预设创建人格后，人格拥有独立的提示词、记忆与上下文，之后对人格的修改不会影响预设。",
+                                stringResource(R.string.preset_info_hint),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -205,10 +217,13 @@ fun PresetListScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             item {
-                                PresetCategoryChip("全部", state.category == null) { viewModel.setCategory(null) }
+                                PresetCategoryChip(
+                                    stringResource(R.string.preset_category_all),
+                                    state.category == null
+                                ) { viewModel.setCategory(null) }
                             }
                             items(state.categories) { category ->
-                                PresetCategoryChip(category, state.category == category) {
+                                PresetCategoryChip(presetCategoryLabel(category), state.category == category) {
                                     viewModel.setCategory(if (state.category == category) null else category)
                                 }
                             }
@@ -221,8 +236,8 @@ fun PresetListScreen(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.Bookmarks,
-                            title = "预设库还是空的",
-                            description = "把常用的人格设定存成预设，下次用一键生成新人格；也可以从人格详情里保存为预设。",
+                            title = stringResource(R.string.preset_empty_title),
+                            description = stringResource(R.string.preset_empty_desc),
                             modifier = Modifier.padding(top = 26.dp)
                         )
                     }
@@ -244,9 +259,9 @@ fun PresetListScreen(
 
     presetToDelete?.let { preset ->
         ConfirmDialog(
-            title = "删除预设「${preset.name}」？",
-            message = "已经用它创建的人格不会受影响，只是以后不能再从这里新建。",
-            confirmText = "删除",
+            title = stringResource(R.string.preset_delete_title, preset.name),
+            message = stringResource(R.string.preset_delete_message),
+            confirmText = stringResource(R.string.preset_delete),
             destructive = true,
             onConfirm = {
                 viewModel.delete(preset.id)
@@ -255,6 +270,21 @@ fun PresetListScreen(
             onDismiss = { presetToDelete = null }
         )
     }
+}
+
+/**
+ * 预设分类是**落库的数据值**（见 `PresetRepository` 与 `PresetForm.category` 的默认值），
+ * 所以常量本身永远保持中文原样，只在界面上做一次显示映射；用户自定义的分类原样显示。
+ */
+@Composable
+internal fun presetCategoryLabel(category: String): String = when (category) {
+    "日常聊天" -> stringResource(R.string.preset_category_daily_chat)
+    "角色扮演" -> stringResource(R.string.preset_category_roleplay)
+    "学习" -> stringResource(R.string.preset_category_study)
+    "编程" -> stringResource(R.string.preset_category_coding)
+    "创意写作" -> stringResource(R.string.preset_category_writing)
+    "通用" -> stringResource(R.string.preset_category_general)
+    else -> category
 }
 
 @Composable
@@ -329,13 +359,13 @@ private fun PresetCard(
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(
                             Icons.Outlined.MoreVert,
-                            contentDescription = "更多",
+                            contentDescription = stringResource(R.string.preset_more),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
-                            text = { Text("用这个预设创建人格") },
+                            text = { Text(stringResource(R.string.preset_create_persona)) },
                             leadingIcon = { Icon(Icons.Outlined.PersonAdd, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
@@ -343,7 +373,7 @@ private fun PresetCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("编辑预设") },
+                            text = { Text(stringResource(R.string.preset_edit)) },
                             leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
@@ -351,7 +381,7 @@ private fun PresetCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("复制") },
+                            text = { Text(stringResource(R.string.preset_duplicate)) },
                             leadingIcon = { Icon(Icons.Outlined.ContentCopy, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
@@ -359,7 +389,7 @@ private fun PresetCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("导出 JSON") },
+                            text = { Text(stringResource(R.string.preset_export_json)) },
                             leadingIcon = { Icon(Icons.Outlined.FileDownload, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
@@ -367,7 +397,12 @@ private fun PresetCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            text = {
+                                Text(
+                                    stringResource(R.string.preset_delete),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            },
                             leadingIcon = {
                                 Icon(
                                     Icons.Outlined.DeleteOutline,
@@ -385,10 +420,14 @@ private fun PresetCard(
             }
             Spacer(Modifier.height(10.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextPill(preset.category)
+                TextPill(presetCategoryLabel(preset.category))
                 Spacer(Modifier.width(8.dp))
                 Text(
-                    "${preset.prompt.length} 字符提示词",
+                    pluralStringResource(
+                        R.plurals.preset_prompt_chars,
+                        preset.prompt.length,
+                        preset.prompt.length
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -399,7 +438,7 @@ private fun PresetCard(
                     modifier = Modifier.clickable(onClick = onCreatePersona)
                 ) {
                     Text(
-                        "用此预设新建",
+                        stringResource(R.string.preset_create_persona_short),
                         style = MaterialTheme.typography.labelSmall,
                         color = accent,
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)

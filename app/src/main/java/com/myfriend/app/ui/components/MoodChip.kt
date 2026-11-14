@@ -16,7 +16,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.myfriend.app.R
 import com.myfriend.app.domain.MoodLexicon
 import com.myfriend.app.domain.MoodState
 
@@ -60,13 +62,45 @@ fun MoodChip(
             }
         }
         Text(
-            text = mood.label.ifBlank { MoodLexicon.BASELINE },
+            text = moodLabelText(mood.label),
             style = MaterialTheme.typography.labelSmall,
             color = tint,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
     }
+}
+
+/**
+ * 心情的那个词。
+ *
+ * 词表是固定的（[MoodLexicon]），所以常见的那些都能说成对方的语言；
+ * 万一模型自己造了个词，就原样显示——不猜、不硬翻。
+ */
+@Composable
+private fun moodLabelText(label: String): String {
+    val word = MoodLexicon.normalize(label)
+    val res = when (word) {
+        "平静" -> R.string.mood_label_calm
+        "放松" -> R.string.mood_label_relaxed
+        "温柔" -> R.string.mood_label_gentle
+        "雀跃" -> R.string.mood_label_elated
+        "开心" -> R.string.mood_label_happy
+        "兴奋" -> R.string.mood_label_excited
+        "期待" -> R.string.mood_label_looking_forward
+        "想念" -> R.string.mood_label_missing_you
+        "有点累" -> R.string.mood_label_a_little_tired
+        "疲惫" -> R.string.mood_label_worn_out
+        "犯困" -> R.string.mood_label_sleepy
+        "低落" -> R.string.mood_label_low
+        "难过" -> R.string.mood_label_sad
+        "心烦" -> R.string.mood_label_restless
+        "不安" -> R.string.mood_label_uneasy
+        "有点委屈" -> R.string.mood_label_a_little_hurt
+        "愧疚" -> R.string.mood_label_guilty
+        else -> null
+    }
+    return if (res != null) stringResource(res) else word
 }
 
 /** 带原因的完整一行，用在「他此刻」这类需要解释的地方。 */

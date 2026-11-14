@@ -194,7 +194,7 @@ class MemoryConsolidator @Inject constructor(
         val plan = ImportanceScoring.parseConsolidation(raw)
 
         val applied = applyPlan(plan, all, promptMemories, now)
-        val decayed = applyDecay(all, applied.handledIds, now)
+        val decayed = applyDecay(all, applied.handledIds, persona.memoryRetention, now)
 
         val kept = applied.kept
         val merged = applied.merged
@@ -554,13 +554,16 @@ class MemoryConsolidator @Inject constructor(
     private suspend fun applyDecay(
         memories: List<MemoryEntity>,
         handledIds: Set<String>,
+        retention: Int,
         now: Long
     ): DecayOutcome {
         var archived = 0
         var forgotten = 0
+        // 「记性」只改淡下去的速度，不改阈值（规格 §三；与 iOS `persona.memoryDecayFactor` 同源）。
+        val retentionFactor = MemoryLifecycle.retentionFactor(retention)
         memories.forEach { memory ->
             if (memory.id in handledIds) return@forEach
-            val update = MemoryLifecycle.dailyUpdate(memory.toLifecycleState(), now)
+            val update = MemoryLifecycle.dailyUpdate(memory.toLifecycleState(), now, retentionFactor)
             when (val action = update.action) {
                 is LifecycleAction.Keep -> runCatching {
                     memoryDao.touchStrength(memory.id, update.strength, now)

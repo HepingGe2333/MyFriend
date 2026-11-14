@@ -44,7 +44,7 @@ struct InAppBrowserView: View {
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .bottom) {
             if copyToast {
-                Text("链接已复制")
+                Text(L("链接已复制"))
                     .font(.footnote)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
@@ -65,10 +65,10 @@ struct InAppBrowserView: View {
                     .frame(width: 36, height: 36)
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(title.isEmpty ? (URL(string: url)?.host ?? "网页") : title)
+                Text(title.isEmpty ? (URL(string: url)?.host ?? L("网页")) : title)
                     .font(.system(.headline, design: .serif))
                     .lineLimit(1)
-                Text("他发给你的链接")
+                Text(L("他发给你的链接"))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -102,14 +102,14 @@ struct InAppBrowserView: View {
             Image(systemName: "wifi.exclamationmark")
                 .font(.system(size: 30, weight: .light))
                 .foregroundStyle(.secondary)
-            Text("这个网页没打开")
+            Text(L("这个网页没打开"))
                 .font(.system(.headline, design: .serif))
             Text(message)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
-            Button("再试一次") {
+            Button(L("再试一次")) {
                 failure = nil
                 progress = 0
                 reloadToken += 1
@@ -213,7 +213,7 @@ private struct WebViewContainer: UIViewRepresentable {
         ) {
             if let response = navigationResponse.response as? HTTPURLResponse,
                response.statusCode >= 400 {
-                onFailure("网页返回了 \(response.statusCode)")
+                onFailure(Lf("网页返回了 %d", response.statusCode))
             }
             decisionHandler(.allow)
         }

@@ -19,11 +19,11 @@ final class ConsolidationRunner: ObservableObject {
         guard !isRunning else { return }
         // 1.9：记忆与整理都内置开启，没有开关要检查（§一）。
         guard let personaId, !personaId.isEmpty else {
-            message = "还没有人格，没法整理记忆。"
+            message = L("还没有人格，没法整理记忆。")
             return
         }
         guard let resolved = env.resolvedChatConfig() else {
-            message = "还没有可用的 API 配置，这次没整理记忆。"
+            message = L("还没有可用的 API 配置，这次没整理记忆。")
             return
         }
 
@@ -47,36 +47,37 @@ final class ConsolidationRunner: ObservableObject {
 enum MemoryHealthText {
     private static let clockFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "HH:mm"
+        formatter.locale = Locale.current
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
         return formatter
     }()
 
     private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "M月d日"
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
         return formatter
     }()
 
     private static let yearFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "zh_CN")
-        formatter.dateFormat = "yyyy年M月d日"
+        formatter.locale = Locale.current
+        formatter.setLocalizedDateFormatFromTemplate("yMMMd")
         return formatter
     }()
 
     /// 「上次整理：昨天 04:10 · 留下 12 条、并掉 2 条、移出 3 条、忘掉 1 条」。
     static func lastRunLine(_ entity: MemoryConsolidationEntity?, now: Int64 = DomainClock.nowMillis) -> String {
-        guard let entity else { return "还没整理过" }
+        guard let entity else { return L("还没整理过") }
         let counts = countsText(
             kept: entity.kept,
             merged: entity.merged,
             archived: entity.archived,
             forgotten: entity.forgotten,
-            separator: "、"
+            separator: LText.listSeparator
         )
-        let head = "上次整理：\(dayAndClock(entity.at, now: now))"
+        let head = Lf("上次整理：%@", dayAndClock(entity.at, now: now))
         return counts.isEmpty ? head : "\(head) · \(counts)"
     }
 
@@ -89,31 +90,31 @@ enum MemoryHealthText {
                 merged: result.merged,
                 archived: result.archived,
                 forgotten: result.forgotten,
-                separator: "，"
+                separator: LText.clauseSeparator
             )
             return counts.isEmpty
-                ? "整理完了：这次没怎么动，让它自己慢慢变淡"
-                : "整理完了：\(counts)"
+                ? L("整理完了：这次没怎么动，让它自己慢慢变淡")
+                : Lf("整理完了：%@", counts)
         case .noMemory:
-            return "整理完了：这次没有需要整理的东西"
+            return L("整理完了：这次没有需要整理的东西")
         case .disabled:
-            return "还没整理：记忆整理现在是关着的"
+            return L("还没整理：记忆整理现在是关着的")
         case .noConfig:
-            return "还没有可用的 API 配置，这次没整理记忆"
+            return L("还没有可用的 API 配置，这次没整理记忆")
         case .noPersona:
-            return "找不到这个人格，没法整理记忆"
+            return L("找不到这个人格，没法整理记忆")
         case .failed:
-            return result.summary.isEmpty ? "这次没能整理，回头它自己会再试一次" : result.summary
+            return result.summary.isEmpty ? L("这次没能整理，回头它自己会再试一次") : result.summary
         }
     }
 
     /// 四项计数拼成中文；全为 0 时返回空串（由调用方决定补哪句话）。
     static func countsText(kept: Int, merged: Int, archived: Int, forgotten: Int, separator: String) -> String {
         var parts: [String] = []
-        if kept > 0 { parts.append("留下 \(kept) 条") }
-        if merged > 0 { parts.append("并掉 \(merged) 条") }
-        if archived > 0 { parts.append("移出 \(archived) 条") }
-        if forgotten > 0 { parts.append("忘掉 \(forgotten) 条") }
+        if kept > 0 { parts.append(Lcount("留下 %d 条", kept)) }
+        if merged > 0 { parts.append(Lcount("并掉 %d 条", merged)) }
+        if archived > 0 { parts.append(Lcount("移出 %d 条", archived)) }
+        if forgotten > 0 { parts.append(Lcount("忘掉 %d 条", forgotten)) }
         return parts.joined(separator: separator)
     }
 
@@ -123,8 +124,8 @@ enum MemoryHealthText {
         let nowDate = Date(timeIntervalSince1970: Double(now) / 1000)
         let calendar = Calendar.current
         let clock = clockFormatter.string(from: date)
-        if calendar.isDateInToday(date) { return "今天 \(clock)" }
-        if calendar.isDateInYesterday(date) { return "昨天 \(clock)" }
+        if calendar.isDateInToday(date) { return Lf("今天 %@", clock) }
+        if calendar.isDateInYesterday(date) { return Lf("昨天 %@", clock) }
         if calendar.component(.year, from: date) == calendar.component(.year, from: nowDate) {
             return "\(dayFormatter.string(from: date)) \(clock)"
         }
@@ -136,9 +137,9 @@ enum MemoryHealthText {
 enum MFMemoryDrawerText {
     static func short(_ drawer: MemoryDrawer) -> String {
         switch drawer {
-        case .selfDrawer: return "他自己"
-        case .user: return "关于你"
-        case .event: return "你们"
+        case .selfDrawer: return L("他自己")
+        case .user: return L("关于你")
+        case .event: return L("你们")
         }
     }
 
@@ -149,7 +150,7 @@ enum MFMemoryDrawerText {
     }
 
     static func detail(_ drawer: MemoryDrawer) -> String {
-        "\(drawer.rawValue) · \(drawer.label)"
+        "\(drawer.rawValue) · \(drawer.displayLabel)"
     }
 }
 
@@ -157,17 +158,17 @@ enum MFMemoryDrawerText {
 enum MFMemoryTierText {
     static func label(_ tier: MemoryTier) -> String {
         switch tier {
-        case .active: return "还在用"
-        case .dormant: return "沉下去了"
-        case .archived: return "已归档"
+        case .active: return L("还在用")
+        case .dormant: return L("沉下去了")
+        case .archived: return L("已归档")
         }
     }
 
     static func tag(_ tier: MemoryTier) -> String {
         switch tier {
-        case .active: return "在用"
-        case .dormant: return "沉睡"
-        case .archived: return "归档"
+        case .active: return L("在用")
+        case .dormant: return L("沉睡")
+        case .archived: return L("归档")
         }
     }
 
@@ -175,8 +176,8 @@ enum MFMemoryTierText {
     static func footnote(_ tier: MemoryTier) -> String? {
         switch tier {
         case .active: return nil
-        case .dormant: return "关键词命中时还能被捞回来"
-        case .archived: return "只有他认真回忆时才可能翻到"
+        case .dormant: return L("关键词命中时还能被捞回来")
+        case .archived: return L("只有他认真回忆时才可能翻到")
         }
     }
 }
@@ -185,11 +186,11 @@ enum MFMemoryTierText {
 enum MFMemoryText {
     static func categoryLabel(_ category: MemoryCategory) -> String {
         switch category {
-        case .fact: return "事实"
-        case .preference: return "偏好"
-        case .event: return "经历"
-        case .relationship: return "关系"
-        case .other: return "其他"
+        case .fact: return L("事实")
+        case .preference: return L("偏好")
+        case .event: return L("经历")
+        case .relationship: return L("关系")
+        case .other: return L("其他")
         }
     }
 }

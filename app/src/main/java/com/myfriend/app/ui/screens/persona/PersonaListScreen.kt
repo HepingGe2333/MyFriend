@@ -55,11 +55,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.domain.ExportFile
@@ -97,10 +100,15 @@ fun PersonaListScreen(
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openOutputStream(uri)?.use { it.write(file.content.toByteArray()) }
-                            ?: error("无法写入文件")
+                            ?: error(context.getString(R.string.persona_list_cannot_write_file))
                     }
                 }
-                snackbar.showSnackbar(result.fold({ "人格预设已导出" }, { "导出失败：${it.message}" }))
+                snackbar.showSnackbar(
+                    result.fold(
+                        { context.getString(R.string.persona_list_exported) },
+                        { context.getString(R.string.persona_list_export_failed_detail, it.message) }
+                    )
+                )
             }
         }
         pendingExport = null
@@ -111,11 +119,13 @@ fun PersonaListScreen(
                 val result = runCatching {
                     withContext(Dispatchers.IO) {
                         context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
-                            ?: error("无法读取文件")
+                            ?: error(context.getString(R.string.persona_list_cannot_read_file))
                     }
                 }
                 result.onSuccess { viewModel.import(it) }
-                    .onFailure { snackbar.showSnackbar("读取失败：${it.message}") }
+                    .onFailure {
+                        snackbar.showSnackbar(context.getString(R.string.persona_list_read_failed, it.message))
+                    }
             }
         }
     }
@@ -150,29 +160,33 @@ fun PersonaListScreen(
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.size(58.dp)
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "创建人格", modifier = Modifier.size(26.dp))
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = stringResource(R.string.persona_list_create_cd),
+                    modifier = Modifier.size(26.dp)
+                )
             }
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "人格",
-                subtitle = "每个人格拥有独立的提示词、记忆与上下文",
+                title = stringResource(R.string.persona_list_title),
+                subtitle = stringResource(R.string.persona_list_subtitle),
                 navigation = { BackNavigation(onBack) },
                 actions = {
                     CircleIconButton(
                         Icons.Outlined.Bookmarks,
-                        "预设库",
+                        stringResource(R.string.persona_list_presets_cd),
                         onClick = onOpenPresets
                     )
                     CircleIconButton(
                         Icons.Outlined.FileUpload,
-                        "导入人格",
+                        stringResource(R.string.persona_list_import_cd),
                         onClick = { importLauncher.launch(arrayOf("application/json", "text/plain")) }
                     )
                     CircleIconButton(
                         Icons.Outlined.FileDownload,
-                        "导出全部人格",
+                        stringResource(R.string.persona_list_export_all_cd),
                         onClick = { viewModel.exportAll() }
                     )
                 }
@@ -199,7 +213,7 @@ fun PersonaListScreen(
                                 modifier = Modifier.size(19.dp)
                             )
                             Text(
-                                "人格提示词会完整保存。每次对话都以 system 消息把完整人格注入，不需要单独的同步步骤。",
+                                stringResource(R.string.persona_list_banner),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -213,10 +227,13 @@ fun PersonaListScreen(
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             item {
-                                CategoryChip("全部", state.category == null) { viewModel.setCategory(null) }
+                                CategoryChip(
+                                    stringResource(R.string.persona_list_filter_all),
+                                    state.category == null
+                                ) { viewModel.setCategory(null) }
                             }
                             items(state.categories) { category ->
-                                CategoryChip(category, state.category == category) {
+                                CategoryChip(personaCategoryLabel(category), state.category == category) {
                                     viewModel.setCategory(if (state.category == category) null else category)
                                 }
                             }
@@ -229,8 +246,9 @@ fun PersonaListScreen(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.PersonOutline,
-                            title = "没有找到人格",
-                            description = if (state.personas.isEmpty()) "创建一个人格，写下它的性格与说话方式。" else "这个分类下还没有人格。",
+                            title = stringResource(R.string.persona_list_empty_title),
+                            description = if (state.personas.isEmpty()) stringResource(R.string.persona_list_empty_desc_new)
+                            else stringResource(R.string.persona_list_empty_desc_filtered),
                             modifier = Modifier.padding(top = 30.dp)
                         )
                     }
@@ -256,9 +274,9 @@ fun PersonaListScreen(
 
     personaToDelete?.let { persona ->
         ConfirmDialog(
-            title = "删除「${persona.name}」？",
-            message = "你们的那段会话、聊天记录、长期记忆与历史版本都会被永久删除。API 配置会被保留。",
-            confirmText = "删除",
+            title = stringResource(R.string.persona_list_delete_title, persona.name),
+            message = stringResource(R.string.persona_list_delete_message),
+            confirmText = stringResource(R.string.persona_list_delete_confirm),
             destructive = true,
             onConfirm = {
                 viewModel.delete(persona.id)
@@ -337,7 +355,7 @@ private fun PersonaCard(
                                 color = LocalAccentColor.current.copy(alpha = 0.13f)
                             ) {
                                 Text(
-                                    "默认",
+                                    stringResource(R.string.persona_list_default_badge),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = LocalAccentColor.current,
                                     modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
@@ -347,7 +365,7 @@ private fun PersonaCard(
                     }
                     Spacer(Modifier.height(3.dp))
                     Text(
-                        persona.description.ifBlank { "尚未填写简介" },
+                        persona.description.ifBlank { stringResource(R.string.persona_list_no_description) },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 2,
@@ -358,9 +376,16 @@ private fun PersonaCard(
                         horizontalArrangement = Arrangement.spacedBy(7.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        TextPill(persona.category.ifBlank { "未分类" })
+                        TextPill(
+                            persona.category
+                                .takeIf { it.isNotBlank() }
+                                ?.let { personaCategoryLabel(it) }
+                                ?: stringResource(R.string.persona_list_uncategorized)
+                        )
                         Text(
-                            text = config?.let { "${it.name} · ${it.model}" } ?: "未绑定 API",
+                            text = config?.let {
+                                stringResource(R.string.persona_list_api_bound_value, it.name, it.model)
+                            } ?: stringResource(R.string.persona_list_api_unbound),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (config == null) MaterialTheme.colorScheme.error.copy(alpha = 0.85f)
                             else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -374,23 +399,23 @@ private fun PersonaCard(
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(
                             Icons.Outlined.MoreVert,
-                            contentDescription = "更多操作",
+                            contentDescription = stringResource(R.string.persona_list_more_cd),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("编辑人格") }, onClick = {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.persona_list_menu_edit)) }, onClick = {
                             menuOpen = false
                             onOpen()
                         })
                         if (!persona.isDefault) {
-                            DropdownMenuItem(text = { Text("设为默认") }, onClick = {
+                            DropdownMenuItem(text = { Text(stringResource(R.string.persona_list_menu_set_default)) }, onClick = {
                                 menuOpen = false
                                 onSetDefault()
                             })
                         }
                         DropdownMenuItem(
-                            text = { Text("复制") },
+                            text = { Text(stringResource(R.string.persona_list_menu_duplicate)) },
                             leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) },
                             onClick = {
                                 menuOpen = false
@@ -398,7 +423,7 @@ private fun PersonaCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("保存为预设") },
+                            text = { Text(stringResource(R.string.persona_list_menu_save_preset)) },
                             leadingIcon = { Icon(Icons.Outlined.Bookmarks, null) },
                             onClick = {
                                 menuOpen = false
@@ -406,7 +431,7 @@ private fun PersonaCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("导出 JSON") },
+                            text = { Text(stringResource(R.string.persona_list_menu_export_json)) },
                             leadingIcon = { Icon(Icons.Outlined.FileDownload, null) },
                             onClick = {
                                 menuOpen = false
@@ -414,7 +439,7 @@ private fun PersonaCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.persona_list_menu_delete), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 menuOpen = false
@@ -432,13 +457,17 @@ private fun PersonaCard(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "${persona.prompt.length} 字符提示词",
+                    pluralStringResource(
+                        R.plurals.persona_list_prompt_chars,
+                        persona.prompt.length,
+                        persona.prompt.length
+                    ),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "版本 v${persona.version}",
+                    stringResource(R.string.persona_list_version, persona.version),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
                 )

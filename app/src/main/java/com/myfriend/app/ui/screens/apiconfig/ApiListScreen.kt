@@ -52,10 +52,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
@@ -93,14 +95,14 @@ fun ApiListScreen(
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.size(58.dp)
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "添加 API 配置", modifier = Modifier.size(26.dp))
+                Icon(Icons.Outlined.Add, contentDescription = stringResource(R.string.api_list_add_content_desc), modifier = Modifier.size(26.dp))
             }
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "API 配置",
-                subtitle = "可绑定任意 OpenAI 兼容服务",
+                title = stringResource(R.string.api_list_title),
+                subtitle = stringResource(R.string.api_list_subtitle),
                 navigation = { BackNavigation(onBack) }
             )
             LazyColumn(
@@ -121,10 +123,10 @@ fun ApiListScreen(
                         ) {
                             Icon(Icons.Outlined.Shield, contentDescription = null, tint = LocalAccentColor.current, modifier = Modifier.size(19.dp))
                             Column {
-                                Text("密钥留在本机", style = MaterialTheme.typography.labelLarge)
+                                Text(stringResource(R.string.api_list_security_title), style = MaterialTheme.typography.labelLarge)
                                 Spacer(Modifier.height(3.dp))
                                 Text(
-                                    "API Key 使用 Android Keystore 加密保存，不写入日志，也不会随预设导出。默认仅允许 HTTPS。",
+                                    stringResource(R.string.api_list_security_desc),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -137,8 +139,8 @@ fun ApiListScreen(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.SettingsEthernet,
-                            title = "还没有 API 配置",
-                            description = "添加 OpenAI、DeepSeek、OpenRouter 或任何兼容 Chat Completions 的服务。",
+                            title = stringResource(R.string.api_list_empty_title),
+                            description = stringResource(R.string.api_list_empty_desc),
                             modifier = Modifier.padding(top = 30.dp)
                         )
                     }
@@ -161,9 +163,9 @@ fun ApiListScreen(
 
     pendingDelete?.let { config ->
         ConfirmDialog(
-            title = "删除「${config.name}」？",
-            message = "使用该配置的会话会保留聊天记录，但需要重新选择 API 才能继续对话。API Key 将从本机移除。",
-            confirmText = "删除",
+            title = stringResource(R.string.api_delete_title, config.name),
+            message = stringResource(R.string.api_delete_message),
+            confirmText = stringResource(R.string.api_delete),
             destructive = true,
             onConfirm = {
                 viewModel.delete(config.id)
@@ -218,7 +220,7 @@ private fun ApiConfigCard(
                             modifier = Modifier.weight(1f, fill = false)
                         )
                         Spacer(Modifier.width(7.dp))
-                        TextPill(if (config.provider.name == "OPENAI") "OpenAI 兼容" else config.provider.name)
+                        TextPill(if (config.provider.name == "OPENAI") stringResource(R.string.api_provider_openai_compatible) else config.provider.name)
                     }
                     Spacer(Modifier.height(4.dp))
                     Text(
@@ -239,15 +241,15 @@ private fun ApiConfigCard(
                 }
                 Box {
                     IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Outlined.MoreVert, contentDescription = "更多", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Outlined.MoreVert, contentDescription = stringResource(R.string.api_more), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("编辑") }, onClick = {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.api_edit)) }, onClick = {
                             menuOpen = false
                             onEdit()
                         })
                         DropdownMenuItem(
-                            text = { Text("复制配置") },
+                            text = { Text(stringResource(R.string.api_duplicate)) },
                             leadingIcon = { Icon(Icons.Outlined.ContentCopy, null) },
                             onClick = {
                                 menuOpen = false
@@ -255,7 +257,7 @@ private fun ApiConfigCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.api_delete), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = { Icon(Icons.Outlined.DeleteOutline, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 menuOpen = false
@@ -274,7 +276,11 @@ private fun ApiConfigCard(
             ) {
                 Icon(Icons.Outlined.Lock, contentDescription = null, modifier = Modifier.size(13.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f))
                 Text(
-                    if (config.apiKeyCipher.isNullOrBlank()) "未设置密钥" else "密钥已加密保存",
+                    if (config.apiKeyCipher.isNullOrBlank()) {
+                        stringResource(R.string.api_key_not_set)
+                    } else {
+                        stringResource(R.string.api_key_stored)
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 4.dp)
@@ -284,7 +290,7 @@ private fun ApiConfigCard(
                     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 8.dp)) {
                         CircularProgressIndicator(Modifier.size(13.dp), strokeWidth = 1.6.dp, color = LocalAccentColor.current)
                         Spacer(Modifier.width(5.dp))
-                        Text("测试中", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(stringResource(R.string.api_testing), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 } else {
                     Row(
@@ -296,7 +302,7 @@ private fun ApiConfigCard(
                     ) {
                         Icon(Icons.Outlined.PlayArrow, contentDescription = null, modifier = Modifier.size(14.dp), tint = LocalAccentColor.current)
                         Spacer(Modifier.width(3.dp))
-                        Text("测试连接", style = MaterialTheme.typography.labelSmall, color = LocalAccentColor.current)
+                        Text(stringResource(R.string.api_test_connection), style = MaterialTheme.typography.labelSmall, color = LocalAccentColor.current)
                     }
                 }
             }

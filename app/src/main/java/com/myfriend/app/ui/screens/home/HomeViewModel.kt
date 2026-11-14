@@ -1,13 +1,16 @@
 package com.myfriend.app.ui.screens.home
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.data.repo.ChatRepository
 import com.myfriend.app.data.repo.PersonaRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -27,7 +30,8 @@ data class ContactItem(
     val persona: PersonaEntity,
     val session: ChatSessionEntity?
 ) {
-    val preview: String get() = session?.lastMessagePreview?.takeIf { it.isNotBlank() } ?: "还没有说过话"
+    /** 没有预览时给空串，界面自己用资源补一句「还没有说过话」。 */
+    val preview: String get() = session?.lastMessagePreview?.takeIf { it.isNotBlank() }.orEmpty()
     val time: Long get() = session?.lastMessageAt ?: session?.createdAt ?: persona.updatedAt
     val unread: Int get() = session?.unreadCount ?: 0
 }
@@ -53,7 +57,8 @@ sealed interface HomeEvent {
 class HomeViewModel @Inject constructor(
     private val chatRepository: ChatRepository,
     private val personaRepository: PersonaRepository,
-    private val settingsRepository: SettingsRepository
+    private val settingsRepository: SettingsRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val localMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
     private val switchingId = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
@@ -87,7 +92,7 @@ class HomeViewModel @Inject constructor(
                 chatRepository.markRead(session.id)
                 eventsChannel.send(HomeEvent.OpenChat(session.id))
             } catch (error: Exception) {
-                eventsChannel.send(HomeEvent.Message(error.message ?: "打不开这个联系人，请重试"))
+                eventsChannel.send(HomeEvent.Message(error.message ?: context.getString(R.string.home_open_failed)))
             } finally {
                 switchingId.value = null
             }
@@ -98,8 +103,8 @@ class HomeViewModel @Inject constructor(
     fun deleteContact(personaId: String) {
         viewModelScope.launch {
             runCatching { personaRepository.delete(personaId) }
-                .onSuccess { localMessage.value = "联系人已删除" }
-                .onFailure { localMessage.value = it.message ?: "删除失败" }
+                .onSuccess { localMessage.value = context.getString(R.string.home_deleted) }
+                .onFailure { localMessage.value = it.message ?: context.getString(R.string.home_delete_failed) }
         }
     }
 

@@ -59,12 +59,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.myfriend.app.R
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.ProactiveKind
 import com.myfriend.app.data.local.ProactiveRuleEntity
@@ -142,14 +144,18 @@ fun ProactiveScreen(
                 shape = RoundedCornerShape(20.dp),
                 modifier = Modifier.size(58.dp)
             ) {
-                Icon(Icons.Outlined.Alarm, contentDescription = "新建主动唤醒", modifier = Modifier.size(25.dp))
+                Icon(
+                    Icons.Outlined.Alarm,
+                    contentDescription = stringResource(R.string.proactive_fab_new),
+                    modifier = Modifier.size(25.dp)
+                )
             }
         }
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             AppHeader(
-                title = "主动唤醒",
-                subtitle = "他会按自己的节奏来找你",
+                title = stringResource(R.string.proactive_title),
+                subtitle = stringResource(R.string.proactive_subtitle),
                 navigation = { BackNavigation(onBack) }
             )
             LazyColumn(
@@ -174,7 +180,7 @@ fun ProactiveScreen(
                                 modifier = Modifier.size(19.dp)
                             )
                             Text(
-                                "他会按自己的节奏来找你；时间不是准点，是一段窗口。你也可以在聊天里说个大概时间，他会自己安排，不用你批准；不喜欢随时关掉。",
+                                stringResource(R.string.proactive_intro_body),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -203,7 +209,7 @@ fun ProactiveScreen(
                                 )
                                 Spacer(Modifier.width(10.dp))
                                 Text(
-                                    "还没有通知权限，到点消息只会留在会话里，点这里开启通知",
+                                    stringResource(R.string.proactive_permission_body),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
@@ -224,8 +230,8 @@ fun ProactiveScreen(
                     item {
                         EmptyState(
                             icon = Icons.Outlined.Schedule,
-                            title = "还没有主动唤醒规则",
-                            description = "设一个时间，或直接在聊天里说个大概时间，他会自己安排。",
+                            title = stringResource(R.string.proactive_empty_title),
+                            description = stringResource(R.string.proactive_empty_description),
                             modifier = Modifier.padding(top = 26.dp)
                         )
                     }
@@ -270,9 +276,10 @@ fun ProactiveScreen(
 
     ruleToDelete?.let { rule ->
         ConfirmDialog(
-            title = "删除这条规则？",
-            message = "${rule.note}\n删除后不再主动发消息，已产生的对话会保留。",
-            confirmText = "删除",
+            title = stringResource(R.string.proactive_delete_title),
+            message = stringResource(R.string.proactive_delete_message, rule.note),
+            confirmText = stringResource(R.string.proactive_delete_confirm),
+            dismissText = stringResource(R.string.proactive_cancel),
             destructive = true,
             onConfirm = {
                 viewModel.delete(rule.id)
@@ -296,8 +303,14 @@ private fun RuleCard(
     val accent = LocalAccentColor.current
     // 历史数据里 pending 的规则在新语义下也算「他已经安排好了」，页面不再等谁确认。
     val effectiveEnabled = rule.enabled || rule.pending
-    val sourceText = if (rule.source == ProactiveSource.AI) "他自己安排的" else "你设的"
-    val nextText = if (effectiveEnabled) "下次大概 ${formatClock(rule.nextTriggerAt)} 前后" else "现在关着"
+    val sourceText = stringResource(
+        if (rule.source == ProactiveSource.AI) R.string.proactive_source_agent else R.string.proactive_source_user
+    )
+    val nextText = if (effectiveEnabled) {
+        stringResource(R.string.proactive_next_trigger, formatClock(LocalContext.current, rule.nextTriggerAt))
+    } else {
+        stringResource(R.string.proactive_next_off)
+    }
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface,
@@ -328,13 +341,12 @@ private fun RuleCard(
                         fontWeight = FontWeight.SemiBold
                     )
                     Text(
-                        buildString {
-                            append(persona?.name ?: "人格")
-                            append(" · ")
-                            append(sourceText)
-                            append(" · ")
-                            append(nextText)
-                        },
+                        stringResource(
+                            R.string.proactive_rule_meta,
+                            persona?.name ?: stringResource(R.string.proactive_rule_persona_fallback),
+                            sourceText,
+                            nextText
+                        ),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -351,13 +363,13 @@ private fun RuleCard(
                     IconButton(onClick = { menuOpen = true }) {
                         Icon(
                             Icons.Outlined.MoreVert,
-                            contentDescription = "更多",
+                            contentDescription = stringResource(R.string.proactive_more),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         DropdownMenuItem(
-                            text = { Text("现在试一次") },
+                            text = { Text(stringResource(R.string.proactive_try_now)) },
                             leadingIcon = { Icon(Icons.Outlined.NotificationsActive, contentDescription = null) },
                             onClick = {
                                 menuOpen = false
@@ -365,7 +377,7 @@ private fun RuleCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("删除", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.proactive_menu_delete), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = {
                                 Icon(
                                     Icons.Outlined.DeleteOutline,
@@ -392,7 +404,7 @@ private fun RuleCard(
             if (rule.source == ProactiveSource.AI) {
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "你不喜欢可以随时关掉",
+                    stringResource(R.string.proactive_agent_hint),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
                 )
@@ -400,7 +412,7 @@ private fun RuleCard(
             rule.lastError?.let { error ->
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "上次没发出去：$error",
+                    stringResource(R.string.proactive_last_error, error),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error
                 )
@@ -430,18 +442,18 @@ private fun AddRuleDialog(
         onDismissRequest = onDismiss,
         shape = RoundedCornerShape(26.dp),
         containerColor = MaterialTheme.colorScheme.surface,
-        title = { Text("新建主动唤醒") },
+        title = { Text(stringResource(R.string.proactive_dialog_title_new)) },
         text = {
             Column {
                 if (personas.isEmpty()) {
                     Text(
-                        "还没有人格，先创建一个人格再来设置。",
+                        stringResource(R.string.proactive_no_persona),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     return@AlertDialog
                 }
-                SectionLabel("人格")
+                SectionLabel(stringResource(R.string.proactive_section_persona))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(personas) { persona ->
                         TextPill(
@@ -451,12 +463,18 @@ private fun AddRuleDialog(
                         )
                     }
                 }
-                SectionLabel("触发方式")
+                SectionLabel(stringResource(R.string.proactive_section_trigger))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextPill("每天固定时刻", selected = kind == ProactiveKind.DAILY) {
+                    TextPill(
+                        text = stringResource(R.string.proactive_kind_daily),
+                        selected = kind == ProactiveKind.DAILY
+                    ) {
                         kind = ProactiveKind.DAILY
                     }
-                    TextPill("每隔几小时", selected = kind == ProactiveKind.INTERVAL) {
+                    TextPill(
+                        text = stringResource(R.string.proactive_kind_interval),
+                        selected = kind == ProactiveKind.INTERVAL
+                    ) {
                         kind = ProactiveKind.INTERVAL
                     }
                 }
@@ -465,16 +483,18 @@ private fun AddRuleDialog(
                     StyledOutlinedField(
                         value = timeText,
                         onValueChange = { timeText = it.take(5) },
-                        label = "时间（24 小时制，如 22:30）",
+                        label = stringResource(R.string.proactive_field_time_label),
                         singleLine = true,
                         isError = minutes == null,
-                        supportingText = if (minutes == null) "请输入 HH:mm 格式的时间" else null
+                        supportingText = if (minutes == null) {
+                            stringResource(R.string.proactive_field_time_error)
+                        } else null
                     )
                 } else {
                     StyledOutlinedField(
                         value = hoursText,
                         onValueChange = { hoursText = it.filter { ch -> ch.isDigit() }.take(2) },
-                        label = "间隔小时数（1-24）",
+                        label = stringResource(R.string.proactive_field_interval_label),
                         singleLine = true,
                         isError = hours == null
                     )
@@ -483,23 +503,23 @@ private fun AddRuleDialog(
                 StyledOutlinedField(
                     value = note,
                     onValueChange = { note = it.take(60) },
-                    label = "备注（可留空）",
+                    label = stringResource(R.string.proactive_field_note_label),
                     singleLine = true,
-                    placeholder = "例如：睡前问候"
+                    placeholder = stringResource(R.string.proactive_field_note_placeholder)
                 )
                 Spacer(Modifier.height(10.dp))
                 StyledOutlinedField(
                     value = hint,
                     onValueChange = { hint = it.take(300) },
-                    label = "开口时的指引（可留空）",
+                    label = stringResource(R.string.proactive_field_hint_label),
                     singleLine = false,
                     minLines = 2,
                     maxLines = 4,
-                    placeholder = "例如：像往常一样轻声问对方今天过得怎么样"
+                    placeholder = stringResource(R.string.proactive_field_hint_placeholder)
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "到点消息由人格自己写，指引只影响它的语气与角度。",
+                    stringResource(R.string.proactive_dialog_footnote),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -518,9 +538,9 @@ private fun AddRuleDialog(
                         hint
                     )
                 }
-            ) { Text("创建") }
+            ) { Text(stringResource(R.string.proactive_create)) }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } }
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.proactive_cancel)) } }
     )
 }
 
@@ -539,7 +559,7 @@ private fun MoodCard(mood: MoodState, presence: Presence) {
     ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
             Text(
-                "他此刻",
+                stringResource(R.string.proactive_mood_title),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -559,7 +579,7 @@ private fun MoodCard(mood: MoodState, presence: Presence) {
             if (mood.intensity >= 4 && mood.reason.isBlank()) {
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "看得出来有点浓，但他没细说为什么。",
+                    stringResource(R.string.proactive_mood_unsaid),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                 )
@@ -572,7 +592,13 @@ private fun MoodCard(mood: MoodState, presence: Presence) {
 private fun AgentIntentsCard(state: ProactiveUiState) {
     val zone = java.time.ZoneId.systemDefault()
     val fmt = java.time.format.DateTimeFormatter.ofPattern("HH:mm")
-    val dayFmt = java.time.format.DateTimeFormatter.ofPattern("M月d日 HH:mm")
+    // 日期部分按当前语言取系统格式，避免把「月/日」写死在代码里。
+    val locale = LocalContext.current.resources.configuration.locales[0]
+    val dayFmt = remember(locale) {
+        java.time.format.DateTimeFormatter.ofPattern(
+            android.text.format.DateFormat.getBestDateTimePattern(locale, "Mdjmm")
+        )
+    }
     Surface(
         shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surfaceContainerLow.copy(alpha = 0.8f),
@@ -589,11 +615,11 @@ private fun AgentIntentsCard(state: ProactiveUiState) {
                     modifier = Modifier.size(17.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("他给自己留的念头", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.proactive_intents_title), style = MaterialTheme.typography.titleSmall)
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "不是准点，是一段「差不多那会儿」。窗口过了就算了。",
+                stringResource(R.string.proactive_intents_note),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -605,7 +631,7 @@ private fun AgentIntentsCard(state: ProactiveUiState) {
                 val window = if (sameDay) {
                     "${start.format(fmt)}–${end.format(fmt)}"
                 } else {
-                    "${start.format(dayFmt)} 前后"
+                    stringResource(R.string.proactive_intent_window_around, start.format(dayFmt))
                 }
                 Text(
                     window,
@@ -613,7 +639,7 @@ private fun AgentIntentsCard(state: ProactiveUiState) {
                     color = LocalAccentColor.current
                 )
                 Text(
-                    intent.note.ifBlank { "想找他说句话" },
+                    intent.note.ifBlank { stringResource(R.string.proactive_intent_default_note) },
                     style = MaterialTheme.typography.bodyMedium
                 )
                 if (intent.hint.isNotBlank()) {
@@ -651,7 +677,7 @@ private fun AgentThoughtsCard(thoughts: List<com.myfriend.app.data.local.AgentTi
                     modifier = Modifier.size(16.dp)
                 )
                 Spacer(Modifier.width(8.dp))
-                Text("他最近在想什么", style = MaterialTheme.typography.titleSmall)
+                Text(stringResource(R.string.proactive_thoughts_title), style = MaterialTheme.typography.titleSmall)
             }
             thoughts.take(5).forEachIndexed { index, tick ->
                 if (index > 0) {
@@ -672,13 +698,13 @@ private fun AgentThoughtsCard(thoughts: List<com.myfriend.app.data.local.AgentTi
                     Spacer(Modifier.width(8.dp))
                     Column {
                         Text(
-                            tick.thought.ifBlank { "（没留下想法）" },
+                            tick.thought.ifBlank { stringResource(R.string.proactive_thought_empty) },
                             style = MaterialTheme.typography.bodySmall,
                             maxLines = 3,
                             overflow = TextOverflow.Ellipsis
                         )
                         Text(
-                            tick.outcome.ifBlank { "什么都没做" },
+                            tick.outcome.ifBlank { stringResource(R.string.proactive_thought_outcome_empty) },
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 2,

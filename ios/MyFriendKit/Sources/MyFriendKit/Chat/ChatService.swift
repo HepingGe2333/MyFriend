@@ -164,6 +164,9 @@ public final class ChatService {
     private let personaText: ((PersonaEntity) -> String)?
     /// 排查用日志（App 层写进 Documents/debug.log）。nil = 不记。
     private let log: ((String) -> Void)?
+    /// 「## 语言」小节的完整文本（App 层按界面语言从资源里取）。
+    /// Kit 不自己读 `Locale` 与资源：提示词是产品，模板的决定权在装配层；nil = 不加这一节。
+    private let languageDirective: (() -> String?)?
     /// 附件文件（沙盒里的图片）：把历史里最近几张图读成 data URL 交给多模态报文。
     /// 默认用 App 的 `Application Support/attachments`；单测可以换成临时目录。
     private let media: MediaStorage
@@ -186,6 +189,7 @@ public final class ChatService {
         proactive: ProactiveRuleWriting? = nil,
         personaText: ((PersonaEntity) -> String)? = nil,
         log: ((String) -> Void)? = nil,
+        languageDirective: (() -> String?)? = nil,
         media: MediaStorage = .shared,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
@@ -202,6 +206,7 @@ public final class ChatService {
         self.proactive = proactive
         self.personaText = personaText
         self.log = log
+        self.languageDirective = languageDirective
         self.media = media
         self.now = now
     }
@@ -495,7 +500,9 @@ public final class ChatService {
                 presenceBlock: PromptBuilder.presenceBlock(detail: presenceDetail?(persona.id)),
                 moodNudgeBlock: nudge ?? "",
                 proactiveCapability: ProactiveCapabilityPrompt.text,
-                toolsCapability: ToolCatalog.capabilityPrompt(webEnabled: config.webToolsEnabled)
+                toolsCapability: ToolCatalog.capabilityPrompt(webEnabled: config.webToolsEnabled),
+                // 「用对方的语言回答」：整段指令由 App 层按界面语言给（系统语言 / per-app language）。
+                languageDirective: languageDirective?() ?? ""
             ))
 
             var conversation = PromptBuilder.wireMessages(system: system, history: history)
@@ -536,19 +543,19 @@ public final class ChatService {
                 if let deferred = calls.first(where: {
                     $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.deferReply
                 }) {
-                    let minutes = deferred.intArgument("minutes", default: ChatRhythmService.defaultDeferMinutes)
-                    let reason = String(
-                        (deferred.argument("reason") ?? "")
-                            .trimmingCharacters(in: .whitespacesAndNewlines)
-                            .prefix(ChatRhythmService.deferReasonMax)
+                    // 同一个 now 同时用于「计划」与「落库」：两次取时钟可能差几毫秒，
+                    // 会让 earliestAt 与 agent_intents.createdAt 对不上。
+                    let deferAt = now()
+                    let plan = DeferReply.plan(
+                        minutes: deferred.intArgument("minutes", default: DeferReply.defaultMinutes),
+                        reason: deferred.argument("reason"),
+                        now: deferAt
                     )
-                    let clamped = min(max(minutes, ChatRhythmService.deferMinutesRange.lowerBound),
-                                      ChatRhythmService.deferMinutesRange.upperBound)
                     rhythm?.handleDeferredReply(
                         personaId: persona.id, sessionId: sessionId,
-                        minutes: clamped, reason: reason, at: now()
+                        minutes: plan.minutes, reason: plan.reason, at: deferAt
                     )
-                    continuation.yield(.noReply(.deferred(minutes: clamped, reason: reason)))
+                    continuation.yield(.noReply(.deferred(minutes: plan.minutes, reason: plan.reason)))
                     continuation.finish()
                     return
                 }

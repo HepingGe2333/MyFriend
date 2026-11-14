@@ -106,22 +106,22 @@ public enum NetworkGuard {
     public static func parseHttpURL(_ raw: String, allowInsecureHttp: Bool) throws -> URL {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty {
-            throw ApiException(statusCode: nil, message: "地址不能为空")
+            throw ApiException(statusCode: nil, message: String(localized: "地址不能为空"))
         }
         guard let url = URL(string: value),
               let scheme = url.scheme?.lowercased(),
               let host = url.host, !host.isEmpty else {
-            throw ApiException(statusCode: nil, message: "地址格式不正确，请填写完整的 http(s) 地址")
+            throw ApiException(statusCode: nil, message: String(localized: "地址格式不正确，请填写完整的 http(s) 地址"))
         }
         if scheme == "https" { return url }
         if scheme == "http" && allowInsecureHttp { return url }
         if scheme == "http" {
             throw ApiException(
                 statusCode: nil,
-                message: "出于安全要求，仅允许 HTTPS。若使用本地服务，请在 API 配置中显式开启“允许不安全 HTTP”。"
+                message: String(localized: "出于安全要求，仅允许 HTTPS。若使用本地服务，请在 API 配置中显式开启“允许不安全 HTTP”。")
             )
         }
-        throw ApiException(statusCode: nil, message: "仅支持 HTTP(S) 地址")
+        throw ApiException(statusCode: nil, message: String(localized: "仅支持 HTTP(S) 地址"))
     }
 
     /// 去掉尾部斜杠、以及用户误粘进来的 `/chat/completions`、`/models`。
@@ -141,7 +141,7 @@ public enum NetworkGuard {
         while suffix.hasPrefix("/") { suffix.removeFirst() }
         let root = base.hasSuffix("/v1") ? base : "\(base)/v1"
         guard let url = URL(string: "\(root)/\(suffix)") else {
-            throw ApiException(statusCode: nil, message: "API 地址无效，请检查 Base URL")
+            throw ApiException(statusCode: nil, message: String(localized: "API 地址无效，请检查 Base URL"))
         }
         return url
     }
@@ -303,7 +303,7 @@ public final class OpenAICompatibleClient: ChatCompleting {
                 throw apiException(status: status, body: body)
             }
             guard let root = Self.jsonObject(body) else {
-                throw ApiException(statusCode: status, message: "服务返回了无法解析的模型列表")
+                throw ApiException(statusCode: status, message: String(localized: "服务返回了无法解析的模型列表"))
             }
             let entries = (root["data"] as? [[String: Any]]) ?? (root["models"] as? [[String: Any]]) ?? []
             var models: [String] = []
@@ -409,7 +409,7 @@ public final class OpenAICompatibleClient: ChatCompleting {
                     if payload.text.isEmpty {
                         throw ApiException(
                             statusCode: nil,
-                            message: "模型没有返回任何文字，请检查模型名称或服务配置"
+                            message: String(localized: "模型没有返回任何文字，请检查模型名称或服务配置")
                         )
                     }
                     continuation.yield(payload.text)
@@ -468,7 +468,7 @@ public final class OpenAICompatibleClient: ChatCompleting {
                     if !emittedThisAttempt {
                         throw ApiException(
                             statusCode: nil,
-                            message: "模型没有返回任何文字，请检查模型名称或服务配置"
+                            message: String(localized: "模型没有返回任何文字，请检查模型名称或服务配置")
                         )
                     }
                 }
@@ -557,12 +557,12 @@ public final class OpenAICompatibleClient: ChatCompleting {
         case .chat:
             return ApiException(
                 statusCode: nil,
-                message: "他手上还有别的事没忙完，这次没顾上回你，过一会儿再发一条试试"
+                message: String(localized: "他手上还有别的事没忙完，这次没顾上回你，过一会儿再发一条试试")
             )
         case .background:
             return ApiException(
                 statusCode: nil,
-                message: "他手上一时腾不出空，这件事这次先不做"
+                message: String(localized: "他手上一时腾不出空，这件事这次先不做")
             )
         }
     }
@@ -692,7 +692,7 @@ public final class OpenAICompatibleClient: ChatCompleting {
         if let error = root["error"] {
             throw ApiException(
                 statusCode: status,
-                message: Self.extractErrorMessage(error: error, fallback: "流式响应返回错误"),
+                message: Self.extractErrorMessage(error: error, fallback: String(localized: "流式响应返回错误")),
                 detail: String(Self.renderJSON(error).prefix(500))
             )
         }
@@ -722,14 +722,14 @@ public final class OpenAICompatibleClient: ChatCompleting {
         guard let root = Self.jsonObject(raw) else {
             throw ApiException(
                 statusCode: status,
-                message: "服务返回了无法识别的回复内容",
+                message: String(localized: "服务返回了无法识别的回复内容"),
                 detail: String(raw.prefix(300))
             )
         }
         if let error = root["error"] {
             throw ApiException(
                 statusCode: nil,
-                message: Self.extractErrorMessage(error: error, fallback: "服务返回错误"),
+                message: Self.extractErrorMessage(error: error, fallback: String(localized: "服务返回错误")),
                 detail: String(Self.renderJSON(error).prefix(500))
             )
         }
@@ -737,14 +737,14 @@ public final class OpenAICompatibleClient: ChatCompleting {
         guard let choices = root["choices"] as? [[String: Any]],
               let choice = choices.first else {
             throw ApiException(
-                statusCode: status, message: "服务返回了空回复", detail: String(raw.prefix(300))
+                statusCode: status, message: String(localized: "服务返回了空回复"), detail: String(raw.prefix(300))
             )
         }
         let text = (choice["message"] as? [String: Any])?["content"] as? String
             ?? choice["text"] as? String
         guard let text else {
             throw ApiException(
-                statusCode: status, message: "服务返回了空回复", detail: String(raw.prefix(300))
+                statusCode: status, message: String(localized: "服务返回了空回复"), detail: String(raw.prefix(300))
             )
         }
         return CompletionPayload(text: text, usage: usage)
@@ -756,20 +756,20 @@ public final class OpenAICompatibleClient: ChatCompleting {
     func apiException(status: Int, body: String) -> ApiException {
         let friendly: String
         switch status {
-        case 400: friendly = "请求被服务拒绝（400），请检查模型名称与推理参数"
-        case 401: friendly = "API Key 无效或未授权（401）"
-        case 403: friendly = "没有访问该模型的权限（403）"
-        case 404: friendly = "接口或模型不存在（404），请检查 Base URL 与模型 ID"
-        case 408: friendly = "服务请求超时（408）"
-        case 413: friendly = "请求内容过长（413），请缩短上下文或输出长度"
-        case 429: friendly = "请求过于频繁或额度不足（429）"
-        case 500...599: friendly = "服务端暂时不可用（\(status)）"
-        default: friendly = "请求失败（HTTP \(status)）"
+        case 400: friendly = String(localized: "请求被服务拒绝（400），请检查模型名称与推理参数")
+        case 401: friendly = String(localized: "API Key 无效或未授权（401）")
+        case 403: friendly = String(localized: "没有访问该模型的权限（403）")
+        case 404: friendly = String(localized: "接口或模型不存在（404），请检查 Base URL 与模型 ID")
+        case 408: friendly = String(localized: "服务请求超时（408）")
+        case 413: friendly = String(localized: "请求内容过长（413），请缩短上下文或输出长度")
+        case 429: friendly = String(localized: "请求过于频繁或额度不足（429）")
+        case 500...599: friendly = String(format: String(localized: "服务端暂时不可用（%d）"), status)
+        default: friendly = String(format: String(localized: "请求失败（HTTP %d）"), status)
         }
         let detail = Self.extractErrorMessage(bodyString: body, fallback: "")
         return ApiException(
             statusCode: status,
-            message: detail.isEmpty ? friendly : "\(friendly)：\(detail)",
+            message: detail.isEmpty ? friendly : String(format: String(localized: "%@：%@"), friendly, detail),
             detail: String(body.prefix(1200))
         )
     }
@@ -791,19 +791,19 @@ public final class OpenAICompatibleClient: ChatCompleting {
             case .timedOut:
                 return ApiException(statusCode: nil, message: timedOutMessage)
             case .cannotFindHost, .dnsLookupFailed:
-                return ApiException(statusCode: nil, message: "无法解析服务器地址，请检查网络连接")
+                return ApiException(statusCode: nil, message: String(localized: "无法解析服务器地址，请检查网络连接"))
             case .notConnectedToInternet, .networkConnectionLost,
                  .cannotConnectToHost, .secureConnectionFailed:
                 let reason = urlError.localizedDescription
                 return ApiException(
                     statusCode: nil,
-                    message: "网络连接中断：\(reason.isEmpty ? "请检查网络" : reason)"
+                    message: String(format: String(localized: "网络连接中断：%@"), reason.isEmpty ? String(localized: "请检查网络") : reason)
                 )
             default:
                 let reason = urlError.localizedDescription
                 return ApiException(
                     statusCode: nil,
-                    message: "网络连接中断：\(reason.isEmpty ? "请检查网络" : reason)"
+                    message: String(format: String(localized: "网络连接中断：%@"), reason.isEmpty ? String(localized: "请检查网络") : reason)
                 )
             }
         default:
@@ -824,8 +824,8 @@ public final class OpenAICompatibleClient: ChatCompleting {
     }
 
     /// 流式里超时读作「连接超时」，后台一次性调用读作「请求超时」——与 Android 两条路径的文案一致。
-    var timeOutMessage: String { "连接超时，请检查网络或服务地址" }
-    var completeTimeOutMessage: String { "请求超时，请检查网络或服务响应时间" }
+    var timeOutMessage: String { String(localized: "连接超时，请检查网络或服务地址") }
+    var completeTimeOutMessage: String { String(localized: "请求超时，请检查网络或服务响应时间") }
 
     // MARK: - 小工具
 

@@ -43,8 +43,8 @@ public struct MoodState: Equatable {
 
     /// 给界面用的一句：「雀跃（4/5）· 因为刚聊到想去的地方」
     public func display() -> String {
-        if isEmpty() { return MoodLexicon.BASELINE }
-        var text = "\(label)（\(intensity)/5）"
+        if isEmpty() { return MoodLexicon.displayLabel(MoodLexicon.BASELINE) }
+        var text = "\(MoodLexicon.displayLabel(label))（\(intensity)/5）"
         if !reason.trimmed.isEmpty { text += " · \(reason)" }
         return text
     }
@@ -101,6 +101,34 @@ public enum MoodLexicon {
     public static func classify(_ label: String) -> MoodWord {
         let key = normalize(label)
         return BY_LABEL[key] ?? MoodWord(key, 0, 0)
+    }
+
+    /// 界面显示用的词：已知词表翻成当前界面语言，模型自己造的未知词原样显示。
+    ///
+    /// 词表本身保持中文（它同时是**存库的数据**与**提示词里的词**，不能改）；
+    /// 只有「给人看」的这一处做映射。未知词（比如模型临时写的「有点想你」）不硬翻，
+    /// 原样显示——那属于人格数据，不在文案范围里。
+    public static func displayLabel(_ label: String) -> String {
+        switch normalize(label) {
+        case "平静": return String(localized: "平静")
+        case "放松": return String(localized: "放松")
+        case "温柔": return String(localized: "温柔")
+        case "雀跃": return String(localized: "雀跃")
+        case "开心": return String(localized: "开心")
+        case "兴奋": return String(localized: "兴奋")
+        case "期待": return String(localized: "期待")
+        case "想念": return String(localized: "想念")
+        case "有点累": return String(localized: "有点累")
+        case "疲惫": return String(localized: "疲惫")
+        case "犯困": return String(localized: "犯困")
+        case "低落": return String(localized: "低落")
+        case "难过": return String(localized: "难过")
+        case "心烦": return String(localized: "心烦")
+        case "不安": return String(localized: "不安")
+        case "有点委屈": return String(localized: "有点委屈")
+        case "愧疚": return String(localized: "愧疚")
+        default: return label
+        }
     }
 
     /// 去掉空白与标点，限制长度；空串回落到基准心情。

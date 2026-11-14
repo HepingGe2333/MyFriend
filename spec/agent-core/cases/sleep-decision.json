@@ -1,0 +1,367 @@
+{
+  "contract": "agent-core/sleep-decision",
+  "version": "0.10.0",
+  "title": "睡眠 / 免打扰 / 唤醒阈值判定",
+  "authority": "android",
+  "authorityNote": "规格见 docs/ROADMAP-1.9.md §六；两端不一致时以 Android SleepPolicy 的实现为准（免打扰不留已读这一条以规格为准）。",
+  "kotlin": {
+    "file": "app/src/main/java/com/myfriend/app/domain/SleepPolicy.kt",
+    "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake，app/src/main/java/com/myfriend/app/domain/Mood.kt）"
+  },
+  "swift": {
+    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/SleepSchedule.swift",
+    "symbol": "SleepGate.evaluate（心情恢复：SleepGate.moodAfterWaking）"
+  },
+  "inputSpec": {
+    "sleepEnabled": "人格是否主动睡觉；false = 任何时间都回",
+    "sleepMinutes": "几点睡（当天第几分钟，可空）",
+    "wakeMinutes": "几点醒（当天第几分钟，可空）",
+    "nowMinutes": "现在（当天第几分钟，会先取模 1440）",
+    "dndOnSleep": "睡着时是否免打扰",
+    "userMessagesInWindow": "最近 30 分钟内用户发了几条（含这一条）",
+    "wakeThreshold": "被叫醒需要的连续消息数（1–20）",
+    "mood": "可选：被叫醒前的心情 {label, intensity}"
+  },
+  "cases": [
+    {
+      "name": "sleep-disabled-any-hour-replies",
+      "why": "不睡觉的人任何时间都会回（§6.1）",
+      "input": {
+        "sleepEnabled": false,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 180,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": false,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": true,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "default-window-2330-asleep",
+      "why": "没设作息时默认 23:30–08:00",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 1410,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 1,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "wake-boundary-0800-is-awake",
+      "why": "醒点本身不算睡着（是半开区间）",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": 1410,
+        "wakeMinutes": 480,
+        "nowMinutes": 480,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": false,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": true,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "sleep-boundary-2330-is-asleep",
+      "why": "睡点本身算睡着",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": 1410,
+        "wakeMinutes": 480,
+        "nowMinutes": 1410,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "cross-midnight-0659-asleep",
+      "why": "跨午夜窗口（22:00–07:00）在 06:59 仍是睡着",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": 1320,
+        "wakeMinutes": 420,
+        "nowMinutes": 419,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "cross-midnight-0700-awake",
+      "why": "跨午夜窗口在 07:00 醒",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": 1320,
+        "wakeMinutes": 420,
+        "nowMinutes": 420,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 99,
+        "wakeThreshold": 1
+      },
+      "expect": {
+        "asleep": false,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": true,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "dnd-never-wakes-and-never-marks-read",
+      "why": "免打扰：不回、不唤醒、也不留已读（§6.2）",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": true,
+        "userMessagesInWindow": 99,
+        "wakeThreshold": 1,
+        "mood": {
+          "label": "低落",
+          "intensity": 4
+        }
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": true,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": false
+      }
+    },
+    {
+      "name": "below-threshold-marks-read",
+      "why": "没开免打扰、差一条 → 不回但已读",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 5,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "at-threshold-wakes-and-negative-mood-resets",
+      "why": "到阈值唤醒；负面心情改回「平静」、强度仍按 -1（§6.2）",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 6,
+        "wakeThreshold": 6,
+        "mood": {
+          "label": "低落",
+          "intensity": 4
+        }
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": true,
+        "shouldReply": true,
+        "marksRead": true,
+        "moodAfter": {
+          "label": "平静",
+          "intensity": 3
+        }
+      }
+    },
+    {
+      "name": "above-threshold-positive-mood-minus-one",
+      "why": "非负面心情只把强度压一档",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 10,
+        "wakeThreshold": 6,
+        "mood": {
+          "label": "雀跃",
+          "intensity": 4
+        }
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": true,
+        "shouldReply": true,
+        "marksRead": true,
+        "moodAfter": {
+          "label": "雀跃",
+          "intensity": 3
+        }
+      }
+    },
+    {
+      "name": "threshold-clamps-low",
+      "why": "阈值 0 先夹到 1，一条就醒",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 1,
+        "wakeThreshold": 0
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": true,
+        "shouldReply": true,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "threshold-clamps-high",
+      "why": "阈值 99 先夹到 20，19 条还不醒",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 120,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 19,
+        "wakeThreshold": 99
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "same-sleep-and-wake-falls-back-to-default",
+      "why": "睡醒同一个点 = 没排作息，退回 23:30–08:00（不是全天睡/永远醒）",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": 720,
+        "wakeMinutes": 720,
+        "nowMinutes": 180,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "minute-of-day-wraps",
+      "why": "now 传 1500（次日 01:00）也要先取模",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 1500,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "negative-sleep-minutes-wrap",
+      "why": "负分钟数按 +1440 归一化（-30 = 23:30）",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": -30,
+        "wakeMinutes": 480,
+        "nowMinutes": 1435,
+        "dndOnSleep": false,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": true,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": false,
+        "marksRead": true
+      }
+    },
+    {
+      "name": "dnd-while-awake-has-no-effect",
+      "why": "dnd 只在睡着时生效",
+      "input": {
+        "sleepEnabled": true,
+        "sleepMinutes": null,
+        "wakeMinutes": null,
+        "nowMinutes": 720,
+        "dndOnSleep": true,
+        "userMessagesInWindow": 0,
+        "wakeThreshold": 6
+      },
+      "expect": {
+        "asleep": false,
+        "dnd": false,
+        "woken": false,
+        "shouldReply": true,
+        "marksRead": true
+      }
+    }
+  ]
+}

@@ -150,20 +150,20 @@ public enum PresenceRules {
     /// 让调用方干脆别写这一句；未来的时间（时钟回拨）当作「刚刚」，不抛异常。
     public static func relativeTime(ms: Int64, now: Int64) -> String {
         if ms <= 0 { return "" }
-        if now <= ms { return "刚刚" }
+        if now <= ms { return String(localized: "刚刚") }
         let delta = now - ms
         let minutes = delta / 60_000
-        if minutes < 1 { return "刚刚" }
-        if minutes < 60 { return "\(minutes) 分钟前" }
+        if minutes < 1 { return String(localized: "刚刚") }
+        if minutes < 60 { return String(format: String(localized: "%d 分钟前"), minutes) }
         let hours = delta / 3_600_000
-        if hours < 24 { return "\(hours) 小时前" }
+        if hours < 24 { return String(format: String(localized: "%d 小时前"), hours) }
         let days = delta / 86_400_000
-        if days <= 1 { return "昨天" }
-        if days < 7 { return "\(days) 天前" }
-        if days < 14 { return "上周" }
-        if days < 30 { return "\(days / 7) 周前" }
-        if days < 365 { return "\(days / 30) 个月前" }
-        return "很久以前"
+        if days <= 1 { return String(localized: "昨天") }
+        if days < 7 { return String(format: String(localized: "%d 天前"), days) }
+        if days < 14 { return String(localized: "上周") }
+        if days < 30 { return String(format: String(localized: "%d 周前"), days / 7) }
+        if days < 365 { return String(format: String(localized: "%d 个月前"), days / 30) }
+        return String(localized: "很久以前")
     }
 }
 
@@ -188,8 +188,8 @@ public enum PresenceDeriver {
     /// 什么都没做、也没有任何记录时的状态：坐着发呆。最不冒犯的一种猜测。
     public static let IDLE_FALLBACK = Presence(
         kind: .idle,
-        text: "在发呆",
-        detail: "没什么特别的事，他就坐着发发呆。"
+        text: String(localized: "在发呆"),
+        detail: String(localized: "没什么特别的事，他就坐着发发呆。")
     )
 
     public static func derive(_ input: PresenceInput, now: Int64) -> Presence {
@@ -204,49 +204,49 @@ public enum PresenceDeriver {
         let hour = min(Swift.max(input.hourOfDay, 0), 23)
 
         if input.asleepNow {
-            return presence(kind: .asleep, text: "睡着了",
-                            detail: "他把这段时间设成了休息，消息会留着，醒了再看。",
+            return presence(kind: .asleep, text: String(localized: "睡着了"),
+                            detail: String(localized: "他把这段时间设成了休息，消息会留着，醒了再看。"),
                             sinceMinutes: nil, now: now)
         }
         if let sinceWake, sinceWake <= PresenceRules.JUST_WOKE_MINUTES {
             let detail = (5...10).contains(hour)
-                ? "他一早刚起来，还没完全清醒。"
-                : "他刚睡醒，人还有点懵。"
-            return presence(kind: .justWoke, text: "刚醒", detail: detail,
+                ? String(localized: "他一早刚起来，还没完全清醒。")
+                : String(localized: "他刚睡醒，人还有点懵。")
+            return presence(kind: .justWoke, text: String(localized: "刚醒"), detail: detail,
                             sinceMinutes: sinceWake, now: now)
         }
         if speaksRecently(sinceOwnMessage: sinceOwnMessage, sinceMessage: sinceMessage) {
             let detail = (sinceOwnMessage != nil && sinceOwnMessage! <= PresenceRules.WRITING_MINUTES)
-                ? "他刚说完一句，还在那儿。"
-                : "对方刚说了话，他大概正在写回来。"
-            return presence(kind: .writing, text: "在写东西", detail: detail,
+                ? String(localized: "他刚说完一句，还在那儿。")
+                : String(localized: "对方刚说了话，他大概正在写回来。")
+            return presence(kind: .writing, text: String(localized: "在写东西"), detail: detail,
                             sinceMinutes: [sinceOwnMessage, sinceMessage].compactMap { $0 }.min(),
                             now: now)
         }
         if let sinceBrowse, sinceBrowse <= PresenceRules.BROWSING_MINUTES {
-            return presence(kind: .browsing, text: "在翻东西",
-                            detail: "他正自己翻着些东西，看到有意思的才可能跟你说。",
+            return presence(kind: .browsing, text: String(localized: "在翻东西"),
+                            detail: String(localized: "他正自己翻着些东西，看到有意思的才可能跟你说。"),
                             sinceMinutes: sinceBrowse, now: now)
         }
         if let sinceTick, sinceTick <= PresenceRules.THINKING_MINUTES {
-            return presence(kind: .thinking, text: "在想事情",
-                            detail: "他刚一个人想了一阵，没急着开口。",
+            return presence(kind: .thinking, text: String(localized: "在想事情"),
+                            detail: String(localized: "他刚一个人想了一阵，没急着开口。"),
                             sinceMinutes: sinceTick, now: now)
         }
         if input.hasPendingIntentSoon {
-            return presence(kind: .waiting, text: "过一会儿想找你",
-                            detail: "他心里记着一件事，在等一个合适的时机开口。",
+            return presence(kind: .waiting, text: String(localized: "过一会儿想找你"),
+                            detail: String(localized: "他心里记着一件事，在等一个合适的时机开口。"),
                             sinceMinutes: nil, now: now)
         }
         if let sinceAnyActivity, sinceAnyActivity >= PresenceRules.AWAY_MINUTES {
-            return presence(kind: .away, text: "在忙别的",
-                            detail: "他有好一阵没动静了，大概在忙自己的事。",
+            return presence(kind: .away, text: String(localized: "在忙别的"),
+                            detail: String(localized: "他有好一阵没动静了，大概在忙自己的事。"),
                             sinceMinutes: sinceAnyActivity, now: now)
         }
         let detail = PresenceRules.LATE_NIGHT_HOURS.contains(hour)
-            ? "这么晚了还没睡，他就一个人坐着。"
-            : "没什么特别的事，他就坐着发发呆。"
-        return presence(kind: .idle, text: "在发呆", detail: detail,
+            ? String(localized: "这么晚了还没睡，他就一个人坐着。")
+            : String(localized: "没什么特别的事，他就坐着发发呆。")
+        return presence(kind: .idle, text: String(localized: "在发呆"), detail: detail,
                         sinceMinutes: sinceAnyActivity, now: now)
     }
 

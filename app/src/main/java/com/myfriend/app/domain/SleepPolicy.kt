@@ -43,6 +43,14 @@ object SleepPolicy {
     ) {
         /** 这一轮要不要真的去生成回复。 */
         val shouldReply: Boolean get() = !asleep || woken
+
+        /**
+         * 要不要给用户消息写「已读」。
+         *
+         * 免打扰是唯一的例外：规格 §6.2 说得很直白 —— 「不回复、不唤醒、不显示已读后的任何反应」。
+         * 已读本身也是一种回应，所以 dnd 时连它都不留（iOS 的 `SleepReplyDecision.marksRead` 同义）。
+         */
+        val marksRead: Boolean get() = !dnd
     }
 
     /** 方便调用方传参：从人格的两个可空字段得到一个确定的作息窗口。 */

@@ -1,10 +1,13 @@
 package com.myfriend.app.ui.screens.apiconfig
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -22,7 +25,8 @@ data class ApiListUiState(
 
 @HiltViewModel
 class ApiListViewModel @Inject constructor(
-    private val repository: ApiConfigRepository
+    private val repository: ApiConfigRepository,
+    @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val testingId = MutableStateFlow<String?>(null)
     private val busy = MutableStateFlow(false)
@@ -47,7 +51,10 @@ class ApiListViewModel @Inject constructor(
             testingId.value = configId
             repository.testConnection(configId)
                 .onSuccess { message.value = it.message }
-                .onFailure { message.value = "连接失败：${it.message ?: "未知错误"}" }
+                .onFailure {
+                    val reason = it.message ?: context.getString(R.string.api_error_unknown)
+                    message.value = context.getString(R.string.api_error_connect_failed, reason)
+                }
             testingId.value = null
         }
     }
@@ -56,8 +63,8 @@ class ApiListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             repository.duplicate(configId)
-                .onSuccess { message.value = "配置已复制" }
-                .onFailure { message.value = it.message ?: "复制失败" }
+                .onSuccess { message.value = context.getString(R.string.api_list_duplicated) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.api_list_duplicate_failed) }
             busy.value = false
         }
     }
@@ -66,8 +73,8 @@ class ApiListViewModel @Inject constructor(
         viewModelScope.launch {
             busy.value = true
             runCatching { repository.delete(configId) }
-                .onSuccess { message.value = "配置已删除，相关会话需重新选择 API" }
-                .onFailure { message.value = it.message ?: "删除失败" }
+                .onSuccess { message.value = context.getString(R.string.api_list_deleted) }
+                .onFailure { message.value = it.message ?: context.getString(R.string.api_list_delete_failed) }
             busy.value = false
         }
     }

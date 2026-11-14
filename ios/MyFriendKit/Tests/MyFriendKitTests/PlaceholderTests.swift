@@ -3,6 +3,6 @@ import XCTest
 
 final class PlaceholderTests: XCTestCase {
     func testPackageBuilds() {
-        XCTAssertEqual(MyFriendKitInfo.version, "0.9.1")
+        XCTAssertEqual(MyFriendKitInfo.version, "0.10.0")
     }
 }

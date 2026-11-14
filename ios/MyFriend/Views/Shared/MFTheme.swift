@@ -73,44 +73,47 @@ extension Int64 {
 /// 时间文案：聊天分隔条、消息时间、相对时间。
 ///
 /// 统一走这里，避免每个界面各写一份 `DateFormatter`（那是最常见的「同一个时间显示成两种格式」来源）。
+/// 格式**跟随系统语言**：不再写死 `zh_CN` 与「M月d日」，也不再有硬编码的「分钟前 / 小时前」——
+/// 那些交给 `RelativeDateTimeFormatter`，英语系统自然会得到 "3 minutes ago" / "yesterday"。
 enum MFDate {
-    private static let timeFormatter: DateFormatter = {
+    private static let clockFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "HH:mm"
+        f.locale = Locale.current
+        f.dateStyle = .none
+        f.timeStyle = .short
         return f
     }()
 
     private static let dayFormatter: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "M月d日"
+        f.locale = Locale.current
+        // 模板而不是固定格式：中文「8月3日」、英文 "Aug 3" 都由系统语言决定。
+        f.setLocalizedDateFormatFromTemplate("MMMd")
         return f
     }()
 
     static func time(_ millis: Int64) -> String {
-        timeFormatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
+        clockFormatter.string(from: Date(timeIntervalSince1970: Double(millis) / 1000))
     }
 
     static func day(_ millis: Int64) -> String {
         let date = Date(timeIntervalSince1970: Double(millis) / 1000)
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "今天" }
-        if calendar.isDateInYesterday(date) { return "昨天" }
+        if calendar.isDateInToday(date) { return L("今天") }
+        if calendar.isDateInYesterday(date) { return L("昨天") }
         return dayFormatter.string(from: date)
     }
 
     /// 「刚刚 / 12 分钟前 / 昨天 / 3 天前」——用在会话列表与状态行。
     static func relative(_ millis: Int64, now: Int64 = Int64(Date().timeIntervalSince1970 * 1000)) -> String {
         let delta = max(0, now - millis)
-        let minutes = delta / 60_000
-        if minutes < 1 { return "刚刚" }
-        if minutes < 60 { return "\(minutes) 分钟前" }
-        let hours = minutes / 60
-        if hours < 24 { return "\(hours) 小时前" }
-        let days = hours / 24
-        if days == 1 { return "昨天" }
-        if days < 7 { return "\(days) 天前" }
-        return day(millis)
+        if delta < 60_000 { return L("刚刚") }
+        let date = Date(timeIntervalSince1970: Double(millis) / 1000)
+        let nowDate = Date(timeIntervalSince1970: Double(now) / 1000)
+        let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale.current
+        formatter.unitsStyle = .full
+        formatter.dateTimeStyle = .named
+        return formatter.localizedString(for: date, relativeTo: nowDate)
     }
 }
