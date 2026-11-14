@@ -14,6 +14,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.integerResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -100,7 +101,12 @@ private fun KindUsageLine(bucket: KindUsage) {
         )
         Spacer(Modifier.width(8.dp))
         Text(
-            stringResource(R.string.usage_kind_calls_tokens, bucket.calls, formatTokens(bucket.totalTokens)),
+            pluralStringResource(
+                R.plurals.usage_kind_calls_tokens,
+                bucket.calls,
+                bucket.calls,
+                formatTokens(bucket.totalTokens)
+            ),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.85f)
         )
@@ -138,8 +144,9 @@ private fun usageHeadline(totals: UsageTotals): String = when {
 @Composable
 private fun usageDetail(totals: UsageTotals): String {
     if (totals.isEmpty) return stringResource(R.string.usage_detail_none)
-    return stringResource(
-        R.string.usage_detail_counts,
+    return pluralStringResource(
+        R.plurals.usage_detail_counts,
+        totals.calls,
         totals.calls,
         formatTokens(totals.promptTokens),
         formatTokens(totals.completionTokens)

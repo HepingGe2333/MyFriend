@@ -101,9 +101,32 @@ public struct ProviderUnavailableException: Error, LocalizedError, Equatable, Se
 /// 地址校验与端点拼装。与 Android 的 `NetworkGuard` 同语义、同文案。
 public enum NetworkGuard {
 
-    /// 只允许 HTTPS；用本地服务时必须在配置里显式打开「允许不安全 HTTP」。
+    /// 这个**构建**允不允许明文 HTTP。
+    ///
+    /// 0.10.2 审计 P1-6：发布构建不再全量放开 ATS（`Config/Info.plist` 只留
+    /// `NSAllowsLocalNetworking`，Debug 用 `Config/Info-Debug.plist`），
+    /// 于是「允许不安全 HTTP」这个开关在 Release 里也必须给出明确错误，
+    /// 而不是让用户以为打开了就能用、或者让代码在系统层被静默拦掉。
+    ///
+    /// 只有 DEBUG 构建放行（本机参考服务就在 `http://127.0.0.1:8787`）。
+    public static var buildAllowsInsecureHTTP: Bool {
+        #if DEBUG
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// 只允许 HTTPS；用本地服务时必须在配置里显式打开「允许不安全 HTTP」，
+    /// 而且当前构建必须允许明文（见 `buildAllowsInsecureHTTP`）。
     /// 这不是洁癖：API Key 明文走 http 等于把它交给同网段的每一个人。
-    public static func parseHttpURL(_ raw: String, allowInsecureHttp: Bool) throws -> URL {
+    ///
+    /// - Parameter buildAllowsInsecureHttp: 只为测试注入；业务代码用默认值。
+    public static func parseHttpURL(
+        _ raw: String,
+        allowInsecureHttp: Bool,
+        buildAllowsInsecureHttp: Bool = NetworkGuard.buildAllowsInsecureHTTP
+    ) throws -> URL {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if value.isEmpty {
             throw ApiException(statusCode: nil, message: String(localized: "地址不能为空"))
@@ -114,7 +137,16 @@ public enum NetworkGuard {
             throw ApiException(statusCode: nil, message: String(localized: "地址格式不正确，请填写完整的 http(s) 地址"))
         }
         if scheme == "https" { return url }
-        if scheme == "http" && allowInsecureHttp { return url }
+        if scheme == "http" && allowInsecureHttp {
+            guard buildAllowsInsecureHttp else {
+                // 发布构建：明确报错（不能悄悄走明文，也不能让 ATS 在系统层静默拦掉）。
+                throw ApiException(
+                    statusCode: nil,
+                    message: String(localized: "这个版本的 App 不允许明文 HTTP 连接（只有调试版可以）。请把 API 地址改成 https:// 开头的地址。")
+                )
+            }
+            return url
+        }
         if scheme == "http" {
             throw ApiException(
                 statusCode: nil,
@@ -343,10 +375,21 @@ public final class OpenAICompatibleClient: ChatCompleting {
                 // 而是包在整条流的生命周期里，任何退出路径都只还一次。
                 let acquired = await self.gate.acquire(kind: kind)
                 guard let ticket = acquired.ticket else {
-                    continuation.finish(throwing: self.busyError(lane: .chat))
+                    // 被取消（用户点了停止）不是错误：按取消收流，上层会把半句落库。
+                    if acquired.isCancelled {
+                        continuation.finish(throwing: CancellationError())
+                    } else {
+                        // 车道按用途判断：后台道不该拿到面向聊天的文案（0.10.2 审计 P1-11）。
+                        continuation.finish(throwing: self.busyError(lane: LlmCallLane(kind: kind)))
+                    }
                     return
                 }
                 defer { self.gate.release(ticket) }
+                // 拿到名额之后、发请求之前再确认一次取消：等待期间用户可能已经点了停止。
+                if Task.isCancelled {
+                    continuation.finish(throwing: CancellationError())
+                    return
+                }
                 do {
                     try await self.runStream(
                         config: config, apiKey: apiKey, model: model, messages: messages,
@@ -514,9 +557,12 @@ public final class OpenAICompatibleClient: ChatCompleting {
         // 并发闸放在最前面：等不到名额就「这次不做」（后台 20 秒 / 聊天 60 秒）。
         let acquired = await gate.acquire(kind: kind)
         guard let ticket = acquired.ticket else {
+            if acquired.isCancelled { throw CancellationError() }
             throw busyError(lane: LlmCallLane(kind: kind))
         }
         defer { gate.release(ticket) }
+        // 等待期间被取消：不要再发一次用户已经不想要的请求（0.10.2 审计 P1-11）。
+        if Task.isCancelled { throw CancellationError() }
         var attempts = 0
         while true {
             do {
@@ -560,9 +606,11 @@ public final class OpenAICompatibleClient: ChatCompleting {
                 message: String(localized: "他手上还有别的事没忙完，这次没顾上回你，过一会儿再发一条试试")
             )
         case .background:
+            // 后台道的超时是「排队没排上」，不是「他在忙没顾上」——文案要按车道分开，
+            // 而且这条只会进日志与「他最近在想什么」，不该出现面向聊天的说法（P1-11）。
             return ApiException(
                 statusCode: nil,
-                message: String(localized: "他手上一时腾不出空，这件事这次先不做")
+                message: String(localized: "后台任务排队超时，这次先不做")
             )
         }
     }
@@ -867,13 +915,35 @@ public final class OpenAICompatibleClient: ChatCompleting {
     }
 
     /// 把一条 `URLSession.AsyncBytes` 一次性读完（错误页、非流式响应）。
+    /// 普通（非流式）响应体的体积上限（0.10.2 审计 P2-2）。
+    ///
+    /// 0.10.1 的 `readAll` 逐字节 append、没有上限：网关/代理返回一个没有 Content-Length、
+    /// 一直往外吐的错误页时，这里会一直吃内存。SSE 那条路径有 `SSEParser.MAX_LINE_BYTES`
+    /// 兜底，`readAll` 原来没有。1MB 够放任何正常的 completion/错误体，超了就截断并标记。
+    static let maxResponseBodyBytes = 1 * 1024 * 1024
+
     static func readAll(_ bytes: URLSession.AsyncBytes) async -> String {
         var data = Data()
         do {
-            for try await byte in bytes { data.append(byte) }
+            for try await byte in bytes {
+                // 多读一个字节就能判断「超了」，具体截断与提示交给 `decodeBody`（可单测）。
+                if data.count > maxResponseBodyBytes { break }
+                data.append(byte)
+            }
         } catch {
             // 读不完就用已读到的那部分：错误信息总比空串有用。
         }
-        return String(decoding: data, as: UTF8.self)
+        return decodeBody(data)
+    }
+
+    /// Data → UTF-8 文本；超过上限就截断并加一句说明。
+    ///
+    /// 抽成纯函数是为了能在 `swift test` 里直接钉住上限（不用真的造 1MB 的 HTTP 响应）。
+    static func decodeBody(_ data: Data) -> String {
+        guard data.count > maxResponseBodyBytes else {
+            return String(decoding: data, as: UTF8.self)
+        }
+        let clipped = String(decoding: data.prefix(maxResponseBodyBytes), as: UTF8.self)
+        return clipped + String(localized: "…（响应过长，已截断）")
     }
 }

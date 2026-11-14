@@ -20,10 +20,16 @@
     <string name="usage_headline_none">Not much talking this month</string>
     <string name="usage_headline_tokens">%1$s tokens this month</string>
     <string name="usage_detail_none">Once he starts talking with you and tidying his own memories, the numbers will show up here.</string>
-    <string name="usage_detail_counts">%1$d calls · %2$s tokens in · %3$s tokens out</string>
+    <plurals name="usage_detail_counts">
+        <item quantity="one">%1$d call · %2$s tokens in · %3$s tokens out</item>
+        <item quantity="other">%1$d calls · %2$s tokens in · %3$s tokens out</item>
+    </plurals>
     <string name="usage_by_kind_title">By what he was doing</string>
     <string name="usage_by_session_title">By person (top 10)</string>
-    <string name="usage_kind_calls_tokens">%1$d calls · %2$s tokens</string>
+    <plurals name="usage_kind_calls_tokens">
+        <item quantity="one">%1$d call · %2$s tokens</item>
+        <item quantity="other">%1$d calls · %2$s tokens</item>
+    </plurals>
     <string name="usage_tokens_ten_thousand">%1$sk</string>
     <string name="usage_local_only">Kept on this phone only, never uploaded. It never limits what he can do.</string>
 
@@ -236,6 +242,7 @@
 
     <!-- Chat: export -->
     <string name="chat_export_success">Conversation exported</string>
+    <string name="chat_export_in_progress">Exporting conversation…</string>
     <string name="chat_export_failed">Export failed</string>
     <string name="chat_export_failed_reason">Export failed: %1$s</string>
     <string name="chat_export_error_unwritable">Couldn\'t write that file</string>
@@ -325,7 +332,10 @@
     <string name="chat_profile_session_label">Session</string>
     <string name="chat_profile_session_value">Local session %1$s</string>
     <string name="chat_profile_prompt_label">His words</string>
-    <string name="chat_profile_prompt_value">%1$d characters · kept in full</string>
+    <plurals name="chat_profile_prompt_value">
+        <item quantity="one">%1$d character · kept in full</item>
+        <item quantity="other">%1$d characters · kept in full</item>
+    </plurals>
     <string name="chat_profile_edit">Edit who he is</string>
     <string name="chat_profile_memory">What he remembers</string>
     <string name="chat_profile_evolution">How he\'s changed</string>
@@ -368,10 +378,21 @@
     <string name="search_empty_desc">Look by name or by what was said. Both conversation titles and message text are searched.</string>
     <string name="search_no_results_title">Nothing found for “%1$s”</string>
     <string name="search_no_results_desc">Try a shorter word, or another way of putting it. The words you used back then may not match this exactly.</string>
-    <string name="search_section_sessions">Conversations</string>
-    <string name="search_section_messages">Messages</string>
     <string name="search_no_preview">No messages yet</string>
     <string name="search_session_subtitle">%1$s · %2$s</string>
+    <!-- 0.10.2 search upgrade: tabs / filters / paging / states -->
+    <string name="search_tab_messages">Messages</string>
+    <string name="search_tab_sessions">Conversations</string>
+    <string name="search_tab_with_count">%1$s %2$d</string>
+    <string name="search_filter_persona_all">Everyone</string>
+    <string name="search_time_all">All time</string>
+    <string name="search_time_7d">Last 7 days</string>
+    <string name="search_time_30d">Last 30 days</string>
+    <string name="search_no_results_filtered_desc">Nothing matches these filters. Try “Everyone” or “All time”.</string>
+    <string name="search_error_title">The search didn\'t finish</string>
+    <string name="search_error_desc">Something went wrong reading your local history. Nothing is lost — just try again.</string>
+    <string name="search_retry">Try again</string>
+    <string name="search_truncated">Too many matches — showing only the most recent %1$d.</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -544,7 +565,10 @@
     <string name="persona_editor_memory_level_4">4 · remembers the details</string>
     <string name="persona_editor_memory_level_5">5 · remembers everything</string>
     <string name="persona_editor_extraction_title">How often he saves memories</string>
-    <string name="persona_editor_extraction_value">Every %1$d messages</string>
+    <plurals name="persona_editor_extraction_value">
+        <item quantity="one">Every %1$d message</item>
+        <item quantity="other">Every %1$d messages</item>
+    </plurals>
     <string name="persona_editor_sleep_title">Whether he sleeps</string>
     <string name="persona_editor_sleep_on">He goes to bed at his hour. Messages wait while he\'s asleep — call enough and he wakes up.</string>
     <string name="persona_editor_sleep_off">He doesn\'t sleep and answers at any hour.</string>
@@ -1050,7 +1074,6 @@
     <string name="settings_error_unwritable_file">Couldn\'t write that file</string>
     <string name="settings_export_success">Chats exported</string>
     <string name="settings_export_failed">Export failed: %1$s</string>
-    <string name="settings_error_export">Export failed</string>
     <string name="settings_cleared_chats">All chats and memories are cleared</string>
     <string name="settings_error_clear">Couldn\'t clear them</string>
     <string name="settings_wiped">All local data is deleted</string>
@@ -1198,6 +1221,7 @@
     <string name="error_headers_invalid_json">Custom headers must be a valid JSON object</string>
     <string name="error_header_name_required">A header name can\'t be empty</string>
     <string name="error_header_value_not_string">The value of header %1$s must be a string</string>
+    <string name="error_header_reserved">Header “%1$s” can’t be customized: the HTTP stack owns it</string>
     <string name="error_temperature_range">Temperature must be between 0 and 2</string>
     <string name="error_top_p_range">Top P must be between 0 and 1</string>
     <string name="error_max_output_tokens_range">Max output tokens must be greater than 0</string>
@@ -1222,6 +1246,7 @@
     <!-- Network: address, HTTP status, streaming response -->
     <string name="error_network_empty_url">The address can\'t be empty</string>
     <string name="error_network_invalid_url">That address looks wrong; enter a full http(s) URL</string>
+    <string name="error_network_cleartext_disabled">Release builds allow HTTPS only: plain HTTP works only in a debug build. Please change the service address to https://.</string>
     <string name="error_network_https_required">For safety only HTTPS is allowed. If you run a local service, turn on “Allow insecure HTTP” in the API setup.</string>
     <string name="error_network_unsupported_scheme">Only HTTP(S) addresses are supported</string>
     <string name="error_network_invalid_base_url">That API address is invalid; check the base URL</string>
@@ -1262,7 +1287,10 @@
     <string name="error_web_status_other">Request failed (HTTP %1$d)</string>
 
     <string name="api_connect_success">Connected</string>
-    <string name="api_connect_success_models">Connected — found %1$d models</string>
+    <plurals name="api_connect_success_models">
+        <item quantity="one">Connected — found %1$d model</item>
+        <item quantity="other">Connected — found %1$d models</item>
+    </plurals>
 
     <!-- Why this version exists: a token is stored, this is the wording -->
     <string name="reason_revision_card_created">Persona card created</string>
@@ -1282,32 +1310,75 @@
 
     <!-- Backup: preview, import summary, warnings, failure reasons -->
     <string name="backup_preview_empty">There\'s nothing in this backup</string>
-    <string name="backup_preview_personas">%1$d personas</string>
-    <string name="backup_preview_memories">%1$d memories</string>
-    <string name="backup_preview_sessions">%1$d conversations</string>
-    <string name="backup_preview_messages">%1$d messages</string>
-    <string name="backup_preview_rules">%1$d proactive rules</string>
-    <string name="backup_preview_presets">%1$d presets</string>
+    <plurals name="backup_preview_personas">
+        <item quantity="one">%1$d persona</item>
+        <item quantity="other">%1$d personas</item>
+    </plurals>
+    <plurals name="backup_preview_memories">
+        <item quantity="one">%1$d memory</item>
+        <item quantity="other">%1$d memories</item>
+    </plurals>
+    <plurals name="backup_preview_sessions">
+        <item quantity="one">%1$d conversation</item>
+        <item quantity="other">%1$d conversations</item>
+    </plurals>
+    <plurals name="backup_preview_messages">
+        <item quantity="one">%1$d message</item>
+        <item quantity="other">%1$d messages</item>
+    </plurals>
+    <plurals name="backup_preview_rules">
+        <item quantity="one">%1$d proactive rule</item>
+        <item quantity="other">%1$d proactive rules</item>
+    </plurals>
+    <plurals name="backup_preview_presets">
+        <item quantity="one">%1$d preset</item>
+        <item quantity="other">%1$d presets</item>
+    </plurals>
     <string name="backup_exported_at">packed %1$s</string>
     <string name="backup_exported_unknown">packed at an unknown time</string>
     <string name="backup_moment_pattern">MMM d, yyyy h:mm a</string>
     <string name="backup_import_done">He\'s back: %1$s</string>
     <string name="backup_import_restored">Rebuilt from the backup: %1$s</string>
-    <string name="backup_import_skipped">; %1$d things didn\'t come back</string>
+    <plurals name="backup_import_skipped">
+        <item quantity="one">; %1$d thing didn\'t come back</item>
+        <item quantity="other">; %1$d things didn\'t come back</item>
+    </plurals>
     <string name="backup_warn_separator">"; "</string>
     <string name="backup_warn_older_format">The backup is format v%1$d; read as best we can as v%2$d</string>
     <string name="backup_warn_section_not_list">“%1$s” in the backup isn\'t a list, so that section was skipped</string>
-    <string name="backup_warn_dropped_rows">%1$s: %2$d rows couldn\'t be read and were skipped</string>
-    <string name="backup_warn_blank_ids">%1$s: %2$d rows had no id and were skipped</string>
+    <plurals name="backup_warn_dropped_rows">
+        <item quantity="one">%1$s: %2$d row couldn\'t be read and was skipped</item>
+        <item quantity="other">%1$s: %2$d rows couldn\'t be read and were skipped</item>
+    </plurals>
+    <plurals name="backup_warn_blank_ids">
+        <item quantity="one">%1$s: %2$d row had no id and was skipped</item>
+        <item quantity="other">%1$s: %2$d rows had no id and were skipped</item>
+    </plurals>
     <string name="backup_warn_settings_unreadable">The settings section couldn\'t be read; your settings stay as they are</string>
     <string name="backup_warn_no_content">He isn\'t in this backup: no personas, no memories, no conversations</string>
-    <string name="backup_warn_extra_sessions">The backup had %1$d extra conversations; only the newest one per persona was kept</string>
-    <string name="backup_warn_attachments">%1$d messages used to have pictures. The pictures didn\'t travel with the backup, so only the text is back</string>
-    <string name="backup_warn_configs_missing_key">%1$d API setups still need a key (keys never travel in backups); fill them in under API settings</string>
+    <plurals name="backup_warn_extra_sessions">
+        <item quantity="one">The backup had %1$d extra conversation; only the newest one per persona was kept</item>
+        <item quantity="other">The backup had %1$d extra conversations; only the newest one per persona was kept</item>
+    </plurals>
+    <plurals name="backup_warn_attachments">
+        <item quantity="one">%1$d message used to have a picture. The picture didn\'t travel with the backup, so only the text is back</item>
+        <item quantity="other">%1$d messages used to have pictures. The pictures didn\'t travel with the backup, so only the text is back</item>
+    </plurals>
+    <plurals name="backup_warn_configs_missing_key">
+        <item quantity="one">%1$d API setup still needs a key (keys never travel in backups); fill it in under API settings</item>
+        <item quantity="other">%1$d API setups still need a key (keys never travel in backups); fill them in under API settings</item>
+    </plurals>
     <string name="backup_warn_no_settings">This backup has no settings, so your settings page stays as it is</string>
     <string name="backup_warn_settings_partial">Settings couldn\'t be fully restored (he himself came back fine)</string>
     <string name="backup_warn_active_persona_missing">The active persona in the backup isn\'t in it; the active chat went back to the default persona</string>
     <string name="backup_warn_avatar_missing">The avatar file for “%1$s” isn\'t on this phone anymore, so that avatar was cleared</string>
+    <!-- 0.10.2 security fix: imports never rewrite this phone's service address or open plain HTTP. -->
+    <plurals name="backup_warn_api_config_address_kept">
+        <item quantity="one">%1$d API setup points somewhere else in the backup; this phone’s addresses were kept (edit and confirm manually to change one)</item>
+        <item quantity="other">%1$d API setups point somewhere else in the backup; this phone’s addresses were kept (edit and confirm manually to change one)</item>
+    </plurals>
+    <string name="backup_warn_api_config_insecure_ignored">The backup asks to allow plain HTTP, which was not applied: insecure HTTP can only be turned on here, by hand</string>
+    <string name="backup_warn_api_config_rejected">Setup “%1$s” failed this phone’s validation (for example a plain HTTP address) and was skipped</string>
     <string name="backup_section_persona">personas</string>
     <string name="backup_section_memory">memories</string>
     <string name="backup_section_session">conversations</string>
@@ -1323,10 +1394,16 @@
     <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
 
     <!-- Import results: personas / presets -->
-    <string name="persona_import_result_ok">Imported %1$d personas</string>
+    <plurals name="persona_import_result_ok">
+        <item quantity="one">Imported %1$d persona</item>
+        <item quantity="other">Imported %1$d personas</item>
+    </plurals>
     <string name="persona_import_result_partial">Imported %1$d personas, skipped %2$d incomplete entries</string>
     <string name="preset_import_result_none">No presets to import</string>
-    <string name="preset_import_result_ok">Imported %1$d presets</string>
+    <plurals name="preset_import_result_ok">
+        <item quantity="one">Imported %1$d preset</item>
+        <item quantity="other">Imported %1$d presets</item>
+    </plurals>
     <string name="preset_import_result_partial">Imported %1$d presets, skipped %2$d invalid entries</string>
 
     <!-- Memory extraction results (counts from code, wording here) -->
@@ -1334,16 +1411,93 @@
     <string name="memory_extract_result_reinforced">You talked about the past again; the memory is firmer now</string>
     <string name="memory_extract_result_echoed">Noted — he wants to check once more</string>
     <string name="memory_extract_result_not_enough">Not enough conversation yet; talk a little more</string>
-    <string name="memory_extract_result_interval">Not at the memory interval yet (every %1$d messages)</string>
+    <plurals name="memory_extract_result_interval">
+        <item quantity="one">Not at the memory interval yet (every %1$d message)</item>
+        <item quantity="other">Not at the memory interval yet (every %1$d messages)</item>
+    </plurals>
     <string name="memory_extract_result_none">No new long-term memories this time</string>
 
     <!-- Default note for a proactive rule: written by the UI in the current language before it\'s stored -->
+    <string name="proactive_default_hint">Reach out and check in on how they are doing, in your own way.</string>
     <string name="proactive_default_note_daily">Says hi at %1$s every day</string>
-    <string name="proactive_default_note_interval">Checks in every %1$d hours</string>
+    <plurals name="proactive_default_note_interval">
+        <item quantity="one">Checks in every hour</item>
+        <item quantity="other">Checks in every %1$d hours</item>
+    </plurals>
 
     <!-- Name suffixes that get stored: the UI passes them in, so they follow the current language -->
     <string name="common_copy_suffix"> (copy)</string>
     <string name="persona_import_suffix"> (imported)</string>
     <string name="chat_persona_switch_no_session">Couldn\'t create a conversation</string>
     <string name="chat_persona_switch_api_not_bound">No API bound yet; set one up in this conversation</string>
+    <!-- Display strings for the tool trace under a chat bubble.
+         The text fed back to the model stays Chinese in ToolProtocol / ToolExecutor — keep the paths apart. -->
+    <string name="tool_trace_think">Thought it over</string>
+    <string name="tool_trace_web_search">Web search</string>
+    <string name="tool_trace_web_fetch">Read a page</string>
+    <string name="tool_trace_remember">Remembered something</string>
+    <string name="tool_trace_remember_pending">Noted (still confirming)</string>
+    <string name="tool_trace_remember_confirmed">Remembered</string>
+    <string name="tool_trace_remember_reinforced">Confirmed again</string>
+    <string name="tool_trace_remember_skipped">Not saving this one</string>
+    <string name="tool_trace_remember_considering">Thought about whether to remember it</string>
+    <string name="tool_trace_update_persona">Adjusted his profile</string>
+    <string name="tool_trace_persona_unchanged">Thought it over, left it unchanged</string>
+    <string name="tool_trace_set_quiet_hours">Set his sleep hours</string>
+    <string name="tool_trace_set_mood">Mood changed</string>
+    <string name="tool_trace_recall">Recalled</string>
+    <string name="tool_trace_defer_reply">Decided not to reply yet</string>
+    <string name="tool_trace_unknown">Action</string>
+
+    <string name="tool_trace_think_detail_placeholder">(No specific question — thinking it through first)</string>
+    <string name="tool_trace_search_no_result">No results found</string>
+    <string name="tool_trace_recall_empty">Looked back — nothing came to mind</string>
+    <plurals name="tool_trace_recall_hits">
+        <item quantity="one">Looked back · %1$d memory</item>
+        <item quantity="other">Looked back · %1$d memories</item>
+    </plurals>
+    <string name="tool_trace_recall_empty_detail">(%1$s) — looked back, found nothing</string>
+    <string name="tool_trace_recall_hit_line">(%1$s) %2$s</string>
+    <string name="tool_trace_recall_depth_quick">a quick recall</string>
+    <string name="tool_trace_recall_depth_normal">a careful recall</string>
+    <string name="tool_trace_recall_depth_deep">a deep dive</string>
+    <string name="tool_trace_source_memory">Memories</string>
+    <string name="tool_trace_source_chat">Chats</string>
+    <string name="tool_trace_source_browsing">Things he saw himself</string>
+    <string name="tool_trace_remember_skipped_detail">Not saving this one: %1$s</string>
+    <string name="tool_trace_remember_echo_detail">First time hearing it — kept in mind. Say it once more and he will remember it for real.</string>
+    <string name="tool_trace_remember_reinforced_detail">That memory is a little firmer now.</string>
+    <string name="tool_trace_persona_unchanged_detail">This part of his profile already reads the way you described; nothing to change.</string>
+    <string name="tool_trace_persona_reason">Reason: %1$s</string>
+    <string name="tool_trace_persona_applied">Applied — the change is in his version history.</string>
+    <string name="tool_trace_quiet_hours">Sleep %1$s · wake %2$s</string>
+    <string name="tool_trace_quiet_hours_rest">He won\'t reach out during these hours.</string>
+    <string name="tool_trace_quiet_hours_dnd_on">Do-not-disturb on: messages won\'t wake him.</string>
+    <string name="tool_trace_quiet_hours_dnd_off">Do-not-disturb off: a few messages in a row will wake him.</string>
+    <plurals name="tool_trace_defer_detail">
+        <item quantity="one">Will think about it again in %1$d minute</item>
+        <item quantity="other">Will think about it again in %1$d minutes</item>
+    </plurals>
+    <plurals name="tool_trace_defer_detail_reason">
+        <item quantity="one">Will think about it again in %1$d minute (%2$s)</item>
+        <item quantity="other">Will think about it again in %1$d minutes (%2$s)</item>
+    </plurals>
+    <string name="tool_trace_mood">%1$s (%2$d/5)</string>
+    <string name="tool_trace_mood_reason">%1$s (%2$d/5) · %3$s</string>
+    <string name="tool_trace_when_day_before">the day before yesterday</string>
+    <plurals name="tool_trace_when_years">
+        <item quantity="one">%1$d year ago</item>
+        <item quantity="other">%1$d years ago</item>
+    </plurals>
+    <plurals name="chat_trace_count">
+        <item quantity="one">once</item>
+        <item quantity="other">%1$d times</item>
+    </plurals>
+
+    <!-- Conversation title / message preview that get stored: filled in the current language at write time,
+         Chinese values already in old databases keep showing as they are -->
+    <string name="chat_session_default_title">Chat with %1$s</string>
+    <string name="chat_preview_image">Photo</string>
+    <string name="chat_preview_proactive">Reached out</string>
+    <string name="chat_preview_failed">Reply failed</string>
 </resources>

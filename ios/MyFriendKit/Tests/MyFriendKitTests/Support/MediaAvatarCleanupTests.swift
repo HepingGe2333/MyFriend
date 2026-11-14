@@ -57,6 +57,21 @@ final class MediaAvatarCleanupTests: XCTestCase {
         XCTAssertFalse(media.exists(uriString: gone.absoluteString))
     }
 
+    /// `abs(Int.min)` 会溢出 trap（0.10.2 审计 P2-10）：`avatarSeed` 能从一份手工/损坏的备份
+    /// 直接进来，首页渲染时就会崩。这里钉住「取模前不取绝对值」。
+    func testAvatarSeedIndexIsOverflowSafe() throws {
+        var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var path: URL?
+        for _ in 0..<12 {
+            let candidate = current.appendingPathComponent("MyFriend/Views/Shared/MFAvatar.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) { path = candidate; break }
+            current = current.deletingLastPathComponent()
+        }
+        let source = try String(contentsOf: try XCTUnwrap(path), encoding: .utf8)
+        XCTAssertFalse(source.contains("abs(avatarSeed)"), "abs(Int.min) 会崩；用 magnitude 取模")
+        XCTAssertTrue(source.contains("avatarSeed.magnitude"), "要改成对 magnitude 取模")
+    }
+
     // MARK: - 备份导入：失效头像
 
     private func makeBackupText(withAvatarExists: Bool) throws -> (String, String) {

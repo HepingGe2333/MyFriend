@@ -1,5 +1,6 @@
 package com.myfriend.app.data.repo
 
+import com.myfriend.app.R
 import android.content.Context
 import androidx.room.withTransaction
 import com.myfriend.app.data.local.ChatSessionDao
@@ -15,6 +16,7 @@ import com.myfriend.app.data.local.ProactiveKind
 import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.data.local.ProactiveRuleEntity
 import com.myfriend.app.data.local.ProactiveSource
+import com.myfriend.app.domain.ChatNotificationPolicy
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.MessageWindows
 import com.myfriend.app.domain.UserError
@@ -27,6 +29,7 @@ import com.myfriend.app.network.WireMessage
 import com.myfriend.app.network.inferenceParams
 import com.myfriend.app.network.toUserError
 import com.myfriend.app.network.userError
+import com.myfriend.app.util.AppForegroundTracker
 import com.myfriend.app.util.ProactiveNotifier
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -56,6 +59,7 @@ class ProactiveRepository @Inject constructor(
     private val moodRepository: MoodRepository,
     private val idleBrowsing: IdleBrowsing,
     private val scheduler: ProactiveScheduler,
+    private val foregroundTracker: AppForegroundTracker,
     private val database: MyFriendDatabase,
     @ApplicationContext private val context: Context
 ) {
@@ -135,6 +139,21 @@ class ProactiveRepository @Inject constructor(
     ): Result<String> = runCatching {
         val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()
+        // 模型没写说明/指引时，用当前界面语言的默认文案（会落库、也会显示在列表里）；
+        // 数据层只查资源，不拼中文。
+        val resolvedNote = proposal.note.trim().take(120).ifBlank {
+            if (proposal.kind == ProactiveKind.DAILY) {
+                context.getString(
+                    R.string.proactive_default_note_daily,
+                    ProactiveProtocol.formatTimeOfDay(proposal.timeOfDayMinutes ?: 0)
+                )
+            } else {
+                val hours = (proposal.intervalMinutes ?: 120) / 60
+                context.resources.getQuantityString(R.plurals.proactive_default_note_interval, hours, hours)
+            }
+        }
+        val resolvedHint = proposal.hint.trim().take(600)
+            .ifBlank { context.getString(R.string.proactive_default_hint) }
         // 同样的节奏他已经安排过一次了：更新那条，别再堆一条一模一样的。
         val duplicate = runCatching { ruleDao.enabledRules() }.getOrDefault(emptyList()).firstOrNull {
             it.personaId == persona.id &&
@@ -147,8 +166,8 @@ class ProactiveRepository @Inject constructor(
                 duplicate.copy(
                     enabled = true,
                     pending = true,
-                    note = proposal.note.trim().take(120).ifBlank { duplicate.note },
-                    hint = proposal.hint.trim().take(600).ifBlank { duplicate.hint },
+                    note = resolvedNote,
+                    hint = resolvedHint,
                     nextTriggerAt = computeNextTrigger(
                         proposal.kind,
                         proposal.timeOfDayMinutes,
@@ -171,8 +190,8 @@ class ProactiveRepository @Inject constructor(
                 kind = proposal.kind,
                 timeOfDayMinutes = proposal.timeOfDayMinutes,
                 intervalMinutes = proposal.intervalMinutes,
-                hint = proposal.hint.trim().take(600),
-                note = proposal.note.trim().take(120),
+                hint = resolvedHint,
+                note = resolvedNote,
                 // 1.3 起不再等用户确认：他自己安排的节奏直接生效。
                 // pending 只留作「他刚安排、聊天页要提示一次」的标记，调度看的是 enabled。
                 enabled = true,
@@ -339,13 +358,22 @@ class ProactiveRepository @Inject constructor(
                     )
                 )
             }
-            if (chatRepository.isSessionOpen(session.id)) {
-                sessionDao.markRead(session.id)
-            } else {
+            if (ChatNotificationPolicy.shouldMarkUnread(chatRepository.openSessionId(), session.id)) {
                 sessionDao.incrementUnread(session.id)
+            } else {
+                sessionDao.markRead(session.id)
             }
         }
-        ProactiveNotifier.notify(context, persona, session.id, text)
+        // 规则型主动消息也遵守同一套通知语义：会话正开着就只写库（消息已经出现在屏幕上），
+        // 不再额外弹一条系统通知 + 聚合摘要，也不让 MainActivity 的点击逻辑再导航一次。
+        if (ChatNotificationPolicy.shouldNotify(
+                chatRepository.openSessionId(),
+                session.id,
+                foregroundTracker.isForeground
+            )
+        ) {
+            ProactiveNotifier.notify(context, persona, session.id, text)
+        }
     }
 
     private suspend fun buildProactiveMessages(

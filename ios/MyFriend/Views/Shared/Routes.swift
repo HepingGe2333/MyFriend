@@ -7,6 +7,10 @@ import SwiftUI
 /// 深链接（比如点消息里的链接打开内置浏览器）只需要 push 一个 `.browser(url)`。
 enum Route: Hashable {
     case chat(sessionId: String)
+    /// 进会话并**定位到某条消息**（0.10.2 的聊天记录检索：点搜索结果走这条）。
+    /// 为什么不复用 `.chat(sessionId:)`：那样就得把「定位到哪一条」塞进环境或全局状态，
+    /// 返回栈里也会出现两个「同一个会话」却含义不同的目的地。
+    case chatAt(sessionId: String, messageId: String)
     case browser(url: String)
     case settings
     case personas
@@ -16,6 +20,8 @@ enum Route: Hashable {
     case backups
     /// 主动唤醒规则（他就按这个节奏自己来找你）。
     case proactive
+    /// 聊天记录检索（首页右上角的放大镜）。
+    case search
 }
 
 // MARK: - 根视图的导航路径

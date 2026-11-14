@@ -106,7 +106,10 @@ class ChatPagingContractTest {
 
     @Test
     fun `搜索 导出 历史压缩 备份 仍然是全量路径`() {
-        assertTrue("搜索仍应走 DAO 的全表 LIKE 搜索", chatRepo.contains("messageDao.search(term)"))
+        assertTrue(
+            "搜索仍应走 DAO 的全表粗筛（0.10.2 起是 searchCandidates + 内存精排，不是窗口）",
+            chatRepo.contains("messageDao.searchCandidates(")
+        )
         assertTrue("导出仍应取整段会话", chatRepo.contains("messageDao.getBySession(sessionId)"))
         val compressor = source("src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt")
         assertTrue(

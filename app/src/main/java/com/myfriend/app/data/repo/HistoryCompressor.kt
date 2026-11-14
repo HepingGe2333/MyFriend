@@ -5,12 +5,15 @@ import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MessageEntity
 import com.myfriend.app.data.local.MessageRole
 import com.myfriend.app.data.local.PersonaDao
+import com.myfriend.app.domain.CompressionWriteGuard
 import com.myfriend.app.domain.HistoryCompression
+import com.myfriend.app.domain.SessionGenerationRegistry
 import com.myfriend.app.domain.MsgView
 import com.myfriend.app.domain.UsageKind
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.InferenceParams
 import com.myfriend.app.network.WireMessage
+import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -35,7 +38,13 @@ enum class CompressionStatus {
     REFUSED,
 
     /** 调用失败（网络、额度、解析…）。都当成没做。 */
-    FAILED
+    FAILED,
+
+    /** 调用之前就被取消了（清空上下文 / 删除会话）。 */
+    CANCELLED,
+
+    /** 模型写完了，但期间这段对话被清空 / 删除 / 改过，结果被丢弃（不写回）。 */
+    DISCARDED
 }
 
 /**
@@ -83,7 +92,8 @@ class HistoryCompressor @Inject constructor(
     private val messageDao: MessageDao,
     private val personaDao: PersonaDao,
     private val apiConfigRepository: ApiConfigRepository,
-    private val registry: AiProviderRegistry
+    private val registry: AiProviderRegistry,
+    private val sessionGeneration: SessionGenerationRegistry
 ) {
 
     /** fire-and-forget 用的作用域：进程活着就一直活着，随应用一起结束。 */
@@ -91,6 +101,26 @@ class HistoryCompressor @Inject constructor(
 
     /** 同一段对话同一时间只跑一次：免得连着两轮回复各触发一次、白烧一次额度。 */
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 正在被「清空上下文 / 删除会话」取消的那几次压缩。
+     *
+     * 取消的理由与生成收尾相同：压缩的最后一步是 `setHistorySummary`，如果用户在
+     * 几秒的模型调用里清空了上下文，旧摘要会被写回来。真正保证「不写回」的是
+     * 世代号（[CompressionWriteGuard]）；这个集合是**明确的取消点**：
+     * 在调用模型之前就跳过一次，省掉一次无意义的额度。
+     */
+    private val cancelled = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * 明确取消一个会话正在跑的压缩。
+     *
+     * 只对**真正在跑**的那一次生效：没有在跑的压缩时什么都不做（否则这个标记
+     * 会把清空之后的第一轮正常压缩也吞掉）。
+     */
+    fun cancel(sessionId: String) {
+        if (sessionId.isNotBlank() && inFlight.contains(sessionId)) cancelled.add(sessionId)
+    }
 
 
     /**
@@ -121,6 +151,7 @@ class HistoryCompressor @Inject constructor(
             )
         } finally {
             inFlight.remove(sessionId)
+            cancelled.remove(sessionId)
         }
     }
 
@@ -173,6 +204,10 @@ class HistoryCompressor @Inject constructor(
         val session = runCatching { sessionDao.getById(sessionId) }.getOrNull()
             ?: return CompressionResult(CompressionStatus.SKIPPED, note = "会话不存在")
 
+        // 这一轮属于哪个世代、摘要边界停在哪：写回之前要再比一次。
+        val generation = sessionGeneration.current(sessionId)
+        val startSummaryUpTo = session.historySummarizedUpTo
+
         val total = runCatching { messageDao.countInSession(sessionId) }.getOrDefault(0)
         if (total <= HistoryCompression.DEFAULT_MAX_VERBATIM) {
             return CompressionResult(CompressionStatus.SKIPPED, note = "只有 $total 条，还不用收")
@@ -212,6 +247,11 @@ class HistoryCompressor @Inject constructor(
 
         val previous = session.historySummary?.trim()?.takeIf { it.isNotBlank() }
 
+        // 明确的取消点：清空 / 删除已经打过招呼了，就别再花一次模型调用。
+        if (cancelled.contains(sessionId)) {
+            return CompressionResult(CompressionStatus.CANCELLED, note = "这段对话刚被清空 / 删除，这次不收了")
+        }
+
         // ---- 一次用完即弃的分叉调用：没有会话、没有工具、没有历史 ----
         val raw = try {
             registry.adapterFor(resolved.config.provider).complete(
@@ -248,6 +288,30 @@ class HistoryCompressor @Inject constructor(
         }
 
         val upTo = chunk.last().at
+        // 写完之前再核一次：期间清空 / 删除 / 并发压缩过就丢弃，绝不让旧摘要回来。
+        val freshSession = runCatching { sessionDao.getById(sessionId) }.getOrNull()
+        val currentCount = runCatching { messageDao.countInSession(sessionId) }.getOrDefault(0)
+        val decision = CompressionWriteGuard.decide(
+            startGeneration = generation,
+            currentGeneration = sessionGeneration.current(sessionId),
+            sessionExists = freshSession != null,
+            startSummaryUpTo = startSummaryUpTo,
+            currentSummaryUpTo = freshSession?.historySummarizedUpTo,
+            startMessageCount = total,
+            currentMessageCount = currentCount
+        )
+        if (decision != CompressionWriteGuard.Decision.APPLY) {
+            Log.i(
+                TAG,
+                "discard history summary for session=$sessionId: reason=$decision " +
+                    "start=$total current=$currentCount"
+            )
+            return CompressionResult(
+                CompressionStatus.DISCARDED,
+                messageCount = chunk.size,
+                note = "这段对话在整理期间变化了（$decision），这次结果丢弃"
+            )
+        }
         val applied = runCatching {
             sessionDao.setHistorySummary(sessionId, summary, upTo, now)
         }
@@ -352,6 +416,8 @@ class HistoryCompressor @Inject constructor(
     )
 
     private companion object {
+        const val TAG = "HistoryCompressor"
+
         /** 记忆不需要创造力，但要稳定地说同一件事。 */
         const val TEMPERATURE = 0.2
 

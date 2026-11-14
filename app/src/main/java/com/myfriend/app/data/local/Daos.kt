@@ -5,7 +5,9 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.RawQuery
 import androidx.room.Update
+import androidx.sqlite.db.SupportSQLiteQuery
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -364,20 +366,31 @@ interface MessageDao {
     @Query("DELETE FROM messages WHERE personaId = :personaId")
     suspend fun deleteByPersona(personaId: String)
 
+    /**
+     * 删人格时先取出他要删的消息：附件图片文件要在事务**之前**拿到路径，
+     * 消息删完就查不到了。0.10.2 起「删一个人」也会删他的聊天图片。
+     */
+    @Query("SELECT * FROM messages WHERE personaId = :personaId ORDER BY createdAt ASC, id ASC")
+    suspend fun getByPersona(personaId: String): List<MessageEntity>
+
     @Query("DELETE FROM messages")
     suspend fun deleteAll()
 
-    @Query("""
-        SELECT m.id AS messageId, m.sessionId AS sessionId, s.title AS sessionTitle,
-        s.personaId AS personaId, p.name AS personaName, p.avatarUri AS personaAvatarUri,
-        p.avatarSeed AS personaAvatarSeed, m.content AS content, m.createdAt AS createdAt
-        FROM messages m
-        INNER JOIN chat_sessions s ON s.id = m.sessionId
-        INNER JOIN personas p ON p.id = s.personaId
-        WHERE m.content LIKE '%' || :query || '%' COLLATE NOCASE
-        ORDER BY m.createdAt DESC LIMIT 80
-    """)
-    suspend fun search(query: String): List<MessageSearchRow>
+    /**
+     * 检索粗筛：SQL 由 [MessageSearchSql] 在运行时拼出来（人格 / 时间过滤 + 若干个 LIKE 词元 +
+     * LIMIT），所有值走绑定参数，用户输入永远不进 SQL 文本。
+     *
+     * 为什么用 `@RawQuery` 而不是 `@Query`：关键词要按 [com.myfriend.app.domain.ChineseTerms]
+     * 切出**不定个数**的词元，每个词元一个 `LIKE`，注解里的静态 SQL 表达不了；手拼字符串又
+     * 会把用户输入拼进 SQL（注入风险），`@RawQuery` + [androidx.sqlite.db.SimpleSQLiteQuery]
+     * 既能动态拼装又能保持参数化。排序与展示顺序由 `SearchRanking` 在内存里重新算。
+     */
+    @RawQuery
+    suspend fun searchCandidates(query: SupportSQLiteQuery): List<MessageSearchRow>
+
+    /** 与 [searchCandidates] 同一套过滤条件的命中总数（`COUNT(*) AS total`）。 */
+    @RawQuery
+    suspend fun countSearchHits(query: SupportSQLiteQuery): List<SearchCountRow>
 }
 
 @Dao
@@ -764,6 +777,16 @@ interface MemoryVersionDao {
 
     @Query("DELETE FROM memory_versions WHERE memoryId = :memoryId")
     suspend fun deleteByMemory(memoryId: String)
+
+    /**
+     * 记忆被整批删掉之后回收版本行。
+     *
+     * `memory_versions` 只挂在 `memoryId` 上（没有外键），
+     * `MemoryReconsolidator` 每次「回忆漂移」都写一条——0.10.2 之前它**只增不减**，
+     * 删人格/清空数据都清不干净。这里与 term/vector 用同一条孤儿回收语义。
+     */
+    @Query("DELETE FROM memory_versions WHERE memoryId NOT IN (SELECT id FROM memories)")
+    suspend fun deleteOrphans(): Int
 
     @Query("DELETE FROM memory_versions")
     suspend fun deleteAll()

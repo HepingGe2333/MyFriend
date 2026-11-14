@@ -87,6 +87,16 @@ public final class HeartbeatController {
     private let isLowPower: () -> Bool
     private let lock = NSLock()
     private var cached: BeatSnapshot?
+    /// 「这一拍归谁」的互斥（0.10.2 审计 P1-2）。
+    ///
+    /// 冷启动 `.task`、回前台 `onChange`、BGTask 时间片、前台 30 秒定时器可能同时打进来。
+    /// 原来的 `beat()` 全程没有互斥：并发两次都会读到同一个 `lastResetAt`，都穿过
+    /// 「刚想过」闸（那道闸在掷骰子之后才查）→ 两次 LLM 调用、两条主动消息、两条通知。
+    ///
+    /// 这里用「原子标记 + 直接跳过」而不是排队：心跳是**周期性采样**，
+    /// 这一拍被占掉了，下一拍（30 秒后）再掷就是了；排队反而会让消息挤在一起。
+    private let beatLock = NSLock()
+    private var beating = false
 
     public init(
         stores: DatabaseStores,
@@ -111,7 +121,11 @@ public final class HeartbeatController {
     }
 
     /// 一次「心跳」：轻到可以每半分钟跑一回；只有掷中的时候才会花时间。
+    ///
+    /// **并发调用只会真的跑一次**：另一次立刻返回「上一拍还没跑完」（不留副作用）。
     public func beat(now: Int64? = nil, roll: Double? = nil) async -> Beat {
+        guard beginBeat() else { return Beat(why: "上一拍还没跑完") }
+        defer { endBeat() }
         let at = now ?? self.now()
         let dice = roll ?? self.roll()
         let settings = settings.load()
@@ -180,6 +194,22 @@ public final class HeartbeatController {
             summary: outcome?.summary ?? "",
             why: outcome == nil ? "这一轮没想成" : ""
         )
+    }
+
+    // MARK: - 单拍互斥
+
+    private func beginBeat() -> Bool {
+        beatLock.lock()
+        defer { beatLock.unlock() }
+        if beating { return false }
+        beating = true
+        return true
+    }
+
+    private func endBeat() {
+        beatLock.lock()
+        beating = false
+        beatLock.unlock()
     }
 
     /// 下一次心跳隔多久（毫秒）。默认 30 秒；App 层判定省电时放宽到 2 分钟。

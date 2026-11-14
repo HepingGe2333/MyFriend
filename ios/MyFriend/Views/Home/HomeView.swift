@@ -82,6 +82,13 @@ struct HomeView: View {
                 Text("MyFriend")
                     .font(.system(size: 32, weight: .bold, design: .serif))
                 Spacer()
+                NavigationLink(value: Route.search) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 17))
+                        .foregroundStyle(.primary)
+                }
+                .padding(.leading, 16)
+                .accessibilityLabel(Text(L("搜索聊天记录")))
                 NavigationLink(value: Route.personas) {
                     Image(systemName: "person.2")
                         .font(.system(size: 17))
@@ -97,9 +104,13 @@ struct HomeView: View {
                 .padding(.leading, 16)
                 .accessibilityLabel(Text(L("设置")))
             }
+            // 英文这句比中文长一倍（「A quiet place to talk, unhurried」），留两行并允许纵向伸展，
+            // 否则在 iPhone SE 这类窄屏上会被压成一行后截断。
             Text(L("留一处安静的地方，慢慢说话"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 12)
     }

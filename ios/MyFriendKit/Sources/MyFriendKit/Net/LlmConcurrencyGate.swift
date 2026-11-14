@@ -53,10 +53,22 @@ public enum LlmGateResult: Sendable, Equatable {
     case acquired(LlmGateTicket)
     /// 到点还没轮到。`waitedMillis` 是实际等了多久（就是超时值）。
     case timedOut(lane: LlmCallLane, waitedMillis: Int64)
+    /// 等的时候调用方被取消了（用户点了「停止」/ 页面走了）。
+    ///
+    /// 0.10.2 审计 P1-11：`acquire` 原来是 `withCheckedContinuation`，对 `Task.cancel()`
+    /// 完全不敏感——用户点了停止，这次调用还要等到 20/60 秒超时才会被摘下，
+    /// 期间还可能真的拿到名额、发出一次用户已经不想要的请求（照样花 token）。
+    case cancelled(lane: LlmCallLane)
 
     public var ticket: LlmGateTicket? {
         if case .acquired(let ticket) = self { return ticket }
         return nil
+    }
+
+    /// 是不是「被取消」而不是「超时」：调用方据此抛 `CancellationError` 而不是报错给用户。
+    public var isCancelled: Bool {
+        if case .cancelled = self { return true }
+        return false
     }
 }
 
@@ -129,40 +141,59 @@ public final class LlmConcurrencyGate: @unchecked Sendable {
         }
 
         // 名额不够：登记成等待者（登记时再查一次，避免这中间有人还了名额）。
-        return await withCheckedContinuation { continuation in
-            // 登记与「再查一次名额」在同一段同步临界区里完成，避免这中间有人还了名额又被别人抢走。
-            enum Registration {
-                case acquired(LlmGateTicket)
-                case registered
-            }
-            let registration: Registration = lock.mfWithLock {
-                if let ticket = tryAcquireLocked(lane) { return .acquired(ticket) }
-                waiters.append(
-                    Waiter(id: waiterId, lane: lane, timeoutMillis: timeout,
-                           continuation: continuation)
-                )
-                return .registered
-            }
-            if case .acquired(let ticket) = registration {
-                continuation.resume(returning: .acquired(ticket))
-                return
-            }
-
-            let timeoutTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
-                self?.expireWaiter(id: waiterId)
-            }
-            let installed = lock.mfWithLock { () -> Bool in
-                if let index = waiters.firstIndex(where: { $0.id == waiterId }) {
-                    waiters[index].timeoutTask = timeoutTask
-                    return true
+        //
+        // `withTaskCancellationHandler` 让等待**可被取消**：取消时把自己从队列里摘掉、
+        // 立刻 resume 成 `.cancelled`（名额一个都不占）。登记与取消检查在同一段同步临界区里，
+        // 所以「取消发生在登记之前」也不会漏（`Task.isCancelled` 在锁内再查一次）。
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                // 登记与「再查一次名额」在同一段同步临界区里完成，避免这中间有人还了名额又被别人抢走。
+                enum Registration {
+                    case acquired(LlmGateTicket)
+                    case registered
+                    case cancelled
                 }
-                return false
+                let registration: Registration = lock.mfWithLock {
+                    // 取消可能发生在 `withTaskCancellationHandler` 的 handler 跑完之后、
+                    // 登记之前（handler 那时找不到 waiter）。这里补一次检查。
+                    if Task.isCancelled { return .cancelled }
+                    if let ticket = tryAcquireLocked(lane) { return .acquired(ticket) }
+                    waiters.append(
+                        Waiter(id: waiterId, lane: lane, timeoutMillis: timeout,
+                               continuation: continuation)
+                    )
+                    return .registered
+                }
+                switch registration {
+                case .acquired(let ticket):
+                    continuation.resume(returning: .acquired(ticket))
+                    return
+                case .cancelled:
+                    continuation.resume(returning: .cancelled(lane: lane))
+                    return
+                case .registered:
+                    break
+                }
+
+                let timeoutTask = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds: UInt64(timeout) * 1_000_000)
+                    self?.expireWaiter(id: waiterId)
+                }
+                let installed = lock.mfWithLock { () -> Bool in
+                    if let index = waiters.firstIndex(where: { $0.id == waiterId }) {
+                        waiters[index].timeoutTask = timeoutTask
+                        return true
+                    }
+                    return false
+                }
+                if !installed {
+                    // 已经拿到名额 / 已经取消 / 已经过期：这个定时器没用了。
+                    timeoutTask.cancel()
+                }
             }
-            if !installed {
-                // 已经拿到名额 / 已经过期：这个定时器没用了。
-                timeoutTask.cancel()
-            }
+        } onCancel: {
+            // 取消回调可能在任意线程：只做「摘除 + resume」这一件同步小事。
+            self.cancelWaiter(id: waiterId, lane: lane)
         }
     }
 
@@ -212,6 +243,23 @@ public final class LlmConcurrencyGate: @unchecked Sendable {
         if lane == .background { backgroundActive += 1 }
         nextId += 1
         return LlmGateTicket(lane: lane, id: nextId)
+    }
+
+    /// 被取消：把自己从队列里摘掉并 resume 成 `.cancelled`。
+    ///
+    /// 摘不到就什么都不做——说明这一拍已经被 `release` 授予并 resume 过了（或者还没登记，
+    /// 那种情况由登记那一步的 `Task.isCancelled` 兜住）。所以不会双次 resume，
+    /// 也不会有名额泄漏：名额只在授予时记账，取消时不会记账。
+    private func cancelWaiter(id: UInt64, lane: LlmCallLane) {
+        lock.lock()
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else {
+            lock.unlock()
+            return
+        }
+        let waiter = waiters.remove(at: index)
+        lock.unlock()
+        waiter.timeoutTask?.cancel()
+        waiter.continuation.resume(returning: .cancelled(lane: lane))
     }
 
     /// 到点还没轮到：把自己从队列里摘掉，并告诉调用方「这次算了」。

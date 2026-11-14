@@ -1,0 +1,219 @@
+[
+  {
+    "name": "more distinct query terms first",
+    "why": "matching two query terms must outrank matching one, regardless of recency.",
+    "input": {
+      "query": "harbin coat",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "we talked about harbin",
+          "createdAt": 3000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m2",
+          "content": "harbin is cold, bring a coat",
+          "createdAt": 1000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m2",
+        "m1"
+      ]
+    }
+  },
+  {
+    "name": "equal match count falls back to recency",
+    "why": "same number of matched terms, same content: the newer message wins.",
+    "input": {
+      "query": "harbin",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "harbin",
+          "createdAt": 1000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m2",
+          "content": "harbin",
+          "createdAt": 2000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m2",
+        "m1"
+      ]
+    }
+  },
+  {
+    "name": "same score and timestamp falls back to id ascending",
+    "why": "the order must be stable across platforms when everything else ties.",
+    "input": {
+      "query": "harbin",
+      "messages": [
+        {
+          "id": "b",
+          "content": "harbin",
+          "createdAt": 5000,
+          "personaId": "p1"
+        },
+        {
+          "id": "a",
+          "content": "harbin",
+          "createdAt": 5000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "a",
+        "b"
+      ]
+    }
+  },
+  {
+    "name": "lowercase query matches mixed-case content",
+    "why": "matching is case-insensitive on both platforms.",
+    "input": {
+      "query": "harbin",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "Harbin in January",
+          "createdAt": 1000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m1"
+      ]
+    }
+  },
+  {
+    "name": "non matching messages are dropped",
+    "why": "only hits are returned; no fuzzy fallback.",
+    "input": {
+      "query": "harbin",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "Harbin",
+          "createdAt": 1000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m2",
+          "content": "totally unrelated",
+          "createdAt": 2000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m1"
+      ]
+    }
+  },
+  {
+    "name": "persona filter is applied before ranking",
+    "why": "filtering must not change the relative order of the remaining hits.",
+    "input": {
+      "query": "harbin",
+      "filter": {
+        "personaId": "p2"
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "content": "harbin harbin",
+          "createdAt": 3000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m2",
+          "content": "harbin",
+          "createdAt": 1000,
+          "personaId": "p2"
+        },
+        {
+          "id": "m3",
+          "content": "harbin",
+          "createdAt": 2000,
+          "personaId": "p2"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m3",
+        "m2"
+      ]
+    }
+  },
+  {
+    "name": "since filter drops older hits",
+    "why": "the time filter is inclusive of the boundary timestamp.",
+    "input": {
+      "query": "harbin",
+      "filter": {
+        "since": 2000
+      },
+      "messages": [
+        {
+          "id": "m1",
+          "content": "harbin",
+          "createdAt": 1000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m2",
+          "content": "harbin",
+          "createdAt": 2000,
+          "personaId": "p1"
+        },
+        {
+          "id": "m3",
+          "content": "harbin",
+          "createdAt": 3000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": [
+        "m3",
+        "m2"
+      ]
+    }
+  },
+  {
+    "name": "empty query yields no hits",
+    "why": "searching for whitespace must not return the whole database.",
+    "input": {
+      "query": "   ",
+      "messages": [
+        {
+          "id": "m1",
+          "content": "harbin",
+          "createdAt": 1000,
+          "personaId": "p1"
+        }
+      ]
+    },
+    "expect": {
+      "order": []
+    }
+  }
+]

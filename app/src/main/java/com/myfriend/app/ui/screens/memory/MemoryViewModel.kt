@@ -435,6 +435,13 @@ class MemoryViewModel @Inject constructor(
             com.myfriend.app.data.repo.MemoryExtractionOutcome.NOT_ENOUGH_CHAT ->
                 context.getString(R.string.memory_extract_result_not_enough)
             com.myfriend.app.data.repo.MemoryExtractionOutcome.INTERVAL_NOT_REACHED ->
-                context.getString(R.string.memory_extract_result_interval, result.every ?: 0)
+                run {
+                    val every = result.every ?: 0
+                    context.resources.getQuantityString(
+                        R.plurals.memory_extract_result_interval,
+                        every,
+                        every
+                    )
+                }
         }
 }

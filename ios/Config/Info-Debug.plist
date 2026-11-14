@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 中文是开发语言（base）：系统里没有 zh-Hans / en 时回落中文。 -->
+	<key>CFBundleDevelopmentRegion</key>
+	<string>zh-Hans</string>
+	<!-- 声明支持的语言：iOS 的「设置 → App → 语言」里才会出现中文 / English 两项。
+	     语言跟随系统（或用户在这里的 per-app 选择），App 内没有语言开关。 -->
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>zh-Hans</string>
+		<string>en</string>
+	</array>
+	<key>CFBundleDisplayName</key>
+	<string>MyFriend</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string></string>
+	</dict>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
+
+	<!-- 后台：iOS 不允许常驻，只能申请「定期刷新」与「后台处理」两种机会式时间片。
+	     标识符必须与代码里 BGTaskScheduler 注册的一致，否则系统直接拒绝调度。 -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>processing</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.myfriend.app.ios.refresh</string>
+		<string>com.myfriend.app.ios.processing</string>
+	</array>
+
+	<!-- 调试构建专用（Config/Info-Debug.plist，只被 Debug 配置使用）。
+	     本地参考服务跑在 http://127.0.0.1:8787 / http://192.168.x.x:8787，需要全量放开 ATS；
+	     发布构建用的是 Config/Info.plist，那里没有 NSAllowsArbitraryLoads。
+	     两份 plist 的差异由 `InfoPlistATSTests` 逐键守住，别手动「顺手同步」。 -->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>为了连接你自己在电脑上跑的参考服务（本地调试用），需要访问局域网。</string>
+</dict>
+</plist>

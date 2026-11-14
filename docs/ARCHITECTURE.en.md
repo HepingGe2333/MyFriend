@@ -136,6 +136,14 @@ flowchart LR
 
 **Why contract + cases before KMP**: the contract is a prerequisite for *any* sharing strategy. Without it, both KMP and a remote service still drift. It is also zero-risk: no new toolchain, no client code path changes.
 
+## 5.5 Search
+
+Chat search is the same semantics implemented twice, pinned by `spec/search/` (16 cases): parameterised `LIKE`
+pre-filtering (user input `%`/`_`/`\` treated literally) plus `ChineseTerms` token recall, then in-memory ranking
+(matched tokens → `relevance` → time → id) over at most 500 candidates. No inverted-index table is deliberate: it would
+have to be maintained on every write path and force a schema bump, while search is a low-frequency action where a
+pre-filter over tens of thousands of messages is millisecond-scale.
+
 ## 6. Migration path (staged, each step revertible)
 
 | Stage | Work | Rollback |
@@ -164,7 +172,9 @@ UI copy follows the system language (Simplified Chinese is the base, English is 
 | Backup fixtures | `fixtures/backup/`, `BackupFixtureTest` / `BackupInteropTests` | field names, encodings, enum values |
 | Shared conformance cases | `spec/agent-core/cases/`, spec tests on both platforms | divergent decisions and boundaries |
 | "Retired settings" guard | `SettingsRemovalGuardTest`, `SettingsRetirementTests` | re-introducing budgets and toggles that were deliberately removed |
-| i18n resource guard | new in 0.10.0 | adding a Chinese string without the English one |
+| i18n resource guard | new in 0.10.0, strengthened in 0.10.2 | key drift, untranslated English (CJK), placeholder reordering, unused keys |
+| Search contract | `spec/search/cases/` | snippet/highlight rules and ranking/filter semantics drifting |
+| Independent audits | `docs/audits/` | concurrency, data integrity, security, contract drift; one per version, every P0/P1 fixed with a test |
 | Migration tests | `MyFriendDatabaseMigrationTest`, `SchemaMigrationTests` | data loss on upgrade |
 
 ## 10. Known limitations

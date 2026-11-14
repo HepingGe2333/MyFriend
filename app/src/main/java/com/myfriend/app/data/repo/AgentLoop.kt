@@ -21,6 +21,8 @@ import com.myfriend.app.domain.AgentAction
 import com.myfriend.app.domain.AgentDecision
 import com.myfriend.app.domain.AgentDecisionCodec
 import com.myfriend.app.domain.AgentPromptBuilder
+import com.myfriend.app.domain.AgentTickLock
+import com.myfriend.app.domain.ChatNotificationPolicy
 import com.myfriend.app.domain.MessageWindows
 import com.myfriend.app.domain.MoodBehavior
 import com.myfriend.app.domain.MoodState
@@ -35,6 +37,7 @@ import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.InferenceParams
 import com.myfriend.app.network.WireMessage
 import com.myfriend.app.network.inferenceParams
+import com.myfriend.app.util.AppForegroundTracker
 import com.myfriend.app.util.ProactiveNotifier
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.first
@@ -70,9 +73,19 @@ class AgentLoop @Inject constructor(
     private val chatRepository: ChatRepository,
     private val openSessionTracker: OpenSessionTracker,
     private val presenceRepository: PresenceRepository,
+    private val foregroundTracker: AppForegroundTracker,
     private val database: MyFriendDatabase,
     @ApplicationContext private val context: Context
 ) {
+
+    /**
+     * 一拍只允许一个在跑。
+     *
+     * 三条入口（心跳 / WorkManager 兜底 / 主动规则 Worker）都会直接调 [tick]，
+     * 而 tick 里是「先查今天说够没 → 再发」的 check-then-act：两条并发的 tick
+     * 都能通过检查，然后各发一条几乎一样的消息。拿不到就直接跳过这一拍。
+     */
+    private val tickLock = AgentTickLock()
 
     /** 一次思考的结果：下次多久之后再来想、这次到底做了什么。 */
     data class Outcome(
@@ -101,6 +114,18 @@ class AgentLoop @Inject constructor(
     suspend fun lastTickAt(): Long? = runCatching { tickDao.lastTickAt() }.getOrNull()
 
     suspend fun tick(now: Long = System.currentTimeMillis()): Outcome {
+        if (!tickLock.tryEnter()) {
+            return Outcome(IDLE_MAX, false, "上一次思考还没结束，这一拍跳过")
+        }
+        return try {
+            tickLocked(now)
+        } finally {
+            tickLock.exit()
+        }
+    }
+
+    /** [tick] 的实际内容，调用前必须已经拿到 [tickLock]。 */
+    private suspend fun tickLocked(now: Long): Outcome {
         val settings = settingsRepository.settings.first()
         if (!settings.agentLoopEnabled) return Outcome(IDLE_MAX, false, "常驻循环已关闭")
 
@@ -416,11 +441,18 @@ class AgentLoop @Inject constructor(
                         updatedAt = stamp
                     )
                 )
-                if (openSessionTracker.openSessionId != session.id) sessionDao.incrementUnread(session.id)
+                if (ChatNotificationPolicy.shouldMarkUnread(openSessionTracker.openSessionId, session.id)) {
+                    sessionDao.incrementUnread(session.id)
+                }
             }
         }
-        // 对方没在看这个会话时才打扰；正在看就直接出现在屏幕上了。
-        if (openSessionTracker.openSessionId != session.id) {
+        // 对方没在看这个会话（或 App 不在前台）时才打扰；正在看就直接出现在屏幕上了。
+        if (ChatNotificationPolicy.shouldNotify(
+                openSessionTracker.openSessionId,
+                session.id,
+                foregroundTracker.isForeground
+            )
+        ) {
             runCatching { ProactiveNotifier.notify(context, persona, session.id, text) }
         }
         return message

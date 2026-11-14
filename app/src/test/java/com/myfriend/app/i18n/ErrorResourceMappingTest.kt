@@ -30,6 +30,11 @@ class ErrorResourceMappingTest {
         .filter { it.type == Int::class.javaPrimitiveType }
         .associate { it.getInt(null) to it.name }
 
+    /** `R.plurals` 的 id → 名字（计数文案从 `<string>` 换成 `<plurals>` 之后要用）。 */
+    private val pluralNamesById: Map<Int, String> = R.plurals::class.java.declaredFields
+        .filter { it.type == Int::class.javaPrimitiveType }
+        .associate { it.getInt(null) to it.name }
+
     @Test
     fun `每个数据层错误码都有中英双语资源`() {
         val missing = DomainErrorCode.entries.mapNotNull { code ->
@@ -53,6 +58,7 @@ class ErrorResourceMappingTest {
             NetworkErrorKind.EmptyUrl,
             NetworkErrorKind.InvalidUrl,
             NetworkErrorKind.HttpsRequired,
+            NetworkErrorKind.CleartextDisabled,
             NetworkErrorKind.UnsupportedScheme,
             NetworkErrorKind.InvalidBaseUrl,
             NetworkErrorKind.Http(400),
@@ -115,8 +121,13 @@ class ErrorResourceMappingTest {
         val connected = namesById[R.string.api_connect_success]
         assertNotNull(connected)
         assertTrue(connected in zh && connected in en)
-        val withModels = namesById[R.string.api_connect_success_models]
+        // 0.10.2 起「发现 N 个模型」是计数文案：英文要区分 1 model / 2 models，所以换成 plurals。
+        val withModels = pluralNamesById[R.plurals.api_connect_success_models]
         assertNotNull(withModels)
-        assertTrue(withModels in zh && withModels in en)
+        requireNotNull(withModels)
+        val zhPlurals = TestResources.plurals("values")
+        val enPlurals = TestResources.plurals("values-en")
+        assertTrue(withModels in zhPlurals && withModels in enPlurals)
+        assertTrue("英文 plurals 少了 one 变体", "one" in enPlurals.getValue(withModels))
     }
 }

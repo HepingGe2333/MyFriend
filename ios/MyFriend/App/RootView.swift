@@ -15,6 +15,10 @@ struct RootView: View {
                         switch route {
                         case .chat(let sessionId):
                             ChatScreen(sessionId: sessionId)
+                        case .chatAt(let sessionId, let messageId):
+                            ChatScreen(sessionId: sessionId, focusMessageId: messageId)
+                        case .search:
+                            SearchScreen()
                         case .browser(let url):
                             InAppBrowserView(url: url)
                         case .settings:

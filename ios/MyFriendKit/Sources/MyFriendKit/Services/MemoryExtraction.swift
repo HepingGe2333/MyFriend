@@ -51,6 +51,8 @@ public final class MemoryExtraction {
     private let completion: CompletionClient
     private let echoStore: MemoryEchoStoring
     private let now: () -> Int64
+    /// 写回失败 / 被并发抢走时记一句（后台任务不弹错，但日志里要能查）。
+    private let log: (String) -> Void
     /// 抽取串行化：并发的两次抽取会各自把同一件事当成「第一次提到」。
     private let gate = AsyncMutex()
 
@@ -59,13 +61,15 @@ public final class MemoryExtraction {
         memoryRepository: MemoryRepository,
         completion: CompletionClient,
         echoStore: MemoryEchoStoring? = nil,
-        now: @escaping () -> Int64 = { DomainClock.nowMillis }
+        now: @escaping () -> Int64 = { DomainClock.nowMillis },
+        log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
         self.memoryRepository = memoryRepository
         self.completion = completion
         self.echoStore = echoStore ?? MemoryEchoStore(database: stores.database)
         self.now = now
+        self.log = log
     }
 
     /// 抽取一次。`force = true` 时不看间隔（「现在整理一次」用）。
@@ -205,10 +209,24 @@ public final class MemoryExtraction {
         }
 
         // 记下「已经抽到第几条消息」，下一轮就不会重复抽同一段。
-        var updatedSession = session
-        updatedSession.lastMemoryExtractedCount = currentCount
-        updatedSession.updatedAt = at
-        _ = try? stores.sessions.upsert(updatedSession)
+        //
+        // 只 UPDATE 这一列（0.10.2 审计 P1-1）：整行写回会把这几秒里用户新消息写下的
+        // 预览 / 未读 / 标题、以及另一条后台任务写的摘要一起冲掉；会话被删时
+        // `INSERT OR REPLACE` 还会把它复活成一行幽灵会话。
+        // 乐观检查：读到的旧计数仍然成立才写；不成立说明有人抢先了，这次的结果只进日志。
+        do {
+            let wrote = try stores.sessions.updateMemoryExtractedCount(
+                id: session.id,
+                observed: session.lastMemoryExtractedCount,
+                count: currentCount,
+                updatedAt: at
+            )
+            if !wrote {
+                log("[memory] 会话在这期间被改过（或已删除），这次抽取计数不写回（\(sessionId)）")
+            }
+        } catch {
+            log("[memory] 写回抽取计数失败（\(sessionId)）：\(error.localizedDescription)")
+        }
 
         let message: String
         if added > 0 {

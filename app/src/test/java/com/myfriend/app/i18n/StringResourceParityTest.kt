@@ -108,7 +108,80 @@ class StringResourceParityTest {
         assertTrue(File(TestResources.valuesDir("values").parentFile, "xml/locales_config.xml").isFile)
     }
 
-    /** `%1$s` / `%2$d` 这类位置化参数；裸 `%s` 也算一种写法，一并比对。 */
-    private fun placeholders(text: String): Set<String> =
-        Regex("""%(\d+\$[sd]|[sd])""").findAll(text).map { it.value }.toSet()
+    /**
+     * `values-en` 里不允许出现中文（未翻译）。
+     *
+     * 0.10.1 的守卫只比 key 集合：把一条英文文案写成中文，测试照样绿——
+     * 上一轮实际存在 `values-en/seed.xml` 三段中文分类。现在直接扫**值**：
+     * XML 注释不算（注释是给开发者看的，可以写中文）。
+     */
+    @Test
+    fun `values-en 的文案里不许出现中文`() {
+        val problems = buildList {
+            TestResources.strings("values-en").forEach { (key, text) ->
+                if (CONTAINS_CJK.containsMatchIn(text)) add("values-en/$key = $text")
+            }
+            TestResources.plurals("values-en").forEach { (key, items) ->
+                items.forEach { (quantity, text) ->
+                    if (CONTAINS_CJK.containsMatchIn(text)) add("values-en/$key[$quantity] = $text")
+                }
+            }
+        }
+        assertEquals(
+            "以下英文资源里还有中文（未翻译，或该加进 cjkWhitelist 并写清原因）：\n" +
+                problems.joinToString("\n"),
+            emptyList<String>(),
+            problems
+        )
+    }
+
+    /**
+     * 两份资源的格式符集合必须一致（比 0.10.1 宽得多的正则）。
+     *
+     * 旧守卫只认 `%1$s` / `%d`，于是 `%.1f`、`%x`、`%%` 这类格式符两边不一致也发现不了——
+     * 英文界面可能因此拿到一条「参数比实际多一个」的文案，轻则显示 `%2$d`，重则
+     * `String.format` 抛 `IllegalFormatConversionException` 崩溃。
+     */
+    @Test
+    fun `同一 key 的完整格式符集合两边一致`() {
+        val zh = TestResources.strings("values")
+        val en = TestResources.strings("values-en")
+        val mismatched = (zh.keys intersect en.keys).mapNotNull { key ->
+            val left = formatSpecifiers(zh.getValue(key))
+            val right = formatSpecifiers(en.getValue(key))
+            if (left == right) null else "$key zh=$left en=$right"
+        }
+        assertEquals("格式符对不上的条目：$mismatched", emptyList<String>(), mismatched)
+    }
+
+    @Test
+    fun `plurals 的完整格式符集合两边一致`() {
+        val zh = TestResources.plurals("values")
+        val en = TestResources.plurals("values-en")
+        val mismatched = (zh.keys intersect en.keys).mapNotNull { key ->
+            val left = zh.getValue(key).values.flatMap { formatSpecifiers(it) }.toSet()
+            val right = en.getValue(key).values.flatMap { formatSpecifiers(it) }.toSet()
+            if (left == right) null else "$key zh=$left en=$right"
+        }
+        assertEquals("plurals 格式符对不上的条目：$mismatched", emptyList<String>(), mismatched)
+    }
+
+    /**
+     * 一条文案里的全部格式符（Android `String.format` 语法）。
+     *
+     * 覆盖位置参数、flags、宽度、精度与所有转换字符（`%s %d %f %x %c %%` 等）。
+     * `%%` 也保留：它决定「这段文案里有没有一个字面百分号」，两边不一致同样是问题。
+     */
+    /** 0.10.1 的窄口径占位符（只认 `%1$s` / `%d`）；保留给老测试，全量口径见 [formatSpecifiers]。 */
+    private fun placeholders(text: String): Set<String> = formatSpecifiers(text)
+
+    private fun formatSpecifiers(text: String): Set<String> =
+        Regex("""%(\d+\$)?[-#+ 0,(]*\d*(?:\.\d+)?([a-zA-Z%])""")
+            .findAll(text)
+            .map { it.value }
+            .toSet()
+
+    private companion object {
+        val CONTAINS_CJK = Regex("[\\u3400-\\u4dbf\\u4e00-\\u9fff\\uf900-\\ufaff]")
+    }
 }

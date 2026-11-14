@@ -47,12 +47,17 @@ open class SQLiteStore<Record: SQLiteRecord> {
     // MARK: 写入
 
     /// 单条 upsert。**不开事务**：调用方在批量导入时应自己包一层 `inTransaction`。
+    ///
+    /// 但要过连接锁：这条 autocommit 写不能落进别的线程正在跑的事务里
+    /// （否则对方回滚时它会静默消失，见 0.10.2 审计 P0-1）。
     open func upsert(_ record: Record) throws {
         let placeholders = Array(repeating: "?", count: columns.count).joined(separator: ", ")
         let sql = "INSERT OR REPLACE INTO \(tableName) (\(columns.joined(separator: ", "))) VALUES (\(placeholders))"
-        let statement = try database.prepare(sql)
-        try statement.bind(record.bindings)
-        _ = try statement.step()
+        try database.withConnectionLock {
+            let statement = try database.prepare(sql)
+            try statement.bind(record.bindings)
+            _ = try statement.step()
+        }
     }
 
     /// 批量 upsert：一个事务，要么全进要么全不进（备份导入不该留下半份数据）。
@@ -120,15 +125,19 @@ open class SQLiteStore<Record: SQLiteRecord> {
     // MARK: 删除
 
     public func delete(id: String) throws {
-        let statement = try database.prepare("DELETE FROM \(tableName) WHERE id = ?")
-        try statement.bind([.text(id)])
-        _ = try statement.step()
+        try database.withConnectionLock {
+            let statement = try database.prepare("DELETE FROM \(tableName) WHERE id = ?")
+            try statement.bind([.text(id)])
+            _ = try statement.step()
+        }
     }
 
     public func delete(where clause: String, _ arguments: [SQLiteValue] = []) throws {
-        let statement = try database.prepare("DELETE FROM \(tableName) WHERE \(clause)")
-        try statement.bind(arguments)
-        _ = try statement.step()
+        try database.withConnectionLock {
+            let statement = try database.prepare("DELETE FROM \(tableName) WHERE \(clause)")
+            try statement.bind(arguments)
+            _ = try statement.step()
+        }
     }
 
     public func deleteAll() throws {
@@ -670,6 +679,157 @@ public final class ChatSessionStore: SQLiteStore<ChatSessionEntity> {
     public func recent(limit: Int) throws -> [ChatSessionEntity] {
         try fetch(where: "lastMessageAt IS NOT NULL", [], orderBy: "lastMessageAt DESC", limit: limit)
     }
+
+    // MARK: - 后台任务的定向写回（0.10.2 审计 P1-1）
+    //
+    // 抽记忆与压缩摘要是「读整行 → 调模型（几百毫秒到几十秒）→ 写回」的模式。
+    // 原来写回用 `INSERT OR REPLACE`（整行替换），于是这段时间里用户新发的消息带来的
+    // 预览 / 未读 / 标题、另一条后台任务写的字段、甚至「会话被删掉」都会被冲掉或复活。
+    //
+    // 现在只 UPDATE 自己那几列，并且带**乐观检查**：读到的旧值仍然成立才写，
+    // 否则放弃这次后台结果（调用方只记日志，不弹错——后台任务失败不该打扰用户）。
+
+    /// 只写「记忆抽到第几条」。`observed` 是开始时读到的那一行的值：
+    /// 期间有人抢先改过（另一轮抽取、或备份导入）就不写。
+    ///
+    /// - Returns: false 表示乐观检查没过（会话被删 / 计数已被别人推进）。
+    @discardableResult
+    public func updateMemoryExtractedCount(
+        id: String,
+        observed: Int,
+        count: Int,
+        updatedAt: Int64
+    ) throws -> Bool {
+        let changed = try database.executeUpdate(
+            """
+            UPDATE chat_sessions SET lastMemoryExtractedCount = ?, updatedAt = ?
+            WHERE id = ? AND lastMemoryExtractedCount = ?
+            """,
+            [.int(count), .int(updatedAt), .text(id), .int(observed)]
+        )
+        return changed > 0
+    }
+
+    /// 只写「历史摘要」那三列。
+    ///
+    /// 乐观检查用**单调性**而不是「旧值相等」：两次压缩同时跑时，压得更远的那一次
+    /// 才应该生效（先到先得会让覆盖更多消息的那次白算）。`-1` 代表「还没有摘要」。
+    ///
+    /// - Returns: false 表示没写（会话被删 / 已经有人压得更远）。
+    @discardableResult
+    public func updateHistorySummary(
+        id: String,
+        summary: String,
+        summarizedUpTo: Int64,
+        summaryAt: Int64,
+        updatedAt: Int64
+    ) throws -> Bool {
+        let changed = try database.executeUpdate(
+            """
+            UPDATE chat_sessions
+            SET historySummary = ?, historySummarizedUpTo = ?, historySummaryAt = ?, updatedAt = ?
+            WHERE id = ? AND COALESCE(historySummarizedUpTo, -1) < ?
+            """,
+            [
+                .text(summary), .int(summarizedUpTo), .int(summaryAt), .int(updatedAt),
+                .text(id), .int(summarizedUpTo)
+            ]
+        )
+        return changed > 0
+    }
+
+    /// 只清空摘要三列（启动自检发现旧摘要不可用时用）。会话被删就返回 false。
+    @discardableResult
+    public func clearHistorySummary(id: String, updatedAt: Int64) throws -> Bool {
+        let changed = try database.executeUpdate(
+            """
+            UPDATE chat_sessions SET historySummary = NULL, historySummarizedUpTo = NULL,
+                historySummaryAt = NULL, updatedAt = ?
+            WHERE id = ?
+            """,
+            [.int(updatedAt), .text(id)]
+        )
+        return changed > 0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 聊天记录检索的结果对象。
+//
+// 这是**界面唯一需要认识的东西**：一条命中、它所在的会话与人格、可渲染的摘要与高亮。
+// 为什么不让界面自己去 join 会话 / 人格：那会把「标题为空怎么回落」这种规则复制到每个调用点，
+// 而且 N+1 次查询会写在视图里。规则集中在这个文件里，界面只管画。
+// ---------------------------------------------------------------------------
+
+/// 一条检索命中。
+///
+/// 比规格里列的九个字段多了 `personaId` / `avatarSeed`：它们本来就要在 SQL 里查出来
+/// （按人格过滤、头像底色），丢在数据层反而逼界面再查一次。
+public struct SearchHit: Identifiable, Equatable, Sendable {
+    /// 消息 id（也是跳转定位的锚点）。
+    public var id: String
+    public var sessionId: String
+    /// 会话标题；标题为空时回落成人格名（界面不用再判一次空）。
+    public var sessionTitle: String
+    public var personaId: String
+    public var personaName: String
+    /// 人格头像 URI（没有头像时界面用 `avatarSeed` + 首字画一个稳定的圆）。
+    public var avatar: String?
+    public var avatarSeed: Int
+    /// 摘要正文（带省略号的那一段）。
+    public var snippet: String
+    /// 摘要里的高亮区间（UTF-16 偏移，相对 `snippet`）。
+    public var highlights: [Range<Int>]
+    public var createdAt: Int64
+    public var role: MessageRole
+
+    public init(
+        id: String,
+        sessionId: String,
+        sessionTitle: String,
+        personaId: String,
+        personaName: String,
+        avatar: String? = nil,
+        avatarSeed: Int = 0,
+        snippet: String,
+        highlights: [Range<Int>] = [],
+        createdAt: Int64,
+        role: MessageRole
+    ) {
+        self.id = id
+        self.sessionId = sessionId
+        self.sessionTitle = sessionTitle
+        self.personaId = personaId
+        self.personaName = personaName
+        self.avatar = avatar
+        self.avatarSeed = avatarSeed
+        self.snippet = snippet
+        self.highlights = highlights
+        self.createdAt = createdAt
+        self.role = role
+    }
+
+    /// 摘要按高亮切开的样子（直接交给 `Text` 拼；Kit 不依赖 SwiftUI）。
+    public var snippetSegments: [SearchSnippet.Segment] {
+        SearchSnippet(text: snippet, highlights: highlights).segments()
+    }
+}
+
+/// 一页检索结果。
+public struct SearchPage: Equatable, Sendable {
+    public var hits: [SearchHit]
+    /// 还有下一页（按同一查询 + 同一筛选条件继续往后翻）。
+    public var hasMore: Bool
+    /// 下一页的游标；`hasMore == false` 时是 nil。
+    public var nextCursor: SearchCursor?
+
+    public init(hits: [SearchHit] = [], hasMore: Bool = false, nextCursor: SearchCursor? = nil) {
+        self.hits = hits
+        self.hasMore = hasMore
+        self.nextCursor = nextCursor
+    }
+
+    public static let empty = SearchPage()
 }
 
 public final class MessageStore: SQLiteStore<MessageEntity> {
@@ -751,6 +911,168 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
             try upsert(message)
         }
         return unread.count
+    }
+
+    // MARK: - 聊天记录检索
+
+    /// 一页多少条（界面每页 30 条）。
+    public static let defaultSearchPageSize = 30
+
+    /// 粗筛最多取多少条候选进内存精排。
+    ///
+    /// 为什么要有上限：`LIKE '%q%'` 命中几千条时，把整张表的正文读进内存再算 relevance
+    /// 会在低端机上卡一下。代价是**超过 500 条命中时只在新最近的 500 条里排序**，
+    /// 更旧的高分命中可能被截掉（见交付报告的风险项）；`hasMore` 只反映这批候选内部还有没有。
+    public static let maxSearchCandidates = 500
+
+    /// 会话 / 人格只为了给命中补标题与头像，缓存一下避免同一次检索里 N+1。
+    private lazy var sessionLookup = ChatSessionStore(database: database)
+    private lazy var personaLookup = PersonaStore(database: database)
+
+    /// 检索聊天记录：**粗筛（SQL）→ 精排（Domain）→ 游标分页 → 补会话/人格信息**。
+    ///
+    /// 为什么是「LIKE 粗筛 + 内存精排」而不是建一张倒排索引表：
+    /// 排序规则要的是「命中词元个数 + `ChineseTerms.relevance`」，这在 SQL 里算不出来；
+    /// 真要做就得把词元、权重、分值的维护搬到写消息的每条路径上（发消息、撤回、编辑、
+    /// 备份导入、清空上下文……），一处漏了就会「搜不到自己刚说的话」。
+    /// 聊天记录的量级（一个人的对话）落在 500 条候选内，把复杂度放在 Domain 里值得。
+    ///
+    /// 用户输入里的 `%` / `_` / `\` 一律按普通字符处理（`LIKE ... ESCAPE '\'`）：
+    /// 「100%」不会被当成「100 后面跟任意内容」。注意这只管**粗筛的匹配语义**——
+    /// 规范还有一条「查询的任一词元命中也算命中」，所以「100%」仍会经词元「100」召回「1000」，
+    /// 两端行为必须一致（`spec/search/README.md` 的 Ranking rules 第 1 条）。
+    ///
+    /// - Parameters:
+    ///   - query: 查询词（内部 trim；空查询返回空页，不是「返回全部」）。
+    ///   - personaId: 只看某个人格（nil = 全部）。
+    ///   - since: 只要这个时刻之后（含边界）的消息（nil = 全部时间）。
+    ///   - limit: 这一页最多几条。
+    ///   - cursor: 上一页返回的游标（nil = 第一页）。
+    ///   - candidateLimit: 粗筛上限（测试用它验证「候选被截断」时的行为）。
+    ///   - snippetWindow: 摘要窗口宽度，默认 60（与 `spec/search` 一致）。
+    public func search(
+        query: String,
+        personaId: String? = nil,
+        since: Int64? = nil,
+        limit: Int = MessageStore.defaultSearchPageSize,
+        cursor: SearchCursor? = nil,
+        candidateLimit: Int = MessageStore.maxSearchCandidates,
+        snippetWindow: Int = SearchSnippet.defaultWindow
+    ) throws -> SearchPage {
+        let trimmed = query.trimmed
+        guard !trimmed.isEmpty, limit > 0 else { return .empty }
+
+        // 1) 粗筛：正文里出现「查询原文」或任意一个中文词元。
+        //    词元这一半是中文的命根子：查「项目压力」时二元组能命中「项目压得我睡不着」。
+        var patterns = [MessageStore.likePattern(trimmed)]
+        for term in ChineseTerms.queryTerms(trimmed) where term != trimmed {
+            patterns.append(MessageStore.likePattern(term))
+        }
+        var clause = "(" + patterns.map { _ in "content LIKE ? ESCAPE '\\'" }.joined(separator: " OR ") + ")"
+        var arguments: [SQLiteValue] = patterns.map { .text($0) }
+        if let personaId {
+            clause += " AND personaId = ?"
+            arguments.append(.text(personaId))
+        }
+        if let since {
+            clause += " AND createdAt >= ?"
+            arguments.append(.int(since))
+        }
+        let candidates = try fetch(
+            where: clause,
+            arguments,
+            orderBy: "createdAt DESC, id ASC",
+            limit: max(1, candidateLimit)
+        )
+        if candidates.isEmpty { return .empty }
+
+        // 2) 精排：命中判断、命中词元数、relevance、四键排序都在 Domain 里（与规范用例同一套）。
+        let items = candidates.map { message in
+            SearchRankItem(
+                id: message.id,
+                content: message.content,
+                createdAt: message.createdAt,
+                personaId: message.personaId
+            )
+        }
+        let ranked = SearchRanking.rank(items, query: trimmed, personaId: personaId, since: since)
+
+        // 3) 游标分页：顺序是「分值优先」，所以游标必须带上四个排序键（见 `SearchCursor`）。
+        let remaining: [SearchRankedHit]
+        if let cursor {
+            remaining = ranked.filter { SearchRanking.comesAfter($0, cursor: cursor) }
+        } else {
+            remaining = ranked
+        }
+        if remaining.isEmpty { return .empty }
+        let page = Array(remaining.prefix(limit))
+        let hasMore = remaining.count > page.count
+
+        // 4) 补会话标题 / 人格名 / 头像 —— 只对**这一页**做，且同样的 id 只查一次。
+        var messagesById: [String: MessageEntity] = [:]
+        for candidate in candidates { messagesById[candidate.id] = candidate }
+        var sessionCache: [String: ChatSessionEntity?] = [:]
+        var personaCache: [String: PersonaEntity?] = [:]
+
+        func session(_ id: String) -> ChatSessionEntity? {
+            if let cached = sessionCache[id] { return cached }
+            let loaded: ChatSessionEntity? = (try? sessionLookup.byId(id)) ?? nil
+            sessionCache[id] = loaded
+            return loaded
+        }
+        func persona(_ id: String) -> PersonaEntity? {
+            if let cached = personaCache[id] { return cached }
+            let loaded: PersonaEntity? = (try? personaLookup.byId(id)) ?? nil
+            personaCache[id] = loaded
+            return loaded
+        }
+
+        var hits: [SearchHit] = []
+        hits.reserveCapacity(page.count)
+        for rankedHit in page {
+            guard let message = messagesById[rankedHit.item.id] else { continue }
+            let sessionEntity = session(message.sessionId)
+            let personaEntity = persona(message.personaId) ?? sessionEntity.flatMap { persona($0.personaId) }
+            let personaName = personaEntity?.name ?? ""
+            let title = (sessionEntity?.title ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let snippet = SearchSnippet.build(
+                content: message.content,
+                query: trimmed,
+                window: snippetWindow
+            )
+            hits.append(SearchHit(
+                id: message.id,
+                sessionId: message.sessionId,
+                sessionTitle: title.isEmpty ? personaName : title,
+                personaId: message.personaId,
+                personaName: personaName,
+                avatar: personaEntity?.avatarUri,
+                avatarSeed: personaEntity?.avatarSeed ?? 0,
+                snippet: snippet.text,
+                highlights: snippet.highlights,
+                createdAt: message.createdAt,
+                role: message.role
+            ))
+        }
+
+        let nextCursor = hasMore ? page.last.map(SearchCursor.init) : nil
+        return SearchPage(hits: hits, hasMore: hasMore && nextCursor != nil, nextCursor: nextCursor)
+    }
+
+    /// 把用户输入包成 `LIKE` 模式：`%` / `_` / `\` 全部转义成普通字符。
+    ///
+    /// 与 SQL 里的 `ESCAPE '\'` 配套使用。SQLite 的 `LIKE` 对 ASCII 大小写不敏感，
+    /// 对中文是逐字节比较 —— 正好符合「中文没有大小写」的事实。
+    static func likePattern(_ text: String) -> String {
+        var escaped = ""
+        escaped.reserveCapacity(text.count + 2)
+        for character in text {
+            if character == "\\" || character == "%" || character == "_" {
+                escaped.append("\\")
+            }
+            escaped.append(character)
+        }
+        return "%" + escaped + "%"
     }
 }
 

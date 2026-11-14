@@ -60,6 +60,18 @@ final class AppEnvironment: ObservableObject {
     /// 设置变了要通知界面重绘；View 用 `@EnvironmentObject` 读它。
     @Published private(set) var currentSettings: AppSettings
 
+    // MARK: - 前台心跳与补算的节流状态（0.10.2 审计 P1-2 / P1-3）
+
+    /// 「补算」的重入保护：冷启动 `.task` 与回前台 `onChange` 会同时命中同一次启动，
+    /// 没有它就会跑两遍（两次心跳 + 两次每日整理 + 两条主动消息）。
+    private let catchUpGuard = CatchUpGuard()
+    /// 每日整理同理：BGProcessingTask 与回前台补算可能撞上。
+    private var isConsolidating = false
+    /// 前台 30 秒一拍的定时器（只在 App 前台时存在）。
+    private var foregroundPulseTask: Task<Void, Never>?
+    /// 当前是不是前台（`scenePhase` 的镜像；定时器循环里用它再确认一次）。
+    private(set) var isForeground = false
+
     /// 启动失败时留给根视图显示（数据库打不开、没有可写目录……）。
     let bootError: String?
 
@@ -82,7 +94,9 @@ final class AppEnvironment: ObservableObject {
 
         let settings = SettingsStore()
         self.settings = settings
-        // 未签名的模拟器构建拿不到 Keychain entitlement；这里优先真 Keychain，失败才调试兜底。
+        // 未签名的模拟器构建拿不到 Keychain entitlement；只有「DEBUG + 模拟器」才允许
+        // 把 Key 临时放进 UserDefaults 调通链路。真机 / Release 上写失败会抛错
+        //（`KeychainFallbackPolicy`，见 0.10.2 审计 P1-5）。
         let apiKeys = ApiKeyStore(backend: ResilientKeychain())
         self.apiKeys = apiKeys
         let loadedSettings = settings.load()
@@ -123,7 +137,9 @@ final class AppEnvironment: ObservableObject {
         let extraction = MemoryExtraction(
             stores: fallbackStores,
             memoryRepository: memoryRepository,
-            completion: completion
+            completion: completion,
+            // 写回被并发抢走时只进日志（后台任务失败不该弹错给用户）。
+            log: { DebugSeeding.log($0) }
         )
         let consolidator = MemoryConsolidator(
             stores: fallbackStores,
@@ -197,7 +213,10 @@ final class AppEnvironment: ObservableObject {
                 guard let resolved else { return nil }
                 let completionConfig = CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey)
                 return await agentLoop.tick(config: completionConfig, model: resolved.model, now: now)
-            }
+            },
+            // 低电量模式下把前台账拍放宽到 2 分钟（`ForegroundPulse.intervalMillis` 与
+            // 概率换算用的是同一个数）：省电优先，但也别让「他」彻底不说话。
+            isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled }
         )
         self.heartbeat = heartbeat
 
@@ -264,7 +283,14 @@ final class AppEnvironment: ObservableObject {
             appVersion: Self.appVersion
         )
         self.backup = backup
-        self.dataReset = DataReset(stores: fallbackStores, settings: settings, apiKeys: apiKeys)
+        // 媒体清理收进 `DataReset`（0.10.2 审计 P1-7）：设置页与备份页两个入口都只调它，
+        // 谁也不会再忘记删图片/头像文件。
+        self.dataReset = DataReset(
+            stores: fallbackStores,
+            settings: settings,
+            apiKeys: apiKeys,
+            media: .shared
+        )
 
         self.chat = ChatService(
             stores: fallbackStores,
@@ -451,21 +477,30 @@ final class AppEnvironment: ObservableObject {
     ///
     /// 为什么装配层要有这个方法：首页（长按删除）与人格列表（卡片删除）都要做同一串动作，
     /// 而「删记忆必须先删倒排索引与向量索引」这种顺序一旦两处各写一份，迟早漏一个。
+    /// 删掉一个人，连同他的聊天、记忆、回声、思考留痕与记忆版本。
+    ///
+    /// 级联清单一律走 `PersonaDeletion`（Kit，有单测）：0.10.1 这里漏了 `memory_echoes`、
+    /// `agent_ticks`、`memory_versions`，也处理「删的是默认人格」——
+    /// 删完之后库里一个默认人格都没有，`defaultPersona()` 返回 nil（0.10.2 安全审计 P1-6）。
     func deletePersona(_ persona: PersonaEntity) throws {
         // 头像文件不跟着备份走，也不属于数据库；人删了，文件也该删（只删我们自己的目录）。
         MediaStorage.shared.deleteFileIfOwned(persona.avatarUri)
-        let memories = (try? stores.memories.byPersona(persona.id)) ?? []
-        for memory in memories {
-            memoryRepository.delete(memory)
+        let outcome = PersonaDeletion.delete(
+            personaId: persona.id,
+            stores: stores,
+            memoryRepository: memoryRepository,
+            activePersonaId: currentSettings.activePersonaId
+        )
+        guard outcome.personaDeleted else {
+            throw PersonaDeletionError.failed
         }
-        try stores.database.inTransaction {
-            try stores.messages.delete(where: "personaId = ?", [.text(persona.id)])
-            try stores.sessions.delete(where: "personaId = ?", [.text(persona.id)])
-            try stores.memoryConsolidations.delete(where: "personaId = ?", [.text(persona.id)])
-            try stores.proactiveRules.delete(where: "personaId = ?", [.text(persona.id)])
-            try stores.agentIntents.delete(where: "personaId = ?", [.text(persona.id)])
-            try stores.personas.delete(id: persona.id)
+        // 「正在聊的人」若指向被删的人：交还给新的默认人格（一个都不剩时清空）。
+        if outcome.activePersonaWasDeleted {
+            updateSettings { $0.activePersonaId = outcome.nextDefaultPersonaId }
         }
+        // 心跳快照里还有那个人的心情/互动时间：清掉，下一拍重新读。
+        heartbeat.clearCache()
+        DebugSeeding.log("[persona] 删掉了 \(persona.id)：回声 \(outcome.echoes) 条、思考 \(outcome.ticks) 条、记忆版本 \(outcome.memoryVersions) 条")
     }
 
     /// 把「没有绑定 API 配置」的会话补上默认配置。
@@ -517,7 +552,17 @@ final class AppEnvironment: ObservableObject {
     ///
     /// 这是 iOS 上唯一能「补回错过的时间」的地方（系统给的后台时间片不可控），
     /// 而且只补**一次**：不假装能补回 6 小时里的 12 拍——那样只会一口气烧掉一堆 token。
+    ///
+    /// **重入保护**（0.10.2 审计 P1-2）：冷启动时 `.task` 与 `scenePhase == .active` 会各触发
+    /// 一次，两次读到同一个 `lastHeartbeatAt` / `lastConsolidatedAt`，于是都判「该补」。
+    /// 现在同一时刻只允许一次，且两次之间至少隔 `CatchUpGuard.defaultMinimumIntervalMillis`。
     func performCatchUp() async {
+        let now = DomainClock.nowMillis
+        guard catchUpGuard.begin(now: now) else {
+            DebugSeeding.log("[bg] 已经在补算了（或 30 秒内刚补过），这次不重复")
+            return
+        }
+        defer { catchUpGuard.finish() }
         let plan = catchUpPlan(isForeground: true)
         DebugSeeding.log("[bg] 回到前台补算：\(plan.note)")
         if plan.shouldConsolidate {
@@ -527,6 +572,51 @@ final class AppEnvironment: ObservableObject {
             _ = await runBackgroundTick()
         }
     }
+
+    // MARK: - 前台 30 秒一拍（0.10.2 审计 P1-3）
+
+    /// 进前台：起定时器。已经在跑就什么都不做（重复调用是安全的）。
+    ///
+    /// 为什么是 `Task` + `Task.sleep` 而不是 `Timer`：它跟着 `scenePhase` 启停，
+    /// 进后台时 `cancel()` 立刻生效；`Timer` 在后台会被系统挂着，开销和语义都更差。
+    func startForegroundPulse() {
+        isForeground = true
+        guard foregroundPulseTask == nil else { return }
+        let hasConfig = resolvedChatConfig() != nil
+        let hasPersona = currentPersona() != nil
+        guard ForegroundPulse.shouldRun(isActive: true, hasApiConfig: hasConfig, hasPersona: hasPersona) else {
+            DebugSeeding.log("[bg] 前台心跳没起来：\(hasConfig ? "还没有可用人格" : "还没有 API 配置")")
+            return
+        }
+        foregroundPulseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                let interval = self?.heartbeat.checkIntervalMillis() ?? HeartbeatController.beatIntervalMillis
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(max(interval, 0)) * 1_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                // `scenePhase` 已经变了但 `onChange` 还没跑完时，别多跑一拍。
+                guard self.isForeground else { return }
+                _ = await self.runBackgroundTick()
+            }
+        }
+        DebugSeeding.log("[bg] 前台心跳已启动：每 \(foregroundPulseIntervalMillis / 1000) 秒一拍")
+    }
+
+    /// 进后台：停定时器（系统会挂起进程，留着只是白占资源）。
+    func stopForegroundPulse() {
+        isForeground = false
+        foregroundPulseTask?.cancel()
+        foregroundPulseTask = nil
+        // 回到前台时重新读一次真实状态（心情、最后互动），别拿几分钟前的快照掷骰子。
+        heartbeat.clearCache()
+        DebugSeeding.log("[bg] 前台心跳已停止")
+    }
+
+    /// 当前一拍的间隔（低电量 2 分钟 / 平时 30 秒）。日志与界面用。
+    var foregroundPulseIntervalMillis: Int64 { heartbeat.checkIntervalMillis() }
 
     /// 跑一次「想一下」：到点的主动规则变成念头 → 心跳掷一次 → 该说话就写消息（通知在 `AgentLoop` 回调里）。
     ///
@@ -548,11 +638,19 @@ final class AppEnvironment: ObservableObject {
     /// 每日整理一次（`BGProcessingTask` 与「补算」共用）。失败不抛：只写日志。
     @discardableResult
     func runDailyConsolidation() async -> Bool {
+        // 「昨日整理」一天只该有一次：BGProcessingTask 与回前台补算会撞车
+        //（两次整理 = 两次模型调用 + 两条 memory_consolidations 记录）。
+        guard !isConsolidating else {
+            DebugSeeding.log("[bg] 已经在整理记忆了，这次跳过")
+            return false
+        }
         guard let resolved = resolvedChatConfig() else {
             DebugSeeding.log("[bg] 还没有 API 配置，这次不整理记忆")
             return false
         }
         guard let persona = currentPersona() else { return false }
+        isConsolidating = true
+        defer { isConsolidating = false }
         let result = await consolidator.consolidate(
             personaId: persona.id,
             config: CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey),

@@ -911,53 +911,103 @@ fun ApiConfigEntity.toBackupApiConfig(): BackupApiConfig = BackupApiConfig(
 )
 
 /**
+ * [mergeInto] 的结果：合并后的配置，加上「因为安全原因没有采纳备份值」的标记。
+ *
+ * 导入摘要要把这些标记翻成一句中英文都有的提醒（`BackupWarning`），
+ * 用户才知道「这份备份想改你的服务地址，但我们没改」。
+ */
+data class MergedApiConfig(
+    val entity: ApiConfigEntity,
+    /** 备份里的 `baseUrl` / `webToolsBaseUrl` 与本机不同，按安全策略保留了本机值。 */
+    val addressKept: Boolean = false,
+    /** 备份要求打开明文 HTTP，被忽略（本机开关没有被备份改掉）。 */
+    val insecureIgnored: Boolean = false
+)
+
+/**
  * 把备份里的配置盖回一条**已存在**的配置：只动非敏感字段。
  *
  * 密钥、自定义 Headers、创建时间都留在本机——备份里从来没有它们，
  * 要是这里顺手把整个实体换掉，用户在本机存的 Key 就被一份「没有 Key 的备份」抹掉了。
+ *
+ * ## 0.10.2 安全修复：地址与明文开关不是可迁移内容
+ *
+ * 以前的实现无条件覆盖 `baseUrl` 与 `allowInsecureHttp`，同时保留本机 Key：
+ * 攻击者只要知道本机某条配置的 id（任何一份导出过的备份里都明文带着），
+ * 就能拼一份备份，把地址改成自己的主机 / 改成 `http://`，用户「合并导入」之后
+ * 下一次聊天就把**真实 Key 与全部上下文**发过去，或者被悄悄降级成明文。
+ *
+ * 现在：
+ * - `baseUrl` / `webToolsBaseUrl` 与本地不同 → **保留本机值**，标 `addressKept`；
+ *   要改地址请用户手动编辑并重新确认；
+ * - `allowInsecureHttp` 一律保留本机值；备份要求打开而本机没开时标 `insecureIgnored`。
  */
-fun BackupApiConfig.mergeInto(existing: ApiConfigEntity): ApiConfigEntity = existing.copy(
-    name = name.ifBlank { existing.name },
-    provider = enumOr(provider, existing.provider),
-    baseUrl = baseUrl.ifBlank { existing.baseUrl },
-    model = model.ifBlank { existing.model },
-    allowInsecureHttp = allowInsecureHttp,
-    temperature = temperature ?: existing.temperature,
-    topP = topP ?: existing.topP,
-    maxOutputTokens = maxOutputTokens ?: existing.maxOutputTokens,
-    frequencyPenalty = frequencyPenalty ?: existing.frequencyPenalty,
-    presencePenalty = presencePenalty ?: existing.presencePenalty,
-    webToolsEnabled = webToolsEnabled,
-    webToolsBaseUrl = webToolsBaseUrl.ifBlank { existing.webToolsBaseUrl },
-    updatedAt = updatedAt.takeIf { it > 0L } ?: existing.updatedAt
-)
+fun BackupApiConfig.mergeInto(existing: ApiConfigEntity): MergedApiConfig {
+    val incomingBaseUrl = baseUrl.trim().trimEnd('/')
+    val localBaseUrl = existing.baseUrl.trim().trimEnd('/')
+    val keepLocalBaseUrl = incomingBaseUrl.isNotEmpty() && incomingBaseUrl != localBaseUrl
+    val incomingWebTools = webToolsBaseUrl.trim().trimEnd('/')
+    val localWebTools = existing.webToolsBaseUrl.trim().trimEnd('/')
+    val keepLocalWebTools = incomingWebTools.isNotEmpty() && incomingWebTools != localWebTools
+    val insecureIgnored = allowInsecureHttp && !existing.allowInsecureHttp
+    val merged = existing.copy(
+        name = name.ifBlank { existing.name },
+        provider = enumOr(provider, existing.provider),
+        // 地址是「这台设备对这个服务商的信任决定」，不从备份迁移。
+        baseUrl = existing.baseUrl,
+        model = model.ifBlank { existing.model },
+        // 明文开关从不因备份打开：只在用户当面的设置页里才能勾。
+        allowInsecureHttp = existing.allowInsecureHttp,
+        temperature = temperature ?: existing.temperature,
+        topP = topP ?: existing.topP,
+        maxOutputTokens = maxOutputTokens ?: existing.maxOutputTokens,
+        frequencyPenalty = frequencyPenalty ?: existing.frequencyPenalty,
+        presencePenalty = presencePenalty ?: existing.presencePenalty,
+        webToolsEnabled = webToolsEnabled,
+        webToolsBaseUrl = existing.webToolsBaseUrl,
+        updatedAt = updatedAt.takeIf { it > 0L } ?: existing.updatedAt
+    )
+    return MergedApiConfig(
+        entity = merged,
+        addressKept = keepLocalBaseUrl || keepLocalWebTools,
+        insecureIgnored = insecureIgnored
+    )
+}
 
 /**
  * 把备份里的配置建成一条新配置：密钥留空，等用户在这台手机上重新填一次。
  *
  * `customHeadersJson` 给 `{}`：备份里没有它（可能夹带 Authorization），
  * 与其猜，不如让用户在「API 配置」里显式补。
+ *
+ * 新配置没有「本机信任决定」可保留，但 `allowInsecureHttp` **一律从 false 开始**：
+ * 明文只能由用户在这台设备上手动打开。备份里写了 `true` 时标 `insecureIgnored`，
+ * 并且因为默认只允许 HTTPS，`http://` 的新地址会在导入校验时被拒（记一条 warning）。
  */
-fun BackupApiConfig.toNewEntity(): ApiConfigEntity = ApiConfigEntity(
-    id = id,
-    name = name.ifBlank { "接回来的配置" },
-    provider = enumOr(provider, ProviderType.OPENAI),
-    baseUrl = baseUrl,
-    apiKeyCipher = null,
-    model = model,
-    customHeadersJson = "{}",
-    allowInsecureHttp = allowInsecureHttp,
-    temperature = temperature,
-    topP = topP,
-    maxOutputTokens = maxOutputTokens,
-    frequencyPenalty = frequencyPenalty,
-    presencePenalty = presencePenalty,
-    createdAt = createdAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
-    updatedAt = updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
-    webToolsEnabled = webToolsEnabled,
-    webToolsBaseUrl = webToolsBaseUrl,
-    webToolsApiKeyCipher = null
-)
+fun BackupApiConfig.toNewEntity(): MergedApiConfig {
+    val insecureIgnored = allowInsecureHttp
+    val entity = ApiConfigEntity(
+        id = id,
+        name = name.ifBlank { "接回来的配置" },
+        provider = enumOr(provider, ProviderType.OPENAI),
+        baseUrl = baseUrl,
+        apiKeyCipher = null,
+        model = model,
+        customHeadersJson = "{}",
+        allowInsecureHttp = false,
+        temperature = temperature,
+        topP = topP,
+        maxOutputTokens = maxOutputTokens,
+        frequencyPenalty = frequencyPenalty,
+        presencePenalty = presencePenalty,
+        createdAt = createdAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
+        updatedAt = updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
+        webToolsEnabled = webToolsEnabled,
+        webToolsBaseUrl = webToolsBaseUrl,
+        webToolsApiKeyCipher = null
+    )
+    return MergedApiConfig(entity = entity, insecureIgnored = insecureIgnored)
+}
 
 fun AppSettings.toBackupSettings(): BackupSettings = BackupSettings(
     themeMode = themeMode.name,

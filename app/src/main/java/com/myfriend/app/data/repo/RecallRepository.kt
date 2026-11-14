@@ -3,8 +3,10 @@ package com.myfriend.app.data.repo
 import com.myfriend.app.data.local.ChatSessionDao
 import com.myfriend.app.data.local.MemoryDao
 import com.myfriend.app.data.local.MemoryEntity
+import androidx.sqlite.db.SimpleSQLiteQuery
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MessageRole
+import com.myfriend.app.data.local.MessageSearchSql
 import com.myfriend.app.data.local.MessageStatus
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.domain.ChineseTerms
@@ -289,9 +291,17 @@ class RecallRepository @Inject constructor(
         now: Long
     ): List<RecallHit> {
         val hits = mutableListOf<RecallHit>()
-        val like = likeSafe(term)
-        if (like.isNotBlank()) {
-            val rows = runCatching { messageDao.search(like) }.getOrDefault(emptyList())
+        // 聊天记录的粗筛和检索页共用一份 SQL（见 MessageSearchSql）：人格过滤直接进 SQL，
+        // 召回也从「一条 LIKE」升级成「原文 + 中文词元若干条 LIKE」。
+        val query = MessageSearchSql.candidateQuery(
+            text = term,
+            personaId = personaId,
+            limit = SEARCH_LIMIT
+        )
+        if (query.sql.isNotEmpty()) {
+            val rows = runCatching {
+                messageDao.searchCandidates(SimpleSQLiteQuery(query.sql, query.args.toTypedArray()))
+            }.getOrDefault(emptyList())
             rows.asSequence()
                 .filter { it.personaId == personaId && it.content.isNotBlank() }
                 .take(if (depth == RecallDepth.DEEP) DEEP_SEARCH_LIMIT else NORMAL_SEARCH_LIMIT)

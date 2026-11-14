@@ -9,6 +9,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -98,6 +99,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -113,6 +115,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
@@ -171,8 +174,11 @@ import com.myfriend.app.util.dayLabel
 import com.myfriend.app.util.formatClock
 import com.myfriend.app.util.isSameDay
 import com.myfriend.app.data.repo.ProactiveProtocol
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
@@ -216,6 +222,13 @@ fun ChatScreen(
     var pendingExport by remember { mutableStateOf<com.myfriend.app.domain.ExportFile?>(null) }
     var localNotice by remember { mutableStateOf<String?>(null) }
     var viewingImage by remember { mutableStateOf<MessageAttachment?>(null) }
+    /**
+     * 从检索结果跳进来时要高亮的那条消息。
+     *
+     * 它只在这里活约 [MESSAGE_FOCUS_MILLIS]：滚到位之后给一条可见但不刺眼的底色，
+     * 然后淡出 —— 居留太久会让人以为那条消息被「选中」了。
+     */
+    var focusedMessageId by remember { mutableStateOf<String?>(null) }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(4)
@@ -225,26 +238,34 @@ fun ChatScreen(
     val exportLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
     ) { uri ->
+        // ActivityResult 回调在主线程：写文件（可能几百 KB～几 MB）必须切到 IO。
+        // 0.10.2 之前这里是 `stream.write(file.content.toByteArray())`，StrictMode 会直接报磁盘写。
         val file = pendingExport
-        if (uri != null && file != null) {
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { stream ->
-                    stream.write(file.content.toByteArray(Charsets.UTF_8))
-                } ?: error(context.getString(R.string.chat_export_error_unwritable))
-            }.onSuccess {
-                coroutineScope.launch {
-                    snackbarHostState.showSnackbar(context.getString(R.string.chat_export_success), duration = SnackbarDuration.Short)
+        pendingExport = null
+        if (uri == null || file == null) return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            val written = runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { stream ->
+                        stream.write(file.content.toByteArray(Charsets.UTF_8))
+                    } ?: error(context.getString(R.string.chat_export_error_unwritable))
                 }
-            }.onFailure {
-                coroutineScope.launch {
+            }
+            written.fold(
+                {
                     snackbarHostState.showSnackbar(
-                        context.getString(R.string.chat_export_failed_reason, ErrorText.of(context, it)),
+                        context.getString(R.string.chat_export_success),
+                        duration = SnackbarDuration.Short
+                    )
+                },
+                { error ->
+                    snackbarHostState.showSnackbar(
+                        context.getString(R.string.chat_export_failed_reason, ErrorText.of(context, error)),
                         duration = SnackbarDuration.Long
                     )
                 }
-            }
+            )
         }
-        pendingExport = null
     }
 
     LaunchedEffect(Unit) {
@@ -256,6 +277,7 @@ fun ChatScreen(
                     runCatching { exportLauncher.launch(event.file.fileName) }
                 }
                 ChatEvent.SessionDeleted -> onBack()
+                is ChatEvent.FocusMessage -> focusedMessageId = event.messageId
             }
         }
     }
@@ -264,6 +286,13 @@ fun ChatScreen(
         val message = state.snackbar ?: return@LaunchedEffect
         snackbarHostState.showSnackbar(message, duration = SnackbarDuration.Short)
         viewModel.dismissSnackbar()
+    }
+
+    // 定位高亮：亮 2 秒后自己灭掉（底色由 MessageBubble 用动画过渡）。
+    LaunchedEffect(focusedMessageId) {
+        val id = focusedMessageId ?: return@LaunchedEffect
+        delay(MESSAGE_FOCUS_MILLIS)
+        if (focusedMessageId == id) focusedMessageId = null
     }
 
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -308,6 +337,7 @@ fun ChatScreen(
                 } else {
                     ChatMessageList(
                         state = state,
+                        focusMessageId = focusedMessageId,
                         onLoadOlder = viewModel::loadOlder,
                         onLongPress = { message ->
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -771,10 +801,15 @@ private fun NoConfigBanner(
 /** 加载更早之前的视口锚点。 */
 private data class Anchor(val key: String, val offset: Int, val displayCount: Int)
 
+/** 检索定位的高亮停留时长：够看清「就是这条」，又不至于让人以为它被选中了。 */
+private const val MESSAGE_FOCUS_MILLIS = 2_000L
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatMessageList(
     state: ChatUiState,
+    /** 从检索结果跳进来时要滚到并高亮的那条消息（null = 正常打开会话）。 */
+    focusMessageId: String? = null,
     onLoadOlder: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
     onRetry: () -> Unit,
@@ -787,6 +822,13 @@ private fun ChatMessageList(
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     val coroutineScope = rememberCoroutineScope()
     var autoFollow by remember { mutableStateOf(true) }
+    /**
+     * 「自动贴底」的滚动动画。
+     *
+     * 它是一个会跑几百毫秒的协程：从检索结果定位过来时，最后那一页加载完会起一条
+     * 贴底动画，若不取消，它会把刚刚滚到目标消息的视口又拽回底部（第一版就踩了这个坑）。
+     */
+    var autoScrollJob by remember { mutableStateOf<Job?>(null) }
     val displayItems = remember(state.messages, context) {
         buildList {
             var previousTimestamp: Long? = null
@@ -828,8 +870,12 @@ private fun ChatMessageList(
         if (isAtBottom) autoFollow = true
     }
     LaunchedEffect(displayItems.size) {
+        if (focusMessageId != null) return@LaunchedEffect
         if (autoFollow && displayItems.isNotEmpty()) {
-            listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+            autoScrollJob?.cancel()
+            autoScrollJob = launch {
+                listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+            }
         }
     }
     LaunchedEffect(state.streamingText.length, state.isGenerating) {
@@ -886,6 +932,25 @@ private fun ChatMessageList(
         if (index >= 0) listState.scrollToItem(index, anchor.offset)
     }
 
+    // 定位到检索命中的那条消息。
+    //
+    // 依赖 displayItems.size 是必须的：从检索跳进来时可能还要往前翻好几页，目标消息
+    // 进入窗口的那一次重组才会让 indexOfFirst 找到它。
+    // 滚到目标上方留 2 条上下文，比「贴顶」更容易看出这段话在讲什么。
+    LaunchedEffect(focusMessageId, displayItems.size) {
+        val id = focusMessageId ?: return@LaunchedEffect
+        val index = displayItems.indexOfFirst { it is ChatDisplayItem.Message && it.message.id == id }
+        if (index < 0) return@LaunchedEffect
+        // 定位期间关掉「自动贴底」，并取消已经在跑的贴底动画（否则它会把视口又拉回底部）。
+        autoFollow = false
+        autoScrollJob?.cancel()
+        autoScrollJob = null
+        // 等一帧：列表刚变长时 layoutInfo 还没稳定，直接 scrollToItem 可能被这一帧的测量修正。
+        withFrameNanos { }
+        val offset = if (showLoadEarlier) 1 else 0
+        listState.scrollToItem((index - 2).coerceAtLeast(0) + offset)
+    }
+
     Box(Modifier.fillMaxSize()) {
         if (state.messages.isEmpty() && !state.isGenerating) {
             EmptyConversation(state, onSuggestion)
@@ -909,6 +974,7 @@ private fun ChatMessageList(
                                 message = item.message,
                                 settings = state.settings,
                                 userAvatarUri = state.settings.userAvatarUri,
+                                highlighted = item.message.id == focusMessageId,
                                 isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
                                 // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
                                 // 否则每条用户消息都挂一个小字，会像回执系统而不像一个人。
@@ -1090,6 +1156,8 @@ private fun MessageBubble(
     settings: AppSettings,
     /** 「我的头像」；null 时不画（默认就是没有头像的克制样子）。 */
     userAvatarUri: String? = null,
+    /** 从检索结果定位过来时短暂亮一下（见 ChatScreen 的 focusedMessageId）。 */
+    highlighted: Boolean = false,
     isLatestAssistant: Boolean,
     showRead: Boolean = false,
     onLongPress: () -> Unit,
@@ -1145,9 +1213,19 @@ private fun MessageBubble(
         else -> androidx.compose.foundation.BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
     }
     val showUserAvatar = outgoing && !userAvatarUri.isNullOrBlank()
+    // 定位高亮：一条横贯整行的浅色底，2 秒后由 ChatScreen 撤掉 highlighted，这里再淡出。
+    val highlightAlpha by animateFloatAsState(
+        targetValue = if (highlighted) 1f else 0f,
+        animationSpec = tween(durationMillis = if (highlighted) 220 else 600),
+        label = "searchHitHighlight"
+    )
     Box(
         Modifier
             .fillMaxWidth()
+            .background(
+                color = accent.copy(alpha = 0.16f * highlightAlpha),
+                shape = RoundedCornerShape(12.dp)
+            )
             .padding(vertical = if (settings.bubbleStyle == BubbleStyle.COMPACT) 1.dp else 2.dp),
         contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart
     ) {
@@ -1386,7 +1464,9 @@ private fun StreamingTraceRow(
     onToggle: () -> Unit
 ) {
     val tint = MaterialTheme.colorScheme.onSurfaceVariant
-    val summary = ToolTraceCodec.summarize(items).ifBlank { stringResource(R.string.chat_trace_busy) }
+    val context = LocalContext.current
+    val summary = ToolTraceCodec.summarize(items, traceCountText(context))
+        .ifBlank { stringResource(R.string.chat_trace_busy) }
     Column(Modifier.widthIn(max = 460.dp)) {
         Surface(
             shape = RoundedCornerShape(50),
@@ -1457,7 +1537,8 @@ private fun ToolTraceRow(
         )
         Spacer(Modifier.width(5.dp))
         Text(
-            text = "· " + ToolTraceCodec.summarize(items).ifBlank { stringResource(R.string.chat_trace_title) },
+            text = "· " + ToolTraceCodec.summarize(items, traceCountText(LocalContext.current))
+                .ifBlank { stringResource(R.string.chat_trace_title) },
             style = MaterialTheme.typography.labelSmall,
             color = tint,
             maxLines = 1,
@@ -1472,6 +1553,15 @@ private fun ToolTraceRow(
             tint = tint
         )
     }
+}
+
+/**
+ * 痕迹摘要里的「N 次」：中文只有一种说法，英文要分 one/other，所以走 plurals。
+ *
+ * 标题本身是写入时的显示文案（见 `data/repo/ToolTraceText`），这里只补计数词。
+ */
+private fun traceCountText(context: android.content.Context): (Int) -> String = { count ->
+    context.resources.getQuantityString(R.plurals.chat_trace_count, count, count)
 }
 
 /**
@@ -1917,7 +2007,11 @@ private fun ProfileSheet(
             )
             SettingLine(
                 stringResource(R.string.chat_profile_prompt_label),
-                stringResource(R.string.chat_profile_prompt_value, persona.prompt.length)
+                pluralStringResource(
+                    R.plurals.chat_profile_prompt_value,
+                    persona.prompt.length,
+                    persona.prompt.length
+                )
             )
             Spacer(Modifier.height(10.dp))
             HorizontalDivider(Modifier.padding(horizontal = 24.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))

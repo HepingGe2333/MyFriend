@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,6 +40,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -59,8 +61,11 @@ fun AppHeader(
         modifier = modifier
             .fillMaxWidth()
             .statusBarsPadding()
-            .height(64.dp)
-            .padding(horizontal = 20.dp),
+            // 英文标题/副标题比中文长：给一个最小高度而不是死高度，需要时让它自己长高，
+            // 副标题最多两行（见下），这样「Growing naturally, with his core kept intact」
+            // 这类长句不会被 64dp 裁掉。
+            .heightIn(min = 64.dp)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (navigation != null) {
@@ -80,7 +85,7 @@ fun AppHeader(
                     text = subtitle,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
             }
@@ -238,7 +243,9 @@ fun PrimaryButton(
         onClick = onClick,
         modifier = modifier
             .fillMaxWidth()
-            .height(52.dp),
+            // 英文按钮文案更长（"Clear all chats and memories"）：最小高度 + 允许两行，
+            // 不再用死高度把第二行裁掉。
+            .heightIn(min = 52.dp),
         enabled = enabled && !loading,
         shape = RoundedCornerShape(17.dp),
         colors = ButtonDefaults.buttonColors(
@@ -257,7 +264,13 @@ fun PrimaryButton(
                 Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
             }
-            Text(text, style = MaterialTheme.typography.labelLarge)
+            Text(
+                text = text,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -271,7 +284,7 @@ fun SecondaryButton(
 ) {
     Button(
         onClick = onClick,
-        modifier = modifier.height(46.dp),
+        modifier = modifier.heightIn(min = 46.dp),
         enabled = enabled,
         shape = RoundedCornerShape(15.dp),
         colors = ButtonDefaults.buttonColors(
@@ -280,7 +293,13 @@ fun SecondaryButton(
         ),
         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
     ) {
-        Text(text, style = MaterialTheme.typography.labelLarge)
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelLarge,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

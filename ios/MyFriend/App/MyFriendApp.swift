@@ -5,6 +5,12 @@ struct MyFriendApp: App {
 
     @StateObject private var env = AppEnvironment()
     @Environment(\.scenePhase) private var scenePhase
+    /// 上一次的 `scenePhase`。
+    ///
+    /// 为什么需要它：冷启动时 SwiftUI 会让 `inactive → active` 走一次 `onChange`，
+    /// 而 `.task` 已经在同一个启动里补算过了——不区分「真正从后台回来」就会跑两遍
+    ///（两次心跳 + 两次每日整理，0.10.2 审计 P1-2）。
+    @State private var lastScenePhase: ScenePhase = .inactive
 
     init() {
         // 后台调度必须在启动完成前注册（标识符与 Config/Info.plist 里的一致）。
@@ -28,19 +34,28 @@ struct MyFriendApp: App {
                     _ = env.repairHistorySummariesIfNeeded()
                     // 打开 App 时补算错过的时间（iOS 不允许常驻后台，只能在这里补）。
                     await env.performCatchUp()
+                    // 之后每 30 秒一拍（低电量 2 分钟），与 Android 的前台服务同节拍。
+                    env.startForegroundPulse()
+                    lastScenePhase = scenePhase
                 }
                 .onChange(of: scenePhase) { phase in
                     switch phase {
                     case .active:
                         AppNotifications.shared.setAppActive(true)
-                        Task { await env.performCatchUp() }
+                        // 只有「从后台真的回来」才补算；冷启动那一次已经由上面的 `.task` 做过了。
+                        if lastScenePhase == .background {
+                            Task { await env.performCatchUp() }
+                        }
+                        env.startForegroundPulse()
                     case .background:
                         AppNotifications.shared.setAppActive(false)
+                        env.stopForegroundPulse()
                         // 进后台前把下一次后台时间排上；拿不到就算了。
                         BackgroundScheduler.shared.scheduleNext()
                     default:
                         break
                     }
+                    lastScenePhase = phase
                 }
         }
     }

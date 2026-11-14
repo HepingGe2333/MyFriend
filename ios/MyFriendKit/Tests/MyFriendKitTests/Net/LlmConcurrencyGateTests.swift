@@ -147,6 +147,95 @@ final class LlmConcurrencyGateTests: XCTestCase {
         XCTAssertEqual(LlmCallLane(kind: "WHAT"), .background)
     }
 
+    // MARK: - 取消（0.10.2 审计 P1-11）
+
+    /// 等待者能被 `Task.cancel()` 唤醒，而且**名额不泄漏**。
+    ///
+    /// 0.10.1 的 `acquire` 用裸 `withCheckedContinuation`：用户点「停止」之后，
+    /// 那次调用还要在队列里等到 20/60 秒超时才会被摘下（期间甚至可能拿到名额、
+    /// 真的发出一次用户已经不想要的请求）。
+    func testCancelledWaiterIsRemovedAndDoesNotLeakSlots() async throws {
+        let gate = LlmConcurrencyGate()
+        var tickets: [LlmGateTicket] = []
+        for kind in [UsageKind.consolidation, UsageKind.agent, UsageKind.chat] {
+            if let ticket = await gate.acquire(kind: kind, timeoutMillis: 0).ticket { tickets.append(ticket) }
+        }
+        XCTAssertEqual(tickets.count, 3)
+        XCTAssertEqual(gate.snapshot().waiting, 0)
+
+        let cancelled = expectation(description: "被取消的等待者立刻返回")
+        let resultBox = LockedBox<LlmGateResult?>(nil)
+        let task = Task {
+            let result = await gate.acquire(kind: UsageKind.chat, timeoutMillis: 10_000)
+            resultBox.set(result)
+            cancelled.fulfill()
+        }
+        // 让它先登记成等待者。
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        XCTAssertEqual(gate.snapshot().waiting, 1, "这时它应该还在排队")
+
+        task.cancel()
+        await fulfillment(of: [cancelled], timeout: 5)
+        XCTAssertTrue(resultBox.get()?.isCancelled == true, "取消要返回 .cancelled，而不是等到超时")
+        XCTAssertEqual(gate.snapshot().waiting, 0, "取消后要从队列里摘掉")
+        XCTAssertEqual(gate.snapshot().global, 3, "取消不该动已占用的名额")
+
+        // 名额一个都没泄漏：全部还回去之后还能再拿 3 个。
+        for ticket in tickets { gate.release(ticket) }
+        XCTAssertEqual(gate.snapshot().global, 0)
+        var again: [LlmGateTicket] = []
+        for kind in [UsageKind.consolidation, UsageKind.agent, UsageKind.chat] {
+            if let ticket = await gate.acquire(kind: kind, timeoutMillis: 0).ticket { again.append(ticket) }
+        }
+        XCTAssertEqual(again.count, 3, "取消不能把名额吃掉")
+        for ticket in again { gate.release(ticket) }
+    }
+
+    /// 在「还没开始等」之前就取消：也不能卡住（这条走的是登记时的 `Task.isCancelled` 兜底）。
+    func testAcquireOnAlreadyCancelledTaskReturnsImmediately() async throws {
+        let gate = LlmConcurrencyGate()
+        let tickets = [
+            await gate.acquire(kind: UsageKind.consolidation),
+            await gate.acquire(kind: UsageKind.agent),
+            await gate.acquire(kind: UsageKind.chat)
+        ].compactMap { $0.ticket }
+
+        let resultBox = LockedBox<LlmGateResult?>(nil)
+        let task = Task {
+            // 先取消自己，再进 acquire。
+            withUnsafeCurrentTask { $0?.cancel() }
+            resultBox.set(await gate.acquire(kind: UsageKind.chat, timeoutMillis: 10_000))
+        }
+        _ = await task.value
+        XCTAssertEqual(resultBox.get()?.isCancelled, true)
+        XCTAssertEqual(gate.snapshot().waiting, 0)
+        XCTAssertEqual(gate.snapshot().global, 3)
+        for ticket in tickets { gate.release(ticket) }
+    }
+
+    /// 取消**不能**触发 `onTimeout` 回调（那条回调的语义是「排队超时」）。
+    func testCancellationDoesNotFireTimeoutCallback() async throws {
+        let gate = LlmConcurrencyGate()
+        let timeouts = LockedBox<[LlmCallLane]>([])
+        gate.onTimeout = { lane, _ in timeouts.mutate { $0.append(lane) } }
+        let tickets = [
+            await gate.acquire(kind: UsageKind.consolidation),
+            await gate.acquire(kind: UsageKind.agent),
+            await gate.acquire(kind: UsageKind.chat)
+        ].compactMap { $0.ticket }
+
+        let done = expectation(description: "取消完成")
+        let task = Task {
+            _ = await gate.acquire(kind: UsageKind.extraction, timeoutMillis: 10_000)
+            done.fulfill()
+        }
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        task.cancel()
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertTrue(timeouts.get().isEmpty, "取消不是超时")
+        for ticket in tickets { gate.release(ticket) }
+    }
+
     /// `withSlot` 拿不到名额时返回 nil，拿到时正常返回结果并还名额。
     func testWithSlotReturnsNilOnTimeoutAndReleasesOnSuccess() async throws {
         let gate = LlmConcurrencyGate()

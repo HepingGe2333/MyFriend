@@ -98,12 +98,8 @@ enum BackupSamples {
                     createdAt: now - 7_200_000,
                     updatedAt: now,
                     lastPersonaVersion: 2,
-                    syncState: "SYNCED",
-                    syncedPersonaVersion: 2,
-                    syncedMemoriesHash: "hash-ios-001",
-                    serverSessionId: "server-ios-7",
-                    lastSyncError: "上次同步超时，已重试",
-                    lastSyncAt: now - 600_000,
+                    // 不再有 syncState / synced* / serverSessionId / lastSync* 这 6 个字段：
+                    // 它们只在 iOS 库里，Android 的 BackupSession 没有（0.10.2 安全审计 P1-5）。
                     lastMemoryExtractedCount: 9,
                     summary: "你聊到奶奶留下的旧书，他答应替你记着。",
                     summarizedUpTo: now - 1_200_000,

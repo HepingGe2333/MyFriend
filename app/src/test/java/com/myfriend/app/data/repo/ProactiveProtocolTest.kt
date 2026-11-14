@@ -47,8 +47,11 @@ class ProactiveProtocolTest {
         assertEquals(ProactiveKind.INTERVAL, interval.kind)
         assertEquals(180, interval.intervalMinutes)
         assertNull(interval.timeOfDayMinutes)
-        // 没写 hint 时用默认口吻，避免规则触发时空转。
-        assertTrue(interval.hint.isNotBlank())
+        assertEquals("每隔三小时来陪你", interval.note)
+        // 没写说明/指引时不再由协议层拼中文：仓储层会按界面语言补
+        // `R.string.proactive_default_note_*` / `proactive_default_hint`（见 ProactiveRepository）。
+        assertEquals("", interval.hint)
+        assertEquals("", ProactiveProtocol.parse("""{"kind":"interval","intervalHours":3}""")!!.note)
     }
 
     @Test
@@ -83,7 +86,8 @@ class ProactiveProtocolTest {
 
         val daily = requireNotNull(proposal)
         assertEquals(7 * 60 + 5, daily.timeOfDayMinutes)
-        assertEquals("每天 07:05 主动问候", daily.note)
+        // 说明由仓储层按当前语言生成（`R.string.proactive_default_note_daily`），协议层留空。
+        assertEquals("", daily.note)
     }
 
     @Test

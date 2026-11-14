@@ -67,13 +67,14 @@
 		<string>com.myfriend.app.ios.processing</string>
 	</array>
 
-	<!-- 本地联调：参考服务跑在局域网 http://192.168.x.x:8787。
-	     iOS 的 ATS 默认不允许明文 HTTP，这里显式放开，并在「API 配置」里保留
-	     「允许不安全 HTTP」开关做第二道闸。正式发布前应改成 HTTPS（或只留域例外）。 -->
+	<!-- ATS（0.10.2 审计 P1-6）：**发布构建不允许全量明文 HTTP**。
+	     这里只留 NSAllowsLocalNetworking：局域网联调（192.168.x.x / localhost / .local）够用，
+	     而公网地址仍然必须走 HTTPS。调试构建另有一份 Config/Info-Debug.plist，多开了
+	     NSAllowsArbitraryLoads，专门给「本机参考服务」这类联调用。
+	     代码侧还有一道闸（Net/OpenAICompatibleClient.swift 的 NetworkGuard）：
+	     Release 构建里即使用户打开了「允许不安全 HTTP」，也会明确报错而不是悄悄走明文。 -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<key>NSAllowsArbitraryLoads</key>
-		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>

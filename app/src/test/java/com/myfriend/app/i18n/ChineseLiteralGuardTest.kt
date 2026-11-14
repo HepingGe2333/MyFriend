@@ -35,11 +35,6 @@ class ChineseLiteralGuardTest {
     private val storedValues = setOf(
         // 人格/预设的内置分类（PresetRepository、PersonaRepository 的默认值与筛选都按这个字符串比对）
         "日常聊天", "角色扮演", "学习", "编程", "创意写作", "通用", "工作", "未分类",
-        // 版本历史里的 reason：0.10.1 起新数据存 `@rev:` 令牌，老库里的中文原样显示；
-        // 这两个是编辑器里仍会写入的旧值（历史兼容），不翻译。
-        "创建人格卡", "编辑人格卡",
-        // 新建会话的默认标题模板：落库成数据，历史值不改写（搜索/导出会原样显示）。
-        "与 ${'$'}{persona.name} 的对话",
         // 心情词表（domain/MoodLexicon）里的词：落库的标签，界面只是按它挑一条资源显示，
         // 模型也可能自己造一个新词（那种就原样显示，不翻）。
         "平静", "放松", "温柔", "雀跃", "开心", "兴奋", "期待", "想念", "有点累",
@@ -60,7 +55,7 @@ class ChineseLiteralGuardTest {
         "src/main/java/com/myfriend/app/data/repo/AgentIntentRepository.kt" to
             "念头的提示词与落库说明：念头的 note 是模型给的原文",
         "src/main/java/com/myfriend/app/data/repo/ChatRepository.kt" to
-            "system 提示词脚手架、工具回灌说明，以及落库的会话预览（图片/回复失败等数据值）",
+            "system 提示词脚手架与工具回灌说明（会话标题/消息预览已在写入时取 R.string.chat_* 资源）",
         "src/main/java/com/myfriend/app/data/repo/EvolutionRepository.kt" to
             "人格进化提示词与模型给的默认摘要",
         "src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt" to
@@ -80,18 +75,17 @@ class ChineseLiteralGuardTest {
         "src/main/java/com/myfriend/app/data/repo/PresenceRepository.kt" to
             "「他正在…」给模型看的解释句；界面按 PresenceKind 取资源，不显示这句",
         "src/main/java/com/myfriend/app/data/repo/ProactiveProtocol.kt" to
-            "主动开口协议的提示词与模型动作说明",
+            "主动开口协议的提示词与模型动作说明（规则的默认说明/指引已改由仓储层取资源）",
         "src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt" to
-            "主动开口的 system 提示词",
+            "主动开口的 system 提示词（默认 note/hint 已改成 R.string.proactive_default_*）",
         "src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt" to
-            "工具调用结果与痕迹文案：回灌给模型的工具协议脚手架（失败原因已改成错误令牌）",
+            "只剩回灌给模型的工具结果/摘要与提示词脚手架；给用户看的标题、副标题、展开正文" +
+            "已搬到 data/repo/ToolTraceText.kt 走 R.string.tool_trace_*（那个文件不在白名单里）",
         "src/main/java/com/myfriend/app/data/repo/WebSearchScorer.kt" to
             "网页打分/记笔记提示词与留痕",
         // ---- 网络层：回灌给模型的内容 / 日志 ----
         "src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt" to
             "抓回来的网页正文的截断标记：属于回灌给模型的正文，不是界面文案",
-        "src/main/java/com/myfriend/app/network/LlmGatekeeper.kt" to
-            "两处 Log.w 的多行参数（并发位等待超时），只进日志"
     )
 
     @Test

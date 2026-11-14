@@ -26,7 +26,8 @@ import kotlinx.serialization.json.put
  * ```
  *
  * 3. 客户端执行后把结果回灌给模型（原生 tool 消息或 [ToolProtocol.renderResultsForModel] 文本），
- *    同时在聊天界面用 [ToolProtocol.describe] 渲染成可展开的「动作」卡片。
+ *    同时在聊天界面渲染成可展开的「动作」卡片——那张卡片的标题/副标题是**给用户看的**，
+ *    走 `data/repo/ToolTraceText` 的 `R.string.tool_trace_*`；本文件只负责模型面向的文本。
  *
  * 本文件只做协议解析与序列化，不碰网络、数据库和 UI，任何坏数据都不抛异常。
  */
@@ -291,7 +292,7 @@ data class ToolInvocation(
 data class ToolResult(
     val invocation: ToolInvocation,
     val ok: Boolean,
-    val summary: String,              // 给界面看的一行中文，如「查了 3 个网页」「记住了：你怕冷」
+    val summary: String,              // 回灌给模型的摘要（中文），如「翻了翻记忆 · 2 条」
     val contentForModel: String,      // 回灌给模型的文本（已裁剪，≤ 4000 字）
     val errorMessage: String? = null
 )
@@ -396,26 +397,6 @@ object ToolProtocol {
     fun renderResultsForModel(results: List<ToolResult>): String =
         results.filter { it.invocation.name.isNotBlank() || it.summary.isNotBlank() }
             .joinToString("\n\n") { renderOne(it) }
-
-    /** 聊天界面上的动作卡片文案：标题 + 副标题（可空） */
-    fun describe(result: ToolResult): Pair<String, String?> {
-        val summary = result.summary.trim().ifBlank { null }
-        val error = result.errorMessage?.trim()?.ifBlank { null }
-        // 失败时优先说明原因，成功时用结果摘要；think 这种没有副标题的工具固定返回 null。
-        val subtitle = if (result.ok) summary else error ?: summary
-        return when (result.invocation.name) {
-            ToolCatalog.THINK -> "想了想" to null
-            ToolCatalog.WEB_SEARCH -> "联网搜索" to subtitle
-            ToolCatalog.WEB_FETCH -> "读了网页" to subtitle
-            ToolCatalog.REMEMBER -> "记住了一件事" to subtitle
-            ToolCatalog.UPDATE_PERSONA -> "调整了自己的人设" to subtitle
-            ToolCatalog.SET_QUIET_HOURS -> "安排了自己的作息" to subtitle
-            ToolCatalog.SET_MOOD -> "心情变了" to subtitle
-            ToolCatalog.RECALL -> "回想了一下" to subtitle
-            ToolCatalog.DEFER_REPLY -> "决定先不回" to null
-            else -> result.invocation.name.ifBlank { "动作" } to subtitle
-        }
-    }
 
     /** 解析单个代码块的内容；形状为 {name,arguments} 或 {tool,args}。 */
     private fun parseBlock(payload: String, index: Int): ToolInvocation? {

@@ -102,7 +102,19 @@ public final class SQLiteDatabase {
     public let path: String
     private var handle: OpaquePointer?
     /// 事务嵌套深度：见 `inTransaction`。
+    ///
+    /// **只在持有 `transactionLock` 时读写**。同一个进程里只有一个连接，而
+    /// 聊天落库 / 心跳 / 抽记忆 / 压缩 / 备份导入会从不同线程同时进来，
+    /// 裸 `Int` 会读到撕裂值（0.10.2 审计 P0-1：两个线程同时读到 0 → 都 BEGIN →
+    /// 后者拿到 "cannot start a transaction within a transaction"；或者 T2 读到 >0
+    /// 直接执行 body，把写并进 T1 的事务里，T1 一 ROLLBACK 就静默丢失）。
     private var transactionDepth = 0
+    /// 连接级串行锁：`inTransaction` 整段持有它，于是「同一时刻只有一个事务」成立，
+    /// 深度也就成了持锁线程的嵌套层数。
+    ///
+    /// 用递归锁而不是普通锁：嵌套事务（备份导入里仓储自己又开事务）必须能重入，
+    /// 现有调用方依赖「内层并入外层」这条语义。
+    private let transactionLock = NSRecursiveLock()
 
     /// - Parameter path: 文件路径，或 `":memory:"`（测试用）。
     public init(path: String) throws {
@@ -141,6 +153,8 @@ public final class SQLiteDatabase {
 
     /// 执行一段（可含多条语句的）SQL。DDL 与 PRAGMA 走这里。
     public func execute(_ sql: String) throws {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
         let handle = try requireHandle()
         var errorPointer: UnsafeMutablePointer<CChar>?
         let status = sqlite3_exec(handle, sql, nil, nil, &errorPointer)
@@ -152,19 +166,53 @@ public final class SQLiteDatabase {
         if let errorPointer { sqlite3_free(errorPointer) }
     }
 
+    /// 在连接锁里跑一段（同步）活。
+    ///
+    /// 为什么单条 autocommit 写也要过这把锁：SQLite 的事务状态是**连接级**的——
+    /// 别的线程正在 `BEGIN IMMEDIATE … ROLLBACK` 时，这里一条裸 `INSERT` 会被并进
+    /// 那个事务，一起回滚。锁住它，写就不会「搭别人的车」。
+    ///
+    /// 递归锁：已经在事务里（同一线程）再进来不会死锁。
+    public func withConnectionLock<T>(_ body: () throws -> T) rethrows -> T {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
+        return try body()
+    }
+
+    /// 执行一条写入语句并返回受影响行数（定向 UPDATE 的乐观检查靠它）。
+    @discardableResult
+    public func executeUpdate(_ sql: String, _ arguments: [SQLiteValue] = []) throws -> Int {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
+        let handle = try requireHandle()
+        let statement = try prepare(sql)
+        try statement.bind(arguments)
+        _ = try statement.step()
+        return Int(sqlite3_changes(handle))
+    }
+
+    /// 预备语句。**不加锁**：语句的执行（`step`）发生在调用方，语句生命周期可能跨越
+    /// 多个同步片段；调用方要保证「写不落进别人的事务」时用 `withConnectionLock` /
+    /// `inTransaction` / `executeUpdate`。
     public func prepare(_ sql: String) throws -> SQLiteStatement {
         try SQLiteStatement(database: try requireHandle(), sql: sql)
     }
 
     /// 事务：`body` 抛错就 ROLLBACK，并把错误继续往上抛。
     ///
-    /// 不支持嵌套（SQLite 的 SAVEPOINT 留给以后真有需要时再说）：
-    /// 现在唯一的批量场景是「备份导入」，一次性写几百条，一个事务足够。
+    /// 嵌套（同一个线程里再进一次）**退化为外层事务**：内层不 BEGIN/COMMIT，
+    /// 由最外层统一提交或回滚——批量导入里「仓储自己开事务」和「仓储被包进大事务」
+    /// 两种写法都能用。
+    ///
+    /// 并发（不同线程/任务）：`transactionLock` 把整段事务串起来，所以
+    /// 1. 不会出现两个 `BEGIN`（"cannot start a transaction within a transaction"）；
+    /// 2. 后来者不会把写并进别人的事务里（那会在对方回滚时静默丢失）。
+    /// 异常路径（`BEGIN` 失败 / body 抛错 / COMMIT 失败）都会解锁并清深度。
     @discardableResult
     public func inTransaction<T>(_ body: () throws -> T) throws -> T {
-        // 已经在事务里时不再 BEGIN（SQLite 不支持嵌套事务）：内层直接并入外层，
-        // 由最外层统一 COMMIT/ROLLBACK —— 批量导入里「仓储自己开事务」和「仓储被包进大事务」
-        // 两种写法都能用，不会因为嵌套而炸。
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
+        // 能走到这里说明锁在我们手上：深度只可能是本线程的嵌套层数。
         if transactionDepth > 0 {
             transactionDepth += 1
             defer { transactionDepth -= 1 }
@@ -172,19 +220,21 @@ public final class SQLiteDatabase {
         }
         try execute("BEGIN IMMEDIATE")
         transactionDepth = 1
+        // 无论正常/异常结束都回到「没有事务」：`BEGIN` 之后深度只能靠这里复位。
+        defer { transactionDepth = 0 }
         do {
             let result = try body()
             try execute("COMMIT")
-            transactionDepth = 0
             return result
         } catch {
             try? execute("ROLLBACK")
-            transactionDepth = 0
             throw error
         }
     }
 
     public func scalarInt64(_ sql: String, _ arguments: [SQLiteValue] = []) throws -> Int64 {
+        transactionLock.lock()
+        defer { transactionLock.unlock() }
         let statement = try prepare(sql)
         try statement.bind(arguments)
         guard try statement.step() else { return 0 }

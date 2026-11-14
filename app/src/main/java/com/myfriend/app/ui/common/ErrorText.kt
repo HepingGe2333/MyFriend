@@ -60,7 +60,7 @@ object ErrorText {
         if (modelCount <= 0) {
             context.getString(R.string.api_connect_success)
         } else {
-            context.getString(R.string.api_connect_success_models, modelCount)
+            context.resources.getQuantityString(R.plurals.api_connect_success_models, modelCount, modelCount)
         }
 
     @StringRes
@@ -120,6 +120,7 @@ object ErrorText {
         DomainErrorCode.HEADERS_INVALID_JSON -> R.string.error_headers_invalid_json
         DomainErrorCode.HEADER_NAME_REQUIRED -> R.string.error_header_name_required
         DomainErrorCode.HEADER_VALUE_NOT_STRING -> R.string.error_header_value_not_string
+        DomainErrorCode.HEADER_RESERVED -> R.string.error_header_reserved
         DomainErrorCode.TEMPERATURE_RANGE -> R.string.error_temperature_range
         DomainErrorCode.TOP_P_RANGE -> R.string.error_top_p_range
         DomainErrorCode.MAX_OUTPUT_TOKENS_RANGE -> R.string.error_max_output_tokens_range
@@ -146,6 +147,7 @@ object ErrorText {
         val id = domainRes(error.code)
         val arg: Any? = when (error.code) {
             DomainErrorCode.HEADER_VALUE_NOT_STRING,
+            DomainErrorCode.HEADER_RESERVED,
             DomainErrorCode.TOOL_UNKNOWN -> error.arg ?: ""
             else -> error.number ?: error.arg
         }
@@ -163,6 +165,7 @@ object ErrorText {
         NetworkErrorKind.EmptyUrl -> R.string.error_network_empty_url
         NetworkErrorKind.InvalidUrl -> R.string.error_network_invalid_url
         NetworkErrorKind.HttpsRequired -> R.string.error_network_https_required
+        NetworkErrorKind.CleartextDisabled -> R.string.error_network_cleartext_disabled
         NetworkErrorKind.UnsupportedScheme -> R.string.error_network_unsupported_scheme
         NetworkErrorKind.InvalidBaseUrl -> R.string.error_network_invalid_base_url
         is NetworkErrorKind.Http -> httpRes(kind.status)

@@ -174,15 +174,13 @@ public final class HistoryCompressionService {
             where: "historySummary IS NOT NULL AND historySummary != ''", []
         )) ?? []
         var cleared = 0
-        for var session in sessions {
+        for session in sessions {
             let summary = session.historySummary?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             if summary.isEmpty { continue }
             if HistoryCompression.isLegacySummaryHealthy(summary) { continue }
-            session.historySummary = nil
-            session.historySummarizedUpTo = nil
-            session.historySummaryAt = nil
-            session.updatedAt = now()
-            if (try? stores.sessions.upsert(session)) != nil {
+            // 只清摘要三列：整行写回会把这段时间里别人写的预览 / 未读一起按旧快照盖回去
+            // （0.10.2 审计 P1-1）。
+            if (try? stores.sessions.clearHistorySummary(id: session.id, updatedAt: now())) == true {
                 cleared += 1
                 log("[history] 清掉了一段不像记忆的旧摘要（\(session.id)）")
             }
@@ -270,18 +268,33 @@ public final class HistoryCompressionService {
         guard let upTo = chunk.last?.at else {
             return CompressionResult(status: .skipped, note: "这一批消息没有可用的时间戳")
         }
-        var updated = session
-        updated.historySummary = summary
-        updated.historySummarizedUpTo = upTo
-        updated.historySummaryAt = now
-        updated.updatedAt = now
+        // 只写摘要三列（0.10.2 审计 P1-1）：整行写回会冲掉这几秒里用户新消息带来的
+        // 预览 / 未读，以及抽记忆任务写的计数；会话被删时还会被 REPLACE 插回一行幽灵会话。
+        //
+        // 乐观检查用「压到哪儿」的单调性：只有这次压得比库里更远才写。
+        // 两次压缩同时跑时，覆盖更多消息的那次生效，另一条只记日志（不弹错）。
+        let wrote: Bool
         do {
-            try stores.sessions.upsert(updated)
+            wrote = try stores.sessions.updateHistorySummary(
+                id: session.id,
+                summary: summary,
+                summarizedUpTo: upTo,
+                summaryAt: now,
+                updatedAt: now
+            )
         } catch {
             return CompressionResult(
                 status: .failed,
                 messageCount: chunk.count,
                 note: "写回摘要时出错，当作没收过"
+            )
+        }
+        guard wrote else {
+            log("[history] 会话已被删除，或摘要已被更靠后的一次整理盖过（\(sessionId)），这次不写回")
+            return CompressionResult(
+                status: .skipped,
+                messageCount: chunk.count,
+                note: "摘要已经被更新的一次整理盖过，这次不写回"
             )
         }
         log("[history] 更早的 \(chunk.count) 条收成一段记忆（\(sessionId)）")

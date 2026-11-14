@@ -15,6 +15,13 @@ import SwiftUI
 struct ChatScreen: View {
 
     let sessionId: String
+    /// 从搜索结果跳进来时要定位的那条消息；普通进入是 nil。
+    let focusMessageId: String?
+
+    init(sessionId: String, focusMessageId: String? = nil) {
+        self.sessionId = sessionId
+        self.focusMessageId = focusMessageId
+    }
 
     @EnvironmentObject private var env: AppEnvironment
     @Environment(\.dismiss) private var dismiss
@@ -138,6 +145,11 @@ struct ChatScreen: View {
         .onAppear {
             model.bind(env: env, sessionId: sessionId)
             model.enter()
+            // 定位模式：用户点的是「某条老消息」，先别跟随到底部，否则等于白点。
+            if let focusMessageId {
+                autoFollow = false
+                model.focus(on: focusMessageId)
+            }
             // Debug：进入聊天 30 秒后打一条内存快照（Release 里是空实现）。
             DebugMemoryLog.scheduleChatSnapshot()
             // Debug：`MYFRIEND_DEBUG_OPEN_IMAGE=1` 时自动打开第一张图的全屏查看（模拟器没法点）。
@@ -328,6 +340,19 @@ struct ChatScreen: View {
                                 onRegenerate: { model.regenerate() },
                                 onDelete: { pendingDelete = message }
                             )
+                            // 搜索结果跳过来时的高亮：一圈强调色底，约 2 秒后淡出。
+                            // 用负 padding 让底色「包住」气泡而不改变原有排版间距。
+                            .background(
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(accent.opacity(message.id == model.highlightedMessageId ? 0.16 : 0))
+                                    .padding(.horizontal, -6)
+                                    .padding(.vertical, -3)
+                            )
+                            .animation(
+                                animationsEnabled ? .easeOut(duration: 0.7) : nil,
+                                value: model.highlightedMessageId
+                            )
+                            .id(message.id)
                         }
                     }
                     if model.isGenerating {
@@ -363,6 +388,10 @@ struct ChatScreen: View {
             }
             .onChange(of: model.streamingText) { _ in
                 throttledScrollToBottom(proxy)
+            }
+            .onChange(of: model.scrollTargetId) { target in
+                guard let target else { return }
+                scrollToFocus(proxy, messageId: target)
             }
             .overlay(alignment: .bottomTrailing) {
                 jumpToLatest(proxy)
@@ -500,6 +529,24 @@ struct ChatScreen: View {
         }
     }
 
+    /// 滚到搜索结果点进来的那条消息。
+    ///
+    /// 为什么滚好几次：目标那一行在 `LazyVStack` 里可能还没被创建出来（尤其是刚往前读了几页、
+    /// 视图还在重建时），第一次 `scrollTo` 会落空。这里重试几次，每次错开 120ms；
+    /// 重复滚到同一个位置是幂等的，用户看不出多余动作。
+    private func scrollToFocus(_ proxy: ScrollViewProxy, messageId: String) {
+        Task { @MainActor in
+            for attempt in 0..<4 {
+                if attempt > 0 {
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                }
+                withAnimation(animationsEnabled && attempt == 0 ? .easeInOut(duration: 0.28) : nil) {
+                    proxy.scrollTo(messageId, anchor: .center)
+                }
+            }
+        }
+    }
+
     /// 流式输出时**每 60ms 最多滚一次**：每个 token 都滚一次会让长回复整屏发抖，
     /// 而完全不等又会让字跑出可视区。
     private func throttledScrollToBottom(_ proxy: ScrollViewProxy) {
@@ -532,6 +579,8 @@ struct ChatScreen: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(height: 0.5)
 
+            sendFailureBar
+
             attachmentPreview
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -562,6 +611,48 @@ struct ChatScreen: View {
             .padding(.bottom, 10)
         }
         .background(.regularMaterial)
+    }
+
+    /// 发送被拒（没落库）时的提示：草稿与图片都还在，点一下就能重试。
+    ///
+    /// 0.10.2 审计 P1-10：原来失败时 `ChatViewModel` 已经把 `draft` 与 `pendingAttachments`
+    /// 清空了，用户只能重打重选。现在这两样原样留着，这条提示只负责说明「为什么没发出去」。
+    @ViewBuilder
+    private var sendFailureBar: some View {
+        if let failure = model.sendFailure {
+            HStack(spacing: 10) {
+                Image(systemName: "exclamationmark.circle")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.orange)
+                Text(failure)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: 8)
+                Button {
+                    autoFollow = true
+                    model.send()
+                } label: {
+                    Text(L("重试"))
+                        .font(.footnote.weight(.medium))
+                        .foregroundStyle(accent)
+                }
+                .buttonStyle(.plain)
+                .disabled(!model.canSend)
+                Button {
+                    model.dismissSendFailure()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(Text(L("关闭")))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.orange.opacity(0.10))
+        }
     }
 
     private var composerPlaceholder: String {

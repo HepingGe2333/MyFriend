@@ -325,12 +325,10 @@ public struct BackupSession: Equatable, Sendable, Encodable {
     public var createdAt: Int64
     public var updatedAt: Int64
     public var lastPersonaVersion: Int
-    public var syncState: String
-    public var syncedPersonaVersion: Int?
-    public var syncedMemoriesHash: String?
-    public var serverSessionId: String?
-    public var lastSyncError: String?
-    public var lastSyncAt: Int64?
+    // 注意：`syncState` / `syncedPersonaVersion` / `syncedMemoriesHash` / `serverSessionId` /
+    // `lastSyncError` / `lastSyncAt` 这 6 列**只在库里**（对齐 Room 的 v10 表结构），
+    // 不进备份 JSON：Android 的 `BackupSession` 没有它们，跨端契约要求字段名逐字一致
+    //（0.10.2 安全审计 P1-5）。v1/v2 旧文件里若出现这些键，解码时按未知字段忽略。
     public var lastMemoryExtractedCount: Int
     /// 长会话被收成的那段「他还记得的话」（1.7 的滚动摘要）。
     ///
@@ -357,12 +355,6 @@ public struct BackupSession: Equatable, Sendable, Encodable {
         createdAt: Int64 = 0,
         updatedAt: Int64 = 0,
         lastPersonaVersion: Int = 0,
-        syncState: String = "STATELESS",
-        syncedPersonaVersion: Int? = nil,
-        syncedMemoriesHash: String? = nil,
-        serverSessionId: String? = nil,
-        lastSyncError: String? = nil,
-        lastSyncAt: Int64? = nil,
         lastMemoryExtractedCount: Int = 0,
         summary: String? = nil,
         summarizedUpTo: Int64? = nil,
@@ -382,12 +374,6 @@ public struct BackupSession: Equatable, Sendable, Encodable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.lastPersonaVersion = lastPersonaVersion
-        self.syncState = syncState
-        self.syncedPersonaVersion = syncedPersonaVersion
-        self.syncedMemoriesHash = syncedMemoriesHash
-        self.serverSessionId = serverSessionId
-        self.lastSyncError = lastSyncError
-        self.lastSyncAt = lastSyncAt
         self.lastMemoryExtractedCount = lastMemoryExtractedCount
         self.summary = summary
         self.summarizedUpTo = summarizedUpTo
@@ -402,9 +388,8 @@ public struct BackupSession: Equatable, Sendable, Encodable {
 
     enum CodingKeys: String, CodingKey {
         case id, personaId, apiConfigId, model, title, lastMessagePreview, lastMessageAt
-        case unreadCount, pinned, createdAt, updatedAt, lastPersonaVersion, syncState
-        case syncedPersonaVersion, syncedMemoriesHash, serverSessionId, lastSyncError
-        case lastSyncAt, lastMemoryExtractedCount, summary, summarizedUpTo, summaryAt
+        case unreadCount, pinned, createdAt, updatedAt, lastPersonaVersion
+        case lastMemoryExtractedCount, summary, summarizedUpTo, summaryAt
         case memoryRetentionOverride, extractionEveryOverride
     }
 }
@@ -859,12 +844,8 @@ extension BackupSession {
             createdAt: try json.int64("createdAt"),
             updatedAt: try json.int64("updatedAt"),
             lastPersonaVersion: try json.int("lastPersonaVersion"),
-            syncState: try json.text("syncState", "STATELESS"),
-            syncedPersonaVersion: try json.optionalInt("syncedPersonaVersion"),
-            syncedMemoriesHash: try json.optionalText("syncedMemoriesHash"),
-            serverSessionId: try json.optionalText("serverSessionId"),
-            lastSyncError: try json.optionalText("lastSyncError"),
-            lastSyncAt: try json.optionalInt64("lastSyncAt"),
+            // 旧文件里的 6 个 sync 字段在这里被**忽略**（不再读）：
+            // 它们不是跨端契约的一部分，读了也只会让 iOS 的备份跟 Android 不一样。
             lastMemoryExtractedCount: try json.int("lastMemoryExtractedCount"),
             summary: try json.optionalText("summary"),
             summarizedUpTo: try json.optionalInt64("summarizedUpTo"),

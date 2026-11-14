@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 构建：允许明文 HTTP。
+
+  为什么需要它：本地自建服务（Ollama / LM Studio / 反向代理）常常只有 http://。
+  「允许不安全 HTTP」开关是用户在每个 API 配置上显式勾选的第二道闸；
+  系统层的这一份只对调试构建生效，release 包（主 manifest）是 false。
+
+  注意 `tools:replace`：主 manifest 写了 false，debug 这份要用 true 覆盖它。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:usesCleartextTraffic="true"
+        tools:replace="android:usesCleartextTraffic" />
+
+</manifest>

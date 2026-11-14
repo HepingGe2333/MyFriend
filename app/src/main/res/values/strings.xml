@@ -19,10 +19,14 @@
     <string name="usage_headline_none">这个月还没怎么说话</string>
     <string name="usage_headline_tokens">这个月一共用了 %1$s tokens</string>
     <string name="usage_detail_none">等他开始陪你聊天、自己整理记忆，这里会慢慢有数。</string>
-    <string name="usage_detail_counts">一共 %1$d 次调用 · 读了 %2$s tokens · 写了 %3$s tokens</string>
+    <plurals name="usage_detail_counts">
+        <item quantity="other">一共 %1$d 次调用 · 读了 %2$s tokens · 写了 %3$s tokens</item>
+    </plurals>
     <string name="usage_by_kind_title">按用途</string>
     <string name="usage_by_session_title">按人（前 10）</string>
-    <string name="usage_kind_calls_tokens">%1$d 次 · %2$s tokens</string>
+    <plurals name="usage_kind_calls_tokens">
+        <item quantity="other">%1$d 次 · %2$s tokens</item>
+    </plurals>
     <string name="usage_tokens_ten_thousand">%1$s 万</string>
     <string name="usage_local_only">只记在本机，不上传；也不会因此限制他做任何事。</string>
 
@@ -233,6 +237,8 @@
 
     <!-- 聊天页：导出 -->
     <string name="chat_export_success">对话已导出</string>
+    <!-- 0.10.2：导出改到 IO 线程 + 分批写文件，导出期间给一个明确的进行中状态。 -->
+    <string name="chat_export_in_progress">正在导出对话…</string>
     <string name="chat_export_failed">导出失败</string>
     <string name="chat_export_failed_reason">导出失败：%1$s</string>
     <string name="chat_export_error_unwritable">无法写入文件</string>
@@ -322,7 +328,9 @@
     <string name="chat_profile_session_label">会话</string>
     <string name="chat_profile_session_value">本地会话 %1$s</string>
     <string name="chat_profile_prompt_label">人格提示词</string>
-    <string name="chat_profile_prompt_value">%1$d 字符 · 完整保存</string>
+    <plurals name="chat_profile_prompt_value">
+        <item quantity="other">%1$d 字符 · 完整保存</item>
+    </plurals>
     <string name="chat_profile_edit">编辑人格与提示词</string>
     <string name="chat_profile_memory">长期记忆</string>
     <string name="chat_profile_evolution">人格进化与版本保留</string>
@@ -365,10 +373,21 @@
     <string name="search_empty_desc">按人格名字或对话内容查找。输入关键词后，会同时搜索会话标题与消息正文。</string>
     <string name="search_no_results_title">没有找到「%1$s」</string>
     <string name="search_no_results_desc">试试更短的词，或者换个说法——你们聊过的原话不一定是这样写的。</string>
-    <string name="search_section_sessions">会话</string>
-    <string name="search_section_messages">消息</string>
     <string name="search_no_preview">暂无消息</string>
     <string name="search_session_subtitle">%1$s · %2$s</string>
+    <!-- 0.10.2 检索升级：分段 / 过滤 / 分页 / 状态 -->
+    <string name="search_tab_messages">消息</string>
+    <string name="search_tab_sessions">会话</string>
+    <string name="search_tab_with_count">%1$s %2$d</string>
+    <string name="search_filter_persona_all">全部人格</string>
+    <string name="search_time_all">全部时间</string>
+    <string name="search_time_7d">最近 7 天</string>
+    <string name="search_time_30d">最近 30 天</string>
+    <string name="search_no_results_filtered_desc">当前的过滤条件里没有命中。换成「全部人格」或「全部时间」再试试。</string>
+    <string name="search_error_title">这次没搜成</string>
+    <string name="search_error_desc">读取本地记录时出了点问题。记录还在，重试一次就好。</string>
+    <string name="search_retry">重试</string>
+    <string name="search_truncated">命中太多，只显示最近的 %1$d 条。</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -538,7 +557,9 @@
     <string name="persona_editor_memory_level_4">4 · 记得很细</string>
     <string name="persona_editor_memory_level_5">5 · 什么都记得</string>
     <string name="persona_editor_extraction_title">抽记忆频率</string>
-    <string name="persona_editor_extraction_value">每 %1$d 条消息抽一次</string>
+    <plurals name="persona_editor_extraction_value">
+        <item quantity="other">每 %1$d 条消息抽一次</item>
+    </plurals>
     <string name="persona_editor_sleep_title">他会不会主动睡觉</string>
     <string name="persona_editor_sleep_on">到点会睡，睡着时消息留着；叫得够多会醒。</string>
     <string name="persona_editor_sleep_off">他不睡觉，任何时间都会回。</string>
@@ -1033,7 +1054,6 @@
     <string name="settings_error_unwritable_file">无法写入文件</string>
     <string name="settings_export_success">聊天记录已导出</string>
     <string name="settings_export_failed">导出失败：%1$s</string>
-    <string name="settings_error_export">导出失败</string>
     <string name="settings_cleared_chats">所有聊天与记忆已清空</string>
     <string name="settings_error_clear">清空失败</string>
     <string name="settings_wiped">所有本地数据已删除</string>
@@ -1176,6 +1196,8 @@
     <string name="error_headers_invalid_json">自定义 Headers 必须是合法的 JSON 对象</string>
     <string name="error_header_name_required">Header 名称不能为空</string>
     <string name="error_header_value_not_string">Header %1$s 的值必须是字符串</string>
+    <!-- 0.10.2：不允许用户自定义由 HTTP 框架管理的头（Host / Content-Length / Transfer-Encoding 等）。 -->
+    <string name="error_header_reserved">不能自定义 Header「%1$s」：它由 HTTP 框架管理</string>
     <string name="error_temperature_range">Temperature 应在 0 到 2 之间</string>
     <string name="error_top_p_range">Top P 应在 0 到 1 之间</string>
     <string name="error_max_output_tokens_range">Max Output Tokens 必须大于 0</string>
@@ -1200,6 +1222,8 @@
     <!-- 网络层：地址、HTTP 状态、流式响应 -->
     <string name="error_network_empty_url">地址不能为空</string>
     <string name="error_network_invalid_url">地址格式不正确，请填写完整的 http(s) 地址</string>
+    <!-- 0.10.2：release 构建在系统层禁止明文，用户打开开关也必须给出明确原因。 -->
+    <string name="error_network_cleartext_disabled">发布版只允许 HTTPS：明文 HTTP 只在这个调试构建里可用，请把服务地址改成 https://。</string>
     <string name="error_network_https_required">出于安全要求，仅允许 HTTPS。若使用本地服务，请在 API 配置中显式开启“允许不安全 HTTP”。</string>
     <string name="error_network_unsupported_scheme">仅支持 HTTP(S) 地址</string>
     <string name="error_network_invalid_base_url">API 地址无效，请检查 Base URL</string>
@@ -1240,7 +1264,9 @@
     <string name="error_web_status_other">请求失败（HTTP %1$d）</string>
 
     <string name="api_connect_success">连接成功</string>
-    <string name="api_connect_success_models">连接成功，发现 %1$d 个模型</string>
+    <plurals name="api_connect_success_models">
+        <item quantity="other">连接成功，发现 %1$d 个模型</item>
+    </plurals>
 
     <!-- 版本历史里的「为什么有这个版本」：落库的是令牌，这里是说法 -->
     <string name="reason_revision_card_created">创建人格卡</string>
@@ -1260,32 +1286,62 @@
 
     <!-- 备份：预览、导入总结、warnings、失败原因 -->
     <string name="backup_preview_empty">这份备份里什么也没有</string>
-    <string name="backup_preview_personas">%1$d 个人格</string>
-    <string name="backup_preview_memories">%1$d 条记忆</string>
-    <string name="backup_preview_sessions">%1$d 段对话</string>
-    <string name="backup_preview_messages">%1$d 句话</string>
-    <string name="backup_preview_rules">%1$d 条主动节奏</string>
-    <string name="backup_preview_presets">%1$d 个预设</string>
+    <plurals name="backup_preview_personas">
+        <item quantity="other">%1$d 个人格</item>
+    </plurals>
+    <plurals name="backup_preview_memories">
+        <item quantity="other">%1$d 条记忆</item>
+    </plurals>
+    <plurals name="backup_preview_sessions">
+        <item quantity="other">%1$d 段对话</item>
+    </plurals>
+    <plurals name="backup_preview_messages">
+        <item quantity="other">%1$d 句话</item>
+    </plurals>
+    <plurals name="backup_preview_rules">
+        <item quantity="other">%1$d 条主动节奏</item>
+    </plurals>
+    <plurals name="backup_preview_presets">
+        <item quantity="other">%1$d 个预设</item>
+    </plurals>
     <string name="backup_exported_at">%1$s 带走</string>
     <string name="backup_exported_unknown">带走的时间不详</string>
     <string name="backup_moment_pattern">yyyy年M月d日 HH:mm</string>
     <string name="backup_import_done">把他接回来了：%1$s</string>
     <string name="backup_import_restored">照备份重新接回了他：%1$s</string>
-    <string name="backup_import_skipped">；有 %1$d 条没接回来</string>
+    <plurals name="backup_import_skipped">
+        <item quantity="other">；有 %1$d 条没接回来</item>
+    </plurals>
     <string name="backup_warn_separator">；</string>
     <string name="backup_warn_older_format">备份格式是 v%1$d，已按 v%2$d 尽力读出来</string>
     <string name="backup_warn_section_not_list">备份里的「%1$s」不是列表，这一段已跳过</string>
-    <string name="backup_warn_dropped_rows">%1$s 里有 %2$d 条读不出来，已跳过</string>
-    <string name="backup_warn_blank_ids">%1$s 里有 %2$d 条没写 id，已跳过</string>
+    <plurals name="backup_warn_dropped_rows">
+        <item quantity="other">%1$s 里有 %2$d 条读不出来，已跳过</item>
+    </plurals>
+    <plurals name="backup_warn_blank_ids">
+        <item quantity="other">%1$s 里有 %2$d 条没写 id，已跳过</item>
+    </plurals>
     <string name="backup_warn_settings_unreadable">设置这一段读不出来，接回来时设置页保持原样</string>
     <string name="backup_warn_no_content">这份备份里没有他：既没有人格也没有记忆和对话</string>
-    <string name="backup_warn_extra_sessions">备份里有 %1$d 段多余会话，已按「一人一段」保留最新那段</string>
-    <string name="backup_warn_attachments">有 %1$d 句话原本带着图片，图片没有跟着备份走，现在只剩文字</string>
-    <string name="backup_warn_configs_missing_key">有 %1$d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好</string>
+    <plurals name="backup_warn_extra_sessions">
+        <item quantity="other">备份里有 %1$d 段多余会话，已按「一人一段」保留最新那段</item>
+    </plurals>
+    <plurals name="backup_warn_attachments">
+        <item quantity="other">有 %1$d 句话原本带着图片，图片没有跟着备份走，现在只剩文字</item>
+    </plurals>
+    <plurals name="backup_warn_configs_missing_key">
+        <item quantity="other">有 %1$d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好</item>
+    </plurals>
     <string name="backup_warn_no_settings">这份备份里没有设置，设置页保持你现在的样子</string>
     <string name="backup_warn_settings_partial">设置没能完全接回来（他本身已经接回来了）</string>
     <string name="backup_warn_active_persona_missing">备份里选中的那个人格不在这份备份里，已把「正在聊的人」交还给默认人格</string>
     <string name="backup_warn_avatar_missing">「%1$s」的头像文件已经不在这台手机上，已清空这个头像</string>
+    <!-- 0.10.2 安全修复：导入不改本机服务地址 / 不打开明文 HTTP，用这三条提醒说明。 -->
+    <plurals name="backup_warn_api_config_address_kept">
+        <item quantity="other">有 %1$d 条 API 配置的地址与备份里不同，已保留这台手机上的地址（要改地址请手动编辑并重新确认）</item>
+    </plurals>
+    <string name="backup_warn_api_config_insecure_ignored">备份要求允许明文 HTTP，没有被采纳：明文只能在这台手机的设置里手动开启</string>
+    <string name="backup_warn_api_config_rejected">配置「%1$s」没通过本机校验（例如地址是明文 HTTP），已跳过</string>
     <string name="backup_section_persona">人格</string>
     <string name="backup_section_memory">记忆</string>
     <string name="backup_section_session">对话</string>
@@ -1301,10 +1357,14 @@
     <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
 
     <!-- 导入结果：人格 / 预设 -->
-    <string name="persona_import_result_ok">成功导入 %1$d 个人格</string>
+    <plurals name="persona_import_result_ok">
+        <item quantity="other">成功导入 %1$d 个人格</item>
+    </plurals>
     <string name="persona_import_result_partial">成功导入 %1$d 个人格，跳过 %2$d 个格式不完整项</string>
     <string name="preset_import_result_none">没有可导入的预设</string>
-    <string name="preset_import_result_ok">已导入 %1$d 个预设</string>
+    <plurals name="preset_import_result_ok">
+        <item quantity="other">已导入 %1$d 个预设</item>
+    </plurals>
     <string name="preset_import_result_partial">已导入 %1$d 个预设，跳过 %2$d 个无效条目</string>
 
     <!-- 记忆抽取结果（数量由代码给，说法在这里） -->
@@ -1312,16 +1372,85 @@
     <string name="memory_extract_result_reinforced">又聊到了旧事，记忆更牢了</string>
     <string name="memory_extract_result_echoed">记下了，还想再确认一次</string>
     <string name="memory_extract_result_not_enough">对话还不够多，先聊几句</string>
-    <string name="memory_extract_result_interval">还没到记忆整理间隔（每 %1$d 条）</string>
+    <plurals name="memory_extract_result_interval">
+        <item quantity="other">还没到记忆整理间隔（每 %1$d 条）</item>
+    </plurals>
     <string name="memory_extract_result_none">没有发现需要新增的长期记忆</string>
 
     <!-- 主动节奏的默认说明：落库前由界面按当前语言写好 -->
+    <string name="proactive_default_hint">主动开口，用你的方式关心对方此刻的状态。</string>
     <string name="proactive_default_note_daily">每天 %1$s 主动问候</string>
-    <string name="proactive_default_note_interval">每 %1$d 小时主动关心一次</string>
+    <plurals name="proactive_default_note_interval">
+        <item quantity="other">每 %1$d 小时主动关心一次</item>
+    </plurals>
 
     <!-- 落库的名字后缀：复制/导入时由界面传进去，跟着当时的语言走 -->
     <string name="common_copy_suffix"> 副本</string>
     <string name="persona_import_suffix">（导入）</string>
     <string name="chat_persona_switch_no_session">无法创建会话</string>
     <string name="chat_persona_switch_api_not_bound">尚未绑定 API，请在会话中完成配置</string>
+    <!-- 工具痕迹（聊天气泡下面那一行）的显示文案。
+         回灌给模型的文本仍留在 ToolProtocol / ToolExecutor 里保持中文，两条路径不许混用。 -->
+    <string name="tool_trace_think">想了想</string>
+    <string name="tool_trace_web_search">联网搜索</string>
+    <string name="tool_trace_web_fetch">读了网页</string>
+    <string name="tool_trace_remember">记住了一件事</string>
+    <string name="tool_trace_remember_pending">记下了（还在确认）</string>
+    <string name="tool_trace_remember_confirmed">记住了</string>
+    <string name="tool_trace_remember_reinforced">又确认了一次</string>
+    <string name="tool_trace_remember_skipped">这次先不记</string>
+    <string name="tool_trace_remember_considering">想了想要不要记</string>
+    <string name="tool_trace_update_persona">调整了自己的人设</string>
+    <string name="tool_trace_persona_unchanged">想了想，没有改</string>
+    <string name="tool_trace_set_quiet_hours">安排了自己的作息</string>
+    <string name="tool_trace_set_mood">心情变了</string>
+    <string name="tool_trace_recall">回想了一下</string>
+    <string name="tool_trace_defer_reply">决定先不回</string>
+    <string name="tool_trace_unknown">动作</string>
+
+    <string name="tool_trace_think_detail_placeholder">（没有写具体问题，就是想清楚再答）</string>
+    <string name="tool_trace_search_no_result">没有搜到结果</string>
+    <string name="tool_trace_recall_empty">翻了翻，没想起什么</string>
+    <plurals name="tool_trace_recall_hits">
+        <item quantity="other">翻了翻记忆 · %1$d 条</item>
+    </plurals>
+    <string name="tool_trace_recall_empty_detail">（%1$s）翻了一遍，没有找到</string>
+    <string name="tool_trace_recall_hit_line">（%1$s）%2$s</string>
+    <string name="tool_trace_recall_depth_quick">随口想想</string>
+    <string name="tool_trace_recall_depth_normal">认真回忆</string>
+    <string name="tool_trace_recall_depth_deep">翻箱倒柜</string>
+    <string name="tool_trace_source_memory">记忆</string>
+    <string name="tool_trace_source_chat">聊天</string>
+    <string name="tool_trace_source_browsing">他自己看到的</string>
+    <string name="tool_trace_remember_skipped_detail">这次先不记：%1$s</string>
+    <string name="tool_trace_remember_echo_detail">第一次听到，先放在心里；再提到一次就会真正记住。</string>
+    <string name="tool_trace_remember_reinforced_detail">这条记忆更牢了。</string>
+    <string name="tool_trace_persona_unchanged_detail">这处设定本来就是你说的样子，不用改。</string>
+    <string name="tool_trace_persona_reason">原因：%1$s</string>
+    <string name="tool_trace_persona_applied">已生效，改动进了版本历史。</string>
+    <string name="tool_trace_quiet_hours">%1$s 睡 · %2$s 起</string>
+    <string name="tool_trace_quiet_hours_rest">这段时间他不会主动来打扰。</string>
+    <string name="tool_trace_quiet_hours_dnd_on">睡前会开免打扰：睡着时不会被消息叫醒。</string>
+    <string name="tool_trace_quiet_hours_dnd_off">睡前不开免打扰：睡着时被连着叫几条会醒。</string>
+    <plurals name="tool_trace_defer_detail">
+        <item quantity="other">过 %1$d 分钟再想这件事</item>
+    </plurals>
+    <plurals name="tool_trace_defer_detail_reason">
+        <item quantity="other">过 %1$d 分钟再想这件事（%2$s）</item>
+    </plurals>
+    <string name="tool_trace_mood">%1$s（%2$d/5）</string>
+    <string name="tool_trace_mood_reason">%1$s（%2$d/5）· %3$s</string>
+    <string name="tool_trace_when_day_before">前天</string>
+    <plurals name="tool_trace_when_years">
+        <item quantity="other">%1$d 年前</item>
+    </plurals>
+    <plurals name="chat_trace_count">
+        <item quantity="other">%1$d 次</item>
+    </plurals>
+
+    <!-- 落到数据库里的会话标题 / 消息预览：写入时按当前语言取，老库里的中文原样显示 -->
+    <string name="chat_session_default_title">与 %1$s 的对话</string>
+    <string name="chat_preview_image">图片</string>
+    <string name="chat_preview_proactive">主动提议</string>
+    <string name="chat_preview_failed">回复失败</string>
 </resources>

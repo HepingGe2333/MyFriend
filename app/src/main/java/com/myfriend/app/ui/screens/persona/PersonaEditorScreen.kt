@@ -546,7 +546,11 @@ private fun ContactProfileSection(
             )
             ProfileSlider(
                 title = stringResource(R.string.persona_editor_extraction_title),
-                valueText = stringResource(R.string.persona_editor_extraction_value, form.extractionEvery),
+                valueText = pluralStringResource(
+                    R.plurals.persona_editor_extraction_value,
+                    form.extractionEvery,
+                    form.extractionEvery
+                ),
                 value = form.extractionEvery.toFloat(),
                 valueRange = 3f..12f,
                 steps = 8,
@@ -692,15 +696,22 @@ private fun memoryRetentionText(level: Int): String = when (level.coerceIn(1, 5)
  */
 private val CATEGORY_SUGGESTIONS = listOf("日常聊天", "角色扮演", "学习", "编程", "创意写作", "工作")
 
-/** 已知的分类落库值映射成本地化文案；用户自己敲的分类原样显示。 */
+/**
+ * 已知的分类落库值映射成本地化文案；用户自己敲的分类原样显示。
+ *
+ * 中文值是 1.9 起的内置分类；英文值来自两处：`values-en/seed.xml`（英文首次安装时
+ * 种下的分类）与英文设备的备份/人格包导入。两边都映射到同一批资源，
+ * 这样英文设备上显示英文、中文设备导入后也不会露出英文。
+ */
 @Composable
-internal fun personaCategoryLabel(value: String): String = when (value) {
-    "日常聊天" -> stringResource(R.string.persona_category_daily_chat)
-    "角色扮演" -> stringResource(R.string.persona_category_roleplay)
-    "学习" -> stringResource(R.string.persona_category_study)
-    "编程" -> stringResource(R.string.persona_category_coding)
-    "创意写作" -> stringResource(R.string.persona_category_writing)
-    "工作" -> stringResource(R.string.persona_category_work)
+internal fun personaCategoryLabel(value: String): String = when (value.trim()) {
+    "日常聊天", "Everyday talk" -> stringResource(R.string.persona_category_daily_chat)
+    "角色扮演", "Roleplay" -> stringResource(R.string.persona_category_roleplay)
+    "学习", "Study" -> stringResource(R.string.persona_category_study)
+    "编程", "Coding" -> stringResource(R.string.persona_category_coding)
+    "创意写作", "Creative writing" -> stringResource(R.string.persona_category_writing)
+    "工作", "Work" -> stringResource(R.string.persona_category_work)
+    "未分类", "Uncategorized" -> stringResource(R.string.chat_persona_category_unknown)
     else -> value
 }
 

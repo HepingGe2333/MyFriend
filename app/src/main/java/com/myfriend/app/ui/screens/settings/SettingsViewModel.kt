@@ -1,6 +1,7 @@
 package com.myfriend.app.ui.screens.settings
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.myfriend.app.data.repo.BackupImportException
@@ -22,10 +23,9 @@ import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.UsageTotals
 import com.myfriend.app.domain.BackupDecodeResult
 import com.myfriend.app.domain.BackupPreview
-import com.myfriend.app.domain.ExportFile
-import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -35,6 +35,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class SettingsUiState(
@@ -48,7 +49,11 @@ data class SettingsUiState(
 )
 
 sealed interface SettingsEvent {
-    data class ExportReady(val file: ExportFile) : SettingsEvent
+    /**
+     * 「导出全部对话」已经准备好：只带建议文件名，真正的内容在用户选完位置之后
+     * 边读库边分批写盘（见 [SettingsViewModel.exportAllChatsTo]）。
+     */
+    data class ExportReady(val fileName: String) : SettingsEvent
 }
 
 /**
@@ -134,12 +139,42 @@ class SettingsViewModel @Inject constructor(
     /** 常驻后台：关掉后他就只在应用打开时存在。 */
     fun setAgentLoopEnabled(enabled: Boolean) = launchSetting { settingsRepository.setAgentLoopEnabled(enabled) }
 
+    /** 导出全部对话的默认文件名（界面先拿它去开系统文件选择器）。 */
+    fun suggestedAllChatsFileName(): String = chatRepository.suggestedAllChatsFileName()
+
     fun exportAllChats() {
         viewModelScope.launch {
+            // 这里只发起「选位置」；真正的读库 + 分批写文件在 exportAllChatsTo 里做。
+            runCatching { events.send(SettingsEvent.ExportReady(chatRepository.suggestedAllChatsFileName())) }
+        }
+    }
+
+    /**
+     * 把全部对话**边读边写**进用户选的文件。
+     *
+     * 0.10.2 之前：仓库先在主线程上下文里组装整份字符串，界面再整体写盘 ——
+     * 整库导出时这是几十 MB 的堆峰值 + 一段主线程卡顿。现在读取/序列化在仓库的
+     * IO 上下文里，按 [com.myfriend.app.domain.ExportJsonStream] 的批大小一段段回调，
+     * 这里每段直接写进输出流并 flush；失败（磁盘满、权限没了）会让整次导出失败并报出来。
+     */
+    fun exportAllChatsTo(uri: Uri) {
+        viewModelScope.launch {
             busy.value = true
-            chatRepository.exportAllChats()
-                .onSuccess { events.send(SettingsEvent.ExportReady(it)) }
-                .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_export) }
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        chatRepository.exportAllChatsTo { chunk ->
+                            output.write(chunk.toByteArray(Charsets.UTF_8))
+                            // 分批落盘：不要等整份文件拼完再一次性写。
+                            output.flush()
+                        }.getOrThrow()
+                    } ?: error(context.getString(R.string.settings_error_unwritable_file))
+                }
+            }
+            message.value = result.fold(
+                { context.getString(R.string.settings_export_success) },
+                { context.getString(R.string.settings_export_failed, ErrorText.of(context, it)) }
+            )
             busy.value = false
         }
     }
@@ -163,7 +198,8 @@ class SettingsViewModel @Inject constructor(
                 chatRepository.wipeAllData()
                 apiUsageRepository.wipe()
                 presetRepository.wipeAll()
-                MediaStorage.clear(context)
+                // 媒体文件（files/media + files/avatars）由 ChatRepository.wipeAllData 内的
+                // DataEraser 一并清掉：删表与删文件走同一份清单，避免两处各自漏。
                 settingsRepository.resetAll()
             }.onSuccess { message.value = context.getString(R.string.settings_wiped) }
                 .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_delete) }

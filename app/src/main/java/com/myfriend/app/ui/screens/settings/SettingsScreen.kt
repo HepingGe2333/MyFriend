@@ -89,7 +89,6 @@ import com.myfriend.app.BuildConfig
 import com.myfriend.app.R
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.prefs.ThemeMode
-import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
 import com.myfriend.app.ui.components.ConfirmDialog
@@ -102,9 +101,7 @@ import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.util.BackgroundKeeper
 import com.myfriend.app.util.formatFullDateTime
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 private val accentChoices = listOf(
     0xFFC76F4E, 0xFFB6883E, 0xFF6F8B65, 0xFF4F7F92,
@@ -137,7 +134,6 @@ fun SettingsScreen(
     }
     var showClearChatsConfirm by remember { mutableStateOf(false) }
     var showWipeConfirm by remember { mutableStateOf(false) }
-    var pendingExport by remember { mutableStateOf<ExportFile?>(null) }
     var customHex by remember { mutableStateOf("") }
     var notificationsGranted by remember { mutableStateOf(BackgroundKeeper.hasNotificationPermission(context)) }
     var batteryUnrestricted by remember { mutableStateOf(BackgroundKeeper.isIgnoringBatteryOptimizations(context)) }
@@ -176,33 +172,17 @@ fun SettingsScreen(
             }
         }
     }
+    // 「导出全部对话」：选完位置后由 ViewModel 边读库边分批写盘（都在 IO 上），
+    // 结果通过 state.message 显示，屏幕不再自己拿到整份 JSON 字符串。
     val exportLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
-        val file = pendingExport
-        if (uri != null && file != null) {
-            scope.launch {
-                val result = runCatching {
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openOutputStream(uri)?.use { it.write(file.content.toByteArray()) }
-                            ?: error(context.getString(R.string.settings_error_unwritable_file))
-                    }
-                }
-                snackbar.showSnackbar(
-                    result.fold(
-                        { context.getString(R.string.settings_export_success) },
-                        { context.getString(R.string.settings_export_failed, ErrorText.of(context, it)) }
-                    )
-                )
-            }
-        }
-        pendingExport = null
+        if (uri != null) viewModel.exportAllChatsTo(uri)
     }
 
     LaunchedEffect(Unit) {
         viewModel.eventFlow.collect { event ->
             when (event) {
                 is SettingsEvent.ExportReady -> {
-                    pendingExport = event.file
-                    exportLauncher.launch(event.file.fileName)
+                    exportLauncher.launch(event.fileName)
                 }
             }
         }

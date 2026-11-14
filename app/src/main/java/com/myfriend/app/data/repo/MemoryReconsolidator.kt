@@ -290,6 +290,22 @@ class MemoryReconsolidator @Inject constructor(
     suspend fun driftedCount(personaId: String): Int =
         runCatching { memoryDao.countDrifted(personaId) }.getOrDefault(0)
 
+    /**
+     * **删除清理入口**：`memory_versions`（记忆旧正文）是它写的，也必须由它清。
+     *
+     * 这张表只挂在 `memoryId` 上、没有外键，0.10.2 之前没有任何删除路径：
+     * 每次「回忆漂移」都写一条，删人格 / 清空聊天与记忆 / 删除全部数据 / 备份替换
+     * 都会把这些整段用户信息留在 `myfriend.db` 里。
+     *
+     * @param personaId null = 整表清空（删除全部数据 / 备份替换）；
+     *                  非 null = 只在「这个人的记忆已经删掉之后」回收孤儿行。
+     */
+    suspend fun purgeVersions(personaId: String? = null) {
+        runCatching {
+            if (personaId == null) memoryVersionDao.deleteAll() else memoryVersionDao.deleteOrphans()
+        }
+    }
+
     // ---------------------------------------------------------------- 内部
 
     /** 这条路能不能走：属于这个人、够长、还没定型。 */

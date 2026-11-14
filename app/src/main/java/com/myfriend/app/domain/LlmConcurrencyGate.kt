@@ -2,8 +2,10 @@ package com.myfriend.app.domain
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 /** 一次 LLM 调用属于哪个车道：用户在等他回话，还是他背着你做别的事。 */
 enum class LlmLane { CHAT, BACKGROUND }
@@ -64,13 +66,21 @@ class LlmConcurrencyGate(
         try {
             queued.ready.await()
         } catch (cancel: CancellationException) {
-            mutex.withLock {
-                if (queued.ready.isCompleted) {
-                    // 取消和放行撞在一起：位置已经算给这个等待者了，要还回去。
-                    releaseLocked(lane)
-                    drainLocked()
-                } else {
-                    waiters.remove(queued)
+            // 取消和放行撞在一起：位置已经算给这个等待者了，必须还回去。
+            //
+            // 这一段**必须**在 NonCancellable 里跑：`Mutex.lock()` 是可取消的，
+            // 而进到这个 catch 的唯一时刻就是「协程已经被取消」——直接在取消上下文里
+            // withLock，lock() 会立刻抛 CancellationException，`releaseLocked` 永远执行不到，
+            // activeTotal/activeBackground 就永久 +1。撞三次之后三个名额全部蒸发，
+            // 表现为「他彻底不回话了」，日志里只有「等并发位超时」。
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    if (queued.ready.isCompleted) {
+                        releaseLocked(lane)
+                        drainLocked()
+                    } else {
+                        waiters.remove(queued)
+                    }
                 }
             }
             throw cancel

@@ -46,4 +46,18 @@ sealed interface BackupWarning {
 
     /** 备份里的头像路径已经失效，这个字段被清空了。 */
     data class AvatarMissing(val personaName: String) : BackupWarning
+
+    /**
+     * 备份想把 API 配置的服务地址改成另一个主机，被拒绝、保留了本机地址。
+     *
+     * 0.10.2 安全修复：地址与明文开关不是可迁移内容（否则一份可控备份就能把
+     * 本机 Key 与聊天内容引到攻击者主机）。
+     */
+    data class ApiConfigAddressKept(val count: Int) : BackupWarning
+
+    /** 备份要求打开「允许不安全 HTTP」，没有被采纳（明文只能由用户在本机手动开启）。 */
+    data class ApiConfigInsecureIgnored(val count: Int) : BackupWarning
+
+    /** 备份里的某条配置没通过与本机保存相同的校验（例如 `http://` 明文地址），已跳过。 */
+    data class ApiConfigRejected(val configName: String) : BackupWarning
 }

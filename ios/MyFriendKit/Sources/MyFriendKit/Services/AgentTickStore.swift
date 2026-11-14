@@ -62,6 +62,8 @@ public protocol AgentTickStoring {
     func recent(personaId: String, limit: Int) -> [AgentTick]
     func deleteOlderThan(_ at: Int64)
     func deleteAll()
+    /// 删掉一个人格的全部思考留痕（删人格时用；0.10.2 审计 P1-6）。
+    func deleteAll(personaId: String)
 }
 
 /// 进程内实现：表还没建时用它，也用于单测。
@@ -126,6 +128,12 @@ public final class InMemoryAgentTickStore: AgentTickStoring {
         ticks.removeAll()
         lock.unlock()
     }
+
+    public func deleteAll(personaId: String) {
+        lock.lock()
+        ticks.removeAll { $0.personaId == personaId }
+        lock.unlock()
+    }
 }
 
 /// `agent_ticks` 的 SQLite 实现。
@@ -167,15 +175,18 @@ public final class AgentTickStore: AgentTickStoring {
         INSERT OR REPLACE INTO agent_ticks (id, personaId, at, thought, actionJson, outcome, messageId)
         VALUES (?, ?, ?, ?, ?, ?, ?)
         """
-        guard let statement = try? database.prepare(sql) else {
-            fallback.insert(tick)
-            return
+        // 连接锁：这条 autocommit 写不能落进别人正在跑的事务里（0.10.2 审计 P0-1）。
+        database.withConnectionLock {
+            guard let statement = try? database.prepare(sql) else {
+                fallback.insert(tick)
+                return
+            }
+            try? statement.bind([
+                .text(tick.id), .text(tick.personaId), .int(tick.at), .text(tick.thought),
+                .text(tick.actionJson), .text(tick.outcome), .optionalText(tick.messageId)
+            ])
+            _ = try? statement.step()
         }
-        try? statement.bind([
-            .text(tick.id), .text(tick.personaId), .int(tick.at), .text(tick.thought),
-            .text(tick.actionJson), .text(tick.outcome), .optionalText(tick.messageId)
-        ])
-        _ = try? statement.step()
     }
 
     public func latest(personaId: String) -> AgentTick? {
@@ -217,15 +228,19 @@ public final class AgentTickStore: AgentTickStoring {
             fallback.deleteOlderThan(at)
             return
         }
-        guard let statement = try? database.prepare("DELETE FROM agent_ticks WHERE at < ?") else { return }
-        try? statement.bind([.int(at)])
-        _ = try? statement.step()
+        _ = try? database.executeUpdate("DELETE FROM agent_ticks WHERE at < ?", [.int(at)])
     }
 
     public func deleteAll() {
         fallback.deleteAll()
         guard available() else { return }
         _ = try? database.execute("DELETE FROM agent_ticks")
+    }
+
+    public func deleteAll(personaId: String) {
+        fallback.deleteAll(personaId: personaId)
+        guard available() else { return }
+        _ = try? database.executeUpdate("DELETE FROM agent_ticks WHERE personaId = ?", [.text(personaId)])
     }
 
     private func queryRows(sql: String, arguments: [SQLiteValue]) -> [AgentTick] {
@@ -428,37 +443,33 @@ public final class MemoryEchoStore: MemoryEchoStoring {
         (id, personaId, drawer, content, importance, sourceQuote, categoryName, confidence, createdAt, lastSeenAt)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
-        guard let statement = try? database.prepare(sql) else {
-            fallback.insertAll(echoes)
-            return
-        }
-        for echo in echoes {
-            statement.reset()
-            try? statement.bind([
-                .text(echo.id), .text(echo.personaId), .text(echo.drawer), .text(echo.content),
-                .int(echo.importance), .text(echo.sourceQuote), .text(echo.categoryName),
-                .real(Double(echo.confidence)), .int(echo.createdAt), .int(echo.lastSeenAt)
-            ])
-            _ = try? statement.step()
+        database.withConnectionLock {
+            guard let statement = try? database.prepare(sql) else {
+                fallback.insertAll(echoes)
+                return
+            }
+            for echo in echoes {
+                statement.reset()
+                try? statement.bind([
+                    .text(echo.id), .text(echo.personaId), .text(echo.drawer), .text(echo.content),
+                    .int(echo.importance), .text(echo.sourceQuote), .text(echo.categoryName),
+                    .real(Double(echo.confidence)), .int(echo.createdAt), .int(echo.lastSeenAt)
+                ])
+                _ = try? statement.step()
+            }
         }
     }
 
     public func delete(id: String) {
         fallback.delete(id: id)
         guard available() else { return }
-        guard let statement = try? database.prepare("DELETE FROM memory_echoes WHERE id = ?") else { return }
-        try? statement.bind([.text(id)])
-        _ = try? statement.step()
+        _ = try? database.executeUpdate("DELETE FROM memory_echoes WHERE id = ?", [.text(id)])
     }
 
     public func deleteAll(personaId: String) {
         fallback.deleteAll(personaId: personaId)
         guard available() else { return }
-        guard let statement = try? database.prepare("DELETE FROM memory_echoes WHERE personaId = ?") else {
-            return
-        }
-        try? statement.bind([.text(personaId)])
-        _ = try? statement.step()
+        _ = try? database.executeUpdate("DELETE FROM memory_echoes WHERE personaId = ?", [.text(personaId)])
     }
 
     public func deleteAll() {

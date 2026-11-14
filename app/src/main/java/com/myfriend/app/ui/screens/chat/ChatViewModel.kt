@@ -39,6 +39,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,6 +47,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
@@ -54,6 +56,7 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 data class ChatUiState(
@@ -73,6 +76,8 @@ data class ChatUiState(
     val streamingText: String = "",
     val streamingTraces: List<ToolTraceItem> = emptyList(),
     val isGenerating: Boolean = false,
+    /** 正在读库、组装并编码导出文本（在 IO 线程上）：界面显示进行中并避免重复点。 */
+    val isExporting: Boolean = false,
     /**
      * 模型真的开始说话了（收到 Started）。
      *
@@ -104,6 +109,7 @@ data class ChatEphemeral(
     val isGenerating: Boolean = false,
     val hasStarted: Boolean = false,
     val switchingPersona: Boolean = false,
+    val isExporting: Boolean = false,
     val snackbar: String? = null,
     val showConfigPicker: Boolean = false,
     val showPersonaPicker: Boolean = false
@@ -115,6 +121,14 @@ sealed interface ChatEvent {
     data class OpenSession(val sessionId: String) : ChatEvent
     data class ExportReady(val file: ExportFile) : ChatEvent
     data object SessionDeleted : ChatEvent
+
+    /**
+     * 从检索结果跳进来时，要定位的那条消息已经进入窗口。
+     *
+     * 界面收到后滚到它、并给它约 2 秒的高亮。做成一次性事件而不是 UiState 字段：
+     * 「定位」是一次动作，不该在每次重组时重新触发（返回列表再进来会重新滚一次）。
+     */
+    data class FocusMessage(val messageId: String) : ChatEvent
 }
 
 @HiltViewModel
@@ -223,6 +237,7 @@ class ChatViewModel @Inject constructor(
             isGenerating = local.isGenerating,
             hasStarted = local.hasStarted,
             switchingPersona = local.switchingPersona,
+            isExporting = local.isExporting,
             snackbar = local.snackbar,
             showConfigPicker = local.showConfigPicker,
             showPersonaPicker = local.showPersonaPicker,
@@ -247,11 +262,48 @@ class ChatViewModel @Inject constructor(
      */
     private var operationInFlight = false
 
+    /**
+     * 从检索结果跳过来时要定位的消息 id（导航参数，可能没有）。
+     *
+     * 定位复用聊天页自己的分页：先让 [ChatRepository.cursorContainingMessage] 算出「窗口起点」，
+     * 把已加载区间挪到包含目标消息的那一段（前面还会多带一两页上下文），再等窗口真的到达，
+     * 最后发一次 [ChatEvent.FocusMessage] 让界面滚过去并高亮。
+     *
+     * 为什么不「按 id 只查一条插进列表」：聊天页的列表是连续窗口，孤立插一条会让上下文断开，
+     * 往上滑还会跳；所以只能真的把区间翻到那里。
+     */
+    private val jumpTargetId: String? = savedStateHandle.get<String>("messageId")
+
     init {
         chatRepository.setOpenSession(sessionId)
         viewModelScope.launch {
             chatRepository.markRead(sessionId)
             initialPrepare()
+        }
+        startJumpToTarget()
+    }
+
+    /**
+     * 滚到检索命中的那条消息。
+     *
+     * 三种结局都安静收场：找到了 → 发事件；目标已经在首屏窗口（不用挪）→ 一样发事件；
+     * 目标不在了（删过 / 换过设备）→ 停在最新一屏，不报错 —— 用户自己会明白那条话没了。
+     */
+    private fun startJumpToTarget() {
+        val target = jumpTargetId ?: return
+        if (target.isBlank()) return
+        viewModelScope.launch {
+            val cursor = runCatching {
+                chatRepository.cursorContainingMessage(sessionId, target)
+            }.getOrNull()
+            if (cursor != null) sinceCursor.value = cursor
+
+            // 目标可能就在首屏（cursor 为 null），也可能要等窗口挪过去；统一等「窗口里出现它」。
+            // 5 秒上限是为了它已经被删掉时不要把协程永远挂着（此时停在新的一屏即可）。
+            val settled = withTimeoutOrNull(JUMP_TIMEOUT_MILLIS) {
+                uiState.first { state -> state.messages.any { it.id == target } }
+            }
+            if (settled != null) eventsChannel.send(ChatEvent.FocusMessage(target))
         }
     }
 
@@ -326,13 +378,13 @@ class ChatViewModel @Inject constructor(
     fun removeImage(uri: String) {
         val removed = ephemeral.value.images.filter { it.uri == uri }
         ephemeral.update { state -> state.copy(images = state.images.filterNot { it.uri == uri }) }
-        MediaStorage.deleteFiles(removed)
+        MediaStorage.deleteAttachments(context, removed)
     }
 
     fun clearImages() {
         val removed = ephemeral.value.images
         ephemeral.update { it.copy(images = emptyList()) }
-        MediaStorage.deleteFiles(removed)
+        MediaStorage.deleteAttachments(context, removed)
     }
 
     fun dismissSnackbar() {
@@ -368,7 +420,9 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
-                memoryJob?.join()
+                // 0.10.2：发送不再等「抽记忆」跑完。抽取是后台任务（读的是历史窗口），
+                // 与「写一条用户消息」没有写冲突；以前在这里 join 会让发送键看起来坏掉
+                // （最长等一次完整模型往返，期间没有任何 loading）。
                 val result = chatRepository.sendUserMessage(sessionId, text, images)
                 if (result.isFailure) {
                     ephemeral.update {
@@ -470,7 +524,7 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
-                memoryJob?.join()
+                // 同上：重新生成也不等后台抽记忆。
                 val result = chatRepository.prepareRegeneration(sessionId)
                 if (result.isFailure) {
                     ephemeral.update { it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_regenerate_failed)) }
@@ -489,7 +543,7 @@ class ChatViewModel @Inject constructor(
             if (operationInFlight) return@launch
             operationInFlight = true
             try {
-                memoryJob?.join()
+                // 同上：编辑重发也不等后台抽记忆。
                 val result = chatRepository.editUserMessage(sessionId, messageId, content)
                 if (result.isFailure) {
                     ephemeral.update { it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_edit_failed)) }
@@ -510,8 +564,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun clearContext() {
-        streamJob?.cancel()
         viewModelScope.launch {
+            // 先停下正在跑的生成并**等它收尾**：仓库层还会用世代号 + 存在性校验兜底，
+            // 但界面上不能出现「清空成功之后又冒出一条半截回复」。
+            streamJob?.cancelAndJoin()
             ephemeral.update { it.copy(isGenerating = false, streamingText = "") }
             val result = chatRepository.clearContext(sessionId)
             ephemeral.update {
@@ -566,10 +622,21 @@ class ChatViewModel @Inject constructor(
     }
 
     fun exportChat() {
+        if (ephemeral.value.isExporting) return
         viewModelScope.launch {
-            val result = chatRepository.exportSession(sessionId)
-            result.onSuccess { eventsChannel.send(ChatEvent.ExportReady(it)) }
-                .onFailure { error -> ephemeral.update { it.copy(snackbar = ErrorText.of(context, error, R.string.chat_export_failed)) } }
+            ephemeral.update { it.copy(isExporting = true, snackbar = context.getString(R.string.chat_export_in_progress)) }
+            try {
+                // 仓库内部切 Dispatchers.IO：读整段会话 + 组 DTO + JSON 编码都不在主线程。
+                val result = chatRepository.exportSession(sessionId)
+                result.onSuccess { eventsChannel.send(ChatEvent.ExportReady(it)) }
+                    .onFailure { error ->
+                        ephemeral.update {
+                            it.copy(snackbar = ErrorText.of(context, error, R.string.chat_export_failed))
+                        }
+                    }
+            } finally {
+                ephemeral.update { it.copy(isExporting = false) }
+            }
         }
     }
 
@@ -607,6 +674,10 @@ class ChatViewModel @Inject constructor(
 
     fun deleteSession() {
         viewModelScope.launch {
+            // 删除前先取消并等生成收尾：NonCancellable 的落库可能排在删除事务之后，
+            // 仓库层的存在性/世代校验会丢弃它，这里等一等让顺序确定下来。
+            streamJob?.cancelAndJoin()
+            ephemeral.update { it.copy(isGenerating = false, streamingText = "") }
             chatRepository.deleteSession(sessionId)
             eventsChannel.send(ChatEvent.SessionDeleted)
         }
@@ -638,18 +709,30 @@ class ChatViewModel @Inject constructor(
             com.myfriend.app.data.repo.MemoryExtractionOutcome.NOT_ENOUGH_CHAT ->
                 context.getString(R.string.memory_extract_result_not_enough)
             com.myfriend.app.data.repo.MemoryExtractionOutcome.INTERVAL_NOT_REACHED ->
-                context.getString(R.string.memory_extract_result_interval, result.every ?: 0)
+                run {
+                    val every = result.every ?: 0
+                    context.resources.getQuantityString(
+                        R.plurals.memory_extract_result_interval,
+                        every,
+                        every
+                    )
+                }
         }
 
     override fun onCleared() {
         streamJob?.cancel()
         memoryJob?.cancel()
-        chatRepository.setOpenSession(null)
+        // compare-and-clear：转场期间新 VM 可能已经打开了下一段会话，旧 VM 不能把它清掉。
+        // 无条件 setOpenSession(null) 会让「正在读的会话」被判成没开着：未读 +1 并弹通知。
+        chatRepository.clearOpenSession(sessionId)
         super.onCleared()
     }
 
     private companion object {
         const val MAX_IMAGES = 4
+
+        /** 定位消息最多等多久：窗口挪过去通常几十毫秒，留 5 秒足够；超时就当作「那条消息不在了」。 */
+        const val JUMP_TIMEOUT_MILLIS = 5_000L
     }
 
     private data class Details(

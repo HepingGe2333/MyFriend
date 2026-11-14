@@ -323,6 +323,16 @@ public final class MediaStorage {
         self.directory = directory
         self.fileManager = fileManager
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        applyBackupExclusion()
+    }
+
+    /// 把附件目录从 iCloud/iTunes 整机备份里排除。
+    ///
+    /// 为什么要有这个方法而不是在 `init` 里写一遍就算了：`deleteAll()` 会把目录删掉重建，
+    /// 新建出来的目录没有这个标记（0.10.2 审计 P1-8），于是「清空过一次数据之后」，
+    /// 几百 MB 的聊天图与头像开始进整机备份 —— 而用户完全看不出来。
+    /// 所以 `init` 与 `deleteAll` 都走这里。
+    func applyBackupExclusion() {
         // 图片二进制**不进备份**（与 Android 的约定一致）：
         // 应用自己的备份 JSON 本来就不带图；这里再把附件目录从 iCloud 整机备份里排除，
         // 免得「换机恢复」时把几百 MB 的聊天图一起搬过去（那些路径到了新机器也指不到东西）。
@@ -498,9 +508,29 @@ public final class MediaStorage {
         delete(AttachmentsCodec.decode(json))
     }
 
+    /// 删掉全部附件（聊天图 + 头像）。重建目录后**立刻**恢复「不进备份」标记（P1-8）。
     public func deleteAll() {
         try? fileManager.removeItem(at: directory)
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        applyBackupExclusion()
+    }
+
+    /// 只删聊天图，人格头像留着（「清空全部聊天与记忆」用：人还在，头像不该消失）。
+    ///
+    /// 文件名的前缀就是 `MediaKind.rawValue`（`chatImage-<uuid>.jpg` / `avatar-<uuid>.jpg`），
+    /// 所以这里按前缀删，而不是遍历数据库里的引用 —— 顺便把历史遗留的孤儿图也清掉。
+    ///
+    /// - Returns: 删掉了几个文件。
+    @discardableResult
+    public func deleteAllChatImages() -> Int {
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: nil
+        ) else { return 0 }
+        var removed = 0
+        for url in items where url.lastPathComponent.hasPrefix(MediaKind.chatImage.rawValue + "-") {
+            if (try? fileManager.removeItem(at: url)) != nil { removed += 1 }
+        }
+        return removed
     }
 
     /// 附件一共占了多少字节（设置页/报告里给个数字用）。

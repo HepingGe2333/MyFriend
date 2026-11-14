@@ -400,6 +400,9 @@ public final class MemoryRepository {
     public func delete(_ memory: MemoryEntity) {
         _ = try? stores.memories.delete(id: memory.id)
         _ = try? stores.memoryTerms.deleteTerms(forMemory: memory.id)
+        // 版本历史里存着这条记忆的正文与 beforeContent：「忘掉」就是真删，
+        // 不能只在界面上看不见（0.10.2 审计 P2-11）。
+        _ = try? stores.memoryVersions.delete(where: "memoryId = ?", [.text(memory.id)])
         vectorIndex.remove(memoryId: memory.id)
     }
 

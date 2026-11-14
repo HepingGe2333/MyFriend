@@ -626,7 +626,7 @@ struct PersonaEditorScreen: View {
 
             LevelSliderRow(
                 title: L("多久记一次"),
-                hint: Lf("每聊 %d 条消息，他会在后台回头看一眼，把值得记的事记下来。", extractionEvery),
+                hint: Lcount("每聊 %d 条消息，他会在后台回头看一眼，把值得记的事记下来。", extractionEvery),
                 value: Binding(
                     get: { Double(extractionEvery) },
                     set: { extractionEvery = Int($0.rounded()) }
@@ -683,7 +683,7 @@ struct PersonaEditorScreen: View {
 
                 LevelSliderRow(
                     title: L("叫醒他要几条消息"),
-                    hint: Lf("睡着的时候，你连着发满 %d 条，他会被叫醒（并有点不好意思）。1–20。", wakeThreshold),
+                    hint: Lcount("睡着的时候，你连着发满 %d 条，他会被叫醒（并有点不好意思）。1–20。", wakeThreshold),
                     value: Binding(
                         get: { Double(wakeThreshold) },
                         set: { wakeThreshold = Int($0.rounded()) }

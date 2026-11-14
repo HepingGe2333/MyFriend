@@ -219,67 +219,81 @@ class ToolProtocolTest {
         assertTrue(ToolProtocol.renderResultsForModel(emptyList()).isEmpty())
     }
 
+    /**
+     * 回灌给模型的整段工具结果仍然逐字是中文（提示词脚手架不翻译）。
+     *
+     * 0.10.2 把「给用户看的标题/副标题」搬去了 `data/repo/ToolTraceText`（走 `R.string.tool_trace_*`），
+     * 这条测试钉住另一半：模型侧一个字都不许变，免得顺手把提示词也翻译了。
+     */
     @Test
-    fun describeGivesChineseTitles() {
-        val search = ToolResult(
-            invocation = ToolInvocation(id = "call_1", name = ToolCatalog.WEB_SEARCH),
-            ok = true,
-            summary = "查了 3 个网页",
-            contentForModel = "略"
+    fun renderResultsForModelStaysChinese() {
+        val results = listOf(
+            ToolResult(
+                invocation = ToolInvocation(
+                    id = "call_1",
+                    name = ToolCatalog.WEB_SEARCH,
+                    argumentsJson = """{"query":"今天上海天气"}"""
+                ),
+                ok = true,
+                summary = "今天上海天气",
+                contentForModel = "1. 上海天气：晴"
+            ),
+            ToolResult(
+                invocation = ToolInvocation(
+                    id = "call_2",
+                    name = ToolCatalog.REMEMBER,
+                    argumentsJson = """{"content":"你怕冷","drawer":"USER","importance":4}"""
+                ),
+                ok = true,
+                summary = "你怕冷",
+                contentForModel = ""
+            ),
+            ToolResult(
+                invocation = ToolInvocation(
+                    id = "call_3",
+                    name = ToolCatalog.WEB_FETCH,
+                    argumentsJson = """{"url":"https://example.com"}"""
+                ),
+                ok = false,
+                summary = "网页没读成",
+                contentForModel = "",
+                errorMessage = "链接打不开"
+            )
         )
-        assertEquals("联网搜索" to "查了 3 个网页", ToolProtocol.describe(search))
 
-        val think = ToolResult(
-            invocation = ToolInvocation(id = "call_2", name = ToolCatalog.THINK),
-            ok = true,
-            summary = "想了想",
-            contentForModel = "略"
+        val rendered = ToolProtocol.renderResultsForModel(results)
+
+        assertEquals(
+            """
+            【工具结果】web_search
+            查询：今天上海天气
+            摘要：今天上海天气
+            结果：1. 上海天气：晴
+
+            【工具结果】remember
+            内容：你怕冷
+            摘要：你怕冷
+
+            【工具结果】web_fetch
+            链接：https://example.com
+            摘要：网页没读成
+            失败：链接打不开
+            """.trimIndent(),
+            rendered
         )
-        val (thinkTitle, thinkSubtitle) = ToolProtocol.describe(think)
-        assertEquals("想了想", thinkTitle)
-        assertNull(thinkSubtitle)
+    }
 
-        val remember = ToolResult(
-            invocation = ToolInvocation(id = "call_3", name = ToolCatalog.REMEMBER),
-            ok = true,
-            summary = "记住了：你怕冷",
-            contentForModel = "略"
-        )
-        assertEquals("记住了一件事" to "记住了：你怕冷", ToolProtocol.describe(remember))
-
-        val persona = ToolResult(
-            invocation = ToolInvocation(id = "call_4", name = ToolCatalog.UPDATE_PERSONA),
-            ok = true,
-            summary = "话更少了一些",
-            contentForModel = "略"
-        )
-        assertEquals("调整了自己的人设" to "话更少了一些", ToolProtocol.describe(persona))
-
-        val quietHours = ToolResult(
-            invocation = ToolInvocation(id = "call_5", name = ToolCatalog.SET_QUIET_HOURS),
-            ok = true,
-            summary = "23:00 睡，07:00 醒",
-            contentForModel = "略"
-        )
-        assertEquals("安排了自己的作息" to "23:00 睡，07:00 醒", ToolProtocol.describe(quietHours))
-
-        val recall = ToolResult(
-            invocation = ToolInvocation(id = "call_7", name = ToolCatalog.RECALL),
-            ok = true,
-            summary = "翻了翻记忆 · 2 条",
-            contentForModel = "略"
-        )
-        assertEquals("回想了一下" to "翻了翻记忆 · 2 条", ToolProtocol.describe(recall))
-
-        // 失败时副标题给出原因，标题不变
-        val failedFetch = ToolResult(
-            invocation = ToolInvocation(id = "call_6", name = ToolCatalog.WEB_FETCH),
+    /** 工具结果为空时的兜底文本也还是中文（`toolMessageContent` → role=tool 的 content）。 */
+    @Test
+    fun toolMessageContentFallsBackToChinese() {
+        val failed = ToolResult(
+            invocation = ToolInvocation(id = "call_5", name = ToolCatalog.THINK),
             ok = false,
-            summary = "网页没读成",
-            contentForModel = "",
-            errorMessage = "链接打不开"
+            summary = "执行失败",
+            contentForModel = ""
         )
-        assertEquals("读了网页" to "链接打不开", ToolProtocol.describe(failedFetch))
+        val message = Json.parseToJsonElement(ToolProtocol.toolMessageJson(failed)).jsonObject
+        assertEquals("执行失败", message.getValue("content").jsonPrimitive.content)
     }
 
     @Test

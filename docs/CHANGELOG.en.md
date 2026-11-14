@@ -23,6 +23,89 @@ Version rules live in [VERSIONING.en.md](VERSIONING.en.md): during the beta the 
 
 ---
 
+## 0.10.2
+
+A small release: **chat-history search** (both platforms; iOS had none), **fixes from three independent audits**
+(1 P0, 17 P1), and the tail of the i18n work. Version `0.10.2`, build numbers **14**, schema stays **v10**,
+backup format stays **v2**.
+
+### Chat-history search
+
+- New cross-platform contract `spec/search/` (16 cases: 8 for snippet/highlight rules, 8 for ranking/filtering);
+  each platform has a test reading the same files.
+- **Semantics**: parameterised `LIKE` pre-filter (user input `%`/`_`/`\\` are escaped and treated literally) plus
+  `ChineseTerms` token recall, then in-memory ranking (matched tokens → `relevance` → time → id) over at most
+  500 candidates; when hits are truncated the UI says so.
+- **Android**: results split into "messages / conversations", filters by persona and time (7 / 30 days), highlighted
+  snippets, 30 per page, infinite scroll; tapping a hit **opens the conversation at that message** (reusing the paging
+  cursor, 2-second highlight that fades) and the search page keeps its query and scroll position.
+- **iOS**: there was no chat search at all; this adds a search screen with identical semantics, filters, paging and
+  jump-to-message highlighting.
+- Trade-off: no inverted index table (that would force schema v11 and touch every write path); search is a low-frequency
+  action and a `LIKE` pre-filter over tens of thousands of messages is millisecond-scale.
+
+### Audit fixes
+
+Three independent audits (`docs/audits/`) produced 46 findings: **1 P0, 17 P1**, all fixed in this release.
+
+**iOS (P0/P1)**
+
+| Item | Problem | Fix |
+| --- | --- | --- |
+| P0-1 | SQLite transaction depth was a bare `Int` shared across MainActor, generation tasks, heartbeat and concurrent background work → double `BEGIN`, or a write swallowed by another transaction's rollback | Transactions are serialised behind a recursive lock; single-statement writes take the same lock; nested transactions still degrade to the outer one |
+| P1-1 | Memory extraction / compression wrote the whole session row back, clobbering newer messages, unread counts and summaries | Targeted `UPDATE`s with optimistic checks (count by observed value, summary by monotonic position); deleted sessions are never resurrected |
+| P1-2 | Cold start and foregrounding each ran catch-up → double heartbeat, double proactive message, double notification | `CatchUpGuard` (in-flight + 30 s interval) and a single-beat mutex |
+| P1-3 | Docs claimed a 30-second foreground heartbeat; none existed | `ForegroundPulse` + foreground timer, stopped in background, relaxed to 2 minutes in low-power mode |
+| P1-4 | BGTask reported "nothing to do" as failure and never called `setTaskCompleted` on expiry | Single-shot completion reporter: nothing-to-do counts as success, expiry reports failure exactly once |
+| P1-5 | `ResilientKeychain` fell back to plaintext `UserDefaults` on real devices too | Fallback narrowed to `DEBUG && simulator`; on device the write fails loudly |
+| P1-6 | Release `Info.plist` had `NSAllowsArbitraryLoads=true` | Release keeps only `NSAllowsLocalNetworking`; Debug uses its own plist; enabling insecure HTTP in Release now reports a clear error |
+| P1-7 | "Delete everything" on the backup screen left images and avatars behind | Media cleanup moved into `DataReset`, shared by both entry points |
+| P1-8 | `MediaStorage.deleteAll()` dropped `isExcludedFromBackup` after recreating the directory | Re-applied after recreation, with a test |
+| P1-9 | Merge import overwrote the local session row and nil-ed `attachmentsJson` (merging your own backup lost every image reference) | Field-by-field merge that keeps local attachment references and newer values |
+| P1-10 | A failed send swallowed the draft and picked images and left orphan files | The draft and images are only cleared once sending actually starts; failures keep them and offer a retry |
+| P1-11 | Gate waits ignored cancellation (after "stop" a request could still be sent 20/60 s later) | `withTaskCancellationHandler`: cancellation removes the waiter without consuming a slot; background lane gets its own timeout copy |
+| Security P1-0 | A backup import could rewrite an existing config's `baseUrl` or enable cleartext while keeping the local key | Address and cleartext flag are always kept local and reported as import warnings; new configs always import with cleartext off |
+| Security P1-5 | Backups wrote six legacy sync fields (including `serverSessionId`) | Removed from the backup model and codec, matching Android exactly |
+| Security P1-6 | Deleting a persona did not cascade to echoes/thought traces and did not transfer the default flag | Unified cascade in `PersonaDeletion` |
+
+**Android (P1)**
+
+| Item | Problem | Fix |
+| --- | --- | --- |
+| P1-1 | An old ViewModel's `onCleared` cleared the "currently open session" → the session you were reading was treated as closed: unread +1 and a notification for the message on screen | `OpenSessionTracker` clears only if it still owns the session; notification decisions moved into `ChatNotificationPolicy` |
+| P1-2 | A running history compression wrote its summary back after "clear context" | Session generation counter plus pre-write validation (generation, existence, summary boundary) |
+| P1-3 | "Clear chats", "delete everything", "delete persona" and "backup replace" missed `memory_versions`, `memory_echoes`, `memory_vectors`, `memory_consolidations`, `agent_ticks`, `agent_intents` and chat images | A single erasure plan (`ErasurePlan`) + `DataEraser` used by all four paths; `MemoryReconsolidator` gained a purge entry point |
+| P1-4 | Chat export ran its DB loop and JSON encoding on the main thread | Moved to IO with chunked streaming and in-progress/failure states |
+| P1-5 | `send()` blocked on `memoryJob.join()` for up to a full model round-trip | Memory extraction is fully background; sending no longer waits |
+| P1-6 | Deleting a session raced with in-flight generation, whose cleanup wrote into the deleted session | Per-session cancellation plus generation/existence checks before every write-back |
+| Security P1-0 | Same as iOS: a backup import could change a config's address or enable cleartext | Same validation and warning copy |
+| Security P1-2 | Main manifest had `usesCleartextTraffic=true` | Disabled in the main manifest, enabled only in `src/debug`; Release rejects `http://` with a clear error |
+| Security P2-1 | Custom headers allowed `Host` / `Content-Length` / etc. | Blocked both when saving and when building requests |
+| Security P2-2 | Deleting attachments had no "only inside our own directory" guard | `MediaOwnership` checks (`..` and same-prefix directories) |
+| P2-3 | Gate cancellation compensation could take the lock from an already-cancelled coroutine, leaking a slot | Compensation runs inside a `NonCancellable` critical section |
+| P2-4 | `AgentLoop.tick` had no mutex (heartbeat / WorkManager / rules) | Non-reentrant `AgentTickLock` |
+| P2-5 | Rule-driven proactive messages notified even while the conversation was open | Write + mark read, no notification |
+
+### i18n tail
+
+- Tool trace titles ("Web search", "Remembered", …) now come from resources while model-facing text stays Chinese.
+- The remaining user-visible Chinese from the data layer is gone (session title fallback, message previews, default rule
+  copy, extraction result lines, …).
+- English plurals filled in for 0/1/2; long English copy reviewed on home, settings, search and persona editor.
+- Guards strengthened: `values-en` / `en` resources **must not contain CJK**, format specifiers compared position by
+  position, and unused resources fail the build.
+
+### Tests
+
+| Target | Result |
+| --- | --- |
+| Android | **823 tests / 73 classes / 0 failures** + 3 instrumented tests (real resources, zh/en titles) |
+| iOS | **1016 tests / 0 failures** (Debug and Release builds, zero Swift warnings) |
+| agentd | 19 tests / 0 failures |
+| Builds | `:app:assembleDebug` / `:app:assembleRelease` / `:agentd:build`, iOS Debug and Release `xcodebuild` all succeed |
+
+---
+
 ## 0.10.1
 
 A small release that closes the "not done yet" items each track admitted to during 0.10.0, and fixes the

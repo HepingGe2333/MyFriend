@@ -143,6 +143,13 @@ JVM 源集，其余因依赖 Room / kotlinx-serialization / Hilt / coroutines �
 **为什么先做契约与用例，而不是直接上 KMP**：契约与用例是**任何**共享方案的前置条件——没有它，
 无论换成 KMP 还是独立服务，两端仍然会悄悄漂移。而且它零风险：不引入新工具链、不改客户端代码路径。
 
+## 5.5 检索
+
+聊天检索是**同一个语义在两端的两次实现**，靠 `spec/search/`（16 条用例）钉住：参数化 `LIKE` 粗筛
+（用户输入的 `%`/`_`/`\` 按普通字符处理）+ `ChineseTerms` 词元召回 → 内存精排（命中词元数 → `relevance`
+→ 时间 → id），候选上限 500。不建倒排索引表是刻意取舍：建表要把词元维护铺满每条写路径，并升 schema；
+检索是低频操作，几万条消息的粗筛是毫秒级。
+
 ## 6. 迁移路径（分阶段、每步可回退）
 
 | 阶段 | 做什么 | 回退方式 |
@@ -178,7 +185,9 @@ Android 侧 `values/` + `values-en/`，iOS 侧 `zh-Hans.lproj` + `en.lproj`，�
 | 备份夹具互读 | `fixtures/backup/`、两端 `BackupFixtureTest` / `BackupInteropTests` | 备份字段名、编码、枚举值漂移 |
 | 共享用例 | `spec/agent-core/cases/`、两端 spec 测试 | 决策逻辑的取值/边界不一致 |
 | 「消失的设置」守卫 | Android `SettingsRemovalGuardTest`、iOS `SettingsRetirementTests` | 把删掉的额度/开关又加回来 |
-| i18n 资源守卫 | 两端新增的资源一致性测试（0.10.0） | 只加中文没加英文、key 漂移 |
+| i18n 资源守卫 | 两端资源一致性测试（0.10.0，0.10.2 加强） | key 漂移、英文未翻译（含 CJK）、格式符错位、死键 |
+| 检索契约 | `spec/search/cases/` | 摘要/高亮规则与排序过滤语义漂移 |
+| 独立审计 | `docs/audits/` | 并发、数据完整性、安全、契约漂移；每版一次，P0/P1 必须带测试修复 |
 | 迁移测试 | Android `MyFriendDatabaseMigrationTest`、iOS `SchemaMigrationTests` | 老库升级丢数据 |
 
 ## 10. 已知限制

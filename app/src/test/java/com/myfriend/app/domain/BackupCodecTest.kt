@@ -314,11 +314,12 @@ class BackupCodecTest {
         assertEquals("OPENAI", backup.provider)
         assertTrue(backup.webToolsEnabled)
 
-        val restored = backup.toNewEntity()
+        val restored = backup.toNewEntity().entity
         assertNull("新配置没有 Key，等用户在这台手机上重新填", restored.apiKeyCipher)
         assertNull(restored.webToolsApiKeyCipher)
         assertEquals("{}", restored.customHeadersJson)
         assertEquals("https://api.deepseek.com", restored.baseUrl)
+        assertFalse("明文开关不能由备份打开（只能用户在本机手勾）", restored.allowInsecureHttp)
     }
 
     @Test
@@ -331,14 +332,16 @@ class BackupCodecTest {
         )
 
         val merged = incoming.mergeInto(local)
-        // 地址和模型用备份里的，Key 与 Headers 必须原封不动留在本机。
-        assertEquals("https://new.example.com", merged.baseUrl)
-        assertEquals("new-model", merged.model)
-        assertFalse(merged.webToolsEnabled)
-        assertEquals(local.apiKeyCipher, merged.apiKeyCipher)
-        assertEquals(local.webToolsApiKeyCipher, merged.webToolsApiKeyCipher)
-        assertEquals(local.customHeadersJson, merged.customHeadersJson)
-        assertEquals(local.createdAt, merged.createdAt)
+        // 0.10.2 安全修复：地址**不再**从备份迁移（否则一份可控备份就能把 Key 引到攻击者主机）；
+        // 模型/开关这类非敏感字段仍然可以跟着备份走。
+        assertEquals("地址必须保留本机值", local.baseUrl, merged.entity.baseUrl)
+        assertTrue("地址被拒绝时要在导入摘要里说明", merged.addressKept)
+        assertEquals("new-model", merged.entity.model)
+        assertFalse(merged.entity.webToolsEnabled)
+        assertEquals(local.apiKeyCipher, merged.entity.apiKeyCipher)
+        assertEquals(local.webToolsApiKeyCipher, merged.entity.webToolsApiKeyCipher)
+        assertEquals(local.customHeadersJson, merged.entity.customHeadersJson)
+        assertEquals(local.createdAt, merged.entity.createdAt)
     }
 
     // ------------------------------------------------------------------

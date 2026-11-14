@@ -105,34 +105,60 @@ final class BackgroundScheduler {
     // MARK: - 系统给的时间片
 
     /// 心跳时间片：补一次「想一下」，然后排下一次。
+    ///
+    /// 完成上报的语义按 0.10.2 审计 P1-4 修正：
+    /// - **无事可做也报 success**（心跳绝大多数拍本来就什么都不做，报失败会被系统削减调度）；
+    /// - 时间片到期时 `expirationHandler` 自己报一次失败并保证只报一次，
+    ///   不让进程因为「没上报完成」被杀。
     private func handleRefresh(_ task: BGTask) async {
         scheduleRefresh()
         guard let env else {
+            DebugSeeding.log("[bg] refresh 没有 AppEnvironment，直接上报失败")
             task.setTaskCompleted(success: false)
             return
         }
+        let reporter = BackgroundTaskCompletionReporter { success in
+            task.setTaskCompleted(success: success)
+        }
         // 系统收回时间片时取消这次活；`Task.cancel()` 是线程安全的，正合适。
         let work = Task { await env.runBackgroundTick() }
-        task.expirationHandler = { work.cancel() }
+        task.expirationHandler = {
+            work.cancel()
+            // 到期就是「这次没跑完」：立刻上报，避免整个时间片都没上报而被系统杀掉进程。
+            _ = reporter.expire()
+        }
         let acted = await work.value
-        task.setTaskCompleted(success: acted && !work.isCancelled)
+        if reporter.complete() {
+            DebugSeeding.log("[bg] refresh 跑完了（这一次\(acted ? "做了点事" : "无事可做")，仍按成功上报）")
+        }
     }
 
     /// 每日整理时间片：记忆整理 + 清掉坏掉的旧摘要 + 顺手补一次心跳。
     private func handleProcessing(_ task: BGTask) async {
         scheduleProcessing()
         guard let env else {
+            DebugSeeding.log("[bg] processing 没有 AppEnvironment，直接上报失败")
             task.setTaskCompleted(success: false)
             return
         }
-        let work = Task { await env.runDailyConsolidation() }
-        task.expirationHandler = { work.cancel() }
-        let consolidated = await work.value
-        if !work.isCancelled {
-            _ = env.repairHistorySummariesIfNeeded()
-            _ = await env.runBackgroundTick()
+        let reporter = BackgroundTaskCompletionReporter { success in
+            task.setTaskCompleted(success: success)
         }
-        task.setTaskCompleted(success: consolidated && !work.isCancelled)
+        let work = Task { await env.runDailyConsolidation() }
+        task.expirationHandler = {
+            work.cancel()
+            _ = reporter.expire()
+        }
+        let consolidated = await work.value
+        if work.isCancelled {
+            // 到期已经被 `expirationHandler` 报过了（它可能报得比这里早），这里不再补活、不再上报。
+            return
+        }
+        _ = env.repairHistorySummariesIfNeeded()
+        _ = await env.runBackgroundTick()
+        if reporter.complete() {
+            DebugSeeding.log("[bg] processing 跑完了（这一次\(consolidated ? "整理过" : "无事可做")，仍按成功上报）")
+        }
     }
 
     private var isSimulator: Bool {

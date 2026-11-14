@@ -387,6 +387,8 @@ struct BackupScreen: View {
 
     private func clearChats() {
         do {
+            // 与设置页对齐：媒体清理在 `DataReset` 里（0.10.2 审计 P1-7）。
+            // 0.10.1 这里只调 `dataReset` 而装配层没接 `onClearMedia`，图片文件就留在了沙盒里。
             let summary = try env.dataReset.clearChats()
             banner = MFAlert(title: L("清空了"), message: summary.describeChats())
         } catch {
@@ -395,6 +397,7 @@ struct BackupScreen: View {
     }
 
     private func clearAll() {
+        // 同上：附件目录（聊天图 + 头像）由 `DataReset` 一起清，备份页不再漏这一步。
         let summary = env.dataReset.clearAll()
         env.reloadSettings()
         banner = MFAlert(title: L("都删掉了"), message: summary.describeAll())

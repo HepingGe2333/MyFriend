@@ -154,7 +154,7 @@ API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串�
 
 | 0.9.1：图片消息、头像、内存上限、工具执行器、主动唤醒页面、人设卡、压缩编排、通知与后台调度 | ✅ | iOS **810 条**单测全绿、`xcodebuild` BUILD SUCCEEDED；模拟器实测发图 / 工具调用 / 规则落库与开关 / 重启后回声仍在 |
 
-iOS 侧合计 **872 条单测**（`swift test --disable-sandbox`），Android 侧 **683 条**（`:app:testDebugUnitTest`），
+iOS 侧合计 **1016 条单测**（`swift test --disable-sandbox`），Android 侧 **823 条**（`:app:testDebugUnitTest`），
 两端都绿；两端 App 都能编译（Android `assembleDebug`、iOS `xcodebuild … build`）。
 
 ### 1.9 里两端必须一致的三个取舍（规格没写死，已对齐）
@@ -169,12 +169,13 @@ iOS 侧合计 **872 条单测**（`swift test --disable-sandbox`），Android �
 
 > 0.9.1 补掉了：图片附件、聊天侧工具执行器、主动唤醒规则落库 + 界面、历史压缩编排、人设卡编辑器、通知与 BGTask 注册。
 > 0.10.1 补掉了：聊天分页（两端）、iOS 的 `web_search` 后打分、记忆回声清理、「现在试一次」+ 失败原因、编译警告清零。
+> 0.10.2 补掉了：聊天历史检索（iOS 从零新建）与「点结果跳回该消息并高亮」；并按三份审计修掉 1 个 P0 / 17 个 P1。
 > 下面这张表是**现在**还差的。
 
 | 缺口 | 现状 |
 | --- | --- |
-| 工具痕迹标题的本地化 | 两端仍显示中文标题（「联网搜索」「记住了」等，来自 `ToolProtocol`）；失败原因已本地化 |
-| 历史消息定位 | 分页后没有「跳到某条历史消息」的 UI；搜索/通知只打开会话并停在最新窗口（`messagesBefore` 可复用） |
+| ~~工具痕迹标题的本地化~~ | 0.10.2 已完成（模型面向文本仍中文，显示标题走资源） |
+| ~~历史消息定位~~ | 0.10.2 已完成（检索结果可跳回并高亮）；通知深链仍只打开会话、停在最新窗口 |
 | `persona_revisions` / `persona_pending_patches` | iOS 不做人格版本历史、不做 pending patch（既定取舍，与备份互通无关） |
 | 回忆后的心情漂移 | 留了 `afterRecallDrift` 回调，不接就是「只回忆不改写」 |
 | 真机后台调度 | `BGAppRefreshTask` / `BGProcessingTask` 只有真机能验证；模拟器上走「回到前台补算一次」 |

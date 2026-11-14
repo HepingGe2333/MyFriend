@@ -236,8 +236,12 @@ struct MFChoiceBar<Value: Hashable>: View {
                 Button {
                     selection = option.value
                 } label: {
+                    // 一排等宽芯片：中文两三个字，英文常常一个词就占满（"Preference"、"System"）。
+                    // 钉死一行，装不下时先缩字号（最多缩到 80%），不换行、不撑高整排。
                     Text(option.label)
                         .font(.footnote)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                         .foregroundStyle(selected ? Color.white : Color.primary)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 7)

@@ -73,8 +73,10 @@ object ProactiveProtocol {
                     kind = ProactiveKind.DAILY,
                     timeOfDayMinutes = minutes,
                     intervalMinutes = null,
-                    note = note.ifBlank { "每天 ${formatTimeOfDay(minutes)} 主动问候" },
-                    hint = hint.ifBlank { "主动开口，用你的方式关心对方此刻的状态。" }
+                    // 默认说明/指引由仓储层按界面语言补（它们会落库、也会显示在规则列表里），
+                    // 这里不再拼中文；模型自己写了就用模型的原文。
+                    note = note,
+                    hint = hint
                 )
             }
             "interval", "every", "interval_hours" -> {
@@ -84,8 +86,8 @@ object ProactiveProtocol {
                     kind = ProactiveKind.INTERVAL,
                     timeOfDayMinutes = null,
                     intervalMinutes = hours * 60,
-                    note = note.ifBlank { "每 $hours 小时主动关心一次" },
-                    hint = hint.ifBlank { "主动开口，用你的方式关心对方此刻的状态。" }
+                    note = note,
+                    hint = hint
                 )
             }
             else -> null

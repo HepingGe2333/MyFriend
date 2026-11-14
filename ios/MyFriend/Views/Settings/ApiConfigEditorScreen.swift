@@ -384,7 +384,7 @@ struct ApiConfigEditorScreen: View {
                         testMessage = L("连上了，但服务没返回模型列表。模型名可以自己填。")
                     } else {
                         let sample = models.prefix(3).joined(separator: LText.listSeparator)
-                        testMessage = Lf("连上了：这个 Key 能看到 %d 个可用项，比如 %@。", models.count, sample)
+                        testMessage = Lcount("连上了：这个 Key 能看到 %d 个可用项，比如 %@。", models.count, sample)
                     }
                 }
             } catch {

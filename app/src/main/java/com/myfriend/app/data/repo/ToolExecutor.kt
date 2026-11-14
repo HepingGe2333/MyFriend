@@ -1,6 +1,9 @@
 package com.myfriend.app.data.repo
 
+import android.content.Context
 import androidx.room.withTransaction
+import com.myfriend.app.R
+import dagger.hilt.android.qualifiers.ApplicationContext
 import com.myfriend.app.data.local.AgentIntentKind
 import com.myfriend.app.data.local.MemoryCategory
 import com.myfriend.app.data.local.MemoryEchoDao
@@ -24,10 +27,8 @@ import com.myfriend.app.domain.MoodLexicon
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaCardCodec
 import com.myfriend.app.domain.PersonaCardPatch
-import com.myfriend.app.domain.Recall
 import com.myfriend.app.domain.RecallDepth
 import com.myfriend.app.domain.ToolInvocation
-import com.myfriend.app.domain.ToolProtocol
 import com.myfriend.app.domain.ToolResult
 import com.myfriend.app.domain.ToolTraceItem
 import com.myfriend.app.domain.UserError
@@ -55,6 +56,7 @@ data class ToolExecution(
  */
 @Singleton
 class ToolExecutor @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val webTools: DeepSeekWebTools,
     private val apiConfigRepository: ApiConfigRepository,
     private val memoryRepository: MemoryRepository,
@@ -125,9 +127,11 @@ class ToolExecutor @Inject constructor(
         }
         return success(
             invocation,
-            title = "心情变了",
-            subtitle = state.display(),
-            detail = state.display(),
+            title = ToolTraceTitle.SET_MOOD,
+            subtitle = ToolTraceText.mood(appContext, state),
+            detail = ToolTraceText.mood(appContext, state),
+            // 回灌给模型的摘要保持中文（提示词脚手架不翻译）：与 0.10.1 逐字相同。
+            modelSummary = state.display(),
             modelText = buildString {
                 append("心情已经记下：你现在是「${state.label}」")
                 append("（强度 ${state.intensity}/5）")
@@ -149,9 +153,10 @@ class ToolExecutor @Inject constructor(
         val question = invocation.argument("question")?.trim().orEmpty()
         return success(
             invocation = invocation,
-            title = "想了想",
+            title = ToolTraceTitle.THINK,
             subtitle = question.take(28).ifBlank { null },
-            detail = question.ifBlank { "（没有写具体问题，就是想清楚再答）" },
+            detail = ToolTraceText.thinkDetail(appContext, question),
+            modelSummary = question.take(28).ifBlank { "想了想" },
             modelText = "（可以慢慢想。想清楚以后，直接用你自己的语气把话说完，不用把思考过程念给对方。）"
         )
     }
@@ -184,9 +189,9 @@ class ToolExecutor @Inject constructor(
                     ),
                     trace = ToolTraceItem(
                         name = invocation.name,
-                        title = "联网搜索",
+                        title = ToolTraceText.title(appContext, ToolTraceTitle.WEB_SEARCH),
                         subtitle = query,
-                        detail = "没有搜到结果",
+                        detail = ToolTraceText.searchNoResult(appContext),
                         ok = true
                     )
                 )
@@ -213,7 +218,7 @@ class ToolExecutor @Inject constructor(
                     ),
                     trace = ToolTraceItem(
                         name = invocation.name,
-                        title = "联网搜索",
+                        title = ToolTraceText.title(appContext, ToolTraceTitle.WEB_SEARCH),
                         subtitle = query,
                         detail = hits.take(4).joinToString("\n") { hit ->
                             buildString {
@@ -255,7 +260,7 @@ class ToolExecutor @Inject constructor(
                 ),
                 trace = ToolTraceItem(
                     name = invocation.name,
-                    title = "读了网页",
+                    title = ToolTraceText.title(appContext, ToolTraceTitle.WEB_FETCH),
                     subtitle = page.title.ifBlank { url }.take(40),
                     detail = body.take(400),
                     ok = true
@@ -355,9 +360,9 @@ class ToolExecutor @Inject constructor(
                     ),
                     trace = ToolTraceItem(
                         name = invocation.name,
-                        title = "想了想要不要记",
+                        title = ToolTraceText.title(appContext, ToolTraceTitle.REMEMBER_CONSIDERING),
                         subtitle = null,
-                        detail = "这次先不记：${decision.reason}",
+                        detail = ToolTraceText.rememberSkippedDetail(appContext, decision.reason),
                         ok = true
                     )
                 )
@@ -379,9 +384,9 @@ class ToolExecutor @Inject constructor(
                 )
                 success(
                     invocation,
-                    title = "记下了（还在确认）",
+                    title = ToolTraceTitle.REMEMBER_PENDING,
                     subtitle = decision.candidate.content.take(40),
-                    detail = "第一次听到，先放在心里；再提到一次就会真正记住。",
+                    detail = ToolTraceText.rememberEchoDetail(appContext),
                     modelText = "已记下：「${decision.candidate.content.take(80)}」。这还只是印象，不用反复确认。"
                 )
             }
@@ -403,7 +408,7 @@ class ToolExecutor @Inject constructor(
                 memoryEchoDao.deleteByPersona(persona.id)
                 success(
                     invocation,
-                    title = "记住了",
+                    title = ToolTraceTitle.REMEMBER_CONFIRMED,
                     subtitle = text.take(40),
                     detail = text.take(300),
                     modelText = "已写进长期记忆：「${text.take(120)}」。"
@@ -413,9 +418,9 @@ class ToolExecutor @Inject constructor(
                 memoryRepository.reinforce(decision.id, decision.appendedText, candidate.importance)
                 success(
                     invocation,
-                    title = "又确认了一次",
+                    title = ToolTraceTitle.REMEMBER_REINFORCED,
                     subtitle = candidate.content.take(40),
-                    detail = decision.appendedText ?: "这条记忆更牢了。",
+                    detail = decision.appendedText ?: ToolTraceText.rememberReinforcedDetail(appContext),
                     modelText = "这条你已经提过，我加固了一下印象。"
                 )
             }
@@ -457,18 +462,26 @@ class ToolExecutor @Inject constructor(
             else -> RecallDepth.fromLevel(invocation.intArgument("depth", RecallDepth.NORMAL.level))
         }
         val outcome = recallRepository.recall(persona.id, query, depth, now)
+        // 显示正文用「显示版」的来源与日期（跟随界面语言）；回灌给模型的 `outcome.rendered`
+        // 由 domain 的 Recall 拼装，继续用中文，两者不共用。
         val detail = if (outcome.isEmpty) {
-            "（${depth.label}）翻了一遍，没有找到"
+            ToolTraceText.recallEmptyDetail(appContext, depth)
         } else {
-            outcome.hits.joinToString("\n") { hit ->
-                "（${Recall.sourceLabel(hit, now)}）${hit.text.take(80)}"
-            }
+            ToolTraceText.recallHitsDetail(appContext, outcome.hits, now)
         }
         return success(
             invocation = invocation,
-            title = "回想了一下",
-            subtitle = if (outcome.isEmpty) "翻了翻，没想起什么" else "翻了翻记忆 · ${outcome.hits.size} 条",
+            title = ToolTraceTitle.RECALL,
+            subtitle = ToolTraceText.recallSubtitle(
+                appContext,
+                if (outcome.isEmpty) null else outcome.hits.size
+            ),
             detail = detail.take(600),
+            modelSummary = if (outcome.isEmpty) {
+                "翻了翻，没想起什么"
+            } else {
+                "翻了翻记忆 · ${outcome.hits.size} 条"
+            },
             modelText = outcome.rendered
         )
     }
@@ -499,9 +512,10 @@ class ToolExecutor @Inject constructor(
             // 本来就是这样：不算错，也别让他一直重试。
             return success(
                 invocation = invocation,
-                title = "想了想，没有改",
-                subtitle = "这处本来就是这样",
-                detail = "这处设定本来就是你说的样子，不用改。",
+                title = ToolTraceTitle.PERSONA_UNCHANGED,
+                subtitle = ToolTraceText.title(appContext, ToolTraceTitle.PERSONA_UNCHANGED),
+                detail = ToolTraceText.personaUnchangedDetail(appContext),
+                modelSummary = "这处本来就是这样",
                 modelText = "这处设定你已经是这样了，不用改；也别再重复调用。"
             )
         }
@@ -512,12 +526,12 @@ class ToolExecutor @Inject constructor(
             .getOrElse { return failure(invocation, it.toUserError()) }
         return success(
             invocation,
-            title = "调整了自己的人设",
+            title = ToolTraceTitle.UPDATE_PERSONA,
             subtitle = summary,
             detail = buildString {
                 append(summary)
-                if (reason.isNotBlank()) append("\n原因：").append(reason)
-                append("\n已经生效，改动进了版本历史。")
+                if (reason.isNotBlank()) append('\n').append(ToolTraceText.personaReason(appContext, reason))
+                append('\n').append(ToolTraceText.personaApplied(appContext))
             },
             modelText = "你已经把「$summary」写进自己的人设，从现在开始就按这个来。不用向对方请示，也不必解释这是改动。"
         )
@@ -546,9 +560,10 @@ class ToolExecutor @Inject constructor(
         }
         return success(
             invocation,
-            title = "安排了自己的作息",
-            subtitle = "${formatClock(sleep)} 睡 · ${formatClock(wake)} 起",
-            detail = (if (reason.isBlank()) "这段时间他不会主动来打扰。" else "$reason\n这段时间他不会主动来打扰。") + dndLine,
+            title = ToolTraceTitle.SET_QUIET_HOURS,
+            subtitle = ToolTraceText.quietHoursSubtitle(appContext, sleep, wake),
+            detail = ToolTraceText.quietHoursDetail(appContext, reason, dnd),
+            modelSummary = "${formatClock(sleep)} 睡 · ${formatClock(wake)} 起",
             modelText = "作息已记下：${formatClock(sleep)} 到 ${formatClock(wake)} 是你的休息时间，这段时间不会有主动消息。$dndLine"
         )
     }
@@ -592,9 +607,10 @@ class ToolExecutor @Inject constructor(
         runCatching { messageDao.markUserMessagesRead(sessionId, now) }
         return success(
             invocation,
-            title = "决定先不回",
+            title = ToolTraceTitle.DEFER_REPLY,
             subtitle = null,
-            detail = "过 ${plan.minutes} 分钟再想这件事${if (plan.reason.isBlank()) "" else "（${plan.reason}）"}",
+            detail = ToolTraceText.deferDetail(appContext, plan.minutes, plan.reason),
+            modelSummary = "决定先不回",
             modelText = "好的，这一轮不回复。不要再输出任何文字，也不要解释；对方会看到「已读」，" +
                 "过了 ${plan.minutes} 分钟你会再想起这件事。"
         )
@@ -605,22 +621,33 @@ class ToolExecutor @Inject constructor(
 
     // ---------------------------------------------------------------- 辅助
 
+    /**
+     * 成功的一次调用。
+     *
+     * @param title 显示用标题：**只走资源**（[ToolTraceTitle]），不写中文。
+     * @param subtitle 显示用副标题：数据类副标题（查询词、记忆正文）原样，生成类的用 [ToolTraceText]。
+     * @param detail 显示用展开正文，同上。
+     * @param modelSummary 回灌给模型的「摘要」：继续中文，与 0.10.1 逐字一致；
+     *        不传时沿用显示副标题（数据类副标题本来就是模型原文）。
+     * @param modelText 回灌给模型的正文：提示词脚手架，继续中文。
+     */
     private fun success(
         invocation: ToolInvocation,
-        title: String,
+        title: ToolTraceTitle,
         subtitle: String?,
         detail: String,
-        modelText: String
+        modelText: String,
+        modelSummary: String? = null
     ): ToolExecution = ToolExecution(
         result = ToolResult(
             invocation = invocation,
             ok = true,
-            summary = subtitle?.take(40) ?: title,
+            summary = modelSummary ?: subtitle?.take(40) ?: ToolTraceText.title(appContext, title),
             contentForModel = modelText
         ),
         trace = ToolTraceItem(
             name = invocation.name,
-            title = title,
+            title = ToolTraceText.title(appContext, title),
             subtitle = subtitle,
             detail = detail,
             ok = true
@@ -645,9 +672,7 @@ class ToolExecutor @Inject constructor(
             ),
             trace = ToolTraceItem(
                 name = invocation.name,
-                title = ToolProtocol.describe(
-                    ToolResult(invocation, false, text, "", text)
-                ).first,
+                title = ToolTraceText.title(appContext, invocation.name),
                 subtitle = null,
                 detail = UserErrorTokens.encode(error),
                 ok = false

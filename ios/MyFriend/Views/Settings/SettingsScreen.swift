@@ -104,6 +104,8 @@ struct SettingsScreen: View {
             Text(L("留一处安静的地方，慢慢说话"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
             Text(summaryLine)
                 .font(.caption)
                 .foregroundStyle(accent)
@@ -678,10 +680,8 @@ struct SettingsScreen: View {
     private func clearChats() {
         do {
             // 消息要删了，它们带的图片文件也别留在沙盒里（人格头像不动：人还在）。
-            let images = ((try? env.stores.messages.all()) ?? [])
-                .flatMap { AttachmentsCodec.decode($0.attachmentsJson) }
+            // 这一步现在由 `DataReset` 统一做（0.10.2 审计 P1-7）：设置页与备份页不再各写一份。
             let summary = try env.dataReset.clearChats()
-            MediaStorage.shared.delete(images)
             reload()
             banner = MFAlert(title: L("清空了"), message: summary.describeChats())
         } catch {
@@ -690,9 +690,8 @@ struct SettingsScreen: View {
     }
 
     private func clearAll() {
+        // 全部数据都删：附件目录（消息图 + 头像）由 `DataReset` 一起清掉。
         let summary = env.dataReset.clearAll()
-        // 全部数据都删：附件目录（消息图 + 头像）也一起清掉。
-        MediaStorage.shared.deleteAll()
         // 清空会重置 SettingsStore；AppEnvironment 的内存快照要跟着换一份，
         // 否则界面上还挂着已经不存在的人格与主题。
         env.reloadSettings()

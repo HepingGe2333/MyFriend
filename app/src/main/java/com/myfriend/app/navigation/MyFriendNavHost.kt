@@ -42,7 +42,8 @@ object Routes {
     const val PRESETS = "presets"
     const val API_CONFIGS = "api_configs"
     const val ABOUT = "about"
-    const val CHAT_PATTERN = "chat/{sessionId}"
+    /** 会话页；`messageId` 是「从检索结果跳过来」时要定位的那条消息（可选）。 */
+    const val CHAT_PATTERN = "chat/{sessionId}?messageId={messageId}"
     const val PERSONA_EDIT_PATTERN = "persona_edit?personaId={personaId}"
     const val PRESET_EDIT_PATTERN = "preset_edit?presetId={presetId}"
     const val API_EDIT_PATTERN = "api_edit?configId={configId}"
@@ -51,7 +52,16 @@ object Routes {
     const val PROACTIVE_PATTERN = "proactive?personaId={personaId}"
     const val BROWSER_PATTERN = "browser?url={url}"
 
-    fun chat(sessionId: String) = "chat/${Uri.encode(sessionId)}"
+    /**
+     * 打开会话。
+     *
+     * [messageId] 不为空时，聊天页会一页页往前翻直到这条消息进入窗口，再滚到它并短暂高亮 ——
+     * 这是检索结果「点一条就回到那句话」的实现入口。
+     */
+    fun chat(sessionId: String, messageId: String? = null): String = buildString {
+        append("chat/").append(Uri.encode(sessionId))
+        if (!messageId.isNullOrBlank()) append("?messageId=").append(Uri.encode(messageId))
+    }
     fun personaEdit(personaId: String? = null) =
         if (personaId == null) "persona_edit" else "persona_edit?personaId=${Uri.encode(personaId)}"
     fun presetEdit(presetId: String? = null) =
@@ -121,7 +131,14 @@ fun MyFriendNavHost(
         }
         composable(
             route = Routes.CHAT_PATTERN,
-            arguments = listOf(navArgument("sessionId") { type = NavType.StringType })
+            arguments = listOf(
+                navArgument("sessionId") { type = NavType.StringType },
+                navArgument("messageId") {
+                    type = NavType.StringType
+                    nullable = true
+                    defaultValue = null
+                }
+            )
         ) {
             ChatScreen(
                 onBack = { navController.popBackStack() },
@@ -146,7 +163,11 @@ fun MyFriendNavHost(
         composable(Routes.SEARCH) {
             SearchScreen(
                 onBack = { navController.popBackStack() },
-                onOpenSession = { navController.navigate(Routes.chat(it)) }
+                onOpenSession = { navController.navigate(Routes.chat(it)) },
+                // 点消息结果：带着 messageId 进会话页，由聊天页负责翻页定位 + 高亮。
+                onOpenMessage = { sessionId, messageId ->
+                    navController.navigate(Routes.chat(sessionId, messageId))
+                }
             )
         }
         composable(Routes.SETTINGS) {

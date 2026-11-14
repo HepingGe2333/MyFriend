@@ -349,6 +349,90 @@ final class OpenAICompatibleClientTests: XCTestCase {
         for ticket in tickets { gate.release(ticket) }
     }
 
+    /// 后台道的排队超时**不能**用聊天文案（0.10.2 审计 P1-11）。
+    ///
+    /// 0.10.1 的 `streamChat` 在拿不到名额时硬编码 `busyError(lane: .chat)`：
+    /// 抽记忆/整理/心跳这些后台任务超时后，日志与「他最近在想什么」里会出现一句
+    /// 面向聊天的「他手上还有别的事没忙完，这次没顾上回你」。
+    func testBackgroundLaneUsesItsOwnTimeoutMessageInBothPaths() async {
+        let gate = LlmConcurrencyGate()
+        let tickets = [
+            await gate.acquire(kind: UsageKind.consolidation),
+            await gate.acquire(kind: UsageKind.agent),
+            await gate.acquire(kind: UsageKind.chat)
+        ].compactMap { $0.ticket }
+        XCTAssertEqual(tickets.count, 3)
+        let client = makeClient(gate: gate)
+
+        // 1) 非流式（后台任务都走它）
+        do {
+            _ = try await client.complete(
+                config: config(), apiKey: "sk-abc", model: "deepseek-chat",
+                messages: [WireMessage(role: "user", content: "hi")],
+                params: InferenceParams(), extraHeaders: [:],
+                kind: UsageKind.extraction, usageContext: .none
+            )
+            XCTFail("名额已满时后台调用应当放弃")
+        } catch {
+            let message = (error as? ApiException)?.message ?? ""
+            XCTAssertTrue(message.contains("后台任务"), "后台道要用后台文案：\(message)")
+            XCTAssertFalse(message.contains("没顾上回你"), "不该出现聊天文案：\(message)")
+        }
+
+        // 2) 流式（心跳/自主循环可能走它）
+        let stream = client.streamChat(
+            config: config(), apiKey: "sk-abc", model: "deepseek-chat",
+            messages: [WireMessage(role: "user", content: "hi")],
+            params: InferenceParams(), extraHeaders: [:],
+            kind: UsageKind.agent, usageContext: .none
+        )
+        do {
+            for try await _ in stream { XCTFail("名额已满时不该有内容") }
+            XCTFail("应当抛错")
+        } catch {
+            let message = (error as? ApiException)?.message ?? ""
+            XCTAssertTrue(message.contains("后台任务"), "流式后台道也要用后台文案：\(message)")
+            XCTAssertFalse(message.contains("没顾上回你"), "不该出现聊天文案：\(message)")
+        }
+        XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "拿不到名额时不该发请求")
+        for ticket in tickets { gate.release(ticket) }
+    }
+
+    /// 排队期间被取消：必须抛 `CancellationError`，不再发一次用户已经不想要的请求。
+    func testCancelledWhileWaitingDoesNotSendRequest() async {
+        let gate = LlmConcurrencyGate()
+        let tickets = [
+            await gate.acquire(kind: UsageKind.consolidation),
+            await gate.acquire(kind: UsageKind.agent),
+            await gate.acquire(kind: UsageKind.chat)
+        ].compactMap { $0.ticket }
+        let client = makeClient(gate: gate)
+
+        let finished = expectation(description: "取消后返回")
+        let box = ResultBox()
+        let task = Task {
+            do {
+                _ = try await client.complete(
+                    config: config(), apiKey: "sk-abc", model: "deepseek-chat",
+                    messages: [WireMessage(role: "user", content: "hi")],
+                    params: InferenceParams(), extraHeaders: [:],
+                    kind: UsageKind.chat, usageContext: .none
+                )
+                box.set(error: nil)
+            } catch {
+                box.set(error: error)
+            }
+            finished.fulfill()
+        }
+        try? await Task.sleep(nanoseconds: 30_000_000)
+        task.cancel()
+        await fulfillment(of: [finished], timeout: 5)
+
+        XCTAssertTrue(box.error is CancellationError, "取消要变成 CancellationError：\(String(describing: box.error))")
+        XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "取消之后不能再发请求")
+        for ticket in tickets { gate.release(ticket) }
+    }
+
     // MARK: - 状态码与中文文案
 
     func testHTTPErrorMessagesMatchAndroid() {
@@ -463,5 +547,23 @@ final class OpenAICompatibleClientTests: XCTestCase {
         XCTAssertThrowsError(try client.parseCompletion(raw: #"{"error":{"message":"boom"}}"#, status: 200)) { error in
             XCTAssertEqual((error as? ApiException)?.message, "boom")
         }
+    }
+}
+
+/// 跨线程收集一个 Error（取消测试用）。
+private final class ResultBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Error?
+
+    func set(error: Error?) {
+        lock.lock()
+        stored = error
+        lock.unlock()
+    }
+
+    var error: Error? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
     }
 }

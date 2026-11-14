@@ -79,6 +79,7 @@ enum DebugSeeding {
         case "proactive": return .proactive
         case "backup": return .backups
         case "personas": return .personas
+        case "search": return .search
         case "browser": return .browser(url: ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_URL"] ?? "https://example.com")
         default: return nil
         }
@@ -86,6 +87,57 @@ enum DebugSeeding {
 
     static var openChatOnLaunch: Bool {
         ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_OPEN"] == "chat"
+    }
+
+    // MARK: - 搜索页的验收钩子（0.10.2）
+
+    /// `MYFRIEND_DEBUG_SEARCH_QUERY`：进搜索页就把这句话填进去并查一次。
+    static var searchQuery: String? {
+        let text = ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_QUERY"] ?? ""
+        return text.isEmpty ? nil : text
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_TIME=7d|30d`：让时间筛选停在「最近 7 天 / 最近 30 天」上（截图用）。
+    static var searchTimeFilter: SearchViewModel.TimeFilter? {
+        switch ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_TIME"] ?? "" {
+        case "7d": return .week
+        case "30d": return .month
+        default: return nil
+        }
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_PERSONA=<人格名>`：让按人格筛选停在某个人身上（截图用）。
+    static var searchPersonaName: String? {
+        let name = ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_PERSONA"] ?? ""
+        return name.isEmpty ? nil : name
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_SCROLL=1`：搜索页自己把结果列表滚到底（触发「加载更多」）。
+    /// `simctl` 不能上滑，长列表的分页只有这个办法能在截图里看见。
+    static var searchScrollToBottom: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_SCROLL"] == "1"
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_OPEN=1`：结果出来之后自动点开第一条（验收「跳转 + 定位高亮」）。
+    static var searchOpenFirst: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_OPEN"] == "1"
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_ROUNDTRIP=1`：自动点开第一条 → 4 秒后自动返回搜索页。
+    /// 用来验收「返回时查询与列表位置还在」（模拟器里没人能点返回键）。
+    static var searchRoundTrip: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_ROUNDTRIP"] == "1"
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_NO_KEYBOARD=1`：进搜索页不弹键盘（键盘会盖住半屏结果，截图用）。
+    static var searchNoKeyboard: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_NO_KEYBOARD"] == "1"
+    }
+
+    /// `MYFRIEND_DEBUG_SEARCH_SLOW_PAGING=1`：让「正在加载更多…」多停 8 秒，好让 `simctl` 截图。
+    /// 与聊天页的 `MYFRIEND_DEBUG_SLOW_PAGING` 是同一个用途（分页状态一帧就过去了）。
+    static var searchSlowPaging: Bool {
+        ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SEARCH_SLOW_PAGING"] == "1"
     }
 
     /// 模拟器里没法「点一下图片」：用它让聊天页自己把第一张图的全屏查看打开，方便截图验收。
@@ -468,5 +520,29 @@ enum DebugSeeding {
     /// Release：不执行主动唤醒页的调试动作。
     @MainActor
     static func applyProactiveDebugAction(_ env: AppEnvironment) {}
+
+    /// Release：搜索页没有预填查询。
+    static var searchQuery: String? { nil }
+
+    /// Release：搜索页不预设时间筛选。
+    static var searchTimeFilter: SearchViewModel.TimeFilter? { nil }
+
+    /// Release：搜索页不预设人格筛选。
+    static var searchPersonaName: String? { nil }
+
+    /// Release：搜索页不自动滚动。
+    static var searchScrollToBottom: Bool { false }
+
+    /// Release：搜索页不自动点开第一条。
+    static var searchOpenFirst: Bool { false }
+
+    /// Release：搜索页没有「慢速分页」这个调试模式。
+    static var searchSlowPaging: Bool { false }
+
+    /// Release：搜索页照常自动聚焦（弹键盘）。
+    static var searchNoKeyboard: Bool { false }
+
+    /// Release：搜索页不会自动往返。
+    static var searchRoundTrip: Bool { false }
 }
 #endif

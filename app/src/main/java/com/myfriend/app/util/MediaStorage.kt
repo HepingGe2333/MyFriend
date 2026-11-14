@@ -7,8 +7,10 @@ import android.graphics.ImageDecoder
 import android.net.Uri
 import android.os.Build
 import android.util.Base64
+import android.util.Log
 import com.myfriend.app.R
 import com.myfriend.app.domain.AvatarImagePolicy
+import com.myfriend.app.domain.MediaOwnership
 import com.myfriend.app.domain.MessageAttachment
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +25,14 @@ object MediaStorage {
 
     /** 头像文件目录：files/avatars，和聊天图片的 files/media 分开，清理时互不牵连。 */
     private const val AVATAR_DIR = "avatars"
+
+    /** 聊天图片 / 聊天背景 / 其它聊天媒体所在的目录。 */
+    private const val MEDIA_DIR = "media"
+
+    /** `persistChatImage` 落盘时的文件名前缀；「清空聊天」只删这一类。 */
+    private const val CHAT_IMAGE_PREFIX = "chat-"
+
+    private const val TAG = "MediaStorage"
 
     /**
      * 把相册里选的头像采样、缩放、压缩后存进 App 私有目录，返回 `file://` 路径。
@@ -108,7 +118,7 @@ object MediaStorage {
 
     suspend fun persistImage(context: Context, source: Uri, kind: String): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
-            val dir = File(context.filesDir, "media").apply { mkdirs() }
+            val dir = File(context.filesDir, MEDIA_DIR).apply { mkdirs() }
             val target = File(dir, "$kind-${UUID.randomUUID()}.img")
             context.contentResolver.openInputStream(source)?.use { input ->
                 target.outputStream().use { output ->
@@ -131,7 +141,7 @@ object MediaStorage {
     suspend fun persistChatImage(context: Context, source: Uri): Result<MessageAttachment> =
         withContext(Dispatchers.IO) {
             runCatching {
-                val dir = File(context.filesDir, "media").apply { mkdirs() }
+                val dir = File(context.filesDir, MEDIA_DIR).apply { mkdirs() }
                 val bitmap = decodeScaled(context, source)
                 val sourceMime = context.contentResolver.getType(source).orEmpty()
                 val usePng = sourceMime == "image/png"
@@ -171,9 +181,54 @@ object MediaStorage {
         if (uri.scheme == "file") uri.path?.let { File(it) } else null
     }.getOrNull()
 
-    fun deleteFiles(items: List<MessageAttachment>) {
-        items.forEach { attachment -> fileOf(attachment.uri)?.delete() }
+    /**
+     * 删一批聊天附件文件。
+     *
+     * **只删 App 自己媒体目录里的**（`files/media` 或 `files/avatars`）：
+     * 路径来自数据库的 `attachmentsJson`，属于「数据即代码」的输入面，上游一旦被污染，
+     * 一个 `file:///data/user/0/<pkg>/databases/myfriend.db` 或 `../../shared_prefs/x.xml`
+     * 就会被当成聊天图片删掉。头像早已这么守卫（[deleteAvatar]），附件 0.10.2 起补齐。
+     *
+     * @return 真的删掉的文件数（被拒绝的路径不计数）
+     */
+    fun deleteAttachments(context: Context, items: List<MessageAttachment>): Int =
+        deleteFiles(context, items.map { it.uri })
+
+    fun deleteFiles(context: Context, uris: List<String>): Int {
+        if (uris.isEmpty()) return 0
+        val roots = ownedRoots(context)
+        var deleted = 0
+        uris.forEach { raw ->
+            val file = fileOf(raw) ?: return@forEach
+            if (!MediaOwnership.isWithin(file, roots)) {
+                // 拒绝并留痕：这条路径不是我们自己的文件，删它就是越界。
+                Log.w(TAG, "refusing to delete a file outside app media dirs: ${file.path}")
+                return@forEach
+            }
+            if (runCatching { file.delete() }.getOrDefault(false)) deleted++
+        }
+        return deleted
     }
+
+    /**
+     * 只删聊天图片（`files/media/chat-*`），不动聊天背景（`background-*.img`）与头像。
+     *
+     * 「清空聊天与记忆」要清掉聊天图片文件，但不该顺手把用户设的聊天背景删掉——
+     * 那是设置项，不是聊天内容。
+     */
+    fun clearChatImages(context: Context): Int {
+        val dir = File(context.filesDir, MEDIA_DIR)
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return 0
+        return files.count { file ->
+            file.isFile && file.name.startsWith(CHAT_IMAGE_PREFIX) &&
+                runCatching { file.delete() }.getOrDefault(false)
+        }
+    }
+
+    private fun ownedRoots(context: Context): List<File> = listOf(
+        File(context.filesDir, MEDIA_DIR),
+        File(context.filesDir, AVATAR_DIR)
+    )
 
     /**
      * 删掉一张 App 自己管的头像文件。
@@ -181,15 +236,33 @@ object MediaStorage {
      * 只删 `files/avatars/` 里的文件：用户选的 `content://` 原图、或别处借来的路径一律不碰，
      * 免得「换头像」把人相册里的照片删了。传 null / 非 file:// 路径时什么都不做。
      */
-    fun deleteAvatar(context: Context, uriString: String?) {
+    fun deleteAvatar(context: Context, uriString: String?): Int {
         val raw = uriString?.trim().orEmpty()
-        if (raw.isEmpty()) return
-        val file = fileOf(raw) ?: return
+        if (raw.isEmpty()) return 0
+        val file = fileOf(raw) ?: return 0
         val dir = File(context.filesDir, AVATAR_DIR)
-        val parent = runCatching { file.canonicalFile.parentFile }.getOrNull() ?: return
-        val canonicalDir = runCatching { dir.canonicalFile }.getOrNull() ?: return
-        if (parent != canonicalDir) return
-        runCatching { file.delete() }
+        if (!MediaOwnership.isWithin(file, listOf(dir))) return 0
+        return if (runCatching { file.delete() }.getOrDefault(false)) 1 else 0
+    }
+
+    /**
+     * 删掉 `files/avatars/` 里没有被 [keepUris] 引用的头像文件。
+     *
+     * 用 canonical path 比较（与 [deleteAvatar] 同一套归属语义）：路径写法的差异
+     * （相对段、符号链接）不会让「本来还在用的头像」被误删。
+     */
+    fun clearUnreferencedAvatars(context: Context, keepUris: Set<String>): Int {
+        val dir = File(context.filesDir, AVATAR_DIR)
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return 0
+        val keepPaths = keepUris.mapNotNull { raw ->
+            fileOf(raw)?.let { file -> runCatching { file.canonicalPath }.getOrNull() }
+        }.toSet()
+        return files.count { file ->
+            if (!file.isFile) return@count false
+            val canonical = runCatching { file.canonicalPath }.getOrNull() ?: return@count false
+            if (canonical in keepPaths) return@count false
+            runCatching { file.delete() }.getOrDefault(false)
+        }
     }
 
     /**
@@ -238,9 +311,18 @@ object MediaStorage {
         return target.length()
     }
 
-    fun clear(context: Context) {
-        File(context.filesDir, "media").deleteRecursively()
-        // 头像和聊天图片一样是这台手机上的文件；「清空所有数据」之后不能留下孤儿文件。
-        File(context.filesDir, AVATAR_DIR).deleteRecursively()
+    /**
+     * 「删除全部数据」：媒体目录整棵删掉（聊天图片、聊天背景、头像），返回删掉的文件数。
+     *
+     * 只有真正「全删」才该用它；「清空聊天与记忆」用 [clearChatImages]，否则会连
+     * 聊天背景与头像一起删掉——那两样是设置/人格数据，不在「聊天记录」的语义里。
+     */
+    fun clear(context: Context): Int {
+        var deleted = 0
+        ownedRoots(context).forEach { dir ->
+            deleted += runCatching { dir.walkTopDown().count { it.isFile } }.getOrDefault(0)
+            runCatching { dir.deleteRecursively() }
+        }
+        return deleted
     }
 }

@@ -1,6 +1,7 @@
 package com.myfriend.app.ui.common
 
 import android.content.Context
+import androidx.annotation.PluralsRes
 import com.myfriend.app.R
 import com.myfriend.app.data.repo.ImportMode
 import com.myfriend.app.data.repo.ImportSummary
@@ -22,12 +23,12 @@ object BackupText {
     fun preview(context: Context, preview: BackupPreview): String {
         if (preview.isEmpty) return context.getString(R.string.backup_preview_empty)
         val parts = buildList {
-            add(context.getString(R.string.backup_preview_personas, preview.personas))
-            add(context.getString(R.string.backup_preview_memories, preview.memories))
-            add(context.getString(R.string.backup_preview_sessions, preview.sessions))
-            add(context.getString(R.string.backup_preview_messages, preview.messages))
-            if (preview.rules > 0) add(context.getString(R.string.backup_preview_rules, preview.rules))
-            if (preview.presets > 0) add(context.getString(R.string.backup_preview_presets, preview.presets))
+            add(context.quantity(R.plurals.backup_preview_personas, preview.personas))
+            add(context.quantity(R.plurals.backup_preview_memories, preview.memories))
+            add(context.quantity(R.plurals.backup_preview_sessions, preview.sessions))
+            add(context.quantity(R.plurals.backup_preview_messages, preview.messages))
+            if (preview.rules > 0) add(context.quantity(R.plurals.backup_preview_rules, preview.rules))
+            if (preview.presets > 0) add(context.quantity(R.plurals.backup_preview_presets, preview.presets))
         }
         return parts.joinToString(" · ")
     }
@@ -42,12 +43,12 @@ object BackupText {
     /** 「把他接回来了：3 个人格 · …」+ 跳过的条数 + 每条提醒。 */
     fun importSummary(context: Context, summary: ImportSummary): String {
         val counts = buildList {
-            add(context.getString(R.string.backup_preview_personas, summary.personas))
-            add(context.getString(R.string.backup_preview_memories, summary.memories))
-            add(context.getString(R.string.backup_preview_sessions, summary.sessions))
-            add(context.getString(R.string.backup_preview_messages, summary.messages))
-            if (summary.rules > 0) add(context.getString(R.string.backup_preview_rules, summary.rules))
-            if (summary.presets > 0) add(context.getString(R.string.backup_preview_presets, summary.presets))
+            add(context.quantity(R.plurals.backup_preview_personas, summary.personas))
+            add(context.quantity(R.plurals.backup_preview_memories, summary.memories))
+            add(context.quantity(R.plurals.backup_preview_sessions, summary.sessions))
+            add(context.quantity(R.plurals.backup_preview_messages, summary.messages))
+            if (summary.rules > 0) add(context.quantity(R.plurals.backup_preview_rules, summary.rules))
+            if (summary.presets > 0) add(context.quantity(R.plurals.backup_preview_presets, summary.presets))
         }.joinToString(" · ")
 
         val head = context.getString(
@@ -56,7 +57,7 @@ object BackupText {
         )
         return buildString {
             append(head)
-            if (summary.skipped > 0) append(context.getString(R.string.backup_import_skipped, summary.skipped))
+            if (summary.skipped > 0) append(context.quantity(R.plurals.backup_import_skipped, summary.skipped))
             if (summary.warnings.isNotEmpty()) {
                 // 分隔符也走资源：中文用全角分号，英文用 "; "。
                 val separator = context.getString(R.string.backup_warn_separator)
@@ -72,18 +73,24 @@ object BackupText {
         is BackupWarning.SectionNotList ->
             context.getString(R.string.backup_warn_section_not_list, section(context, warning.section))
         is BackupWarning.DroppedRows ->
-            context.getString(R.string.backup_warn_dropped_rows, section(context, warning.section), warning.count)
+            context.quantity(R.plurals.backup_warn_dropped_rows, warning.count, section(context, warning.section), warning.count)
         is BackupWarning.BlankIds ->
-            context.getString(R.string.backup_warn_blank_ids, section(context, warning.section), warning.count)
+            context.quantity(R.plurals.backup_warn_blank_ids, warning.count, section(context, warning.section), warning.count)
         BackupWarning.SettingsUnreadable -> context.getString(R.string.backup_warn_settings_unreadable)
         BackupWarning.NoContent -> context.getString(R.string.backup_warn_no_content)
-        is BackupWarning.ExtraSessions -> context.getString(R.string.backup_warn_extra_sessions, warning.count)
-        is BackupWarning.AttachmentsDropped -> context.getString(R.string.backup_warn_attachments, warning.count)
-        is BackupWarning.ConfigsMissingKey -> context.getString(R.string.backup_warn_configs_missing_key, warning.count)
+        is BackupWarning.ExtraSessions -> context.quantity(R.plurals.backup_warn_extra_sessions, warning.count)
+        is BackupWarning.AttachmentsDropped -> context.quantity(R.plurals.backup_warn_attachments, warning.count)
+        is BackupWarning.ConfigsMissingKey -> context.quantity(R.plurals.backup_warn_configs_missing_key, warning.count)
         BackupWarning.NoSettings -> context.getString(R.string.backup_warn_no_settings)
         BackupWarning.SettingsPartiallyRestored -> context.getString(R.string.backup_warn_settings_partial)
         BackupWarning.ActivePersonaMissing -> context.getString(R.string.backup_warn_active_persona_missing)
         is BackupWarning.AvatarMissing -> context.getString(R.string.backup_warn_avatar_missing, warning.personaName)
+        is BackupWarning.ApiConfigAddressKept ->
+            context.quantity(R.plurals.backup_warn_api_config_address_kept, warning.count)
+        is BackupWarning.ApiConfigInsecureIgnored ->
+            context.getString(R.string.backup_warn_api_config_insecure_ignored, warning.count)
+        is BackupWarning.ApiConfigRejected ->
+            context.getString(R.string.backup_warn_api_config_rejected, warning.configName)
     }
 
     fun failure(context: Context, failure: BackupFailure): String = when (failure) {
@@ -107,4 +114,17 @@ object BackupText {
             BackupSection.API_CONFIG -> R.string.backup_section_api_config
         }
     )
+
+    /**
+     * 计数文案：数量既决定单复数（英文 one/other），也按位置填进 `%1$d`。
+     *
+     * 备份预览/导入总结里「1 个人格」不能再说成「1 personas」，所以这些 key
+     * 从 `<string>` 换成了 `<plurals>`。
+     */
+    private fun Context.quantity(@PluralsRes id: Int, count: Int): String =
+        resources.getQuantityString(id, count, count)
+
+    /** 模板里 `%1$d` 不是第一个参数的（例如 `%1$s 里有 %2$d 条`），参数按顺序给全。 */
+    private fun Context.quantity(@PluralsRes id: Int, count: Int, vararg args: Any): String =
+        resources.getQuantityString(id, count, *args)
 }

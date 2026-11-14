@@ -99,13 +99,46 @@ public enum MemoryDecision: Equatable {
     case promote(candidate: MemoryCandidate, mergeIntoId: String?)
     /// 已有记忆再被提到：加固（hits+1、可能升重要度），可选补充内容。
     case reinforce(id: String, appendedText: String?)
-    /// 丢弃（一次性的情绪、太含糊、和人格无关）。
+    /// 丢弃（一次性的情绪、太含糊、和人格无关）。`reason` 是**界面语言**的说法。
     case reject(reason: String)
 }
 
 // MARK: - MemoryScreening
 
 public enum MemoryScreening {
+
+    /// 六种「这次先不记」的原因。
+    ///
+    /// 中文原文既是资源 key，也是提示词里的说法：`Localizable.strings` 两份各有译文，
+    /// 界面走 `localizedText`，回灌模型走 `promptText`（面向模型的文本不跟着界面语言走）。
+    public enum RejectReason: String, CaseIterable, Equatable, Sendable {
+        case emptyContent = "内容为空"
+        case tooShort = "内容太短，没有可长期复用的信息"
+        case tooLong = "内容太长，不像一条记忆"
+        case lowConfidence = "模型自己也不确定，先不留"
+        case smallTalk = "只是寒暄，没有长期价值"
+        case oneOffEmotion = "一次性的情绪，不必长期记住"
+
+        /// 提示词里固定用中文原文（0.10.2 i18n 约定：面向模型的文本不翻译）。
+        public var promptText: String { rawValue }
+
+        /// 界面上显示的说法（英文资源里有对应译文；没有资源时回落中文原文）。
+        public var localizedText: String {
+            switch self {
+            case .emptyContent: return String(localized: "内容为空")
+            case .tooShort: return String(localized: "内容太短，没有可长期复用的信息")
+            case .tooLong: return String(localized: "内容太长，不像一条记忆")
+            case .lowConfidence: return String(localized: "模型自己也不确定，先不留")
+            case .smallTalk: return String(localized: "只是寒暄，没有长期价值")
+            case .oneOffEmotion: return String(localized: "一次性的情绪，不必长期记住")
+            }
+        }
+
+        /// 从界面译文找回中文原文：`ToolResult.contentForModel` 里嵌着这条原因，英文不能进提示词。
+        public static func promptText(forLocalized localized: String) -> String {
+            allCases.first { $0.localizedText == localized }?.rawValue ?? localized
+        }
+    }
 
     // ---------- 判定阈值 ----------
 
@@ -408,13 +441,19 @@ public enum MemoryScreening {
 
     // ---------- 内部：拒绝规则 ----------
 
+    /// 这次的候选该被丢掉吗？返回「为什么」（界面语言的说法，资源 key 就是中文原文）。
+    ///
+    /// 中文侧不做转换：`String(localized:)` 在没有资源的环境（`swift test`）里回落成 key，
+    /// 也就是中文原文，正好让提示词与单测都拿到同一句话。
     static func rejectReason(_ candidate: MemoryCandidate, content: String) -> String? {
-        if content.isEmpty { return "内容为空" }
-        if content.count < minContentLength { return "内容太短，没有可长期复用的信息" }
-        if content.count > maxContentLength { return "内容太长，不像一条记忆" }
-        if candidate.confidence < minConfidence { return "模型自己也不确定，先不留" }
-        if isSmallTalk(content) { return "只是寒暄，没有长期价值" }
-        if isOneOffEmotion(content, importance: candidate.importance) { return "一次性的情绪，不必长期记住" }
+        if content.isEmpty { return RejectReason.emptyContent.localizedText }
+        if content.count < minContentLength { return RejectReason.tooShort.localizedText }
+        if content.count > maxContentLength { return RejectReason.tooLong.localizedText }
+        if candidate.confidence < minConfidence { return RejectReason.lowConfidence.localizedText }
+        if isSmallTalk(content) { return RejectReason.smallTalk.localizedText }
+        if isOneOffEmotion(content, importance: candidate.importance) {
+            return RejectReason.oneOffEmotion.localizedText
+        }
         return nil
     }
 

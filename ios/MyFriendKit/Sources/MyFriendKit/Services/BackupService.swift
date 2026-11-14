@@ -324,8 +324,14 @@ public final class BackupService {
         let messagesWithAttachments = bundle.messages.filter {
             !($0.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }.count
-        if messagesWithAttachments > 0 {
-            warnings.append(PluralText.format("有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字", messagesWithAttachments))
+        // 合并模式下，本机同 id 的消息会保留自己的附件引用（文件就在磁盘上），
+        // 这部分不该被算进「图片没跟过来」——那是跨设备的说法。
+        let locallyBackedAttachments = Self.countLocallyBackedAttachments(
+            messages, stores: stores, merge: mode == .merge
+        )
+        let unbackedAttachments = max(messagesWithAttachments - locallyBackedAttachments, 0)
+        if unbackedAttachments > 0 {
+            warnings.append(PluralText.format("有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字", unbackedAttachments))
         }
 
         try stores.database.inTransaction {
@@ -355,19 +361,64 @@ public final class BackupService {
                 }
                 if !terms.isEmpty { try? stores.memoryTerms.upsert(terms) }
             }
-            for session in sessions { try stores.sessions.upsert(session) }
-            try stores.messages.upsert(messages)
+            // 会话：合并模式下与本机同一段对话**不能整行替换**（0.10.2 审计 P1-9）：
+            // 备份里的预览 / 未读是导出那一刻的快照，比本机旧的话会把首页预览倒退、
+            // 把已读又算一遍、把摘要与抽记忆计数冲回去。这里按「谁更新用谁 / 缺了就补」逐字段合并。
+            for session in sessions {
+                if mode == .merge,
+                   let local = (try? stores.sessions.byId(session.id)) ?? nil {
+                    try stores.sessions.upsert(Self.mergeSessionIntoLocal(session, local: local))
+                } else {
+                    try stores.sessions.upsert(session)
+                }
+            }
+            // 消息：合并模式下同 id 的消息保留本机的 `attachmentsJson`。
+            // 备份只带元数据、不带图片二进制，整行 REPLACE 会把它写成 NULL →
+            // 本机所有带图消息的图片引用被抹掉，文件却还在磁盘上变成孤儿（同样见 P1-9）。
+            for message in messages {
+                if mode == .merge,
+                   let local = (try? stores.messages.byId(message.id)) ?? nil {
+                    try stores.messages.upsert(Self.mergeMessageIntoLocal(message, local: local))
+                } else {
+                    try stores.messages.upsert(message)
+                }
+            }
             for rule in rules { try stores.proactiveRules.upsert(rule) }
             for intent in intents { try stores.agentIntents.upsert(intent) }
             for consolidation in consolidations { try stores.memoryConsolidations.upsert(consolidation) }
 
-            // API 配置：只覆盖地址/模型/开关这些非敏感字段；已存在的配置把本机 Key 留着，
-            // 新配置 Key 留空等用户填。配置本身从不删除。
+            // API 配置：只覆盖非敏感字段；已存在的配置把本机 Key 留着，新配置 Key 留空等用户填。
+            // 配置本身从不删除。
+            //
+            // 安全边界（0.10.2 安全审计 P1-0）：`baseUrl` / `allowInsecureHttp` /
+            // `webToolsBaseUrl` 是「这台设备对这个服务商的信任决定」，**不从备份迁移**。
+            // 否则只要攻击者知道某条配置的 id（任何一份导出文件里都有），拼一份备份把地址
+            // 改成自己的主机，用户「合并导入」之后本机 Key 与全部聊天就发到攻击者那里了。
             for imported in bundle.apiConfigs {
                 if let existing = (try? stores.apiConfigs.byId(imported.id)) ?? nil {
-                    try stores.apiConfigs.upsert(Self.mergeInto(imported, existing: existing))
+                    let merge = Self.mergeInto(imported, existing: existing)
+                    try stores.apiConfigs.upsert(merge.entity)
+                    if let foreign = merge.foreignBaseUrl {
+                        warnings.append(
+                            String(format: String(localized: "配置「%@」在备份里的地址与本机不同，已保留本机地址（不会跟着备份改）"), merge.entity.name)
+                        )
+                        // 只进 warnings（界面会逐条显示）：Kit 层没有日志设施，
+                        // 而这条差异本来就该让用户看到，而不是躺在 debug.log 里。
+                        _ = foreign
+                    }
+                    if merge.keptLocalInsecureHttp {
+                        warnings.append(
+                            String(format: String(localized: "配置「%@」的「允许不安全 HTTP」保持本机设置，不改从备份"), merge.entity.name)
+                        )
+                    }
                 } else {
-                    try stores.apiConfigs.upsert(Self.toNewEntity(imported, now: now()))
+                    let created = Self.toNewEntity(imported, now: now())
+                    try stores.apiConfigs.upsert(created)
+                    if imported.allowInsecureHttp {
+                        warnings.append(
+                            String(format: String(localized: "配置「%@」在备份里开着「允许不安全 HTTP」，接回来一律关掉；需要的话请自己再打开"), created.name)
+                        )
+                    }
                 }
             }
         }
@@ -452,6 +503,98 @@ public final class BackupService {
         return (sessions.filter { keptIds.contains($0.id) }, dropped)
     }
 
+    /// 合并导入时「同 id 的会话」怎么落库：**只补缺失字段 / 按时间取新**，绝不整行替换。
+    ///
+    /// 本机是「当前状态」的唯一事实来源：预览 / 未读 / 标题 / 置顶 / 摘要进度都可能是
+    /// 导出之后才更新的。备份只有「导出那一刻」。
+    static func mergeSessionIntoLocal(_ imported: ChatSessionEntity, local: ChatSessionEntity) -> ChatSessionEntity {
+        var merged = local
+        // 绑定信息：本机没填才用备份的（备份那台机器可能绑过配置）。
+        if (merged.apiConfigId ?? "").isEmpty, let importedConfig = imported.apiConfigId, !importedConfig.isEmpty {
+            merged.apiConfigId = importedConfig
+        }
+        if merged.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !imported.model.isEmpty {
+            merged.model = imported.model
+        }
+        if merged.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !imported.title.isEmpty {
+            merged.title = imported.title
+        }
+        // 预览 / 最后一条时间：只接受**更新**的那一份（备份比本机旧时不能倒退）。
+        let localAt = local.lastMessageAt ?? 0
+        let importedAt = imported.lastMessageAt ?? 0
+        if importedAt > localAt {
+            merged.lastMessageAt = imported.lastMessageAt
+            merged.lastMessagePreview = imported.lastMessagePreview ?? merged.lastMessagePreview
+        } else if merged.lastMessagePreview == nil {
+            merged.lastMessagePreview = imported.lastMessagePreview
+        }
+        // 未读与置顶是本机这台设备的阅读状态，不从备份覆盖。
+        // 摘要：谁的覆盖更远用谁（等价于「只有更新的那次压缩生效」）。
+        let localUpTo = local.historySummarizedUpTo ?? -1
+        let importedUpTo = imported.historySummarizedUpTo ?? -1
+        if importedUpTo > localUpTo,
+           let summary = imported.historySummary?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !summary.isEmpty {
+            merged.historySummary = imported.historySummary
+            merged.historySummarizedUpTo = imported.historySummarizedUpTo
+            merged.historySummaryAt = imported.historySummaryAt
+        }
+        // 抽记忆计数：取更大的那个（只往前推进，不往回退）。
+        merged.lastMemoryExtractedCount = max(local.lastMemoryExtractedCount, imported.lastMemoryExtractedCount)
+        merged.lastPersonaVersion = max(local.lastPersonaVersion, imported.lastPersonaVersion)
+        // 会话级覆盖：本机没有才补。
+        if merged.memoryRetentionOverride == nil { merged.memoryRetentionOverride = imported.memoryRetentionOverride }
+        if merged.extractionEveryOverride == nil { merged.extractionEveryOverride = imported.extractionEveryOverride }
+        // 6 个 sync 列只在库里且 iOS 不做同步：保留本机值（`ChatSessionEntity` 的默认/现值）。
+        merged.updatedAt = max(local.updatedAt, imported.updatedAt)
+        return merged
+    }
+
+    /// 合并导入时「同 id 的消息」怎么落库：本机的附件引用与更新过的正文不能被备份抹掉。
+    static func mergeMessageIntoLocal(_ imported: MessageEntity, local: MessageEntity) -> MessageEntity {
+        let importedAttachments = (imported.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let localAttachments = (local.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        var merged = local
+        // 附件：本机有引用就保住（文件就在磁盘上；文件不在了界面按占位降级）。
+        // 只有本机没有、备份里有的时候才补上（跨设备接回来的那条消息本来就只剩元数据）。
+        if localAttachments.isEmpty, !importedAttachments.isEmpty {
+            merged.attachmentsJson = imported.attachmentsJson
+        }
+        // 正文 / 状态：只接受备份里**更新**的那一份（本机编辑过、已读、失败重试过都更可信）。
+        if imported.updatedAt > local.updatedAt {
+            merged.content = imported.content
+            merged.status = imported.status
+            merged.errorMessage = imported.errorMessage
+            merged.model = imported.model
+            merged.edited = imported.edited
+            merged.toolTraceJson = imported.toolTraceJson ?? merged.toolTraceJson
+            merged.updatedAt = imported.updatedAt
+            merged.readAt = local.readAt ?? imported.readAt
+        }
+        // `attachmentsJson` 永远以「本机的引用」为准（上面已经处理过补齐的情况）。
+        return merged
+    }
+
+    /// 合并模式下有多少条导入消息「本机已经有带附件引用的同 id 消息」（这些图不会丢）。
+    static func countLocallyBackedAttachments(
+        _ messages: [MessageEntity],
+        stores: DatabaseStores,
+        merge: Bool
+    ) -> Int {
+        guard merge else { return 0 }
+        var count = 0
+        for message in messages {
+            guard !(message.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                continue
+            }
+            if let local = (try? stores.messages.byId(message.id)) ?? nil,
+               !(local.attachmentsJson ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                count += 1
+            }
+        }
+        return count
+    }
+
     // MARK: - 实体 ⇄ 备份结构
     //
     // 这些映射只在这里写一遍：任何实体新增字段却忘了带进备份，往返测试会当场变红。
@@ -530,11 +673,9 @@ public final class BackupService {
             lastMessagePreview: session.lastMessagePreview, lastMessageAt: session.lastMessageAt,
             unreadCount: session.unreadCount, pinned: session.pinned,
             createdAt: session.createdAt, updatedAt: session.updatedAt,
-            lastPersonaVersion: session.lastPersonaVersion, syncState: session.syncState.stored,
-            syncedPersonaVersion: session.syncedPersonaVersion,
-            syncedMemoriesHash: session.syncedMemoriesHash,
-            serverSessionId: session.serverSessionId, lastSyncError: session.lastSyncError,
-            lastSyncAt: session.lastSyncAt,
+            lastPersonaVersion: session.lastPersonaVersion,
+            // 本机的 6 个 sync 列（syncState/…/lastSyncAt）**不写进备份**：
+            // Android 的 BackupSession 没有它们（0.10.2 安全审计 P1-5）。
             lastMemoryExtractedCount: session.lastMemoryExtractedCount,
             summary: session.historySummary,
             summarizedUpTo: session.historySummarizedUpTo,
@@ -555,11 +696,13 @@ public final class BackupService {
             unreadCount: session.unreadCount, pinned: session.pinned,
             createdAt: session.createdAt, updatedAt: session.updatedAt,
             lastPersonaVersion: session.lastPersonaVersion,
-            syncState: SessionSyncState(stored: session.syncState),
-            syncedPersonaVersion: session.syncedPersonaVersion,
-            syncedMemoriesHash: session.syncedMemoriesHash,
-            serverSessionId: session.serverSessionId, lastSyncError: session.lastSyncError,
-            lastSyncAt: session.lastSyncAt,
+            // 备份里没有 sync 字段：接回来的会话一律按「还没同步过」处理（iOS 本来也没做同步）。
+            syncState: .stateless,
+            syncedPersonaVersion: nil,
+            syncedMemoriesHash: nil,
+            serverSessionId: nil,
+            lastSyncError: nil,
+            lastSyncAt: nil,
             lastMemoryExtractedCount: session.lastMemoryExtractedCount,
             historySummary: validSummary ? session.summary : nil,
             historySummarizedUpTo: session.summarizedUpTo.flatMap { $0 > 0 ? $0 : nil },
@@ -686,32 +829,70 @@ public final class BackupService {
         )
     }
 
-    /// 把备份里的配置盖回一条**已存在**的配置：只动非敏感字段。
+    /// `mergeInto` 的结果：合并后的实体 + 需要告诉用户/日志的差异。
+    struct ApiConfigMerge: Equatable {
+        var entity: ApiConfigEntity
+        /// 备份里给了一个**与本机不同**的地址（真实地址，不覆盖本机，只用于告警/日志）。
+        var foreignBaseUrl: String?
+        /// 备份想把「允许不安全 HTTP」改成本机不同的值（已拒绝）。
+        var keptLocalInsecureHttp: Bool
+
+        /// 便捷取用：绝大多数调用方只关心实体。
+        var merged: ApiConfigEntity { entity }
+    }
+
+    /// 把备份里的配置盖回一条**已存在**的配置：只动非敏感/非信任字段。
     ///
     /// 密钥、自定义 Headers、创建时间都留在本机——备份里从来没有它们，
     /// 要是这里顺手把整个实体换掉，用户在本机存的 Key 就被一份「没有 Key 的备份」抹掉了。
-    static func mergeInto(_ imported: BackupApiConfig, existing: ApiConfigEntity) -> ApiConfigEntity {
+    ///
+    /// **地址不迁移**（0.10.2 安全审计 P1-0）：`baseUrl` / `webToolsBaseUrl` 与 `allowInsecureHttp`
+    /// 都是「这台设备信任谁」的决定。备份改了它们而保留本机 Key，就等于把用户真实的 Key
+    /// 与全部聊天送到一个陌生主机（或降级成明文）。所以：地址与本机不同就保留本机值并告警；
+    /// 明文开关永远不因备份被打开（本机自己开着就继续开着）。
+    static func mergeInto(_ imported: BackupApiConfig, existing: ApiConfigEntity) -> ApiConfigMerge {
         var merged = existing
         merged.name = imported.name.isEmpty ? existing.name : imported.name
         merged.provider = ProviderType(stored: imported.provider)
-        merged.baseUrl = imported.baseUrl.isEmpty ? existing.baseUrl : imported.baseUrl
         merged.model = imported.model.isEmpty ? existing.model : imported.model
-        merged.allowInsecureHttp = imported.allowInsecureHttp
         merged.temperature = imported.temperature ?? existing.temperature
         merged.topP = imported.topP ?? existing.topP
         merged.maxOutputTokens = imported.maxOutputTokens ?? existing.maxOutputTokens
         merged.frequencyPenalty = imported.frequencyPenalty ?? existing.frequencyPenalty
         merged.presencePenalty = imported.presencePenalty ?? existing.presencePenalty
         merged.webToolsEnabled = imported.webToolsEnabled
-        merged.webToolsBaseUrl = imported.webToolsBaseUrl.isEmpty
-            ? existing.webToolsBaseUrl : imported.webToolsBaseUrl
+
+        // 地址：同源才接受（尾部斜杠/`/v1` 写法差异不算不同）；不同就保留本机值。
+        let importedBase = NetworkGuard.normalizeBaseUrl(imported.baseUrl)
+        let localBase = NetworkGuard.normalizeBaseUrl(existing.baseUrl)
+        var foreignBaseUrl: String?
+        if !importedBase.isEmpty, importedBase != localBase {
+            foreignBaseUrl = importedBase
+        } else if !importedBase.isEmpty {
+            merged.baseUrl = importedBase
+        }
+        let importedToolsBase = NetworkGuard.normalizeBaseUrl(imported.webToolsBaseUrl)
+        if !importedToolsBase.isEmpty, importedToolsBase == NetworkGuard.normalizeBaseUrl(existing.webToolsBaseUrl) {
+            merged.webToolsBaseUrl = importedToolsBase
+        }
+
+        // 明文开关：只在「本机本来就开着」时保留 true；备份说 true 本机说 false → 拒绝。
+        let keptLocalInsecureHttp = imported.allowInsecureHttp != existing.allowInsecureHttp
+        merged.allowInsecureHttp = existing.allowInsecureHttp
+
         if imported.updatedAt > 0 { merged.updatedAt = imported.updatedAt }
-        return merged
+        return ApiConfigMerge(
+            entity: merged,
+            foreignBaseUrl: foreignBaseUrl,
+            keptLocalInsecureHttp: keptLocalInsecureHttp
+        )
     }
 
     /// 把备份里的配置建成一条新配置：密钥留空，等用户在这台手机上重新填一次。
     ///
     /// `customHeadersJson` 给 `{}`：备份里没有它（可能夹带 Authorization），与其猜，不如让用户显式补。
+    /// `allowInsecureHttp` 一律给 false：新设备上没有「用户当场同意过明文」这件事，
+    /// 备份不该替用户做这个决定（0.10.2 安全审计 P1-0）。
     static func toNewEntity(_ imported: BackupApiConfig, now: Int64) -> ApiConfigEntity {
         ApiConfigEntity(
             id: imported.id,
@@ -721,7 +902,7 @@ public final class BackupService {
             apiKeyCipher: nil,
             model: imported.model,
             customHeadersJson: "{}",
-            allowInsecureHttp: imported.allowInsecureHttp,
+            allowInsecureHttp: false,
             temperature: imported.temperature,
             topP: imported.topP,
             maxOutputTokens: imported.maxOutputTokens,

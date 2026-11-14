@@ -31,6 +31,13 @@ final class ChatViewModel: ObservableObject {
     /// 有没有可用的 API 配置：没有就禁用输入栏并提示去设置。
     @Published private(set) var hasApiConfig = false
 
+    // MARK: - 从搜索结果定位
+
+    /// 要滚过去的那条消息（搜索结果跳进来时设定；界面用它在滚动视图里 `scrollTo`）。
+    @Published private(set) var scrollTargetId: String?
+    /// 正在短暂高亮的那条消息（约 2 秒后自己淡出，与 Android 的「闪一下」一致）。
+    @Published private(set) var highlightedMessageId: String?
+
     // MARK: - 生成中
 
     @Published private(set) var isGenerating = false
@@ -51,6 +58,8 @@ final class ChatViewModel: ObservableObject {
 
     /// 一句会自己消失的提示（已复制、生成失败……）。不做成 alert：聊天里不该被弹窗打断。
     @Published private(set) var toast: String?
+    /// 上一次发送被拒（没落库）的原因。非空时输入框上方显示一条「草稿还在，可以重试」。
+    @Published private(set) var sendFailure: String?
 
     /// 上一轮他为什么没说话（睡着 / 免打扰 / 主动晚点回）。界面不解释、不弹窗，
     /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
@@ -74,6 +83,8 @@ final class ChatViewModel: ObservableObject {
     private var toastTask: Task<Void, Never>?
     /// 停止的兜底：底层流万一不响应取消，也不让界面永远停在「正在输入」。
     private var stopFallback: Task<Void, Never>?
+    /// 定位高亮的淡出计时器。
+    private var highlightTask: Task<Void, Never>?
 
     // MARK: - 进 / 出页面
 
@@ -108,6 +119,8 @@ final class ChatViewModel: ObservableObject {
         messagePulseTask = nil
         stopFallback?.cancel()
         stopFallback = nil
+        highlightTask?.cancel()
+        highlightTask = nil
     }
 
     // MARK: - 读
@@ -192,6 +205,53 @@ final class ChatViewModel: ObservableObject {
         DebugSeeding.log("[chat] load earlier +\(older.count) loaded=\(messages.count) hasMore=\(hasMoreHistory)")
         #endif
     }
+
+    // MARK: - 从搜索结果定位到某条消息
+
+    /// 把目标消息所在的那一页读进窗口，然后让界面滚过去 + 短暂高亮。
+    ///
+    /// 目标可能比首屏那 60 条早很多，所以这里复用 0.10.1 的游标分页：
+    /// 一页页往前取，直到它进入窗口（`MessagePaging.window(reaching:)` 里那段循环是纯逻辑，
+    /// 单测覆盖了「目标在很前面 / 目标已删除 / 加载器不给新页」三种边界）。
+    ///
+    /// 为什么定位之后不再跟随到底部：用户点的是「某条老消息」，把他拽到最新一句等于白点。
+    /// `autoFollow` 由界面负责关掉（`ChatScreen` 在 onAppear 里做）。
+    func focus(on messageId: String) {
+        guard let env, !messageId.isEmpty else { return }
+        let result = MessagePaging.window(reaching: messageId, from: messages) { [weak self] oldest, _ in
+            guard let self, let oldest else { return nil }
+            return (try? env.stores.messages.pageBefore(
+                sessionId: self.sessionId,
+                createdAt: oldest.createdAt,
+                id: oldest.id,
+                limit: Self.pageSize
+            )) ?? []
+        }
+        messages = result.messages
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] 定位 \(messageId)：窗口 \(messages.count) 条（往前 \(result.pagesLoaded) 页）found=\(result.found) hasMore=\(hasMoreHistory)")
+        #endif
+        guard result.found else {
+            showToast(L("没找到这条消息，可能已经被删掉了"))
+            return
+        }
+        scrollTargetId = messageId
+        highlightedMessageId = messageId
+        highlightTask?.cancel()
+        highlightTask = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: Self.highlightDurationNanos)
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.highlightedMessageId = nil
+        }
+    }
+
+    /// 高亮持续多久（2 秒，之后由界面的动画淡出）。
+    static let highlightDurationNanos: UInt64 = 2_000_000_000
 
     /// 心情与「他此刻」都是**只读推导**：心情会让时间冲淡（`MoodRepository` 顺手落库），
     /// presence 什么都不写。30 秒重算一次，与 Android 的 Flow 语义一致。
@@ -299,13 +359,28 @@ final class ChatViewModel: ObservableObject {
             showToast(L("先去设置里配一个 API"))
             return
         }
-        draft = ""
-        pendingAttachments.removeAll()
-        // `ChatService.send` 会**先**把用户这句话落库、再返回流；立刻重读一次，
-        // 自己说的话就马上出现在屏幕上，而不是等模型开口。
-        let stream = env.chat.send(sessionId: sessionId, text: text, attachments: attachments)
-        reloadMessages()
-        consume(stream)
+        // 只有「真的落库了」才清空输入状态（0.10.2 审计 P1-10）。
+        // 消息过长 / 会话被删 / 配置没了都发生在落库之前：这时草稿与图片原样留着，
+        // 用户点一下「重试」就能接着发；附件引用没变、文件还在磁盘上，不会留下孤儿图。
+        switch env.chat.sendChecked(sessionId: sessionId, text: text, attachments: attachments) {
+        case .started(let stream):
+            sendFailure = nil
+            draft = ""
+            pendingAttachments.removeAll()
+            // `ChatService` 会**先**把用户这句话落库、再返回流；立刻重读一次，
+            // 自己说的话就马上出现在屏幕上，而不是等模型开口。
+            reloadMessages()
+            consume(stream)
+        case .rejected(let error):
+            let message = Self.describe(error)
+            sendFailure = message
+            showToast(message)
+        }
+    }
+
+    /// 撤掉「发送失败」的提示（用户自己关掉，或者下一次发送成功时自动清）。
+    func dismissSendFailure() {
+        sendFailure = nil
     }
 
     /// 重新生成：`ChatService` 会删掉最后一条助手消息再跑一轮。

@@ -32,14 +32,12 @@ class LlmGatekeeper @Inject constructor() {
             true
         } ?: false
         if (!admitted) {
-            Log.w(
-                TAG,
-                if (lane == LlmLane.CHAT) {
-                    "聊天等并发位超过 ${CHAT_WAIT_MS / 1000} 秒，放弃这一次请求"
-                } else {
-                    "后台任务等并发位超过 ${BACKGROUND_WAIT_MS / 1000} 秒，放弃这一次请求"
-                }
-            )
+            // 只进日志，不进界面：写在 Log.w(...) 同一行，中文日志守卫认得出来。
+            if (lane == LlmLane.CHAT) {
+                Log.w(TAG, "聊天等并发位超过 ${CHAT_WAIT_MS / 1000} 秒，放弃这一次请求")
+            } else {
+                Log.w(TAG, "后台任务等并发位超过 ${BACKGROUND_WAIT_MS / 1000} 秒，放弃这一次请求")
+            }
             throw ApiException(
                 if (lane == LlmLane.CHAT) NetworkErrorKind.ChatQueueBusy else NetworkErrorKind.BackgroundQueueBusy
             )

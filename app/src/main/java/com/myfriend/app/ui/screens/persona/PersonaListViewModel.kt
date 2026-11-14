@@ -151,6 +151,6 @@ class PersonaListViewModel @Inject constructor(
         if (result.skipped > 0) {
             context.getString(R.string.persona_import_result_partial, result.imported, result.skipped)
         } else {
-            context.getString(R.string.persona_import_result_ok, result.imported)
+            context.resources.getQuantityString(R.plurals.persona_import_result_ok, result.imported, result.imported)
         }
 }

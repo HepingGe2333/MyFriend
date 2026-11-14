@@ -2,6 +2,7 @@ package com.myfriend.app.domain
 
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runCurrent
@@ -125,6 +126,39 @@ class LlmConcurrencyGateTest {
         gate.release(LlmLane.BACKGROUND)
         gate.release(LlmLane.BACKGROUND)
         assertEquals(0 to 0, gate.activeCounts())
+    }
+
+    /**
+     * 审计 P2-3：取消撞上「刚刚放行」时，补偿必须把名额还回去。
+     *
+     * 这段补偿逻辑以前直接在被取消的协程里 `mutex.withLock`：`Mutex.lock()` 是可取消的，
+     * 而进到这个分支的唯一时刻就是协程已经被取消——lock() 立刻抛出，`releaseLocked`
+     * 永远执行不到，`activeTotal` 永久 +1。撞三次之后三个名额全部蒸发，
+     * 表现就是「他彻底不回话了」，日志里只有「等并发位超时」。
+     */
+    @Test
+    fun `取消与放行撞在一起时 名额不会泄漏`() = runTest {
+        val gate = LlmConcurrencyGate(globalLimit = 1, backgroundLimit = 0)
+        gate.acquire(LlmLane.CHAT)
+
+        val waiter = launch { gate.acquire(LlmLane.CHAT) }
+        runCurrent()
+        assertEquals("第二个请求应当在排队", 1, gate.queuedCount())
+
+        // 先放行（位置算给 waiter），再取消（它的协程还没恢复）。
+        gate.release(LlmLane.CHAT)
+        waiter.cancel()
+        waiter.join()
+
+        assertEquals(
+            "取消撞上放行必须把名额还回去，否则名额会一次一个地蒸发",
+            0 to 0,
+            gate.activeCounts()
+        )
+        // 名额没漏：后面还能正常拿到。
+        gate.acquire(LlmLane.CHAT)
+        assertEquals(1 to 0, gate.activeCounts())
+        gate.release(LlmLane.CHAT)
     }
 
     @Test

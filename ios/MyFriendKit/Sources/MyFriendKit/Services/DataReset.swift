@@ -17,8 +17,9 @@ import Foundation
 // - `clearChats()` 不碰 api_configs / Keychain；
 // - `clearAll()` 删 api_configs，并在删之前把对应 Keychain 条目清掉（不留孤儿密钥）。
 //
-// 图片：Android 会 `MediaStorage.clear(context)`。iOS 的图片存沙盒，服务层不碰文件系统
-// （那属于 App 层的 Chat/Media 管理），所以这里留 `onClearMedia` 回调，App 层接上即可。
+// 图片：Android 会 `MediaStorage.clear(context)`。iOS 的图片也在沙盒里，而 `MediaStorage`
+// 本来就在 Kit 层，所以直接把 `media` 传进来，两个清空入口共用同一份清理
+//（0.10.2 审计 P1-7：原来这条清理挂在两个 View 上，备份页漏掉了）。
 
 /// 清空动作的结果：给界面一句「删掉了多少」的中文，也方便单测断言。
 public struct ClearSummary: Equatable, Sendable {
@@ -32,6 +33,8 @@ public struct ClearSummary: Equatable, Sendable {
     public var consolidations: Int
     public var apiConfigs: Int
     public var usage: Int
+    /// 哪几张表没删成功（`clearAll` 逐表吞错，但要如实告诉用户是哪些）。
+    public var warnings: [String]
 
     public init(
         messages: Int = 0,
@@ -43,7 +46,8 @@ public struct ClearSummary: Equatable, Sendable {
         intents: Int = 0,
         consolidations: Int = 0,
         apiConfigs: Int = 0,
-        usage: Int = 0
+        usage: Int = 0,
+        warnings: [String] = []
     ) {
         self.messages = messages
         self.sessions = sessions
@@ -55,6 +59,7 @@ public struct ClearSummary: Equatable, Sendable {
         self.consolidations = consolidations
         self.apiConfigs = apiConfigs
         self.usage = usage
+        self.warnings = warnings
     }
 
     public func describeChats() -> String {
@@ -74,10 +79,23 @@ public struct ClearSummary: Equatable, Sendable {
             PluralText.format("%d 句话", messages)
         ]
         if apiConfigs > 0 { parts.append(PluralText.format("%d 个 API 配置", apiConfigs)) }
-        return String(
+        var text = String(
             format: String(localized: "所有本地数据已删除（%@）"),
             PluralText.list(parts)
         )
+        if !warnings.isEmpty {
+            // 静默半成功比报错更糟（0.10.2 审计 P2-12）：哪几张表没删掉要如实说。
+            // 计数单独挑模板（`PluralText.template`）而不是整句 `String(format:)`：
+            // 英文要的是「1 table couldn't be cleared / 2 tables couldn't be cleared」，
+            // 中文只有一种说法，`.one` 变体的值与正文相同。
+            let template = PluralText.template("；有 %d 张表没删成功：%@，其余数据已删除", warnings.count)
+            text += String(
+                format: template,
+                warnings.count,
+                warnings.joined(separator: String(localized: "、"))
+            )
+        }
+        return text
     }
 }
 
@@ -102,21 +120,36 @@ public final class DataReset {
     private let vectorIndex: MemoryVectorIndex
     /// App 层传 `ApiKeyStore` 进来：全部删除时把配置对应的 Keychain 条目一起清掉。
     private let apiKeys: ApiKeyStore?
-    /// App 层传图片目录清理：服务层不碰文件系统。
-    private let onClearMedia: (() -> Void)?
+    /// 附件文件（聊天图 / 头像）的清理。
+    ///
+    /// 为什么收进 `DataReset` 而不是让两个界面各调一次（0.10.2 审计 P1-7）：
+    /// 0.10.1 的媒体清理是一个**可选回调**，装配层根本没传，真正干活的是设置页与备份页两个
+    /// View —— 而备份页那条路径忘了调，于是「删除全部本地数据」之后图片与头像文件还留在
+    /// `Application Support/attachments/` 里。收进这里，两个入口只调 `DataReset` 就不会再漏。
+    private let media: MediaStorage?
 
     public init(
         stores: DatabaseStores,
         settings: SettingsProviding,
         vectorIndex: MemoryVectorIndex? = nil,
         apiKeys: ApiKeyStore? = nil,
-        onClearMedia: (() -> Void)? = nil
+        media: MediaStorage? = nil
     ) {
         self.stores = stores
         self.settings = settings
         self.vectorIndex = vectorIndex ?? MemoryVectorIndex(stores: stores)
         self.apiKeys = apiKeys
-        self.onClearMedia = onClearMedia
+        self.media = media
+    }
+
+    /// 清空聊天与记忆时要清的图片（头像不动：人还在）。
+    private func clearChatMedia() {
+        media?.deleteAllChatImages()
+    }
+
+    /// 「删除全部本地数据」时要清的图片（聊天图 + 头像）。
+    private func clearAllMedia() {
+        media?.deleteAll()
     }
 
     // MARK: - 清空聊天与记忆（保留人格与 API 配置）
@@ -138,7 +171,7 @@ public final class DataReset {
             try stores.memoryConsolidations.deleteAll()
             _ = try? stores.memoryVectors.deleteAll()
         }
-        onClearMedia?()
+        clearChatMedia()
         return summary
     }
 
@@ -167,25 +200,31 @@ public final class DataReset {
         // Keychain 里的密钥随配置一起走：先读 id 再删库，最后清 Keychain。
         let configIds = ((try? stores.apiConfigs.all()) ?? []).map(\.id)
 
+        // 逐表吞错（与 Android 的 runCatching per step 同义：用户点的是「都删掉」，
+        // 不该因为一张表的锁失败就半途停下），但把失败的表收集起来告诉用户。
+        var failures: [String] = []
+        func attempt(_ label: String, _ body: () throws -> Void) {
+            do { try body() } catch { failures.append(label) }
+        }
         _ = try? stores.database.inTransaction {
             // 1) 规则与排期
-            try? stores.proactiveRules.deleteAll()
-            try? stores.agentIntents.deleteAll()
+            attempt("proactive_rules") { try stores.proactiveRules.deleteAll() }
+            attempt("agent_intents") { try stores.agentIntents.deleteAll() }
             // 2) 聊天与记忆（子表先走）
-            try? stores.messages.deleteAll()
-            try? stores.sessions.deleteAll()
-            try? stores.memoryTerms.deleteAll()
-            try? stores.memoryVersions.deleteAll()
-            MemoryEchoStore(database: stores.database).deleteAll()
-            try? stores.memories.deleteAll()
-            try? stores.memoryConsolidations.deleteAll()
-            try? stores.memoryVectors.deleteAll()
+            attempt("messages") { try stores.messages.deleteAll() }
+            attempt("chat_sessions") { try stores.sessions.deleteAll() }
+            attempt("memory_terms") { try stores.memoryTerms.deleteAll() }
+            attempt("memory_versions") { try stores.memoryVersions.deleteAll() }
+            attempt("memory_echoes") { MemoryEchoStore(database: stores.database).deleteAll() }
+            attempt("memories") { try stores.memories.deleteAll() }
+            attempt("memory_consolidations") { try stores.memoryConsolidations.deleteAll() }
+            attempt("memory_vectors") { try stores.memoryVectors.deleteAll() }
             // 3) 人格与配置
-            try? stores.personas.deleteAll()
-            try? stores.apiConfigs.deleteAll()
+            attempt("personas") { try stores.personas.deleteAll() }
+            attempt("api_configs") { try stores.apiConfigs.deleteAll() }
             // 4) 用量 / 预设
-            try? stores.apiUsage.deleteAll()
-            try? stores.presets.deleteAll()
+            attempt("api_usage") { try stores.apiUsage.deleteAll() }
+            attempt("persona_presets") { try stores.presets.deleteAll() }
         }
         // 思考留痕（表补上之前是进程内实现）
         AgentTickStore(database: stores.database).deleteAll()
@@ -195,7 +234,7 @@ public final class DataReset {
                 try? apiKeys.deleteKeys(for: id)
             }
         }
-        onClearMedia?()
+        clearAllMedia()
         // 设置最后清：清完这里，「正在聊的人 / 心跳进度 / 主题」一起回到出厂。
         if let resetting = settings as? SettingsResetting {
             resetting.resetAll()
@@ -203,6 +242,7 @@ public final class DataReset {
             settings.save(AppSettings())
         }
         vectorIndex.resetEnsured()
+        summary.warnings = failures
         return summary
     }
 }

@@ -147,7 +147,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(memory.strength, 1.0)
 
         let session = try XCTUnwrap(try success(#"{"sessions":[{"id":"s1"}]}"#).bundle?.sessions.first)
-        XCTAssertEqual(session.syncState, "STATELESS")
+        XCTAssertEqual(session.lastMemoryExtractedCount, 0)
         XCTAssertNil(session.summary)
         XCTAssertNil(session.summarizedUpTo)
         XCTAssertNil(session.summaryAt)
@@ -283,8 +283,9 @@ final class BackupCodecTests: XCTestCase {
             try keys(of: "sessions"),
             ["id", "personaId", "apiConfigId", "model", "title", "lastMessagePreview",
              "lastMessageAt", "unreadCount", "pinned", "createdAt", "updatedAt",
-             "lastPersonaVersion", "syncState", "syncedPersonaVersion", "syncedMemoriesHash",
-             "serverSessionId", "lastSyncError", "lastSyncAt", "lastMemoryExtractedCount",
+             // 6 个 sync 字段已从跨端契约里删掉（0.10.2 安全审计 P1-5）：
+             // 本机列还在，但备份 JSON 里不再出现，与 Android `BackupSession` 逐字一致。
+             "lastPersonaVersion", "lastMemoryExtractedCount",
              "summary", "summarizedUpTo", "summaryAt",
              // 1.9 的会话级覆盖（§三）
              "memoryRetentionOverride", "extractionEveryOverride"]

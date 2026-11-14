@@ -627,6 +627,87 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertTrue(try messages().isEmpty, "失败时不该留下半截消息")
     }
 
+    // MARK: - 发送被拒（0.10.2 审计 P1-10）
+
+    /// 消息过长 / 会话被删这类错误发生在**落库之前**：`sendChecked` 必须告诉调用方
+    /// 「这次没落库」，界面才能把草稿与图片还给用户（原来只能拿到一条只会抛错的流，
+    /// 而那时草稿已经被清空了）。
+    func testSendCheckedRejectsOversizedMessageWithoutPersistingOrDeletingAttachments() async throws {
+        try seedReadySession()
+        let mediaDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("myfriend-chat-media-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: mediaDirectory) }
+        let media = MediaStorage(directory: mediaDirectory)
+        service = makeService(media: media)
+        let attachment = try media.saveImage(data: makeJPEG(width: 120, height: 120), kind: .chatImage)
+
+        let tooLong = String(repeating: "字", count: ChatService.maxMessageLength + 1)
+        let outcome = service.sendChecked(
+            sessionId: sessionId, text: tooLong, attachments: [attachment]
+        )
+        guard case .rejected(let error) = outcome else {
+            return XCTFail("超长消息应当被拒")
+        }
+        XCTAssertEqual((error as? ApiException)?.message, "消息过长")
+        XCTAssertTrue(try messages().isEmpty, "没落库就不能留下半截消息")
+        XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "更不该发请求")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: try XCTUnwrap(media.fileURL(for: attachment.uri)).path),
+            "附件文件不能被删：界面会把这张图还给用户重试，删了就成孤儿/丢图"
+        )
+    }
+
+    /// 被拒的另一种现实来源：会话在点发送的一瞬间被别人删掉了。
+    func testSendCheckedRejectsMissingSession() throws {
+        try seedReadySession()
+        try stores.sessions.delete(id: sessionId)
+        guard case .rejected(let error) = service.sendChecked(sessionId: sessionId, text: "在吗") else {
+            return XCTFail("会话不存在时应当被拒")
+        }
+        XCTAssertEqual((error as? ApiException)?.message, "会话不存在")
+        XCTAssertTrue(try messages().isEmpty)
+    }
+
+    /// 真的开始生成时 `sendChecked` 返回 `.started`，并且用户那句已经落库。
+    func testSendCheckedStartsAndPersistsUserMessage() async throws {
+        try seedReadySession()
+        StubURLProtocol.enqueue(.sse(textDeltas: ["在"]))
+        guard case .started(let stream) = service.sendChecked(sessionId: sessionId, text: "在吗") else {
+            return XCTFail("正常发送应当返回 .started")
+        }
+        _ = try await collect(stream)
+        let stored = try messages()
+        XCTAssertEqual(stored.map(\.role), [.user, .assistant])
+        XCTAssertEqual(stored.first?.content, "在吗")
+    }
+
+    /// 界面守卫：`ChatViewModel` 只有在 `.started` 之后才清空草稿/图片；`.rejected` 时保留并给出重试入口。
+    func testChatViewModelOnlyClearsComposerAfterPersisted() throws {
+        var current = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        var path: URL?
+        for _ in 0..<12 {
+            let candidate = current.appendingPathComponent("MyFriend/Views/Chat/ChatViewModel.swift")
+            if FileManager.default.fileExists(atPath: candidate.path) { path = candidate; break }
+            current = current.deletingLastPathComponent()
+        }
+        let source = try String(contentsOf: try XCTUnwrap(path), encoding: .utf8)
+        XCTAssertTrue(source.contains("env.chat.sendChecked("), "ViewModel 要走能分辨「有没有落库」的入口")
+        XCTAssertTrue(source.contains("case .rejected(let error)"), "被拒要走单独分支")
+        XCTAssertTrue(source.contains("sendFailure = message"), "被拒时要留一个可重试状态")
+        // 清空动作必须只出现在 `.started` 分支里（``.rejected` 分支只留提示，不碰输入状态）。
+        let rejected = try XCTUnwrap(source.range(of: "case .rejected(let error)"))
+        let started = try XCTUnwrap(source.range(of: "case .started(let stream)"))
+        XCTAssertTrue(started.lowerBound < rejected.lowerBound)
+        let startedBranch = source[started.upperBound..<rejected.lowerBound]
+        XCTAssertTrue(startedBranch.contains("draft = \"\""), "成功落库后才清草稿")
+        XCTAssertTrue(startedBranch.contains("pendingAttachments.removeAll()"), "成功落库后才清已选图片")
+        let rejectedBranch = source[rejected.upperBound..<source.endIndex]
+        let rejectedEnd = try XCTUnwrap(rejectedBranch.range(of: "func dismissSendFailure"))
+        let rejectedBody = rejectedBranch[..<rejectedEnd.lowerBound]
+        XCTAssertFalse(rejectedBody.contains("draft = "), "被拒时不能动草稿")
+        XCTAssertFalse(rejectedBody.contains("pendingAttachments.removeAll()"), "被拒时不能丢已选图片")
+    }
+
     /// 文件不在时（从 Android 备份接回、被系统清掉）仍然能发新消息：
     /// 历史里那条只剩文字，不崩、不阻塞这一轮。
     func testHistoryWithMissingAttachmentFileStillGenerates() async throws {

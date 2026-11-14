@@ -9,6 +9,7 @@ import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.ApiConfigDraft
+import com.myfriend.app.domain.ApiConfigRules
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.network.ConnectionTestResult
 import com.myfriend.app.domain.ResolvedApiConfig
@@ -73,16 +74,7 @@ class ApiConfigRepository @Inject constructor(
         val existing = draft.id?.let { apiConfigDao.getById(it) }
         if (existing != null && existing.id != draft.id) userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
         val name = draft.name.trim()
-        if (name.isBlank()) userError(DomainErrorCode.API_CONFIG_NAME_REQUIRED)
-        if (name.length > 60) userError(DomainErrorCode.API_CONFIG_NAME_TOO_LONG)
         val baseUrl = NetworkGuard.normalizeBaseUrl(draft.baseUrl)
-        NetworkGuard.parseHttpUrl(baseUrl, draft.allowInsecureHttp)
-        if (draft.model.trim().isBlank()) userError(DomainErrorCode.MODEL_ID_REQUIRED)
-        if (draft.model.trim().length > 160) userError(DomainErrorCode.MODEL_ID_TOO_LONG)
-        val capabilities = registry.capabilities(draft.provider)
-        if (!capabilities.available) userError(DomainErrorCode.PROVIDER_RESERVED)
-        validateHeaders(draft.customHeadersJson)
-        validateParams(draft)
         val now = System.currentTimeMillis()
         val id = existing?.id ?: UUID.randomUUID().toString()
         val keyCipher = when {
@@ -116,8 +108,39 @@ class ApiConfigRepository @Inject constructor(
             createdAt = existing?.createdAt ?: now,
             updatedAt = now
         )
+        // 与备份导入共用同一套校验：手填、导入、将来别的入口都必须过这一关。
+        validateEntity(entity)
         apiConfigDao.insert(entity)
         id
+    }
+
+    /**
+     * 一条配置实体的完整校验（保存与备份导入共用）。
+     *
+     * 之前只有 [save] 里有这些检查，备份导入直接写 DAO，于是 `temperature = 1e9`、
+     * 超长 model、`http://` 明文地址都能从一份备份里塞进库；`allowInsecureHttp` 更是
+     * 被合并逻辑静默打开。现在导入路径也必须调用这里，不合法就跳过那条配置并记 warning。
+     *
+     * 抛 [com.myfriend.app.domain.UserErrorException]（统一走 `userError`），
+     * 调用方用 `runCatching` 决定是报错还是跳过。
+     */
+    suspend fun validateEntity(entity: com.myfriend.app.data.local.ApiConfigEntity) {
+        val name = entity.name.trim()
+        if (name.isBlank()) userError(DomainErrorCode.API_CONFIG_NAME_REQUIRED)
+        if (name.length > 60) userError(DomainErrorCode.API_CONFIG_NAME_TOO_LONG)
+        val baseUrl = NetworkGuard.normalizeBaseUrl(entity.baseUrl)
+        NetworkGuard.parseHttpUrl(baseUrl, entity.allowInsecureHttp)
+        if (entity.model.trim().isBlank()) userError(DomainErrorCode.MODEL_ID_REQUIRED)
+        if (entity.model.trim().length > 160) userError(DomainErrorCode.MODEL_ID_TOO_LONG)
+        if (!registry.capabilities(entity.provider).available) userError(DomainErrorCode.PROVIDER_RESERVED)
+        validateHeaders(entity.customHeadersJson)
+        ApiConfigRules.paramError(
+            temperature = entity.temperature,
+            topP = entity.topP,
+            maxOutputTokens = entity.maxOutputTokens,
+            frequencyPenalty = entity.frequencyPenalty,
+            presencePenalty = entity.presencePenalty
+        )?.let { userError(it) }
     }
 
     /**
@@ -214,17 +237,16 @@ class ApiConfigRepository @Inject constructor(
         }
         parsed.forEach { (key, value) ->
             if (key.isBlank()) userError(DomainErrorCode.HEADER_NAME_REQUIRED)
+            // Host / Content-Length / Transfer-Encoding / Connection / Expect / Proxy-*
+            // 由 HTTP 框架管理：Host 在 OkHttp 里只在缺失时才补，用户值会被原样发出，
+            // 能把请求路由到同一 IP:端口上的另一个虚拟主机。保存时就拒绝并说清是哪个头。
+            ApiConfigRules.reservedHeaderName(key)?.let { reserved ->
+                userError(DomainErrorCode.HEADER_RESERVED, arg = reserved)
+            }
             if (value !is JsonPrimitive || !value.isString) {
                 userError(DomainErrorCode.HEADER_VALUE_NOT_STRING, arg = key)
             }
         }
     }
 
-    private fun validateParams(draft: ApiConfigDraft) {
-        draft.temperature?.let { if (it !in 0.0..2.0) userError(DomainErrorCode.TEMPERATURE_RANGE) }
-        draft.topP?.let { if (it !in 0.0..1.0) userError(DomainErrorCode.TOP_P_RANGE) }
-        draft.maxOutputTokens?.let { if (it !in 1..1_000_000) userError(DomainErrorCode.MAX_OUTPUT_TOKENS_RANGE) }
-        draft.frequencyPenalty?.let { if (it !in -2.0..2.0) userError(DomainErrorCode.FREQUENCY_PENALTY_RANGE) }
-        draft.presencePenalty?.let { if (it !in -2.0..2.0) userError(DomainErrorCode.PRESENCE_PENALTY_RANGE) }
-    }
 }

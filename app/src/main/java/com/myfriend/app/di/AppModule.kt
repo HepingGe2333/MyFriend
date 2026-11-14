@@ -24,7 +24,13 @@ import com.myfriend.app.data.local.PersonaPendingPatchDao
 import com.myfriend.app.data.local.PersonaPresetDao
 import com.myfriend.app.data.local.PersonaRevisionDao
 import com.myfriend.app.data.local.ProactiveRuleDao
+import com.myfriend.app.data.repo.AndroidErasureFiles
+import com.myfriend.app.data.repo.RoomErasureStore
 import com.myfriend.app.domain.AppMemoryBudget
+import com.myfriend.app.domain.DataEraser
+import com.myfriend.app.domain.ErasureFiles
+import com.myfriend.app.domain.ErasureStore
+import com.myfriend.app.domain.SessionGenerationRegistry
 import com.myfriend.app.network.AiProviderRegistry
 import com.myfriend.app.network.ApiUsageRecorder
 import com.myfriend.app.network.ClaudeAdapter
@@ -85,6 +91,30 @@ object AppModule {
     @Provides fun agentIntentDao(db: MyFriendDatabase): AgentIntentDao = db.agentIntentDao()
 
     @Provides fun agentTickDao(db: MyFriendDatabase): AgentTickDao = db.agentTickDao()
+
+    /**
+     * 四条删除路径共用的清理器。
+     *
+     * [DataEraser] 本身是纯 Kotlin（在 `domain/`，agentd 也会编译），所以不能在它头上写
+     * `@Inject`；接口在 domain、实现（Room / Android 文件）在 data 层，这里做绑定。
+     */
+    @Provides
+    @Singleton
+    fun provideErasureStore(impl: RoomErasureStore): ErasureStore = impl
+
+    @Provides
+    @Singleton
+    fun provideErasureFiles(impl: AndroidErasureFiles): ErasureFiles = impl
+
+    @Provides
+    @Singleton
+    fun provideDataEraser(store: ErasureStore, files: ErasureFiles): DataEraser =
+        DataEraser(store, files)
+
+    /** 会话世代号：清空/删除时 bump，历史压缩与生成收尾写库前核对。 */
+    @Provides
+    @Singleton
+    fun provideSessionGeneration(): SessionGenerationRegistry = SessionGenerationRegistry()
 
     @Provides
     @Singleton

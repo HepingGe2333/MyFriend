@@ -520,7 +520,7 @@ public enum ToolProtocol {
         case ToolCatalog.setQuietHours: title = String(localized: "安排了自己的作息")
         case ToolCatalog.setMood: title = String(localized: "心情变了")
         case ToolCatalog.recall: title = String(localized: "回想了一下")
-        case ToolCatalog.deferReply: title = String(localized: "这次先没说话")
+        case ToolCatalog.deferReply: title = String(localized: "决定先不回")
         default:
             let name = result.invocation.name.trimmingCharacters(in: .whitespacesAndNewlines)
             title = name.isEmpty ? String(localized: "动作") : name

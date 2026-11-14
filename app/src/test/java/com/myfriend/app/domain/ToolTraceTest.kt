@@ -43,6 +43,9 @@ class ToolTraceTest {
         assertTrue(ToolTraceCodec.decode("{\"a\":1}").isEmpty())
     }
 
+    /** 「次 / times」的措辞在界面层（`R.plurals.chat_trace_count`），这里只测分组与拼接。 */
+    private val chineseCount: (Int) -> String = { count -> "$count 次" }
+
     @Test
     fun summarizeCountsRepeats() {
         val items = listOf(
@@ -50,13 +53,33 @@ class ToolTraceTest {
             ToolTraceItem(name = "web_search", title = "联网搜索"),
             ToolTraceItem(name = "think", title = "想了想")
         )
-        assertEquals("联网搜索 2 次 · 想了想", ToolTraceCodec.summarize(items))
-        assertEquals("", ToolTraceCodec.summarize(emptyList()))
+        assertEquals("联网搜索 2 次 · 想了想", ToolTraceCodec.summarize(items, chineseCount))
+        assertEquals("", ToolTraceCodec.summarize(emptyList(), chineseCount))
+    }
+
+    /**
+     * 0 / 1 / 2 三种次数：1 不写数量，0 条痕迹没有摘要，2 才出现计数词。
+     *
+     * 英文的 "N times"/"once" 由 `R.plurals.chat_trace_count` 决定（见 `ToolTraceTextTest`），
+     * 这里验证的是计数词确实只在 count > 1 时被调用。
+     */
+    @Test
+    fun summarizeOnlyCountsWhenRepeated() {
+        val once = listOf(ToolTraceItem(name = "web_search", title = "联网搜索"))
+        assertEquals("联网搜索", ToolTraceCodec.summarize(once, chineseCount))
+
+        val twice = once + once
+        assertEquals("联网搜索 2 次", ToolTraceCodec.summarize(twice, chineseCount))
+
+        var calls = 0
+        val counted: (Int) -> String = { count -> calls++; "$count times" }
+        assertEquals("联网搜索 3 times", ToolTraceCodec.summarize(twice + once, counted))
+        assertEquals(1, calls)
     }
 
     @Test
     fun summarizeFallsBackToName() {
         val items = listOf(ToolTraceItem(name = "remember", title = ""))
-        assertEquals("remember", ToolTraceCodec.summarize(items))
+        assertEquals("remember", ToolTraceCodec.summarize(items, chineseCount))
     }
 }

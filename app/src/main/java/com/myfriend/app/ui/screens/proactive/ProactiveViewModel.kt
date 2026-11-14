@@ -146,9 +146,11 @@ class ProactiveViewModel @Inject constructor(
                         com.myfriend.app.data.repo.ProactiveProtocol.formatTimeOfDay(timeOfDayMinutes ?: 0)
                     )
                 } else {
-                    context.getString(
-                        R.string.proactive_default_note_interval,
-                        (intervalMinutes ?: 120) / 60
+                    val hours = (intervalMinutes ?: 120) / 60
+                    context.resources.getQuantityString(
+                        R.plurals.proactive_default_note_interval,
+                        hours,
+                        hours
                     )
                 }
             }

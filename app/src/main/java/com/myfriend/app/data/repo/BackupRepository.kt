@@ -8,15 +8,12 @@ import com.myfriend.app.data.local.ChatSessionDao
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryDao
-import com.myfriend.app.data.local.MemoryEchoDao
 import com.myfriend.app.data.local.MemoryTermDao
 import com.myfriend.app.data.local.MemoryTermEntity
-import com.myfriend.app.data.local.MemoryVersionDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaPresetDao
-import com.myfriend.app.data.local.PersonaRevisionDao
 import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.BACKUP_FORMAT_VERSION
@@ -29,6 +26,7 @@ import com.myfriend.app.domain.BackupFailure
 import com.myfriend.app.domain.BackupWarning
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ChineseTerms
+import com.myfriend.app.domain.DataEraser
 import com.myfriend.app.domain.backupFileName
 import com.myfriend.app.domain.mergeInto
 import com.myfriend.app.domain.toAppSettings
@@ -110,18 +108,17 @@ class BackupImportException(val failure: BackupFailure) : Exception(failure.toSt
 class BackupRepository @Inject constructor(
     private val database: MyFriendDatabase,
     private val personaDao: PersonaDao,
-    private val revisionDao: PersonaRevisionDao,
     private val presetDao: PersonaPresetDao,
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
     private val memoryDao: MemoryDao,
     private val memoryTermDao: MemoryTermDao,
-    private val memoryVersionDao: MemoryVersionDao,
-    private val memoryEchoDao: MemoryEchoDao,
     private val memoryConsolidationDao: MemoryConsolidationDao,
     private val proactiveRuleDao: ProactiveRuleDao,
     private val agentIntentDao: AgentIntentDao,
     private val apiConfigDao: ApiConfigDao,
+    private val apiConfigRepository: ApiConfigRepository,
+    private val dataEraser: DataEraser,
     private val settingsRepository: SettingsRepository
 ) {
 
@@ -266,25 +263,29 @@ class BackupRepository @Inject constructor(
             ok
         }
 
+        // 备份替换时按引用保留头像：备份里带到的 avatarUri（可能就指向本机仍有效的文件）
+        // + 用户自己的头像。其余旧头像文件当孤儿回收（否则「替换」之后旧头像永远留在手机上）。
+        val keepAvatarUris = buildSet {
+            bundle.personas.forEach { persona ->
+                persona.avatarUri?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            }
+            runCatching { settingsRepository.settings.first().userAvatarUri }
+                .getOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+        }
+
         val messagesWithAttachments = bundle.messages.count { !it.attachmentsJson.isNullOrBlank() }
         if (messagesWithAttachments > 0) {
             warnings += BackupWarning.AttachmentsDropped(messagesWithAttachments)
         }
         database.withTransaction {
             if (mode == ImportMode.REPLACE) {
-                // 顺序：先清子表（消息、索引、回声、版本），再清父表。
-                messageDao.deleteAll()
-                sessionDao.deleteAll()
-                memoryTermDao.deleteAll()
-                memoryVersionDao.deleteAll()
-                memoryEchoDao.deleteAll()
-                memoryDao.deleteAll()
-                memoryConsolidationDao.deleteAll()
-                agentIntentDao.deleteAll()
-                proactiveRuleDao.deleteAll()
-                presetDao.deleteAll()
-                revisionDao.deleteByPersonaAll()
-                personaDao.deleteAll()
+                // 0.10.2：清空清单统一收在 DataEraser（与「清空聊天与记忆 / 删除全部数据 / 删人格」
+                // 共用 ErasurePlan），这里不再手写一份——以前漏的 agent_ticks / memory_vectors /
+                // persona_pending_patches / 聊天图片文件都在那份清单里。
+                // 注意：API 配置从不删（Key 只在本机），所以 ErasurePlan.BACKUP_REPLACE 不含它。
+                // 用 InsideTransaction 变体：本函数已经在 database.withTransaction 里，
+                // 不再嵌套开事务（清空 + 写回必须同属一个原子操作）。
+                dataEraser.replaceForBackupInsideTransaction(keepAvatarUris)
             }
 
             personaDao.insertAll(personas)
@@ -305,12 +306,29 @@ class BackupRepository @Inject constructor(
             intents.forEach { agentIntentDao.insert(it) }
             consolidations.forEach { memoryConsolidationDao.insert(it) }
 
-            // API 配置：只覆盖地址/模型/开关这些非敏感字段；已存在的配置把本机 Key 留着，
-            // 新配置 Key 留空等用户填。配置本身从不删除。
+            // API 配置：只覆盖非敏感字段（名称 / 模型 / 推理参数 / 联网开关）；
+            // **地址与明文开关永远保留本机值**，而且每条都要过一遍与 save() 相同的校验。
+            // 不合法（例如备份里是 http:// 明文地址、temperature 越界）就跳过这条并记 warning，
+            // 绝不让一份外部文件把本机配置改成攻击者的主机或打开明文。
+            var addressKept = 0
+            var insecureIgnored = 0
             bundle.apiConfigs.forEach { imported ->
                 val existing = apiConfigDao.getById(imported.id)
-                apiConfigDao.insert(if (existing != null) imported.mergeInto(existing) else imported.toNewEntity())
+                val merged = if (existing != null) imported.mergeInto(existing) else imported.toNewEntity()
+                if (merged.addressKept) addressKept++
+                if (merged.insecureIgnored) insecureIgnored++
+                val validation = runCatching { apiConfigRepository.validateEntity(merged.entity) }
+                if (validation.isFailure) {
+                    // 已存在的配置保持本机原值不动；新配置直接丢弃。
+                    warnings += BackupWarning.ApiConfigRejected(
+                        merged.entity.name.trim().ifBlank { merged.entity.id }
+                    )
+                    return@forEach
+                }
+                apiConfigDao.insert(merged.entity)
             }
+            if (addressKept > 0) warnings += BackupWarning.ApiConfigAddressKept(addressKept)
+            if (insecureIgnored > 0) warnings += BackupWarning.ApiConfigInsecureIgnored(insecureIgnored)
         }
 
         val configsMissingKey = bundle.apiConfigs.count { config ->

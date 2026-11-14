@@ -137,7 +137,7 @@ class PresetListViewModel @Inject constructor(
     /** 预设导入结果：数量在数据层，句子在这里。 */
     private fun presetImportText(result: com.myfriend.app.data.repo.PresetImportResult): String = when {
         result.imported <= 0 -> context.getString(R.string.preset_import_result_none)
-        result.skipped <= 0 -> context.getString(R.string.preset_import_result_ok, result.imported)
+        result.skipped <= 0 -> context.resources.getQuantityString(R.plurals.preset_import_result_ok, result.imported, result.imported)
         else -> context.getString(R.string.preset_import_result_partial, result.imported, result.skipped)
     }
 }

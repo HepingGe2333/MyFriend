@@ -347,6 +347,10 @@ class OpenAiAdapter(
         var customHasAuthorization = false
         parseHeaders(config.customHeadersJson).forEach { (name, value) ->
             if (name.equals("Content-Type", ignoreCase = true)) return@forEach
+            // 保存时已经拦过保留头（Host / Content-Length / Transfer-Encoding / …），
+            // 这里再滤一遍：老库里可能存着 0.10.2 之前写进去的值，历史配置也享受同样的保护。
+            // 其余自定义头（X-*、HTTP-Referer、OpenAI-Organization…）一律保留。
+            if (com.myfriend.app.domain.ApiConfigRules.isReservedHeader(name)) return@forEach
             if (name.equals("Authorization", ignoreCase = true)) customHasAuthorization = true
             header(name, value)
         }

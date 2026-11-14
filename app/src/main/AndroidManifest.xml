@@ -12,6 +12,14 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!--
+      0.10.2 安全修复：发布包在系统层就禁止明文 HTTP（默认值也是 false，这里显式写出来，
+      让「发布版只允许 HTTPS」这条承诺在 manifest 里可见）。本地调试用的明文在白名单下由
+      app/src/debug/AndroidManifest.xml 打开，release 构建拿不到那一份。
+
+      App 内的闸门（network/NetworkGuard.kt）仍然保留，并在 release 下给出
+      「发布版只允许 HTTPS」的明确错误文案（NetworkErrorKind.CleartextDisabled）。
+    -->
     <application
         android:name=".MyFriendApplication"
         android:allowBackup="false"
@@ -23,7 +31,7 @@
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.MyFriend"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="false">
 
         <activity
             android:name=".MainActivity"

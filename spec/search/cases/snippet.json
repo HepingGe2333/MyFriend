@@ -1,0 +1,144 @@
+[
+  {
+    "name": "short content, no truncation",
+    "why": "content shorter than the window keeps the whole string; offsets are absolute.",
+    "input": {
+      "content": "明天去哈尔滨，记得带外套。",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "明天去哈尔滨，记得带外套。",
+      "highlights": [
+        [
+          3,
+          6
+        ]
+      ]
+    }
+  },
+  {
+    "name": "long content, match in the middle",
+    "why": "32-char context before and after, both sides truncated with an ellipsis.",
+    "input": {
+      "content": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa哈尔滨bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "…aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa哈尔滨bbbbbbbbbbbbbbbbbbbbbbbbbbb…",
+      "highlights": [
+        [
+          31,
+          34
+        ]
+      ]
+    }
+  },
+  {
+    "name": "match near the start, right side padded to the full window",
+    "why": "start cannot go below 0, so the window extends to the right.",
+    "input": {
+      "content": "哈尔滨cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "哈尔滨ccccccccccccccccccccccccccccccccccccccccccccccccccccccccc…",
+      "highlights": [
+        [
+          0,
+          3
+        ]
+      ]
+    }
+  },
+  {
+    "name": "match near the end, left side padded to the full window",
+    "why": "end is clamped to content length, so the window slides left.",
+    "input": {
+      "content": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd哈尔滨",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "…ddddddddddddddddddddddddddddddddddddddddddddddddddddddddd哈尔滨",
+      "highlights": [
+        [
+          58,
+          61
+        ]
+      ]
+    }
+  },
+  {
+    "name": "multiple occurrences are all highlighted",
+    "why": "every case-insensitive occurrence inside the window becomes a highlight range.",
+    "input": {
+      "content": "他说哈尔滨冷，我说哈尔滨也行。",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "他说哈尔滨冷，我说哈尔滨也行。",
+      "highlights": [
+        [
+          2,
+          5
+        ],
+        [
+          9,
+          12
+        ]
+      ]
+    }
+  },
+  {
+    "name": "case-insensitive latin match",
+    "why": "matching is case-insensitive; highlights keep the original casing.",
+    "input": {
+      "content": "We talked about HARBIN and harbin again.",
+      "query": "harbin",
+      "window": 60
+    },
+    "expect": {
+      "text": "We talked about HARBIN and harbin again.",
+      "highlights": [
+        [
+          16,
+          22
+        ],
+        [
+          27,
+          33
+        ]
+      ]
+    }
+  },
+  {
+    "name": "no match falls back to a head preview",
+    "why": "no match: head of the message plus an ellipsis, no highlights.",
+    "input": {
+      "content": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "query": "哈尔滨",
+      "window": 60
+    },
+    "expect": {
+      "text": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee…",
+      "highlights": []
+    }
+  },
+  {
+    "name": "empty query yields nothing",
+    "why": "empty query short-circuits.",
+    "input": {
+      "content": "随便聊聊",
+      "query": "",
+      "window": 60
+    },
+    "expect": {
+      "text": "",
+      "highlights": []
+    }
+  }
+]

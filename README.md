@@ -6,17 +6,17 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-683%20Android%20%7C%20872%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#构建与测试)
+[![Tests](https://img.shields.io/badge/tests-823%20Android%20%7C%201016%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#构建与测试)
 
 ## 项目状态
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.10.1`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
+| 版本 | `0.10.2`（内测，`0.x` 体系，规则见 [docs/VERSIONING.md](docs/VERSIONING.md)） |
 | 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
 | 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 683 条（`:app:testDebugUnitTest`）、iOS 872 条（`swift test`）、agentd 19 条（`:agentd:test`） |
+| 单元测试 | Android 823 条（`:app:testDebugUnitTest`，另有 3 条 instrumented）、iOS 1016 条（`swift test`）、agentd 19 条（`:agentd:test`） |
 | 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
 
 ## 特性概览
@@ -24,6 +24,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | 领域 | 已实现的能力 |
 | --- | --- |
 | 首页 | 联系人列表：头像、名字、最后一条消息、时间、未读数；一人一段会话 |
+| 检索 | 聊天记录全文检索：摘要高亮、按人格与时间过滤、分页、点结果跳回该消息并高亮（两端语义一致，契约在 `spec/search/`） |
 | 聊天 | SSE 流式、停止生成、Markdown / 代码块 / LaTeX、图片消息（每条最多 4 张）、长按菜单（复制 / 编辑重发 / 重新生成 / 删除）、链接识别与内置浏览器 |
 | 已读与沉默 | `messages.readAt` 已读回执；`defer_reply` 允许模型本轮不回，界面只显示「已读」 |
 | 睡眠 | 人格自主睡觉、睡前免打扰（由模型决定）、30 分钟窗口内的唤醒阈值 |
@@ -135,6 +136,7 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 | [docs/CHANGELOG.md](docs/CHANGELOG.md) · [EN](docs/CHANGELOG.en.md) | 每个版本的实际变更 |
 | [docs/VERSIONING.md](docs/VERSIONING.md) · [EN](docs/VERSIONING.en.md) | 版本号规则、构建号与 schema 的关系、发版清单 |
 | [docs/IOS-PARITY.md](docs/IOS-PARITY.md) | 两端哪些必须一致、哪些受平台限制、iOS 仍缺什么 |
+| [docs/audits/](docs/audits/README.md) | 独立审计报告（每版的 P0/P1/P2 发现、已修复与已接受的取舍） |
 | [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | 0.9.0（旧编号 1.9.0）的规格、删除清单与验收表 |
 | [docs/ROADMAP-1.7.md](docs/ROADMAP-1.7.md) | 链接与内置浏览器、心跳曲线、向量检索、长会话压缩 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) · [EN](CONTRIBUTING.en.md) | 环境、代码风格、提交规范、数据与文案改动流程 |
@@ -142,17 +144,20 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 ## 已知限制
 
 - **没有 CI**：两端测试、构建与迁移测试都靠本地命令；PR 评审以本地运行结果为准。
+- **检索的候选上限**：排序要在内存里算词元命中，只在最新 500 条候选里排序；命中更多时界面会提示「只显示最近 N 条」。
 - **聊天页分页有代价**：两端首屏只读最近 60 条、上滑再取（未读/已读/DND 仍走全表），
-  但把整个历史翻完之后可观察区间等价于全量；「跳到某条历史消息」的定位 UI 仍未做。
+  把整个历史翻完之后可观察区间等价于全量；检索跳转到很旧的消息会把「目标→最新」整段装进窗口（上限 60 页）。
 - **iOS 后台不保证实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；回到前台时按错过的时间补算。
 - **图片与头像不进备份**：备份只保留路径与元数据，换机后需要重新选择图片。
 - **只有 token 统计**：没有金额、额度与拦截，`costMicroUsd` 仅保留列，不展示。
 - **agentd 尚未接线**：只有独立服务与契约用例，Android / iOS 客户端还没有调用它。
 - **仓库不含产物**：`.gitignore` 排除了 `dist/`、`docs/screenshots/`、APK / IPA 与构建缓存，因此文档中不放截图，也不提供预编译包。
-- **英文仍有几处中文**：数据层与网络层错误已改为结构化错误 + 资源映射（含落库令牌），但**工具痕迹标题**
-  （「联网搜索」「记住了」）、**升级前已落库的中文值**、**模型写出的文本**（心情理由、记忆正文、人格名/简介）
-  以及代码注释/日志/提示词脚手架仍是中文；英文长句未逐条走查（见 [docs/I18N.md](docs/I18N.md)）。
-- **模拟器 Keychain 限制**：未签名模拟器构建没有 Keychain entitlement，调试时走 UserDefaults 兜底并写入 `debug.log`；真机不受影响。
+- **英文仍有几处中文**：工具痕迹标题、数据层错误与 Kit 层可见文案已本地化（含写入时生成的会话标题与预览），
+  但**升级前已落库的中文值**、**模型写出的文本**（心情理由、记忆正文、人格名/简介、自造心情词）与
+  代码注释/日志/提示词脚手架仍是中文（见 [docs/I18N.md](docs/I18N.md)）。
+- **发布包不发明文 HTTP**：Android Release 关闭 `usesCleartextTraffic`，iOS Release 只放行局域网明文；
+  在发布包里把「允许不安全 HTTP」打开去连公网会得到明确错误（调试包不受影响）。
+- **模拟器 Keychain 限制**：未签名模拟器构建没有 Keychain entitlement；明文兜底**只在 `DEBUG && 模拟器`** 生效并写 `debug.log`，真机（含 Release 模拟器）写失败会直接报错，不会降级。
 
 ## 贡献与许可
 

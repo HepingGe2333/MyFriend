@@ -203,6 +203,23 @@ final class LocalizationResourceTests: XCTestCase {
         }.sorted()
     }
 
+    /// 取出格式串里的占位符，**按出现顺序**（去掉位置前缀）。
+    ///
+    /// 与 `placeholders(in:)` 的区别只有「不排序」：这条才是 `String(format:)` 的真实语义。
+    static func orderedPlaceholders(in value: String) -> [String] {
+        let pattern = #"%(?:\d+\$)?[-+ #0]*[0-9.]*(?:hh|h|ll|l|q|L|z|t|j)?[@dDiuUxXoOfeEgGcCsSpaA]|%%"#
+        let regex = try! NSRegularExpression(pattern: pattern)
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return regex.matches(in: value, range: range).map { match in
+            var token = String(value[Range(match.range, in: value)!])
+            if token == "%%" { return "%%" }
+            if let dollar = token.firstIndex(of: "$") {
+                token = "%" + token[token.index(after: dollar)...]
+            }
+            return token
+        }
+    }
+
     func testPlaceholdersMatchAcrossLanguages() throws {
         let zh = Dictionary(uniqueKeysWithValues: try load("zh-Hans").map { ($0.key, $0.value) })
         let en = try load("en")
@@ -213,6 +230,80 @@ final class LocalizationResourceTests: XCTestCase {
             XCTAssertEqual(
                 zhTokens, enTokens,
                 "key「\(entry.key)」的占位符不一致：zh=\(zhTokens) en=\(enTokens)"
+            )
+        }
+    }
+
+    /// 占位符**按位置**一致（0.10.2 审计 P2-9）。
+    ///
+    /// 上面那条只比集合（排序过）：`"%@ 里有 %d 条"` 与 `"%d entry in %@"` 也算通过，
+    /// 可这两种写法里「第 1 个参数」根本不是同一个东西 —— `String(format:)` 会把
+    /// `%@` 的位置交给 `Int`、把 `%d` 的位置交给 `String`，轻则乱码重则崩溃。
+    ///
+    /// 这里按**出现顺序**比对：英文想调整语序就必须写位置参数（`%1$@ … %2$d`），
+    /// 而那正好保证了「参数身份不变」。
+    func testPlaceholdersMatchByPosition() throws {
+        let zh = Dictionary(uniqueKeysWithValues: try load("zh-Hans").map { ($0.key, $0.value) })
+        let en = try load("en")
+        var mismatches: [String] = []
+        for entry in en {
+            guard let zhValue = zh[entry.key] else { continue }
+            let zhTokens = Self.orderedPlaceholders(in: zhValue)
+            let enTokens = Self.orderedPlaceholders(in: entry.value)
+            if zhTokens != enTokens {
+                mismatches.append("「\(entry.key)」zh=\(zhTokens) en=\(enTokens)")
+            }
+        }
+        XCTAssertTrue(
+            mismatches.isEmpty,
+            "这些 key 的占位符**位置**不一致（语序变了就必须用位置参数 %1$@/%2$d）：\n"
+                + mismatches.joined(separator: "\n")
+        )
+    }
+
+    // MARK: - 2b. 英文资源里不能残留中文（未翻译）
+
+    private static let cjk = try! NSRegularExpression(pattern: #"[\u4e00-\u9fff]"#)
+
+    private static func containsCJK(_ text: String) -> Bool {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return cjk.firstMatch(in: text, range: range) != nil
+    }
+
+    /// 英文资源的**值**里不允许出现 CJK（0.10.2 审计 P2-9）。
+    ///
+    /// 为什么必须钉这一条：key 是中文原文，所以「没翻译」在英文资源里长得跟「翻译好了」
+    /// 一模一样（值就是 key 本身）；只有扫字符能发现。0.10.1 的守卫只比 key 集合与占位符，
+    /// 漏一条翻译照样全绿，界面上却是一句中文。
+    ///
+    /// 白名单只有一个理由：**中文本身是内容**（比如语言名「中文」）。
+    func testEnglishValuesContainNoChinese() throws {
+        let allowed: Set<String> = ["中文"]
+        var offenders: [String] = []
+        for entry in try load("en") {
+            if allowed.contains(entry.value) { continue }
+            if Self.containsCJK(entry.value) {
+                offenders.append("第 \(entry.line) 行「\(entry.key)」= \(entry.value)")
+            }
+        }
+        XCTAssertTrue(
+            offenders.isEmpty,
+            "en 里有 \(offenders.count) 条没翻译（值里含中文）：\n" + offenders.joined(separator: "\n")
+        )
+        // InfoPlist.strings 同理（App 名字/权限说明会直接上屏）。
+        for entry in try Self.parse(Self.stringsURL("en", "InfoPlist.strings")) {
+            XCTAssertFalse(Self.containsCJK(entry.value), "InfoPlist.strings(en) 第 \(entry.line) 行没翻译：\(entry.value)")
+        }
+    }
+
+    /// 单复数变体的**值**里不能残留 key 后缀（0.9.1 有一批 `.one` 值把后缀写进了正文）。
+    func testPluralValuesDoNotLeakKeySuffix() throws {
+        for language in ["zh-Hans", "en"] {
+            let offenders = try load(language).filter { $0.key.hasSuffix(".one") && $0.value.hasSuffix(".one") }
+                .map { "第 \($0.line) 行「\($0.key)」= \($0.value)" }
+            XCTAssertTrue(
+                offenders.isEmpty,
+                "\(language) 里有值的结尾多了 `.one`（用户会看到这个后缀）：\n" + offenders.joined(separator: "\n")
             )
         }
     }

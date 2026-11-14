@@ -388,11 +388,12 @@ public final class ToolExecutor: ToolRunning {
         switch MemoryScreening.decide(candidate, existing: existing, echoes: existingEchoes, now: now) {
         case .reject(let reason):
             // 「这次先不记」不是错误：模型该知道的是「这件事不必落库」，然后自然聊过去。
+            // 原因有两种说法：`traceDetail` 跟着界面语言走，回灌模型的那句始终用中文原文。
             return ToolResult(
                 invocation: invocation,
                 ok: true,
                 summary: String(localized: "这次先不记"),
-                contentForModel: "这件事不必写进长期记忆（\(reason)），自然聊过去就好。",
+                contentForModel: "这件事不必写进长期记忆（\(MemoryScreening.RejectReason.promptText(forLocalized: reason))），自然聊过去就好。",
                 traceTitle: String(localized: "想了想要不要记"),
                 traceDetail: String(format: String(localized: "这次先不记：%@"), reason)
             )

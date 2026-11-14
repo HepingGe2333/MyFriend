@@ -2,24 +2,18 @@ package com.myfriend.app.data.repo
 
 import android.content.Context
 import androidx.room.withTransaction
+import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigDao
 import com.myfriend.app.data.local.ChatSessionDao
-import com.myfriend.app.data.local.MemoryDao
-import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaRevisionDao
 import com.myfriend.app.data.local.PersonaRevisionEntity
-import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.domain.ExportFile
 import com.myfriend.app.domain.ImportResult
-import com.myfriend.app.data.local.AgentIntentDao
-import com.myfriend.app.data.local.AgentTickDao
-import com.myfriend.app.data.local.MemoryConsolidationDao
-import com.myfriend.app.data.local.MemoryEchoDao
-import com.myfriend.app.data.local.MemoryVectorDao
+import com.myfriend.app.domain.DataEraser
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.PersonaProfile
 import com.myfriend.app.domain.PersonaRevisionReason
@@ -68,15 +62,7 @@ class PersonaRepository @Inject constructor(
     private val revisionDao: PersonaRevisionDao,
     private val apiConfigDao: ApiConfigDao,
     private val sessionDao: ChatSessionDao,
-    private val messageDao: MessageDao,
-    private val memoryDao: MemoryDao,
-    private val memoryTermDao: com.myfriend.app.data.local.MemoryTermDao,
-    private val proactiveRuleDao: ProactiveRuleDao,
-    private val agentIntentDao: AgentIntentDao,
-    private val agentTickDao: AgentTickDao,
-    private val memoryEchoDao: MemoryEchoDao,
-    private val memoryConsolidationDao: MemoryConsolidationDao,
-    private val memoryVectorDao: MemoryVectorDao,
+    private val dataEraser: DataEraser,
     private val proactiveScheduler: ProactiveScheduler,
     private val database: MyFriendDatabase,
     private val settingsRepository: SettingsRepository,
@@ -234,31 +220,18 @@ class PersonaRepository @Inject constructor(
      */
     suspend fun delete(personaId: String) {
         val wasActive = settingsRepository.settings.first().activePersonaId == personaId
-        val avatarUri = personaDao.getById(personaId)?.avatarUri
         database.withTransaction {
             val wasDefault = personaDao.getById(personaId)?.isDefault == true
-            messageDao.deleteByPersona(personaId)
-            sessionDao.deleteByPersona(personaId)
-            memoryDao.deleteByPersona(personaId)
-            // 记忆没了，倒排索引与向量里指向它们的行也要一起收掉，否则越删越多。
-            runCatching { memoryTermDao.deleteOrphans() }
-            runCatching { memoryVectorDao.deleteOrphans() }
-            runCatching { memoryEchoDao.deleteByPersona(personaId) }
-            runCatching { memoryConsolidationDao.deleteByPersona(personaId) }
-            revisionDao.deleteByPersona(personaId)
-            // 人格没了，它的主动节奏、念头、思考留痕都不该继续留着排期或出现在「他最近在想什么」。
-            proactiveRuleDao.deleteByPersona(personaId)
-            runCatching { agentIntentDao.deleteByPersona(personaId) }
-            runCatching { agentTickDao.deleteByPersona(personaId) }
-            personaDao.deleteById(personaId)
+            // 清单统一在 ErasurePlan（DataEraser）：消息 / 会话 / 记忆 / 回声 / 整理摘要 /
+            // 记忆旧正文（memory_versions）/ 向量 / 念头 / 思考留痕 / 待确认补丁 / 版本历史 /
+            // 主动节奏 / 人格本体，外加他的聊天图片与头像文件。
+            dataEraser.deletePersonaInsideTransaction(personaId)
             if (wasDefault) {
                 personaDao.getAll().firstOrNull()?.let {
                     personaDao.markDefault(it.id, System.currentTimeMillis())
                 }
             }
         }
-        // 人格没了，他头像的那张文件也不该留在这台手机上（只删 App 自己 avatars 目录里的）。
-        MediaStorage.deleteAvatar(appContext, avatarUri)
         proactiveScheduler.ensureScheduled()
         if (wasActive) {
             settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
@@ -275,7 +248,7 @@ class PersonaRepository @Inject constructor(
                 personaId = persona.id,
                 apiConfigId = config?.id,
                 model = persona.modelOverride?.takeIf { it.isNotBlank() } ?: config?.model.orEmpty(),
-                title = "与 ${persona.name} 的对话",
+                title = appContext.getString(R.string.chat_session_default_title, persona.name),
                 lastMessagePreview = null,
                 lastMessageAt = null,
                 unreadCount = 0,

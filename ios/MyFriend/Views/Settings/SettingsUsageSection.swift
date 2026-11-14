@@ -95,7 +95,7 @@ struct SettingsUsageSection: View {
         if totals.isEmpty { return L("等他开口说话，这里会慢慢有数。") }
         let reads = tokenText(totals.promptTokens)
         let writes = tokenText(totals.completionTokens)
-        return Lf("一共 %d 次调用 · 读了 %@ · 写了 %@", totals.calls, reads, writes)
+        return Lcount("一共 %d 次调用 · 读了 %@ · 写了 %@", totals.calls, reads, writes)
     }
 
     private func nameOf(_ bucket: SessionUsage) -> String {

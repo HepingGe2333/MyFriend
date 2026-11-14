@@ -112,6 +112,7 @@ enum class DomainErrorCode {
     HEADERS_INVALID_JSON,
     HEADER_NAME_REQUIRED,
     HEADER_VALUE_NOT_STRING,
+    HEADER_RESERVED,
     TEMPERATURE_RANGE,
     TOP_P_RANGE,
     MAX_OUTPUT_TOKENS_RANGE,
@@ -143,6 +144,14 @@ sealed interface NetworkErrorKind {
     data object EmptyUrl : NetworkErrorKind
     data object InvalidUrl : NetworkErrorKind
     data object HttpsRequired : NetworkErrorKind
+
+    /**
+     * 用户打开了「允许不安全 HTTP」，但这次构建（release）在系统层就不允许明文。
+     *
+     * 与 [HttpsRequired] 分开，是为了给出「发布版只允许 HTTPS」这句明确原因，
+     * 而不是让请求悄悄失败成超时或一个莫名其妙的 IO 错误。
+     */
+    data object CleartextDisabled : NetworkErrorKind
     data object UnsupportedScheme : NetworkErrorKind
     data object InvalidBaseUrl : NetworkErrorKind
     data class Http(val status: Int) : NetworkErrorKind
@@ -191,6 +200,8 @@ private fun NetworkErrorKind.debugText(): String = when (this) {
     NetworkErrorKind.InvalidUrl -> "地址格式不正确，请填写完整的 http(s) 地址"
     NetworkErrorKind.HttpsRequired ->
         "出于安全要求，仅允许 HTTPS。若使用本地服务，请在 API 配置中显式开启“允许不安全 HTTP”。"
+    NetworkErrorKind.CleartextDisabled ->
+        "发布版只允许 HTTPS：明文 HTTP 只在这个调试构建里可用，请把服务地址改成 https://。"
     NetworkErrorKind.UnsupportedScheme -> "仅支持 HTTP(S) 地址"
     NetworkErrorKind.InvalidBaseUrl -> "API 地址无效，请检查 Base URL"
     is NetworkErrorKind.Http -> when (status) {
@@ -290,6 +301,7 @@ private fun DomainErrorCode.debugText(arg: String?, number: Int?): String = when
     DomainErrorCode.HEADERS_INVALID_JSON -> "自定义 Headers 必须是合法的 JSON 对象"
     DomainErrorCode.HEADER_NAME_REQUIRED -> "Header 名称不能为空"
     DomainErrorCode.HEADER_VALUE_NOT_STRING -> "Header ${arg.orEmpty()} 的值必须是字符串"
+    DomainErrorCode.HEADER_RESERVED -> "不能自定义 Header「${arg.orEmpty()}」：它由 HTTP 框架管理"
     DomainErrorCode.TEMPERATURE_RANGE -> "Temperature 应在 0 到 2 之间"
     DomainErrorCode.TOP_P_RANGE -> "Top P 应在 0 到 1 之间"
     DomainErrorCode.MAX_OUTPUT_TOKENS_RANGE -> "Max Output Tokens 必须大于 0"
@@ -376,6 +388,7 @@ object UserErrorTokens {
         NetworkErrorKind.EmptyUrl -> "empty_url"
         NetworkErrorKind.InvalidUrl -> "invalid_url"
         NetworkErrorKind.HttpsRequired -> "https_required"
+        NetworkErrorKind.CleartextDisabled -> "cleartext_disabled"
         NetworkErrorKind.UnsupportedScheme -> "unsupported_scheme"
         NetworkErrorKind.InvalidBaseUrl -> "invalid_base_url"
         is NetworkErrorKind.Http -> "http" + SEP + kind.status
@@ -405,6 +418,7 @@ object UserErrorTokens {
         "empty_url" -> NetworkErrorKind.EmptyUrl
         "invalid_url" -> NetworkErrorKind.InvalidUrl
         "https_required" -> NetworkErrorKind.HttpsRequired
+        "cleartext_disabled" -> NetworkErrorKind.CleartextDisabled
         "unsupported_scheme" -> NetworkErrorKind.UnsupportedScheme
         "invalid_base_url" -> NetworkErrorKind.InvalidBaseUrl
         "unparsable_models" -> NetworkErrorKind.UnparsableModels

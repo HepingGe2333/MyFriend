@@ -6,17 +6,17 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-683%20Android%20%7C%20872%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-823%20Android%20%7C%201016%20iOS%20%7C%2019%20agentd-brightgreen.svg)](#build-and-test)
 
 ## Project status
 
 | Item | Value |
 | --- | --- |
-| Version | `0.10.1` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
+| Version | `0.10.2` (beta series `0.x`; rules in [docs/VERSIONING.en.md](docs/VERSIONING.en.md)) |
 | Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
 | Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 683 on Android (`:app:testDebugUnitTest`), 872 on iOS (`swift test`), 19 in agentd (`:agentd:test`) |
+| Unit tests | 823 on Android (`:app:testDebugUnitTest`, plus 3 instrumented), 1016 on iOS (`swift test`), 19 in agentd (`:agentd:test`) |
 | CI | None yet; all tests and builds run from local commands |
 
 ## Feature overview
@@ -24,6 +24,7 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 | Area | Implemented |
 | --- | --- |
 | Home | Contact list with avatar, name, last message, timestamp and unread count; one conversation per contact |
+| Search | Full-text chat-history search: highlighted snippets, persona and time filters, pagination, tap a hit to jump back to that message with a highlight (same semantics on both platforms, contract in `spec/search/`) |
 | Chat | SSE streaming, stop generation, Markdown / code blocks / LaTeX, image messages (up to 4 per message), long-press actions (copy / edit & resend / regenerate / delete), link detection with an in-app browser |
 | Read state and silence | `messages.readAt` read receipts; `defer_reply` lets the model skip a turn while the UI only shows "read" |
 | Sleep | Persona-initiated sleep, do-not-disturb decided by the model, wake threshold inside a 30-minute window |
@@ -138,18 +139,21 @@ The server understands `remember` / `recall` / `set_mood` / `web_search` / `myfr
 | [docs/ROADMAP-1.9.md](docs/ROADMAP-1.9.md) | Specification, deletion list and acceptance table for 0.9.0 (formerly 1.9.0) |
 | [docs/ROADMAP-1.7.md](docs/ROADMAP-1.7.md) | Links and in-app browser, heartbeat curve, vector retrieval, long-conversation compression |
 | [CONTRIBUTING.en.md](CONTRIBUTING.en.md) · [中文](CONTRIBUTING.md) | Environment, code style, commit conventions, data and string workflows |
+| [docs/audits/](docs/audits/README.md) | Independent audit reports (P0/P1/P2 findings, fixes and accepted risks per version) |
 
 ## Known limitations
 
 - **No CI**: tests, builds and migration tests run locally; pull requests are reviewed against local results.
-- **Chat is not paginated**: both platforms load the whole message list at once, which is the largest memory cost in long conversations (background paths are already windowed).
-- **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled opportunistically, so background heartbeat and daily consolidation may run late; missed time is caught up when the app returns to the foreground.
+- **Search ranks at most the newest 500 candidates**: ranking needs term counts SQL cannot express; the UI says so when results are truncated. Jumping to a very old hit loads the whole "target → latest" range into the paging window (capped at 60 pages).
+- **Chat pagination has a cost**: the first screen loads the latest 60 messages and fetches 60 more as you scroll up (unread, read receipts and DND still query the full table), but once the whole history has been paged through the observed range equals the full history.
+- **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled opportunistically, so background heartbeat and daily consolidation may run late; missed time is caught up once when the app returns to the foreground.
 - **Images and avatars are not backed up**: backups keep paths and metadata only, so images must be picked again after switching devices.
 - **Token statistics only**: no money, quotas or blocking; `costMicroUsd` remains a column and is not displayed.
 - **agentd is not wired yet**: only the standalone service and the contract cases exist; neither client calls it.
 - **No build artifacts in the repository**: `.gitignore` excludes `dist/`, `docs/screenshots/`, APK/IPA files and build caches, so the docs contain no screenshots and no prebuilt packages are provided.
-- **Some Chinese remains in English builds**: data and network errors are now structured and mapped to resources (including persisted error tokens), but **tool trace titles** (「联网搜索」, 「记住了」), **values written before the upgrade**, **model output** (mood reasons, memory bodies, persona names/descriptions) and code comments/logs/prompt scaffolding remain Chinese; long English strings have not been reviewed one by one (see [docs/I18N.en.md](docs/I18N.en.md)).
-- **Simulator Keychain limitation**: unsigned simulator builds have no Keychain entitlement, so debugging falls back to UserDefaults and writes `debug.log`; devices are unaffected.
+- **Some Chinese remains in English builds**: tool trace titles, data-layer errors and kit copy are localised (including session titles and previews generated at write time), but **values persisted before the upgrade**, **model output** (mood reasons, memory bodies, persona names/descriptions, invented mood words) and code comments/logs/prompt scaffolding remain Chinese (see [docs/I18N.en.md](docs/I18N.en.md)).
+- **Release builds do not do cleartext HTTP**: Android Release disables `usesCleartextTraffic`, and iOS Release only allows local-network cleartext; enabling "allow insecure HTTP" in a release build against a public host reports a clear error (debug builds are unaffected).
+- **Simulator Keychain limitation**: unsigned simulator builds have no Keychain entitlement; the plaintext fallback exists only under `DEBUG && simulator` and logs why. Device builds fail loudly instead of falling back.
 
 ## Contributing & license
 

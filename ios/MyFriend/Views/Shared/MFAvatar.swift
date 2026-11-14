@@ -114,7 +114,9 @@ struct MFAvatar: View {
                 ? Color.white.opacity(0.10)
                 : MFTheme.defaultAccent.opacity(0.12)
         }
-        let index = abs(avatarSeed) % Self.palette.count
+        // `abs(Int.min)` 会溢出 trap（这个值能从一份手工/损坏的备份直接进来，
+        // 见 0.10.2 审计 P2-10）：用 magnitudes 取模，永不溢出。
+        let index = Int(avatarSeed.magnitude % UInt(Self.palette.count))
         return Self.palette[index]
     }
 

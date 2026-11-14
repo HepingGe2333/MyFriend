@@ -234,6 +234,18 @@ public final class ChatService {
 
     // MARK: - 发送 / 重新生成 / 停止
 
+    /// `send` 的结果：要么已经开始生成，要么**压根没落库**。
+    ///
+    /// 为什么需要这个区分（0.10.2 审计 P1-10）：参数/配置类错误（消息过长、会话被删、
+    /// 配置没了）发生在落库之前，原来界面拿到的是「一条只会抛错的流」，
+    /// 而它在此之前已经把草稿与已选图片清空了 → 用户刚打的字和刚选的图不可恢复，
+    /// 磁盘上还留下没人引用的孤儿图。
+    public enum SendOutcome {
+        case started(AsyncThrowingStream<ChatEvent, Error>)
+        /// 没落库：调用方应当把草稿/图片还给界面，并给一个可重试的提示。
+        case rejected(Error)
+    }
+
     /// 发一条用户消息，然后开始生成回复。
     ///
     /// 顺序与 Android 一致：**先把用户消息落库**，再生成。这样即使网络立刻失败，
@@ -249,12 +261,29 @@ public final class ChatService {
         text: String,
         attachments: [MessageAttachment] = []
     ) -> AsyncThrowingStream<ChatEvent, Error> {
+        switch sendChecked(sessionId: sessionId, text: text, attachments: attachments) {
+        case .started(let stream):
+            return stream
+        case .rejected(let error):
+            return Self.failedStream(error)
+        }
+    }
+
+    /// 与 `send` 同一条路径，但**告诉调用方这次有没有落库**。
+    ///
+    /// 界面用这个入口：`.rejected` 时不改输入状态（草稿与图片引用原样留着，
+    /// 文件也还在磁盘上，所以既不用重新压图，也不会产生孤儿文件）。
+    public func sendChecked(
+        sessionId: String,
+        text: String,
+        attachments: [MessageAttachment] = []
+    ) -> SendOutcome {
         do {
             try appendUserMessage(sessionId: sessionId, text: text, attachments: attachments)
         } catch {
-            return Self.failedStream(error)
+            return .rejected(error)
         }
-        return generate(sessionId: sessionId)
+        return .started(generate(sessionId: sessionId))
     }
 
     /// 重新生成：删掉最后一条助手消息（如果有），然后重新跑一轮。
@@ -375,7 +404,10 @@ public final class ChatService {
         let preview = flattened.isEmpty ? String(localized: "图片") : flattened
         try stores.database.inTransaction {
             try stores.messages.upsert(message)
-            var updated = session
+            // 在事务里**重读**一次会话：上面那次读是为了校验（配置、人格），而这两条语句之间
+            // 后台任务可能已经写过摘要 / 抽记忆计数（它们写自己那几列，0.10.2 审计 P1-1）。
+            // 拿旧快照整行写回会把它们冲掉；事务持有连接锁，所以这里读到的就是最新值。
+            var updated = (try stores.sessions.byId(sessionId)) ?? session
             updated.lastMessagePreview = String(preview.prefix(90))
             updated.lastMessageAt = timestamp
             updated.unreadCount = 0
@@ -702,7 +734,7 @@ public final class ChatService {
                 message = api.message
             } else {
                 let localized = (error as NSError).localizedDescription
-                message = localized.isEmpty ? "生成失败" : localized
+                message = localized.isEmpty ? String(localized: "生成失败") : localized
             }
             var saved: MessageEntity?
             if !completed {

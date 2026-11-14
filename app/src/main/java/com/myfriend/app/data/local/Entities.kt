@@ -379,6 +379,11 @@ data class PersonaPendingPatchEntity(
     val createdAt: Long
 )
 
+/**
+ * 检索粗筛回来的一行（不是表，只是 `MessageSearchSql` 的 SELECT 结果投影）。
+ *
+ * `role` 用来在结果里区分「我说的」和「他说的」；`personaId` 是人格过滤的依据。
+ */
 data class MessageSearchRow(
     val messageId: String,
     val sessionId: String,
@@ -388,8 +393,12 @@ data class MessageSearchRow(
     val personaAvatarUri: String?,
     val personaAvatarSeed: Int,
     val content: String,
-    val createdAt: Long
+    val createdAt: Long,
+    val role: String
 )
+
+/** 检索命中的总条数（`COUNT(*) AS total` 的投影）。 */
+data class SearchCountRow(val total: Int)
 
 /**
  * 一次模型调用的 token 流水。
