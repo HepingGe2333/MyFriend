@@ -214,11 +214,25 @@ final class BackupCodecTests: XCTestCase {
 
     // MARK: - v4：apiConfigs[].webToolsProvider
 
-    /// v1–v3 的备份里没有这一列：必须读成 DEEPSEEK，而不是报错或变成空串。
-    func testApiConfigProviderDefaultsToDeepSeekWhenAbsent() throws {
+    /// v1–v3 的备份里没有这一列：必须读成 MESSAGEAPI，而不是报错或变成空串。
+    func testApiConfigProviderDefaultsToMessageAPIWhenAbsent() throws {
         let raw = #"{"format":"myfriend.backup","formatVersion":3,"apiConfigs":[{"id":"c1","name":"旧配置"}]}"#
         let config = try XCTUnwrap(try success(raw).bundle?.apiConfigs.first)
-        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK")
+        XCTAssertEqual(config.webToolsProvider, "MESSAGEAPI")
+    }
+
+    /// 0.12 改名兼容：旧备份里的 `DEEPSEEK`（含大小写/空白变体）读进来等价于 MESSAGEAPI，
+    /// 而不是被当成「不认识的值」丢掉整条配置。
+    func testLegacyDeepSeekBackupValueDecodesAsMessageAPI() throws {
+        let raw = #"""
+        {"format":"myfriend.backup","formatVersion":4,"apiConfigs":[
+          {"id":"c1","name":"旧配置","webToolsProvider":"DEEPSEEK"},
+          {"id":"c2","name":"小写旧值","webToolsProvider":" deepseek "},
+          {"id":"c3","name":"新值","webToolsProvider":"MESSAGEAPI"}
+        ]}
+        """#
+        let configs = try XCTUnwrap(try success(raw).bundle?.apiConfigs)
+        XCTAssertEqual(configs.map(\.webToolsProvider), ["MESSAGEAPI", "MESSAGEAPI", "MESSAGEAPI"])
     }
 
     /// v4 写出去一定要带 provider（即使等于默认值），读回来保持一致。
@@ -229,10 +243,11 @@ final class BackupCodecTests: XCTestCase {
             BackupApiConfig(id: "c2", name: "自建", webToolsProvider: "GENERIC")
         ]
         let json = try BackupCodec.encode(bundle)
-        XCTAssertTrue(json.contains("\"webToolsProvider\":\"DEEPSEEK\""), "默认值也要写（规范 §6）")
+        XCTAssertTrue(json.contains("\"webToolsProvider\":\"MESSAGEAPI\""), "默认值也要写（规范 §6）")
         XCTAssertTrue(json.contains("\"webToolsProvider\":\"GENERIC\""))
+        XCTAssertFalse(json.contains("\"webToolsProvider\":\"DEEPSEEK\""), "旧值不能继续写进备份")
         let decoded = try XCTUnwrap(BackupCodec.decode(json).bundle)
-        XCTAssertEqual(decoded.apiConfigs.map(\.webToolsProvider), ["DEEPSEEK", "GENERIC"])
+        XCTAssertEqual(decoded.apiConfigs.map(\.webToolsProvider), ["MESSAGEAPI", "GENERIC"])
     }
 
     // MARK: - 密钥：结构里没有，导出前再查一遍

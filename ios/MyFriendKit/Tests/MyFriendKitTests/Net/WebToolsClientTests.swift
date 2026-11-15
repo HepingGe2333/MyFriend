@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import MyFriendKit
 
-/// 联网工具（DeepSeek Search / Fetch）网络客户端。
+/// 联网工具（MESSAGEAPI 兼容的 Search / Fetch）网络客户端。
 ///
 /// 为什么这些要钉死：
 /// 1. 端点归一化——用户在设置页会把 `https://api.deepseek.com`、带 `/v1`、带尾斜杠、
@@ -295,18 +295,18 @@ final class WebToolsClientTests: XCTestCase {
         let client = WebToolsClient(session: StubURLProtocol.makeSession(), log: { logs.append($0) })
 
         let failure = await assertFailure(
-            .http(status: 500, message: WebToolsClient.httpMessage(provider: .deepSeek, status: 500))
+            .http(status: 500, message: WebToolsClient.httpMessage(provider: .messageAPI, status: 500))
         ) {
             _ = try await client.search(query: "坏服务", access: self.access())
         }
         let message = failure?.message ?? ""
-        XCTAssertTrue(message.contains("DEEPSEEK"), "要带 provider 名：\(message)")
+        XCTAssertTrue(message.contains("MESSAGEAPI"), "要带 provider 名：\(message)")
         XCTAssertTrue(message.contains("500"), "要带状态码：\(message)")
         XCTAssertNotNil(message.range(of: "\\p{Han}", options: .regularExpression),
                         "模型会把 message 原样抄进回复，必须是中文：\(message)")
         // 日志里有原始响应体（方便排查），但模型看不到它。
         let log = try XCTUnwrap(logs.lines.first)
-        XCTAssertTrue(log.contains("DEEPSEEK"), log)
+        XCTAssertTrue(log.contains("MESSAGEAPI"), log)
         XCTAssertTrue(log.contains("HTTP 500"), log)
         XCTAssertFalse(message.contains("联网工具服务开小差了"), "原始响应体不能回灌给模型")
     }

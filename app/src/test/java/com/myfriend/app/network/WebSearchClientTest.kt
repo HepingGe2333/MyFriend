@@ -39,14 +39,14 @@ class WebSearchClientTest {
         json = json
     )
 
-    // ---------------------------------------------------------------- DeepSeek
+    // ---------------------------------------------------------------- MessageAPI（老名字 DEEPSEEK）
 
     @Test
-    fun `DEEPSEEK 搜索保持原有请求形状与解析`() = runBlocking {
+    fun `MESSAGEAPI 搜索保持原有请求形状与解析`() = runBlocking {
         server.respond { FakeResponse(body = """{"results":[{"title":"Kotlin","url":"https://kotlinlang.org","snippet":"现代语言","summary":"官方文档","site_name":"kotlinlang.org","date":"2024-11-20","authority":8,"rerank_score":0.9}]}""") }
 
         val hits = client.search(
-            provider = WebToolsProviders.DEEPSEEK,
+            provider = WebToolsProviders.MESSAGEAPI,
             baseUrl = "https://api.deepseek.com/v1",
             apiKey = "sk-deepseek",
             query = "kotlin",
@@ -73,11 +73,11 @@ class WebSearchClientTest {
     }
 
     @Test
-    fun `DEEPSEEK 抓取仍走服务端 fetch`() = runBlocking {
+    fun `MESSAGEAPI 抓取仍走服务端 fetch`() = runBlocking {
         server.respond { FakeResponse(body = """{"url":"https://example.com/a","title":"示例","content":"正文"}""") }
 
         val page = client.fetch(
-            provider = WebToolsProviders.DEEPSEEK,
+            provider = WebToolsProviders.MESSAGEAPI,
             baseUrl = "https://api.deepseek.com",
             apiKey = "sk-deepseek",
             url = "https://example.com/a"
@@ -200,7 +200,7 @@ class WebSearchClientTest {
     @Test
     fun `缺 Key 时明确报错而不是空结果 GENERIC 除外`() = runBlocking {
         listOf(
-            WebToolsProviders.DEEPSEEK,
+            WebToolsProviders.MESSAGEAPI,
             WebToolsProviders.TAVILY,
             WebToolsProviders.BRAVE,
             WebToolsProviders.SERPER
@@ -305,7 +305,7 @@ class WebSearchClientTest {
     // ---------------------------------------------------------------- web_fetch（客户端抓取）
 
     @Test
-    fun `非 DEEPSEEK 的 web_fetch 由客户端 GET 并抽正文`() = runBlocking {
+    fun `非 MESSAGEAPI 的 web_fetch 由客户端 GET 并抽正文`() = runBlocking {
         server.respond {
             FakeResponse(
                 body = """
@@ -389,12 +389,53 @@ class WebSearchClientTest {
     // ---------------------------------------------------------------- 端点归一化
 
     @Test
-    fun `DeepSeek 端点归一化保持原行为`() {
+    fun `MessageAPI 端点归一化保持原行为`() {
         val expected = "https://api.deepseek.com/v1/tools/search"
         assertEquals(expected, client.toolsEndpoint("https://api.deepseek.com", "search"))
         assertEquals(expected, client.toolsEndpoint("https://api.deepseek.com/", "search"))
         assertEquals(expected, client.toolsEndpoint("https://api.deepseek.com/v1", "search"))
         assertEquals("https://api.deepseek.com/v1/tools/fetch", client.toolsEndpoint("https://api.deepseek.com/v1", "fetch"))
+    }
+
+    /**
+     * 0.12 改名：`DEEPSEEK` → `MESSAGEAPI`。
+     *
+     * 旧库/旧备份里存的仍是 `DEEPSEEK`（大小写、空白都不标准），读进来必须还是一个**可用**的
+     * MESSAGEAPI：走同一套 `/v1/tools/search`、`/v1/tools/fetch`，而不是掉到「客户端抓取」那条分支。
+     */
+    @Test
+    fun `旧值 DEEPSEEK 读进来仍是可用的 MESSAGEAPI`() = runBlocking {
+        listOf("DEEPSEEK", "deepseek", " DeepSeek ").forEach { legacy ->
+            assertEquals("$legacy 要归一化成 MESSAGEAPI", "MESSAGEAPI", WebToolsProviders.normalize(legacy))
+            assertTrue("$legacy 是认识的旧值", WebToolsProviders.isValid(legacy))
+        }
+        assertTrue("新值当然也合法", WebToolsProviders.isValid("MESSAGEAPI"))
+
+        server.respond {
+            FakeResponse(body = """{"results":[{"title":"K","url":"https://k.example/a","snippet":"s"}]}""")
+        }
+        val hits = client.search(
+            provider = "DEEPSEEK",
+            baseUrl = "https://api.deepseek.com/v1",
+            apiKey = "sk-legacy",
+            query = "q"
+        )
+        assertEquals("旧值也要走同一套 tools 搜索端点", "https://api.deepseek.com/v1/tools/search", server.requests.single().url)
+        assertEquals(1, hits.size)
+
+        server.reset()
+        server.respond { FakeResponse(body = """{"url":"https://example.com/a","title":"t","content":"c"}""") }
+        client.fetch(
+            provider = " deepseek ",
+            baseUrl = "https://api.deepseek.com",
+            apiKey = "sk-legacy",
+            url = "https://example.com/a"
+        )
+        assertEquals(
+            "旧值也要走服务端 fetch（而不是客户端 GET 抓正文）",
+            "https://api.deepseek.com/v1/tools/fetch",
+            server.requests.single().url
+        )
     }
 
     @Test
@@ -410,7 +451,7 @@ class WebSearchClientTest {
             client.providerEndpoint("GENERIC", "https://self.example.com", "", true)
         )
         assertEquals("TAVILY", WebToolsProviders.normalize("tavily"))
-        assertEquals("DEEPSEEK", WebToolsProviders.normalize("not-a-provider"))
+        assertEquals("MESSAGEAPI", WebToolsProviders.normalize("not-a-provider"))
     }
 
     @Test

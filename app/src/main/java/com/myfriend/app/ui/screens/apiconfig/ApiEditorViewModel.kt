@@ -50,8 +50,8 @@ data class ApiEditorUiState(
     val frequencyPenalty: String = "",
     val presencePenalty: String = "",
     val webToolsEnabled: Boolean = false,
-    /** 搜索后端（schema v12）；空/脏值会被仓储层归一化成 DEEPSEEK。 */
-    val webToolsProvider: String = WebToolsProviders.DEEPSEEK,
+    /** 搜索后端（schema v12）；空/脏值、以及旧版本的 `DEEPSEEK` 都会被归一化成 MESSAGEAPI。 */
+    val webToolsProvider: String = WebToolsProviders.MESSAGEAPI,
     val webToolsBaseUrl: String = "",
     /** 仅存在于内存；为空表示复用主 Key。 */
     val webToolsApiKey: String = "",

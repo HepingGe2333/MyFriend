@@ -15,6 +15,7 @@ import com.myfriend.app.data.local.MemoryVectorDao
 import com.myfriend.app.data.local.MemoryVersionDao
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryEchoDao
+import com.myfriend.app.data.local.MediaReferenceDao
 import com.myfriend.app.data.local.MessageBlockDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.AgentIntentDao
@@ -29,7 +30,9 @@ import com.myfriend.app.BuildConfig
 import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.core.AgentCoreClients
 import com.myfriend.app.data.repo.AndroidErasureFiles
+import com.myfriend.app.data.repo.MediaReferenceSource
 import com.myfriend.app.data.repo.RoomErasureStore
+import com.myfriend.app.data.repo.RoomMediaReferenceSource
 import com.myfriend.app.domain.AppMemoryBudget
 import com.myfriend.app.domain.DataEraser
 import com.myfriend.app.domain.ErasureFiles
@@ -94,6 +97,18 @@ object AppModule {
     @Provides fun memoryVersionDao(db: MyFriendDatabase): MemoryVersionDao = db.memoryVersionDao()
     @Provides fun memoryVectorDao(db: MyFriendDatabase): MemoryVectorDao = db.memoryVectorDao()
     @Provides fun personaPendingPatchDao(db: MyFriendDatabase): PersonaPendingPatchDao = db.personaPendingPatchDao()
+
+    @Provides fun mediaReferenceDao(db: MyFriendDatabase): MediaReferenceDao = db.mediaReferenceDao()
+
+    /**
+     * 媒体引用计数的数据来源（0.12）：删文件之前「还有没有人引用」的唯一查询口。
+     *
+     * 接口在 data 层、实现打 Room + DataStore；抽接口只为了纯 JVM 单测能塞内存假实现
+     * （见 `MediaReferenceGcTest`），生产装配没有第二份实现。
+     */
+    @Provides
+    @Singleton
+    fun provideMediaReferenceSource(impl: RoomMediaReferenceSource): MediaReferenceSource = impl
 
     @Provides fun agentIntentDao(db: MyFriendDatabase): AgentIntentDao = db.agentIntentDao()
 

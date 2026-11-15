@@ -143,16 +143,16 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertTrue(bundle.media.isEmpty)
     }
 
-    /// v1–v3 备份里没有 `webToolsProvider`：接回来以后按规范默认 DEEPSEEK，
+    /// v1–v3 备份里没有 `webToolsProvider`：接回来以后按规范默认 MESSAGEAPI，
     /// 而不是把空串或 null 写进库（否则联网工具会在 provider 解析处变成「不认识」）。
-    func testImportingV3BackupDefaultsProviderToDeepSeek() throws {
+    func testImportingV3BackupDefaultsProviderToMessageAPI() throws {
         let directory = try XCTUnwrap(RepoLayout.backupFixtureDirectory())
         let text = try String(
             contentsOf: directory.appendingPathComponent("android-export-v3.json"), encoding: .utf8
         )
         let summary = try service.importBackup(text: text, mode: .replace)
         let config = try XCTUnwrap(try db.stores.apiConfigs.byId("a-1"))
-        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK")
+        XCTAssertEqual(config.webToolsProvider, "MESSAGEAPI")
         XCTAssertFalse(config.webToolsEnabled)
 
         // v3 的图片仍然能导：头像接回来、聊天图的 attachmentsJson 指向新文件。
@@ -189,12 +189,12 @@ final class BackupServiceTests: XCTestCase {
         try db.stores.apiConfigs.upsert(ApiConfigEntity(
             id: "config-1", name: "本机配置", provider: .openai,
             baseUrl: "https://api.deepseek.com", model: "deepseek-chat",
-            webToolsEnabled: false, webToolsProvider: "DEEPSEEK",
+            webToolsEnabled: false, webToolsProvider: "MESSAGEAPI",
             webToolsBaseUrl: ""
         ))
         let summary = try service.importBundle(bundle, mode: .merge)
         let config = try XCTUnwrap(try db.stores.apiConfigs.byId("config-1"))
-        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK", "本机 provider 不能被备份改掉")
+        XCTAssertEqual(config.webToolsProvider, "MESSAGEAPI", "本机 provider 不能被备份改掉")
         XCTAssertTrue(
             summary.warnings.contains { $0.contains("搜索服务保持本机设置") },
             "保留本机设置要上报警告：\(summary.warnings)"
@@ -871,6 +871,46 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(second.count, 1)
         XCTAssertNotEqual(first, second, "每次导入都要生成新的 UUID 文件名")
         XCTAssertFalse(first[0].contains("avatar-persona-1"))
+    }
+
+    /// 替换导入的旧图清理（0.12 媒体引用计数）：新图不删、旧图零引用才删。
+    ///
+    /// 旧头像同时被设置里的「我的头像」引用，备份里又没有 USER_AVATAR：导入后它仍是引用，
+    /// 必须留着；旧聊天图只属于被替换掉的消息，零引用，必须删掉。
+    func testReplaceImportDeletesOnlyUnreferencedOldMedia() throws {
+        let oldAvatar = try writeMedia("avatar-old-only.jpg", Data([0xFF, 0xD8, 0xFF]), in: attachments)
+        let oldChat = try writeMedia("chatImage-old-only.jpg", Data([0xFF, 0xD8, 0xFE]), in: attachments)
+        var persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        persona.avatarUri = oldAvatar
+        try db.stores.personas.upsert(persona)
+        var message = try XCTUnwrap(try db.stores.messages.byId("msg-1"))
+        message.attachmentsJson = AttachmentsCodec.encode([MessageAttachment(uri: oldChat)])
+        try db.stores.messages.upsert(message)
+        var current = settings.load()
+        current.myAvatarUri = oldAvatar
+        settings.save(current)
+
+        let oldAvatarURL = try XCTUnwrap(URL(string: oldAvatar))
+        let oldChatURL = try XCTUnwrap(URL(string: oldChat))
+
+        _ = try service.importBundle(BackupSamples.iosBundle(), mode: .replace)
+
+        // 新图（样本头像 + 样本聊天图）都落盘，且能真的读出来。
+        let names = restoredFileNames(in: attachments)
+        let newNames = names.filter {
+            $0 != oldAvatarURL.lastPathComponent && $0 != oldChatURL.lastPathComponent
+        }
+        XCTAssertEqual(newNames.count, 2, "导入的新图不能删：\(names)")
+        XCTAssertTrue(newNames.contains { $0.hasPrefix("avatar-") }, "\(names)")
+        XCTAssertTrue(newNames.contains { $0.hasPrefix("chatImage-") }, "\(names)")
+        for name in newNames {
+            XCTAssertTrue(fileManager.fileExists(atPath: attachments.appendingPathComponent(name).path))
+        }
+
+        // 旧聊天图零引用：删；旧头像还被「我的头像」引用：留。
+        XCTAssertFalse(fileManager.fileExists(atPath: oldChatURL.path), "旧聊天图零引用要删掉")
+        XCTAssertTrue(fileManager.fileExists(atPath: oldAvatarURL.path), "旧头像仍被设置引用，不能删")
+        XCTAssertEqual(settings.load().myAvatarUri, oldAvatar)
     }
 
     /// 媒体导入提醒：坏数据与超限分开计数，导入照样成功。

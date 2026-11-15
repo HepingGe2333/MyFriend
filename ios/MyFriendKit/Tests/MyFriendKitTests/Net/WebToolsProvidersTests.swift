@@ -69,11 +69,11 @@ final class WebToolsProvidersTests: XCTestCase {
 
     func testDefaultBaseUrlsMatchTheContract() {
         XCTAssertEqual(
-            WebToolsProvider.deepSeek.resolvedBaseUrl(llmBaseUrl: "https://api.deepseek.com"),
+            WebToolsProvider.messageAPI.resolvedBaseUrl(llmBaseUrl: "https://api.deepseek.com"),
             "https://api.deepseek.com"
         )
         XCTAssertEqual(
-            WebToolsProvider.deepSeek.resolvedBaseUrl(llmBaseUrl: "  "),
+            WebToolsProvider.messageAPI.resolvedBaseUrl(llmBaseUrl: "  "),
             "https://api.deepseek.com",
             "LLM 地址也没填时回落官方地址"
         )
@@ -83,16 +83,32 @@ final class WebToolsProvidersTests: XCTestCase {
         XCTAssertNil(WebToolsProvider.generic.resolvedBaseUrl(), "GENERIC 没有默认地址，必须让用户填")
         XCTAssertFalse(WebToolsProvider.generic.requiresAPIKey, "自建服务可以不要 Key")
         XCTAssertTrue(WebToolsProvider.tavily.requiresAPIKey)
-        XCTAssertTrue(WebToolsProvider.deepSeek.usesServerSideFetch)
+        XCTAssertTrue(WebToolsProvider.messageAPI.usesServerSideFetch)
         XCTAssertFalse(WebToolsProvider.tavily.usesServerSideFetch)
     }
 
     func testStoredProviderIsTolerant() {
         XCTAssertEqual(WebToolsProvider(stored: " tavily "), .tavily)
         XCTAssertEqual(WebToolsProvider(stored: "BRAVE"), .brave)
-        XCTAssertEqual(WebToolsProvider(stored: nil), .deepSeek)
-        XCTAssertEqual(WebToolsProvider(stored: ""), .deepSeek)
-        XCTAssertEqual(WebToolsProvider(stored: "SOMETHING_NEW"), .deepSeek, "不认识的值退回默认")
+        XCTAssertEqual(WebToolsProvider(stored: nil), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: ""), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: "SOMETHING_NEW"), .messageAPI, "不认识的值退回默认")
+    }
+
+    /// 0.12 改名：旧库/旧备份里的 `DEEPSEEK`（含大小写、空白变体）读进来等价于 MESSAGEAPI；
+    /// 写回时一律规范成 `MESSAGEAPI`，不会把历史名字继续写出去。
+    func testLegacyDeepSeekStoredValueNormalizesToMessageAPI() {
+        XCTAssertEqual(WebToolsProvider(stored: "DEEPSEEK"), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: " deepseek "), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: "DeepSeek\n"), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: "MESSAGEAPI"), .messageAPI)
+        XCTAssertEqual(WebToolsProvider(stored: " messageapi "), .messageAPI)
+
+        XCTAssertEqual(WebToolsProvider.normalizedStored("DEEPSEEK"), "MESSAGEAPI")
+        XCTAssertEqual(WebToolsProvider.normalizedStored(" deepseek "), "MESSAGEAPI")
+        XCTAssertEqual(WebToolsProvider.normalizedStored(nil), "MESSAGEAPI")
+        XCTAssertEqual(WebToolsProvider.normalizedStored(" tavily "), "TAVILY")
+        XCTAssertEqual(WebToolsProvider.normalizedStored("GENERIC"), "GENERIC")
     }
 
     // MARK: - TAVILY
@@ -224,7 +240,7 @@ final class WebToolsProvidersTests: XCTestCase {
     // MARK: - 缺 Key
 
     func testMissingKeyFailsForEveryProviderExceptGeneric() async throws {
-        for provider in [WebToolsProvider.deepSeek, .tavily, .brave, .serper] {
+        for provider in [WebToolsProvider.messageAPI, .tavily, .brave, .serper] {
             await assertFailure(.missingAPIKey) {
                 _ = try await self.makeClient().search(
                     query: "你好", access: self.access(provider: provider, apiKey: "  ")
@@ -325,7 +341,7 @@ final class WebToolsProvidersTests: XCTestCase {
         XCTAssertEqual(WebToolsClient.normalized(missing, limit: 6), [])
     }
 
-    // MARK: - 客户端抓网页（非 DEEPSEEK）
+    // MARK: - 客户端抓网页（非 MESSAGEAPI）
 
     func testClientSideFetchStripsHTMLAndCapsAt8000Characters() async throws {
         let body = String(repeating: "正文内容 ", count: 2_000)
@@ -368,10 +384,10 @@ final class WebToolsProvidersTests: XCTestCase {
         XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty)
     }
 
-    func testDeepSeekFetchStillUsesServerSideEndpoint() async throws {
+    func testMessageAPIFetchStillUsesServerSideEndpoint() async throws {
         StubURLProtocol.enqueue(.json(#"{"url":"https://example.com/d","title":"深寻","markdown":"正文"}"#))
         let page = try await makeClient().fetch(
-            url: "https://example.com/d", access: access(provider: .deepSeek)
+            url: "https://example.com/d", access: access(provider: .messageAPI)
         )
         let request = try request()
         XCTAssertEqual(request.url?.absoluteString, "https://api.deepseek.com/v1/tools/fetch")
@@ -380,10 +396,10 @@ final class WebToolsProvidersTests: XCTestCase {
         XCTAssertEqual(page.markdown, "正文")
     }
 
-    func testDeepSeekFetchRequiresKey() async throws {
+    func testMessageAPIFetchRequiresKey() async throws {
         await assertFailure(.missingAPIKey) {
             _ = try await self.makeClient().fetch(
-                url: "https://example.com/d", access: self.access(provider: .deepSeek, apiKey: "")
+                url: "https://example.com/d", access: self.access(provider: .messageAPI, apiKey: "")
             )
         }
     }

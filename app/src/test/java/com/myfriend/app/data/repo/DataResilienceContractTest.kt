@@ -168,7 +168,7 @@ class DataResilienceContractTest {
         assertTrue("按声明的文件大小先拒绝", section.contains("declaredSizeBytes("))
         assertTrue("读的时候按字节设上限", section.contains("BoundedTextRead.read("))
         assertFalse("不再 readText() 整份读进内存", section.contains(".bufferedReader()?.use { it.readText() }"))
-        // v3：媒体 base64 让备份变大；0.13.0 起解析前的字符闸按可用堆收紧。
+        // v3：媒体 base64 让备份变大；0.12 起解析前的字符闸按可用堆收紧。
         assertTrue(
             "解析前再兜一次字符数（按可用堆收紧）",
             backupCodec.contains("BackupMediaLimits.effectiveBackupBytes()")
@@ -221,7 +221,7 @@ class DataResilienceContractTest {
     @Test
     fun `保存配置读写 provider 且切换时不丢地址与 Key`() {
         val save = bodyOf(apiConfig, "suspend fun save(")
-        assertTrue("save 要接收 provider", save.contains("webToolsProvider: String = WebToolsProviders.DEEPSEEK"))
+        assertTrue("save 要接收 provider", save.contains("webToolsProvider: String = WebToolsProviders.MESSAGEAPI"))
         assertTrue("落库前归一化脏值", save.contains("webToolsProvider = WebToolsProviders.normalize(webToolsProvider)"))
         assertTrue("地址照旧落库（空字符串语义保留）", save.contains("webToolsBaseUrl = webToolsBaseUrl.trim()"))
         assertTrue("专用 Key 走原来的加密/保留/清除三态", save.contains("webToolsApiKeyCipher = webToolsKeyCipher"))
@@ -241,7 +241,7 @@ class DataResilienceContractTest {
     fun `ToolExecutor 把 provider 交给新客户端并保留默认地址语义`() {
         val access = bodyOf(toolExecutor, "private suspend fun webAccess(")
         assertTrue("读 provider", access.contains("WebToolsProviders.normalize(config.webToolsProvider)"))
-        assertTrue("DEEPSEEK 默认用 LLM base URL", access.contains("WebToolsProviders.DEEPSEEK_FALLBACK_BASE"))
+        assertTrue("MESSAGEAPI 默认用 LLM base URL", access.contains("WebToolsProviders.MESSAGEAPI_FALLBACK_BASE"))
         assertTrue("缺 Key 不再等同于联网关闭", access.contains("key.orEmpty()"))
         assertTrue("搜索调用带 provider", bodyOf(toolExecutor, "private suspend fun webSearch(").contains("provider = access.provider"))
         assertTrue("抓取调用带 provider", bodyOf(toolExecutor, "private suspend fun webFetch(").contains("provider = access.provider"))
@@ -255,7 +255,7 @@ class DataResilienceContractTest {
         assertTrue("保存时传给仓储", apiEditorVm.contains("webToolsProvider = current.webToolsProvider"))
         assertTrue("界面遍历五家", apiEditorScreen.contains("WebToolsProviders.all.forEach"))
         listOf(
-            "api_web_provider_deepseek", "api_web_provider_tavily", "api_web_provider_brave",
+            "api_web_provider_messageapi", "api_web_provider_tavily", "api_web_provider_brave",
             "api_web_provider_serper", "api_web_provider_generic"
         ).forEach { key ->
             assertTrue("$key 中文资源", source("src/main/res/values/strings.xml").contains("name=\"$key\""))
@@ -411,9 +411,9 @@ class DataResilienceContractTest {
         )
         assertTrue("ViewModel 销毁后要删掉刚写的文件", addImages.contains("draftWindowClosed"))
         assertTrue(
-            "onCleared 先立旗子再删已登记的图片",
+            "onCleared 先立旗子再删已登记的图片（0.12 起改走带引用守卫的 MediaJanitor）",
             bodyOf(viewModel, "override fun onCleared()").let { body ->
-                body.indexOf("draftWindowClosed = true") in 0 until body.indexOf("MediaStorage.deleteAttachments(")
+                body.indexOf("draftWindowClosed = true") in 0 until body.indexOf("mediaJanitor.deleteAttachmentsLater(")
             }
         )
         val editor = source("src/main/java/com/myfriend/app/ui/screens/persona/PersonaEditorScreen.kt")
@@ -426,7 +426,7 @@ class DataResilienceContractTest {
     // ------------------------------------------------------------------ 0.11.1 审计：发布构建（P2-14）
 
     @Test
-    fun `release 构建强制进程内 并且版本号精确是 0_13_0`() {
+    fun `release 构建强制进程内 并且版本号精确是 0_12_0`() {
         val gradle = source("build.gradle.kts")
         val release = gradle.substringAfter("buildTypes {", "")
             .substringAfter("release {", "")
@@ -453,11 +453,11 @@ class DataResilienceContractTest {
         // `AppWiringGuardTests.testVersionIsConsistentForBothConfigurations` 钉同一组数字。
         val versionCode = Regex("""versionCode\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt()
             ?: error("build.gradle.kts 里找不到 versionCode")
-        assertEquals("versionCode 必须精确等于 19（0.13.0）", 19, versionCode)
+        assertEquals("versionCode 必须精确等于 18（0.12.0）", 18, versionCode)
         val versionName = Regex("""versionName\s*=\s*"([^"]+)"""")
             .find(gradle)?.groupValues?.get(1)
             ?: error("build.gradle.kts 里找不到 versionName")
-        assertEquals("versionName 必须精确等于 0.13.0", "0.13.0", versionName)
+        assertEquals("versionName 必须精确等于 0.12.0", "0.12.0", versionName)
 
         // 两端构建号相等 + 两处配置一致：Android 与 iOS 发布的必须是同一个版本。
         val pbxproj = File(projectRoot(), "../ios/MyFriend.xcodeproj/project.pbxproj")

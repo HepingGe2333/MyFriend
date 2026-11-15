@@ -14,6 +14,7 @@
 | [CHANGELOG.md](CHANGELOG.md) · [EN](CHANGELOG.en.md) | 每个版本的实际变更 |
 | [IOS-PARITY.md](IOS-PARITY.md) | 两端哪些必须一致、哪些受平台限制、iOS 还缺什么 |
 | [performance.md](performance.md) · [iOS 章节](performance-ios.md) | 大库基准（10 万条迁移、检索分页耗时、备份 500 图内存）与结论 |
+| [local-search.md](local-search.md) | 本地聊天检索用了什么框架、能搜什么、明确不支持什么、升级路线 |
 | [audits/](audits/README.md) | 独立审计记录（每个版本的发现、修复与已接受的取舍） |
 | [design/](design/roadmap-1.9.md) | 历史设计记录：`0.9.0` 之前各阶段的行为规格与验收表，保留供追溯，不是当前行为说明 |
 
@@ -25,7 +26,8 @@
 | --- | --- |
 | [spec/agent-core/](../spec/agent-core/README.md) | 决策层的行为用例（睡眠、`defer_reply`、主动上限、心跳、记忆衰减、工具参数），两端测试共读；实现是 `agentcore/` 的 Kotlin Multiplatform 代码，iOS 经 `AgentCoreKit` framework 复用 |
 | [spec/messages-blocks/](../spec/messages-blocks/README.md) | 历史按 200 条一块存储、区块分页与「无候选上限」检索的存储/遍历契约 |
-| [spec/web-search/](../spec/web-search/README.md) | `web_search` 的多 provider 契约（DeepSeek / Tavily / Brave / Serper / 自建）与 `web_fetch` 行为 |
+| [spec/web-search/](../spec/web-search/README.md) | `web_search` 的多 provider 契约（MessageAPI / Tavily / Brave / Serper / 自建）与 `web_fetch` 行为 |
+| [web-search-live-check.md](web-search-live-check.md) | 各搜索 provider 的**真实接口实测**（字段形状、状态码、延迟），不含密钥 |
 | [spec/search/](../spec/search/README.md) | 聊天检索的摘要/高亮与排序/过滤规则 |
 | [fixtures/backup/](../fixtures/backup/README.md) | 备份 JSON 的黄金样本（v1 只读、v2 契约），两端互读 |
 

@@ -20,6 +20,7 @@ import com.myfriend.app.data.prefs.AppSettings
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.ChatRepository
+import com.myfriend.app.data.repo.MediaJanitor
 import com.myfriend.app.data.repo.MemoryRepository
 import com.myfriend.app.data.repo.MoodRepository
 import com.myfriend.app.data.repo.PersonaCardRepository
@@ -166,6 +167,8 @@ class ChatViewModel @Inject constructor(
     private val proactiveRepository: ProactiveRepository,
     private val settingsRepository: SettingsRepository,
     private val chatNotifier: ChatNotifier,
+    /** 删草稿图片之前的引用守卫（0.12）：用户可能选了一张已经发过的图（内容寻址同名文件）。 */
+    private val mediaJanitor: MediaJanitor,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -499,8 +502,9 @@ class ChatViewModel @Inject constructor(
                 if (persisted.isEmpty()) {
                     emptyList()
                 } else if (draftWindowClosed) {
-                    // ViewModel 已经销毁（onCleared 跑过）：文件不该留在磁盘上。
-                    MediaStorage.deleteAttachments(context, persisted)
+                    // ViewModel 已经销毁（onCleared 跑过）：文件不该留在磁盘上——
+                    // 但仍要先查引用：这张图可能已经发给过某条消息（内容寻址同名文件）。
+                    mediaJanitor.deleteAttachmentsIfUnreferenced(persisted)
                     emptyList()
                 } else {
                     ephemeral.update { state ->
@@ -523,13 +527,14 @@ class ChatViewModel @Inject constructor(
     fun removeImage(uri: String) {
         val removed = ephemeral.value.images.filter { it.uri == uri }
         ephemeral.update { state -> state.copy(images = state.images.filterNot { it.uri == uri }) }
-        MediaStorage.deleteAttachments(context, removed)
+        // 0.12：草稿图片也要过引用守卫——同一张图可能已经发出去过（内容寻址 → 同一个文件）。
+        viewModelScope.launch { mediaJanitor.deleteAttachmentsIfUnreferenced(removed) }
     }
 
     fun clearImages() {
         val removed = ephemeral.value.images
         ephemeral.update { it.copy(images = emptyList()) }
-        MediaStorage.deleteAttachments(context, removed)
+        viewModelScope.launch { mediaJanitor.deleteAttachmentsIfUnreferenced(removed) }
     }
 
     fun dismissSnackbar() {
@@ -772,7 +777,7 @@ class ChatViewModel @Inject constructor(
                         draft = ""
                     )
                 }
-                MediaStorage.deleteAttachments(context, abandoned)
+                mediaJanitor.deleteAttachmentsIfUnreferenced(abandoned)
                 eventsChannel.send(ChatEvent.OpenSession(result.session.id))
             } else {
                 ephemeral.update {
@@ -891,7 +896,8 @@ class ChatViewModel @Inject constructor(
         // 文件已经落在 files/media/chat-*.jpg 了。只有「点 ×」「清空」「发送成功」三条路
         // 会处理它们，退出编辑必须在这里兜一次，否则是纯增量、无上限的磁盘泄漏。
         // 发送成功时 images 已经被清空，所以这里不会删到已发出的图。
-        MediaStorage.deleteAttachments(context, ephemeral.value.images)
+        // 0.12：走进程级作用域（viewModelScope 已被取消），引用守卫照样生效。
+        mediaJanitor.deleteAttachmentsLater(ephemeral.value.images)
         // compare-and-clear：转场期间新 VM 可能已经打开了下一段会话，旧 VM 不能把它清掉。
         // 无条件 setOpenSession(null) 会让「正在读的会话」被判成没开着：未读 +1 并弹通知。
         chatRepository.clearOpenSession(sessionId)

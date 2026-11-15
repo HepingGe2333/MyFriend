@@ -242,7 +242,9 @@ extension ApiConfigEntity: SQLiteRecord {
             .bool(allowInsecureHttp), .optionalReal(temperature), .optionalReal(topP),
             .optionalInt(maxOutputTokens), .optionalReal(frequencyPenalty),
             .optionalReal(presencePenalty), .int(createdAt), .int(updatedAt),
-            .bool(webToolsEnabled), .text(webToolsProvider),
+            .bool(webToolsEnabled),
+            // 写库一律写规范值：老库里的 `DEEPSEEK` 不会在保存之后继续留在这一列里。
+            .text(WebToolsProvider.normalizedStored(webToolsProvider)),
             .text(webToolsBaseUrl), .optionalText(webToolsApiKeyCipher)
         ]
     }
@@ -265,8 +267,9 @@ extension ApiConfigEntity: SQLiteRecord {
             createdAt: try row.int64("createdAt"),
             updatedAt: try row.int64("updatedAt"),
             webToolsEnabled: try row.bool("webToolsEnabled"),
-            webToolsProvider: try row.text(
-                "webToolsProvider", WebToolsProvider.deepSeek.rawValue
+            // 读库时归一化：v11 老库/旧 DDL 默认值写的是 `DEEPSEEK`，读进来等价于 MESSAGEAPI。
+            webToolsProvider: WebToolsProvider.normalizedStored(
+                try row.optionalText("webToolsProvider")
             ),
             webToolsBaseUrl: try row.text("webToolsBaseUrl"),
             webToolsApiKeyCipher: try row.optionalText("webToolsApiKeyCipher")

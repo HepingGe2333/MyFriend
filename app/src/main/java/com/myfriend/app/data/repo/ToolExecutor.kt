@@ -296,11 +296,11 @@ class ToolExecutor @Inject constructor(
             ?: return null
         if (!config.webToolsEnabled) return null
         val provider = WebToolsProviders.normalize(config.webToolsProvider)
-        // DEEPSEEK 的默认地址是「LLM 配置的 base URL」（规范 §1）；其余 provider 留空交给
+        // MESSAGEAPI 的默认地址是「LLM 配置的 base URL」（规范 §1）；其余 provider 留空交给
         // WebSearchClient 用各自的默认地址，GENERIC 留空会在发请求前报 WebBaseMissing。
         val baseUrl = config.webToolsBaseUrl.trim().ifBlank {
-            if (provider == WebToolsProviders.DEEPSEEK) {
-                config.baseUrl.trim().ifBlank { WebToolsProviders.DEEPSEEK_FALLBACK_BASE }
+            if (provider == WebToolsProviders.MESSAGEAPI) {
+                config.baseUrl.trim().ifBlank { WebToolsProviders.MESSAGEAPI_FALLBACK_BASE }
             } else {
                 ""
             }

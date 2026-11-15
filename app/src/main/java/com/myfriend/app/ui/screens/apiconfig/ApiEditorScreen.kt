@@ -632,7 +632,7 @@ private fun webProviderLabelRes(provider: String): Int = when (WebToolsProviders
     WebToolsProviders.BRAVE -> R.string.api_web_provider_brave
     WebToolsProviders.SERPER -> R.string.api_web_provider_serper
     WebToolsProviders.GENERIC -> R.string.api_web_provider_generic
-    else -> R.string.api_web_provider_deepseek
+    else -> R.string.api_web_provider_messageapi
 }
 
 private fun webProviderHintRes(provider: String): Int = when (WebToolsProviders.normalize(provider)) {
@@ -640,7 +640,7 @@ private fun webProviderHintRes(provider: String): Int = when (WebToolsProviders.
     WebToolsProviders.BRAVE -> R.string.api_web_provider_brave_hint
     WebToolsProviders.SERPER -> R.string.api_web_provider_serper_hint
     WebToolsProviders.GENERIC -> R.string.api_web_provider_generic_hint
-    else -> R.string.api_web_provider_deepseek_hint
+    else -> R.string.api_web_provider_messageapi_hint
 }
 
 /** 占位符只是提示，不会写进库；留空语义由 provider 的默认地址决定。 */
@@ -649,7 +649,7 @@ private fun webProviderPlaceholder(provider: String): String =
         ?: if (WebToolsProviders.normalize(provider) == WebToolsProviders.GENERIC) {
             "https://search.example.com/search"
         } else {
-            WebToolsProviders.DEEPSEEK_FALLBACK_BASE
+            WebToolsProviders.MESSAGEAPI_FALLBACK_BASE
         }
 
 @Composable

@@ -465,9 +465,14 @@ enum DebugSeeding {
             // 2) 头像：长边 ≤512 / ≤400KB（给当前人格与「我的头像」各一份引用）
             if let avatar = try? MediaStorage.shared.saveImage(at: url, kind: .avatar) {
                 if var persona = ((try? env.stores.personas.allOrderedByUpdatedAt()) ?? []).first {
-                    MediaStorage.shared.deleteFileIfOwned(persona.avatarUri)
+                    let previousAvatar = persona.avatarUri
                     persona.avatarUri = avatar.uri
                     try? env.stores.personas.upsert(persona)
+                    // 先落库、再查引用：调试换头像也不能删掉被预设/我的头像共享的文件。
+                    MediaStorage.shared.deleteIfUnreferenced(
+                        previousAvatar,
+                        references: MediaReferences(stores: env.stores, settings: env.settings)
+                    )
                 }
                 env.updateSettings { $0.myAvatarUri = avatar.uri }
                 log("[debug] 头像已设置：\(avatar.uri) \(avatar.width)x\(avatar.height)")

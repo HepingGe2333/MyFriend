@@ -783,7 +783,14 @@ class MyFriendDatabaseMigrationTest {
             assertEquals(1, cursor.getInt(2))
             assertEquals("https://search.example.com", cursor.getString(3))
             assertEquals("LOCAL-WEB-CIPHER", cursor.getString(4))
-            assertEquals("老配置必须默认走 DEEPSEEK", "DEEPSEEK", cursor.getString(5))
+            // 列的 SQL 默认值仍是旧值 'DEEPSEEK'（与 schemas/12.json 一致，不能改）；
+            // 读出来之后由 WebToolsProviders.normalize 折算成可用的 MESSAGEAPI。
+            assertEquals("老配置的列默认值仍是 v12 的旧值", "DEEPSEEK", cursor.getString(5))
+            assertEquals(
+                "旧值读出来必须是一个可用的 provider",
+                "MESSAGEAPI",
+                com.myfriend.app.domain.WebToolsProviders.normalize(cursor.getString(5))
+            )
         }
     }
 
@@ -837,7 +844,12 @@ class MyFriendDatabaseMigrationTest {
             assertEquals("Room 打开后 user_version 应该是 12", 12, opened.version)
             room.query("SELECT webToolsProvider FROM api_configs WHERE id = 'config-1'", emptyArray()).use { cursor ->
                 assertTrue(cursor.moveToFirst())
+                // Room 的 schema 校验要求列默认值仍是 'DEEPSEEK'；代码层归一化成 MESSAGEAPI。
                 assertEquals("DEEPSEEK", cursor.getString(0))
+                assertEquals(
+                    "MESSAGEAPI",
+                    com.myfriend.app.domain.WebToolsProviders.normalize(cursor.getString(0))
+                )
             }
         } finally {
             room.close()
@@ -853,7 +865,17 @@ class MyFriendDatabaseMigrationTest {
             val dao = room.apiConfigDao()
             val original = testApiConfig()
             dao.insert(original)
-            assertEquals("DEEPSEEK", dao.getById("config-1")?.webToolsProvider)
+            assertEquals("MESSAGEAPI", dao.getById("config-1")?.webToolsProvider)
+
+            // 0.12 改名兼容：v12 之前写进库里的旧值读出来仍然是可用的 MESSAGEAPI。
+            dao.insert(original.copy(id = "config-legacy", webToolsProvider = "DEEPSEEK"))
+            val legacy = dao.getById("config-legacy") ?: error("旧配置不见了")
+            assertEquals("库里的旧值原样保留（不升级 schema 就不是迁移的活）", "DEEPSEEK", legacy.webToolsProvider)
+            assertEquals(
+                "读库归一化：旧值等价于 MESSAGEAPI",
+                "MESSAGEAPI",
+                com.myfriend.app.domain.WebToolsProviders.normalize(legacy.webToolsProvider)
+            )
 
             // 模拟设置页切换 provider：只换这一列，地址与密文保持原值。
             dao.update(original.copy(webToolsProvider = "TAVILY"))
@@ -913,7 +935,7 @@ class MyFriendDatabaseMigrationTest {
             webToolsEnabled = true,
             webToolsBaseUrl = "https://search.example.com",
             webToolsApiKeyCipher = "LOCAL-WEB-CIPHER",
-            webToolsProvider = "DEEPSEEK"
+            webToolsProvider = com.myfriend.app.domain.WebToolsProviders.MESSAGEAPI
         )
 
     /** 造一个 v10 库：按 v8 建表 → 跑真实迁移到 v10 → 写入 [messageCount] 条消息。 */

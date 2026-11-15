@@ -9,6 +9,7 @@ import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.ChatRepository
+import com.myfriend.app.data.repo.MediaJanitor
 import com.myfriend.app.data.repo.MemoryRepository
 import com.myfriend.app.data.repo.MessageBlockWriter
 import com.myfriend.app.data.repo.MoodRepository
@@ -62,6 +63,7 @@ class ChatUiBehaviorLoadNewerTest {
     @Inject lateinit var proactiveRepository: ProactiveRepository
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var chatNotifier: ChatNotifier
+    @Inject lateinit var mediaJanitor: MediaJanitor
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val store = ViewModelStore()
@@ -83,7 +85,8 @@ class ChatUiBehaviorLoadNewerTest {
             presenceRepository = presenceRepository,
             proactiveRepository = proactiveRepository,
             settingsRepository = settingsRepository,
-            chatNotifier = chatNotifier
+            chatNotifier = chatNotifier,
+            mediaJanitor = mediaJanitor
         )
     }
 

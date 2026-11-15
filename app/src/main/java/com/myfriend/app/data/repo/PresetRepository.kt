@@ -56,6 +56,8 @@ data class PresetImportResult(
 class PresetRepository @Inject constructor(
     private val presetDao: PersonaPresetDao,
     private val personaRepository: PersonaRepository,
+    /** 删预设/换预设头像时删旧文件的引用守卫（0.12）：预设与人格经常共用同一张头像。 */
+    private val mediaJanitor: MediaJanitor,
     private val json: Json
 ) {
     fun observeAll(): Flow<List<PersonaPresetEntity>> = presetDao.observeAll()
@@ -85,6 +87,10 @@ class PresetRepository @Inject constructor(
             updatedAt = now
         )
         if (existing == null) presetDao.insert(entity) else presetDao.update(entity)
+        // 换了头像：旧的按引用回收（预设之间/与人格之间可能共用同一个文件）。
+        if (existing != null && existing.avatarUri != entity.avatarUri) {
+            runCatching { mediaJanitor.deleteIfUnreferenced(existing.avatarUri) }
+        }
         entity.id
     }
 
@@ -101,8 +107,18 @@ class PresetRepository @Inject constructor(
         copy.id
     }
 
+    /**
+     * 删一个预设。
+     *
+     * 0.12：预设的头像文件在行删掉**之后**按引用回收——「把人格保存为预设」共用同一个
+     * `avatar-*.jpg`，那个文件大概率还被原人格引用，闭眼删就会让原人格的脸消失。
+     */
     suspend fun delete(id: String) {
+        val existing = presetDao.getById(id)
         presetDao.deleteById(id)
+        if (existing?.avatarUri != null) {
+            runCatching { mediaJanitor.deleteIfUnreferenced(existing.avatarUri) }
+        }
     }
 
     /** 把现有人格保存为预设（提示词、简介、分类、头像一起带走）。 */

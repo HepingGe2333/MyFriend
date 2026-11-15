@@ -11,7 +11,7 @@ platforms implement; field names and response shapes are normative.
 ALTER TABLE api_configs ADD COLUMN webToolsProvider TEXT NOT NULL DEFAULT 'DEEPSEEK';
 ```
 
-`webToolsProvider` is one of `DEEPSEEK` | `TAVILY` | `BRAVE` | `SERPER` | `GENERIC`.
+`webToolsProvider` is one of `MESSAGEAPI` | `TAVILY` | `BRAVE` | `SERPER` | `GENERIC`.
 
 Existing columns keep their meaning:
 
@@ -25,7 +25,7 @@ Default base URLs when `webToolsBaseUrl` is empty:
 
 | Provider | Default base |
 | --- | --- |
-| `DEEPSEEK` | LLM config's base URL (existing behaviour: `{base}/v1/tools/search`, `{base}/v1/tools/fetch`) |
+| `MESSAGEAPI` | LLM config's base URL (existing behaviour: `{base}/v1/tools/search`, `{base}/v1/tools/fetch`); any vendor exposing the same tools API can be used |
 | `TAVILY` | `https://api.tavily.com` |
 | `BRAVE` | `https://api.search.brave.com/res/v1` |
 | `SERPER` | `https://google.serper.dev` |
@@ -35,7 +35,7 @@ Default base URLs when `webToolsBaseUrl` is empty:
 
 Every provider is asked for at most `count` (1–12, default 6) results; the caller passes the query verbatim.
 
-**DEEPSEEK** (unchanged): `POST {base}/v1/tools/search` with `Authorization: Bearer <key>` and
+**MESSAGEAPI** (unchanged wire format; DeepSeek is the default vendor): `POST {base}/v1/tools/search` with `Authorization: Bearer <key>` and
 `{"query": "...", "count": 6}`; `web_fetch` uses `POST {base}/v1/tools/fetch` with `{"url": "..."}`.
 
 **TAVILY**: `POST {base}/search`, header `Authorization: Bearer <key>`, body
@@ -67,7 +67,7 @@ All providers produce the same shape used by the tool result pipeline:
 
 ## 4. `web_fetch`
 
-- `DEEPSEEK`: unchanged (server-side fetch).
+- `MESSAGEAPI`: unchanged (server-side fetch).
 - Other providers: the client fetches the URL itself (`GET`, 10 s timeout, max 2 MiB body, `User-Agent: MyFriend/1.0`),
   strips HTML tags/scripts/styles, collapses whitespace and returns at most 8000 characters.
 - In every case the URL must pass the shared `WebUrlPolicy` (http/https, no private hosts, no userinfo) **before** any
@@ -84,5 +84,6 @@ All providers produce the same shape used by the tool result pipeline:
 
 ## 6. Backup
 
-Backup format **v4** adds `apiConfigs[].webToolsProvider` (default `DEEPSEEK` when absent). The search key is **never**
-written to a backup (same rule as the LLM key). v1–v3 backups stay readable.
+Backup format **v4** adds `apiConfigs[].webToolsProvider` (default `MESSAGEAPI` when absent; the legacy value `DEEPSEEK`
+is accepted and normalised to `MESSAGEAPI` on read). The search key is **never** written to a backup (same rule as the
+LLM key). v1–v3 backups stay readable.

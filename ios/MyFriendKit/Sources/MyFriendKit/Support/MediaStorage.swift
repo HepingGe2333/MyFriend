@@ -1349,6 +1349,107 @@ public final class MediaStorage {
         delete(AttachmentsCodec.decode(json))
     }
 
+    // MARK: 删（引用计数守卫）
+
+    /// 删除文件的**唯一安全入口**：文件必须属于附件目录，且删除时已经零引用。
+    ///
+    /// 为什么必须有它：文件名按内容哈希去重，同一张图可能被多条消息、人格、预设或
+    /// 「我的头像」共享。删消息/删人格/换头像时直接删文件，其它引用就变成「图片已不在本机」。
+    /// 调用顺序固定为：**先删数据库行 → 再对候选文件逐个调用这里 → 只有零引用才真删。**
+    ///
+    /// 引用查询失败时**不删**（保守）：宁可留一个孤儿文件，也不能删掉还有引用的图。
+    ///
+    /// - Returns: 文件确实被删掉了才返回 true。
+    @discardableResult
+    public func deleteIfUnreferenced(_ uriString: String?, references: MediaReferences) -> Bool {
+        guard let uriString,
+              let fileName = MediaReferences.fileName(from: uriString),
+              let url = fileURL(for: uriString),
+              AttachmentLocation.isWithin(directory, url) else { return false }
+        // 只删普通文件：即使目录归属判定被绕过，也不能对子目录做递归删除。
+        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
+            return false
+        }
+        guard let referenced = try? references.isReferenced(
+            fileName: fileName, uriString: uriString
+        ), referenced == false else { return false }
+        return (try? fileManager.removeItem(at: url)) != nil
+    }
+
+    /// 单条附件的便捷入口（界面撤掉一张待发送图片时用）。
+    @discardableResult
+    public func deleteIfUnreferenced(
+        _ attachment: MessageAttachment,
+        references: MediaReferences
+    ) -> Bool {
+        deleteIfUnreferenced(attachment.uri, references: references)
+    }
+
+    /// 同一批附件里重复引用同一文件时只查/删一次。
+    @discardableResult
+    public func deleteIfUnreferenced(
+        _ attachments: [MessageAttachment],
+        references: MediaReferences
+    ) -> Int {
+        var seen = Set<String>()
+        var removed = 0
+        for attachment in attachments {
+            guard let name = MediaReferences.fileName(from: attachment.uri),
+                  seen.insert(name).inserted else { continue }
+            if deleteIfUnreferenced(attachment.uri, references: references) { removed += 1 }
+        }
+        return removed
+    }
+
+    /// 删掉一条消息里的附件：仅删除删除后零引用的文件。
+    @discardableResult
+    public func deleteAttachmentsIfUnreferenced(
+        in json: String?,
+        references: MediaReferences
+    ) -> Int {
+        deleteIfUnreferenced(AttachmentsCodec.decode(json), references: references)
+    }
+
+    /// 删掉全部聊天图里**已经零引用**的那些（「清空全部聊天与记忆」用）。
+    ///
+    /// 调用方必须先删掉消息行；这里仍然逐个查引用，是因为聊天图可能与头像共用同一文件
+    /// （内容哈希相同），或者删除过程中有单张表失败、留下了引用。
+    @discardableResult
+    public func deleteAllChatImages(references: MediaReferences) -> Int {
+        var removed = 0
+        for name in chatImageFileNames() {
+            if deleteIfUnreferenced(name, references: references) { removed += 1 }
+        }
+        return removed
+    }
+
+    /// 删掉附件目录里**已经零引用**的全部文件（「删除全部本地数据」用）。
+    ///
+    /// 与 `deleteAll()` 的区别：这是引用计数版本，必须等数据库行与设置都清完之后再调用。
+    @discardableResult
+    public func deleteAll(references: MediaReferences) -> Int {
+        var removed = 0
+        for name in allFileNames() {
+            if deleteIfUnreferenced(name, references: references) { removed += 1 }
+        }
+        return removed
+    }
+
+    private func chatImageFileNames() -> [String] {
+        let prefix = MediaKind.chatImage.rawValue + "-"
+        return allFileNames().filter { $0.hasPrefix(prefix) }
+    }
+
+    private func allFileNames() -> [String] {
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return [] }
+        return items.compactMap { url in
+            let isFile = (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile
+            return isFile == true ? url.lastPathComponent : nil
+        }
+    }
+
     /// 删掉全部附件（聊天图 + 头像）。重建目录后**立刻**恢复「不进备份」标记（P1-8）。
     public func deleteAll() {
         try? fileManager.removeItem(at: directory)

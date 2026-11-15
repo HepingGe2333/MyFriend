@@ -23,91 +23,6 @@ Version rules live in [CONTRIBUTING.en.md](../CONTRIBUTING.en.md): during the be
 
 ---
 
-## 0.13.0
-
-A large release: **CI gates**, **third-party search APIs for `web_search` (schema v12 / backup v4)**, **media compression
-on import and storage**, **UI behaviour tests on both platforms**, **large-history benchmarks**, **agentd rate limiting
-and TLS deployment notes**, and the iOS Swift second implementation narrowed to "macOS tests only".
-Version `0.13.0`, build numbers **19**; schema **v12**, backup **v4**. (Still iterating on `dev/0.12.0`; `main` is not
-merged and no tag is created.)
-
-### CI (GitHub Actions)
-
-- New `.github/workflows/ci.yml`:
-  - **Linux**: JDK 17 + Gradle, running `:app:testDebugUnitTest`, `:agentcore:test`, `:agentd:test`, `assembleDebug`,
-    `:agentd:build`, `lintDebug`, uploading test and lint reports even on failure;
-  - **macOS**: builds `AgentCoreKit.xcframework` first, then `swift test --disable-sandbox`, then
-    `xcodebuild build-for-testing` (skipping UI tests); caches `~/.gradle`, `~/.konan` and the SwiftPM build directory;
-    `CODE_SIGNING_ALLOWED=NO`;
-  - triggers on `push(main, dev/**)` and `pull_request(main)`, `concurrency` cancels stale runs, plus a `ci-ok` summary
-    job intended as the required check.
-- `CONTRIBUTING` explains what CI runs and how to reproduce it locally; "no CI" is gone from the README limitations.
-
-### `web_search`: third-party search APIs
-
-- New normative `spec/web-search/README.md`: `api_configs.webToolsProvider` (`DEEPSEEK` / `TAVILY` / `BRAVE` / `SERPER` /
-  `GENERIC`), default base URLs, per-provider request/response shapes, normalised results, `web_fetch` behaviour, errors
-  and limits.
-- Both platforms implement the same override semantics: `DEEPSEEK` keeps the server-side search/fetch; other providers
-  call their own APIs; `web_fetch` is fetched client-side for non-DeepSeek providers (10 s, ≤2 MiB, tag stripping,
-  ≤8000 chars). Missing keys fail loudly, 401/403/429/5xx carry the provider name, raw bodies are truncated into logs,
-  and every URL passes `WebUrlPolicy` before any request.
-- Settings → API config gained a "search service" selector, per-provider base URL placeholders/hints, and a key reusing the
-  existing `webToolsApiKeyCipher` (encrypted locally, never in a backup); `GENERIC` requires a base URL with an optional key.
-- **Schema v12**: `api_configs.webToolsProvider` (default `DEEPSEEK`), migrations and schema-parity tests on both platforms.
-- **Backup v4**: `apiConfigs[].webToolsProvider` (default `DEEPSEEK`, always written), keys still excluded; v1–v3 remain
-  readable; `fixtures/backup/{android,ios}-export-v4.json` generated and read both ways.
-- `harness/server.mjs` gained mock branches for every provider for local integration.
-
-### Media compression (import and storage)
-
-- Backup import and picking share one compressor: avatars ≤512 px / ≤400 KB, chat images ≤1600 px / ≤800 KB, JPEG quality
-  ladder 0.85→0.50, transparent images flattened onto white; corrupt or over-limit images are skipped per item with a
-  warning instead of failing the whole import.
-- Content-addressed de-duplication: file names carry the first 16 hex chars of SHA-256 and identical content is stored
-  once (no new table); avatars keep one file per reference to avoid deleting a shared file when changing a photo.
-- The existing 8 MiB per image / 128 MiB total input gates are unchanged; images from v3 backups still import.
-
-### Tests and benchmarks
-
-- **UI behaviour tests** (new):
-  - Android: six Compose behaviour tests under `app/src/androidTest/.../ui/` (first screen reads one block, load older /
-    newer, jump-to-message highlight, send failure keeps the draft, clear + wipe behaviour), plus `HiltTestRunner`,
-    Compose test dependencies, and a debug-only manifest that no longer registers `BootReceiver` (the install broadcast
-    used to crash the process before Hilt came up);
-  - iOS: six `MyFriendTests/ChatUiBehaviorTests` with the same scope, executed on the simulator (this sandbox uses
-    `simctl spawn xctest` because `xcodebuild test` needs a pty).
-- **Large-history benchmarks**: one per platform (100k-message migration, search pages 1/10/100, backup with 500 images
-  peak memory); numbers and conclusions live in `docs/performance.md`.
-- Drive-by fix: a flaky agentd socket test under parallel builds (wait for EOF → accept timeout once data arrived).
-
-### Platform and security
-
-- **agentd rate limiting**: token bucket per source IP (60/min, burst 30 by default; `--rate-limit` / `--rate-burst` / env,
-  0 disables), 429 + `Retry-After` when exceeded; `/health` gets its own bucket so probes stay usable; rate limiting runs
-  before authentication and before the body is read.
-- **TLS deployment notes**: agentd serves plain HTTP only; the README gives minimal Caddy/Nginx reverse-proxy configs that
-  terminate TLS, explains that `X-Forwarded-For` is deliberately not trusted, and recommends keeping the token on.
-- **iOS Swift second implementation narrowed**: `NativeAgentCoreClient` is fully wrapped in `#if !os(iOS)`; the iOS app
-  now runs Kotlin only (the built binary no longer contains the symbol), Swift remains for macOS `swift test`, and a
-  source guard prevents regressions.
-- **Version guards pinned to exact values**: `versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
-  `MARKETING_VERSION = 0.13.0` (Debug and Release), with one exact assertion and one structural assertion per platform.
-- **Android now matches iOS on "delete all data reseeds personas"**: Android used to keep the "already seeded" marker and
-  left an empty home screen; it now reseeds three personas in the current language
-  (`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`).
-
-### Tests and builds
-
-| Target | Result |
-| --- | --- |
-| Android | **1072 unit tests / 96 classes / 0 failures**; **47 instrumented tests** (migrations, block maintenance, UI behaviour, media compression) all pass |
-| `:agentcore` (KMP jvmTest) | **60 tests / 0 failures** |
-| `:agentd` | **53 tests / 0 failures** |
-| iOS | **1305 tests / 0 failures** (2 benchmark tests skipped by default; Debug/Release, zero Swift warnings) |
-| Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:build`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
-
----
 
 ## 0.12.0
 
@@ -189,6 +104,106 @@ cleanup of the README's known-limitations list. Version `0.12.0`, build numbers 
 | Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:fatJar`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
 
 ---
+
+### 0.12 follow-up 1 (no version bump): CI gates, third-party search providers, schema v12 / backup v4, media compression, UI tests and benchmarks
+
+A large release: **CI gates**, **third-party search APIs for `web_search` (schema v12 / backup v4)**, **media compression
+on import and storage**, **UI behaviour tests on both platforms**, **large-history benchmarks**, **agentd rate limiting
+and TLS deployment notes**, and the iOS Swift second implementation narrowed to "macOS tests only".
+No version bump yet (not approved): both platforms stay at `0.12.0` / build **18**; schema **v12**, backup **v4**. Still on `dev/0.12.0`; `main` is not merged and no tag is created.
+
+### CI (GitHub Actions)
+
+- New `.github/workflows/ci.yml`:
+  - **Linux**: JDK 17 + Gradle, running `:app:testDebugUnitTest`, `:agentcore:test`, `:agentd:test`, `assembleDebug`,
+    `:agentd:build`, `lintDebug`, uploading test and lint reports even on failure;
+  - **macOS**: builds `AgentCoreKit.xcframework` first, then `swift test --disable-sandbox`, then
+    `xcodebuild build-for-testing` (skipping UI tests); caches `~/.gradle`, `~/.konan` and the SwiftPM build directory;
+    `CODE_SIGNING_ALLOWED=NO`;
+  - triggers on `push(main, dev/**)` and `pull_request(main)`, `concurrency` cancels stale runs, plus a `ci-ok` summary
+    job intended as the required check.
+- `CONTRIBUTING` explains what CI runs and how to reproduce it locally; "no CI" is gone from the README limitations.
+
+### `web_search`: third-party search APIs
+
+- New normative `spec/web-search/README.md`: `api_configs.webToolsProvider` (`MESSAGEAPI` / `TAVILY` / `BRAVE` / `SERPER` /
+  `GENERIC`), default base URLs, per-provider request/response shapes, normalised results, `web_fetch` behaviour, errors
+  and limits.
+- Both platforms implement the same override semantics: `DEEPSEEK` keeps the server-side search/fetch; other providers
+  call their own APIs; `web_fetch` is fetched client-side for non-DeepSeek providers (10 s, ≤2 MiB, tag stripping,
+  ≤8000 chars). Missing keys fail loudly, 401/403/429/5xx carry the provider name, raw bodies are truncated into logs,
+  and every URL passes `WebUrlPolicy` before any request.
+- Settings → API config gained a "search service" selector, per-provider base URL placeholders/hints, and a key reusing the
+  existing `webToolsApiKeyCipher` (encrypted locally, never in a backup); `GENERIC` requires a base URL with an optional key.
+- **Schema v12**: `api_configs.webToolsProvider` (default `DEEPSEEK`), migrations and schema-parity tests on both platforms.
+- **Backup v4**: `apiConfigs[].webToolsProvider` (default `DEEPSEEK`, always written), keys still excluded; v1–v3 remain
+  readable; `fixtures/backup/{android,ios}-export-v4.json` generated and read both ways.
+- `harness/server.mjs` gained mock branches for every provider for local integration.
+
+### Media compression (import and storage)
+
+- Backup import and picking share one compressor: avatars ≤512 px / ≤400 KB, chat images ≤1600 px / ≤800 KB, JPEG quality
+  ladder 0.85→0.50, transparent images flattened onto white; corrupt or over-limit images are skipped per item with a
+  warning instead of failing the whole import.
+- Content-addressed de-duplication: file names carry the first 16 hex chars of SHA-256 and identical content is stored
+  once (no new table); avatars keep one file per reference to avoid deleting a shared file when changing a photo.
+- The existing 8 MiB per image / 128 MiB total input gates are unchanged; images from v3 backups still import.
+
+### Tests and benchmarks
+
+- **UI behaviour tests** (new):
+  - Android: six Compose behaviour tests under `app/src/androidTest/.../ui/` (first screen reads one block, load older /
+    newer, jump-to-message highlight, send failure keeps the draft, clear + wipe behaviour), plus `HiltTestRunner`,
+    Compose test dependencies, and a debug-only manifest that no longer registers `BootReceiver` (the install broadcast
+    used to crash the process before Hilt came up);
+  - iOS: six `MyFriendTests/ChatUiBehaviorTests` with the same scope, executed on the simulator (this sandbox uses
+    `simctl spawn xctest` because `xcodebuild test` needs a pty).
+- **Large-history benchmarks**: one per platform (100k-message migration, search pages 1/10/100, backup with 500 images
+  peak memory); numbers and conclusions live in `docs/performance.md`.
+- Drive-by fix: a flaky agentd socket test under parallel builds (wait for EOF → accept timeout once data arrived).
+
+### Platform and security
+
+- **agentd rate limiting**: token bucket per source IP (60/min, burst 30 by default; `--rate-limit` / `--rate-burst` / env,
+  0 disables), 429 + `Retry-After` when exceeded; `/health` gets its own bucket so probes stay usable; rate limiting runs
+  before authentication and before the body is read.
+- **TLS deployment notes**: agentd serves plain HTTP only; the README gives minimal Caddy/Nginx reverse-proxy configs that
+  terminate TLS, explains that `X-Forwarded-For` is deliberately not trusted, and recommends keeping the token on.
+- **iOS Swift second implementation narrowed**: `NativeAgentCoreClient` is fully wrapped in `#if !os(iOS)`; the iOS app
+  now runs Kotlin only (the built binary no longer contains the symbol), Swift remains for macOS `swift test`, and a
+  source guard prevents regressions.
+- **Version guards pinned to exact values**: `versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
+  `MARKETING_VERSION = 0.13.0` (Debug and Release), with one exact assertion and one structural assertion per platform.
+- **Android now matches iOS on "delete all data reseeds personas"**: Android used to keep the "already seeded" marker and
+  left an empty home screen; it now reseeds three personas in the current language
+  (`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`).
+
+### Tests and builds
+
+| Target | Result |
+| --- | --- |
+| Android | **1085 unit tests / 97 classes / 0 failures** (media reference counting +13); instrumented tests compile, device batch deferred |
+| `:agentcore` (KMP jvmTest) | **60 tests / 0 failures** |
+| `:agentd` | **53 tests / 0 failures** |
+| iOS | **1315 tests / 0 failures** (2 benchmark tests skipped by default; Debug/Release, zero Swift warnings) |
+| Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:build`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
+
+---
+
+### 0.12 follow-up 2 (no version bump): provider renamed to MessageAPI, live API checks, media reference counting
+
+- **`DEEPSEEK` → `MESSAGEAPI`**: the provider targets the `/v1/tools/search` + `/v1/tools/fetch` tools API, which any
+  compatible vendor can expose, so it was renamed. **Old values are read, new values are written**: legacy `DEEPSEEK`
+  (any case/whitespace) is normalised on read, and every write stores `MESSAGEAPI`; the DB column default stays
+  `'DEEPSEEK'` because changing it would break already-installed v12 databases.
+- **Live API checks**: `docs/web-search-live-check.md` records real calls against MessageAPI (DeepSeek official) and
+  Tavily (status codes, latency, response shapes, 401 behaviour); Brave/Serper were not reachable from this machine.
+- **Media reference counting** (fixes deleting a shared image after de-duplication): both platforms gained a
+  `MediaReferences` query plus a single `deleteIfUnreferenced` guard; every file deletion now runs
+  "delete DB rows → check references → delete only when zero". No new tables, no schema bump.
+- **Local search write-up**: `docs/local-search.md` documents the framework (plain Kotlin + SQLite block scanning, no
+  FTS or third-party search engine), the capability matrix, the explicit non-goals and the upgrade path.
+
 
 ## 0.11.2
 

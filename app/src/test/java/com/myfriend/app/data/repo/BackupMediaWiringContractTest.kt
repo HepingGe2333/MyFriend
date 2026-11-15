@@ -22,7 +22,7 @@ class BackupMediaWiringContractTest {
     @Test
     fun `格式版本是 v4 且顶层有 media`() {
         assertTrue("BackupCodec 的版本常量要改成 4", codec.contains("BACKUP_FORMAT_VERSION: Int = 4"))
-        assertTrue("v4 的配置段要带 webToolsProvider", codec.contains("val webToolsProvider: String = WebToolsProviders.DEEPSEEK"))
+        assertTrue("v4 的配置段要带 webToolsProvider", codec.contains("val webToolsProvider: String = WebToolsProviders.MESSAGEAPI"))
         assertTrue("顶部结构要有 media 数组", codec.contains("val media: List<BackupMedia> = emptyList()"))
         assertTrue("media 的 7 个字段", listOf(
             "val id: String", "val kind: String", "val personaId: String?", "val fileName: String",

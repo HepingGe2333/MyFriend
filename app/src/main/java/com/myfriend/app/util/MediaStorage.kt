@@ -401,7 +401,10 @@ object MediaStorage {
     }
 
     /**
-     * 删一批聊天附件文件。
+     * 删一批聊天附件文件（**不查引用**，只给「确定没有任何行引用」的草稿文件用）。
+     *
+     * 库里引用得到的附件一律走 [deleteFilesIfUnreferenced]（或 `MediaJanitor`）：
+     * 内容寻址之后同一个文件名可能被多条消息共用一个文件。
      *
      * **只删 App 自己媒体目录里的**（`files/media` 或 `files/avatars`）：
      * 路径来自数据库的 `attachmentsJson`，属于「数据即代码」的输入面，上游一旦被污染，
@@ -412,6 +415,115 @@ object MediaStorage {
      */
     fun deleteAttachments(context: Context, items: List<MessageAttachment>): Int =
         deleteFiles(context, items.map { it.uri })
+
+    /**
+     * 「删文件之前先问引用」的**单点函数**（0.12 媒体去重）。
+     *
+     * 归属守卫（只删 `files/media`、`files/avatars`）+ 引用守卫（[referrer] 说有人在用
+     * 就不删）都在这里。各删除路径只传路径与「这批文件名里哪些还有人引用」，
+     * 不各自拼一遍逻辑——写八遍就会有一遍忘了查引用，而忘掉的那次会让用户另一段对话里的图
+     * 永久消失。
+     *
+     * 为什么回调是「一批名字 → 有引用的那批」而不是逐个布尔：删一个人格可能带 50 张图，
+     * 逐个问会把头像表的查询重复 50 遍（批量导入/删人都在主线程路径上）。
+     *
+     * @param referrer 传候选文件名集合，回答「其中哪些还有引用」；必须在**数据库行已经删掉之后**调用
+     */
+    suspend fun deleteIfUnreferenced(
+        context: Context,
+        fileNameOrUri: String?,
+        referrer: suspend (Collection<String>) -> Set<String>
+    ): Int {
+        if (fileNameOrUri.isNullOrBlank()) return 0
+        return deleteFilesIfUnreferenced(context, listOf(fileNameOrUri), referrer)
+    }
+
+    /** [deleteIfUnreferenced] 的批量版：先收集候选文件，再一次性问引用，最后逐个删。 */
+    suspend fun deleteFilesIfUnreferenced(
+        context: Context,
+        uris: List<String>,
+        referrer: suspend (Collection<String>) -> Set<String>
+    ): Int = withContext(Dispatchers.IO) {
+        if (uris.isEmpty()) return@withContext 0
+        val roots = ownedRoots(context)
+        val candidates = mutableListOf<File>()
+        uris.distinct().forEach { raw ->
+            val file = candidateFile(context, raw) ?: return@forEach
+            if (!MediaOwnership.isWithin(file, roots)) {
+                // 拒绝并留痕：这条路径不是我们自己的文件，删它就是越界。
+                Log.w(TAG, "refusing to delete a file outside app media dirs: ${file.path}")
+                return@forEach
+            }
+            candidates += file
+        }
+        if (candidates.isEmpty()) return@withContext 0
+        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
+        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+    }
+
+    /**
+     * 「清空聊天」的带引用守卫变体：删 `files/media/chat-*`，但保留 [keepFileNames]。
+     *
+     * 与 [clearChatImagesExcept] 的唯一区别是**每个候选文件先问引用**：内容寻址之后
+     * 同一个 `chat-<sha>.<ext>` 可能被另一条（甚至另一个人的）消息引用，闭眼删就会让
+     * 那条消息变成「图片已不在本机」。
+     */
+    suspend fun clearChatImagesExceptIfUnreferenced(
+        context: Context,
+        keepFileNames: Set<String>,
+        referrer: suspend (Collection<String>) -> Set<String>
+    ): Int = withContext(Dispatchers.IO) {
+        val dir = File(context.filesDir, MEDIA_DIR)
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return@withContext 0
+        val candidates = files.filter { file ->
+            file.isFile && file.name.startsWith(CHAT_IMAGE_PREFIX) && file.name !in keepFileNames
+        }
+        if (candidates.isEmpty()) return@withContext 0
+        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
+        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+    }
+
+    /**
+     * [clearUnreferencedAvatars] 的带引用守卫变体：`keepUris` 之外再按数据库引用兜一遍。
+     *
+     * 用途是备份「替换」导入：keep 集合按备份里的引用算，可能漏掉一个刚写进来的新头像；
+     * 只按 keep 删会把它删掉，于是「接回来了却没有脸」。
+     */
+    suspend fun clearUnreferencedAvatarsIfUnreferenced(
+        context: Context,
+        keepUris: Set<String>,
+        referrer: suspend (Collection<String>) -> Set<String>
+    ): Int = withContext(Dispatchers.IO) {
+        val dir = File(context.filesDir, AVATAR_DIR)
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return@withContext 0
+        val keepPaths = keepUris.mapNotNull { raw ->
+            fileOf(raw)?.let { file -> runCatching { file.canonicalPath }.getOrNull() }
+        }.toSet()
+        val candidates = files.filter { file ->
+            if (!file.isFile) return@filter false
+            val canonical = runCatching { file.canonicalPath }.getOrNull() ?: return@filter false
+            canonical !in keepPaths
+        }
+        if (candidates.isEmpty()) return@withContext 0
+        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
+        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+    }
+
+    /**
+     * 路径或裸文件名 → 候选文件。
+     *
+     * 库里存 `file://` 绝对路径；草稿/测试里也可能直接给文件名，所以两种都接。
+     * 归属校验仍由调用方用 [MediaOwnership] 做（这里只负责「找到它」）。
+     */
+    private fun candidateFile(context: Context, raw: String): File? {
+        val value = raw.trim()
+        if (value.isEmpty()) return null
+        fileOf(value)?.let { return it }
+        val name = MediaFileGc.fileNameOf(value) ?: return null
+        return ownedRoots(context).asSequence()
+            .map { File(it, name) }
+            .firstOrNull { it.exists() }
+    }
 
     fun deleteFiles(context: Context, uris: List<String>): Int {
         if (uris.isEmpty()) return 0
@@ -434,6 +546,9 @@ object MediaStorage {
      *
      * 「清空聊天与记忆」要清掉聊天图片文件，但不该顺手把用户设的聊天背景删掉——
      * 那是设置项，不是聊天内容。
+     *
+     * **不查引用**：这是旧版同步实现，只保留给「确定没有行引用」的场合；
+     * 四条删除路径统一走 [clearChatImagesExceptIfUnreferenced]（引用守卫版）。
      */
     fun clearChatImages(context: Context): Int {
         val dir = File(context.filesDir, MEDIA_DIR)
@@ -467,10 +582,13 @@ object MediaStorage {
     )
 
     /**
-     * 删掉一张 App 自己管的头像文件。
+     * 删掉一张 App 自己管的头像文件（**不查引用**）。
      *
      * 只删 `files/avatars/` 里的文件：用户选的 `content://` 原图、或别处借来的路径一律不碰，
      * 免得「换头像」把人相册里的照片删了。传 null / 非 file:// 路径时什么都不做。
+     *
+     * 只给「刚落盘、库里还没有行引用」的草稿文件用；换头像/删人格等一切涉及库内引用的删除
+     * 都走 [deleteIfUnreferenced]（或 `MediaJanitor.deleteIfUnreferenced`）。
      */
     fun deleteAvatar(context: Context, uriString: String?): Int {
         val raw = uriString?.trim().orEmpty()
@@ -482,10 +600,13 @@ object MediaStorage {
     }
 
     /**
-     * 删掉 `files/avatars/` 里没有被 [keepUris] 引用的头像文件。
+     * 删掉 `files/avatars/` 里没有被 [keepUris] 引用的头像文件（**不查数据库引用**）。
      *
      * 用 canonical path 比较（与 [deleteAvatar] 同一套归属语义）：路径写法的差异
      * （相对段、符号链接）不会让「本来还在用的头像」被误删。
+     *
+     * 备份替换请用 [clearUnreferencedAvatarsIfUnreferenced]：keep 集合是按备份里的引用算的，
+     * 可能漏掉刚写进来的新文件。
      */
     fun clearUnreferencedAvatars(context: Context, keepUris: Set<String>): Int {
         val dir = File(context.filesDir, AVATAR_DIR)

@@ -196,6 +196,10 @@ class PersonaEditorViewModel @Inject constructor(
      *
      * 选图是「立刻落盘」的；不记着它们，取消编辑或连选两张就会在 files/avatars 里留孤儿。
      * 只有「本次新建的」才进这个集合：数据库里已经保存过的那张由仓库层负责删。
+     *
+     * 这里直接用 `MediaStorage.deleteAvatar`（不查引用）是安全的：集合里只会出现在本页
+     * `persistAvatar` 刚写出来的**全新文件**（每次都是新 UUID，数据库里不可能有行引用它）。
+     * 凡是「库里已经引用过的文件」，删除一律走 `MediaJanitor` 的带守卫版本。
      */
     private val pendingAvatarUris = mutableSetOf<String>()
 

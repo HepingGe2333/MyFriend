@@ -24,80 +24,6 @@
 
 ---
 
-## 0.13.0
-
-大改动：**CI 门禁**、**`web_search` 支持第三方搜索 API（schema v12 / 备份 v4）**、**媒体导入与存储压缩**、
-**两端 UI 行为测试**、**大库性能基准**、**agentd 限流与 TLS 部署说明**，并把 iOS 的 Swift 第二实现收窄到「仅 macOS 测试」。
-版本 `0.13.0`，两端构建号 **19**；schema **v12**、备份 **v4**。（仍在 `dev/0.12.0` 分支迭代，未合并 `main`、未打 tag。）
-
-### CI（GitHub Actions）
-
-- 新增 `.github/workflows/ci.yml`：
-  - **Linux**：JDK 17 + Gradle，跑 `:app:testDebugUnitTest`、`:agentcore:test`、`:agentd:test`、`assembleDebug`、
-    `:agentd:build`、`lintDebug`，失败时也上传测试报告与 lint 结果；
-  - **macOS**：先 `ios/scripts/build-agentcore-framework.sh` 生成 `AgentCoreKit.xcframework`，再
-    `swift test --disable-sandbox`，最后 `xcodebuild build-for-testing`（绕过 UI 测试）；缓存 `~/.gradle`、`~/.konan`、
-    SwiftPM 构建目录；`CODE_SIGNING_ALLOWED=NO`；
-  - 触发 `push(main, dev/**)` 与 `pull_request(main)`，`concurrency` 取消旧运行，另有 `ci-ok` 汇总 job 作为 required check。
-- `CONTRIBUTING` 补「CI 会跑什么、本地怎么复现」；README 的「已知限制」里删掉了「没有 CI」。
-
-### `web_search`：第三方搜索 API
-
-- 新增 `spec/web-search/README.md`（规范性）：`api_configs.webToolsProvider`（`DEEPSEEK` / `TAVILY` / `BRAVE` /
-  `SERPER` / `GENERIC`）、默认 base URL、各 provider 的请求/响应形状、归一化结果、`web_fetch` 行为、错误与限额。
-- 两端实现同一套 override 语义：`DEEPSEEK` 保持原服务端 search/fetch；其余 provider 走各自 API；`web_fetch` 在非
-  DeepSeek 时由客户端抓取（10s、≤2MiB、去标签、≤8000 字）。缺 Key 明确报错，401/403/429/5xx 带 provider 名，
-  原始 body 只截断进日志；所有 URL 发请求前过 `WebUrlPolicy`。
-- 设置页「API 配置」新增「搜索服务」选择、随 provider 变化的地址占位/提示、Key 复用既有 `webToolsApiKeyCipher`
-  （加密本机、不进备份）；GENERIC 必填地址、可选 Key。
-- **schema v12**：`api_configs.webToolsProvider`（默认 `DEEPSEEK`），两端迁移 + 迁移测试 + schema 对照测试。
-- **备份 v4**：`apiConfigs[].webToolsProvider`（默认 `DEEPSEEK`，导出总是写），Key 仍不进备份；v1–v3 可读；
-  `fixtures/backup/{android,ios}-export-v4.json` 生成并双向互读。
-- `harness/server.mjs` 增加各 provider 的 mock 分支，便于本地联调。
-
-### 媒体压缩（导入与存储）
-
-- 备份导入与选图共用同一套压缩：头像长边 ≤512 / ≤400KB，聊天图片长边 ≤1600 / ≤800KB，JPEG 质量阶梯 0.85→0.50，
-  透明图先垫白底；坏图/压不进上限逐条跳过并告警，不让整份导入失败。
-- 内容寻址去重：文件名带 SHA-256 前 16 位，同内容不重复落盘（不新增表）；头像保留「一文一文件」避免换头像误删共享文件。
-- 原有 8 MiB/张、128 MiB 总量输入闸保持；v3 备份里的图片仍可导入。
-
-### 测试与基准
-
-- **两端 UI 行为测试**（新增）：
-  - Android：`app/src/androidTest/.../ui/` 6 条 Compose 行为测试（首屏只读一块、向上/向下加载、跳转定位高亮、
-    发送失败保留草稿、清空与整库删除后的行为），新增 `HiltTestRunner`、Compose UI 测试依赖，debug 变体不再注册
-    `BootReceiver`（避免安装后广播在 Hilt 启动前崩溃）；
-  - iOS：`MyFriendTests/ChatUiBehaviorTests` 6 条（同口径），在模拟器上通过（本沙箱用 `simctl spawn xctest` 运行，
-    `xcodebuild test` 受 pty 限制）。
-- **大库基准**：Android/iOS 各一套 benchmark（10 万条消息迁移、检索第 1/10/100 页、备份 500 图峰值内存），
-  数字与结论见 `docs/performance.md`。
-- 顺带修复：agentd 一条 socket 测试在并行构建下的偶发失败（等 EOF 改为超时即用已收内容）。
-
-### 平台与安全
-
-- **agentd 限流**：按来源 IP 令牌桶（默认 60/分钟、突发 30，可 `--rate-limit` / `--rate-burst` / env 配置，
-  0 = 关闭），超限 429 + `Retry-After`；`/health` 独立桶保证探针可用；限流先于鉴权，超限请求不读 body。
-- **TLS 部署说明**：agentd 只提供明文 HTTP，README 给出 Caddy/Nginx 反代终止 TLS 的最小配置、`X-Forwarded-For`
-  不信任的说明与「不要把 token 关掉」的建议。
-- **iOS Swift 第二实现收窄**：`NativeAgentCoreClient` 整体放进 `#if !os(iOS)`；iOS App 运行时只有 Kotlin
-  （构建产物 `strings` 里已无该符号），Swift 实现只服务 macOS `swift test`；新增源码守卫测试防止回流。
-- **版本号守卫钉回精确值**：`versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
-  `MARKETING_VERSION = 0.13.0`（Debug/Release），Android 与 iOS 各一条精确断言 + 结构断言。
-- **Android 与 iOS 对齐「删除全部数据后重新播种」**：Android 之前会保留「已播种」标记导致空白首页，现在清空后按
-  当前语言重新播种三个人格（`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`）。
-
-### 测试与构建
-
-| 目标 | 结果 |
-| --- | --- |
-| Android | **1072 条单元测试 / 96 类 / 0 失败**；**47 条 instrumented**（迁移、块维护、UI 行为、媒体压缩）全通过 |
-| `:agentcore`（KMP jvmTest） | **60 条 / 0 失败** |
-| `:agentd` | **53 条 / 0 失败** |
-| iOS | **1305 条 / 0 失败**（2 条 benchmark 默认跳过；Debug/Release 零 Swift 警告） |
-| 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:build`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
-
----
 
 ## 0.12.0
 
@@ -168,6 +94,96 @@
 | 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:fatJar`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
 
 ---
+
+### 0.12 续 1（未升版本）：CI 门禁、第三方搜索 provider、schema v12 / 备份 v4、媒体压缩、UI 行为测试与大库基准
+
+大改动：**CI 门禁**、**`web_search` 支持第三方搜索 API（schema v12 / 备份 v4）**、**媒体导入与存储压缩**、
+**两端 UI 行为测试**、**大库性能基准**、**agentd 限流与 TLS 部署说明**，并把 iOS 的 Swift 第二实现收窄到「仅 macOS 测试」。
+仍未升版本（用户未批准版本变更）：两端仍是 `0.12.0` / 构建号 **18**；schema **v12**、备份 **v4**。仍在 `dev/0.12.0` 分支迭代，未合并 `main`、未打 tag。
+
+### CI（GitHub Actions）
+
+- 新增 `.github/workflows/ci.yml`：
+  - **Linux**：JDK 17 + Gradle，跑 `:app:testDebugUnitTest`、`:agentcore:test`、`:agentd:test`、`assembleDebug`、
+    `:agentd:build`、`lintDebug`，失败时也上传测试报告与 lint 结果；
+  - **macOS**：先 `ios/scripts/build-agentcore-framework.sh` 生成 `AgentCoreKit.xcframework`，再
+    `swift test --disable-sandbox`，最后 `xcodebuild build-for-testing`（绕过 UI 测试）；缓存 `~/.gradle`、`~/.konan`、
+    SwiftPM 构建目录；`CODE_SIGNING_ALLOWED=NO`；
+  - 触发 `push(main, dev/**)` 与 `pull_request(main)`，`concurrency` 取消旧运行，另有 `ci-ok` 汇总 job 作为 required check。
+- `CONTRIBUTING` 补「CI 会跑什么、本地怎么复现」；README 的「已知限制」里删掉了「没有 CI」。
+
+### `web_search`：第三方搜索 API
+
+- 新增 `spec/web-search/README.md`（规范性）：`api_configs.webToolsProvider`（`MESSAGEAPI` / `TAVILY` / `BRAVE` /
+  `SERPER` / `GENERIC`）、默认 base URL、各 provider 的请求/响应形状、归一化结果、`web_fetch` 行为、错误与限额。
+- 两端实现同一套 override 语义：`DEEPSEEK` 保持原服务端 search/fetch；其余 provider 走各自 API；`web_fetch` 在非
+  DeepSeek 时由客户端抓取（10s、≤2MiB、去标签、≤8000 字）。缺 Key 明确报错，401/403/429/5xx 带 provider 名，
+  原始 body 只截断进日志；所有 URL 发请求前过 `WebUrlPolicy`。
+- 设置页「API 配置」新增「搜索服务」选择、随 provider 变化的地址占位/提示、Key 复用既有 `webToolsApiKeyCipher`
+  （加密本机、不进备份）；GENERIC 必填地址、可选 Key。
+- **schema v12**：`api_configs.webToolsProvider`（默认 `DEEPSEEK`），两端迁移 + 迁移测试 + schema 对照测试。
+- **备份 v4**：`apiConfigs[].webToolsProvider`（默认 `DEEPSEEK`，导出总是写），Key 仍不进备份；v1–v3 可读；
+  `fixtures/backup/{android,ios}-export-v4.json` 生成并双向互读。
+- `harness/server.mjs` 增加各 provider 的 mock 分支，便于本地联调。
+
+### 媒体压缩（导入与存储）
+
+- 备份导入与选图共用同一套压缩：头像长边 ≤512 / ≤400KB，聊天图片长边 ≤1600 / ≤800KB，JPEG 质量阶梯 0.85→0.50，
+  透明图先垫白底；坏图/压不进上限逐条跳过并告警，不让整份导入失败。
+- 内容寻址去重：文件名带 SHA-256 前 16 位，同内容不重复落盘（不新增表）；头像保留「一文一文件」避免换头像误删共享文件。
+- 原有 8 MiB/张、128 MiB 总量输入闸保持；v3 备份里的图片仍可导入。
+
+### 测试与基准
+
+- **两端 UI 行为测试**（新增）：
+  - Android：`app/src/androidTest/.../ui/` 6 条 Compose 行为测试（首屏只读一块、向上/向下加载、跳转定位高亮、
+    发送失败保留草稿、清空与整库删除后的行为），新增 `HiltTestRunner`、Compose UI 测试依赖，debug 变体不再注册
+    `BootReceiver`（避免安装后广播在 Hilt 启动前崩溃）；
+  - iOS：`MyFriendTests/ChatUiBehaviorTests` 6 条（同口径），在模拟器上通过（本沙箱用 `simctl spawn xctest` 运行，
+    `xcodebuild test` 受 pty 限制）。
+- **大库基准**：Android/iOS 各一套 benchmark（10 万条消息迁移、检索第 1/10/100 页、备份 500 图峰值内存），
+  数字与结论见 `docs/performance.md`。
+- 顺带修复：agentd 一条 socket 测试在并行构建下的偶发失败（等 EOF 改为超时即用已收内容）。
+
+### 平台与安全
+
+- **agentd 限流**：按来源 IP 令牌桶（默认 60/分钟、突发 30，可 `--rate-limit` / `--rate-burst` / env 配置，
+  0 = 关闭），超限 429 + `Retry-After`；`/health` 独立桶保证探针可用；限流先于鉴权，超限请求不读 body。
+- **TLS 部署说明**：agentd 只提供明文 HTTP，README 给出 Caddy/Nginx 反代终止 TLS 的最小配置、`X-Forwarded-For`
+  不信任的说明与「不要把 token 关掉」的建议。
+- **iOS Swift 第二实现收窄**：`NativeAgentCoreClient` 整体放进 `#if !os(iOS)`；iOS App 运行时只有 Kotlin
+  （构建产物 `strings` 里已无该符号），Swift 实现只服务 macOS `swift test`；新增源码守卫测试防止回流。
+- **版本号守卫钉回精确值**：`versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
+  `MARKETING_VERSION = 0.13.0`（Debug/Release），Android 与 iOS 各一条精确断言 + 结构断言。
+- **Android 与 iOS 对齐「删除全部数据后重新播种」**：Android 之前会保留「已播种」标记导致空白首页，现在清空后按
+  当前语言重新播种三个人格（`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`）。
+
+### 测试与构建
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **1085 条单元测试 / 97 类 / 0 失败**（媒体引用计数 +13）；`instrumented` 已编译，设备批次留待统一运行 |
+| `:agentcore`（KMP jvmTest） | **60 条 / 0 失败** |
+| `:agentd` | **53 条 / 0 失败** |
+| iOS | **1315 条 / 0 失败**（2 条 benchmark 默认跳过；Debug/Release 零 Swift 警告） |
+| 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:build`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
+
+---
+
+### 0.12 续 2（未升版本）：搜索 provider 更名 MessageAPI、真实接口实测、媒体引用计数
+
+- **`DEEPSEEK` → `MESSAGEAPI`**：这个 provider 指向 `/v1/tools/search`、`/v1/tools/fetch` 这套 tools 接口，
+  任何提供同一套接口的厂商都能用，所以改名为 `MESSAGEAPI`（DeepSeek 官方是默认实现）。**读旧值、写新值**：
+  旧库/旧备份里的 `DEEPSEEK`（含大小写、空白）在读取时归一化，写库/写备份一律 `MESSAGEAPI`；
+  数据库列默认值保持 `'DEEPSEEK'`（v12 已装机库不能改，否则 schema 校验失败）。
+- **真实接口实测**：`docs/web-search-live-check.md` 记录 MessageAPI（DeepSeek 官方）与 Tavily 的真网调用
+  （状态码、延迟、返回字段形状、401 行为），Brave/Serper 因网络原因未测。两个 provider 的解析与规范一致。
+- **媒体引用计数**（修「去重后删文件误删共享图」）：两端新增 `MediaReferences` 查询与单点守卫
+  `deleteIfUnreferenced`，所有删文件路径改为「先删数据库行 → 查引用 → 零引用才删文件」：删消息/会话/清空上下文/
+  清空聊天/删人格/删预设/换头像/换用户头像/备份替换导入/清空全部数据/草稿图。不新增表、不升 schema。
+- **本地检索说明**：`docs/local-search.md` 写清本地搜索的框架（纯 Kotlin + SQLite 逐块扫描，无 FTS/无第三方检索库）、
+  能力矩阵与明确边界，以及升级路线。
+
 
 ## 0.11.2
 

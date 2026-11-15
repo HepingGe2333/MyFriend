@@ -285,7 +285,7 @@ final class ToolExecutorTests: XCTestCase {
         try temp.stores.apiConfigs.upsert(ApiConfigEntity(
             id: "config-1", name: "测试配置", provider: .openai,
             baseUrl: "https://api.example.com", model: "deepseek-chat",
-            webToolsEnabled: true, webToolsProvider: "DEEPSEEK",
+            webToolsEnabled: true, webToolsProvider: "MESSAGEAPI",
             webToolsBaseUrl: "https://api.deepseek.com"
         ))
         let result = await run("web_search", arguments: ["query": "今天"])
@@ -295,7 +295,7 @@ final class ToolExecutorTests: XCTestCase {
         XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "没有 Key 不该发请求")
     }
 
-    /// 非 DEEPSEEK 的 web_fetch 由本端 GET，HTML 去掉标签后回灌给模型；工具结果文本形状不变。
+    /// 非 MESSAGEAPI 的 web_fetch 由本端 GET，HTML 去掉标签后回灌给模型；工具结果文本形状不变。
     func testWebFetchClientSideStripsHTMLAndKeepsResultShape() async throws {
         try temp.stores.apiConfigs.upsert(ApiConfigEntity(
             id: "config-1", name: "测试配置", provider: .openai,

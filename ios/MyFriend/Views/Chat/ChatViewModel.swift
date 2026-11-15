@@ -533,13 +533,23 @@ final class ChatViewModel: ObservableObject {
     func removeAttachment(at index: Int) {
         guard pendingAttachments.indices.contains(index) else { return }
         let attachment = pendingAttachments.remove(at: index)
-        // 用户撤掉的那张不该留在沙盒里当垃圾。
-        MediaStorage.shared.delete(attachment)
+        // 用户撤掉的那张不该留在沙盒里当垃圾 —— 但如果选图命中了已有文件的去重
+        // （另一条消息/头像用同一张图），它其实还有引用，不能删。
+        guard let env else { return }
+        MediaStorage.shared.deleteIfUnreferenced(
+            attachment,
+            references: MediaReferences(stores: env.stores, settings: env.settings)
+        )
     }
 
     func clearPendingAttachments() {
-        MediaStorage.shared.delete(pendingAttachments)
+        let attachments = pendingAttachments
         pendingAttachments.removeAll()
+        guard let env else { return }
+        MediaStorage.shared.deleteIfUnreferenced(
+            attachments,
+            references: MediaReferences(stores: env.stores, settings: env.settings)
+        )
     }
 
     func setPreparingAttachments(_ preparing: Bool) {
@@ -693,8 +703,12 @@ final class ChatViewModel: ObservableObject {
         guard let env else { return }
         do {
             try env.stores.messages.delete(id: message.id)
-            // 图片跟着这条消息一起离开：留着文件只占空间，而且在文件 App 里也看不到它。
-            MediaStorage.shared.deleteAttachments(in: message.attachmentsJson)
+            // 图片跟着这条消息一起离开 —— 但只删零引用的：同一张图可能还被别的消息、
+            // 人格或我的头像引用着（文件名按内容哈希去重）。
+            MediaStorage.shared.deleteAttachmentsIfUnreferenced(
+                in: message.attachmentsJson,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
             try refreshSessionPreview(env)
             reloadMessages()
             showToast(L("已删除这条消息"))
@@ -707,11 +721,14 @@ final class ChatViewModel: ObservableObject {
     func clearContext() {
         guard let env, !isGenerating else { return }
         do {
-            // 先把这段对话里的图片文件找出来，消息删掉之后再删文件。
+            // 先删消息行，再逐个文件查引用：同一张图可能还被别的会话/头像引用着。
             let images = ((try? env.stores.messages.bySession(sessionId)) ?? [])
                 .flatMap { AttachmentsCodec.decode($0.attachmentsJson) }
             try env.stores.messages.delete(where: "sessionId = ?", [.text(sessionId)])
-            MediaStorage.shared.delete(images)
+            MediaStorage.shared.deleteIfUnreferenced(
+                images,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
             try refreshSessionPreview(env)
             reloadMessages()
             showToast(L("上下文已清空"))

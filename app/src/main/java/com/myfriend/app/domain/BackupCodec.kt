@@ -51,7 +51,7 @@ import java.util.Locale
  * 2. **读坏数据不许崩**。[decode] 永远返回 [BackupDecodeResult]，缺字段用默认值、未知字段忽略、
  *    坏条目跳过并记一条中文警告；版本比本机高时明确拒绝，而不是半懂不懂地写库。
  *
- * v4（0.12）在 v3 的媒体之上加了 `apiConfigs[].webToolsProvider`（搜索后端，默认 DEEPSEEK）；
+ * v4（0.12）在 v3 的媒体之上加了 `apiConfigs[].webToolsProvider`（搜索后端，默认 MESSAGEAPI）；
  * v3 的媒体规则不变：头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
  * 每条是一张图（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）+ 标准 base64。
  * `personas.avatarUri` / `presets.avatarUri` 仍写裸文件名，`messages.attachmentsJson`
@@ -352,12 +352,15 @@ data class BackupApiConfig(
     val webToolsEnabled: Boolean = false,
     val webToolsBaseUrl: String = "",
     /**
-     * 搜索后端（v4）。缺字段的老备份读到默认 `DEEPSEEK`；导出时**总是写**这一列
-     * （即使值等于默认），否则「v3 备份导入后 provider 默认 DEEPSEEK」与
+     * 搜索后端（v4）。缺字段的老备份读到默认 `MESSAGEAPI`；导出时**总是写**这一列
+     * （即使值等于默认），否则「v3 备份导入后 provider 默认 MESSAGEAPI」与
      * 「v4 备份里确实带了 provider」这两件事在 JSON 上分不出来。
+     *
+     * 0.12 之前这一列的值叫 `DEEPSEEK`：读旧备份时由 [BackupCodec.decode] 归一化成
+     * `MESSAGEAPI`，导出时由 [BackupCodec.encode] 一律写新值（见 [WebToolsProviders.normalize]）。
      */
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
-    val webToolsProvider: String = WebToolsProviders.DEEPSEEK,
+    val webToolsProvider: String = WebToolsProviders.MESSAGEAPI,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
@@ -476,7 +479,19 @@ object BackupCodec {
 
     fun containsSecretField(encoded: String): Boolean = SECRET_KEY_MARKERS.any { encoded.contains(it) }
 
-    fun encode(bundle: BackupBundle): String = writeJson.encodeToString(bundle)
+    /**
+     * 导出：**写新值**。
+     *
+     * `webToolsProvider` 在这里统一走一遍 [WebToolsProviders.normalize]：库里/内存里即使还残留
+     * 旧值 `DEEPSEEK`（老库未重写、或调用方直接构造了模型），导出到另一端时也只会是 `MESSAGEAPI`。
+     */
+    fun encode(bundle: BackupBundle): String = writeJson.encodeToString(
+        bundle.copy(
+            apiConfigs = bundle.apiConfigs.map {
+                it.copy(webToolsProvider = WebToolsProviders.normalize(it.webToolsProvider))
+            }
+        )
+    )
 
     /** 坏 JSON、坏条目、版本过高都在这里被接住，返回中文原因而不是抛异常。 */
     fun decode(raw: String?): BackupDecodeResult {
@@ -522,8 +537,15 @@ object BackupCodec {
                 warnings,
                 BackupMemoryConsolidation.serializer()
             ) { it.id }
-        val configs =
-            decodeList(root, "apiConfigs", BackupSection.API_CONFIG, warnings, BackupApiConfig.serializer()) { it.id }
+        // 读旧值、写新值：0.12 之前的备份里 provider 叫 `DEEPSEEK`，归一化成 `MESSAGEAPI`；
+        // 缺字段的 v3 备份也在这里落到默认值。归一化在校验之前完成，下游（导入/合并）只认新值。
+        val configs = decodeList(
+            root,
+            "apiConfigs",
+            BackupSection.API_CONFIG,
+            warnings,
+            BackupApiConfig.serializer()
+        ) { it.id }.map { it.copy(webToolsProvider = WebToolsProviders.normalize(it.webToolsProvider)) }
 
         val mediaWarnings = mutableListOf<BackupMediaWarning>()
         val media = decodeMedia(root, mediaWarnings)

@@ -32,7 +32,7 @@ import javax.inject.Singleton
 /**
  * 一个搜索结果；字段与 `spec/web-search/README.md` §3 的归一化结果一致。
  *
- * 前三个字段是所有 provider 都有的；后面几个是 DeepSeek 官方接口额外给出的排序信息，
+ * 前三个字段是所有 provider 都有的；后面几个是 MessageAPI 兼容接口额外给出的排序信息，
  * 其它 provider 留默认值。保留它们是为了不改变既有工具结果文案的形状。
  */
 @Serializable
@@ -58,9 +58,11 @@ data class WebPage(
  * 联网工具的网络客户端：`web_search` / `web_fetch` 的后端适配层。
  *
  * 支持的 provider 与请求形状见 `spec/web-search/README.md`：
- * - `DEEPSEEK`：`POST {base}/v1/tools/search`、`POST {base}/v1/tools/fetch`（保持 0.12 之前的行爲）；
+ * - `MESSAGEAPI`（0.12 之前的名字是 `DEEPSEEK`）：`POST {base}/v1/tools/search`、
+ *   `POST {base}/v1/tools/fetch`（保持 0.12 之前的行爲）——这套 tools 接口是开放契约，
+ *   任何兼容厂商都能实现，DeepSeek 官方只是默认实现；
  * - `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`：客户端直接请求各自的搜索接口；
- * - `web_fetch`：只有 DEEPSEEK 走服务端，其余由客户端 `GET` 目标网页并抽正文。
+ * - `web_fetch`：只有 `MESSAGEAPI` 走服务端，其余由客户端 `GET` 目标网页并抽正文。
  *
  * 这里**只做网络与解析**（无 UI、无 Room）。所有 provider 的结果最后都收敛到 [WebSearchHit]，
  * 并统一做「丢非 http(s)、按 URL 去重、snippet 截 500、最多 count 条」。
@@ -74,8 +76,8 @@ class WebSearchClient @Inject constructor(
     /**
      * 调搜索接口。
      *
-     * @param provider `DEEPSEEK` / `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`（大小写与脏值会被归一化）
-     * @param baseUrl 用户配置的地址；留空时用 provider 默认地址（DEEPSEEK 的默认值由调用方传入 LLM base）
+     * @param provider `MESSAGEAPI` / `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`（大小写、脏值与旧值 `DEEPSEEK` 会被归一化）
+     * @param baseUrl 用户配置的地址；留空时用 provider 默认地址（`MESSAGEAPI` 的默认值由调用方传入 LLM base）
      * @param apiKey provider 密钥；GENERIC 允许为空，其余缺 Key 直接报错
      */
     suspend fun search(
@@ -114,7 +116,7 @@ class WebSearchClient @Inject constructor(
                 provider = selected
             )
             else -> execute(
-                request = deepSeekSearchRequest(
+                request = messageApiSearchRequest(
                     baseUrl = baseUrl,
                     apiKey = key,
                     query = keyword,
@@ -131,7 +133,7 @@ class WebSearchClient @Inject constructor(
             WebToolsProviders.BRAVE -> parseBrave(body)
             WebToolsProviders.SERPER -> parseSerper(body)
             WebToolsProviders.GENERIC -> parseGeneric(body)
-            else -> parseDeepSeekSearch(body)
+            else -> parseMessageApiSearch(body)
         }
         return normalizeHits(hits, limit)
     }
@@ -139,7 +141,7 @@ class WebSearchClient @Inject constructor(
     /**
      * 抓取单个网页正文。
      *
-     * DEEPSEEK 仍交给服务端；其它 provider 由客户端 GET（10s、≤2MiB、固定 UA）并抽正文。
+     * `MESSAGEAPI` 仍交给服务端；其它 provider 由客户端 GET（10s、≤2MiB、固定 UA）并抽正文。
      * **无论哪种 provider，URL 都必须先过 [WebUrlPolicy]**（http/https、非内网/本机、无 userinfo）。
      */
     suspend fun fetch(
@@ -158,14 +160,14 @@ class WebSearchClient @Inject constructor(
             }
             throw ApiException(NetworkErrorKind.WebUrlRejected(rejection))
         }
-        if (selected != WebToolsProviders.DEEPSEEK) {
+        if (selected != WebToolsProviders.MESSAGEAPI) {
             return fetchLocally(target, allowInsecureHttp)
         }
 
         val key = requireApiKey(apiKey)
         val endpoint = resolveEndpoint(baseUrl, TOOL_FETCH, allowInsecureHttp)
         val payload = buildJsonObject { put("url", target) }
-        val page = parseDeepSeekFetch(post(endpoint, key, payload))
+        val page = parseMessageApiFetch(post(endpoint, key, payload))
         val resolvedUrl = page.url.ifBlank { target }
         return page.copy(
             url = resolvedUrl,
@@ -175,7 +177,7 @@ class WebSearchClient @Inject constructor(
 
     // ---------------------------------------------------------------- 请求构造
 
-    private fun deepSeekSearchRequest(
+    private fun messageApiSearchRequest(
         baseUrl: String,
         apiKey: String,
         query: String,
@@ -285,7 +287,7 @@ class WebSearchClient @Inject constructor(
     }
 
     private suspend fun post(endpoint: String, apiKey: String, payload: JsonObject): String =
-        execute(postRequest(endpoint, apiKey, payload), WebToolsProviders.DEEPSEEK)
+        execute(postRequest(endpoint, apiKey, payload), WebToolsProviders.MESSAGEAPI)
 
     // ---------------------------------------------------------------- 执行
 
@@ -345,7 +347,7 @@ class WebSearchClient @Inject constructor(
             WebPage(
                 url = target,
                 title = title.ifBlank { target },
-                // 规范上限 8000 字符；比 DeepSeek 服务端抓取的 12000 更保守（正文是我们自己抽的）。
+                // 规范上限 8000 字符；比 MessageAPI 服务端抓取的 12000 更保守（正文是我们自己抽的）。
                 markdown = htmlToText(raw).take(MAX_FETCH_CHARS)
             )
         }
@@ -388,7 +390,7 @@ class WebSearchClient @Inject constructor(
         val preview = body.take(MAX_LOGGED_BODY_CHARS)
         // 原始响应体只进日志，且只留 200 字符；模型只会看到「哪个 provider、什么状态码」。
         println("[websearch] provider=$provider status=$code body=${preview.replace('\n', ' ')}")
-        if (code == 404 && provider == WebToolsProviders.DEEPSEEK) {
+        if (code == 404 && provider == WebToolsProviders.MESSAGEAPI) {
             return ApiException(NetworkErrorKind.WebPageUnreachable, "provider=$provider status=$code")
         }
         return ApiException(NetworkErrorKind.WebStatus(code), "provider=$provider status=$code")
@@ -405,8 +407,9 @@ class WebSearchClient @Inject constructor(
     // ---------------------------------------------------------------- 地址
 
     /**
-     * 归一化 baseUrl 并拼出 DeepSeek 工具端点：
-     * 去掉尾斜杠；已以 /v1 结尾就沿用，否则补 /v1。结果形如 https://api.deepseek.com/v1/tools/search。
+     * 归一化 baseUrl 并拼出 MessageAPI 工具端点：
+     * 去掉尾斜杠；已以 /v1 结尾就沿用，否则补 /v1。结果形如 https://api.deepseek.com/v1/tools/search
+     * （DeepSeek 官方是默认实现，所以示例仍是它的地址）。
      */
     internal fun toolsEndpoint(baseUrl: String, tool: String): String {
         val base = baseUrl.trim()
@@ -424,7 +427,7 @@ class WebSearchClient @Inject constructor(
         NetworkGuard.parseHttpUrl(toolsEndpoint(baseUrl, tool), allowInsecureHttp).toString()
 
     /**
-     * 非 DeepSeek provider 的端点：
+     * 其它 provider（非 `MESSAGEAPI`）的端点：
      * - 显式 baseUrl 优先；留空用规范里的默认地址；
      * - TAVILY / SERPER 追加 `/search`，BRAVE 追加 `/web/search`，GENERIC **原样使用** base；
      * - 统一过 [NetworkGuard]（http(s)、明文开关语义）。
@@ -452,8 +455,8 @@ class WebSearchClient @Inject constructor(
 
     // ---------------------------------------------------------------- 解析
 
-    /** 容错解析 DeepSeek 搜索响应：缺字段走默认值，results 缺失/非数组返回 emptyList。 */
-    internal fun parseDeepSeekSearch(body: String): List<WebSearchHit> {
+    /** 容错解析 MessageAPI 搜索响应：缺字段走默认值，results 缺失/非数组返回 emptyList。 */
+    internal fun parseMessageApiSearch(body: String): List<WebSearchHit> {
         val element = parseRoot(body)
         val results: JsonArray = when (element) {
             is JsonArray -> element
@@ -463,7 +466,7 @@ class WebSearchClient @Inject constructor(
                 ?: JsonArray(emptyList())
             else -> JsonArray(emptyList())
         }
-        return results.mapNotNull { item -> (item as? JsonObject)?.let { obj -> toDeepSeekHit(obj) } }
+        return results.mapNotNull { item -> (item as? JsonObject)?.let { obj -> toMessageApiHit(obj) } }
     }
 
     internal fun parseTavily(body: String): List<WebSearchHit> =
@@ -512,8 +515,8 @@ class WebSearchClient @Inject constructor(
             )
         }
 
-    /** 容错解析 DeepSeek 抓取响应：兼容 content / markdown 两种字段名，标题为空时回退成 url。 */
-    internal fun parseDeepSeekFetch(body: String): WebPage {
+    /** 容错解析 MessageAPI 抓取响应：兼容 content / markdown 两种字段名，标题为空时回退成 url。 */
+    internal fun parseMessageApiFetch(body: String): WebPage {
         val element = parseRoot(body)
         val root = when (element) {
             is JsonObject -> (element["data"] as? JsonObject) ?: element
@@ -565,7 +568,7 @@ class WebSearchClient @Inject constructor(
     private fun normalizedCount(count: Int): Int =
         if (count <= 0) DEFAULT_COUNT else count.coerceAtMost(MAX_COUNT)
 
-    private fun toDeepSeekHit(obj: JsonObject): WebSearchHit = WebSearchHit(
+    private fun toMessageApiHit(obj: JsonObject): WebSearchHit = WebSearchHit(
         title = obj.text("title", "name"),
         url = obj.text("url", "link", "href"),
         snippet = obj.text("snippet", "description", "abstract"),

@@ -5,7 +5,7 @@ import XCTest
 /// 媒体与失效路径：
 /// 1. 备份导入时 `personas.avatarUri` 指向不存在的文件 → 清空字段并计入 warnings；
 /// 2. `MediaStorage.exists/deleteFileIfOwned` 只认自己目录、只删自己目录（临时目录注入）；
-/// 3. 编辑器取消/保存失败后的孤儿头像清理、删除人格时删头像——这两处在 App target，
+/// 3. 编辑器取消/保存失败后的孤儿头像清理、删除人格时按引用删头像——这些接线在 App target，
 ///    用源码守卫钉住「确实接上了」（SwiftUI 状态机没法在 `swift test` 里跑）。
 final class MediaAvatarCleanupTests: XCTestCase {
 
@@ -157,11 +157,20 @@ final class MediaAvatarCleanupTests: XCTestCase {
                        "不许再自己手写一套主动程度文案（已经和 domain 漂移过）")
     }
 
-    func testDeletingPersonaDeletesItsAvatarFile() throws {
+    func testDeletingPersonaDeletesItsAvatarFileWithReferenceGuard() throws {
         let url = try repoRoot().appendingPathComponent("ios/MyFriend/App/AppEnvironment.swift")
         let text = try String(contentsOf: url, encoding: .utf8)
-        XCTAssertTrue(text.contains("deleteFileIfOwned(persona.avatarUri)"),
-                      "删人格时要连头像文件一起删（文件不属于数据库）")
+        XCTAssertTrue(text.contains("deleteIfUnreferenced("),
+                      "删人格时头像文件要走引用计数守卫（共享头像不能删）")
+        XCTAssertTrue(text.contains("persona.avatarUri"), "要传被删人格的头像")
+        XCTAssertTrue(text.contains("MediaReferences(stores: stores, settings: settings)"),
+                      "引用查询要在 Kit 里做，App 层不复制一份")
+        let deletePersona = try XCTUnwrap(text.range(of: "PersonaDeletion.delete("))
+        let deleteAvatar = try XCTUnwrap(text.range(of: "deleteIfUnreferenced("))
+        XCTAssertLessThan(deletePersona.lowerBound, deleteAvatar.lowerBound,
+                          "必须先删数据库行，再查引用删文件")
+        XCTAssertFalse(text.contains("deleteFileIfOwned(persona.avatarUri)"),
+                       "不能在人还引用着头像时先把文件删掉")
     }
 
     // MARK: - 编辑器文案 == domain 文案

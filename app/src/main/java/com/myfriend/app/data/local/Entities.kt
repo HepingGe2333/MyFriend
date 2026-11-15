@@ -128,13 +128,20 @@ data class ApiConfigEntity(
     /** 联网工具专用的密钥（加密存储）；留空则复用主 Key。 */
     val webToolsApiKeyCipher: String? = null,
     /**
-     * 搜索后端（schema v12）：`DEEPSEEK` | `TAVILY` | `BRAVE` | `SERPER` | `GENERIC`。
+     * 搜索后端（schema v12）：`MESSAGEAPI` | `TAVILY` | `BRAVE` | `SERPER` | `GENERIC`。
      *
      * 用字符串而不是枚举：备份格式本来就是字符串契约，遇到旧版本/手写脏值时要能退回默认，
      * 而不是让 Room 在反序列化时直接抛异常。合法值与默认地址见 [com.myfriend.app.domain.WebToolsProviders]。
+     *
+     * ## 为什么默认值还写着 `'DEEPSEEK'`（0.12 改名）
+     *
+     * 列的 SQL 默认值写进了 `app/schemas/12.json`，已装 v12 的库启动时会拿它跟实体注解比对；
+     * 这里改成 `'MESSAGEAPI'` 会让那些库的 schema 校验失败（直接崩，或逼我们加一次没必要的迁移）。
+     * 所以**注解与迁移 SQL 保持旧值**，旧值读出来由 `WebToolsProviders.normalize` 折算成
+     * `MESSAGEAPI`；Kotlin 侧的默认参数是新值，新建/写入的行一律是 `MESSAGEAPI`。
      */
     @ColumnInfo(defaultValue = "'DEEPSEEK'")
-    val webToolsProvider: String = "DEEPSEEK"
+    val webToolsProvider: String = com.myfriend.app.domain.WebToolsProviders.MESSAGEAPI
 )
 
 /**

@@ -425,7 +425,7 @@ final class SchemaMigrationTests: XCTestCase {
         database.close()
     }
 
-    /// v11 → v12：加列、老数据不丢、老配置默认 DEEPSEEK，且新 provider 能正常写读。
+    /// v11 → v12：加列、老数据不丢、老配置读成默认 MESSAGEAPI，且新 provider 能正常写读。
     func testV11ToV12AddsProviderColumnAndPreservesData() throws {
         try seedV11Database()
         let stores = try DatabaseStores.open(path: databasePath)
@@ -445,7 +445,7 @@ final class SchemaMigrationTests: XCTestCase {
         XCTAssertEqual(config.model, "deepseek-chat")
         XCTAssertTrue(config.webToolsEnabled)
         XCTAssertEqual(config.webToolsBaseUrl, "https://api.deepseek.com")
-        XCTAssertEqual(config.webToolsProvider, WebToolsProvider.deepSeek.rawValue, "老配置默认 DEEPSEEK")
+        XCTAssertEqual(config.webToolsProvider, WebToolsProvider.messageAPI.rawValue, "老配置默认 MESSAGEAPI")
 
         // 新值能写能读（迁移不是把这一列变成只读的占位）。
         var updated = config
@@ -463,8 +463,42 @@ final class SchemaMigrationTests: XCTestCase {
         ))
         XCTAssertEqual(
             try stores.apiConfigs.byId("config-v12-new")?.webToolsProvider,
-            WebToolsProvider.deepSeek.rawValue
+            WebToolsProvider.messageAPI.rawValue
         )
+    }
+
+    /// 0.12 改名兼容：v12 补列的 DDL 默认值仍是历史 `DEEPSEEK`（不升 schema），
+    /// 但实体读出来必须是 `MESSAGEAPI`；下一次写库会把这一列规范成新值。
+    func testLegacyDeepSeekInDatabaseReadsAndWritesAsMessageAPI() throws {
+        try seedV11Database()
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        func rawProvider(id: String) throws -> String? {
+            let statement = try stores.database.prepare(
+                "SELECT webToolsProvider FROM api_configs WHERE id = ?"
+            )
+            try statement.bind([.text(id)])
+            guard try statement.step() else { return nil }
+            return statement.text(at: 0)
+        }
+
+        XCTAssertEqual(try rawProvider(id: "config-v11"), "DEEPSEEK",
+                       "DDL 默认值保持历史值（不改 DDL、不升 schema）")
+        XCTAssertEqual(
+            try stores.apiConfigs.byId("config-v11")?.webToolsProvider,
+            "MESSAGEAPI",
+            "旧库里的 DEEPSEEK 读进来等价于 MESSAGEAPI"
+        )
+
+        // 大小写/空白变体也一样；读出来之后写回去一定落成规范值。
+        try stores.database.executeUpdate(
+            "UPDATE api_configs SET webToolsProvider = ? WHERE id = ?",
+            [.text(" deepseek "), .text("config-v11")]
+        )
+        let legacy = try XCTUnwrap(try stores.apiConfigs.byId("config-v11"))
+        XCTAssertEqual(legacy.webToolsProvider, "MESSAGEAPI")
+        try stores.apiConfigs.upsert(legacy)
+        XCTAssertEqual(try rawProvider(id: "config-v11"), "MESSAGEAPI", "写库一律写规范值")
     }
 
     /// 空库（有表、没数据）从 v11 升上来：列补上、版本对、不报错。

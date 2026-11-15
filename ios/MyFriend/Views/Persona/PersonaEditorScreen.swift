@@ -190,17 +190,25 @@ struct PersonaEditorScreen: View {
         }
     }
 
-    /// 离开编辑页时，把「选了但没保存」的头像文件清掉（只删我们自己目录里的）。
+    /// 离开编辑页时，把「选了但没保存」的头像文件清掉（只删我们自己目录里、且已零引用的）。
+    ///
+    /// 这里也要查引用：选图按内容哈希去重，刚选的那张可能本来就属于另一条消息/人格。
     private func discardUnsavedAvatar() {
         guard avatarUri != originalAvatarUri else { return }
-        MediaStorage.shared.deleteFileIfOwned(avatarUri)
+        MediaStorage.shared.deleteIfUnreferenced(
+            avatarUri,
+            references: MediaReferences(stores: env.stores, settings: env.settings)
+        )
         avatarUri = originalAvatarUri
     }
 
     private func removeAvatar() {
         if avatarUri != nil, avatarUri != originalAvatarUri {
-            // 刚选的新图还没落库，直接删掉，别留垃圾文件。
-            MediaStorage.shared.deleteFileIfOwned(avatarUri)
+            // 刚选的新图还没落库，删之前仍要确认没有别的记录引用它。
+            MediaStorage.shared.deleteIfUnreferenced(
+                avatarUri,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
         }
         avatarUri = nil
     }
@@ -892,9 +900,13 @@ struct PersonaEditorScreen: View {
                     return
                 }
             }
-            // 换了头像：把旧文件删掉（只删我们自己目录里的）。
+            // 换了头像：新头像已经落库，再删旧文件；只删零引用的
+            // （旧图可能同时被预设头像 / 我的头像 / 另一条消息共享）。
             if originalAvatarUri != avatarUri {
-                MediaStorage.shared.deleteFileIfOwned(originalAvatarUri)
+                MediaStorage.shared.deleteIfUnreferenced(
+                    originalAvatarUri,
+                    references: MediaReferences(stores: env.stores, settings: env.settings)
+                )
                 originalAvatarUri = avatarUri
             }
             // 一人一段（§二）：创建人格的同时就把他那一段会话建好，

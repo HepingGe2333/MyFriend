@@ -98,7 +98,7 @@ class ApiConfigRepository @Inject constructor(
         webToolsBaseUrl: String = "",
         webToolsApiKey: String = "",
         clearWebToolsApiKey: Boolean = false,
-        webToolsProvider: String = WebToolsProviders.DEEPSEEK
+        webToolsProvider: String = WebToolsProviders.MESSAGEAPI
     ): Result<String> = runCatching {
         val existing = draft.id?.let { apiConfigDao.getById(it) }
         if (existing != null && existing.id != draft.id) userError(DomainErrorCode.API_CONFIG_NOT_FOUND)

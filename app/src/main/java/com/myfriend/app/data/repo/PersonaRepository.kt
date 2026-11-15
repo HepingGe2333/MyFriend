@@ -24,8 +24,10 @@ import com.myfriend.app.network.NetworkGuard
 import com.myfriend.app.network.userError
 import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -63,6 +65,8 @@ class PersonaRepository @Inject constructor(
     private val apiConfigDao: ApiConfigDao,
     private val sessionDao: ChatSessionDao,
     private val dataEraser: DataEraser,
+    /** 换头像/回滚版本时删旧文件的引用守卫（0.12）：同一张图可能还被预设或别人引用。 */
+    private val mediaJanitor: MediaJanitor,
     private val proactiveScheduler: ProactiveScheduler,
     private val database: MyFriendDatabase,
     private val settingsRepository: SettingsRepository,
@@ -154,8 +158,9 @@ class PersonaRepository @Inject constructor(
             }
         }
         // 头像换了一张（或恢复成默认头像）：旧文件不再被任何一行引用，得删掉，否则越攒越多。
+        // 0.12：**先查引用**再删——「保存人格为预设」会共用同一个头像文件，闭眼删会把预设的脸删掉。
         if (existing?.avatarUri != entity.avatarUri) {
-            MediaStorage.deleteAvatar(appContext, existing?.avatarUri)
+            runCatching { mediaJanitor.deleteIfUnreferenced(existing?.avatarUri) }
         }
         if (existing == null) {
             val active = settingsRepository.settings.first().activePersonaId
@@ -243,7 +248,9 @@ class PersonaRepository @Inject constructor(
         }
         // 事务已经提交：现在删文件才是安全的。删不掉只会留下孤儿文件（不影响这次删除），
         // 不让「人格已经删了」的操作再报一次失败。
-        runCatching { dataEraser.commitFiles(erasure) }
+        // 切到 IO：`ErasureFiles` 是非挂起接口，里面的引用查询会阻塞调用线程
+        // （见 `AndroidErasureFiles`），不能让它阻塞主线程。
+        runCatching { withContext(Dispatchers.IO) { dataEraser.commitFiles(erasure) } }
         // 人已经删了：他发过的通知（会话通知 + 聚合摘要）也得撤掉，否则点开是一个空会话
         //（审计 P2-14：以前 cancel 只支持单会话，删人格之后残留通知没人收）。
         runCatching { chatNotifier.cancelByPersona(appContext, personaId) }
@@ -331,7 +338,10 @@ class PersonaRepository @Inject constructor(
             insertRevision(restored, PersonaRevisionReason.restored(revision.version), now)
         }
         // 换了一张（或恢复成默认）：当前头像文件不再被引用，删掉。
-        if (persona.avatarUri != restoredAvatar) MediaStorage.deleteAvatar(appContext, persona.avatarUri)
+        // 0.12：回滚版本换掉的头像同样先查引用（可能被预设/别的人格共享）。
+        if (persona.avatarUri != restoredAvatar) {
+            runCatching { mediaJanitor.deleteIfUnreferenced(persona.avatarUri) }
+        }
     }
 
     suspend fun acceptEvolution(personaId: String, newPrompt: String, summary: String): Result<Unit> = runCatching {

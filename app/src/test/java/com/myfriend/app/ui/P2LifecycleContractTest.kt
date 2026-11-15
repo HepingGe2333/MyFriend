@@ -26,12 +26,17 @@ class P2LifecycleContractTest {
         val onCleared = bodyOf(chatVm, "override fun onCleared()")
         assertTrue(
             "onCleared 必须回收草稿里的图片文件，否则每选一次退一次就永远多一个孤儿",
-            onCleared.contains("MediaStorage.deleteAttachments(context, ephemeral.value.images)")
+            onCleared.contains("mediaJanitor.deleteAttachmentsLater(ephemeral.value.images)")
         )
         val switch = bodyOf(chatVm, "fun switchPersona(")
         assertTrue(
             "切人格时上一段对话的草稿图也要回收",
-            switch.contains("MediaStorage.deleteAttachments(context, abandoned)")
+            switch.contains("mediaJanitor.deleteAttachmentsIfUnreferenced(abandoned)")
+        )
+        // 0.12：草稿图也要过引用守卫——用户可能选了一张已经发过的图（内容寻址 → 同名文件）。
+        assertTrue(
+            "回收草稿图不能绕过引用守卫",
+            !onCleared.contains("MediaStorage.deleteAttachments(")
         )
     }
 

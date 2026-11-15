@@ -226,6 +226,8 @@ class ChatRepository @Inject constructor(
     private val historyCompressor: HistoryCompressor,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
+    /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
+    private val mediaJanitor: MediaJanitor,
     private val agentTickDao: AgentTickDao,
     /** agent 决策（睡眠判定）：默认进程内，可切 agentd；失败会自动回退，见 [AgentCoreClient]。 */
     private val agentCore: AgentCoreClient,
@@ -963,14 +965,19 @@ class ChatRepository @Inject constructor(
         sessionGeneration.forget(sessionId)
     }
 
-    /** 删掉这些消息带在身上的图片文件（只删 App 自己媒体目录里的）。 */
-    private fun deleteAttachmentFiles(messages: List<MessageEntity>) {
+    /**
+     * 删掉这些消息带在身上的图片文件（只删 App 自己媒体目录里的）。
+     *
+     * **必须在数据库行删掉之后调用**（0.12 媒体去重）：聊天图按内容寻址命名，
+     * 同一个 `chat-<sha>.<ext>` 可能被别的消息引用；先删行再查引用，
+     * 本次要删的那条消息自己才不会被算成「还有人在用」（否则文件永远删不掉），
+     * 而别人还在用的那一份也不会被误删。
+     */
+    private suspend fun deleteAttachmentFiles(messages: List<MessageEntity>) {
         if (messages.isEmpty()) return
         runCatching {
-            messages.forEach { message ->
-                val items = AttachmentsCodec.decode(message.attachmentsJson)
-                if (items.isNotEmpty()) MediaStorage.deleteAttachments(appContext, items)
-            }
+            val attachments = messages.flatMap { AttachmentsCodec.decode(it.attachmentsJson) }
+            if (attachments.isNotEmpty()) mediaJanitor.deleteAttachmentsIfUnreferenced(attachments)
         }
     }
 
@@ -1227,7 +1234,9 @@ class ChatRepository @Inject constructor(
      * （记忆旧正文）、`memory_vectors`，以及聊天图片文件（不碰聊天背景与头像）。
      */
     suspend fun clearAllChatData() {
-        dataEraser.clearChatsAndMemories()
+        // 文件清理（删聊天图）在 IO 上做：`ErasureFiles` 是非挂起接口，那里的引用查询会阻塞
+        // 调用线程（见 `AndroidErasureFiles`），不能让它阻塞主线程。
+        withContext(Dispatchers.IO) { dataEraser.clearChatsAndMemories() }
         // 审计 P2-2（0.11.1）：与 wipeAllData 对齐——表都删了，还挂着的通知与被认为
         // 「仍开着」的会话都要收掉，否则点旧通知会跳进一个不存在的会话、未读判定也拿旧值比较。
         openSessionTracker.clearAll()
@@ -1241,7 +1250,8 @@ class ChatRepository @Inject constructor(
      * 人格版本历史 / 主动节奏 / 人格预设 / 人格 / API 配置，以及整个媒体目录。
      */
     suspend fun wipeAllData() {
-        dataEraser.wipeAllData()
+        // 整棵媒体目录的删除是阻塞文件 IO；与其他删除路径一样挪到 IO 上。
+        withContext(Dispatchers.IO) { dataEraser.wipeAllData() }
         openSessionTracker.clearAll()
         // 「删除全部数据」之后不该还挂着任何一条他的通知（审计 P2-14：以前 cancel 只支持单会话）。
         runCatching { chatNotifier.cancelAll(appContext) }

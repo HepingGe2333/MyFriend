@@ -16,6 +16,7 @@ import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.ApiUsageRepository
 import com.myfriend.app.data.repo.BackupRepository
 import com.myfriend.app.data.repo.ChatRepository
+import com.myfriend.app.data.repo.MediaJanitor
 import com.myfriend.app.data.repo.ImportMode
 import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.data.repo.PresetRepository
@@ -33,6 +34,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -81,6 +83,8 @@ class SettingsViewModel @Inject constructor(
     apiConfigRepository: ApiConfigRepository,
     private val apiUsageRepository: ApiUsageRepository,
     private val backupRepository: BackupRepository,
+    /** 「我的头像」换新图之后，旧文件按引用回收（0.12：共享文件不删）。 */
+    private val mediaJanitor: MediaJanitor,
     private val personaInitializer: PersonaRepositoryInitializer,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -141,8 +145,19 @@ class SettingsViewModel @Inject constructor(
     fun setChatBackgroundColor(color: Long?) = launchSetting { settingsRepository.setChatBackgroundColor(color) }
     fun setChatBackgroundImage(uri: String?) = launchSetting { settingsRepository.setChatBackgroundImageUri(uri) }
 
-    /** 「我的头像」只写 DataStore 里的路径；文件已经由 MediaStorage 采样压缩好了。 */
-    fun setUserAvatar(uri: String?) = launchSetting { settingsRepository.setUserAvatarUri(uri) }
+    /**
+     * 「我的头像」只写 DataStore 里的路径；文件已经由 MediaStorage 采样压缩好了。
+     *
+     * 0.12：换新图之后旧文件按引用回收——旧实现从不删旧图，每换一次就多一个孤儿文件；
+     * 而「删」必须查引用（同一个 `avatar-*.jpg` 可能还被某个人格/预设引用着）。
+     */
+    fun setUserAvatar(uri: String?) = launchSetting {
+        val previous = runCatching { settingsRepository.settings.first().userAvatarUri }.getOrNull()
+        settingsRepository.setUserAvatarUri(uri)
+        if (previous != null && previous != uri) {
+            runCatching { mediaJanitor.deleteIfUnreferenced(previous) }
+        }
+    }
 
     /** 常驻后台：关掉后他就只在应用打开时存在。 */
     fun setAgentLoopEnabled(enabled: Boolean) = launchSetting { settingsRepository.setAgentLoopEnabled(enabled) }

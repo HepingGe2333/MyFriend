@@ -178,14 +178,24 @@ public final class DataReset {
         self.media = media
     }
 
+    /// 媒体引用查询（不新增表）：删文件前必须问「还有没有别的记录引用它」。
+    private func mediaReferences() -> MediaReferences {
+        MediaReferences(stores: stores, settings: settings)
+    }
+
     /// 清空聊天与记忆时要清的图片（头像不动：人还在）。
+    ///
+    /// 必须先删消息行（调用方已删），再逐个查引用：聊天图按内容哈希去重，可能与头像共用文件。
     private func clearChatMedia() {
-        media?.deleteAllChatImages()
+        media?.deleteAllChatImages(references: mediaReferences())
     }
 
     /// 「删除全部本地数据」时要清的图片（聊天图 + 头像）。
+    ///
+    /// 引用计数版：**设置也要先清**（`myAvatarUri` 是引用之一），否则「我的头像」文件
+    /// 会被当成仍有引用而留下。调用顺序在 `clearAll()` 里固定：库行 → 设置 → 媒体。
     private func clearAllMedia() {
-        media?.deleteAll()
+        media?.deleteAll(references: mediaReferences())
     }
 
     // MARK: - 清空聊天与记忆（保留人格与 API 配置）
@@ -270,13 +280,15 @@ public final class DataReset {
                 try? apiKeys.deleteKeys(for: id)
             }
         }
-        clearAllMedia()
-        // 设置最后清：清完这里，「正在聊的人 / 心跳进度 / 主题」一起回到出厂。
+        // 设置先清：清完这里，「正在聊的人 / 心跳进度 / 主题」一起回到出厂；
+        // 同时 `myAvatarUri` 不再是一条引用，下面的零引用判定才能删掉用户头像文件。
         if let resetting = settings as? SettingsResetting {
             resetting.resetAll()
         } else {
             settings.save(AppSettings())
         }
+        // 库行与设置都清完，才逐个文件查引用：零引用的删掉，仍被引用的留着。
+        clearAllMedia()
         vectorIndex.resetEnsured()
         if let reseed {
             // 0.10.2 审计 P2-13：清空之后立刻按当前语言重新播种三位示例人格。

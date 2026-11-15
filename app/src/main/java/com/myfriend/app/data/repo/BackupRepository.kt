@@ -151,6 +151,8 @@ class BackupRepository @Inject constructor(
     private val apiConfigDao: ApiConfigDao,
     private val apiConfigRepository: ApiConfigRepository,
     private val dataEraser: DataEraser,
+    /** 替换导入之后回收旧图：先查引用再删（0.12；新图/共享图不会被误删）。 */
+    private val mediaJanitor: MediaJanitor,
     private val settingsRepository: SettingsRepository,
     /** 备份「替换」前要 bump 所有会复用 sessionId 的世代（审计 P2-3）。 */
     private val sessionGeneration: SessionGenerationRegistry,
@@ -567,8 +569,11 @@ class BackupRepository @Inject constructor(
         // 刚恢复的图片删光。所以按同一份语义手工做：旧头像按引用回收、旧聊天图片只删不是这次写的。
         if (mode == ImportMode.REPLACE) {
             runCatching {
-                MediaStorage.clearUnreferencedAvatars(appContext, keepAvatarUris)
-                MediaStorage.clearChatImagesExcept(appContext, restoredChatFileNames)
+                // 0.12：两条清理都带引用守卫——`keep` 集合是按备份里的引用算的，
+                // 一个刚写进来、备份里没写成引用格式的新文件可能漏在 keep 外面；
+                // 只按 keep 删会把它删掉（人格「接回来了却没有脸」）。旧图没有引用才回收。
+                mediaJanitor.clearUnreferencedAvatars(keepAvatarUris)
+                mediaJanitor.clearChatImagesExcept(restoredChatFileNames)
             }
         }
 

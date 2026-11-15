@@ -40,7 +40,7 @@ class AgentdApiTest {
         val response = AgentdApi.handle("GET", "/health", null)
         assertEquals(200, response.status)
         assertEquals(
-            """{"ok":true,"service":"myfriend-agentd","version":"0.13.0"}""",
+            """{"ok":true,"service":"myfriend-agentd","version":"0.12.0"}""",
             response.body
         )
     }

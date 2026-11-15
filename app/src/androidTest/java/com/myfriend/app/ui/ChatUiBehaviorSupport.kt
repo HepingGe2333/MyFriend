@@ -24,6 +24,7 @@ import com.myfriend.app.data.prefs.AppSettings
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.ChatRepository
+import com.myfriend.app.data.repo.MediaJanitor
 import com.myfriend.app.data.repo.MemoryRepository
 import com.myfriend.app.data.repo.MessageBlockWriter
 import com.myfriend.app.data.repo.MoodRepository
@@ -83,7 +84,9 @@ class ChatUiHarness(
     private val presenceRepository: PresenceRepository,
     private val proactiveRepository: ProactiveRepository,
     private val settingsRepository: SettingsRepository,
-    private val chatNotifier: ChatNotifier
+    private val chatNotifier: ChatNotifier,
+    /** 0.12：删草稿图片前的引用守卫（合成一个真实现，避免测试里手拼假守卫）。 */
+    private val mediaJanitor: MediaJanitor
 ) {
 
     val personaDao get() = db.personaDao()
@@ -213,6 +216,7 @@ class ChatUiHarness(
                 proactiveRepository = proactiveRepository,
                 settingsRepository = settingsRepository,
                 chatNotifier = chatNotifier,
+                mediaJanitor = mediaJanitor,
                 context = context
             ) as T
         }

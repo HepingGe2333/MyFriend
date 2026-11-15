@@ -208,8 +208,12 @@ class SchemaVersionTest {
      * v12：`api_configs.webToolsProvider`（`spec/web-search/README.md` §1）。
      *
      * 规范把列名、类型、默认值写死了；默认值写错（例如 `DEEPSEEK` 少了引号）在 SQLite 里
-     * 不会报错，只会让老库升级后读出一个空字符串，然后被 provider 归一化悄悄退回 DEEPSEEK——
+     * 不会报错，只会让老库升级后读出一个空字符串，然后被 provider 归一化悄悄退回默认 provider——
      * 看起来「能用」，实际是把规范里的默认值丢了。这里逐项钉住。
+     *
+     * **0.12 改名不影响这里**：provider 的字符串值从 `DEEPSEEK` 改成了 `MESSAGEAPI`，但列的
+     * SQL 默认值与 `schemas/12.json` 必须保持旧值——已装 v12 的库启动时会拿 schema 校验实体，
+     * 改默认值会让那些库直接启动失败。旧值由 `WebToolsProviders.normalize` 在代码层折算。
      */
     @Test
     fun `v12 的 schema 里有 webToolsProvider 且默认值是 DEEPSEEK`() {

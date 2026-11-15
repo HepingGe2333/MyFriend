@@ -53,14 +53,21 @@ abstract class MyFriendDatabase : RoomDatabase() {
     abstract fun memoryVersionDao(): MemoryVersionDao
     abstract fun memoryVectorDao(): MemoryVectorDao
 
+    /** 媒体文件引用计数（0.12 去重收尾）：纯查询，不新增表，也不动 schema。 */
+    abstract fun mediaReferenceDao(): MediaReferenceDao
+
     companion object {
         const val NAME = "myfriend.db"
 
         /**
          * v12：`api_configs.webToolsProvider`（`spec/web-search/README.md` §1）。
          *
-         * 只加一列，不动任何既有数据；默认 `DEEPSEEK`，所以老库里已有的联网配置升级后
-         * 仍走原来的 DeepSeek 工具端点，换 provider 是用户之后在设置页里显式做的选择。
+         * 只加一列，不动任何既有数据；默认 `'DEEPSEEK'`，所以老库里已有的联网配置升级后
+         * 仍走原来的 MessageAPI / DeepSeek 工具端点，换 provider 是用户之后在设置页里显式做的选择。
+         *
+         * **0.12 改名时这条 SQL 刻意不改**：`DEEPSEEK` 是 v12 的列默认值，已经写进
+         * `app/schemas/12.json`，改掉它会让已装 v12 的库 schema 校验失败。旧值读出后由
+         * `WebToolsProviders.normalize` 折算成 `MESSAGEAPI`（归一只在代码层，不升 schema）。
          *
          * 幂等：先查 `PRAGMA table_info`，列已经在就跳过。Room 跑迁移时自带事务，
          * 但同一个 Migration 也可能被迁移测试或将来的「修复脚本」重复调用，

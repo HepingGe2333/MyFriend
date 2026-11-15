@@ -233,7 +233,7 @@ class BackupFixtureTest {
     }
 
     @Test
-    fun `v3 样本仍然可读 且 provider 默认 DEEPSEEK`() {
+    fun `v3 样本仍然可读 且 provider 默认 MESSAGEAPI`() {
         listOf("android-export-v3.json", "ios-export-v3.json").forEach { name ->
             val file = File("../fixtures/backup/$name")
             if (!file.exists()) {
@@ -250,7 +250,7 @@ class BackupFixtureTest {
                 success.warnings.any { it is BackupWarning.OlderFormat && it.version == 3 }
             )
             val config = bundle.apiConfigs.firstOrNull() ?: error("$name 没有 apiConfigs")
-            assertEquals("v3 备份缺 provider 时默认 DEEPSEEK", "DEEPSEEK", config.webToolsProvider)
+            assertEquals("v3 备份缺 provider 时默认 MESSAGEAPI", "MESSAGEAPI", config.webToolsProvider)
             assertTrue("v3 的图片也要还在", bundle.media.isNotEmpty())
             assertTrue(!BackupCodec.containsSecretField(file.readText()))
         }
@@ -262,14 +262,37 @@ class BackupFixtureTest {
             personas = listOf(BackupPersona(id = "p-1", name = "阿深")),
             apiConfigs = listOf(
                 BackupApiConfig(id = "a-1", name = "联网", webToolsProvider = "BRAVE"),
-                BackupApiConfig(id = "a-2", name = "默认", webToolsProvider = "DEEPSEEK")
+                BackupApiConfig(id = "a-2", name = "默认", webToolsProvider = WebToolsProviders.MESSAGEAPI)
             )
         )
         val encoded = BackupCodec.encode(bundle)
-        assertTrue("默认值也要写出来", encoded.contains("\"webToolsProvider\":\"DEEPSEEK\""))
+        assertTrue("默认值也要写出来", encoded.contains("\"webToolsProvider\":\"MESSAGEAPI\""))
         assertTrue(encoded.contains("\"webToolsProvider\":\"BRAVE\""))
         val decoded = (BackupCodec.decode(encoded) as BackupDecodeResult.Success).bundle
-        assertEquals(listOf("BRAVE", "DEEPSEEK"), decoded.apiConfigs.map { it.webToolsProvider })
+        assertEquals(listOf("BRAVE", "MESSAGEAPI"), decoded.apiConfigs.map { it.webToolsProvider })
+    }
+
+    /**
+     * 0.12 改名兼容：**旧备份**里 `webToolsProvider` 是 `DEEPSEEK`（0.12 早期样本 / 手写文件），
+     * 读进来必须是 `MESSAGEAPI`——不能原样透传给网络层，也不能被当成脏值丢掉这一条配置。
+     */
+    @Test
+    fun `旧备份里的 DEEPSEEK 读进来归一化成 MESSAGEAPI`() {
+        val legacyJson = """{"format":"myfriend.backup","formatVersion":4,"apiKeysOmitted":true,""" +
+            """"appVersion":"0.12.0","exportedAt":1,"personas":[],"apiConfigs":[""" +
+            """{"id":"a-1","name":"老的","provider":"OPENAI","baseUrl":"https://api.deepseek.com/v1",""" +
+            """"model":"m","webToolsProvider":"DEEPSEEK"},""" +
+            """{"id":"a-2","name":"空的","provider":"OPENAI","baseUrl":"https://api.deepseek.com/v1",""" +
+            """"model":"m","webToolsProvider":"  "}]}"""
+        val success = BackupCodec.decode(legacyJson) as BackupDecodeResult.Success
+        assertEquals(
+            listOf("MESSAGEAPI", "MESSAGEAPI"),
+            success.bundle.apiConfigs.map { it.webToolsProvider }
+        )
+        // 再导出：写出去的一律是新值，旧值不会继续传下去。
+        val reencoded = BackupCodec.encode(success.bundle)
+        assertFalse("旧值不该被再写出去", reencoded.contains("\"webToolsProvider\":\"DEEPSEEK\""))
+        assertTrue(reencoded.contains("\"webToolsProvider\":\"MESSAGEAPI\""))
     }
 
     private fun jpegBytes(): ByteArray = BackupBase64.decode(JPEG_BASE64)!!

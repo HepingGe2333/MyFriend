@@ -108,7 +108,8 @@ public enum Schema {
     /// v12 给 `api_configs` 加的列：联网工具用哪个搜索服务（`spec/web-search/README.md` §1）。
     ///
     /// `NOT NULL DEFAULT 'DEEPSEEK'` 是规范里逐字写明的：老库补列时每一行都自动落到
-    /// 「DeepSeek 官方接口」，与 0.12 之前的行为完全一致；新库也拿同一个默认值。
+    /// 旧的 provider 名（0.12 改名后读库时归一化成 `MESSAGEAPI`，与之前的行为等价）；
+    /// **DDL 默认值不变**，也不为改名升 schema —— 归一化只在代码层做。
     public static let webToolsProviderColumn = (
         name: "webToolsProvider",
         ddl: "TEXT NOT NULL DEFAULT 'DEEPSEEK'"
@@ -539,7 +540,7 @@ public enum Schema {
             column: messageBlockColumn.name, type: messageBlockColumn.ddl
         )
         // v12：搜索服务选择。`addColumnIfMissing` 本身幂等，重复打开不会重复加列；
-        // 列上的 DEFAULT 让老行直接读成 DEEPSEEK（与迁移前行为一致）。
+        // 列上的 DEFAULT 让老行直接读成旧值 DEEPSEEK（实体层归一化成 MESSAGEAPI）。
         try addColumnIfMissing(
             database, table: "api_configs",
             column: webToolsProviderColumn.name, type: webToolsProviderColumn.ddl

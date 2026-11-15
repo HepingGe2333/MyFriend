@@ -194,8 +194,8 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertEqual(bundle.format, "myfriend.backup")
         XCTAssertEqual(bundle.formatVersion, 4)
         XCTAssertFalse(bundle.media.isEmpty, "v3 样本必须带 media")
-        // v1–v3 里没有 webToolsProvider：读成默认 DEEPSEEK（这就是「旧备份仍能读」）。
-        XCTAssertEqual(bundle.apiConfigs.first?.webToolsProvider, "DEEPSEEK")
+        // v1–v3 里没有 webToolsProvider：读成默认 MESSAGEAPI（这就是「旧备份仍能读」）。
+        XCTAssertEqual(bundle.apiConfigs.first?.webToolsProvider, "MESSAGEAPI")
         XCTAssertFalse(BackupCodec.containsSecretField(raw))
 
         // 每一条都真的能解出一张图：bytes 是声明值，也是 `data` 解出来的字节数。
@@ -269,8 +269,8 @@ final class BackupInteropTests: XCTestCase {
         }
         // 至少有一条不是默认值，才能证明「跨端真的传了 provider」而不是靠默认值蒙对。
         XCTAssertTrue(
-            bundle.apiConfigs.contains { $0.webToolsProvider != WebToolsProvider.deepSeek.rawValue },
-            "Android 的 v4 样本里应当有一条非 DEEPSEEK 的配置"
+            bundle.apiConfigs.contains { $0.webToolsProvider != WebToolsProvider.messageAPI.rawValue },
+            "Android 的 v4 样本里应当有一条非 MESSAGEAPI 的配置"
         )
     }
 

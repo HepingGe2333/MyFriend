@@ -942,8 +942,8 @@
 "联网工具" = "Web tools";
 "让他能搜索和读网页。关掉以后，这两个工具对他不可用。" = "Let him search and read web pages. When this is off, neither tool is available to him.";
 "搜索服务" = "Search service";
-"用哪家的搜索接口。DeepSeek 官方接口和聊天共用同一个地址与 Key。" = "Which search API to use. DeepSeek's official API shares the address and Key of the chat model.";
-"DeepSeek 官方" = "DeepSeek official";
+"用哪家的搜索接口。MessageAPI 兼容厂商的 tools 接口和聊天共用同一个地址与 Key。" = "Which search API to use. A MessageAPI-compatible provider shares the chat configuration's address and Key.";
+"MessageAPI（兼容厂商）" = "MessageAPI-compatible";
 "自建服务" = "Self-hosted";
 "留空就用上面聊天配置的地址" = "Leave empty to use the chat address above";
 "https://你的搜索服务地址/search" = "https://your-search-service/search";

@@ -29,7 +29,7 @@ import com.myfriend.app.domain.SleepInput
 object AgentdApi {
 
     const val SERVICE = "myfriend-agentd"
-    const val VERSION = "0.13.0"
+    const val VERSION = "0.12.0"
 
     /** 请求体字节上限（HTTP 层与 handler 层共用这一份）。 */
     const val MAX_BODY_BYTES = 1024 * 1024

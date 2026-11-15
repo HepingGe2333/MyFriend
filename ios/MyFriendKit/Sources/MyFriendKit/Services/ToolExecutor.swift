@@ -24,7 +24,7 @@ import Foundation
 //
 // ## iOS 与 Android 的已知差异（都写在报告里，不是静默空实现）
 //
-// - `web_search` / `web_fetch` 走 `Net/WebToolsClient.swift`：0.12 起支持 DeepSeek / Tavily /
+// - `web_search` / `web_fetch` 走 `Net/WebToolsClient.swift`：0.12 起支持 MESSAGEAPI / Tavily /
 //   Brave / Serper / 自建服务五个 provider（规范 `spec/web-search/README.md`）。工具协议与
 //   回灌给模型的文本形状不变；没开联网说「这个人格还没有开启联网」，缺 Key 则明确说缺 Key；
 // - Android 搜到东西后会另开一次「用完即弃」的打分（`WebSearchScorer`）把值得记的写进长期记忆，
@@ -53,7 +53,7 @@ public final class ToolExecutor: ToolRunning {
     private let now: () -> Int64
     private let log: (String) -> Void
 
-    /// 联网工具默认地址（与 Android 的 `DEFAULT_DEEPSEEK_BASE` 一致）。
+    /// 联网工具默认地址（与 Android 的 `DEFAULT_MESSAGEAPI_BASE` 一致）。
     public static let defaultWebToolsBase = "https://api.deepseek.com"
 
     public init(
@@ -285,7 +285,7 @@ public final class ToolExecutor: ToolRunning {
         guard config.webToolsEnabled else { return nil }
 
         let provider = WebToolsProvider(stored: config.webToolsProvider)
-        // 库里留空 = 用默认：DeepSeek 跟 LLM 配置的地址走，Tavily/Brave/Serper 用规范默认值；
+        // 库里留空 = 用默认：MESSAGEAPI 跟 LLM 配置的地址走，Tavily/Brave/Serper 用规范默认值；
         // GENERIC 没有默认值，留空就保持空（客户端会明确报「地址不合法」，绝不猜地址）。
         let configuredBase = config.webToolsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseUrl = configuredBase.isEmpty

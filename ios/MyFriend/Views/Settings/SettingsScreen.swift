@@ -456,8 +456,11 @@ struct SettingsScreen: View {
             case .success(let attachment):
                 let previous = env.currentSettings.myAvatarUri
                 env.updateSettings { $0.myAvatarUri = attachment.uri }
-                // 换下来的旧图删掉；只删我们自己目录里的文件。
-                MediaStorage.shared.deleteFileIfOwned(previous)
+                // 新头像已经落库，再删旧图；只删零引用的（旧图可能与人格/预设头像共用）。
+                MediaStorage.shared.deleteIfUnreferenced(
+                    previous,
+                    references: MediaReferences(stores: env.stores, settings: env.settings)
+                )
             case .failure(let message):
                 banner = MFAlert(title: L("这张图用不了"), message: message)
             }
@@ -467,7 +470,11 @@ struct SettingsScreen: View {
     private func removeMyAvatar() {
         let previous = env.currentSettings.myAvatarUri
         env.updateSettings { $0.myAvatarUri = nil }
-        MediaStorage.shared.deleteFileIfOwned(previous)
+        // 设置里已经不再引用它；仍要确认人格/预设/消息没有引用同一张图。
+        MediaStorage.shared.deleteIfUnreferenced(
+            previous,
+            references: MediaReferences(stores: env.stores, settings: env.settings)
+        )
     }
 
     // MARK: - 主动

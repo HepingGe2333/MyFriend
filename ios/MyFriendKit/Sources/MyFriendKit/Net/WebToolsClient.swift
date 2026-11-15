@@ -4,7 +4,8 @@ import Foundation
 // 联网工具（web_search / web_fetch）的网络客户端。
 //
 // 0.12 起搜索可以选五个服务（`spec/web-search/README.md` 是唯一契约）：
-//   DEEPSEEK  官方 Search / Fetch（服务端抓网页，与 0.11 之前完全一致）
+//   MESSAGEAPI 兼容厂商的 Search / Fetch（服务端抓网页，与 0.11 之前完全一致；
+//              0.12 之前这个 provider 叫 DEEPSEEK，旧值仍能读）
 //   TAVILY    POST {base}/search
 //   BRAVE     GET  {base}/web/search?q=…&count=…
 //   SERPER    POST {base}/search
@@ -26,26 +27,49 @@ import Foundation
 /// `api_configs.webToolsProvider` 的五个合法取值（规范 §1）。
 ///
 /// 库里存的是 `String`（而不是这个枚举）：备份/数据库是跨端输入，遇到不认识的
-/// provider 时退回 DEEPSEEK 比在类型层面把整条配置读丢更安全。
+/// provider 时退回 `MESSAGEAPI` 比在类型层面把整条配置读丢更安全。
+///
+/// **0.12 改名**：这个 provider 以前叫 `DEEPSEEK`，现在代表「任何提供同一套
+/// `/v1/tools/search`、`/v1/tools/fetch` 接口的兼容厂商」。老库/老备份里的
+/// `"DEEPSEEK"` 在读取时归一化成 `MESSAGEAPI`，写库/写备份一律写新值；
+/// 数据库 DDL 的默认值仍是历史的 `'DEEPSEEK'`（不改 schema，只在代码层归一化）。
 public enum WebToolsProvider: String, CaseIterable, Sendable {
-    case deepSeek = "DEEPSEEK"
+    case messageAPI = "MESSAGEAPI"
     case tavily = "TAVILY"
     case brave = "BRAVE"
     case serper = "SERPER"
     case generic = "GENERIC"
 
-    /// 宽松读法：大小写/空白都容忍；不认识的值按 DEEPSEEK 处理（老库、新备份都安全）。
+    /// 旧版本的 provider 名（读库/读备份时归一化成现在的取值）。
+    ///
+    /// 只放「曾经写出去过」的名字：`DEEPSEEK` 是 0.12 之前唯一的服务端 tools provider。
+    private static let legacyAliases: [String: WebToolsProvider] = [
+        "DEEPSEEK": .messageAPI
+    ]
+
+    /// 宽松读法：大小写/空白都容忍；旧值 `DEEPSEEK` 归一到 `MESSAGEAPI`；
+    /// 不认识的值也按 `MESSAGEAPI` 处理（老库、新备份都安全）。
     public init(stored: String?) {
         let normalized = stored?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .uppercased() ?? ""
-        self = WebToolsProvider(rawValue: normalized) ?? .deepSeek
+        self = WebToolsProvider(rawValue: normalized)
+            ?? Self.legacyAliases[normalized]
+            ?? .messageAPI
     }
 
-    /// 规范 §1 的默认地址。`nil` 表示「没有默认值」（DEEPSEEK 跟 LLM 配置走，GENERIC 必填）。
+    /// 写库/写备份用的规范值。
+    ///
+    /// 旧值（`DEEPSEEK`）、大小写/空白差异、以及不认识的取值都收敛成 `MESSAGEAPI`：
+    /// 这一列在两端只认五个枚举名，别把历史名字继续写回库和备份里。
+    public static func normalizedStored(_ raw: String?) -> String {
+        WebToolsProvider(stored: raw).rawValue
+    }
+
+    /// 规范 §1 的默认地址。`nil` 表示「没有默认值」（MESSAGEAPI 跟 LLM 配置走，GENERIC 必填）。
     public var defaultBaseUrl: String? {
         switch self {
-        case .deepSeek: return nil
+        case .messageAPI: return nil
         case .tavily: return "https://api.tavily.com"
         case .brave: return "https://api.search.brave.com/res/v1"
         case .serper: return "https://google.serper.dev"
@@ -55,13 +79,13 @@ public enum WebToolsProvider: String, CaseIterable, Sendable {
 
     /// 配置里 `webToolsBaseUrl` 为空时真正要用的地址。
     ///
-    /// - DEEPSEEK：沿用 LLM 配置的 base URL（这是 0.9.1 以来的行为），LLM 地址也没填时
+    /// - MESSAGEAPI：沿用 LLM 配置的 base URL（这是 0.9.1 以来的行为），LLM 地址也没填时
     ///   回落到官方地址；
     /// - 其它：规范里的默认值；
     /// - GENERIC：没有默认值，返回 nil（调用方报「地址不合法」，绝不猜一个地址发出去）。
     public func resolvedBaseUrl(llmBaseUrl: String = "") -> String? {
         switch self {
-        case .deepSeek:
+        case .messageAPI:
             let base = llmBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
             return base.isEmpty ? "https://api.deepseek.com" : base
         default:
@@ -72,8 +96,8 @@ public enum WebToolsProvider: String, CaseIterable, Sendable {
     /// 搜索必须带 Key 吗？GENERIC 是自建服务，可以完全不开鉴权。
     public var requiresAPIKey: Bool { self != .generic }
 
-    /// `web_fetch` 是不是由服务端代抓（只有 DEEPSEEK 是这样）。
-    public var usesServerSideFetch: Bool { self == .deepSeek }
+    /// `web_fetch` 是不是由服务端代抓（只有 MESSAGEAPI 兼容厂商是这样）。
+    public var usesServerSideFetch: Bool { self == .messageAPI }
 }
 
 // MARK: - 传输模型
@@ -134,14 +158,14 @@ public struct WebToolsAccess: Equatable, Sendable {
     public var baseUrl: String
     public var apiKey: String
     public var allowInsecureHttp: Bool
-    /// 这次调用用哪家搜索服务。默认 DEEPSEEK，保持 0.11 的调用点不用改。
+    /// 这次调用用哪家搜索服务。默认 MESSAGEAPI，保持 0.11 的调用点不用改。
     public var provider: WebToolsProvider
 
     public init(
         baseUrl: String,
         apiKey: String,
         allowInsecureHttp: Bool = false,
-        provider: WebToolsProvider = .deepSeek
+        provider: WebToolsProvider = .messageAPI
     ) {
         self.baseUrl = baseUrl
         self.apiKey = apiKey
@@ -254,7 +278,7 @@ public final class WebToolsClient: @unchecked Sendable {
 
     // MARK: 端点归一化
 
-    /// 归一化 DeepSeek baseUrl 并拼出工具端点，与 Android `toolsEndpoint` 逐条对齐：
+    /// 归一化 MESSAGEAPI 兼容厂商的 baseUrl 并拼出工具端点，与 Android `toolsEndpoint` 逐条对齐：
     ///
     /// 1. 两侧空白与尾斜杠去掉；
     /// 2. 用户误粘进来的 `/tools/search`、`/tools/fetch` 去掉（设置页常见）；
@@ -285,7 +309,7 @@ public final class WebToolsClient: @unchecked Sendable {
         return validatedEndpoint(text, allowInsecureHttp: allowInsecureHttp)
     }
 
-    /// 非 DeepSeek 的「base + 固定路径」：默认地址已经包含各自的前缀
+    /// 非 MESSAGEAPI 的「base + 固定路径」：默认地址已经包含各自的前缀
     /// （Brave 默认是 `…/res/v1`），这里只负责把两段拼起来。
     static func appendedEndpoint(
         baseUrl: String,
@@ -317,8 +341,8 @@ public final class WebToolsClient: @unchecked Sendable {
     /// - Parameters:
     ///   - query: 搜索关键词（会 trim；空则抛 `.emptyQuery`）。
     ///   - count: 想要几条；`<= 0` 用 6，`> 12` 夹到 12（与 Android 的 coerceIn(1,12) 同义）。
-    ///   - oriQuestion: 仅 DEEPSEEK 使用；nil/空白时不发送该字段（同 Android）。
-    ///   - needContent: 仅 DEEPSEEK 使用；请求体里始终带上该字段（同 Android）。
+    ///   - oriQuestion: 仅 MESSAGEAPI 使用；nil/空白时不发送该字段（同 Android）。
+    ///   - needContent: 仅 MESSAGEAPI 使用；请求体里始终带上该字段（同 Android）。
     public func search(
         query: String,
         count: Int = 6,
@@ -334,8 +358,8 @@ public final class WebToolsClient: @unchecked Sendable {
 
         let hits: [WebSearchHit]
         switch provider {
-        case .deepSeek:
-            let endpoint = try resolveDeepSeekEndpoint(tool: "search", access: access)
+        case .messageAPI:
+            let endpoint = try resolveMessageAPIEndpoint(tool: "search", access: access)
             var payload: [String: Any] = [
                 "query": keyword,
                 "count": limit,
@@ -351,7 +375,7 @@ public final class WebToolsClient: @unchecked Sendable {
                 headers: ["Authorization": "Bearer \(key ?? "")"],
                 provider: provider
             )
-            hits = Self.parseDeepSeekSearch(body)
+            hits = Self.parseMessageAPISearch(body)
 
         case .tavily:
             let endpoint = try resolveAppendedEndpoint(path: "search", access: access)
@@ -427,7 +451,7 @@ public final class WebToolsClient: @unchecked Sendable {
 
     /// 抓单个网页正文。
     ///
-    /// - DEEPSEEK：服务端代抓（行为与 0.11 一致）；
+    /// - MESSAGEAPI：服务端代抓（行为与 0.11 一致）；
     /// - 其它 provider：本端自己 `GET`（规范 §4：10 秒、≤2 MiB、UA `MyFriend/1.0`），
     ///   去掉标签/脚本/样式、压缩空白、最多 8000 字符。
     public func fetch(url: String, access: WebToolsAccess) async throws -> WebPage {
@@ -436,14 +460,14 @@ public final class WebToolsClient: @unchecked Sendable {
 
         if access.provider.usesServerSideFetch {
             let key = try requireKeyIfNeeded(access)
-            let endpoint = try resolveDeepSeekEndpoint(tool: "fetch", access: access)
+            let endpoint = try resolveMessageAPIEndpoint(tool: "fetch", access: access)
             let body = try await postJSON(
                 endpoint: endpoint,
                 payload: ["url": target],
                 headers: ["Authorization": "Bearer \(key ?? "")"],
                 provider: access.provider
             )
-            return Self.parseDeepSeekPage(body, requestedUrl: target)
+            return Self.parseMessageAPIPage(body, requestedUrl: target)
         }
 
         guard let endpoint = URL(string: target) else {
@@ -487,7 +511,7 @@ public final class WebToolsClient: @unchecked Sendable {
         return access.provider.resolvedBaseUrl() ?? ""
     }
 
-    private func resolveDeepSeekEndpoint(tool: String, access: WebToolsAccess) throws -> URL {
+    private func resolveMessageAPIEndpoint(tool: String, access: WebToolsAccess) throws -> URL {
         let base = resolvedBase(access)
         guard let url = Self.toolsEndpoint(
             baseUrl: base, tool: tool, allowInsecureHttp: access.allowInsecureHttp
@@ -607,8 +631,8 @@ public final class WebToolsClient: @unchecked Sendable {
 
     // MARK: - 响应解析（全部容错：坏 JSON / 缺字段都不抛）
 
-    /// DeepSeek 的旧解析：`results` / `data` / `hits` 都认。
-    static func parseDeepSeekSearch(_ body: String) -> [WebSearchHit] {
+    /// MESSAGEAPI 兼容接口的旧解析：`results` / `data` / `hits` 都认。
+    static func parseMessageAPISearch(_ body: String) -> [WebSearchHit] {
         guard let root = jsonObject(body) else { return [] }
         let rawItems: [Any]
         if let array = root as? [Any] {
@@ -692,8 +716,8 @@ public final class WebToolsClient: @unchecked Sendable {
         return true
     }
 
-    /// 解析 DeepSeek 的抓取响应：兼容 `markdown` / `content` / `text` 三种字段名，也认 `data` 包一层。
-    static func parseDeepSeekPage(_ body: String, requestedUrl: String) -> WebPage {
+    /// 解析 MESSAGEAPI 兼容接口的抓取响应：兼容 `markdown` / `content` / `text` 三种字段名，也认 `data` 包一层。
+    static func parseMessageAPIPage(_ body: String, requestedUrl: String) -> WebPage {
         let fallback = WebPage(url: requestedUrl, title: requestedUrl, markdown: "")
         guard let object = jsonObject(body) else { return fallback }
         // 极少数网关会直接把正文当 JSON 字符串回。

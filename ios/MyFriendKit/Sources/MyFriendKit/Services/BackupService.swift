@@ -705,6 +705,10 @@ public final class BackupService {
             warnings.append(PluralText.format("有 %d 句话原本带着图片，图片没有跟着备份走，现在只剩文字", unbackedAttachments))
         }
 
+        // 替换导入会丢掉本机所有引用：先把「导入前数据库里指向哪些媒体文件」记下来，
+        // 导入成功、设置也恢复之后再逐个查引用 —— 新图（被新库引用）不删，旧图零引用才删。
+        let previousMediaNames = mode == .replace ? mediaFileNamesInDatabase() : Set<String>()
+
         do {
             try stores.database.inTransaction {
                 if mode == .replace {
@@ -841,6 +845,17 @@ public final class BackupService {
             var updated = settings.load()
             updated.myAvatarUri = userAvatar.uri
             settings.save(updated)
+        }
+
+        // 替换导入的旧图清理：数据库、设置都已经换成导入后的状态，这时再逐个问引用。
+        // 必须放在 `restoreSettings` / 我的头像写回之后：`myAvatarUri` 也是引用之一。
+        // 只处理「导入前数据库里真的引用过」的文件，绝不遍历删除目录里的未知文件。
+        if !previousMediaNames.isEmpty {
+            let references = MediaReferences(stores: stores, settings: settings)
+            let storage = MediaStorage(directory: mediaDirectory)
+            for name in previousMediaNames {
+                storage.deleteIfUnreferenced(name, references: references)
+            }
         }
 
         return ImportSummary(
@@ -1241,6 +1256,33 @@ public final class BackupService {
         )
     }
 
+    /// 导入前数据库里所有媒体文件名（聊天图 + 人格/预设头像 + 我的头像）。
+    ///
+    /// 只用于替换导入的旧文件清理：这是一个**候选集**，不是「应删集」。
+    /// 聊天图直接读 `attachmentsJson` 文本列，避免把几千条消息整行解码一遍。
+    func mediaFileNamesInDatabase() -> Set<String> {
+        var names = Set<String>()
+        if let statement = try? stores.database.prepare("SELECT attachmentsJson FROM messages") {
+            while (try? statement.step()) == true {
+                for attachment in AttachmentsCodec.decode(statement.text(at: 0)) {
+                    if let name = MediaReferences.fileName(from: attachment.uri) {
+                        names.insert(name)
+                    }
+                }
+            }
+        }
+        for persona in (try? stores.personas.all()) ?? [] {
+            if let name = MediaReferences.fileName(from: persona.avatarUri) { names.insert(name) }
+        }
+        for preset in (try? stores.presets.all()) ?? [] {
+            if let name = MediaReferences.fileName(from: preset.avatarUri) { names.insert(name) }
+        }
+        if let name = MediaReferences.fileName(from: settings.load().myAvatarUri) {
+            names.insert(name)
+        }
+        return names
+    }
+
     /// API 配置 → 备份：白名单拷贝（密钥不进备份的第一道闸）。
     static func toBackupApiConfig(_ config: ApiConfigEntity) -> BackupApiConfig {
         BackupApiConfig(
@@ -1293,8 +1335,8 @@ public final class BackupService {
         merged.presencePenalty = imported.presencePenalty ?? existing.presencePenalty
         merged.webToolsEnabled = imported.webToolsEnabled
         // 搜索服务也属于「这台设备把 Key 发给谁」的一部分：本机 `webToolsBaseUrl` 为空时，
-        // provider 决定默认地址（DeepSeek 官方 vs Tavily/Brave/Serper/自建）。若照备份改 provider
-        // 而不改地址，本机存的 DeepSeek Key 就会发到备份指定的那家服务上去 —— 等于把 Key 交给
+        // provider 决定默认地址（MESSAGEAPI 兼容厂商 vs Tavily/Brave/Serper/自建）。若照备份改
+        // provider 而不改地址，本机存的 MESSAGEAPI Key 就会发到备份指定的那家服务上去 —— 等于把 Key 交给
         // 第三方。所以 provider 与本机不同时保留本机值并上报警告；新配置（本机没有）才采用备份值。
         let importedProvider = WebToolsProvider(stored: imported.webToolsProvider).rawValue
         let localProvider = WebToolsProvider(stored: existing.webToolsProvider).rawValue

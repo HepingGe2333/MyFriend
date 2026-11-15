@@ -373,11 +373,14 @@ public struct ApiConfigEntity: Equatable, Sendable {
     public var updatedAt: Int64
     /// 是否让这个配置启用联网工具（搜索 / 抓网页）。
     public var webToolsEnabled: Bool
-    /// 联网工具用哪个搜索服务：`DEEPSEEK` / `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`。
+    /// 联网工具用哪个搜索服务：`MESSAGEAPI` / `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`。
+    ///
+    /// 0.12 之前 `MESSAGEAPI` 叫 `DEEPSEEK`：老库/老备份里的旧值在读取时归一化成新值
+    /// （见 `WebToolsProvider(stored:)`），写库一律写规范值。
     ///
     /// 存在库里的是规范 §1 的枚举名（TEXT），不是 Swift 枚举：这样以后 Android 加一个
-    /// 新 provider、备份先到 iOS 时，iOS 能把它原样保留下来（读不认识的取值退回 DEEPSEEK），
-    /// 而不是在类型层面把这一列丢掉。业务侧统一用 `WebToolsProvider(stored:)` 解释它。
+    /// 新 provider、备份先到 iOS 时，iOS 不会在类型层面把这一列丢掉。
+    /// 业务侧统一用 `WebToolsProvider(stored:)` 解释它。
     public var webToolsProvider: String
     /// 联网工具地址，留空用该 provider 的默认地址（见 `WebToolsProvider.defaultBaseUrl`）。
     public var webToolsBaseUrl: String
@@ -401,7 +404,7 @@ public struct ApiConfigEntity: Equatable, Sendable {
         createdAt: Int64 = 0,
         updatedAt: Int64 = 0,
         webToolsEnabled: Bool = false,
-        webToolsProvider: String = WebToolsProvider.deepSeek.rawValue,
+        webToolsProvider: String = WebToolsProvider.messageAPI.rawValue,
         webToolsBaseUrl: String = "",
         webToolsApiKeyCipher: String? = nil
     ) {

@@ -288,8 +288,8 @@ class IdleBrowsing @Inject constructor(
         if (!config.webToolsEnabled) return@runCatching null
         val provider = WebToolsProviders.normalize(config.webToolsProvider)
         val baseUrl = config.webToolsBaseUrl.trim().ifBlank {
-            if (provider == WebToolsProviders.DEEPSEEK) {
-                config.baseUrl.trim().ifBlank { WebToolsProviders.DEEPSEEK_FALLBACK_BASE }
+            if (provider == WebToolsProviders.MESSAGEAPI) {
+                config.baseUrl.trim().ifBlank { WebToolsProviders.MESSAGEAPI_FALLBACK_BASE }
             } else {
                 ""
             }

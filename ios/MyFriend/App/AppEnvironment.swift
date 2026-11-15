@@ -524,8 +524,6 @@ final class AppEnvironment: ObservableObject {
     /// `agent_ticks`、`memory_versions`，也处理「删的是默认人格」——
     /// 删完之后库里一个默认人格都没有，`defaultPersona()` 返回 nil（0.10.2 安全审计 P1-6）。
     func deletePersona(_ persona: PersonaEntity) throws {
-        // 头像文件不跟着备份走，也不属于数据库；人删了，文件也该删（只删我们自己的目录）。
-        MediaStorage.shared.deleteFileIfOwned(persona.avatarUri)
         let outcome = PersonaDeletion.delete(
             personaId: persona.id,
             stores: stores,
@@ -535,6 +533,13 @@ final class AppEnvironment: ObservableObject {
         guard outcome.personaDeleted else {
             throw PersonaDeletionError.failed
         }
+        // 人已经删了，再决定头像文件要不要删：先删库行、再查引用，只有零引用才删文件。
+        // 头像按内容哈希去重，可能与预设头像、我的头像或某条消息的图共用同一个文件；
+        // 这里必须走 Kit 的 `deleteIfUnreferenced`，不能在 App 层复制一份引用查询。
+        MediaStorage.shared.deleteIfUnreferenced(
+            persona.avatarUri,
+            references: MediaReferences(stores: stores, settings: settings)
+        )
         // 「正在聊的人」若指向被删的人：交还给新的默认人格（一个都不剩时清空）。
         if outcome.activePersonaWasDeleted {
             updateSettings { $0.activePersonaId = outcome.nextDefaultPersonaId }

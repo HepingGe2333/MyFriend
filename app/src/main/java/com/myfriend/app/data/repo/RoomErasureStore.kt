@@ -25,6 +25,7 @@ import com.myfriend.app.domain.ErasableTable
 import com.myfriend.app.domain.ErasureFiles
 import com.myfriend.app.domain.ErasureStore
 import com.myfriend.app.util.MediaStorage
+import kotlinx.coroutines.runBlocking
 import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -153,22 +154,48 @@ class RoomErasureStore @Inject constructor(
 /**
  * [ErasureFiles] 的 Android 实现：所有文件操作都落在 `files/media` 与 `files/avatars`。
  *
- * 具体删除仍由 [MediaStorage] 做，那里有「只删自己目录」的守卫
- * （见 [com.myfriend.app.domain.MediaOwnership]）。
+ * ## 0.12：引用守卫
+ *
+ * 具体删除由 [MediaStorage] 的**带守卫**版本完成（归属 + 引用）；`DataEraser` 保证这些方法
+ * 都在**数据库事务提交之后**才被调用，正好满足「先删行、再查引用」的顺序。
+ *
+ * `ErasureFiles` 是 `:agentcore` 里的非挂起接口（两端共用，本轮不改它），所以这里用
+ * `runBlocking` 把挂起的引用查询接进同步方法：阻塞点是用户显式发起的
+ * 「清空聊天与记忆 / 删一个人 / 备份替换」，一次操作只查一批；比起「删掉用户另一段对话里的图」
+ * 这点阻塞是划算的。（Room 的挂起查询会切到查询线程，不会因为调用线程是主线程而死锁。）
+ *
+ * `clearAllMedia` 是「删除全部数据」专用（整棵媒体目录），此刻所有引用它的行都已经删掉，
+ * 保持整目录删除的语义即可。
  */
 @Singleton
 class AndroidErasureFiles @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val mediaReferences: MediaReferences
 ) : ErasureFiles {
 
-    override fun clearChatImages(): Int = MediaStorage.clearChatImages(context)
+    override fun clearChatImages(): Int = runBlocking {
+        MediaStorage.clearChatImagesExceptIfUnreferenced(context, emptySet()) { names ->
+            mediaReferences.referencedNames(names)
+        }
+    }
 
     override fun clearAllMedia(): Int = MediaStorage.clear(context)
 
-    override fun deleteChatImages(uris: List<String>): Int = MediaStorage.deleteFiles(context, uris)
+    override fun deleteChatImages(uris: List<String>): Int = runBlocking {
+        MediaStorage.deleteFilesIfUnreferenced(context, uris) { names ->
+            mediaReferences.referencedNames(names)
+        }
+    }
 
-    override fun deleteAvatar(uri: String?): Int = MediaStorage.deleteAvatar(context, uri)
+    override fun deleteAvatar(uri: String?): Int = runBlocking {
+        MediaStorage.deleteIfUnreferenced(context, uri) { names ->
+            mediaReferences.referencedNames(names)
+        }
+    }
 
-    override fun clearUnreferencedAvatars(keep: Set<String>): Int =
-        MediaStorage.clearUnreferencedAvatars(context, keep)
+    override fun clearUnreferencedAvatars(keep: Set<String>): Int = runBlocking {
+        MediaStorage.clearUnreferencedAvatarsIfUnreferenced(context, keep) { names ->
+            mediaReferences.referencedNames(names)
+        }
+    }
 }

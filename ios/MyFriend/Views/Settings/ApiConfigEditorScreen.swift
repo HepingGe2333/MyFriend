@@ -27,7 +27,7 @@ struct ApiConfigEditorScreen: View {
     @State private var topPText = ""
 
     @State private var webToolsEnabled = false
-    @State private var webToolsProvider: WebToolsProvider = .deepSeek
+    @State private var webToolsProvider: WebToolsProvider = .messageAPI
     @State private var webToolsBaseUrl = ""
     @State private var webToolsKeyInput = ""
     @State private var hasExistingWebToolsKey = false
@@ -230,8 +230,8 @@ struct ApiConfigEditorScreen: View {
     /// 联网工具（`web_search` / `web_fetch`）的搜索服务配置。
     ///
     /// 这一节只在打开「联网工具」之后才展开：关掉时它连字段都不出现，表单不会莫名其妙
-    /// 长出五六个跟聊天无关的输入框。DEEPSEEK 复用上面聊天的地址与 Key（所以留空就行），
-    /// GENERIC 是自建服务、没有默认地址，必须填完整地址。
+    /// 长出五六个跟聊天无关的输入框。MESSAGEAPI 兼容厂商复用上面聊天的地址与 Key
+    /// （所以留空就行），GENERIC 是自建服务、没有默认地址，必须填完整地址。
     private var webToolsCard: some View {
         MFCard {
             MFToggleRow(
@@ -243,7 +243,7 @@ struct ApiConfigEditorScreen: View {
             )
 
             if webToolsEnabled {
-                FieldLabel(L("搜索服务"), hint: L("用哪家的搜索接口。DeepSeek 官方接口和聊天共用同一个地址与 Key。"))
+                FieldLabel(L("搜索服务"), hint: L("用哪家的搜索接口。MessageAPI 兼容厂商的 tools 接口和聊天共用同一个地址与 Key。"))
                 MFChoiceBar(options: webToolsProviderOptions, selection: $webToolsProvider, accent: accent)
                     .padding(.top, 4)
                     .padding(.bottom, 14)
@@ -306,7 +306,7 @@ struct ApiConfigEditorScreen: View {
     /// 产品名（Tavily / Brave / Serper）不翻译：它们就是服务自己的名字。
     private static func webToolsProviderLabel(_ provider: WebToolsProvider) -> String {
         switch provider {
-        case .deepSeek: return L("DeepSeek 官方")
+        case .messageAPI: return L("MessageAPI（兼容厂商）")
         case .tavily: return "Tavily"
         case .brave: return "Brave"
         case .serper: return "Serper"
@@ -316,7 +316,7 @@ struct ApiConfigEditorScreen: View {
 
     private var webToolsBasePlaceholder: String {
         switch webToolsProvider {
-        case .deepSeek: return L("留空就用上面聊天配置的地址")
+        case .messageAPI: return L("留空就用上面聊天配置的地址")
         case .tavily: return "https://api.tavily.com"
         case .brave: return "https://api.search.brave.com/res/v1"
         case .serper: return "https://google.serper.dev"
