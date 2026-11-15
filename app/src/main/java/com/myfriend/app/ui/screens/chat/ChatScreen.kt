@@ -340,6 +340,7 @@ fun ChatScreen(
                         state = state,
                         focusMessageId = focusedMessageId,
                         onLoadOlder = viewModel::loadOlder,
+                        onLoadNewer = viewModel::loadNewer,
                         onShowLatest = viewModel::showLatest,
                         onLongPress = { message ->
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -813,7 +814,9 @@ private fun ChatMessageList(
     /** 从检索结果跳进来时要滚到并高亮的那条消息（null = 正常打开会话）。 */
     focusMessageId: String? = null,
     onLoadOlder: () -> Unit,
-    /** 定位窗口之外的「更新的消息」：回到最新一屏。 */
+    /** 滚到底且不在最新块：向下加载一块（0.12 新增，不再只能「跳回最新」）。 */
+    onLoadNewer: () -> Unit,
+    /** 「回到底部」按钮：直接回到最新一屏（只保留最新一块）。 */
     onShowLatest: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
     onRetry: () -> Unit,
@@ -833,6 +836,11 @@ private fun ChatMessageList(
      * 贴底动画，若不取消，它会把刚刚滚到目标消息的视口又拽回底部（第一版就踩了这个坑）。
      */
     var autoScrollJob by remember { mutableStateOf<Job?>(null) }
+    /**
+     * 「跟着往下加载」：点了底部那一行之后，每次新块拼上来都贴到最新位置，
+     * 于是「滚到底 → 自动加载下一块」会一路走到最新块；用户一拖动就停。
+     */
+    var followNewer by remember { mutableStateOf(false) }
     val displayItems = remember(state.messages, context) {
         buildList {
             var previousTimestamp: Long? = null
@@ -868,7 +876,11 @@ private fun ChatMessageList(
     }
 
     LaunchedEffect(isDragged) {
-        if (isDragged) autoFollow = false
+        if (isDragged) {
+            autoFollow = false
+            // 用户自己接手滚动：不再替他把视口往下拽。
+            followNewer = false
+        }
     }
     LaunchedEffect(isAtBottom) {
         if (isAtBottom) autoFollow = true
@@ -882,6 +894,14 @@ private fun ChatMessageList(
             }
         }
     }
+    // 点了「下面还有更新的消息」之后：每加载一块都贴到当前底部，
+    // 到了底部 isAtBottom 又为真，于是自动加载继续往下走（见下面的 LaunchedEffect）。
+    LaunchedEffect(state.messages.size, followNewer) {
+        if (followNewer && displayItems.isNotEmpty()) {
+            listState.animateScrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+
     LaunchedEffect(state.streamingText.length, state.isGenerating) {
         if (autoFollow) {
             val target = listState.layoutInfo.totalItemsCount - 1
@@ -900,6 +920,12 @@ private fun ChatMessageList(
             // 恢复到原来那条消息（下标必然 ≥1），所以不会「一加载完又立刻触发下一頁」地连锁加载。
             if (index == 0) onLoadOlder()
         }
+    }
+
+    // 滚到底（且不在最新块）：继续往下加载一块。是否真的发查询由 ViewModel 的状态机决定
+    // （加载中 / 已经到最新块都会直接忽略），所以这里可以在每次重组时放心调用。
+    LaunchedEffect(state.hasMoreNewer, state.loadingNewer, isAtBottom) {
+        if (state.hasMoreNewer && !state.loadingNewer && isAtBottom) onLoadNewer()
     }
 
     // 往前面插入旧消息之后，LazyColumn 的「第几项」会整体后移，视口会跳。
@@ -1008,11 +1034,21 @@ private fun ChatMessageList(
                         )
                     }
                 }
-                if (state.hasMoreNewer) {
-                    // 审计 P2-13：定位只加载目标附近的有界窗口，「下面还有更近的话」是真的；
-                    // 点了回到最新一屏（而不是把「目标 → 最新」整段读进内存）。
+                if (state.hasMoreNewer || state.loadingNewer) {
+                    // 规范 §3 Newer：不在最新块时，底部提示「下面还有更新的消息」。
+                    // 滚到底会自动加载（见上面的 LaunchedEffect），点一下也加载——
+                    // 不再是「只能跳回最新、中间那段永远看不到」。
                     item(key = "load-newer") {
-                        LoadNewerRow(onClick = onShowLatest)
+                        LoadNewerRow(
+                            loading = state.loadingNewer,
+                            onClick = {
+                                // 点一下就开始「跟着往下」：加载一块 + 贴到底，
+                                // 之后滚到底会自动接着加载，直到最新块。
+                                followNewer = true
+                                autoFollow = true
+                                onLoadNewer()
+                            }
+                        )
                     }
                 }
                 item(key = "tail-space") { Spacer(Modifier.height(4.dp)) }
@@ -1034,8 +1070,14 @@ private fun ChatMessageList(
                         .combinedClickable(
                             onClick = {
                                 autoFollow = true
-                                coroutineScope.launch {
-                                    listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+                                if (state.hasMoreNewer) {
+                                    // 下面还有没加载的块：直接回到最新一屏（只留最新一块），
+                                    // 而不是先滚到「已加载的最后一条」再逐块往下爬。
+                                    onShowLatest()
+                                } else {
+                                    coroutineScope.launch {
+                                        listState.animateScrollToItem(listState.layoutInfo.totalItemsCount.coerceAtLeast(1) - 1)
+                                    }
                                 }
                             },
                             onLongClick = null
@@ -1140,22 +1182,41 @@ private fun LoadEarlierRow(loading: Boolean) {
     }
 }
 
-/** 列表底部那一行：「下面还有更新的消息」——点了回到最新一屏（定位窗口是有界的）。 */
+/**
+ * 列表底部那一行：「下面还有更新的消息」。
+ *
+ * 0.12（规范 §3）起它是**加载入口**而不只是提示：点击加载下一块，滚到底也会自动加载；
+ * 加载中显示转圈并挡住重复触发。
+ */
 @Composable
-private fun LoadNewerRow(onClick: () -> Unit) {
+private fun LoadNewerRow(loading: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 12.dp)
-            .clickable(onClick = onClick),
+            .clickable(enabled = !loading, onClick = onClick),
         horizontalArrangement = Arrangement.Center,
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(
-            stringResource(R.string.chat_back_to_latest),
-            style = MaterialTheme.typography.labelSmall,
-            color = LocalAccentColor.current
-        )
+        if (loading) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(13.dp),
+                strokeWidth = 2.dp,
+                color = LocalAccentColor.current
+            )
+            Spacer(Modifier.width(7.dp))
+            Text(
+                stringResource(R.string.chat_loading_newer),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else {
+            Text(
+                stringResource(R.string.chat_load_newer),
+                style = MaterialTheme.typography.labelSmall,
+                color = LocalAccentColor.current
+            )
+        }
     }
 }
 

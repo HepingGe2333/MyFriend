@@ -65,7 +65,9 @@ data class BackupUiState(
     val busy: Boolean = false,
     val preview: BackupPreview? = null,
     /** 这份备份里有东西没读出来 / 带不回来时的中文说明，直接给用户看。 */
-    val decodeWarnings: List<com.myfriend.app.domain.BackupWarning> = emptyList()
+    val decodeWarnings: List<com.myfriend.app.domain.BackupWarning> = emptyList(),
+    /** v3 媒体段的提醒（坏条目 / 读不出来），与 [decodeWarnings] 一起显示。 */
+    val decodeMediaWarnings: List<com.myfriend.app.domain.BackupMediaWarning> = emptyList()
 )
 
 @HiltViewModel
@@ -107,14 +109,18 @@ class SettingsViewModel @Inject constructor(
     private val backupBusy = MutableStateFlow(false)
     private val backupPreview = MutableStateFlow<BackupPreview?>(null)
     private val backupDecodeWarnings = MutableStateFlow<List<com.myfriend.app.domain.BackupWarning>>(emptyList())
+    private val backupDecodeMediaWarnings =
+        MutableStateFlow<List<com.myfriend.app.domain.BackupMediaWarning>>(emptyList())
 
     /** 「把他带走」这一节：正在打包/接回来时按钮停一下；读完文件先给一句摘要。 */
     val backupState: StateFlow<BackupUiState> = combine(
         backupBusy,
         backupPreview,
-        backupDecodeWarnings
-    ) { busy, preview, warnings -> BackupUiState(busy, preview, warnings) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
+        backupDecodeWarnings,
+        backupDecodeMediaWarnings
+    ) { busy, preview, warnings, mediaWarnings ->
+        BackupUiState(busy, preview, warnings, mediaWarnings)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
 
     /** 用户手里那份备份文件：预览之后先拿着，等用户决定怎么接回来时再用。 */
     private var pendingBackup: String? = null
@@ -220,10 +226,10 @@ class SettingsViewModel @Inject constructor(
      * 交给界面的 rememberCoroutineScope 在 IO 线程写文件——文件可能几 MB，
      * 但生成这份文本要读库，所以这里只负责「生成」。
      */
-    suspend fun buildBackupJson(): Result<String> = runCatching {
+    suspend fun buildBackupJson(): Result<com.myfriend.app.data.repo.BackupExport> = runCatching {
         backupBusy.value = true
         try {
-            backupRepository.exportJson()
+            backupRepository.export()
         } finally {
             backupBusy.value = false
         }
@@ -238,6 +244,7 @@ class SettingsViewModel @Inject constructor(
                 is BackupDecodeResult.Success -> {
                     pendingBackup = text
                     backupDecodeWarnings.value = decoded.warnings
+                    backupDecodeMediaWarnings.value = decoded.mediaWarnings
                     backupPreview.value = BackupPreview.from(decoded.bundle)
                 }
             }
@@ -250,6 +257,7 @@ class SettingsViewModel @Inject constructor(
         pendingBackup = null
         backupPreview.value = null
         backupDecodeWarnings.value = emptyList()
+        backupDecodeMediaWarnings.value = emptyList()
     }
 
     /** 照备份把他接回来。失败时库里什么都没变，只给一句中文。 */

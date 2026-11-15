@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import MyFriendKit
 
-/// v8/v9 → v10 的迁移（§2.2）。
+/// v8/v9/v10 → v11 的迁移（§2.2 与 `spec/messages-blocks/README.md` §5）。
 ///
 /// 这是 1.9 唯一会**删用户数据**的地方（一人一段，其余会话连同消息直接删），
 /// 所以它必须被一条真库测试钉住：造一个 1.8 形状的旧库，打开它，然后逐条核对
@@ -29,7 +29,7 @@ final class SchemaMigrationTests: XCTestCase {
     private let configId = "config-legacy"
     private let now: Int64 = 1_794_500_000_000
 
-    /// 造一个「1.8 的库」：先把库建成 v10，再把 1.9 加的东西拆掉、灌进旧形状的数据。
+    /// 造一个「1.8 的库」：先把库建成当前版本，再把 1.9 / v11 加的东西拆掉、灌进旧形状的数据。
     ///
     /// 为什么这么做而不是手写一整套 v8 DDL：手写的那份迟早会和真实 schema 漂开，
     /// 而「在真库上回退」用的是同一份建表语句，测出来的就是真实迁移路径。
@@ -101,7 +101,7 @@ final class SchemaMigrationTests: XCTestCase {
         let stores = try DatabaseStores.open(path: databasePath)
 
         // 1) 版本号与唯一索引。
-        XCTAssertEqual(try stores.database.userVersion(), 10)
+        XCTAssertEqual(try stores.database.userVersion(), 11)
         let indexNames = try indexNames(stores.database)
         XCTAssertTrue(indexNames.contains(Schema.uniquePersonaSessionIndex), "唯一索引必须建起来")
 
@@ -148,16 +148,19 @@ final class SchemaMigrationTests: XCTestCase {
         stores = nil
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 10)
+        XCTAssertEqual(try reopened.database.userVersion(), 11)
         XCTAssertEqual(try reopened.sessions.count(), 1)
         XCTAssertEqual(try reopened.messages.count(), 1)
         XCTAssertNotNil(try reopened.personas.byId(personaId))
+        // v11：块表也只能有一份，不能因为重复打开而多出块行。
+        XCTAssertEqual(try reopened.messageBlocks.count(), 1)
+        XCTAssertTrue(try reopened.messageBlocks.inconsistencies().isEmpty)
     }
 
     /// 空库也能正常建起来（迁移不能只在「有数据」时才成立）。
     func testFreshDatabaseHasEverything() throws {
         let stores = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try stores.database.userVersion(), 10)
+        XCTAssertEqual(try stores.database.userVersion(), 11)
         XCTAssertTrue(try indexNames(stores.database).contains(Schema.uniquePersonaSessionIndex))
         XCTAssertEqual(try stores.personas.count(), 0)
         XCTAssertEqual(try stores.sessions.count(), 0)
@@ -185,13 +188,13 @@ final class SchemaMigrationTests: XCTestCase {
         var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
         try stores?.database.execute("DROP TABLE agent_ticks")
         try stores?.database.execute("DROP TABLE memory_echoes")
-        XCTAssertEqual(try stores?.database.userVersion(), 10)
+        XCTAssertEqual(try stores?.database.userVersion(), 11)
         XCTAssertFalse(try XCTUnwrap(stores).database.hasTable(Schema.agentTicksTable))
         stores = nil
 
         // 「升级后第一次启动」：同一个路径再打开一次。
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 10, "补 DDL 不改 user_version")
+        XCTAssertEqual(try reopened.database.userVersion(), 11)
         let names = try reopened.database.tableNames()
         for table in Schema.supplementaryTables {
             XCTAssertTrue(names.contains(table), "老库升级后缺表：\(table)")
@@ -242,6 +245,158 @@ final class SchemaMigrationTests: XCTestCase {
         let again = AgentTickStore(database: reopened.database)
         XCTAssertEqual(again.lastTickAt(), now, "重启后「刚想过」还在")
         XCTAssertEqual(again.latest(personaId: personaId)?.thought, "刚好在这个时间段")
+    }
+
+    // MARK: - v10 → v11：分块历史（规范 §5）
+
+    /// 造一个「v10 的库」：有消息、没有块表、`messages` 没有 `blockIndex`。
+    ///
+    /// 与上面的 v8 用例同一个手法：先在真库上建到 v11，再把 v11 加的东西拆掉、灌旧数据、
+    /// 把版本号记回 10，这样测到的就是真实的 `Schema.create` 升级路径。
+    ///
+    /// - Parameters:
+    ///   - descendingCreatedAt: 插入顺序与时间顺序相反（用来证明回填按 `(createdAt, id)` 排）。
+    ///   - sameTimestamp: 所有消息同一毫秒（用来证明 `id` 是第二排序键）。
+    private func seedV10Database(
+        messageCount: Int,
+        descendingCreatedAt: Bool = false,
+        sameTimestamp: Bool = false
+    ) throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+
+        try database.execute("DROP TABLE \(Schema.messageBlocksTable)")
+        try database.execute("DROP INDEX IF EXISTS index_messages_sessionId_blockIndex_createdAt")
+        try database.execute("ALTER TABLE messages DROP COLUMN blockIndex")
+
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt)
+            VALUES ('\(personaId)', '林岸', 'v10 的数据', 7, '你叫林岸。', '朋友', 2, 1, 1, \(now))
+            """)
+        try database.execute("""
+            INSERT INTO chat_sessions (id, personaId, apiConfigId, model, title, lastMessagePreview,
+                lastMessageAt, unreadCount, pinned, createdAt, updatedAt, lastPersonaVersion,
+                syncState, lastMemoryExtractedCount)
+            VALUES ('session-1', '\(personaId)', NULL, 'deepseek-chat', '旧的对话', '旧',
+                \(now), 0, 0, 1, \(now), 2, 'STATELESS', 0)
+            """)
+        for index in 0..<messageCount {
+            let offset: Int64
+            if sameTimestamp {
+                offset = 0
+            } else if descendingCreatedAt {
+                offset = Int64(messageCount - 1 - index)
+            } else {
+                offset = Int64(index)
+            }
+            let createdAt = now + offset * 1000
+            try database.execute("""
+                INSERT INTO messages (id, sessionId, personaId, role, content, createdAt, updatedAt,
+                                      status, edited)
+                VALUES ('m-\(String(format: "%03d", index))', 'session-1', '\(personaId)', 'USER',
+                        '第 \(index) 句', \(createdAt), \(createdAt), 'COMPLETE', 0)
+                """)
+        }
+        try database.setUserVersion(10)
+        stores = nil
+        database.close()
+    }
+
+    /// 250 条消息升级：一条不丢、块号按 `(createdAt, id)` 回填、块行边界正确。
+    func testV10ToV11BackfillsBlockIndexAndBuildsBlocks() throws {
+        try seedV10Database(messageCount: 250)
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertTrue(try stores.database.hasTable(Schema.messageBlocksTable), "v11 要建块表")
+        XCTAssertEqual(try stores.messages.count(), 250, "迁移不能丢消息")
+
+        // 块号回填：前 200 条 → 块 0，后 50 条 → 块 1。
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-000"), 0)
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-199"), 0)
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-200"), 1)
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-249"), 1)
+
+        let blocks = try stores.messageBlocks.blocks(sessionId: "session-1")
+        XCTAssertEqual(blocks.map(\.blockIndex), [0, 1])
+        XCTAssertEqual(blocks.map(\.messageCount), [200, 50])
+        XCTAssertEqual(blocks[0].firstMessageId, "m-000")
+        XCTAssertEqual(blocks[0].lastMessageId, "m-199")
+        XCTAssertEqual(blocks[1].firstMessageId, "m-200")
+        XCTAssertEqual(blocks[1].lastMessageId, "m-249")
+        XCTAssertEqual(blocks[0].firstCreatedAt, now)
+        XCTAssertEqual(blocks[1].lastCreatedAt, now + 249 * 1000)
+        XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    /// 回填按**时间**排序，不是插入顺序（老库里的行序不等于对话顺序）。
+    func testV10BackfillOrdersByTimestampNotInsertionOrder() throws {
+        try seedV10Database(messageCount: 250, descendingCreatedAt: true)
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-249"), 0, "最旧的一条落在块 0")
+        XCTAssertEqual(try stores.messages.blockIndex(ofMessage: "m-000"), 1, "最新的一条落在块 1")
+        let blocks = try stores.messageBlocks.blocks(sessionId: "session-1")
+        XCTAssertEqual(blocks[0].firstMessageId, "m-249")
+        XCTAssertEqual(blocks[1].lastMessageId, "m-000")
+        XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    /// 同一毫秒的一批消息：块内边界靠 `id` 稳定排序（不漏不重）。
+    func testV10BackfillUsesIDForSameTimestamp() throws {
+        try seedV10Database(messageCount: 201, sameTimestamp: true)
+        let stores = try DatabaseStores.open(path: databasePath)
+        let blocks = try stores.messageBlocks.blocks(sessionId: "session-1")
+        XCTAssertEqual(blocks.map(\.messageCount), [200, 1])
+        XCTAssertEqual(blocks[0].firstMessageId, "m-000")
+        XCTAssertEqual(blocks[0].lastMessageId, "m-199")
+        XCTAssertEqual(blocks[1].firstMessageId, "m-200")
+        XCTAssertEqual(blocks[1].messageCount, 1)
+    }
+
+    /// 空库（有表、没数据）也要能迁移：块表建出来、没有块行。
+    func testV10WithNoMessagesMigratesToAnEmptyBlockTable() throws {
+        try seedV10Database(messageCount: 0)
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.messages.count(), 0)
+        XCTAssertEqual(try stores.messageBlocks.count(), 0)
+        XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    /// 同一份 v10 库打开两次：块不会翻倍（回填是「清空后重建」，不是追加）。
+    func testV11MigrationIsIdempotent() throws {
+        try seedV10Database(messageCount: 250)
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let blocksAfterFirstOpen = try XCTUnwrap(stores).messageBlocks.count()
+        XCTAssertEqual(blocksAfterFirstOpen, 2)
+        stores = nil
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.messageBlocks.count(), blocksAfterFirstOpen)
+        XCTAssertEqual(try reopened.messages.count(), 250)
+        XCTAssertEqual(try reopened.messageBlocks.blocks(sessionId: "session-1").map(\.messageCount), [200, 50])
+        XCTAssertTrue(try reopened.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    /// 规范 §5 第 4 条：孤儿块（会话已不存在）要清掉。这里直接对回填函数造脏数据。
+    func testBackfillRemovesOrphanBlocks() throws {
+        let stores = try DatabaseStores.open(path: databasePath)
+        try stores.personas.upsert(TestData.persona(id: personaId))
+        try stores.sessions.upsert(TestData.session(id: "session-1", personaId: personaId))
+        try stores.messages.upsert([
+            TestData.message(id: "m-1", role: .user, content: "还在", createdAt: now)
+        ])
+        // 绕过仓储的级联删会话与消息，留下「块行还在、会话没了」的脏状态。
+        try stores.database.execute("DELETE FROM chat_sessions")
+        try stores.database.execute("DELETE FROM messages")
+        XCTAssertEqual(try stores.messageBlocks.count(), 1)
+
+        try Schema.backfillMessageBlocks(stores.database)
+        XCTAssertEqual(try stores.messageBlocks.count(), 0, "孤儿块必须删掉")
+        XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
     }
 
     // MARK: - 小工具

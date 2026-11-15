@@ -48,8 +48,13 @@ class DataResilienceContractTest {
     fun `deleteAfter 用 createdAt 加 id 的稳定序`() {
         val block = bodyOf(chatRepo, "suspend fun editUserMessage(")
         assertTrue(
-            "编辑重发要按 (createdAt, id) 删除之后的消息",
-            block.contains("messageDao.deleteAfterCursor(sessionId, message.createdAt, message.id)")
+            "编辑重发要按 (createdAt, id) 删除之后的消息（写路径统一走 MessageBlockWriter）",
+            block.contains("blockWriter.deleteAfterCursor(sessionId, message.createdAt, message.id)")
+        )
+        assertTrue(
+            "块维护内部仍然用稳定序 deleteAfterCursor",
+            source("src/main/java/com/myfriend/app/data/repo/MessageBlockWriter.kt")
+                .contains("messageDao.deleteAfterCursor(sessionId, createdAt, id)")
         )
         assertFalse("旧版只删严格更晚的，同毫秒会漏", daos.contains("suspend fun deleteAfter(sessionId: String, after: Long)"))
         assertTrue(
@@ -106,18 +111,18 @@ class DataResilienceContractTest {
     // ------------------------------------------------------------------ 审计 P2-13
 
     @Test
-    fun `定位窗口的 DAO 查询有 LIMIT 且只读一页上下文`() {
-        assertTrue(
-            "有界窗口查询必须带 LIMIT",
-            before(daos, "fun observeWindow(", 400).contains("LIMIT :limit")
-        )
-        assertTrue("定位只需要一个 COUNT 就知道目标下标", daos.contains("suspend fun countBefore("))
+    fun `定位按块走 一次只加载目标那一块`() {
         val vm = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt")
-        assertTrue("窗口有上界时界面给「更新的消息」入口", vm.contains("MessagePaging.onJumped("))
-        assertTrue("回到最新一屏要复位窗口与游标", vm.contains("fun showLatest()"))
         val screen = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatScreen.kt")
-        assertTrue("列表底部渲染「更新的消息」", screen.contains("if (state.hasMoreNewer)"))
-        assertTrue("点了回到最新", screen.contains("onShowLatest"))
+        assertTrue(
+            "定位到目标所在的块（不再用 COUNT 算下标、也不逐页往回爬）",
+            vm.contains("chatRepository.blockContainingMessage(sessionId, target)") &&
+                !vm.contains("countBefore(")
+        )
+        assertTrue("窗口换成目标那一块", vm.contains("MessageBlockPaging.onJump("))
+        assertTrue("回到最新一屏只保留最新块", vm.contains("fun showLatest()"))
+        assertTrue("列表底部渲染「下面还有更新的消息」", screen.contains("if (state.hasMoreNewer || state.loadingNewer)"))
+        assertTrue("点了加载下一块", screen.contains("onLoadNewer"))
     }
 
     // ------------------------------------------------------------------ 安全 P2-6
@@ -159,7 +164,8 @@ class DataResilienceContractTest {
         assertTrue("按声明的文件大小先拒绝", section.contains("declaredSizeBytes("))
         assertTrue("读的时候按字节设上限", section.contains("BoundedTextRead.read("))
         assertFalse("不再 readText() 整份读进内存", section.contains(".bufferedReader()?.use { it.readText() }"))
-        assertTrue("解析前再兜一次字符数", backupCodec.contains("BackupLimits.isTooManyChars("))
+        // v3：媒体 base64 让备份变大，字符数闸随之提到 256 MiB（BackupMediaLimits）。
+        assertTrue("解析前再兜一次字符数", backupCodec.contains("BackupMediaLimits.isTooManyChars("))
         assertTrue("超限给资源化错误", section.contains("BackupFailure.TooLarge("))
     }
 
@@ -203,7 +209,7 @@ class DataResilienceContractTest {
 
     @Test
     fun `空备份不再导出空文件`() {
-        val block = bodyOf(backupRepo, "suspend fun exportJson(")
+        val block = bodyOf(backupRepo, "suspend fun export(")
         assertTrue("没有任何内容时拒绝导出并给明确错误", block.contains("DomainErrorCode.BACKUP_EMPTY"))
     }
 
@@ -226,11 +232,15 @@ class DataResilienceContractTest {
     // ------------------------------------------------------------------ 审计 P2-14（滑窗提示）
 
     @Test
-    fun `首屏滑窗时仍会提示上面还有更早的消息`() {
+    fun `首屏加载最新块时仍会提示上面还有更早的消息`() {
         val vm = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt")
         assertTrue(
-            "首屏每次窗口变化都重算 hasMoreOlder（只在第一次算会漏掉滑窗）",
-            vm.contains("MessagePaging.onFirstWindow(it, rows.size)")
+            "首屏按块表算「上面还有没有更早的」（first < last 就为真）",
+            vm.contains("MessageBlockPaging.onInitial(last, first)")
+        )
+        assertTrue(
+            "每次数据变化都重算两侧边界（块被删空/后台写入之后入口要能重新出现）",
+            vm.contains("MessageBlockPaging.onBoundaries(it, hasOlder, hasNewer)")
         )
         val screen = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatScreen.kt")
         assertTrue("列表顶部有「加载更早」那一行", screen.contains("LoadEarlierRow("))
@@ -240,7 +250,7 @@ class DataResilienceContractTest {
 
     @Test
     fun `备份的解析 映射 编码都在 IO 上`() {
-        val export = bodyOf(backupRepo, "suspend fun exportJson(")
+        val export = bodyOf(backupRepo, "suspend fun export(")
         assertTrue("导出（读库 + 映射 + 编码）要切 IO", export.contains("withContext(Dispatchers.IO)"))
 
         val preview = bodyOf(backupRepo, "suspend fun preview(")
@@ -293,8 +303,8 @@ class DataResilienceContractTest {
     fun `备份替换先 bump 世代并取消在跑的生成`() {
         val body = bodyOf(backupRepo, "suspend fun importBundle(")
         val bumpIndex = body.indexOf("sessionGeneration.bump(sessionId)")
-        // 注释里也会提到 database.withTransaction，所以找真正的赋值。
-        val transactionIndex = body.indexOf("val erasure = database.withTransaction")
+        // 注释里也会提到 database.withTransaction，所以找真正的调用。
+        val transactionIndex = body.indexOf("database.withTransaction {")
         assertTrue("替换前要对会复用的 sessionId bump 世代", bumpIndex >= 0)
         assertTrue("还要取消在跑的生成", body.contains("chatRepository.cancelGeneration(sessionId)"))
         assertTrue("必须在清空/写回事务之前", bumpIndex < transactionIndex)
@@ -371,8 +381,14 @@ class DataResilienceContractTest {
             "release 不把编译期地址打进包（remote 已强制 false，baseUrl 留空）",
             release.contains("AGENT_CORE_BASE_URL")
         )
-        assertTrue("versionCode 必须递增", gradle.contains("versionCode = 16"))
-        assertTrue("versionName 是 0.11.1", gradle.contains("""versionName = "0.11.1""""))
+        // 版本号本身由发布流程决定（0.12.0 已升到 17）：这里只守「只增不减」和语义化格式。
+        val versionCode = Regex("""versionCode\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt()
+            ?: error("build.gradle.kts 里找不到 versionCode")
+        assertTrue("versionCode 必须递增（0.11.x 已经是 16）", versionCode >= 17)
+        assertTrue(
+            "versionName 必须是 0.x.y",
+            Regex("""versionName\s*=\s*"0\.\d+\.\d+"""").containsMatchIn(gradle)
+        )
     }
 
     @Test

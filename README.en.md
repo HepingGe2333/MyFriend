@@ -6,17 +6,17 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-970%20Android%20%7C%201187%20iOS%20%7C%2047%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#build-and-test)
 
 ## Project status
 
 | Item | Value |
 | --- | --- |
-| Version | `0.11.2` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
-| Database schema | v10 (Android Room `@Database(version = 10)` aligned with iOS SQLite `user_version = 10`) |
-| Backup format | v2 (`format = "myfriend.backup"`, `formatVersion = 2`; v1 files are read-only inputs) |
+| Version | `0.12.0` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
+| Database schema | v11 (messages stored in blocks of 200; Android Room `@Database(version = 11)` aligned with iOS SQLite `user_version = 11`) |
+| Backup format | v3 (`format = "myfriend.backup"`, `formatVersion = 3`; images and avatars travel with the backup, v1/v2 still readable) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 970 on Android (`:app:testDebugUnitTest`), 47 in `:agentcore`, 34 in `:agentd`, 1187 on iOS (`swift test`) |
+| Unit tests | 1044 on Android (`:app:testDebugUnitTest`, plus 28 instrumented), 60 in `:agentcore`, 34 in `:agentd`, 1263 on iOS (`swift test`) |
 | CI | None yet; all tests and builds run from local commands |
 
 ## Feature overview
@@ -24,7 +24,7 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 | Area | Implemented |
 | --- | --- |
 | Home | Contact list with avatar, name, last message, timestamp and unread count; one conversation per contact |
-| Search | Full-text chat-history search: highlighted snippets, persona and time filters, pagination, tap a hit to jump back to that message with a highlight (same semantics on both platforms, contract in `spec/search/`) |
+| Search | Full-text chat-history search: highlighted snippets, persona and time filters, **block-by-block scanning with no candidate cap**, tap a hit to jump back to that message with a highlight (same semantics on both platforms, contract in `spec/search/`) |
 | Chat | SSE streaming, stop generation, Markdown / code blocks / LaTeX, image messages (up to 4 per message), long-press actions (copy / edit & resend / regenerate / delete), link detection with an in-app browser |
 | Read state and silence | `messages.readAt` read receipts; `defer_reply` lets the model skip a turn while the UI only shows "read" |
 | Sleep | Persona-initiated sleep, do-not-disturb decided by the model, wake threshold inside a 30-minute window |
@@ -145,18 +145,18 @@ The full index is [docs/README.md](docs/README.md) (in Chinese); the documents m
 
 ## Known limitations
 
-- **No CI**: tests, builds and migration tests run locally; pull requests are reviewed against local results.
-- **Search ranks at most the newest 500 candidates**: ranking needs term counts SQL cannot express; the UI says so when results are truncated. Jumping to a very old hit loads the whole "target → latest" range into the paging window (capped at 60 pages).
-- **Chat pagination has a cost**: the first screen loads the latest 60 messages and fetches 60 more as you scroll up (unread, read receipts and DND still query the full table), but once the whole history has been paged through the observed range equals the full history.
-- **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled opportunistically, so background heartbeat and daily consolidation may run late; missed time is caught up once when the app returns to the foreground.
-- **Images and avatars are not backed up**: backups keep paths and metadata only, so images must be picked again after switching devices.
-- **Token statistics only**: no money, quotas or blocking; `costMicroUsd` remains a column and is not displayed.
-- **Remote mode is off by default**: both clients decide locally (zero network); Android opts in with `-PagentCoreRemote=true`, iOS with `MYFRIEND_AGENT_CORE=remote`, and failures fall back locally with a log.
-- **iOS keeps a second implementation**: `:agentcore` is Kotlin/JVM and cannot run on iOS; parity is enforced by the shared `spec/agent-core` and `spec/search` cases plus field-name golden tests (KMP remains a later option).
-- **No build artifacts in the repository**: `.gitignore` excludes `dist/`, `docs/screenshots/`, APK/IPA files and build caches, so the docs contain no screenshots and no prebuilt packages are provided.
-- **Some Chinese remains in English builds**: tool trace titles, data-layer errors and kit copy are localised (including session titles and previews generated at write time), but **values persisted before the upgrade**, **model output** (mood reasons, memory bodies, persona names/descriptions, invented mood words) and code comments/logs/prompt scaffolding remain Chinese (see [docs/I18N.en.md](docs/I18N.en.md)).
-- **Release builds do not do cleartext HTTP**: Android Release disables `usesCleartextTraffic`, and iOS Release only allows local-network cleartext; enabling "allow insecure HTTP" in a release build against a public host reports a clear error (debug builds are unaffected).
-- **Simulator Keychain limitation**: unsigned simulator builds have no Keychain entitlement; the plaintext fallback exists only under `DEBUG && simulator` and logs why. Device builds fail loudly instead of falling back.
+- **No CI**: tests, builds, migration tests and lint run locally; pull requests are reviewed against local results.
+- **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled by the system, so background
+  heartbeat and daily consolidation may run late; missed time is caught up once on foreground. This is an iOS platform
+  constraint, not a setting.
+- **Each search page re-walks the history blocks**: the direct cost of "no candidate cap, no offset" — the first page is
+  fast, but the further you page through a long history the slower it gets; peak memory stays at "one block + one page".
+- **Browsing up and down for a long time accumulates loaded blocks**: blocks stay in the window so the read range can stay
+  contiguous; they are released when the conversation is reopened.
+- **Blocks are never rebalanced**: after extreme deletions a block can hold only a few messages and block numbers can have
+  gaps (paging looks up the block table and skips gaps).
+- **Backup images are capped**: 128 MiB total, 8 MiB per image, JPEG/PNG/WebP only; anything over the limit or of an
+  unsupported format is **skipped with an explicit warning** — GIF, HEIC and video never travel with a backup.
 
 ## Contributing & license
 

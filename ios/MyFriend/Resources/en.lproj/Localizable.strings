@@ -22,9 +22,7 @@
 "选一个位置，把这份 JSON 存起来" = "Choose a place to save this JSON file";
 "从备份里接他回来" = "Bring him back from a backup";
 "先看看这份备份里有什么，再决定合并还是替换" = "See what's in this backup first, then choose merge or replace";
-"哪些东西没跟着走" = "What doesn't come with him";
 "API Key 不在备份里。它存在这台手机的 Keychain 里，从来不进文件；接回来以后在「API 配置」里重新填一次就好。" = "Your API Key isn't in the backup. It stays in this phone's Keychain and never goes into a file. Once he's back, just enter it again in “API configuration”.";
-"图片没有跟着备份走。备份里只有文字，那些带图片的消息会剩下「（发来一张图片）」这行字；头像也一样，换台手机之后会变回名字的首字。" = "Images don't travel with the backup. Only text is included, so messages that had images keep just the line “(sent an image)”; avatars work the same way and revert to the first character of the name on a new phone.";
 "聊天背景图的路径是这台手机上的本地路径，换机之后会失效，需要重新选一次。" = "The chat background is a local file path on this phone, so it won't survive a new device. You'll need to choose it again.";
 "危险区" = "Danger zone";
 "清空之前，先把他带走。" = "Before you clear anything, take him with you.";
@@ -62,7 +60,6 @@
 "API 配置和密钥不在这份备份里，所以两种方式都不会动你存的 Key。" = "API configuration and keys aren't in this backup, so neither option touches the Key you've saved.";
 "备份里另有 %d 个 API 配置的空壳（地址与模型，不含密钥）。" = "The backup also holds %d API configuration shells (address and model, no key).";
 "备份里另有 %d 个 API 配置的空壳（地址与模型，不含密钥）。.one" = "The backup also holds %d API configuration shell (address and model, no key).";
-"图片没有跟着备份走：带图片的消息只会剩下文字，头像也会变回名字首字。" = "Images don't come with the backup: messages that had images keep only their text, and avatars revert to the first character of the name.";
 "接的时候要注意" = "Before you bring him back";
 "合并" = "Merge";
 "替换" = "Replace";
@@ -269,7 +266,7 @@
 "他" = "Him";
 "头像" = "Avatar";
 "没选就先用名字的首字。" = "Until you pick one, the first letter of his name is used.";
-"这张图只存在这台手机上，不跟着备份走。" = "This image stays on this phone only and is not included in backups.";
+"这张图只存在这台手机上，不跟着备份走。" = "This picture travels with your backup too (up to 8 MB).";
 "从相册选一张" = "Choose from library";
 "换一张" = "Change";
 "恢复默认" = "Reset";
@@ -520,7 +517,7 @@
 "这一版不再有「记忆开关」和「回复节奏」：他记不记得、什么时候回，都由他自己决定。" = "This version no longer has a “memory switch” or a “reply rhythm”: whether he remembers and when he replies are his to decide.";
 "我的头像" = "My avatar";
 "给自己选一张；聊天里你那一侧会显示。" = "Pick one for yourself; it shows on your side of the chat.";
-"只在你自己那一侧显示。图片不跟着备份走。" = "Only shown on your side. The image isn't part of backups.";
+"只在你自己那一侧显示。图片不跟着备份走。" = "Only shown on your side. It comes back with your backup on a new phone too.";
 "移除" = "Remove";
 "选择" = "Choose";
 "主动" = "Reaching out";
@@ -816,6 +813,8 @@
 "上次没试成：%@" = "Last try failed: %@";
 "加载更早" = "Load earlier";
 "正在加载更早的消息…" = "Loading earlier messages…";
+"下方还有更新的消息，点这里加载" = "Newer messages below — tap to load";
+"正在加载更新的消息…" = "Loading newer messages…";
 "本地参考服务" = "Local reference service";
 "%d 天前.one" = "%d day ago";
 "%d 周前.one" = "%d week ago";
@@ -908,7 +907,7 @@
 "一共 %d 次调用 · 读了 %@ · 写了 %@.one" = "%d call in total · %@ read · %@ written";
 
 "这个文件读不出来，换一份之前带走的备份试试" = "This file can't be read. Try another backup you exported earlier.";
-"备份文件超过 %@，请选一份更小的" = "That backup is larger than %@. Pick a smaller file.";
+"备份文件超过 %@，请选一份更小的" = "That backup is larger than %@. Backups with pictures are bigger, but should still stay below this; pick a smaller file.";
 "这个链接没有在应用内打开" = "This link can't be opened inside the app.";
 
 // 0.11.1 security / robustness strings (export ceiling, local-URL guard, decision-layer failures)
@@ -920,3 +919,16 @@
 "这个链接指向本机或内网地址，联网工具不会去访问" = "That link points to this device or a private network, so the web tool won't fetch it.";
 "这个链接里带着账号或密码，联网工具不会把它发出去" = "That link contains a username or password, so the web tool won't send it.";
 "决策服务不可用（严格远程模式），请检查 agentd 是否在运行" = "The decision service is unavailable (strict remote mode). Check that agentd is running.";
+
+// 0.12 备份格式 v3：图片（头像 / 聊天图片）跟着备份走，以及它的上限与坏数据提醒。
+"哪些东西跟着走，哪些不跟" = "What travels with him, and what doesn't";
+"头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。" = "Avatars and chat pictures travel with the backup: the image bytes live inside the JSON, so they come back on a new phone. The cost is a bigger file, so there are limits — up to 8 MB per picture and 128 MB in total. Pictures over the limit are left out, and you'll be told how many after exporting.";
+"备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB。" = "Pictures in a backup are capped: 8 MB each, 128 MB in total, and 256 MB for the whole file.";
+"备份里的头像与聊天图片会一起接回来；更早的备份（v2 及以前）里没有图片本体，那些带图片的消息只会剩下文字。" = "Avatars and chat pictures in this backup will come back too. Older backups (v2 and earlier) never carried the image bytes, so those messages keep only their text.";
+"有 %d 张图片没有随备份带走（超出上限）" = "%d pictures weren't included in the backup (over the size limit)";
+"有 %d 张图片没有随备份带走（超出上限）.one" = "%d picture wasn't included in the backup (over the size limit)";
+"有 %d 张图片没接回来（文件损坏或格式不支持）" = "%d pictures couldn't be restored (damaged file or unsupported format)";
+"有 %d 张图片没接回来（文件损坏或格式不支持）.one" = "%d picture couldn't be restored (damaged file or unsupported format)";
+"有 %d 张图片没有接回来（超出上限）" = "%d pictures weren't restored (over the size limit)";
+"有 %d 张图片没有接回来（超出上限）.one" = "%d picture wasn't restored (over the size limit)";
+"媒体" = "Media";

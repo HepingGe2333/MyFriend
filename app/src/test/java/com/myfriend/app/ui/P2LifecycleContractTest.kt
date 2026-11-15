@@ -8,7 +8,7 @@ import java.io.File
 /**
  * 界面与文件生命周期的**接线**契约（0.11.0 P2 收尾：审计 P2-1 / P2-2 / P2-10 / P2-11 / P2-14）。
  *
- * 纯逻辑在 `AvatarDraftFilesTest` / `ReadReceiptTest` / `MessagePagingTest`；
+ * 纯逻辑在 `AvatarDraftFilesTest` / `ReadReceiptTest` / `MessageBlockPagingTest`；
  * 这里只保证「该调的地方真的调了」——比如 onCleared 里忘了删文件、气泡里又写回 O(n) 扫描。
  */
 class P2LifecycleContractTest {
@@ -96,12 +96,17 @@ class P2LifecycleContractTest {
     // ------------------------------------------------------------------ 审计 P2-14
 
     @Test
-    fun `分页滑窗时提示上面还有更早的消息`() {
+    fun `区块分页时提示上面还有更早的消息`() {
         assertTrue(
-            "首屏窗口每次变化都要重算 hasMoreOlder",
-            chatVm.contains("MessagePaging.onFirstWindow(it, rows.size)")
+            "首屏按块表算 hasMoreOlder（first < last）",
+            chatVm.contains("MessageBlockPaging.onInitial(last, first)")
+        )
+        assertTrue(
+            "数据每次变化都重算两侧边界",
+            chatVm.contains("MessageBlockPaging.onBoundaries(it, hasOlder, hasNewer)")
         )
         assertTrue("顶部那一行就是这条提示", chatScreen.contains("R.string.chat_load_earlier"))
+        assertTrue("底部那一行是「下面还有更新的消息」", chatScreen.contains("R.string.chat_load_newer"))
     }
 
     // ------------------------------------------------------------------ 工具

@@ -9,6 +9,7 @@ import com.myfriend.app.data.local.AgentTickEntity
 import com.myfriend.app.data.local.ApiConfigDao
 import com.myfriend.app.data.local.ChatSessionDao
 import com.myfriend.app.data.local.ChatSessionEntity
+import com.myfriend.app.data.local.MessageBlockDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MessageEntity
 import com.myfriend.app.data.local.MessageRole
@@ -16,6 +17,7 @@ import com.myfriend.app.data.local.MessageSearchRow
 import com.myfriend.app.data.local.MessageSearchSql
 import com.myfriend.app.data.local.MessageStatus
 import com.myfriend.app.data.local.MyFriendDatabase
+import com.myfriend.app.data.local.SearchBlockRow
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.core.AgentCoreClient
@@ -34,11 +36,9 @@ import com.myfriend.app.domain.LanguageDirective
 import com.myfriend.app.domain.LlmLane
 import com.myfriend.app.domain.ImageContextBudget
 import com.myfriend.app.domain.InterruptedReply
-import com.myfriend.app.domain.MessageJump
 import com.myfriend.app.domain.MessageOrder
 import com.myfriend.app.domain.MoodRecovery
 import com.myfriend.app.domain.MessageAttachment
-import com.myfriend.app.domain.MessagePaging
 import com.myfriend.app.domain.MoodBehavior
 import com.myfriend.app.domain.MoodPrompt
 import com.myfriend.app.domain.OpenSessionTracker
@@ -46,6 +46,7 @@ import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.PersonaSwitchResult
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.NetworkErrorKind
+import com.myfriend.app.domain.BlockSearch
 import com.myfriend.app.domain.RankInput
 import com.myfriend.app.domain.SearchFilter
 import com.myfriend.app.domain.SearchRanking
@@ -79,6 +80,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.withContext
@@ -109,11 +111,25 @@ data class SessionSearchHit(
     val lastMessageAt: Long? = null
 )
 
+/** 相邻块：编号可能不连续（块删空后留下空洞，规范 §1）。 */
+data class BlocksAround(val older: Int?, val newer: Int?)
+
+/** 从检索结果定位时要加载的块（`hasMoreOlder/Newer` 决定两端要不要给加载入口）。 */
+data class BlockWindow(
+    val blockIndex: Int,
+    val hasMoreOlder: Boolean,
+    val hasMoreNewer: Boolean
+)
+
 /**
- * 一次检索请求：关键词 + 过滤 + 分页窗口。
+ * 一次检索请求：关键词 + 过滤 + **键集游标**。
  *
- * 过滤在 SQL 粗筛与内存精排里各做一次（[com.myfriend.app.domain.SearchFilter]），
- * 这样即使将来粗筛的 SQL 变了，也不会因为「过滤漏在某一层」而把别人的消息露出来。
+ * 过滤在 SQL 与内存里各做一次（[com.myfriend.app.domain.SearchFilter]），
+ * 这样即使将来 SQL 变了，也不会因为「过滤漏在某一层」而把别人的消息露出来。
+ *
+ * 0.12 起没有 `offset`：翻页用上一页最后一条的
+ * [com.myfriend.app.domain.BlockSearch.Cursor]，所以翻页期间新增消息不会让结果重复或乱序，
+ * 也不需要「候选上限」。
  */
 data class SearchQuery(
     val text: String,
@@ -121,18 +137,18 @@ data class SearchQuery(
     val since: Long? = null,
     val until: Long? = null,
     val limit: Int = SEARCH_PAGE_SIZE,
-    val offset: Int = 0
+    val cursor: BlockSearch.Cursor? = null
 )
 
-/** 检索页的一页消息结果（分页单位：[SEARCH_PAGE_SIZE] 条）。 */
+/** 检索页的一页消息结果（分页单位：[SEARCH_PAGE_SIZE] 条，键集游标翻页）。 */
 data class SearchPage(
     val query: String = "",
     val hits: List<SearchHit> = emptyList(),
-    /** SQL 统计出来的命中总数（可能大于已加载条数，也可能大于候选池上限）。 */
+    /** 全部扫完之后的命中总数——**不受页大小、也没有 500 条上限**。 */
     val total: Int = 0,
     val hasMore: Boolean = false,
-    /** 命中数超过候选池上限（[MessageSearchSql.CANDIDATE_LIMIT]）：更早的命中不会出现在结果里。 */
-    val truncated: Boolean = false
+    /** 下一页的游标；没有下一页时为 null。 */
+    val nextCursor: BlockSearch.Cursor? = null
 )
 
 /**
@@ -192,6 +208,9 @@ private data class ExportBundle(
 class ChatRepository @Inject constructor(
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
+    private val blockDao: MessageBlockDao,
+    /** 块元数据的唯一写入入口（规范 §2）。 */
+    private val blockWriter: MessageBlockWriter,
     private val personaDao: PersonaDao,
     private val apiConfigDao: ApiConfigDao,
     private val database: MyFriendDatabase,
@@ -226,102 +245,61 @@ class ChatRepository @Inject constructor(
 
     fun observeSessions(): Flow<List<ChatSessionEntity>> = sessionDao.observeAll()
     fun observeSession(id: String): Flow<ChatSessionEntity?> = sessionDao.observeById(id)
-    /**
-     * 聊天页首屏：最近 [limit] 条，时间正序。
-     *
-     * 不再一次性读整段会话（长会话内存最大的一块）。更早的部分由
-     * [messagesBefore] + [observeMessagesFrom] 一段一段往回要。
-     */
-    fun observeLatestMessages(
-        sessionId: String,
-        limit: Int = MessagePaging.PAGE_SIZE
-    ): Flow<List<MessageEntity>> =
-        messageDao.observeRecentBySession(sessionId, limit).map { rows -> rows.asReversed() }
 
-    /** 已经加载到的最早一条之后：整个已加载区间（可观察，编辑/删除都会跟着更新）。 */
-    fun observeMessagesFrom(
-        sessionId: String,
-        cursor: MessagePaging.Cursor
-    ): Flow<List<MessageEntity>> =
-        messageDao.observeSince(sessionId, cursor.createdAt, cursor.id)
+    // ---------------------------------------------------------------- 区块分页（v11）
+    //
+    // 规范 `spec/messages-blocks/README.md` §3：一页 = 一块；首屏只读最新块，滚到顶读
+    // `blockIndex - 1`，滚到底（且不在最新块）读 `blockIndex + 1`。永远按
+    // `(sessionId, blockIndex)` 定位，不用 offset，所以「一页读多少行」与会话长度无关。
+
+    /** 「读某块」：返回这一块的消息，按 `(createdAt, id)` 升序。 */
+    suspend fun blockOf(sessionId: String, blockIndex: Int): List<MessageEntity> =
+        messageDao.blockOf(sessionId, blockIndex)
 
     /**
-     * 有界窗口：从 [start] 起最多 [rows] 条（可观察）。
+     * 聊天页观察「已加载的那几块」。
      *
-     * 从检索结果定位时用它，窗口只覆盖目标附近（见 [cursorContainingMessage] 与
-     * [com.myfriend.app.domain.MessageJump]）。往前翻页时把 [start] 前移、
-     * 同时把 [rows] 加上一页，窗口的「下界」（更近的一侧）保持不变。
+     * 用可观察查询而不是快照：块内编辑/删除、以及块里追加的新消息都要反映到列表里。
+     * 空列表直接给空流（Room 对 `IN ()` 的行为不保证）。
      */
-    fun observeMessagesWindow(
-        sessionId: String,
-        start: MessagePaging.Cursor,
-        rows: Int
-    ): Flow<List<MessageEntity>> =
-        messageDao.observeWindow(sessionId, start.createdAt, start.id, rows.coerceAtLeast(1))
+    fun observeBlocks(sessionId: String, blockIndices: List<Int>): Flow<List<MessageEntity>> {
+        val distinct = blockIndices.distinct().sorted()
+        if (distinct.isEmpty()) return flowOf(emptyList())
+        return messageDao.observeBlocks(sessionId, distinct)
+    }
+
+    /** 会话里编号最大的块（空会话为 null）。 */
+    suspend fun lastBlockIndex(sessionId: String): Int? = blockDao.lastBlockIndex(sessionId)
+
+    /** 会话里编号最小的块（空会话为 null）。块编号有空洞时它不等于 0。 */
+    suspend fun firstBlockIndex(sessionId: String): Int? = blockDao.firstBlockIndex(sessionId)
 
     /**
-     * 会话里最新一条消息的游标（没有消息为 null）。
-     *
-     * 审计 P1-1：定位窗口是固定区间，`hasMoreNewer` 不能只在定位那一刻算一次；
-     * 窗口数据每次变化时都要拿它和「窗口末尾」比一遍。
+     * 可观察的「最新块」：聊天页靠它在「会话从空变成有一块」「最新块被删空」时重新定位。
      */
-    suspend fun latestMessageCursor(sessionId: String): MessagePaging.Cursor? =
-        messageDao.latestInSession(sessionId)?.let { MessagePaging.Cursor(it.createdAt, it.id) }
+    fun observeLastBlockIndex(sessionId: String): Flow<Int?> =
+        blockDao.observeLastBlock(sessionId).map { it.firstOrNull() }
 
-    /** 往前翻一页（时间正序返回）；返回不足一页说明到底了。 */
-    suspend fun messagesBefore(
-        sessionId: String,
-        cursor: MessagePaging.Cursor,
-        limit: Int = MessagePaging.PAGE_SIZE
-    ): List<MessageEntity> =
-        messageDao.pageBefore(sessionId, cursor.createdAt, cursor.id, limit).asReversed()
+    /** 相邻块（规范 §3 的「上一块 / 下一块」；编号有空洞时不是 ±1）。 */
+    suspend fun blocksAround(sessionId: String, blockIndex: Int): BlocksAround = BlocksAround(
+        older = blockDao.blockBefore(sessionId, blockIndex),
+        newer = blockDao.blockAfter(sessionId, blockIndex)
+    )
 
     /**
-     * 检索结果「跳转到那条消息」用的窗口：算出**窗口起点与条数上界**，让目标消息落进窗口。
+     * 从检索结果跳到某条消息：定位到它所在的那一块（不再按「条数窗口」算）。
      *
-     * ## 为什么不再「一页页往回翻」
-     *
-     * 0.10.2 的做法是从最新一页开始用 `pageBefore` 往前爬，每爬一页就把窗口起点挪一次；
-     * 而聊天页观察的是「起点 → 最新」的连续区间，于是第 k 页要重读 60×k 行，
-     * 合计 O(页数²)（最多 200 页 ≈ 120 万行）。这正是分页要避免的峰值，只是换了个入口
-     * （审计 P2-13）。
-     *
-     * 现在只做三次**有界**查询：
-     * 1. `COUNT(*)`：会话一共几条；
-     * 2. `COUNT(*) WHERE (createdAt,id) < 目标`：目标之前几条（只回一个数字，不 materialize 行）；
-     * 3. `pageBefore(目标, 一页)`：取目标之上的一页当作上下文起点。
-     *
-     * 窗口长度由 [com.myfriend.app.domain.MessageJump] 封顶（最多四页），所以一次定位的
-     * 读取量与会话总长度无关；目标之后还有更新的消息时，界面底部给「更新的消息」入口。
-     *
-     * 返回 null 有两种含义，调用方都不用管：目标消息已经在首屏窗口里（不用动窗口），
-     * 或者它已经不在了（删过、换过设备）。
+     * 目标消息的 `blockIndex` 是落库的，所以一次查询（`getById`）+ 两次相邻块查询就够了；
+     * 块内最多 BLOCK_SIZE 条，定位的读取量与会话长度无关。
      */
-    suspend fun cursorContainingMessage(
-        sessionId: String,
-        messageId: String,
-        pageSize: Int = MessagePaging.PAGE_SIZE
-    ): MessagePaging.Window? {
+    suspend fun blockContainingMessage(sessionId: String, messageId: String): BlockWindow? {
         val target = messageDao.getById(messageId) ?: return null
         if (target.sessionId != sessionId) return null
-        val total = messageDao.countInSession(sessionId)
-        val beforeTarget = messageDao.countBefore(sessionId, target.createdAt, target.id)
-        val plan = MessageJump.plan(total, beforeTarget, pageSize)
-        // 目标就在首屏（最近一页）：聊天页本来就是从最新一屏打开的，什么都不用挪。
-        if (plan.targetInLatestPage) return null
-        val contextRow = if (plan.contextRows > 0) {
-            messageDao.pageBefore(sessionId, target.createdAt, target.id, plan.contextRows).lastOrNull()
-        } else {
-            null
-        }
-        val start = contextRow
-            ?.let { MessagePaging.Cursor(it.createdAt, it.id) }
-            ?: MessagePaging.Cursor(target.createdAt, target.id)
-        return MessagePaging.Window(
-            start = start,
-            rows = plan.windowRows,
-            hasMoreOlder = plan.hasMoreOlder,
-            hasMoreNewer = plan.hasMoreNewer
+        val around = blocksAround(sessionId, target.blockIndex)
+        return BlockWindow(
+            blockIndex = target.blockIndex,
+            hasMoreOlder = around.older != null,
+            hasMoreNewer = around.newer != null
         )
     }
 
@@ -421,7 +399,8 @@ class ChatRepository @Inject constructor(
             attachmentsJson = AttachmentsCodec.encode(images)
         )
         database.withTransaction {
-            messageDao.insert(message)
+            // 写入统一走块维护（规范 §2 Append）：落进最后一块，满了才开新块。
+            blockWriter.append(message)
             // 消息预览同样是落库数据：图片这类「没有文字的消息」用资源生成，不写死中文。
             val preview = content.replace('\n', ' ').trim().take(90)
                 .ifBlank { if (images.isNotEmpty()) appContext.getString(R.string.chat_preview_image) else "" }
@@ -633,7 +612,8 @@ class ChatRepository @Inject constructor(
                     toolTraceJson = ToolTraceCodec.encode(traces)
                 )
                 database.withTransaction {
-                    messageDao.insert(assistant)
+                    // 同上：助手回复也走统一追加规则，块边界不会因为「另一条路径」而错位。
+                    blockWriter.append(assistant)
                     val preview = finalText.replace('\n', ' ').trim().take(100)
                         .ifBlank { appContext.getString(R.string.chat_preview_proactive) }
                     val fresh = sessionDao.getById(sessionId)
@@ -776,7 +756,7 @@ class ChatRepository @Inject constructor(
             toolTraceJson = toolTraceJson
         )
         database.withTransaction {
-            messageDao.insert(message)
+            blockWriter.append(message)
             val fresh = sessionDao.getById(sessionId) ?: return@withTransaction
             sessionDao.update(
                 fresh.copy(
@@ -820,7 +800,7 @@ class ChatRepository @Inject constructor(
             toolTraceJson = toolTraceJson
         )
         database.withTransaction {
-            messageDao.insert(message)
+            blockWriter.append(message)
             val fresh = sessionDao.getById(sessionId)
             if (fresh != null) {
                 sessionDao.update(
@@ -841,7 +821,7 @@ class ChatRepository @Inject constructor(
         val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         val latest = messageDao.latestInSession(sessionId)
         if (latest?.role == MessageRole.ASSISTANT) {
-            messageDao.deleteById(latest.id)
+            blockWriter.deleteMessage(latest)
             refreshPreview(session)
         }
         if (messageDao.latestUser(sessionId) == null) userError(DomainErrorCode.NOTHING_TO_REGENERATE)
@@ -858,11 +838,16 @@ class ChatRepository @Inject constructor(
         val now = System.currentTimeMillis()
         val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         database.withTransaction {
-            messageDao.updateContent(messageId, content, now)
+            // 编辑用户消息按规范 §2「按锚点插入」处理：先移除旧行，再以同一个
+            // `(createdAt, id)` 落回锚点消息所在的那一块（位置不变，块元数据由统一规则重算）。
+            // 不直接 UPDATE content：否则「编辑」与「删除 + 锚点插入」会各算一套块元数据。
+            blockWriter.replaceAtAnchor(
+                message.copy(content = content, edited = true, updatedAt = now)
+            )
             // 「删除这条消息之后的消息」按稳定序 (createdAt, id) 判断（审计 P2-7）：
             // 以前只删 createdAt 严格更晚的，后台消息刚好落在同一毫秒时旧回复会留下来，
             // 编辑重发后对话读起来是错位的。
-            messageDao.deleteAfterCursor(sessionId, message.createdAt, message.id)
+            blockWriter.deleteAfterCursor(sessionId, message.createdAt, message.id)
             val latest = messageDao.latestInSession(sessionId)
             sessionDao.update(
                 session.copy(
@@ -877,7 +862,7 @@ class ChatRepository @Inject constructor(
 
     suspend fun deleteMessage(messageId: String): Result<Unit> = runCatching {
         val message = messageDao.getById(messageId) ?: return@runCatching
-        messageDao.deleteById(messageId)
+        blockWriter.deleteMessage(message)
         // 消息没了，它带着的图片文件也不该继续占地方。
         deleteAttachmentFiles(listOf(message))
         val session = sessionDao.getById(message.sessionId) ?: return@runCatching
@@ -895,7 +880,7 @@ class ChatRepository @Inject constructor(
         // 先取一遍要删的消息，事务提交后把它们的图片文件一并清掉（事务里不做文件 IO）。
         val doomed = messageDao.getBySession(sessionId)
         database.withTransaction {
-            messageDao.deleteBySession(sessionId)
+            blockWriter.deleteSession(sessionId)
             sessionDao.update(
                 session.copy(
                     lastMessagePreview = null,
@@ -970,7 +955,7 @@ class ChatRepository @Inject constructor(
         historyCompressor.cancel(sessionId)
         val doomed = messageDao.getBySession(sessionId)
         database.withTransaction {
-            messageDao.deleteBySession(sessionId)
+            blockWriter.deleteSession(sessionId)
             sessionDao.deleteById(sessionId)
         }
         deleteAttachmentFiles(doomed)
@@ -1010,19 +995,22 @@ class ChatRepository @Inject constructor(
     }
 
     /**
-     * 检索页的「消息」页签：SQL 粗筛 → 内存精排 → 切一页。
+     * 检索页的「消息」页签：**逐块扫描 + 键集游标，无候选上限**（规范 §4）。
      *
      * ## 一次检索的完整路径
      *
-     * 1. [MessageSearchSql.candidateQuery] 拼出参数化 SQL：人格 / 时间过滤 + 原文 LIKE +
-     *    每个 [com.myfriend.app.domain.ChineseTerms] 词元一个 LIKE，取最近 500 条命中（**粗筛**）；
-     * 2. [SearchRanking.rank] 按跨端契约排序（命中词元数 → relevance → 时间 → id），
-     *    过滤在这里再做一次（防「SQL 改了但内存过滤忘了加」）；
-     * 3. 按 `offset/limit` 切页，用 [SearchSnippet] 为每条命中生成摘要与高亮；
-     * 4. [MessageSearchSql.countQuery] 取总数，用来显示「N 条结果」和判断是否有下一页。
+     * 1. [MessageSearchSql.blocksQuery] 枚举（可过滤人格/时间的）块——一条 SQL，只回
+     *    `(sessionId, blockIndex)`，不读正文；
+     * 2. 对每一块调 [MessageSearchSql.blockScanQuery]：**一条 SQL 只读一块**（`blockIndex = ?`），
+     *    块内命中由 [BlockSearch] 用 [SearchRanking] 的同一套词元规则判定并打分；
+     * 3. 遍历时只维护「这一页 + 一条 frontier」（固定大小的堆），一块读完立即丢掉，
+     *    所以峰值内存 ≈ 一块 + 一页，与会话总长度无关；
+     * 4. 翻页用键集游标 `(matchedTermCount, relevance, createdAt, id)`：下一页重走一遍块，
+     *    只保留**严格排在游标之后**的行。这就是「结果完整且不重复」的保证，
+     *    也是 0.11 的「候选上限 500」被删掉的原因。
      *
-     * 为什么粗筛不建倒排索引表：见 [MessageSearchSql] 的取舍说明（不升 schema、不做索引维护，
-     * 代价是候选池 500 条上限）。
+     * 返回的 `total` 是这一遍扫描的**全部**命中数（不是候选池大小）：界面显示「共 N 条」时
+     * 不再需要附加一句「只显示最近的部分」。
      *
      * 只读本地库：不联网、不写库、不改任何状态。
      */
@@ -1030,58 +1018,63 @@ class ChatRepository @Inject constructor(
         val text = request.text.trim()
         if (text.isEmpty()) return@runCatching SearchPage()
         val limit = request.limit.coerceIn(1, 100)
-        val offset = request.offset.coerceAtLeast(0)
         val filter = SearchFilter(
             personaId = request.personaId,
             since = request.since,
             until = request.until
         )
-
-        val candidateQuery = MessageSearchSql.candidateQuery(
-            text = text,
-            personaId = request.personaId,
-            since = request.since,
-            until = request.until
-        )
-        val rows: List<MessageSearchRow> = if (candidateQuery.sql.isEmpty()) {
-            emptyList()
-        } else {
-            messageDao.searchCandidates(candidateQuery.toSupportQuery())
-        }
-        val ranked = SearchRanking.rank(
-            inputs = rows.map { RankInput(it.messageId, it.content, it.createdAt, it.personaId) },
+        val page = BlockSearch.page(
+            source = blockScanSource(text = text, filter = filter),
             query = text,
-            filter = filter
+            filter = filter,
+            limit = limit,
+            cursor = request.cursor
         )
-        val rowById = rows.associateBy { it.messageId }
-        val hits = ranked.asSequence()
-            .drop(offset)
-            .take(limit)
-            .mapNotNull { input -> rowById[input.id]?.let { toSearchHit(it, text) } }
-            .toList()
-
-        val countQuery = MessageSearchSql.countQuery(
-            text = text,
-            personaId = request.personaId,
-            since = request.since,
-            until = request.until
-        )
-        // 总数只用于展示与「是否还有更多」的旁证；它查失败不该让整页检索失败。
-        val total = if (countQuery.sql.isEmpty()) {
-            0
-        } else {
-            runCatching {
-                messageDao.countSearchHits(countQuery.toSupportQuery()).firstOrNull()?.total ?: 0
-            }.getOrDefault(0)
-        }
-
         SearchPage(
             query = text,
-            hits = hits,
-            total = maxOf(total, ranked.size),
-            hasMore = ranked.size > offset + limit,
-            truncated = total > ranked.size
+            hits = page.hits.map { hit -> toSearchHit(hit.payload, text) },
+            total = page.totalMatches,
+            hasMore = page.hasMore,
+            nextCursor = page.nextCursor
         )
+    }
+
+    /**
+     * 检索的数据源：枚举块 → 一块一块读。
+     *
+     * 做成匿名实现而不是往 DAO 里塞循环，是为了让「每条 SQL 只读一块」在源码上就是显然的
+     * （`BlockSearchTest` 用假数据源断言同一个形状：每次 `messages()` 只拿到一个块键）。
+     */
+    private fun blockScanSource(
+        text: String,
+        filter: SearchFilter
+    ): BlockSearch.BlockScanSource<MessageSearchRow> = object : BlockSearch.BlockScanSource<MessageSearchRow> {
+        override suspend fun blocks(filter: SearchFilter): List<BlockSearch.BlockKey> {
+            val query = MessageSearchSql.blocksQuery(filter.personaId, filter.since, filter.until)
+            if (query.sql.isEmpty()) return emptyList()
+            return blockDao.searchBlocks(query.toSupportQuery()).map { row: SearchBlockRow ->
+                BlockSearch.BlockKey(row.sessionId, row.blockIndex)
+            }
+        }
+
+        override suspend fun messages(block: BlockSearch.BlockKey): List<Pair<RankInput, MessageSearchRow>> {
+            val query = MessageSearchSql.blockScanQuery(
+                text = text,
+                sessionId = block.sessionId,
+                blockIndex = block.blockIndex,
+                since = filter.since,
+                until = filter.until
+            )
+            if (query.sql.isEmpty()) return emptyList()
+            return messageDao.searchBlockMessages(query.toSupportQuery()).map { row ->
+                RankInput(
+                    id = row.messageId,
+                    content = row.content,
+                    createdAt = row.createdAt,
+                    personaId = row.personaId
+                ) to row
+            }
+        }
     }
 
     /**

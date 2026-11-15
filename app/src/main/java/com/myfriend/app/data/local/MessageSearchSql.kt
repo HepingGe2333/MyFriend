@@ -12,20 +12,19 @@ import com.myfriend.app.domain.SearchRanking
 data class SqlQuery(val sql: String, val args: List<Any?>)
 
 /**
- * 聊天记录检索的 SQL 粗筛。
+ * 聊天记录检索的 SQL（v11：逐块扫描，无候选上限）。
  *
- * ## 为什么不建 `message_terms` 倒排表（取舍）
+ * ## 两条 SQL，各管一件事
  *
- * 两条路都试过（见 0.10.2 的 review 记录），最后选「LIKE 粗筛 + 内存精排」：
+ * 1. [blocksQuery]：**枚举块**（只有 `(sessionId, blockIndex)` 两列 + 时间范围过滤），
+ *    人格过滤在这里通过 `chat_sessions` 完成；时间过滤靠块的首尾时间直接跳过整块；
+ * 2. [blockScanQuery]：**读一块**，`WHERE m.sessionId = ? AND m.blockIndex = ?`，
+ *    再加若干个 `LIKE` 词元。一块最多 [com.myfriend.app.domain.MessageBlocks.BLOCK_SIZE] 条，
+ *    所以这条 SQL 的读取量与历史长度无关。
  *
- * - 建倒排表要把 schema 升到 v11、写 `MIGRATION_10_11`、在消息写入 / 编辑 / 删除 / 导入 /
- *   备份恢复**每一条**路径上同步维护，漏一处就是「搜得到旧内容、搜不到新内容」这种
- *   只在用户手机上才看得见的错；备份恢复还会因为「派生索引不进备份」而必须重建一次。
- * - 聊天记录的消息量级（一个人聊几个月也就几万条）根本用不上倒排，LIKE 全表扫一遍在
- *   中端机上是个位数毫秒到几十毫秒的量级，而检索是用户主动触发、有 250ms 防抖的低频操作。
- *
- * 代价写在报告里：**召回上限是 [CANDIDATE_LIMIT] 条**（只取最近的 500 条粗筛命中再精排），
- * 超过 500 条命中的超长历史，更早的命中到不了界面（界面会显示「结果太多，只显示最近的部分」）。
+ * 0.10.2 的 `candidateQuery` 是「一条 SQL 扫全表 + `LIMIT 500`」：命中超过 500 条时更早的
+ * 那些永远到不了界面。现在没有候选池，也不需要 `COUNT(*)` 总数预查询——总数在逐块扫描时
+ * 顺路数出来（见 `com.myfriend.app.domain.BlockSearch`）。
  *
  * ## 为什么每个词元都要一个 `LIKE`
  *
@@ -41,14 +40,6 @@ data class SqlQuery(val sql: String, val args: List<Any?>)
  */
 object MessageSearchSql {
 
-    /**
-     * 粗筛候选池上限。
-     *
-     * 500 的依据：一次检索最多精排 500 条正文（几十万字符），在低端机上也在十几毫秒内；
-     * 而正常人的历史里，任意关键词命中 500 条以上已经很罕见，真出现时用户要的也不是「翻到第 40 页」。
-     */
-    const val CANDIDATE_LIMIT = 500
-
     /** LIKE 的转义字符；SQL 里用 `ESCAPE '\'` 声明。 */
     private const val ESCAPE_CHAR = '\\'
 
@@ -61,25 +52,6 @@ object MessageSearchSql {
         INNER JOIN chat_sessions s ON s.id = m.sessionId
         INNER JOIN personas p ON p.id = s.personaId
     """
-
-    /** `WHERE` 之后、`AND (...LIKE...)` 之前的那一段（人格 / 时间过滤），参数顺序与 SQL 一致。 */
-    private fun filters(personaId: String?, since: Long?, until: Long?): Pair<String, List<Any?>> {
-        val clauses = StringBuilder()
-        val args = ArrayList<Any?>(3)
-        if (personaId != null) {
-            clauses.append("\n  AND s.personaId = ?")
-            args += personaId
-        }
-        if (since != null) {
-            clauses.append("\n  AND m.createdAt >= ?")
-            args += since
-        }
-        if (until != null) {
-            clauses.append("\n  AND m.createdAt <= ?")
-            args += until
-        }
-        return clauses.toString() to args
-    }
 
     /**
      * 粗筛命中的 `LIKE` 模式：先原文（整体包含），再每个词元。
@@ -120,55 +92,111 @@ object MessageSearchSql {
     }
 
     /**
-     * 候选查询：按 `createdAt DESC, id ASC` 取最近 [limit] 条粗筛命中。
+     * 读一块：`WHERE m.sessionId = ? AND m.blockIndex = ?` + 时间过滤 + 词元 `LIKE`。
      *
-     * SQL 的排序只是为了「粗筛取哪些」是确定的（同样命中的情况下先取最近的），
-     * 真正的展示顺序由 [SearchRanking.rank] 在内存里重新算。
+     * 刻意**不加 `LIMIT`**：一块的条数由 [com.myfriend.app.domain.MessageBlocks] 保证
+     * （≤ BLOCK_SIZE），加 `LIMIT` 反而会让「块内超出一条」被静默截断，检索结果少一条
+     * 是用户能看见、但很难解释的缺陷。
+     *
+     * `ORDER BY (createdAt, id)` 让块内顺序稳定；精排仍由 `SearchRanking` / `BlockSearch`
+     * 在内存里做（SQL 的顺序不参与最终排序）。
      */
-    fun candidateQuery(
+    fun blockScanQuery(
         text: String,
-        personaId: String? = null,
-        since: Long? = null,
-        until: Long? = null,
-        limit: Int = CANDIDATE_LIMIT
-    ): SqlQuery {
-        val patterns = likePatterns(text)
-        if (patterns.isEmpty()) return SqlQuery("", emptyList())
-        val (filterClauses, filterArgs) = filters(personaId, since, until)
-        val likeClauses = patterns.joinToString("\n     OR ") { "m.content LIKE ? ESCAPE '\\'" }
-        val sql = buildString {
-            append(SELECT_COLUMNS.trimIndent())
-            append("\n WHERE m.content != ''")
-            append(filterClauses)
-            append("\n  AND (")
-            append(likeClauses)
-            append(")\n ORDER BY m.createdAt DESC, m.id ASC")
-            append("\n LIMIT ?")
-        }
-        return SqlQuery(sql, filterArgs + patterns + limit.coerceAtLeast(1))
-    }
-
-    /** 总数查询：与 [candidateQuery] 同一套过滤条件，用来告诉界面「一共有多少条命中」。 */
-    fun countQuery(
-        text: String,
-        personaId: String? = null,
+        sessionId: String,
+        blockIndex: Int,
         since: Long? = null,
         until: Long? = null
     ): SqlQuery {
         val patterns = likePatterns(text)
         if (patterns.isEmpty()) return SqlQuery("", emptyList())
-        val (filterClauses, filterArgs) = filters(personaId, since, until)
-        val likeClauses = patterns.joinToString("\n     OR ") { "m.content LIKE ? ESCAPE '\\'" }
+        val args = ArrayList<Any?>(4 + patterns.size)
+        args += sessionId
+        args += blockIndex
         val sql = buildString {
-            append("SELECT COUNT(*) AS total FROM messages m")
-            append("\n INNER JOIN chat_sessions s ON s.id = m.sessionId")
-            append("\n INNER JOIN personas p ON p.id = s.personaId")
-            append("\n WHERE m.content != ''")
-            append(filterClauses)
+            append(SELECT_COLUMNS.trimIndent())
+            append("\n WHERE m.sessionId = ? AND m.blockIndex = ?")
+            append("\n  AND m.content != ''")
+            if (since != null) {
+                append("\n  AND m.createdAt >= ?")
+                args += since
+            }
+            if (until != null) {
+                append("\n  AND m.createdAt <= ?")
+                args += until
+            }
             append("\n  AND (")
-            append(likeClauses)
-            append(")")
+            append(patterns.joinToString("\n     OR ") { "m.content LIKE ? ESCAPE '\\'" })
+            append(")\n ORDER BY m.createdAt ASC, m.id ASC")
         }
-        return SqlQuery(sql, filterArgs + patterns)
+        args.addAll(patterns)
+        return SqlQuery(sql, args)
+    }
+
+    /**
+     * 枚举块：只回 `(sessionId, blockIndex)`，按 `(sessionId, blockIndex)` 升序。
+     *
+     * 人格过滤走 `chat_sessions`（块表上没有 personaId）；时间过滤按**块的首尾时间**判断重叠，
+     * 整块落在区间外就直接跳过，不必把它读进内存再丢。
+     */
+    fun blocksQuery(
+        personaId: String? = null,
+        since: Long? = null,
+        until: Long? = null
+    ): SqlQuery {
+        val args = ArrayList<Any?>(3)
+        val sql = buildString {
+            append("SELECT b.sessionId AS sessionId, b.blockIndex AS blockIndex")
+            append("\n FROM message_blocks b")
+            append("\n INNER JOIN chat_sessions s ON s.id = b.sessionId")
+            append("\n WHERE 1 = 1")
+            if (personaId != null) {
+                append("\n  AND s.personaId = ?")
+                args += personaId
+            }
+            if (since != null) {
+                // 块的最后一条比下界还早 → 整块都在区间外。
+                append("\n  AND b.lastCreatedAt >= ?")
+                args += since
+            }
+            if (until != null) {
+                append("\n  AND b.firstCreatedAt <= ?")
+                args += until
+            }
+            append("\n ORDER BY b.sessionId ASC, b.blockIndex ASC")
+        }
+        return SqlQuery(sql, args)
+    }
+
+    /**
+     * 「最近若干条命中」——**只给后台回忆用**，不属于检索契约。
+     *
+     * 回忆（`RecallRepository`）要的是「从最近的历史里捞几句相关的话」，本身有
+     * `SEARCH_LIMIT` 条数的启发式上限，也不做翻页；所以这里保留一条有界查询，
+     * 而不是让它去走逐块扫描。检索页（`ChatRepository.searchMessages`）不用它。
+     */
+    fun recentCandidatesQuery(
+        text: String,
+        personaId: String? = null,
+        limit: Int
+    ): SqlQuery {
+        val patterns = likePatterns(text)
+        if (patterns.isEmpty()) return SqlQuery("", emptyList())
+        val args = ArrayList<Any?>(2 + patterns.size)
+        val sql = buildString {
+            append(SELECT_COLUMNS.trimIndent())
+            append("\n WHERE m.content != ''")
+            if (personaId != null) {
+                append("\n  AND s.personaId = ?")
+                args += personaId
+            }
+            append("\n  AND (")
+            append(patterns.joinToString("\n     OR ") { "m.content LIKE ? ESCAPE '\\'" })
+            append(")\n ORDER BY m.createdAt DESC, m.id ASC")
+            append("\n LIMIT ?")
+        }
+        args.addAll(patterns)
+        args += limit.coerceAtLeast(1)
+        return SqlQuery(sql, args)
     }
 }

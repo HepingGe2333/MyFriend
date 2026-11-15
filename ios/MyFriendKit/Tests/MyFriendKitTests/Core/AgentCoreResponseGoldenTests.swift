@@ -28,31 +28,54 @@ final class AgentCoreResponseGoldenTests: XCTestCase {
 
     // MARK: - Kotlin 常量
 
-    private static let repoRoot: URL = {
-        var url = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    /// 仓库根：只要求 `settings.gradle.kts` + `agentcore/` 目录在（**不写死源集布局**）。
+    ///
+    /// 2026-11 的 `:agentcore` KMP 化把 Kotlin 源集从 `src/main/kotlin` 改成了
+    /// `src/commonMain/kotlin`；这里以前会 `fatalError` —— 一个路径漂移就让**整个 `swift test`
+    /// 进程中止**，等于把一条用例的定位问题升级成「全部测试跑不完」。现在找不到就返回 nil，
+    /// 由用例 `XCTSkip` 并写清找过哪些路径。
+    private static func findRepoRoot(file: String = #filePath) -> URL? {
+        var url = URL(fileURLWithPath: file).deletingLastPathComponent()
         let fileManager = FileManager.default
         while url.path != "/" {
             if fileManager.fileExists(atPath: url.appendingPathComponent("settings.gradle.kts").path),
-               fileManager.fileExists(
-                   atPath: url.appendingPathComponent("agentcore/src/main/kotlin/com/myfriend/app/domain").path
-               ) {
+               fileManager.fileExists(atPath: url.appendingPathComponent("agentcore").path) {
                 return url
             }
             url = url.deletingLastPathComponent()
         }
-        fatalError("找不到仓库根目录（从 #filePath=\(#filePath) 向上走不到 agentcore）")
-    }()
+        return nil
+    }
+
+    /// `AgentCoreProtocol.kt` 的候选路径：常见 Kotlin 源集逐个试，不写死一层。
+    private static func protocolCandidates(repoRoot: URL) -> [URL] {
+        let relative = "com/myfriend/app/domain/AgentCoreProtocol.kt"
+        let sourceSets = [
+            "commonMain", "jvmMain", "iosMain", "main", "androidMain", "nativeMain", "concurrentMain"
+        ]
+        return sourceSets.map { repoRoot.appendingPathComponent("agentcore/src/\($0)/kotlin/\(relative)") }
+    }
+
+    /// 读 Kotlin 协议文件；找不到就 skip（把试过的路径写进 skip 信息）。
+    private func protocolText() throws -> String {
+        guard let repoRoot = Self.findRepoRoot() else {
+            throw XCTSkip(
+                "找不到仓库根（向上没有 settings.gradle.kts + agentcore/）；#filePath=\(#filePath)"
+            )
+        }
+        let candidates = Self.protocolCandidates(repoRoot: repoRoot)
+        guard let file = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let text = try? String(contentsOf: file, encoding: .utf8) else {
+            throw XCTSkip(
+                "找不到 AgentCoreProtocol.kt。找过：\n\(candidates.map(\.path).joined(separator: "\n"))"
+            )
+        }
+        return text
+    }
 
     private func constant(_ name: String) throws -> String {
-        let url = Self.repoRoot.appendingPathComponent(
-            "agentcore/src/main/kotlin/com/myfriend/app/domain/AgentCoreProtocol.kt"
-        )
-        let text: String
-        do {
-            text = try String(contentsOf: url, encoding: .utf8)
-        } catch {
-            throw XCTSkip("Kotlin 协议文件缺失（iOS 单独 checkout 时正常）：\(url.path)")
-        }
+        // 找不到仓库/文件就 skip（不再 fatalError：一条定位问题不该中止整轮 swift test）。
+        let text = try protocolText()
         let pattern = "const val \(name) = \"([^\"]+)\""
         let expression = try NSRegularExpression(pattern: pattern)
         let range = NSRange(text.startIndex..<text.endIndex, in: text)

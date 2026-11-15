@@ -112,6 +112,40 @@ final class DataResetMediaTests: XCTestCase {
 
     // MARK: - P2-12：「删除全部」逐表吞错，但要如实上报
 
+    // MARK: - v11：清空要把 message_blocks 一起清掉
+
+    private func seedChatHistory() throws {
+        try temp.stores.personas.upsert([TestData.persona(id: "persona-1")])
+        try temp.stores.sessions.upsert([TestData.session(id: "session-1", personaId: "persona-1")])
+        try temp.stores.messages.upsert((0..<450).map { index in
+            TestData.message(
+                id: String(format: "m-%03d", index),
+                role: index % 2 == 0 ? .user : .assistant,
+                content: "第 \(index) 句",
+                createdAt: TestData.now + Int64(index) * 1000
+            )
+        })
+        XCTAssertEqual(try temp.stores.messageBlocks.count(), 3)
+    }
+
+    func testClearChatsAlsoClearsMessageBlocks() throws {
+        try seedChatHistory()
+        let summary = try makeReset().clearChats()
+        XCTAssertEqual(summary.messages, 450)
+        XCTAssertEqual(try temp.stores.messages.count(), 0)
+        XCTAssertEqual(try temp.stores.messageBlocks.count(), 0, "清空聊天要把块表一起清")
+        XCTAssertTrue(try temp.stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    func testClearAllAlsoClearsMessageBlocks() throws {
+        try seedChatHistory()
+        let summary = makeReset().clearAll()
+        XCTAssertEqual(summary.messages, 450)
+        XCTAssertEqual(try temp.stores.messages.count(), 0)
+        XCTAssertEqual(try temp.stores.messageBlocks.count(), 0, "删除全部数据要把块表一起清")
+        XCTAssertTrue(try temp.stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
     func testClearAllReportsTablesThatFailedToClear() throws {
         try temp.stores.personas.upsert(TestData.persona())
         try temp.stores.presets.upsert(PersonaPresetEntity(

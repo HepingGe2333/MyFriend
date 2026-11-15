@@ -62,6 +62,8 @@ class ProactiveRepository @Inject constructor(
     private val scheduler: ProactiveScheduler,
     private val foregroundTracker: AppForegroundTracker,
     private val database: MyFriendDatabase,
+    /** 块元数据的唯一写入入口（规范 §2）：主动消息/心跳消息也是新消息。 */
+    private val blockWriter: MessageBlockWriter,
     @ApplicationContext private val context: Context
 ) {
 
@@ -353,7 +355,8 @@ class ProactiveRepository @Inject constructor(
             attachmentsJson = null
         )
         database.withTransaction {
-            messageDao.insert(message)
+            // 主动消息也是一条新消息：走统一块维护（规范 §2 Append），否则它的块归属永远是 0。
+            blockWriter.append(message)
             val fresh = sessionDao.getById(session.id)
             if (fresh != null) {
                 sessionDao.update(

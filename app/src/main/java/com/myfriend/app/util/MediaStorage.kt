@@ -274,6 +274,29 @@ object MediaStorage {
         if (uri.scheme == "file") uri.path?.let { File(it) } else null
     }.getOrNull()
 
+    /** 头像目录（备份 v3 导入/导出都要在这里读写；不存在就建好）。 */
+    fun avatarDirectory(context: Context): File =
+        File(context.filesDir, AVATAR_DIR).apply { runCatching { mkdirs() } }
+
+    /** 聊天媒体目录（聊天图片 / 聊天背景；备份 v3 的聊天图片落在这里）。 */
+    fun mediaDirectory(context: Context): File =
+        File(context.filesDir, MEDIA_DIR).apply { runCatching { mkdirs() } }
+
+    /**
+     * 把数据库/备份里的 `file://` 引用解析成「确实属于 [directory] 的现有文件」。
+     *
+     * 备份 v3 的导出收集要走这条：`attachmentsJson` / `avatarUri` 是「数据即代码」的输入面，
+     * 不能让一条脏路径把沙盒里任意文件读进备份（那会把 `myfriend.db` 当图片带走）。
+     * 目录归属用 [MediaOwnership.isWithin]（canonical path，含符号链接与 `..` 解析）。
+     */
+    fun ownedFile(uriString: String?, directory: File): File? {
+        val raw = uriString?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val file = fileOf(raw) ?: return null
+        if (!MediaOwnership.isWithin(file, listOf(directory))) return null
+        return file.takeIf { it.isFile && it.canRead() }
+    }
+
     /**
      * 删一批聊天附件文件。
      *
@@ -314,6 +337,23 @@ object MediaStorage {
         val files = runCatching { dir.listFiles() }.getOrNull() ?: return 0
         return files.count { file ->
             file.isFile && file.name.startsWith(CHAT_IMAGE_PREFIX) &&
+                runCatching { file.delete() }.getOrDefault(false)
+        }
+    }
+
+    /**
+     * 「清空聊天」的变体：只删 `files/media/chat-*`，但保留 [keepFileNames]（备份 v3 导入刚写进来的新图）。
+     *
+     * 为什么需要它：备份「替换」导入时，新的聊天图片必须在落库**之前**就写进媒体目录
+     * （否则库里会引用一个不存在的文件）；而 `ErasureFileCleanup.BackupReplace` 的文件清理
+     * 是在事务提交之后「把 chat-* 全删掉」——那会把刚写进来的新图一起删掉。
+     * 所以替换模式改用「清掉旧 chat-*、留下新写的」这份等价语义（见 BackupRepository）。
+     */
+    fun clearChatImagesExcept(context: Context, keepFileNames: Set<String>): Int {
+        val dir = File(context.filesDir, MEDIA_DIR)
+        val files = runCatching { dir.listFiles() }.getOrNull() ?: return 0
+        return files.count { file ->
+            file.isFile && file.name.startsWith(CHAT_IMAGE_PREFIX) && file.name !in keepFileNames &&
                 runCatching { file.delete() }.getOrDefault(false)
         }
     }

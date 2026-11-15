@@ -45,8 +45,8 @@ android {
         // 内测版本号：0.9.0 → 0.10.0 → 0.10.2 → 0.11.0，本次 0.11.1（审计修复：备份引用完整性 /
         // 定位窗口 / 事务外删文件 / 主线程 IO / 深链校验 / i18n 守卫）。
         // versionCode 只增不减，升级路径才不会断。
-        versionCode = 17
-        versionName = "0.11.2"
+        versionCode = 18
+        versionName = "0.12.0"
         vectorDrawables { useSupportLibrary = true }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

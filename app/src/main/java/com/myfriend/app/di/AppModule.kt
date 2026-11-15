@@ -15,6 +15,7 @@ import com.myfriend.app.data.local.MemoryVectorDao
 import com.myfriend.app.data.local.MemoryVersionDao
 import com.myfriend.app.data.local.MemoryConsolidationDao
 import com.myfriend.app.data.local.MemoryEchoDao
+import com.myfriend.app.data.local.MessageBlockDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.AgentIntentDao
 import com.myfriend.app.data.local.AgentTickDao
@@ -67,7 +68,8 @@ object AppModule {
                 MyFriendDatabase.MIGRATION_6_7,
                 MyFriendDatabase.MIGRATION_7_8,
                 MyFriendDatabase.MIGRATION_8_9,
-                MyFriendDatabase.MIGRATION_9_10
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -81,6 +83,7 @@ object AppModule {
     @Provides fun apiConfigDao(db: MyFriendDatabase): ApiConfigDao = db.apiConfigDao()
     @Provides fun chatSessionDao(db: MyFriendDatabase): ChatSessionDao = db.chatSessionDao()
     @Provides fun messageDao(db: MyFriendDatabase): MessageDao = db.messageDao()
+    @Provides fun messageBlockDao(db: MyFriendDatabase): MessageBlockDao = db.messageBlockDao()
     @Provides fun memoryDao(db: MyFriendDatabase): MemoryDao = db.memoryDao()
     @Provides fun proactiveRuleDao(db: MyFriendDatabase): ProactiveRuleDao = db.proactiveRuleDao()
     @Provides fun memoryEchoDao(db: MyFriendDatabase): MemoryEchoDao = db.memoryEchoDao()

@@ -24,6 +24,76 @@
 
 ---
 
+## 0.12.0
+
+大改动：**共享决策层迁移到 Kotlin Multiplatform（iOS 复用同一份 Kotlin）**、**历史改为区块存储**、
+**检索取消候选上限**、**备份 v3 带走图片与头像**；并清理了 README 里的「已知限制」清单。
+版本 `0.12.0`，两端构建号 **18**；schema **v11**、备份 **v3**。
+（本版在 `dev/0.12.0` 分支上开发，未合并到 `main`，未打发布 tag。）
+
+### 共享决策层：Kotlin Multiplatform
+
+- `agentcore/` 从 `kotlin("jvm")` 改为 `kotlin("multiplatform")`：`jvm()` + `iosX64()` + `iosArm64()` +
+  `iosSimulatorArm64()`，产出静态 framework **`AgentCoreKit`**。`commonMain` 放两端共用的决策，`jvmMain` 只留
+  真正依赖 `java.*` 的 5 个文件（后台锁、会话世代号、文件路径守卫、有界读、语言名），`PlatformTime` 用 expect/actual。
+- `WebUrlPolicy` 原本依赖 `java.net.URI`，为进 `commonMain` **重写为纯字符串解析**（保留全部安全语义与 12 条契约测试）；
+  `LocalEmbedding`/`VectorMath` 的手写小端字节序、日历算术、小顶堆等也都改成平台无关实现。
+- **iOS App 的四个 agent 决策现在执行同一份 Kotlin 代码**（`KotlinAgentCoreClient` → `InProcessAgentCore`）；
+  Swift 实现只保留为 macOS `swift test` 的回落与契约对照。模拟器实跑证明 Kotlin 与 `spec/agent-core` 的
+  189 条断言一致，App 启动日志打印 `agent core: kotlin`。
+- 构建：`ios/scripts/build-agentcore-framework.sh` 生成 `ios/.build/agentcore/AgentCoreKit.xcframework`；
+  Xcode 工程加了 framework 搜索路径与 `-framework AgentCoreKit`（静态、Do Not Embed），并有一个
+  Run Script 在 framework 缺失时自动构建。
+
+### 历史存储：区块 + 双向分页
+
+- schema **v11**：`messages.blockIndex` + `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`，
+  两端逐字一致（iOS 有 `SchemaParityTests` 直接对 Android Room 导出的 `11.json` 做列/索引对照）。
+- `BLOCK_SIZE = 200`；写入走统一的块维护（满块开新块、按锚点插入、删除重算边界、空块删行留编号空洞、不重平衡），
+  覆盖发送/回复/中断/失败/重新生成/编辑/删除/清空/删会话/删人格/备份导入/主动消息。
+- **分页 = 区块**：首屏只读最新一块，向上/向下各加载一块（编号有空洞时按块表找实际相邻块），一页从不使用 offset；
+  未读/已读/DND 仍走全表。
+- 迁移 v10→v11 用 `ROW_NUMBER()/200` 回填并生成块行（流式，不整表读入内存）；两端都有「数据不丢、边界正确、
+  幂等、空库可迁移、孤儿块清理」的迁移测试。
+
+### 检索：无候选上限
+
+- 旧的「`LIKE` 粗筛 + 500 条候选上限」被删除；改为**逐区块扫描**：枚举（可过滤人格/时间的）区块 → 每块读入内存 →
+  `SearchRanking` 精排 → **键集游标**分页。峰值内存 ≈ 一块 + 一页 + frontier，与历史长度无关。
+- 命中 >500 的用例已覆盖：620 条命中可完整翻页、最旧块里的命中不会丢、翻页期间新增消息不重复不乱序；
+  「每次查询只读一块」有结构化断言。
+- 代价写进 README：每翻一页都会重新走一遍区块，历史越长越慢（这是「无上限 + 无 offset」的直接后果）。
+
+### 备份 v3：图片与头像随备份走
+
+- 新增顶层 `media[]`（`id/kind/personaId/fileName/mime/bytes/data`，标准 base64）：人格头像、用户头像、
+  预设头像与聊天图片都随备份走；`avatarUri` 与 `attachmentsJson` 只写裸文件名，导入时写入新 UUID 文件并重写引用。
+- 限额：总量 128 MiB、单张 8 MiB、仅 JPEG/PNG/WebP；超限/坏数据逐条跳过并给出中英告警；导入上限 256 MiB。
+- v1/v2 备份仍可读（没有 `media` 时按旧行为告警）；`fixtures/backup/` 新增 v3 黄金样本并双向互读。
+- 媒体写入在数据库事务之前、事务失败回滚删除新文件；文件名与目录都过归属/穿越守卫。
+
+### 文档与限制清单
+
+- README 的「已知限制」重新核对：删掉**不是限制**的条目（仓库不含产物、只有 token 统计、远程默认关闭、
+  发布包不明文 HTTP、模拟器 Keychain），把它们移到「设计立场」；删掉已被本版修复的条目（检索上限、分页代价、
+  图片不进备份、iOS 第二份实现）；保留并写清真正的限制（无 CI、iOS 后台调度由系统决定、检索逐页重扫、
+  双向浏览累积区块、不重平衡、备份图片限额）。
+- `docs/ARCHITECTURE` 增加「历史存储：区块」与新的「检索」小节、把 agent 核心改为 KMP 四形态；
+  `docs/README` 索引补 `spec/messages-blocks`；`CONTRIBUTING` 增加「先构建 AgentCoreKit 再构建 iOS」的步骤，
+  数据/备份改动清单更新到 v11 / v3。
+
+### 测试与构建
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **1044 条 / 0 失败**（另有 28 条 instrumented：迁移 v10→v11、块维护） |
+| `:agentcore`（KMP jvmTest） | **60 条 / 0 失败** |
+| `:agentd` | **34 条 / 0 失败** |
+| iOS | **1263 条 / 0 失败**（Debug/Release 构建零 Swift 警告） |
+| 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:fatJar`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
+
+---
+
 ## 0.11.2
 
 小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。

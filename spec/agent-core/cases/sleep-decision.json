@@ -5,8 +5,8 @@
   "authority": "android",
   "authorityNote": "规格见 docs/ROADMAP-1.9.md §六；两端不一致时以 Android SleepPolicy 的实现为准（免打扰不留已读这一条以规格为准）。",
   "kotlin": {
-    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/SleepPolicy.kt",
-    "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake，agentcore/src/main/kotlin/com/myfriend/app/domain/Mood.kt）"
+    "file": "agentcore/src/commonMain/kotlin/com/myfriend/app/domain/SleepPolicy.kt",
+    "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake，agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Mood.kt）"
   },
   "swift": {
     "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/SleepSchedule.swift",

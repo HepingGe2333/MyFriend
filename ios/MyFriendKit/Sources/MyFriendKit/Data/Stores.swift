@@ -330,7 +330,7 @@ extension MessageEntity: SQLiteRecord {
     public static let columns = [
         "id", "sessionId", "personaId", "role", "content", "createdAt", "updatedAt",
         "status", "errorMessage", "model", "edited", "attachmentsJson", "toolTraceJson",
-        "readAt"
+        "readAt", "blockIndex"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -338,7 +338,7 @@ extension MessageEntity: SQLiteRecord {
             .text(id), .text(sessionId), .text(personaId), .text(role.stored), .text(content),
             .int(createdAt), .int(updatedAt), .text(status.stored), .optionalText(errorMessage),
             .optionalText(model), .bool(edited), .optionalText(attachmentsJson),
-            .optionalText(toolTraceJson), .optionalInt(readAt)
+            .optionalText(toolTraceJson), .optionalInt(readAt), .int(blockIndex)
         ]
     }
 
@@ -357,7 +357,8 @@ extension MessageEntity: SQLiteRecord {
             edited: try row.bool("edited"),
             attachmentsJson: try row.optionalText("attachmentsJson"),
             toolTraceJson: try row.optionalText("toolTraceJson"),
-            readAt: try row.optionalInt64("readAt")
+            readAt: try row.optionalInt64("readAt"),
+            blockIndex: try row.int("blockIndex")
         )
     }
 }
@@ -781,6 +782,47 @@ public final class ChatSessionStore: SQLiteStore<ChatSessionEntity> {
         )
         return changed > 0
     }
+
+    // MARK: - 删除会话：连带消息与块（v11）
+
+    // 删会话有三条入口（删人格、清空全部聊天、替换导入），以前每条都靠调用方「先删消息再删会话」，
+    // 漏一处就会留下孤儿消息。v11 起块表也有同样的风险（块行指向一段不存在的会话），
+    // 所以这里把「删会话 = 删它的一切」写死在仓储里，调用方不用再记顺序。
+
+    public override func delete(id: String) throws {
+        try database.inTransaction {
+            try MessageBlockStore(database: database).deleteMessages(sessionId: id)
+            try super.delete(id: id)
+        }
+    }
+
+    public override func delete(where clause: String, _ arguments: [SQLiteValue] = []) throws {
+        let trimmed = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            try deleteAll()
+            return
+        }
+        try database.inTransaction {
+            let statement = try database.prepare("SELECT id FROM chat_sessions WHERE \(trimmed)")
+            try statement.bind(arguments)
+            var ids: [String] = []
+            while try statement.step() {
+                if let id = statement.text(at: 0) { ids.append(id) }
+            }
+            let blocks = MessageBlockStore(database: database)
+            for id in ids {
+                try blocks.deleteMessages(sessionId: id)
+            }
+            try super.delete(where: trimmed, arguments)
+        }
+    }
+
+    public override func deleteAll() throws {
+        try database.inTransaction {
+            try MessageBlockStore(database: database).deleteAllMessages()
+            try super.deleteAll()
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -862,12 +904,78 @@ public struct SearchPage: Equatable, Sendable {
     public static let empty = SearchPage()
 }
 
+/// 一页消息 = 一块消息 + 它前后还有没有块（区块分页，规范 §3）。
+///
+/// 界面只认识它：`messages` 直接画，`olderBlockIndex` / `newerBlockIndex` 决定
+/// 「上面还有更早的 / 下面还有更新的」两个加载入口显示不显示。
+public struct MessageBlockWindow: Equatable, Sendable {
+    /// 这一页的块号（块编号可能因为删空而出现空洞，所以不要假设它等于页码）。
+    public var blockIndex: Int
+    /// 这一块里的消息（`(createdAt, id)` 升序）。
+    public var messages: [MessageEntity]
+    /// 比它更旧的最近一块的块号（没有就 nil = 到最早了）。
+    public var olderBlockIndex: Int?
+    /// 比它更新的最近一块的块号（没有就 nil = 这一块就是最新的）。
+    public var newerBlockIndex: Int?
+
+    public init(
+        blockIndex: Int,
+        messages: [MessageEntity],
+        olderBlockIndex: Int?,
+        newerBlockIndex: Int?
+    ) {
+        self.blockIndex = blockIndex
+        self.messages = messages
+        self.olderBlockIndex = olderBlockIndex
+        self.newerBlockIndex = newerBlockIndex
+    }
+
+    /// 这一块是不是最新那一块（界面据此决定要不要显示「下方还有更新的消息」）。
+    public var isNewest: Bool { newerBlockIndex == nil }
+}
+
 public final class MessageStore: SQLiteStore<MessageEntity> {
+
+    /// 块表的唯一入口（规范 `spec/messages-blocks/README.md`）。
+    ///
+    /// 消息的所有写路径都从这里过：`upsert` / `delete` / `deleteAll` 三个覆写把
+    /// 「追加开新块、锚点插入、删空删块」的维护收在一处，调用方（聊天、主动开口、
+    /// 备份导入、删人格、清空数据……）一行都不用改。
+    public lazy var blocks = MessageBlockStore(database: database)
+
+    // MARK: - 写：消息与块元数据一起维护（v11）
+
+    /// 写一条消息（新增走追加规则；已存在保留原块，时间戳变了才重算边界）。
+    public override func upsert(_ record: MessageEntity) throws {
+        try blocks.upsertMaintainingBlocks(record)
+    }
+
+    public override func delete(id: String) throws {
+        try blocks.deleteMessage(id: id)
+    }
+
+    public override func delete(where clause: String, _ arguments: [SQLiteValue] = []) throws {
+        try blocks.deleteMessages(where: clause, arguments)
+    }
+
+    public override func deleteAll() throws {
+        try blocks.deleteAllMessages()
+    }
+
+    /// 按锚点插入（编辑用户消息 = 在锚点那条后面重建一条）。返回 false = 锚点已经不在了。
+    ///
+    /// iOS 暂时没有「编辑用户消息」的界面入口，但写路径先接好：等编辑入口上线，
+    /// 只调这一个方法就会走同一套块规则（锚点所在的块 + 不重平衡），不用再补一次维护逻辑。
+    @discardableResult
+    public func insert(_ message: MessageEntity, atAnchor anchorId: String) throws -> Bool {
+        try blocks.insert(message, atAnchor: anchorId)
+    }
+
     /// **整段**读取（时间升序）。
     ///
-    /// 只该给「本来就需要全部消息」的地方用：备份导出、从搜索结果往前翻页的边界、
-    /// 以及没有窗口可用的诊断路径。0.11.0 P2-1 之后，**取上下文、拼心跳处境、抽记忆、
-    /// 记忆整理**一律走下面那几个窗口查询 —— 它们在几千条的会话里也只会物化几十/几百行。
+    /// 只该给「本来就需要全部消息」的地方用：备份导出、以及没有窗口可用的诊断路径。
+    /// 0.11.0 P2-1 之后，**取上下文、拼心跳处境、抽记忆、记忆整理**一律走下面那几个窗口查询；
+    /// v11 起「从搜索结果定位」也不再整段读，而是按块读（`MessageBlocks.focus`）。
     public func bySession(_ sessionId: String) throws -> [MessageEntity] {
         try observed("bySession", fetch(where: "sessionId = ?", [.text(sessionId)], orderBy: "createdAt ASC"))
     }
@@ -889,7 +997,8 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
 
     /// 最近 `limit` 条（按时间升序返回）。
     ///
-    /// 聊天页首屏与主动开口读历史都走这里：长会话下不该为了看最后 60 条把整段读进内存。
+    /// 「最近 N 条」的窗口读取（拼提示词的上下文、主动开口读历史都走这里）。
+    /// 聊天页的首屏在 v11 已改成「只读最新一块」(`blocksAround`)，不再用这个函数。
     /// 0.11.0 P2-1 起，`ChatService` 的上下文窗口（`PromptBuilder.contextRecentLimit`）也走这里。
     public func recent(sessionId: String, limit: Int) throws -> [MessageEntity] {
         guard limit > 0 else { return [] }
@@ -964,8 +1073,8 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
 
     /// 游标**之后**的消息（严格晚于 `(createdAt, id)`，按时间升序）。
     ///
-    /// 聊天页的窗口以「已加载区间」为锚：新消息只往后追加，不重读「最后 N 条」把
-    /// 最早那一页挤掉（0.11.0 P2-5）。第二排序键 `id` 同样是「同一毫秒两条」的稳定游标。
+    /// 聊天页的「只追加」仍用它：新消息（心跳 / 主动开口 / 流式结束）接在已加载窗口后面，
+    /// 已加载的历史一条都不少（0.11.0 P2-5）。第二排序键 `id` 是「同一毫秒两条」的稳定游标。
     public func pageAfter(
         sessionId: String,
         createdAt: Int64,
@@ -982,36 +1091,65 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
         return observed("pageAfter", rows)
     }
 
-    /// 游标分页：取「严格早于 `(createdAt, id)`」的最近 `limit` 条，仍按时间升序返回。
-    ///
-    /// 为什么游标是两个字段：`createdAt` 是毫秒时间戳，同一毫秒里可能落下两条消息
-    ///（主动开口与用户发送撞在一起时），只按时间取会漏掉或重复一条。`id` 是稳定的第二排序键。
-    public func pageBefore(
-        sessionId: String,
-        createdAt: Int64,
-        id: String,
-        limit: Int
-    ) throws -> [MessageEntity] {
-        guard limit > 0 else { return [] }
-        let rows = try fetch(
-            where: "sessionId = ? AND (createdAt < ? OR (createdAt = ? AND id < ?))",
-            [.text(sessionId), .int(createdAt), .int(createdAt), .text(id)],
-            orderBy: "createdAt DESC, id DESC",
-            limit: limit
-        )
-        return Array(rows.reversed())
-    }
-
-    /// 游标之前还有没有更早的消息（聊天页的「加载更早」只在这里判断到底）。
-    public func countBefore(sessionId: String, createdAt: Int64, id: String) throws -> Int {
-        try count(
-            where: "sessionId = ? AND (createdAt < ? OR (createdAt = ? AND id < ?))",
-            [.text(sessionId), .int(createdAt), .int(createdAt), .text(id)]
-        )
-    }
-
     public func count(sessionId: String) throws -> Int {
         try count(where: "sessionId = ?", [.text(sessionId)])
+    }
+
+    // MARK: - 区块分页（v11，规范 §3）
+
+    /// 一页 = 一块（或更少：这块被删剩几条）。`blockIndex` 必须是真实存在的块。
+    ///
+    /// 返回的 `messages` 按 `(createdAt, id)` 升序；`olderBlockIndex` / `newerBlockIndex`
+    /// 是「按块号找得到的上一块 / 下一块」（块可能因为删空而留下编号空洞，所以不是 ±1）。
+    public func block(_ blockIndex: Int, sessionId: String) throws -> MessageBlockWindow? {
+        guard let block = try blocks.block(sessionId: sessionId, blockIndex: blockIndex) else { return nil }
+        let messages = try observed(
+            "block",
+            blocks.blockMessages(sessionId: sessionId, blockIndex: blockIndex)
+        )
+        return MessageBlockWindow(
+            blockIndex: block.blockIndex,
+            messages: messages,
+            olderBlockIndex: try blocks.olderBlockIndex(sessionId: sessionId, before: block.blockIndex),
+            newerBlockIndex: try blocks.newerBlockIndex(sessionId: sessionId, after: block.blockIndex)
+        )
+    }
+
+    /// 这段会话最新一块的块号（没有消息时 nil）。首屏用它定位，不扫消息表。
+    public func lastBlockIndex(sessionId: String) throws -> Int? {
+        try blocks.lastBlockIndex(sessionId: sessionId)
+    }
+
+    /// 取 `blockIndex` 那一块，并带上它的上一块 / 下一块编号。
+    ///
+    /// - Parameter blockIndex: nil = 最新一块（首屏）；给了块号但那一块已经被删空时，
+    ///   回落到「比它更旧的最近一块」（界面上就是「这一块不见了，给你看前面那块」），
+    ///   再没有就返回 nil（这段会话已经空了）。
+    public func blocksAround(sessionId: String, blockIndex: Int? = nil) throws -> MessageBlockWindow? {
+        guard let requested = blockIndex else {
+            guard let last = try blocks.lastBlockIndex(sessionId: sessionId) else { return nil }
+            return try block(last, sessionId: sessionId)
+        }
+        if let exact = try block(requested, sessionId: sessionId) { return exact }
+        guard let older = try blocks.olderBlockIndex(sessionId: sessionId, before: requested) else {
+            return nil
+        }
+        return try block(older, sessionId: sessionId)
+    }
+
+    /// 比 `blockIndex` 更旧的最近一块的块号（向上加载一页）。
+    public func olderBlockIndex(sessionId: String, before blockIndex: Int) throws -> Int? {
+        try blocks.olderBlockIndex(sessionId: sessionId, before: blockIndex)
+    }
+
+    /// 比 `blockIndex` 更新的最近一块的块号（向下加载一页）。
+    public func newerBlockIndex(sessionId: String, after blockIndex: Int) throws -> Int? {
+        try blocks.newerBlockIndex(sessionId: sessionId, after: blockIndex)
+    }
+
+    /// 一条消息落在哪一块（搜索结果跳进会话时用它定位）。
+    public func blockIndex(ofMessage id: String) throws -> Int? {
+        try blocks.blockIndex(ofMessage: id)
     }
 
     public func latest(sessionId: String) throws -> MessageEntity? {
@@ -1051,29 +1189,26 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 一页多少条（界面每页 30 条）。
     public static let defaultSearchPageSize = 30
 
-    /// 粗筛最多取多少条候选进内存精排。
-    ///
-    /// 为什么要有上限：`LIKE '%q%'` 命中几千条时，把整张表的正文读进内存再算 relevance
-    /// 会在低端机上卡一下。代价是**超过 500 条命中时只在新最近的 500 条里排序**，
-    /// 更旧的高分命中可能被截掉（见交付报告的风险项）；`hasMore` 只反映这批候选内部还有没有。
-    public static let maxSearchCandidates = 500
-
     /// 会话 / 人格只为了给命中补标题与头像，缓存一下避免同一次检索里 N+1。
     private lazy var sessionLookup = ChatSessionStore(database: database)
     private lazy var personaLookup = PersonaStore(database: database)
 
-    /// 检索聊天记录：**粗筛（SQL）→ 精排（Domain）→ 游标分页 → 补会话/人格信息**。
+    /// 检索聊天记录：**逐块枚举 → 每块读入内存精排 → 键集游标 → 补会话/人格信息**。
     ///
-    /// 为什么是「LIKE 粗筛 + 内存精排」而不是建一张倒排索引表：
-    /// 排序规则要的是「命中词元个数 + `ChineseTerms.relevance`」，这在 SQL 里算不出来；
-    /// 真要做就得把词元、权重、分值的维护搬到写消息的每条路径上（发消息、撤回、编辑、
-    /// 备份导入、清空上下文……），一处漏了就会「搜不到自己刚说的话」。
-    /// 聊天记录的量级（一个人的对话）落在 500 条候选内，把复杂度放在 Domain 里值得。
+    /// 与 v10 的区别（规范 §4「无候选上限」）：不再用一条 `WHERE content LIKE ?` 把整张表
+    /// 粗筛一遍、也不再有 500 条候选上限。检索按块走：
+    /// 1. 枚举（可先按人格过滤的）会话的块，块号升序；
+    /// 2. 每块一次查询读进来，用共享的 `SearchRanking` 精排（与 `spec/search/cases` 同一套规则）；
+    /// 3. 只保留「排序位置严格在游标之后」的前 `limit + 1` 条（多出来的那一条就是 `hasMore` 的证据）；
+    /// 4. 一块读完就丢掉它的正文，峰值内存 ≈ 一块 + 一页 + 前沿，与会话总长无关。
     ///
-    /// 用户输入里的 `%` / `_` / `\` 一律按普通字符处理（`LIKE ... ESCAPE '\'`）：
-    /// 「100%」不会被当成「100 后面跟任意内容」。注意这只管**粗筛的匹配语义**——
-    /// 规范还有一条「查询的任一词元命中也算命中」，所以「100%」仍会经词元「100」召回「1000」，
-    /// 两端行为必须一致（`spec/search/README.md` 的 Ranking rules 第 1 条）。
+    /// 为什么仍然不建倒排索引表：排序规则要的是「命中词元个数 + `ChineseTerms.relevance`」，
+    /// SQL 里算不出来；真要做就得把词元、权重、分值的维护搬到每条写消息的路径上
+    ///（发消息、撤回、编辑、备份导入、清空上下文……），一处漏了就会「搜不到自己刚说的话」。
+    ///
+    /// 用户输入里的 `%` / `_` / `\` 现在只影响内存里的匹配（`SearchRanking.isHit` 是字面比较），
+    /// 不再拼进 SQL，所以「100%」不会被当成通配符；「100」这个词元仍会召回「1000」，
+    /// 那是规范规定的词元召回（`spec/search/README.md` Ranking rules 第 1 条）。
     ///
     /// - Parameters:
     ///   - query: 查询词（内部 trim；空查询返回空页，不是「返回全部」）。
@@ -1081,7 +1216,6 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     ///   - since: 只要这个时刻之后（含边界）的消息（nil = 全部时间）。
     ///   - limit: 这一页最多几条。
     ///   - cursor: 上一页返回的游标（nil = 第一页）。
-    ///   - candidateLimit: 粗筛上限（测试用它验证「候选被截断」时的行为）。
     ///   - snippetWindow: 摘要窗口宽度，默认 60（与 `spec/search` 一致）。
     public func search(
         query: String,
@@ -1089,61 +1223,66 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
         since: Int64? = nil,
         limit: Int = MessageStore.defaultSearchPageSize,
         cursor: SearchCursor? = nil,
-        candidateLimit: Int = MessageStore.maxSearchCandidates,
         snippetWindow: Int = SearchSnippet.defaultWindow
     ) throws -> SearchPage {
         let trimmed = query.trimmed
         guard !trimmed.isEmpty, limit > 0 else { return .empty }
 
-        // 1) 粗筛：正文里出现「查询原文」或任意一个中文词元。
-        //    词元这一半是中文的命根子：查「项目压力」时二元组能命中「项目压得我睡不着」。
-        var patterns = [MessageStore.likePattern(trimmed)]
-        for term in ChineseTerms.queryTerms(trimmed) where term != trimmed {
-            patterns.append(MessageStore.likePattern(term))
-        }
-        var clause = "(" + patterns.map { _ in "content LIKE ? ESCAPE '\\'" }.joined(separator: " OR ") + ")"
-        var arguments: [SQLiteValue] = patterns.map { .text($0) }
-        if let personaId {
-            clause += " AND personaId = ?"
-            arguments.append(.text(personaId))
-        }
-        if let since {
-            clause += " AND createdAt >= ?"
-            arguments.append(.int(since))
-        }
-        let candidates = try fetch(
-            where: clause,
-            arguments,
-            orderBy: "createdAt DESC, id ASC",
-            limit: max(1, candidateLimit)
-        )
-        if candidates.isEmpty { return .empty }
+        // 前沿：全局最优的 limit + 1 条（第 limit + 1 条只用来判断「还有下一页」）。
+        let frontierLimit = limit + 1
+        var frontier: [SearchCandidate] = []
+        frontier.reserveCapacity(frontierLimit)
 
-        // 2) 精排：命中判断、命中词元数、relevance、四键排序都在 Domain 里（与规范用例同一套）。
-        let items = candidates.map { message in
-            SearchRankItem(
-                id: message.id,
-                content: message.content,
-                createdAt: message.createdAt,
-                personaId: message.personaId
+        // 1) + 2) 逐块：读一块、精排、按键集游标并入前沿，读完即丢。
+        var visitedBlocks = 0
+        try enumerateBlocks(personaId: personaId) { sessionId, blockIndex in
+            visitedBlocks += 1
+            var clause = "sessionId = ? AND blockIndex = ?"
+            var arguments: [SQLiteValue] = [.text(sessionId), .int(blockIndex)]
+            if let personaId {
+                clause += " AND personaId = ?"
+                arguments.append(.text(personaId))
+            }
+            if let since {
+                clause += " AND createdAt >= ?"
+                arguments.append(.int(since))
+            }
+            let rows = try observed(
+                "searchBlock",
+                fetch(where: clause, arguments, orderBy: "createdAt ASC, id ASC")
             )
+            if rows.isEmpty { return }
+            let items = rows.map {
+                SearchRankItem(
+                    id: $0.id,
+                    content: $0.content,
+                    createdAt: $0.createdAt,
+                    personaId: $0.personaId
+                )
+            }
+            let ranked = SearchRanking.rank(items, query: trimmed, personaId: personaId, since: since)
+            if ranked.isEmpty { return }
+            var messagesById: [String: MessageEntity] = [:]
+            for row in rows {
+                messagesById[row.id] = row
+            }
+            for hit in ranked {
+                if let cursor, !SearchRanking.comesAfter(hit, cursor: cursor) { continue }
+                guard let message = messagesById[hit.item.id] else { continue }
+                Self.insert(
+                    SearchCandidate(hit: hit, message: message),
+                    into: &frontier,
+                    cap: frontierLimit
+                )
+            }
         }
-        let ranked = SearchRanking.rank(items, query: trimmed, personaId: personaId, since: since)
+        if visitedBlocks == 0 || frontier.isEmpty { return .empty }
 
-        // 3) 游标分页：顺序是「分值优先」，所以游标必须带上四个排序键（见 `SearchCursor`）。
-        let remaining: [SearchRankedHit]
-        if let cursor {
-            remaining = ranked.filter { SearchRanking.comesAfter($0, cursor: cursor) }
-        } else {
-            remaining = ranked
-        }
-        if remaining.isEmpty { return .empty }
-        let page = Array(remaining.prefix(limit))
-        let hasMore = remaining.count > page.count
+        // 3) 这一页 + 「还有更多」的证据（多留的那一条）。
+        let hasMore = frontier.count > limit
+        let page = Array(frontier.prefix(limit))
 
         // 4) 补会话标题 / 人格名 / 头像 —— 只对**这一页**做，且同样的 id 只查一次。
-        var messagesById: [String: MessageEntity] = [:]
-        for candidate in candidates { messagesById[candidate.id] = candidate }
         var sessionCache: [String: ChatSessionEntity?] = [:]
         var personaCache: [String: PersonaEntity?] = [:]
 
@@ -1162,8 +1301,8 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
 
         var hits: [SearchHit] = []
         hits.reserveCapacity(page.count)
-        for rankedHit in page {
-            guard let message = messagesById[rankedHit.item.id] else { continue }
+        for candidate in page {
+            let message = candidate.message
             let sessionEntity = session(message.sessionId)
             let personaEntity = persona(message.personaId) ?? sessionEntity.flatMap { persona($0.personaId) }
             let personaName = personaEntity?.name ?? ""
@@ -1188,25 +1327,69 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
             ))
         }
 
-        let nextCursor = hasMore ? page.last.map(SearchCursor.init) : nil
+        let nextCursor = hasMore ? page.last.map { SearchCursor($0.hit) } : nil
         return SearchPage(hits: hits, hasMore: hasMore && nextCursor != nil, nextCursor: nextCursor)
     }
 
-    /// 把用户输入包成 `LIKE` 模式：`%` / `_` / `\` 全部转义成普通字符。
-    ///
-    /// 与 SQL 里的 `ESCAPE '\'` 配套使用。SQLite 的 `LIKE` 对 ASCII 大小写不敏感，
-    /// 对中文是逐字节比较 —— 正好符合「中文没有大小写」的事实。
-    static func likePattern(_ text: String) -> String {
-        var escaped = ""
-        escaped.reserveCapacity(text.count + 2)
-        for character in text {
-            if character == "\\" || character == "%" || character == "_" {
-                escaped.append("\\")
-            }
-            escaped.append(character)
-        }
-        return "%" + escaped + "%"
+    /// 一条命中 + 它的完整消息（前沿要留着它，好在这一页返回时直接拼 `SearchHit`）。
+    private struct SearchCandidate {
+        var hit: SearchRankedHit
+        var message: MessageEntity
     }
+
+    /// 把一条候选按规范四键序插进前沿（前沿按 `SearchRanking.precedes` 升序，最多 `cap` 条）。
+    ///
+    /// 用二分插入而不是「收集完再排序」：前沿只有 `limit + 1` 条，插入是 O(log limit)，
+    /// 整次检索的内存与时间都不会随命中总数增长（这正是「无上限」却仍然便宜的原因）。
+    private static func insert(_ candidate: SearchCandidate, into frontier: inout [SearchCandidate], cap: Int) {
+        if frontier.count >= cap, let last = frontier.last,
+           !SearchRanking.precedes(candidate.hit, last.hit) {
+            return
+        }
+        var low = 0
+        var high = frontier.count
+        while low < high {
+            let mid = (low + high) / 2
+            if SearchRanking.precedes(frontier[mid].hit, candidate.hit) {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        frontier.insert(candidate, at: low)
+        if frontier.count > cap {
+            frontier.removeLast()
+        }
+    }
+
+    /// 逐块枚举（块号升序）：**一次只回调一块**，块清单本身不物化。
+    ///
+    /// 人格过滤下沉到会话子查询（一段会话只属于一个人格）。一条块游标在 `step()` 期间
+    /// 又开新的语句读这一块的消息 —— SQLite 允许同一个连接上有多条活动语句（各自一个游标），
+    /// 因此这里不需要把块清单先读进数组：即便有几万块，内存里也只有「下一块」这一个编号。
+    private func enumerateBlocks(
+        personaId: String?,
+        _ body: (String, Int) throws -> Void
+    ) throws {
+        var sql = """
+            SELECT sessionId, blockIndex FROM message_blocks
+            WHERE sessionId IN (SELECT id FROM chat_sessions
+        """
+        var arguments: [SQLiteValue] = []
+        if let personaId {
+            sql += " WHERE personaId = ?"
+            arguments.append(.text(personaId))
+        }
+        sql += ") ORDER BY sessionId ASC, blockIndex ASC"
+        let statement = try database.prepare(sql)
+        try statement.bind(arguments)
+        while try statement.step() {
+            let sessionId = statement.text(at: 0) ?? ""
+            let blockIndex = Int(statement.int64(at: 1))
+            try body(sessionId, blockIndex)
+        }
+    }
+
 }
 
 public final class MemoryStore: SQLiteStore<MemoryEntity> {
@@ -1376,6 +1559,8 @@ public struct DatabaseStores {
     public let apiConfigs: ApiConfigStore
     public let sessions: ChatSessionStore
     public let messages: MessageStore
+    /// 分块历史的块表（规范 `spec/messages-blocks/README.md`）。
+    public let messageBlocks: MessageBlockStore
     public let memories: MemoryStore
     public let memoryTerms: MemoryTermStore
     public let memoryVectors: MemoryVectorStore
@@ -1392,6 +1577,7 @@ public struct DatabaseStores {
         self.apiConfigs = ApiConfigStore(database: database)
         self.sessions = ChatSessionStore(database: database)
         self.messages = MessageStore(database: database)
+        self.messageBlocks = MessageBlockStore(database: database)
         self.memories = MemoryStore(database: database)
         self.memoryTerms = MemoryTermStore(database: database)
         self.memoryVectors = MemoryVectorStore(database: database)

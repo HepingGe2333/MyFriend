@@ -532,10 +532,12 @@ private fun MessageResults(
                 }
             }
         }
-        if (state.truncated && !state.hasMore) {
-            item(key = "truncated") {
+        if (state.scannedAllHistory) {
+            // 0.12：检索改成「逐块扫描 + 键集游标无上限」之后不再有「只显示最近 N 条」这回事。
+            // 翻到最后一页时说明「已扫描全部历史」，让用户确信没有更早的命中被悄悄丢掉。
+            item(key = "scanned-all") {
                 Text(
-                    stringResource(R.string.search_truncated, state.hits.size),
+                    stringResource(R.string.search_scanned_all_history, state.total),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
                     modifier = Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 6.dp)

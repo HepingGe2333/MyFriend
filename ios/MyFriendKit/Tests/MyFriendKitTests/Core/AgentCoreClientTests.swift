@@ -45,6 +45,21 @@ final class AgentCoreClientTests: XCTestCase {
         fatalError("找不到仓库根目录（从 #filePath=\(#filePath) 向上没有 spec/agent-core/cases）")
     }()
 
+    /// `AgentCoreProtocol.kt` 可能出现的相对路径。
+    ///
+    /// 2026-11 的 `:agentcore` KMP 化把源集从 `src/main/kotlin` 改成了 `src/commonMain/kotlin`
+    /// （将来也可能出现 `jvmMain` / `iosMain` 之类的细分源集），所以这里**不写死一层**：
+    /// 常见源集逐个试，谁先存在用谁。找不到时把试过的路径全部写进 skip 信息。
+    static func agentCoreProtocolCandidates() -> [URL] {
+        let relative = "com/myfriend/app/domain/AgentCoreProtocol.kt"
+        let sourceSets = [
+            "commonMain", "jvmMain", "iosMain", "main", "androidMain", "nativeMain", "concurrentMain"
+        ]
+        return sourceSets.map {
+            repoRoot.appendingPathComponent("agentcore/src/\($0)/kotlin/\(relative)")
+        }
+    }
+
     private struct SpecCase {
         var name: String
         var input: [String: Any]
@@ -645,11 +660,15 @@ final class AgentCoreClientTests: XCTestCase {
     ///
     /// 文件找不到就跳过（iOS 单独 checkout 的情况），找到就必须完全一致。
     func testWireFieldNamesMatchAndroidAgentCoreProtocol() throws {
-        let file = Self.repoRoot.appendingPathComponent(
-            "agentcore/src/main/kotlin/com/myfriend/app/domain/AgentCoreProtocol.kt"
-        )
-        guard let text = try? String(contentsOf: file, encoding: .utf8) else {
-            throw XCTSkip("没有找到 \(file.path)（iOS 单独 checkout 时正常）")
+        let candidates = Self.agentCoreProtocolCandidates()
+        guard let file = candidates.first(where: { FileManager.default.fileExists(atPath: $0.path) }),
+              let text = try? String(contentsOf: file, encoding: .utf8) else {
+            throw XCTSkip(
+                """
+                没有找到 AgentCoreProtocol.kt（iOS 单独 checkout 时正常）。找过：
+                \(candidates.map(\.path).joined(separator: "\n"))
+                """
+            )
         }
         let fields = Self.protocolFieldConstants(in: text)
         func field(_ name: String) throws -> String {

@@ -81,7 +81,9 @@ final class ATSAndInsecureHTTPTests: XCTestCase {
             encoding: .utf8
         )
         let debugBlocks = pbx.components(separatedBy: "/* Debug */ = {")
-        XCTAssertEqual(debugBlocks.count, 3, "工程里应当有 project/target 两个 Debug 配置块（这行也会随格式变红）")
+        // 只要求「至少 project + App 两个 Debug 配置块」：工程里加了新的 target
+        //（比如 0.12 的 iOS 测试 target）不该让这条守卫变红 —— 它要守的是 plist 接线，不是块的数量。
+        XCTAssertGreaterThanOrEqual(debugBlocks.count, 3, "工程里应当有 project/target 两个 Debug 配置块")
         XCTAssertTrue(
             pbx.components(separatedBy: "INFOPLIST_FILE = Config/Info-Debug.plist;").count - 1 == 1,
             "Debug 配置应当使用 Config/Info-Debug.plist"

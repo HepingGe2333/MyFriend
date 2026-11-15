@@ -29,7 +29,15 @@ public let backupFormatName: String = "myfriend.backup"
 /// - `messages` 增加 `readAt`；
 /// - `settings` 删掉记忆开关、回复节奏、额度与单价、每日主动次数；
 /// - `apiConfigs` 删掉 Harness 三列。
-public let backupFormatVersion: Int = 2
+///
+/// v3（0.12）：头像与聊天图片的**二进制**也一起带走。
+/// - 顶层新增 `media` 数组（永远存在，没有图片时是空数组）：
+///   `{ id, kind, personaId?, fileName, mime, bytes, data }`，`data` 是标准 base64；
+/// - `personas.avatarUri` / `presets.avatarUri` 只写**裸文件名**（`avatar-<uuid>.jpg`），
+///   `messages.attachmentsJson[].uri` 也只写裸文件名（`chatImage-<uuid>.jpg`）：
+///   这个裸名是「引用 ↔ media」的关联键，换机后本机路径由导入侧重新生成；
+/// - 上限：单张 8 MiB、全部合计 128 MiB，整份备份（含 base64 膨胀）读写上限 256 MiB。
+public let backupFormatVersion: Int = 3
 
 // MARK: - 顶层
 
@@ -46,6 +54,9 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
     public var memories: [BackupMemory]
     public var sessions: [BackupSession]
     public var messages: [BackupMessage]
+    /// 图片二进制（v3）。没有图片时是空数组而不是省略：老版本读新备份会当成未知字段忽略，
+    /// 新版本读老备份则拿到空列表，行为与 v2 完全一致。
+    public var media: [BackupMedia]
     public var presets: [BackupPreset]
     public var proactiveRules: [BackupProactiveRule]
     /// 他「想在某个时间段找你」的念头；过期就作废，属于可选内容。
@@ -67,6 +78,7 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         memories: [BackupMemory] = [],
         sessions: [BackupSession] = [],
         messages: [BackupMessage] = [],
+        media: [BackupMedia] = [],
         presets: [BackupPreset] = [],
         proactiveRules: [BackupProactiveRule] = [],
         agentIntents: [BackupAgentIntent] = [],
@@ -83,6 +95,7 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         self.memories = memories
         self.sessions = sessions
         self.messages = messages
+        self.media = media
         self.presets = presets
         self.proactiveRules = proactiveRules
         self.agentIntents = agentIntents
@@ -93,7 +106,10 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
 
     enum CodingKeys: String, CodingKey {
         case format, formatVersion, appVersion, exportedAt, apiKeysOmitted
-        case personas, memories, sessions, messages, presets
+        case personas, memories, sessions, messages
+        // `media` 紧跟在 `messages` 后面只为读起来顺：JSON 键顺序对两端都不重要。
+        case media
+        case presets
         case proactiveRules, agentIntents, memoryConsolidations, apiConfigs, settings
     }
 }
@@ -397,7 +413,8 @@ public struct BackupSession: Equatable, Sendable, Encodable {
 /// 一句话。
 ///
 /// `toolTraceJson` 原样带走（「他当时查了两个网页」这种痕迹也是相处的一部分）；
-/// `attachmentsJson` 只留元数据，图片本体不导 —— 换机后 uri 已经指不到东西了。
+/// `attachmentsJson` 只留元数据 + **裸文件名**（v3）：图片本体在 `media` 里，
+/// 导入时按这个裸名把本机新路径接回去。
 public struct BackupMessage: Equatable, Sendable, Encodable {
     public var id: String
     public var sessionId: String
@@ -450,6 +467,51 @@ public struct BackupMessage: Equatable, Sendable, Encodable {
     enum CodingKeys: String, CodingKey {
         case id, sessionId, personaId, role, content, createdAt, updatedAt, status
         case errorMessage, model, edited, attachmentsJson, toolTraceJson, readAt
+    }
+}
+
+/// 备份里的一张图片（v3）：头像或聊天图片的**二进制**。
+///
+/// 字段名逐字对齐 Android 的 `BackupMedia`，一个字母都不能改：
+/// ```json
+/// {"id":"<uuid>","kind":"PERSONA_AVATAR","personaId":"<uuid>","fileName":"avatar-<uuid>.jpg",
+///  "mime":"image/jpeg","bytes":12345,"data":"<base64>"}
+/// ```
+/// - `kind` 是 String 而不是枚举：不认识的 kind 要在**导入时**跳过并计数，
+///   而不是让整条记录在解码阶段就消失（那样用户看不到「有几张图没接回来」）。
+/// - `personaId` 可空：`USER_AVATAR` 没有归属人格（nil 时这个键不写进 JSON）。
+/// - `fileName` 是**裸的源文件名**，也是「引用 ↔ media」的关联键（头像 / 附件里写的就是它）。
+/// - `bytes` 是 `data` 解出来的**原始**字节数（JSON 数字）；`data` 是标准 base64、带 padding、不换行。
+public struct BackupMedia: Equatable, Sendable, Codable {
+    public var id: String
+    /// `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`。见类型注释：故意保留为 String。
+    public var kind: String
+    public var personaId: String?
+    public var fileName: String
+    public var mime: String
+    public var bytes: Int
+    public var data: String
+
+    public init(
+        id: String = "",
+        kind: String = "",
+        personaId: String? = nil,
+        fileName: String = "",
+        mime: String = "",
+        bytes: Int = 0,
+        data: String = ""
+    ) {
+        self.id = id
+        self.kind = kind
+        self.personaId = personaId
+        self.fileName = fileName
+        self.mime = mime
+        self.bytes = bytes
+        self.data = data
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, personaId, fileName, mime, bytes, data
     }
 }
 
@@ -873,6 +935,24 @@ extension BackupMessage {
             attachmentsJson: try json.optionalText("attachmentsJson"),
             toolTraceJson: try json.optionalText("toolTraceJson"),
             readAt: try json.optionalInt64("readAt")
+        )
+    }
+}
+
+/// 媒体条目：字段缺失按默认值（空串 / 0），字段类型写错就让这一条被跳过并计数。
+///
+/// 这里刻意**不做**「base64 解不开就丢掉」之类的业务校验：那是导入侧
+/// （`BackupMediaRestorer`）的事，因为那里才能把「坏了」换算成给用户看的中文提醒。
+extension BackupMedia {
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            id: try json.text("id"),
+            kind: try json.text("kind"),
+            personaId: try json.optionalText("personaId"),
+            fileName: try json.text("fileName"),
+            mime: try json.text("mime"),
+            bytes: try json.int("bytes"),
+            data: try json.text("data")
         )
     }
 }

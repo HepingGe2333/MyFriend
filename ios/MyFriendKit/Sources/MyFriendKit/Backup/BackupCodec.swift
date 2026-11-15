@@ -100,6 +100,11 @@ public enum BackupCodec {
                                   id: { $0.id }, build: BackupSession.init(json:))
         let messages = decodeList(root, key: "messages", label: String(localized: "消息"), warnings: &warnings,
                                   id: { $0.id }, build: BackupMessage.init(json:))
+        // v3 的媒体段：和别的段一样「能救几条是几条」，但**不按 id 过滤** ——
+        // `media[].id` 只是给排查用的，关联靠 `kind + fileName`，没有 id 的条目照样能恢复图片
+        // （Android 侧同样不过滤 id）。
+        let media = decodeList(root, key: "media", label: String(localized: "媒体"), warnings: &warnings,
+                               keepBlankId: true, id: { $0.id }, build: BackupMedia.init(json:))
         let presets = decodeList(root, key: "presets", label: String(localized: "预设"), warnings: &warnings,
                                  id: { $0.id }, build: BackupPreset.init(json:))
         let rules = decodeList(root, key: "proactiveRules", label: String(localized: "主动节奏"), warnings: &warnings,
@@ -126,6 +131,7 @@ public enum BackupCodec {
             memories: memories,
             sessions: sessions,
             messages: messages,
+            media: media,
             presets: presets,
             proactiveRules: rules,
             agentIntents: intents,
@@ -151,6 +157,7 @@ public enum BackupCodec {
         key: String,
         label: String,
         warnings: inout [String],
+        keepBlankId: Bool = false,
         id: (T) -> String,
         build: ([String: JSONValue]) throws -> T
     ) -> [T] {
@@ -180,6 +187,8 @@ public enum BackupCodec {
             ))
         }
 
+        // `keepBlankId`：媒体段没有 id 也要留下（关联靠 kind + fileName，与 Android 一致）。
+        guard !keepBlankId else { return decoded }
         let valid = decoded.filter {
             !id($0).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }

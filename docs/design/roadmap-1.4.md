@@ -93,7 +93,7 @@
 
 | 关注点 | 代码 |
 | --- | --- |
-| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Mood.kt) |
+| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Mood.kt) |
 | 心情的存取与引导 | [`MoodRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MoodRepository.kt) |
 | 表结构与迁移 | [`Entities.kt`](../../app/src/main/java/com/myfriend/app/data/local/Entities.kt)、[`Daos.kt`](../../app/src/main/java/com/myfriend/app/data/local/Daos.kt)、[`MyFriendDatabase.kt`](../../app/src/main/java/com/myfriend/app/data/local/MyFriendDatabase.kt) |
 | 聊天工具 `set_mood` | [`ToolProtocol.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt)、[`ToolExecutor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |

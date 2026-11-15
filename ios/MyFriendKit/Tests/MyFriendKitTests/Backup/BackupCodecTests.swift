@@ -45,17 +45,17 @@ final class BackupCodecTests: XCTestCase {
         let reason = try? XCTUnwrap(result.failureReason)
         XCTAssertTrue(reason?.contains("v99") ?? false)
         XCTAssertTrue(reason?.contains("升级") ?? false)
-        XCTAssertTrue(reason?.contains("v2") ?? false)
+        XCTAssertTrue(reason?.contains("v3") ?? false)
     }
 
     func testLowerFormatVersionDecodesWithWarning() throws {
         let result = try success(#"{"format":"myfriend.backup","formatVersion":0,"personas":[{"id":"p1"}]}"#)
         XCTAssertEqual(result.bundle?.personas.count, 1)
-        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v2 尽力读出来"))
+        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v3 尽力读出来"))
         // v1 及更早的备份还要多一句：旧开关不再生效、一人只留最新一段（§八）。
         XCTAssertTrue(result.warnings.contains { $0.contains("1.9 之前的备份") })
         // 读进来以后统一按本机版本记，再导出不会把 v0 传下去。
-        XCTAssertEqual(result.bundle?.formatVersion, 2)
+        XCTAssertEqual(result.bundle?.formatVersion, 3)
     }
 
     // MARK: - 宽容：缺字段 / 未知字段 / 部分损坏
@@ -67,7 +67,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(bundle.messages.count, 0)
         XCTAssertNil(bundle.settings, "没写设置就不该覆盖本机设置")
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 2)
+        XCTAssertEqual(bundle.formatVersion, 3)
         XCTAssertTrue(result.warnings.contains("这份备份里没有他：既没有人格也没有记忆和对话"))
     }
 
@@ -75,7 +75,7 @@ final class BackupCodecTests: XCTestCase {
         let raw = """
         {
           "format": "myfriend.backup",
-          "formatVersion": 2,
+          "formatVersion": 3,
           "futureSection": [1, 2, 3],
           "personas": [
             {"id": "p1", "name": "他", "futureField": {"nested": [1, 2]}}
@@ -357,12 +357,137 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(
             Set(root.keys),
             ["format", "formatVersion", "appVersion", "exportedAt", "apiKeysOmitted",
-             "personas", "memories", "sessions", "messages", "presets", "proactiveRules",
+             "personas", "memories", "sessions", "messages", "media", "presets", "proactiveRules",
              "agentIntents", "memoryConsolidations", "apiConfigs", "settings"]
         )
         // 顶层不该出现 Kotlin 结构里没有的东西。
         XCTAssertFalse(root.keys.contains("apiUsage"))
         XCTAssertFalse(root.keys.contains("agentTicks"))
+    }
+
+    // MARK: - v3：media 段的 JSON 形状（两端逐字一致）
+
+    /// `media` 永远存在（空数组也算），不能因为「没有图片」就省掉这个键。
+    func testEmptyBundleStillWritesEmptyMediaArray() throws {
+        let json = try BackupCodec.encode(BackupBundle())
+        XCTAssertTrue(json.contains(#""media":[]"#), "没有图片时也要写空数组：\(json)")
+    }
+
+    /// 每个媒体条目的键集合：**恰好**这 7 个（`personaId` 为 nil 时省略）。
+    func testMediaEntryKeySetIsExactlyTheContract() throws {
+        let json = try BackupCodec.encode(BackupSamples.iosBundle())
+        let root = try XCTUnwrap(JSONValueParser.object(from: json))
+        guard case .array(let media)? = root["media"] else {
+            return XCTFail("media 段丢了")
+        }
+        XCTAssertEqual(media.count, 2, "样本里是「人格头像 + 聊天图片」两张")
+        for item in media {
+            guard case .object(let object) = item else { return XCTFail("media 里有一条不是对象") }
+            XCTAssertEqual(
+                Set(object.keys),
+                ["id", "kind", "personaId", "fileName", "mime", "bytes", "data"]
+            )
+        }
+    }
+
+    /// `bytes` 是 JSON **数字**，且等于 `data` 解出来的原始字节数。
+    func testMediaBytesIsTheDecodedLength() throws {
+        let json = try BackupCodec.encode(BackupSamples.iosBundle())
+        let root = try XCTUnwrap(JSONValueParser.object(from: json))
+        guard case .array(let media)? = root["media"] else { return XCTFail("media 段丢了") }
+
+        var expected: [Int] = []
+        for item in media {
+            guard case .object(let object) = item,
+                  case .int(let declared)? = object["bytes"],
+                  case .string(let data)? = object["data"],
+                  let decoded = Data(base64Encoded: data) else {
+                return XCTFail("bytes / data 的形状不对：\(item)")
+            }
+            XCTAssertEqual(decoded.count, Int(declared), "bytes 必须等于 data 解出来的字节数")
+            expected.append(decoded.count)
+        }
+        // 样本用的是真的 2×2 小图：632 字节的 jpeg、75 字节的 png。
+        XCTAssertEqual(expected, [632, 75])
+    }
+
+    /// `data` 是标准 RFC 4648 base64：带 padding、不换行、不含空白。
+    func testMediaBase64IsStandardAndUnwrapped() throws {
+        let json = try BackupCodec.encode(BackupSamples.iosBundle())
+        let root = try XCTUnwrap(JSONValueParser.object(from: json))
+        guard case .array(let media)? = root["media"] else { return XCTFail("media 段丢了") }
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+        )
+        for item in media {
+            guard case .object(let object) = item, case .string(let data)? = object["data"] else {
+                return XCTFail("data 不是字符串")
+            }
+            XCTAssertFalse(data.isEmpty)
+            XCTAssertFalse(data.contains("\n"), "base64 不许换行")
+            XCTAssertFalse(data.contains(" "), "base64 不许带空白")
+            XCTAssertTrue(
+                data.unicodeScalars.allSatisfy { allowed.contains($0) },
+                "不是标准 base64 字母表"
+            )
+            XCTAssertEqual(data.count % 4, 0, "标准 base64 的长度必须是 4 的倍数（带 padding）")
+            XCTAssertTrue(Data(base64Encoded: data) != nil, "标准 base64 必须能被解回来")
+        }
+    }
+
+    /// `personaId` 为 nil 时**这个键不写**（不是写 null）：USER_AVATAR 就是这样。
+    func testMediaOmitsPersonaIdWhenNil() throws {
+        var bundle = BackupSamples.iosBundle()
+        bundle.media = [
+            BackupMedia(
+                id: "ios-media-user", kind: "USER_AVATAR", personaId: nil,
+                fileName: "avatar-ios-me.jpg", mime: "image/jpeg", bytes: 632,
+                data: BackupSamples.sampleJPEGBase64
+            )
+        ]
+        let json = try BackupCodec.encode(bundle)
+        let root = try XCTUnwrap(JSONValueParser.object(from: json))
+        guard case .array(let media)? = root["media"], case .object(let entry)? = media.first else {
+            return XCTFail("media 段丢了")
+        }
+        XCTAssertEqual(
+            Set(entry.keys),
+            ["id", "kind", "fileName", "mime", "bytes", "data"],
+            "nil 的 personaId 不许写进媒体条目（别的段有 personaId 是正常的）"
+        )
+        // 读回来也必须是 nil（不是空串）。
+        XCTAssertNil(BackupCodec.decode(json).bundle?.media.first?.personaId)
+    }
+
+    /// media 段能宽容解码：整段不是数组、某几条读不动，都只记警告、不影响别的段。
+    func testBrokenMediaSectionIsSkippedWithWarning() throws {
+        let result = try success(#"{"personas":[{"id":"p1"}],"media":{"id":"m1"}}"#)
+        XCTAssertTrue(result.bundle?.media.isEmpty ?? false)
+        XCTAssertEqual(result.bundle?.personas.count, 1)
+        XCTAssertTrue(
+            result.warnings.contains("备份里的「media」不是列表，这一段已跳过"),
+            "\(result.warnings)"
+        )
+
+        // 某一条的 bytes 写成了一段文字 → 这一条跳过并计数，别的条目还在。
+        let partiallyBroken = #"""
+        {"media":[
+          {"id":"m1","kind":"USER_AVATAR","fileName":"avatar-a.jpg","mime":"image/jpeg","bytes":"很多","data":""},
+          {"id":"m2","kind":"USER_AVATAR","fileName":"avatar-b.jpg","mime":"image/jpeg","bytes":1,"data":"AA=="}
+        ]}
+        """#
+        let broken = try success(partiallyBroken)
+        XCTAssertEqual(broken.bundle?.media.map(\.id), ["m2"])
+        XCTAssertTrue(broken.warnings.contains("媒体 里有 1 条读不出来，已跳过"), "\(broken.warnings)")
+    }
+
+    /// `media[].id` 只是排查用的：没有 id 的条目也要留下（关联靠 kind + fileName）。
+    func testMediaWithoutIdIsKept() throws {
+        let raw = #"{"media":[{"kind":"USER_AVATAR","fileName":"avatar-a.jpg","mime":"image/jpeg","bytes":0,"data":""}]}"#
+        let result = try success(raw)
+        XCTAssertEqual(result.bundle?.media.count, 1)
+        XCTAssertEqual(result.bundle?.media.first?.fileName, "avatar-a.jpg")
+        XCTAssertFalse(result.warnings.contains { $0.contains("没写 id") }, "\(result.warnings)")
     }
 
     // MARK: - 往返：中文、emoji、超长文本

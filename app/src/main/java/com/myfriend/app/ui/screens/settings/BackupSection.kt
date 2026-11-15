@@ -42,7 +42,8 @@ import com.myfriend.app.ui.components.SettingCard
 import com.myfriend.app.ui.components.SettingRow
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.domain.BackupFailure
-import com.myfriend.app.domain.BackupLimits
+import com.myfriend.app.domain.BackupMediaLimits
+import com.myfriend.app.domain.BackupMediaWarning
 import com.myfriend.app.domain.BoundedTextRead
 import android.content.ContentResolver
 import android.provider.OpenableColumns
@@ -83,6 +84,17 @@ fun BackupSection(
             Spacer(Modifier.height(6.dp))
             Text(
                 stringResource(R.string.backup_safety_body),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(
+                    R.string.backup_media_limits,
+                    BackupMediaLimits.MAX_MEDIA_FILE_BYTES / (1024 * 1024),
+                    BackupMediaLimits.MAX_MEDIA_BYTES / (1024 * 1024),
+                    BackupMediaLimits.MAX_BACKUP_BYTES / (1024 * 1024)
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -128,6 +140,7 @@ fun BackupSection(
         ImportPreviewDialog(
             preview = preview,
             warnings = state.decodeWarnings,
+            mediaWarnings = state.decodeMediaWarnings,
             onConfirm = onConfirmImport,
             onDismiss = onDismissPreview
         )
@@ -173,19 +186,24 @@ fun rememberBackupTransfer(
                 .onFailure {
                     onMessage(ErrorText.of(context, it, R.string.backup_error_pack))
                 }
-                .onSuccess { content ->
+                .onSuccess { exported ->
                     val written = runCatching {
                         withContext(Dispatchers.IO) {
                             context.contentResolver.openOutputStream(uri)?.use { output ->
-                                output.write(content.toByteArray())
+                                output.write(exported.json.toByteArray())
                             } ?: error(context.getString(R.string.backup_error_unwritable))
                         }
                     }
                     onMessage(
                         written.fold(
                             {
-                                if (fileName.isNullOrBlank()) context.getString(R.string.backup_success)
-                                else context.getString(R.string.backup_success_named, fileName)
+                                val success = if (fileName.isNullOrBlank()) {
+                                    context.getString(R.string.backup_success)
+                                } else {
+                                    context.getString(R.string.backup_success_named, fileName)
+                                }
+                                // v3：图片有上限，超限的会留在原机上——必须当场说清楚。
+                                success + BackupText.exportWarnings(context, exported.mediaWarnings)
                             },
                             { context.getString(R.string.backup_error_write, ErrorText.of(context, it)) }
                         )
@@ -204,11 +222,11 @@ fun rememberBackupTransfer(
             val read = runCatching {
                 withContext(Dispatchers.IO) {
                     val declared = context.contentResolver.declaredSizeBytes(uri)
-                    if (declared != null && declared >= 0 && BackupLimits.isTooLarge(declared)) {
-                        throw BoundedTextRead.TooLarge(BackupLimits.MAX_BACKUP_BYTES)
+                    if (declared != null && declared >= 0 && BackupMediaLimits.isTooLarge(declared)) {
+                        throw BoundedTextRead.TooLarge(BackupMediaLimits.MAX_BACKUP_BYTES)
                     }
                     context.contentResolver.openInputStream(uri)?.use { input ->
-                        BoundedTextRead.read(input, BackupLimits.MAX_BACKUP_BYTES)
+                        BoundedTextRead.read(input, BackupMediaLimits.MAX_BACKUP_BYTES)
                     }
                 }
             }
@@ -261,6 +279,7 @@ fun rememberBackupTransfer(
 private fun ImportPreviewDialog(
     preview: BackupPreview,
     warnings: List<BackupWarning>,
+    mediaWarnings: List<BackupMediaWarning>,
     onConfirm: (ImportMode) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -297,6 +316,13 @@ private fun ImportPreviewDialog(
                 warnings.forEach { warning ->
                     Text(
                         BackupText.warning(context, warning),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                mediaWarnings.forEach { warning ->
+                    Text(
+                        BackupText.mediaWarning(context, warning),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

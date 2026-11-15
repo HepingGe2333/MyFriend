@@ -140,6 +140,12 @@ id / 外键关系可以原样写回。第一版只需要这些表：
 设置不放数据库，走 `UserDefaults`（Android 端是 DataStore），键名与 `AppSettings` 字段同名。
 API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串）。
 
+## 六点五、共享决策层（0.12.0 起）
+
+`:agentcore` 已是 Kotlin Multiplatform 模块（`commonMain` + `jvmMain` + `iosMain`），产出 iOS 静态 framework
+`AgentCoreKit`。iOS App 的四个 agent 决策（睡眠、`defer_reply`、主动上限、工具参数夹取）**执行的是同一份 Kotlin 代码**；
+Swift 实现只作为 macOS 上 `swift test` 的回落与契约测试的另一半。构建步骤见 `CONTRIBUTING` 与 `ios/README.md`。
+
 ## 七、进度
 
 | 阶段 | 状态 | 证据 |
@@ -154,7 +160,7 @@ API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串�
 
 | 0.9.1：图片消息、头像、内存上限、工具执行器、主动唤醒页面、人设卡、压缩编排、通知与后台调度 | ✅ | iOS **810 条**单测全绿、`xcodebuild` BUILD SUCCEEDED；模拟器实测发图 / 工具调用 / 规则落库与开关 / 重启后回声仍在 |
 
-iOS 侧合计 **1098 条单测**（`swift test --disable-sandbox`），Android 侧 **909 条**（`:app:testDebugUnitTest`），
+iOS 侧合计 **1263 条单测**（`swift test --disable-sandbox`），Android 侧 **1044 条**（`:app:testDebugUnitTest`），
 两端都绿；两端 App 都能编译（Android `assembleDebug`、iOS `xcodebuild … build`）。
 
 ### 1.9 里两端必须一致的三个取舍（规格没写死，已对齐）

@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
-import com.myfriend.app.domain.MessagePaging
+import com.myfriend.app.domain.MessageBlockPaging
 import androidx.lifecycle.viewModelScope
 import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
@@ -96,17 +96,19 @@ data class ChatUiState(
     val showConfigPicker: Boolean = false,
     val showPersonaPicker: Boolean = false,
     val loaded: Boolean = false,
-    /** 还有更早的消息可以往回加载（首屏 60 条之外）。 */
+    /** 已加载的块之外还有更早的块（界面上「加载更早」那一行）。 */
     val hasMoreOlder: Boolean = false,
-    /** 正在加载更早的一页：列表顶部显示转圈，并且不再重复触发。 */
+    /** 正在加载更早的那一块：列表顶部显示转圈，并且不再重复触发。 */
     val loadingOlder: Boolean = false,
     /**
-     * 从检索结果跳到很久以前的消息后，窗口末尾**之后**还有更新的消息。
+     * 已加载的最新块之外还有更新的块（规范 §3 Newer）。
      *
-     * 0.11.0 起定位只加载目标附近一个有界窗口（审计 P2-13），所以「下面还有更近的话」
-     * 是一个真实状态：界面在底部给「更新的消息」入口，点了回到最新一屏。
+     * 0.12 起这是**可以加载**的：底部显示「下面还有更新的消息」，滚到底会自动加载，
+     * 点一下也加载（不再是「只能跳回最新」）。
      */
     val hasMoreNewer: Boolean = false,
+    /** 正在加载更新的那一块。 */
+    val loadingNewer: Boolean = false,
     /**
      * 窗口里最后一条「可计入」的助手消息时间（`role=ASSISTANT && status != ERROR`）。
      *
@@ -176,53 +178,25 @@ class ChatViewModel @Inject constructor(
     private val sessionFlow = chatRepository.observeSession(sessionId)
 
     /**
-     * 分页游标：null 表示只观察最近 `PAGE_SIZE` 条；一旦加载过更早的一页，
-     * 就改成观察「从那一页最早一条到最新」的区间（依然由 Room 观察，编辑/删除都会跟着更新）。
+     * 区块分页状态（规范 §3）。
+     *
+     * 只记「已加载哪几块 + 两侧还有没有块 + 哪一侧在加载」，不记条数、不记 offset：
+     * 一页就是一块，块编号是落库的，所以新消息进来不会让页边界滑动。
      */
-    private val sinceCursor = MutableStateFlow<MessagePaging.Cursor?>(null)
+    private val window = MutableStateFlow(MessageBlockPaging.State())
 
     /**
-     * 从检索结果定位时的**有界窗口**（审计 P2-13）。
+     * 已加载的那几块的消息（可观察）。
      *
-     * 不为 null 时聊天页只观察「窗口起点 + 最多 [MessagePaging.Window.rows] 条」，
-     * 不再把「目标 → 最新」整段读进内存；窗口的「更新的一侧」由界面上的「更新的消息」
-     * 入口回到最新一屏（[showLatest]）。
+     * 块内的编辑/删除、以及块里追加的新消息都会通过 Room 的失效通知回到这里；
+     * 每次数据回来都重算一次两侧边界（`hasMoreOlder/Newer`）——不能只在首屏算一次，
+     * 否则「下面还有更新的消息」在后台写入之后就不会再出现（旧实现踩过）。
      */
-    private val jumpWindow = MutableStateFlow<MessagePaging.Window?>(null)
-
-    private val pagingState = MutableStateFlow(MessagePaging.State())
-
-    private data class PagingTarget(
-        val cursor: MessagePaging.Cursor?,
-        val window: MessagePaging.Window?
-    )
-
-    private val messageFlow = combine(sinceCursor, jumpWindow) { cursor, window -> PagingTarget(cursor, window) }
+    private val messageFlow = window
+        .map { it.blocks }
         .distinctUntilChanged()
-        .flatMapLatest { target ->
-            val window = target.window
-            when {
-                window != null -> chatRepository.observeMessagesWindow(sessionId, window.start, window.rows)
-                target.cursor == null -> chatRepository.observeLatestMessages(sessionId)
-                else -> chatRepository.observeMessagesFrom(sessionId, target.cursor)
-            }
-        }
-        .onEach { rows ->
-            if (jumpWindow.value == null) {
-                // 只有首屏能靠「不足一页」判断到底了；之后的区间条数变多不代表还有更早的。
-                if (sinceCursor.value == null) {
-                    pagingState.update { MessagePaging.onFirstWindow(it, rows.size) }
-                }
-            } else {
-                // 审计 P1-1：有界窗口是 `LIMIT rows` 的固定区间，窗口末尾之后的新消息
-                // （自己发的、心跳/后台写的）不会自己进来。Room 在 messages 变化时会重跑
-                // 这个窗口查询，这里趁机按「窗口末尾 vs 会话最新一条」重算 hasMoreNewer，
-                // 让「更新的消息」入口能重新出现，而不是只在定位那一刻算一次。
-                val windowEnd = rows.lastOrNull()?.let { MessagePaging.Cursor(it.createdAt, it.id) }
-                val latest = runCatching { chatRepository.latestMessageCursor(sessionId) }.getOrNull()
-                pagingState.update { MessagePaging.onWindowRows(it, latest, windowEnd) }
-            }
-        }
+        .flatMapLatest { blocks -> chatRepository.observeBlocks(sessionId, blocks) }
+        .onEach { rows -> refreshBlockBoundaries(rows) }
 
     private val personaFlow = sessionFlow
         .map { it?.personaId }
@@ -261,7 +235,7 @@ class ChatViewModel @Inject constructor(
     /** 心情和「他正在……」一起进界面：都是他自己的状态，界面看得到、改不了。 */
     private val ambientFlow = combine(moodFlow, presenceFlow) { mood, presence -> mood to presence }
 
-    private val localFlow = combine(ephemeral, pagingState) { local, paging -> local to paging }
+    private val localFlow = combine(ephemeral, window) { local, blocks -> local to blocks }
 
     private val uiFlow = combine(
         detailsFlow.combine(ambientFlow) { (bundle, settings), ambient -> Triple(bundle, settings, ambient) },
@@ -300,6 +274,7 @@ class ChatViewModel @Inject constructor(
             hasMoreOlder = paging.hasMoreOlder,
             loadingOlder = paging.loadingOlder,
             hasMoreNewer = paging.hasMoreNewer,
+            loadingNewer = paging.loadingNewer,
             lastAssistantAt = lastAssistantAt
         )
     }
@@ -326,12 +301,12 @@ class ChatViewModel @Inject constructor(
     /**
      * 从检索结果跳过来时要定位的消息 id（导航参数，可能没有）。
      *
-     * 定位复用聊天页自己的分页：先让 [ChatRepository.cursorContainingMessage] 算出「窗口起点」，
-     * 把已加载区间挪到包含目标消息的那一段（前面还会多带一两页上下文），再等窗口真的到达，
-     * 最后发一次 [ChatEvent.FocusMessage] 让界面滚过去并高亮。
+     * 定位是**区块级**的：目标消息的 `blockIndex` 是落库的，所以只要把窗口换成「目标所在的那一块」，
+     * 再等它真的出现在列表里即可（块内最多 [com.myfriend.app.domain.MessageBlocks.BLOCK_SIZE] 条，
+     * 一次读取量与会话长度无关）。
      *
-     * 为什么不「按 id 只查一条插进列表」：聊天页的列表是连续窗口，孤立插一条会让上下文断开，
-     * 往上滑还会跳；所以只能真的把区间翻到那里。
+     * 为什么不「按 id 只查一条插进列表」：聊天页的列表是一段连续的块，孤立插一条会让上下文断开，
+     * 往上滑还会跳；所以只能真的把窗口翻到那一块。
      */
     private val jumpTargetId: String? = savedStateHandle.get<String>("messageId")
 
@@ -343,33 +318,37 @@ class ChatViewModel @Inject constructor(
             chatRepository.markRead(sessionId)
             initialPrepare()
         }
+        // 首屏只加载**最新一块**（规范 §3）：最新块编号从块表观察，
+        // 这样「会话从空变成有一块」「最新块被删空」都能重新定位。
+        viewModelScope.launch {
+            chatRepository.observeLastBlockIndex(sessionId).collect { last ->
+                applyLatestBlock(last)
+            }
+        }
         startJumpToTarget()
     }
 
     /**
-     * 滚到检索命中的那条消息。
+     * 滚到检索命中的那条消息：把窗口换成「目标那一块」并等它出现。
      *
-     * 三种结局都安静收场：找到了 → 发事件；目标已经在首屏窗口（不用挪）→ 一样发事件；
+     * 三种结局都安静收场：找到了 → 发事件；目标在首屏（最新块里）→ 一样发事件；
      * 目标不在了（删过 / 换过设备）→ 停在最新一屏，不报错 —— 用户自己会明白那条话没了。
      */
     private fun startJumpToTarget() {
         val target = jumpTargetId ?: return
         if (target.isBlank()) return
         viewModelScope.launch {
-            // 一次算出「目标附近的有界窗口」（审计 P2-13）：两次 COUNT + 一页上下文，
-            // 不再从最新一页往回爬（那是 O(页数²) 行读取）。
-            val window = runCatching {
-                chatRepository.cursorContainingMessage(sessionId, target)
+            val located = runCatching {
+                chatRepository.blockContainingMessage(sessionId, target)
             }.getOrNull()
-            if (window != null) {
-                // 先写窗口、再写游标：messageFlow 一看到窗口就按有界区间观察，
-                // 不会先按「游标 → 最新」订阅一次（那才是要避免的全量读）。
-                jumpWindow.value = window
-                sinceCursor.value = window.start
-                pagingState.update { MessagePaging.onJumped(it, window) }
+            if (located != null && window.value.newestBlock != located.blockIndex) {
+                window.value = MessageBlockPaging.onJump(
+                    targetBlock = located.blockIndex,
+                    hasMoreOlder = located.hasMoreOlder,
+                    hasMoreNewer = located.hasMoreNewer
+                )
             }
 
-            // 目标可能就在首屏（window 为 null），也可能要等窗口到；统一等「窗口里出现它」。
             // 5 秒上限是为了它已经被删掉时不要把协程永远挂着（此时停在新的一屏即可）。
             val settled = withTimeoutOrNull(JUMP_TIMEOUT_MILLIS) {
                 uiState.first { state -> state.messages.any { it.id == target } }
@@ -378,22 +357,68 @@ class ChatViewModel @Inject constructor(
         }
     }
 
-    /** 定位窗口之外的「更新的消息」：回到最新一屏（清掉游标与有界窗口，恢复实时观察）。 */
+    /**
+     * 「回到最新」：只保留最新一块（首屏语义）。
+     *
+     * 0.12 起它不再是「往下看更新消息」的唯一入口——底部那一行会一块一块往下加载，
+     * 这里留给「从很久以前跳回来」和「发新消息之前」用。
+     */
     fun showLatest() {
-        jumpWindow.value = null
-        sinceCursor.value = null
-        pagingState.update { MessagePaging.onLatest(it) }
+        viewModelScope.launch {
+            val last = runCatching { chatRepository.lastBlockIndex(sessionId) }.getOrNull()
+            val first = runCatching { chatRepository.firstBlockIndex(sessionId) }.getOrNull()
+            window.value = MessageBlockPaging.onLatest(window.value, last, first)
+        }
     }
 
     /**
-     * 用户主动写消息（发送 / 重新生成 / 编辑）之前，若正停在检索定位的有界窗口里，
-     * 先回到最新一屏（审计 P1-1）。
+     * 用户主动写消息（发送 / 重新生成 / 编辑）之前，若停在更早的块里，先回到最新块。
      *
-     * 留在窗口里的话：新写的消息 `createdAt` 落在窗口区间之外，列表里根本看不到——
-     * 用户感知是「发出去的话消失了、他也不理我」；随后助手回复同样落在窗口外。
+     * 留在旧块里的话：新写的消息落在最新块，列表里根本看不到——用户感知是
+     * 「发出去的话消失了、他也不理我」；随后助手回复同样落在窗口之外。
      */
-    private fun leaveJumpWindowForNewMessage() {
-        if (jumpWindow.value != null) showLatest()
+    private suspend fun leaveJumpWindowForNewMessage() {
+        val last = runCatching { chatRepository.lastBlockIndex(sessionId) }.getOrNull()
+        if (!MessageBlockPaging.isAtNewestBlock(window.value, last)) {
+            val first = runCatching { chatRepository.firstBlockIndex(sessionId) }.getOrNull()
+            window.value = MessageBlockPaging.onLatest(window.value, last, first)
+        }
+    }
+
+    /**
+     * 块表数据变化后重算两侧边界（规范 §3 的「还有没有上一块 / 下一块」）。
+     *
+     * @param rows 本次观察到的消息（没用上，但保留参数让调用点读起来就是「数据回来了」）
+     */
+    private suspend fun refreshBlockBoundaries(@Suppress("UNUSED_PARAMETER") rows: List<MessageEntity>) {
+        val state = window.value
+        if (!state.initialized) return
+        val oldest = state.oldestBlock ?: return
+        val newest = state.newestBlock ?: return
+        val hasOlder = runCatching { chatRepository.blocksAround(sessionId, oldest).older != null }
+            .getOrDefault(false)
+        val hasNewer = runCatching { chatRepository.blocksAround(sessionId, newest).newer != null }
+            .getOrDefault(false)
+        window.update { MessageBlockPaging.onBoundaries(it, hasOlder, hasNewer) }
+    }
+
+    /**
+     * 最新块编号变了（首屏、会话清空、最新块被删空）：重新定位窗口。
+     *
+     * - 还没定位过 → 首屏；
+     * - 窗口里一块都没有（会话本来是空的，现在有消息了；或者被清空了）→ 重新首屏；
+     * - 否则只重算边界，「下面还有更新的消息」会自己亮起来。
+     */
+    private suspend fun applyLatestBlock(last: Int?) {
+        val current = window.value
+        when {
+            last == null -> window.value = MessageBlockPaging.onInitial(null, null)
+            !current.initialized || current.blocks.isEmpty() -> {
+                val first = runCatching { chatRepository.firstBlockIndex(sessionId) }.getOrNull()
+                window.value = MessageBlockPaging.onInitial(last, first)
+            }
+            else -> refreshBlockBoundaries(emptyList())
+        }
     }
 
     private suspend fun initialPrepare() {
@@ -404,46 +429,50 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * 滚到顶部时往回要一页。
+     * 滚到顶部：加载 `blockIndex - 1` 那一块（规范 §3 Older）。
      *
-     * 「同一时刻只加载一页」由 [MessagePaging.beginLoadOlder] 保证：
-     * 快速滚顶 / 反复触发时第二次直接返回，不会并发打两条查询、也不会把同一页插两遍。
+     * 「同一时刻只加载一块」由 [MessageBlockPaging.beginLoadOlder] 保证：快速滚顶 / 反复触发时
+     * 第二次直接返回，不会并发打两条查询、也不会把同一块插两遍。
      */
     fun loadOlder() {
-        val (next, shouldLoad) = MessagePaging.beginLoadOlder(pagingState.value)
-        if (!shouldLoad) return
-        pagingState.value = next
+        val (next, started) = MessageBlockPaging.beginLoadOlder(window.value)
+        if (!started) return
+        window.value = next
         viewModelScope.launch {
             try {
-                // 定位窗口里往前翻：窗口起点前移一页，同时把条数上界加上一页，
-                // 这样窗口「更新的一侧」不动（目标还在，往下看还是原来那段）。
-                val bounded = jumpWindow.value
-                if (bounded != null) {
-                    val page = chatRepository.messagesBefore(sessionId, bounded.start)
-                    pagingState.value = MessagePaging.onOlderPage(pagingState.value, page.size)
-                    val oldest = page.firstOrNull() ?: return@launch
-                    jumpWindow.value = bounded.copy(
-                        start = MessagePaging.Cursor(oldest.createdAt, oldest.id),
-                        rows = bounded.rows + page.size
-                    )
-                    return@launch
-                }
-                val window = uiState.value.messages
-                val cursor = MessagePaging.oldestCursor(window, { it.createdAt }, { it.id })
-                if (cursor == null) {
-                    // 还没读到首屏（或会话为空）：收掉转圈，下次滚动再试。
-                    pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
-                    return@launch
-                }
-                val page = chatRepository.messagesBefore(sessionId, cursor)
-                pagingState.value = MessagePaging.onOlderPage(pagingState.value, page.size)
-                val oldest = page.firstOrNull() ?: return@launch
-                sinceCursor.value = MessagePaging.Cursor(oldest.createdAt, oldest.id)
+                val oldest = window.value.oldestBlock
+                // 「上一块」不是 oldest - 1：块删空之后编号会留缺口（规范 §1），要查。
+                val previous = oldest?.let { chatRepository.blocksAround(sessionId, it).older }
+                window.update { MessageBlockPaging.onOlderLoaded(it, previous) }
             } catch (cancel: CancellationException) {
-                pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
+                window.update { MessageBlockPaging.onLoadFailed(it, older = true) }
                 throw cancel
             } catch (error: Exception) {
-                pagingState.value = MessagePaging.onLoadFailed(pagingState.value)
+                window.update { MessageBlockPaging.onLoadFailed(it, older = true) }
+            }
+        }
+    }
+
+    /**
+     * 滚到底（且不在最新块）：加载 `blockIndex + 1` 那一块（规范 §3 Newer）。
+     *
+     * 这是 0.12 新增的方向：以前只能「跳回最新」，中间那段要么看不到、要么得整段读进内存。
+     * 现在一块一块往下走，读取量与「目标 → 最新」之间隔着多少历史无关。
+     */
+    fun loadNewer() {
+        val (next, started) = MessageBlockPaging.beginLoadNewer(window.value)
+        if (!started) return
+        window.value = next
+        viewModelScope.launch {
+            try {
+                val newest = window.value.newestBlock
+                val following = newest?.let { chatRepository.blocksAround(sessionId, it).newer }
+                window.update { MessageBlockPaging.onNewerLoaded(it, following) }
+            } catch (cancel: CancellationException) {
+                window.update { MessageBlockPaging.onLoadFailed(it, older = false) }
+                throw cancel
+            } catch (error: Exception) {
+                window.update { MessageBlockPaging.onLoadFailed(it, older = false) }
             }
         }
     }

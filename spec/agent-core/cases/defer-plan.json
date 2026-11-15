@@ -5,7 +5,7 @@
   "authority": "android",
   "authorityNote": "规格见 docs/ROADMAP-1.9.md §四；Android 的 DeferReply.plan 是权威实现，iOS 已对齐到同一个纯函数。",
   "kotlin": {
-    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/DeferReply.kt",
+    "file": "agentcore/src/commonMain/kotlin/com/myfriend/app/domain/DeferReply.kt",
     "symbol": "DeferReply.plan"
   },
   "swift": {

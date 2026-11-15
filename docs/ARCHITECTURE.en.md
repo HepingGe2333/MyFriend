@@ -114,8 +114,9 @@ So both sides implement it, held together by three mechanisms:
 tool arguments are clamped. It deliberately excludes persistence — sessions, memories, intents and usage live in the
 client database. That split is what makes sharing *and* serving feasible at the same time.
 
-**Since 0.11.0 the decision layer is a single Kotlin implementation**: `agentcore/` (`:agentcore`, zero third-party
-dependencies, pure JVM).
+**The decision layer is a single Kotlin implementation**: `agentcore/`. Since 0.11.0 it is a standalone module shared by
+`:app` and `agentd`; **since 0.12.0 it is a Kotlin Multiplatform module** (`commonMain` + `jvmMain` + `iosMain`) that also
+produces an iOS static framework, `AgentCoreKit` — so the iOS app executes the same Kotlin decisions.
 
 ```mermaid
 flowchart TB
@@ -131,7 +132,8 @@ flowchart TB
   end
   subgraph ios["iOS client"]
     I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
-    I2[NativeAgentCoreClient]
+    I2["KotlinAgentCoreClient (AgentCoreKit framework)"]
+    I2b["NativeAgentCoreClient (macOS tests only)"]
     I3["RemoteAgentCoreClient (URLSession, env/plist)"]
   end
   subgraph server["agentd (server)"]
@@ -145,6 +147,7 @@ flowchart TB
   A3 --> A1
   A3 <--> S1
   I2 --> I1
+  I2b --> I1
   I3 --> I1
   I3 <--> S1
   S2 --> S1
@@ -155,7 +158,7 @@ flowchart TB
 
 | Shape | Used by | Parity | Offline | Notes |
 | --- | --- | --- | --- | --- |
-| **A in-process** | Android (default), iOS (default) | ✅ one `:agentcore` implementation on Android; iOS is a contract-aligned Swift implementation | ✅ | millisecond pure functions, no round-trip |
+| **A in-process** | Android (default), iOS (default) | ✅ one `:agentcore` implementation (iOS through the `AgentCoreKit` framework) | ✅ | millisecond pure functions, no round-trip |
 | **B embedded service** | Android, optional | ✅ same server code | ✅ | run `agentd` on the same machine/LAN and point Android at it with `-PagentCoreRemote=true` |
 | **C remote service** | both, optional | ✅ | ❌ (falls back to native on failure) | self-hosting / multi-device; off by default, clients fall back and log |
 
@@ -172,13 +175,32 @@ flowchart TB
   packaging. Establishing the contract, module boundary and client abstraction first is the higher-confidence step;
   KMP remains an option for Stage 2.
 
-## 5.5 Search## 5.5 Search
+## 5.5 History storage: blocks
 
-Chat search is the same semantics implemented twice, pinned by `spec/search/` (16 cases): parameterised `LIKE`
-pre-filtering (user input `%`/`_`/`\` treated literally) plus `ChineseTerms` token recall, then in-memory ranking
-(matched tokens → `relevance` → time → id) over at most 500 candidates. No inverted-index table is deliberate: it would
-have to be maintained on every write path and force a schema bump, while search is a low-frequency action where a
-pre-filter over tens of thousands of messages is millisecond-scale.
+Since `0.12.0` conversation history is stored and read in **blocks** (contract: `spec/messages-blocks/README.md`):
+
+- `BLOCK_SIZE = 200`; `messages.blockIndex` plus `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`,
+  identical in both platforms' schema v11;
+- writes go through one block-maintenance path (append opens a new block at 200, anchored insert lands in the anchor's
+  block, delete recomputes the boundaries, an emptied block is deleted leaving a numbering gap, no rebalancing);
+- **a page is a block**: the first screen reads only the newest block, scrolling up reads the previous block (looking it
+  up in the block table so gaps are skipped) and scrolling down reads the next one; no offset is ever used, and the
+  number of rows read for a page is independent of history length;
+- unread / read receipts / DND still query the full table and are unaffected by the window;
+- backups stay a v2 message stream: blocks are rebuilt in order on import, since block metadata is derived and not
+  part of the backup.
+
+## 5.6 Search
+
+Chat search is identical on both platforms, pinned by `spec/search/` (16 cases); since `0.12.0` there is **no candidate
+cap**:
+
+- enumerate the blocks of the (persona/time-filtered) sessions → load one block at a time into memory → rank with the
+  shared `SearchRanking` (matched terms ↓ → `relevance` ↓ → time ↓ → id ↑) → page with a **keyset cursor**;
+- peak memory ≈ one block + one page + frontier, independent of total history length;
+- the cost: **every page re-walks the blocks** (the direct consequence of "no cap, no offset"), so latency grows
+  linearly with the number of blocks in history. This is deliberate; no inverted-index table was introduced, because
+  keeping it in sync would touch every write path and force another schema bump.
 
 ## 6. Migration path (staged, each step revertible)
 

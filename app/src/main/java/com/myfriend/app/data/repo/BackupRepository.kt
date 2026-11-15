@@ -23,8 +23,17 @@ import com.myfriend.app.domain.BackupDecodeResult
 import com.myfriend.app.domain.BackupPreview
 import com.myfriend.app.domain.BackupSettings
 import com.myfriend.app.domain.BackupFailure
+import com.myfriend.app.domain.BackupAvatarPath
 import com.myfriend.app.domain.BackupIntegrity
+import com.myfriend.app.domain.BackupMediaCandidate
+import com.myfriend.app.domain.BackupMediaFormats
+import com.myfriend.app.domain.BackupMediaKind
+import com.myfriend.app.domain.BackupMediaPacker
+import com.myfriend.app.domain.BackupMediaRestorer
+import com.myfriend.app.domain.BackupMediaWarning
+import com.myfriend.app.domain.BackupAttachmentsPortable
 import com.myfriend.app.domain.BackupWarning
+import com.myfriend.app.domain.AttachmentsCodec
 import com.myfriend.app.domain.DomainErrorCode
 import com.myfriend.app.domain.ChineseTerms
 import com.myfriend.app.domain.DataEraser
@@ -75,8 +84,23 @@ data class ImportSummary(
     val skipped: Int = 0,
     /** 结构化提醒：界面按当前语言拼句子（`BackupText`），数据层不拼中文。 */
     val warnings: List<BackupWarning> = emptyList(),
+    /** v3 媒体（头像/聊天图片）单独一组提醒：张数 + 原因，文案在 UI 层拼。 */
+    val mediaWarnings: List<BackupMediaWarning> = emptyList(),
     val mode: ImportMode = ImportMode.MERGE,
     val presets: Int = 0
+)
+
+/**
+ * 一次导出的结果：JSON 文本 + 没有带走的图片提醒。
+ *
+ * 为什么不是直接返回 String：v3 的媒体有上限，超限时备份仍然成功，但用户必须知道
+ * 「有 N 张图片留在原机上」。把提醒和文本绑在同一个返回值里，调用方就没有「忘了看」的借口。
+ */
+data class BackupExport(
+    val json: String,
+    val mediaWarnings: List<BackupMediaWarning> = emptyList(),
+    /** 真的装进备份的图片张数（日志/界面摘要用）。 */
+    val mediaCount: Int = 0
 )
 
 /**
@@ -117,6 +141,8 @@ class BackupRepository @Inject constructor(
     private val presetDao: PersonaPresetDao,
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
+    /** 块元数据的唯一写入入口：导入之后按消息顺序重建（备份格式仍是 v2，不含块）。 */
+    private val blockWriter: MessageBlockWriter,
     private val memoryDao: MemoryDao,
     private val memoryTermDao: MemoryTermDao,
     private val memoryConsolidationDao: MemoryConsolidationDao,
@@ -141,10 +167,13 @@ class BackupRepository @Inject constructor(
      * 把「他」收集成一份可以带走的 JSON 文本。
      *
      * 审计 P1-3 / 0.11.1：读库（每人一次消息查询）、实体→备份结构映射、JSON 编码
-     * 全在 `Dispatchers.IO` 上；64MB 上限让「主线程做这些」变成可达的 ANR。
+     * 全在 `Dispatchers.IO` 上；256MB 的读入上限让「主线程做这些」变成可达的 ANR。
      * 写文件仍由调用方负责（SAF 输出流）。
+     *
+     * v3 起顺带收集**本机当前引用到的**图片：人格/预设/用户自己的头像、聊天消息里的附件。
+     * 只读、只收集真实存在且落在 App 媒体目录里的文件（见 [MediaStorage.ownedFile]）。
      */
-    suspend fun exportJson(): String = withContext(Dispatchers.IO) {
+    suspend fun export(): BackupExport = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val personas = personaDao.getAll()
         // 一人一段：即使库外数据（旧备份、手工 SQL）塞进来多段，导出也只带最新那段。
@@ -169,6 +198,34 @@ class BackupRepository @Inject constructor(
             runCatching { agentIntentDao.observeRecent(persona.id, EXPORT_INTENTS_PER_PERSONA).first() }
                 .getOrDefault(emptyList())
         }
+        val presets = presetDao.getAll()
+        val settings = settingsRepository.settings.first()
+
+        // ---- v3：把图片二进制一起装进 media ----------------------------------
+        val avatarDir = MediaStorage.avatarDirectory(appContext)
+        val mediaDir = MediaStorage.mediaDirectory(appContext)
+        val candidates = mutableListOf<BackupMediaCandidate>()
+        fun addCandidate(kind: String, personaId: String?, uri: String?, directory: java.io.File) {
+            // 只读「属于我们自己的、真实存在的」文件：头像/附件路径来自数据库，属于
+            // 「数据即代码」的输入面，不能让它把沙盒里任意文件读进备份。
+            val file = MediaStorage.ownedFile(uri, directory) ?: return
+            if (!BackupAvatarPath.isSafeName(file.name)) return
+            val mime = BackupMediaFormats.mimeOfFile(file.name) ?: return
+            candidates += BackupMediaCandidate(kind, personaId, file.name, file, mime)
+        }
+        personas.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, it.id, it.avatarUri, avatarDir) }
+        addCandidate(BackupMediaKind.USER_AVATAR, null, settings.userAvatarUri, avatarDir)
+        presets.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, null, it.avatarUri, avatarDir) }
+        messages.forEach { message ->
+            AttachmentsCodec.decode(message.attachmentsJson).forEach { attachment ->
+                addCandidate(BackupMediaKind.CHAT_IMAGE, message.personaId, attachment.uri, mediaDir)
+            }
+        }
+        val packed = BackupMediaPacker.pack(candidates)
+        val chatImageNames = packed.media
+            .filter { it.kind == BackupMediaKind.CHAT_IMAGE }
+            .map { it.fileName }
+            .toSet()
 
         val bundle = BackupBundle(
             formatVersion = BACKUP_FORMAT_VERSION,
@@ -177,13 +234,14 @@ class BackupRepository @Inject constructor(
             personas = personas.map { it.toBackupPersona() },
             memories = memories.map { it.toBackupMemory() },
             sessions = sessions.map { it.toBackupSession() },
-            messages = messages.map { it.toBackupMessage() },
-            presets = presetDao.getAll().map { it.toBackupPreset() },
+            messages = messages.map { it.toBackupMessage(chatImageNames) },
+            media = packed.media,
+            presets = presets.map { it.toBackupPreset() },
             proactiveRules = proactiveRuleDao.observeAll().first().map { it.toBackupRule() },
             agentIntents = intents.map { it.toBackupIntent() },
             memoryConsolidations = consolidations.map { it.toBackupConsolidation() },
             apiConfigs = apiConfigDao.getAll().map { it.toBackupApiConfig() },
-            settings = settingsRepository.settings.first().toBackupSettings()
+            settings = settings.toBackupSettings()
         )
 
         // 空包闸（审计 P2-14）：没有任何人事/记忆/对话时不该导出一个「什么都接不回来」的文件，
@@ -197,8 +255,19 @@ class BackupRepository @Inject constructor(
         val encoded = BackupCodec.encode(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if (BackupCodec.containsSecretField(encoded)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
-        encoded
+        BackupExport(
+            json = encoded,
+            mediaWarnings = if (packed.skippedByLimit > 0) {
+                listOf(BackupMediaWarning.ExportSkipped(packed.skippedByLimit))
+            } else {
+                emptyList()
+            },
+            mediaCount = packed.media.size
+        )
     }
+
+    /** 只要 JSON 文本的调用方（测试、旧代码）：媒体提醒走 [export]。 */
+    suspend fun exportJson(): String = export().json
 
     /**
      * 读进来的备份先解码看一眼，不写库。
@@ -206,7 +275,7 @@ class BackupRepository @Inject constructor(
      * 界面上先让用户确认「几个人格、多少条记忆、多少句话」，再决定合并还是替换。
      */
     suspend fun preview(raw: String): BackupDecodeResult = withContext(Dispatchers.IO) {
-        // 审计 P1-3：JSON 解析 + DOM 构造 + 逐段反序列化可能几十到几百毫秒（上限 64MB），
+        // 审计 P1-3：JSON 解析 + DOM 构造 + 逐段反序列化可能几十到几百毫秒（v3 上限 256MB），
         // 不能占着主线程。这里顺手把「结构不完整」也提前算出来，预览对话框先提醒一句。
         when (val decoded = BackupCodec.decode(raw)) {
             is BackupDecodeResult.Failure -> decoded
@@ -239,7 +308,10 @@ class BackupRepository @Inject constructor(
                 is BackupDecodeResult.Failure -> throw BackupImportException(decoded.reason)
                 is BackupDecodeResult.Success -> {
                     val summary = importBundle(decoded.bundle, mode)
-                    summary.copy(warnings = decoded.warnings + summary.warnings)
+                    summary.copy(
+                        warnings = decoded.warnings + summary.warnings,
+                        mediaWarnings = decoded.mediaWarnings + summary.mediaWarnings
+                    )
                 }
             }
         }
@@ -274,23 +346,67 @@ class BackupRepository @Inject constructor(
             warnings += BackupWarning.ExtraSessions(bundle.sessions.size - latestSessions.size)
         }
 
-        // 备份里的头像只有文件名（安全 P2-5）：按名字看本机 files/avatars 里有没有同名文件。
+        // ---- v3：先把 media 落盘，再落库引用 ---------------------------------
+        // 顺序是刻意的：库里出现的每个 file:// 地址都必须已经指向一个真实文件。
+        // 写失败/坏数据的条目跳过并计数；导入结束后若落库失败，会把这次写的文件回滚删掉。
+        val avatarDir = MediaStorage.avatarDirectory(appContext)
+        val mediaDir = MediaStorage.mediaDirectory(appContext)
+        val referencedAvatarNames = buildSet {
+            bundle.personas.forEach { BackupAvatarPath.fileName(it.avatarUri)?.let { name -> add(name) } }
+            bundle.presets.forEach { BackupAvatarPath.fileName(it.avatarUri)?.let { name -> add(name) } }
+        }
+        val personaIds = bundle.personas.map { it.id }.toSet()
+        val referencedChatNames = buildSet {
+            bundle.messages.forEach { message ->
+                AttachmentsCodec.decode(message.attachmentsJson).forEach { attachment ->
+                    val name = attachment.uri.trim()
+                    if (name.isNotEmpty() && !name.contains('/') && !name.contains('\\') && !name.contains("..")) {
+                        add(name)
+                    }
+                }
+            }
+        }
+        // 只恢复「这次备份里真的会被引用到」的媒体：没被任何头像/消息引用的条目写下去
+        // 也只是孤儿文件（还会给恶意备份一个白占 128 MiB 的机会）。
+        val restorableMedia = bundle.media.filter { media ->
+            when (media.kind) {
+                BackupMediaKind.USER_AVATAR -> true
+                BackupMediaKind.PERSONA_AVATAR -> {
+                    val mediaPersonaId = media.personaId?.trim().orEmpty()
+                    media.fileName in referencedAvatarNames ||
+                        (mediaPersonaId.isNotEmpty() && mediaPersonaId in personaIds)
+                }
+                BackupMediaKind.CHAT_IMAGE -> media.fileName in referencedChatNames
+                else -> false
+            }
+        }
+        val restoredMedia = BackupMediaRestorer.restore(restorableMedia, avatarDir, mediaDir)
+        val mediaWarnings = restoredMedia.warnings.toMutableList()
+        val restoredChatFileNames = restoredMedia.chatImagesByFileName.values.map { it.file.name }.toSet()
+
+        // 备份里的头像只有文件名（安全 P2-5）：v3 用 media 里的同名条目恢复成新的本机文件；
+        // v1/v2 没有 media，仍按「本机 files/avatars 里有没有同名文件」处理。
         // 有 → 恢复成本机路径；没有（换设备的常态）→ 清空并记一条导入提醒，
         // 别让界面拿到一个「点了没反应」的地址。
         val personas = bundle.personas.map { backup ->
             val rawAvatar = backup.avatarUri?.trim().orEmpty()
-            val localAvatar = MediaStorage.resolveImportedAvatar(appContext, rawAvatar)
-            if (rawAvatar.isNotEmpty() && localAvatar == null) {
+            val restored = rawAvatar.takeIf { it.isNotEmpty() }?.let { restoredMedia.avatarsByFileName[it] }
+                ?: restoredMedia.avatarsByPersonaId[backup.id]
+            val localAvatar = restored?.uri ?: MediaStorage.resolveImportedAvatar(appContext, rawAvatar)
+            if (rawAvatar.isNotEmpty() && restored == null && localAvatar == null) {
                 warnings += BackupWarning.AvatarMissing(backup.name)
             }
             backup.copy(avatarUri = localAvatar).toEntity()
         }
         val memories = bundle.memories.map { it.toEntity() }
         val sessions = bundle.sessions.map { it.toEntity() }
-        // 预设头像与人格同一策略（安全 P2-6 / 审计 P2-8）：备份里只有文件名，
-        // 本机有同名文件才恢复成本机路径，否则清空——不把外来绝对路径原样写进 presets。
+        // 预设头像与人格同一策略（安全 P2-6 / 审计 P2-8）：v3 用 media 恢复成本机新文件，
+        // 老备份则只认本机同名文件——不把外来绝对路径原样写进 presets。
         val presets = bundle.presets.map { preset ->
-            val localAvatar = MediaStorage.resolveImportedAvatar(appContext, preset.avatarUri)
+            val restored = preset.avatarUri?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                restoredMedia.avatarsByFileName[it]
+            }
+            val localAvatar = restored?.uri ?: MediaStorage.resolveImportedAvatar(appContext, preset.avatarUri)
             preset.copy(avatarUri = localAvatar).toEntity()
         }
         val rules = bundle.proactiveRules.map { it.toEntity() }
@@ -316,9 +432,19 @@ class BackupRepository @Inject constructor(
         }
 
         // 消息得有个能落脚的会话：按上面的映射改 sessionId，落不进去的跳过并计数。
+        // 附件：v3 用 media 里的 CHAT_IMAGE 重建成本机新路径；v1/v2 没有 media，仍然只剩文字。
+        var messagesWithDroppedAttachments = 0
         val messages = bundle.messages.map { message ->
+            val restoredAttachments = BackupAttachmentsPortable.restore(
+                message.attachmentsJson,
+                restoredMedia.chatImagesByFileName
+            )
+            if (!message.attachmentsJson.isNullOrBlank() && restoredAttachments.dropped > 0) {
+                messagesWithDroppedAttachments++
+            }
             message.toEntity().copy(
-                sessionId = sessionIdMap[message.sessionId] ?: message.sessionId
+                sessionId = sessionIdMap[message.sessionId] ?: message.sessionId,
+                attachmentsJson = restoredAttachments.json
             )
         }.filter { message ->
             val ok = message.sessionId in sessionIdMap.values
@@ -326,20 +452,27 @@ class BackupRepository @Inject constructor(
             ok
         }
 
-        // 备份替换时按引用保留头像：备份里带到的 avatarUri（可能就指向本机仍有效的文件）
-        // + 用户自己的头像。其余旧头像文件当孤儿回收（否则「替换」之后旧头像永远留在手机上）。
+        if (messagesWithDroppedAttachments > 0) {
+            warnings += BackupWarning.AttachmentsDropped(messagesWithDroppedAttachments)
+        }
+
+        // 备份替换时按引用保留头像：备份里带到的 avatarUri（可能就指向本机仍有效的文件）、
+        // 这次刚从 media 落盘的新头像、以及用户自己的头像。
+        // 其余旧头像文件当孤儿回收（否则「替换」之后旧头像永远留在手机上）。
         val keepAvatarUris = buildSet {
             bundle.personas.forEach { persona ->
                 // 备份里是文件名，本机要留的是解析后的绝对路径（解析不出来就是没有这个文件）。
                 MediaStorage.resolveImportedAvatar(appContext, persona.avatarUri)?.let { add(it) }
             }
-            runCatching { settingsRepository.settings.first().userAvatarUri }
-                .getOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
-        }
-
-        val messagesWithAttachments = bundle.messages.count { !it.attachmentsJson.isNullOrBlank() }
-        if (messagesWithAttachments > 0) {
-            warnings += BackupWarning.AttachmentsDropped(messagesWithAttachments)
+            // v3 新落盘的头像（含预设/用户自己的）：此刻库里还没引用它们，必须显式保住。
+            restoredMedia.avatarsByFileName.values.forEach { add(it.uri) }
+            val restoredUserAvatar = restoredMedia.userAvatar
+            if (restoredUserAvatar != null) {
+                add(restoredUserAvatar.uri)
+            } else {
+                runCatching { settingsRepository.settings.first().userAvatarUri }
+                    .getOrNull()?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            }
         }
         // 审计 P2-3（0.11.1）：替换会清空本机、再从备份插回**同一个 sessionId**。
         // 在途生成的收尾（saveInterrupted / saveFailed / save）持有的是 bump 前的世代，
@@ -357,66 +490,81 @@ class BackupRepository @Inject constructor(
             }
         }
 
-        val erasure = database.withTransaction {
-            val cleared = if (mode == ImportMode.REPLACE) {
-                // 0.10.2：清空清单统一收在 DataEraser（与「清空聊天与记忆 / 删除全部数据 / 删人格」
-                // 共用 ErasurePlan），这里不再手写一份——以前漏的 agent_ticks / memory_vectors /
-                // persona_pending_patches / 聊天图片文件都在那份清单里。
-                // 注意：API 配置从不删（Key 只在本机），所以 ErasurePlan.BACKUP_REPLACE 不含它。
-                // 用 InsideTransaction 变体：本函数已经在 database.withTransaction 里，
-                // 不再嵌套开事务（清空 + 写回必须同属一个原子操作）。
-                // 它只删表、只收集待删文件；文件在事务提交之后才删（审计 P1-4）。
-                dataEraser.replaceForBackupInsideTransaction(keepAvatarUris)
-            } else {
-                null
-            }
-
-            personaDao.insertAll(personas)
-            presetDao.insertAll(presets)
-            memoryDao.insertAll(memories)
-            // 记忆的倒排索引要跟着一起建：否则接回来以后按关键词想不起事，只剩 LIKE 兜底。
-            memories.forEach { memory ->
-                runCatching {
-                    memoryTermDao.deleteByMemory(memory.id)
-                    val terms = ChineseTerms.terms(memory.content)
-                        .map { MemoryTermEntity(memoryId = memory.id, term = it.term, weight = it.weight) }
-                    if (terms.isNotEmpty()) memoryTermDao.insertAll(terms)
+        try {
+            database.withTransaction {
+                if (mode == ImportMode.REPLACE) {
+                    // 0.10.2：清空清单统一收在 DataEraser（与「清空聊天与记忆 / 删除全部数据 / 删人格」
+                    // 共用 ErasurePlan），这里不再手写一份——以前漏的 agent_ticks / memory_vectors /
+                    // persona_pending_patches / 聊天图片文件都在那份清单里。
+                    // 注意：API 配置从不删（Key 只在本机），所以 ErasurePlan.BACKUP_REPLACE 不含它。
+                    // 用 InsideTransaction 变体：本函数已经在 database.withTransaction 里，
+                    // 不再嵌套开事务（清空 + 写回必须同属一个原子操作）。
+                    // 它只删表、只收集待删文件；文件清理在事务提交之后才做（审计 P1-4）。
+                    dataEraser.replaceForBackupInsideTransaction(keepAvatarUris)
                 }
-            }
-            sessionsToInsert.forEach { sessionDao.insert(it) }
-            messages.forEach { messageDao.insert(it) }
-            rules.forEach { proactiveRuleDao.insert(it) }
-            intents.forEach { agentIntentDao.insert(it) }
-            consolidations.forEach { memoryConsolidationDao.insert(it) }
 
-            // API 配置：只覆盖非敏感字段（名称 / 模型 / 推理参数 / 联网开关）；
-            // **地址与明文开关永远保留本机值**，而且每条都要过一遍与 save() 相同的校验。
-            // 不合法（例如备份里是 http:// 明文地址、temperature 越界）就跳过这条并记 warning，
-            // 绝不让一份外部文件把本机配置改成攻击者的主机或打开明文。
-            var addressKept = 0
-            var insecureIgnored = 0
-            bundle.apiConfigs.forEach { imported ->
-                val existing = apiConfigDao.getById(imported.id)
-                val merged = if (existing != null) imported.mergeInto(existing) else imported.toNewEntity()
-                if (merged.addressKept) addressKept++
-                if (merged.insecureIgnored) insecureIgnored++
-                val validation = runCatching { apiConfigRepository.validateEntity(merged.entity) }
-                if (validation.isFailure) {
-                    // 已存在的配置保持本机原值不动；新配置直接丢弃。
-                    warnings += BackupWarning.ApiConfigRejected(
-                        merged.entity.name.trim().ifBlank { merged.entity.id }
-                    )
-                    return@forEach
+                personaDao.insertAll(personas)
+                presetDao.insertAll(presets)
+                memoryDao.insertAll(memories)
+                // 记忆的倒排索引要跟着一起建：否则接回来以后按关键词想不起事，只剩 LIKE 兜底。
+                memories.forEach { memory ->
+                    runCatching {
+                        memoryTermDao.deleteByMemory(memory.id)
+                        val terms = ChineseTerms.terms(memory.content)
+                            .map { MemoryTermEntity(memoryId = memory.id, term = it.term, weight = it.weight) }
+                        if (terms.isNotEmpty()) memoryTermDao.insertAll(terms)
+                    }
                 }
-                apiConfigDao.insert(merged.entity)
+                sessionsToInsert.forEach { sessionDao.insert(it) }
+                // 规范 §5：块的元数据是派生数据，不进备份；导入（替换/合并）之后按消息顺序
+                // 用追加规则重建 blockIndex 与块行。合并在中间插入更早的消息也没问题——
+                // 这里整段重建，不依赖「新消息一定排在最后」。
+                blockWriter.insertImported(messages)
+                rules.forEach { proactiveRuleDao.insert(it) }
+                intents.forEach { agentIntentDao.insert(it) }
+                consolidations.forEach { memoryConsolidationDao.insert(it) }
+
+                // API 配置：只覆盖非敏感字段（名称 / 模型 / 推理参数 / 联网开关）；
+                // **地址与明文开关永远保留本机值**，而且每条都要过一遍与 save() 相同的校验。
+                // 不合法（例如备份里是 http:// 明文地址、temperature 越界）就跳过这条并记 warning，
+                // 绝不让一份外部文件把本机配置改成攻击者的主机或打开明文。
+                var addressKept = 0
+                var insecureIgnored = 0
+                bundle.apiConfigs.forEach { imported ->
+                    val existing = apiConfigDao.getById(imported.id)
+                    val merged = if (existing != null) imported.mergeInto(existing) else imported.toNewEntity()
+                    if (merged.addressKept) addressKept++
+                    if (merged.insecureIgnored) insecureIgnored++
+                    val validation = runCatching { apiConfigRepository.validateEntity(merged.entity) }
+                    if (validation.isFailure) {
+                        // 已存在的配置保持本机原值不动；新配置直接丢弃。
+                        warnings += BackupWarning.ApiConfigRejected(
+                            merged.entity.name.trim().ifBlank { merged.entity.id }
+                        )
+                        return@forEach
+                    }
+                    apiConfigDao.insert(merged.entity)
+                }
+                if (addressKept > 0) warnings += BackupWarning.ApiConfigAddressKept(addressKept)
+                if (insecureIgnored > 0) warnings += BackupWarning.ApiConfigInsecureIgnored(insecureIgnored)
             }
-            if (addressKept > 0) warnings += BackupWarning.ApiConfigAddressKept(addressKept)
-            if (insecureIgnored > 0) warnings += BackupWarning.ApiConfigInsecureIgnored(insecureIgnored)
-            cleared
+        } catch (error: Throwable) {
+            // 落库失败：把刚写进媒体目录的文件删掉，别在用户手机上留一批没人引用的图片。
+            restoredMedia.writtenFiles.forEach { file -> runCatching { file.delete() } }
+            throw error
         }
-        // 事务已经提交：现在才删媒体文件（审计 P1-4）。失败最多留下孤儿文件，
+        // 事务已经提交：现在才清理旧媒体文件（审计 P1-4）。失败最多留下孤儿文件，
         // 不能让「他已经被替换接回来」的导入再报一次失败。
-        erasure?.let { report -> runCatching { dataEraser.commitFiles(report) } }
+        //
+        // 这里没有直接 dataEraser.commitFiles(erasure)：BackupReplace 的清理是「把 files/media/chat-*
+        // 全删掉」，而 v3 的新聊天图片是在事务**之前**写进去的（库里已经引用它们）——照搬会把
+        // 刚恢复的图片删光。所以按同一份语义手工做：旧头像按引用回收、旧聊天图片只删不是这次写的。
+        if (mode == ImportMode.REPLACE) {
+            runCatching {
+                MediaStorage.clearUnreferencedAvatars(appContext, keepAvatarUris)
+                MediaStorage.clearChatImagesExcept(appContext, restoredChatFileNames)
+            }
+        }
 
         val configsMissingKey = bundle.apiConfigs.count { config ->
             apiConfigDao.getById(config.id)?.let { it.apiKeyCipher.isNullOrBlank() } ?: true
@@ -433,6 +581,13 @@ class BackupRepository @Inject constructor(
                 .onFailure { warnings += BackupWarning.SettingsPartiallyRestored }
         }
 
+        // 「我的头像」不在可移植设置里，但 v3 会把它的图片一起带来：
+        // 设置写完之后再指到刚恢复的新文件（没有 USER_AVATAR 时保持本机原样）。
+        restoredMedia.userAvatar?.let { avatar ->
+            runCatching { settingsRepository.setUserAvatarUri(avatar.uri) }
+                .onFailure { warnings += BackupWarning.SettingsPartiallyRestored }
+        }
+
         return ImportSummary(
             personas = personas.size,
             memories = memories.size,
@@ -441,6 +596,7 @@ class BackupRepository @Inject constructor(
             rules = rules.size,
             skipped = skipped,
             warnings = warnings.toList(),
+            mediaWarnings = mediaWarnings.toList(),
             mode = mode,
             presets = presets.size
         )

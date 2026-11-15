@@ -1,17 +1,21 @@
 # agentd — the shared agent core as a standalone JVM service
 
 `agentd` is a small HTTP service that exposes the **shared agent decisions** over the wire.
-Since 0.11.0 those decisions live in their own module, `:agentcore` (pure Kotlin/JVM, **zero
-third-party runtime dependencies**), and both clients compile against it:
+Since 0.11.0 those decisions live in their own module, `:agentcore`; since 0.12.0 that module is a
+Kotlin Multiplatform module and `agentd` consumes its **`jvm()` variant** through the same
+`implementation(project(":agentcore"))` dependency (its `installDist`/`fatJar` therefore ship
+`agentcore-jvm.jar` / the same classes). The module has **zero third-party runtime dependencies**,
+and both JVM clients compile against it:
 
 ```
                  ┌─────────────────────────────┐
-                 │  :agentcore  (pure Kotlin)  │
+                 │  :agentcore  (KMP)          │
                  │  com.myfriend.app.domain    │
                  │  SleepPolicy / DeferReply   │
                  │  ProactiveLevel / Clamp …   │
                  │  AgentCore + InProcess impl │
                  │  AgentCoreProtocol / Codec  │
+                 │  commonMain + jvmMain       │
                  └──────────┬──────────────────┘
                             │ implementation(project(":agentcore"))
              ┌──────────────┴───────────────┐
@@ -28,8 +32,9 @@ third-party runtime dependencies**), and both clients compile against it:
   on `:agentcore` and calls it **in-process by default**.
 - `:agentd` never re-implements a rule: its handlers validate the HTTP request and then call
   `InProcessAgentCore` (the same object Android uses in-process).
-- iOS mirrors the same rules in Swift and reads the same `spec/agent-core/cases/*.json`
-  contract files (see the root README); it is not routed through `:agentcore` (which is JVM-only).
+- iOS now links the same Kotlin implementation as a static `AgentCoreKit.framework` built from
+  `:agentcore`'s iOS targets (`ios/scripts/build-agentcore-framework.sh`); the older Swift mirror
+  reads the same `spec/agent-core/cases/*.json` contract files and is being retired.
 
 The HTTP layer is a ~250-line minimal HTTP/1.1 loop built on `ServerSocket` (one request per
 connection, `Connection: close`; no keep-alive, no chunked, no TLS). It replaced the JDK's
@@ -358,7 +363,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 ./gradlew :agentcore:test :agentd:test
 ```
 
-- `:agentcore` — 47 tests. `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json`
+- `:agentcore` — 60 tests (`commonTest` + `jvmTest`; `:agentcore:test` is the `jvmTest` alias). `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json`
   contract through the `AgentCore` interface, protocol pinning, JSON codec round-trips,
   malformed-response rejection), plus the 0.11.1 hardening suites:
   `WebUrlPolicyHardeningTest` (the audit's URL-bypass table and the “normal domains/public IPs

@@ -14,6 +14,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ApiConfigEntity::class,
         ChatSessionEntity::class,
         MessageEntity::class,
+        MessageBlockEntity::class,
         MemoryEntity::class,
         MemoryEchoEntity::class,
         PersonaPendingPatchEntity::class,
@@ -26,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryVersionEntity::class,
         MemoryVectorEntity::class
     ],
-    version = 10,
+    version = 11,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -39,6 +40,7 @@ abstract class MyFriendDatabase : RoomDatabase() {
     abstract fun apiConfigDao(): ApiConfigDao
     abstract fun chatSessionDao(): ChatSessionDao
     abstract fun messageDao(): MessageDao
+    abstract fun messageBlockDao(): MessageBlockDao
     abstract fun memoryDao(): MemoryDao
     abstract fun proactiveRuleDao(): ProactiveRuleDao
     abstract fun memoryEchoDao(): MemoryEchoDao
@@ -53,6 +55,21 @@ abstract class MyFriendDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "myfriend.db"
+
+        /**
+         * v11：会话历史的**区块**（规范 `spec/messages-blocks/README.md`）。
+         *
+         * 两件事：`messages` 加 `blockIndex`，新建 `message_blocks`；然后把老数据按
+         * `(createdAt, id)` 顺序回填成 `行号 / 200`。实现见 [MessageBlockMigration]
+         * （流式回填，峰值内存与会话长度无关；重复执行安全）。
+         *
+         * 备份格式不变（仍是 v2）：块元数据是派生数据，导入之后按追加规则重建。
+         */
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                MessageBlockMigration.migrate10To11(db)
+            }
+        }
 
         /**
          * v10：一人一段会话。

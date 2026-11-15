@@ -160,14 +160,6 @@ final class MessageSearchTests: XCTestCase {
                        "词元「100」把 1000 也召回了 —— 这是规范的词元召回，不是通配符生效")
     }
 
-    /// 模式拼装本身也钉一次（避免哪天有人把转义删了，靠上面几条间接发现）。
-    func testLikePatternEscapesEveryWildcard() {
-        XCTAssertEqual(MessageStore.likePattern("100%"), #"%100\%%"#)
-        XCTAssertEqual(MessageStore.likePattern("a_b"), #"%a\_b%"#)
-        XCTAssertEqual(MessageStore.likePattern(#"a\b"#), #"%a\\b%"#)
-        XCTAssertEqual(MessageStore.likePattern("哈尔滨"), "%哈尔滨%")
-    }
-
     // MARK: - 中文召回
 
     func testCJKRecallThroughTokenizer() throws {
@@ -290,17 +282,6 @@ final class MessageSearchTests: XCTestCase {
         XCTAssertEqual(page.hits.count, 30)
         XCTAssertFalse(page.hasMore, "恰好一页时不该显示「还有更多」")
         XCTAssertNil(page.nextCursor)
-    }
-
-    func testCandidateLimitCapsInMemoryRanking() throws {
-        for index in 0..<40 {
-            try insert(String(format: "m-%02d", index), "哈尔滨 \(index)", at: Int64(index) * 1_000)
-        }
-        // 粗筛只取最新 10 条（ORDER BY createdAt DESC），精排也只在这 10 条里。
-        let page = try temp.stores.messages.search(query: "哈尔滨", limit: 100, candidateLimit: 10)
-        XCTAssertEqual(page.hits.count, 10)
-        XCTAssertEqual(page.hits.first?.id, "m-39")
-        XCTAssertEqual(page.hits.last?.id, "m-30")
     }
 
     // MARK: - 摘要窗口

@@ -56,6 +56,79 @@ xcrun simctl io booted screenshot /tmp/ios.png
 
 在普通 Mac / Xcode 里正常点 Run 不需要这两个 flag。
 
+## AgentCoreKit：agent 决策走 Kotlin（0.12.0）
+
+`agentcore/` 是 Kotlin Multiplatform 工程，iOS 侧产出静态 framework `AgentCoreKit`。
+App 里四个 agent 决策（睡眠判定 / `defer_reply` 计划 / 每日主动上限 / 工具参数夹取）直接调
+Kotlin `InProcessAgentCore`，与 Android、`agentd` 是**同一份**实现（`commonMain`）；
+Swift 的 `NativeAgentCoreClient` 只留给 macOS 上的 `swift test`（那边链接不了 iOS framework），
+以及模拟器上「两条实现互相比对」的测试。
+
+### 1. 先构建 framework（一次就够；改了 `agentcore/` 再跑）
+
+```bash
+cd ios
+./scripts/build-agentcore-framework.sh
+```
+
+- 需要 JDK 17。脚本默认用 `/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/...`，
+  装在别处就 `export JAVA_HOME=...`；
+- Kotlin/Native 工具链默认放仓库内（`KONAN_DATA_DIR=<repo>/.tooling/konan`）：首次会下编译器
+  （百 MB 量级），之后是增量；`~/.konan` 在受限环境里常常不可写，所以别靠默认值；
+- 产物：`ios/.build/agentcore/AgentCoreKit.xcframework`（模拟器 `ios-arm64_x86_64-simulator`
+  + 真机 `ios-arm64`），外加 `iosSimulatorArm64/`、`iosArm64/`、`iosX64/` 三个 thin slice；
+  `ios/.build/` 不进仓库。
+
+### 2. 打开工程 / 命令行构建
+
+**MyFriend** target 的 Debug 与 Release 都已经配好：
+
+| 设置 | 值 |
+| --- | --- |
+| `FRAMEWORK_SEARCH_PATHS` | `$(SRCROOT)/.build/agentcore/AgentCoreKit.xcframework/ios-arm64_x86_64-simulator` 与 `.../ios-arm64` |
+| `OTHER_LDFLAGS` | `-framework AgentCoreKit` |
+| Embed Frameworks | **没有**（静态 framework，Do Not Embed） |
+| `LD_RUNPATH_SEARCH_PATHS` | 没为它加任何东西（静态链接不需要 rpath） |
+
+`$(SRCROOT)` 是 `ios/`（工程文件在 `ios/MyFriend.xcodeproj`），所以路径是 `ios/.build/...`，
+**不要**写成 `$(SRCROOT)/../.build`（那是仓库根的 `.build`，那里没有 framework）。
+
+`ios/.build/agentcore/AgentCoreKit.xcframework` 不存在时，构建里有一个 Run Script
+（*Build AgentCoreKit framework*）会先跑上面那个脚本；存在时它只做一次毫秒级的存在性检查
+（`alwaysOutOfDate`，**不声明 output** —— 声明了 Xcode 会按依赖分析把它跳过，于是把 framework
+删掉后重编会直接链接失败）。注意：**它不会因为 `agentcore/` 源码变了就重跑**。
+
+### 3. 怎么确认真的走了 Kotlin
+
+启动日志（`Documents/debug.log`，Debug 构建）里有一行：
+
+```bash
+CONTAINER=$(xcrun simctl get_app_container booted com.myfriend.app.ios data)
+grep "agent core:" "$CONTAINER/Documents/debug.log"
+# agent core: kotlin（AgentCoreKit.InProcessAgentCore，与 Android / agentd 同一份 :agentcore）
+```
+
+`MYFRIEND_AGENT_CORE=remote` / `remote-strict` 仍然覆盖默认：远程客户端保留，回退时用的
+「本机」也是 Kotlin。
+
+iOS 构建对 framework 是**硬依赖**（`#if os(iOS)` + `import AgentCoreKit`）：缺了就是编译错误，
+不会像 `#if canImport(...)` 那样静默退回 Swift —— 「编译通过、测试通过、App 却在跑另一份实现」
+是这一层最坏的失败方式。也正因为如此，framework 的构建产物不能随便删。
+
+### 4. 常见错误
+
+| 现象 | 原因 / 处理 |
+| --- | --- |
+| `ld: framework 'AgentCoreKit' not found` | framework 没构建（或 `ios/.build/agentcore` 被删）：跑 `./scripts/build-agentcore-framework.sh` |
+| `no such module 'AgentCoreKit'` | 同上（编译期就要找模块）；也检查搜索路径没写成 `$(SRCROOT)/../.build` |
+| `ld: warning: search path '...' not found` | 某个 slice 不存在：确认 xcframework 里同时有 `ios-arm64` 与 `ios-arm64_x86_64-simulator` |
+| 构建卡在下载 / `Konan` 报错 | Kotlin/Native 工具链在装编译器；确认 `KONAN_DATA_DIR`（默认仓库内 `.tooling/konan`）可写 |
+| Run Script 报找不到 gradle / `JAVA_HOME` | 脚本默认的 JDK 路径在这台机器上不存在：`export JAVA_HOME=...` 后手动跑一次脚本 |
+| 改了 Kotlin，App 行为没变 | framework 是构建产物，不会自动重建：重跑脚本再 build（必要时删 `.build/DerivedData`） |
+| 删过 framework 之后 `cannot find type 'KotlinAgentCoreClient'` 或行为怪 | Xcode 的模块缓存还记着「没有 framework」那次编译：删 `ios/.build/DerivedData` 重编一次 |
+| `Building for iOS Simulator, but linking in object file built for iOS` | 用到了真机 slice：模拟器构建时 `ios-arm64_x86_64-simulator` 要在搜索路径里（现在是第一条） |
+| 真机（签名）构建 | 与 framework 无关：静态库不签名、不嵌入 |
+
 ## 调试启动助手（只在 Debug 里编译）
 
 模拟器上没法「点一下再打字」，所以留了三个环境变量做验收（`DebugSeeding.swift`，Release 里不存在）：
@@ -85,12 +158,31 @@ sqlite3 "$CONTAINER/Library/Application Support/myfriend.db" 'select count(*) fr
 
 ## 跑单元测试
 
+macOS（SwiftPM，逻辑层；此时 agent 决策走 Swift `NativeAgentCoreClient`，因为 macOS 链接不了
+iOS 的 Kotlin framework）：
+
 ```bash
 cd ios/MyFriendKit && swift test --disable-sandbox
 ```
 
 > macOS 上的 SwiftPM 会用 `sandbox-exec` 编译 manifest，在受限环境里会被拒；
 > `--disable-sandbox` 是官方参数，只是关掉那一层包裹，不影响测试本身。
+
+iOS 模拟器（Kotlin ⇄ Swift 决策等价性；**必须在模拟器上跑**，`swift test` 覆盖不到）：
+
+```bash
+cd ios
+TMPDIR=$PWD/.build/tmp CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-cache \
+SWIFT_MODULE_CACHE_PATH=$PWD/.build/swift-cache \
+xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath .build/DerivedData \
+  OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox' test
+```
+
+`MyFriendTests` 是 App 承载的单元测试 bundle（`TEST_HOST = MyFriend.app`），用的就是 App 里
+那份代码；`spec/agent-core/cases` 以文件夹引用进 bundle，比对时读的还是仓库里那批契约用例。
+它只在 **TestAction** 里，不参与 Debug/Release 的 `build`（`xcodebuild build` 不会编译它）。
 
 ## 真机测试（iPhone）
 

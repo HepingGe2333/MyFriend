@@ -5,9 +5,13 @@ import Foundation
 //
 // 这一层要解决的是「同一个判断走哪条路」：
 //
-// - `NativeAgentCoreClient`：直接委托 `SleepGate` / `DeferReply` / `ProactiveLevel` /
+// - `KotlinAgentCoreClient`（0.12.0，`AgentCoreClientKotlin.swift`）：iOS App 构建下的默认
+//   本机实现，四个方法原样转发 Kotlin `AgentCoreKit.InProcessAgentCore`（与 Android / agentd
+//   同一份 `:agentcore` 代码）。只有类型转换，没有判定逻辑。
+// - `NativeAgentCoreClient`：Swift 实现，直接委托 `SleepGate` / `DeferReply` / `ProactiveLevel` /
 //   `ToolArgClamp`。这四个纯函数是**唯一真源**，这里不复制任何判定逻辑，只做参数整形
-//   （与 Android 的 `InProcessAgentCore` 一一对应）。
+//   （与 Android 的 `InProcessAgentCore` 一一对应）。0.12.0 起它只在 macOS `swift test`
+//   （链接不了 iOS framework 的场合）与「模拟器上两条实现互相比对」的测试里被使用。
 // - `RemoteAgentCoreClient`：调 `agentd` 的四个 `/v1/core/*` 端点。失败要能被看见
 //   （HTTP 状态、错误体、坏 JSON、超时都翻成 `AgentCoreClientError`）。
 // - `FallbackAgentCoreClient`：先试远程，失败回退本机并记一条日志。
@@ -27,6 +31,10 @@ import Foundation
 //
 // 选择顺序（`AgentCoreClientFactory`）：`MYFRIEND_AGENT_CORE` 环境变量 →
 // Info.plist 的 `MFAgenCoreMode` → 默认 `.native`。**没有用户可见开关**。
+//
+// 默认的 `.native` 在 iOS App 构建里就是 Kotlin（`KotlinAgentCoreClient` →
+// `AgentCoreKit.InProcessAgentCore`），启动时日志写一行 `agent core: kotlin`；
+// 在 macOS `swift test` 里是 Swift `NativeAgentCoreClient`（framework 链接不了）。
 //
 // ```
 // # 本机（默认）：零网络请求
@@ -193,7 +201,11 @@ public struct SleepDecision: Equatable, Sendable {
 
 /// 决策层的两种走法。
 public enum AgentCoreMode: Equatable, Sendable, CustomStringConvertible {
-    /// 本机 Swift 实现：零网络请求（默认）。
+    /// 本机实现：零网络请求（默认）。
+    ///
+    /// 「本机」指的是**在哪跑**，不是**用哪种语言**：iOS App 构建里它背后是 Kotlin
+    /// `InProcessAgentCore`（`KotlinAgentCoreClient`），macOS `swift test` 里是 Swift
+    /// `NativeAgentCoreClient`。两者行为由 `spec/agent-core/cases/*.json` 钉住。
     case native
     /// 远程 `agentd`。`preferredFallback = true` 时远程失败回退本机；
     /// `false` 是「严格远程」，只用于验证 agentd 真的被用上了（失败会冒到调用点）。
@@ -917,9 +929,13 @@ public enum AgentCoreClientFactory {
 
     /// 按模式造客户端。
     ///
-    /// - `.native` → `NativeAgentCoreClient`（零网络）；
+    /// - `.native` → 本机实现（iOS App：`KotlinAgentCoreClient`；macOS `swift test`：
+    ///   `NativeAgentCoreClient`），零网络；
     /// - `.remote(preferredFallback: true)` → `FallbackAgentCoreClient`（远程失败回退本机）；
     /// - `.remote(preferredFallback: false)` → `RemoteAgentCoreClient`（失败冒到调用点）。
+    ///
+    /// 远程那条路没有变：`MYFRIEND_AGENT_CORE=remote` / `remote-strict` 仍然覆盖一切，
+    /// 回退时用的「本机」和默认本机是同一个实现（iOS 上就是 Kotlin）。
     public static func make(
         mode: AgentCoreMode? = nil,
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -932,7 +948,7 @@ public enum AgentCoreClientFactory {
         let resolvedMode = mode ?? resolveMode(environment: environment, info: info)
         switch resolvedMode {
         case .native:
-            return NativeAgentCoreClient()
+            return makeNative(log: log)
         case .remote(let preferredFallback):
             let remote = RemoteAgentCoreClient(
                 baseURL: baseURL ?? resolveBaseURL(environment: environment, info: info),
@@ -941,8 +957,35 @@ public enum AgentCoreClientFactory {
                 log: log
             )
             guard preferredFallback else { return remote }
-            return FallbackAgentCoreClient(mode: resolvedMode, remote: remote, log: log)
+            return FallbackAgentCoreClient(
+                mode: resolvedMode,
+                remote: remote,
+                native: makeNative(log: log),
+                log: log
+            )
         }
+    }
+
+    /// 造「本机实现」。
+    ///
+    /// iOS App 构建里是 `KotlinAgentCoreClient` —— 与 Android、`agentd` 同一份 `:agentcore`；
+    /// macOS（`swift test`）链接不了 iOS 的 Kotlin/Native framework，退回 Swift 实现。
+    ///
+    /// 判定用 `#if os(iOS)` 而不是 `canImport(AgentCoreKit)`：后者在 framework 缺失时会**静默**
+    /// 退回 Swift —— 编译通过、测试通过、App 却在跑另一份实现，是这一层最坏的失败方式
+    /// （看着一样、其实没接上）；而且模块缓存会把那次「canImport=false」记住，framework
+    /// 回来了也不重编。用 `os(iOS)` 之后，iOS 上缺 framework 就是编译错误，一眼看得见。
+    /// 启动时再记一行 `agent core: kotlin`，模拟器上一眼能验。
+    public static func makeNative(
+        log: @escaping @Sendable (String) -> Void = { _ in }
+    ) -> any AgentCoreClient {
+        #if os(iOS)
+        log("agent core: kotlin（AgentCoreKit.InProcessAgentCore，与 Android / agentd 同一份 :agentcore）")
+        return KotlinAgentCoreClient()
+        #else
+        // macOS：`swift test` 跑的就是这一条（链接不了 iOS framework）。
+        return NativeAgentCoreClient()
+        #endif
     }
 
     private static func validURL(_ raw: String) -> URL? {

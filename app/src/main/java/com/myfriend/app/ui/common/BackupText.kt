@@ -6,6 +6,7 @@ import com.myfriend.app.R
 import com.myfriend.app.data.repo.ImportMode
 import com.myfriend.app.data.repo.ImportSummary
 import com.myfriend.app.domain.BackupFailure
+import com.myfriend.app.domain.BackupMediaWarning
 import com.myfriend.app.domain.BackupPreview
 import com.myfriend.app.domain.BackupSection
 import com.myfriend.app.domain.BackupWarning
@@ -58,11 +59,14 @@ object BackupText {
         return buildString {
             append(head)
             if (summary.skipped > 0) append(context.quantity(R.plurals.backup_import_skipped, summary.skipped))
-            if (summary.warnings.isNotEmpty()) {
-                // 分隔符也走资源：中文用全角分号，英文用 "; "。
-                val separator = context.getString(R.string.backup_warn_separator)
+            // 分隔符也走资源：中文用全角分号，英文用 "; "。
+            val separator = context.getString(R.string.backup_warn_separator)
+             // 结构化提醒 + v3 媒体提醒一起说：用户看到的是同一句「哪些东西没回来」。
+            val notes = summary.warnings.map { warning(context, it) } +
+                summary.mediaWarnings.map { mediaWarning(context, it) }
+            if (notes.isNotEmpty()) {
                 append(separator)
-                append(summary.warnings.joinToString(separator) { warning(context, it) })
+                append(notes.joinToString(separator))
             }
         }
     }
@@ -94,6 +98,23 @@ object BackupText {
         // 审计 P1-2：预览阶段就告诉用户「这份结构不完整，导入会被拒绝」。
         is BackupWarning.IncompleteReferences ->
             context.getString(R.string.backup_warn_incomplete_references, warning.holes)
+    }
+
+    /** 导出成功那句话后面要补的「有 N 张图片没随备份走」。 */
+    fun exportWarnings(context: Context, warnings: List<BackupMediaWarning>): String {
+        if (warnings.isEmpty()) return ""
+        val separator = context.getString(R.string.backup_warn_separator)
+        return separator + warnings.joinToString(separator) { mediaWarning(context, it) }
+    }
+
+    /** v3 媒体的三条提醒（导出超限 / 导入跳过 / 导入超限）。 */
+    fun mediaWarning(context: Context, warning: BackupMediaWarning): String = when (warning) {
+        is BackupMediaWarning.ExportSkipped ->
+            context.quantity(R.plurals.backup_media_export_skipped, warning.count)
+        is BackupMediaWarning.ImportSkipped ->
+            context.quantity(R.plurals.backup_media_import_skipped, warning.count)
+        is BackupMediaWarning.ImportOverLimit ->
+            context.quantity(R.plurals.backup_media_import_over_limit, warning.count)
     }
 
     fun failure(context: Context, failure: BackupFailure): String = when (failure) {

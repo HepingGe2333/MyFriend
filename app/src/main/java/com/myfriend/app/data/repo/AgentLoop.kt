@@ -81,6 +81,8 @@ class AgentLoop @Inject constructor(
     /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
     private val agentCore: AgentCoreClient,
     private val database: MyFriendDatabase,
+    /** 块元数据的唯一写入入口（规范 §2）：主动消息/心跳消息也是新消息。 */
+    private val blockWriter: MessageBlockWriter,
     @ApplicationContext private val context: Context
 ) {
 
@@ -446,7 +448,8 @@ class AgentLoop @Inject constructor(
             attachmentsJson = null
         )
         database.withTransaction {
-            messageDao.insert(message)
+            // 心跳/主动开口同样走统一块维护（规范 §2 Append）。
+            blockWriter.append(message)
             val fresh = sessionDao.getById(session.id)
             if (fresh != null) {
                 sessionDao.update(

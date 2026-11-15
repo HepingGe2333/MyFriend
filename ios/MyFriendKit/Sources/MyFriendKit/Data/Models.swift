@@ -539,6 +539,11 @@ public struct MessageEntity: Equatable, Sendable {
     /// 为什么放在消息上而不是会话上：界面要判断「这一句到底被读了没」，
     /// 而「已读」不等于「会回」（模型可以 `defer_reply`，也可以在他睡觉时先不回）。
     public var readAt: Int64?
+    /// v11：这条消息属于这段会话的第几块（分块历史，见 `spec/messages-blocks/README.md`）。
+    ///
+    /// 由 `MessageBlockStore` 在写入时**算好**（追加规则 / 锚点插入），业务代码不要自己赋值：
+    /// 新建消息默认 0，落库那一刻被替换成真实块号。读出来时它是可信的（区块分页就按它取页）。
+    public var blockIndex: Int
 
     public init(
         id: String,
@@ -554,7 +559,8 @@ public struct MessageEntity: Equatable, Sendable {
         edited: Bool = false,
         attachmentsJson: String? = nil,
         toolTraceJson: String? = nil,
-        readAt: Int64? = nil
+        readAt: Int64? = nil,
+        blockIndex: Int = 0
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -570,6 +576,7 @@ public struct MessageEntity: Equatable, Sendable {
         self.attachmentsJson = attachmentsJson
         self.toolTraceJson = toolTraceJson
         self.readAt = readAt
+        self.blockIndex = blockIndex
     }
 }
 

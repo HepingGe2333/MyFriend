@@ -12,6 +12,7 @@ import com.myfriend.app.data.local.MemoryDao
 import com.myfriend.app.data.local.MemoryEchoDao
 import com.myfriend.app.data.local.MemoryTermDao
 import com.myfriend.app.data.local.MemoryVectorDao
+import com.myfriend.app.data.local.MessageBlockDao
 import com.myfriend.app.data.local.MessageDao
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
@@ -42,6 +43,9 @@ import javax.inject.Singleton
 class RoomErasureStore @Inject constructor(
     private val database: MyFriendDatabase,
     private val messageDao: MessageDao,
+    private val blockDao: MessageBlockDao,
+    /** 块表没有自己的擦除枚举：它跟着 `messages` 一起删（同一个分支里）。 */
+    private val blockWriter: MessageBlockWriter,
     private val sessionDao: ChatSessionDao,
     private val memoryDao: MemoryDao,
     private val memoryTermDao: MemoryTermDao,
@@ -65,11 +69,19 @@ class RoomErasureStore @Inject constructor(
 
     override suspend fun delete(table: ErasableTable, personaId: String?) {
         when (table) {
-            ErasableTable.MESSAGES ->
-                if (personaId == null) messageDao.deleteAll() else messageDao.deleteByPersona(personaId)
+            ErasableTable.MESSAGES -> {
+                // v11：`message_blocks` 是 messages 的派生元数据（用户可读的原文只有 messages），
+                // 所以它不单独进 `ErasableTable`（那份清单在 :agentcore），而是**跟着 messages
+                // 在同一个分支里删**。按人删时块表要靠 chat_sessions 反查 personaId，
+                // 因此必须在 SESSIONS 之前执行（ErasurePlan 的顺序正好如此）。
+                if (personaId == null) blockWriter.deleteAll() else blockWriter.deletePersona(personaId)
+            }
 
-            ErasableTable.SESSIONS ->
+            ErasableTable.SESSIONS -> {
                 if (personaId == null) sessionDao.deleteAll() else sessionDao.deleteByPersona(personaId)
+                // 兜底：会话已经不存在、块行还在（异常导入/中断的事务）时回收孤儿块。
+                blockDao.deleteOrphans()
+            }
 
             ErasableTable.MEMORY_ECHOES ->
                 if (personaId == null) memoryEchoDao.deleteAll() else memoryEchoDao.deleteByPersona(personaId)

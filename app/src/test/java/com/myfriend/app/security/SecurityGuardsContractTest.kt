@@ -187,7 +187,16 @@ class SecurityGuardsContractTest {
             ?: error("找不到工程根目录：${File(".").absolutePath}")
     }
 
-    private fun source(relative: String): String = File(projectRoot(), relative).readText()
+    private fun source(relative: String): String {
+        val file = File(projectRoot(), relative)
+        if (file.isFile) return file.readText()
+        // `:agentcore` 改成 KMP 之后源码搬进了 commonMain / jvmMain。
+        // 这里按同一路径在源集目录里再找一次，测试不该因为搬目录就失效。
+        val relocated = listOf("commonMain", "jvmMain")
+            .map { sourceSet -> File(projectRoot(), relative.replace("src/main/kotlin", "src/$sourceSet/kotlin")) }
+            .firstOrNull { it.isFile }
+        return (relocated ?: file).readText()
+    }
 
     private fun between(text: String, startMarker: String, endMarker: String): String {
         val start = text.indexOf(startMarker)

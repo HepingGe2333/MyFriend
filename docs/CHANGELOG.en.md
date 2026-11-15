@@ -23,6 +23,87 @@ Version rules live in [CONTRIBUTING.en.md](../CONTRIBUTING.en.md): during the be
 
 ---
 
+## 0.12.0
+
+A large release: **the shared decision layer moves to Kotlin Multiplatform (iOS reuses the same Kotlin)**,
+**history is stored in blocks**, **search loses its candidate cap**, **backup v3 carries images and avatars** — plus a
+cleanup of the README's known-limitations list. Version `0.12.0`, build numbers **18**; schema **v11**, backup **v3**.
+(Developed on `dev/0.12.0`; not merged into `main`, no release tag.)
+
+### Shared decision layer: Kotlin Multiplatform
+
+- `agentcore/` moved from `kotlin("jvm")` to `kotlin("multiplatform")`: `jvm()` + `iosX64()` + `iosArm64()` +
+  `iosSimulatorArm64()`, producing the static framework **`AgentCoreKit`**. `commonMain` holds the shared decisions;
+  `jvmMain` keeps only the five files that genuinely need `java.*` (background lock, session generation, file-path guard,
+  bounded read, locale name), and `PlatformTime` is an `expect`/`actual`.
+- `WebUrlPolicy` depended on `java.net.URI`; it was **rewritten as pure string parsing** to enter `commonMain` (all
+  security semantics and 12 contract tests preserved). Little-endian byte handling, calendar arithmetic and the min-heap
+  in `LocalEmbedding`/`VectorMath` were also made platform-neutral.
+- **The iOS app's four agent decisions now execute the same Kotlin code** (`KotlinAgentCoreClient` → `InProcessAgentCore`);
+  the Swift implementation remains only as the macOS `swift test` fallback and as the other half of the parity test.
+  A simulator run showed Kotlin agreeing with all 189 assertions of `spec/agent-core`, and the app logs `agent core: kotlin`.
+- Build: `ios/scripts/build-agentcore-framework.sh` produces `ios/.build/agentcore/AgentCoreKit.xcframework`; the Xcode
+  project gained framework search paths and `-framework AgentCoreKit` (static, Do Not Embed), plus a Run Script that
+  builds it when missing.
+
+### History storage: blocks with two-way paging
+
+- Schema **v11**: `messages.blockIndex` plus
+  `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`, identical on both platforms (iOS has
+  `SchemaParityTests` comparing against Android's exported `11.json`).
+- `BLOCK_SIZE = 200`; writes go through one block-maintenance path (new block when full, anchored insert, boundary
+  recomputation on delete, deleted empty block leaving a numbering gap, no rebalancing), covering send/reply/interrupt/
+  failure/regenerate/edit/delete/clear/delete-session/delete-persona/backup-import/proactive messages.
+- **A page is a block**: the first screen reads only the newest block, scrolling up/down loads one block at a time
+  (looking up the real neighbour when numbering has gaps), and no offset is ever used; unread/receipts/DND still query
+  the full table.
+- The v10→v11 migration backfills with `ROW_NUMBER()/200` and builds the block rows while streaming; both platforms have
+  tests for "no data lost, correct boundaries, idempotent, empty database, orphan cleanup".
+
+### Search: no candidate cap
+
+- The old "`LIKE` pre-filter + 500 candidates" cap is gone. Search walks **block by block**: enumerate the (persona/time
+  filtered) blocks → load one block into memory → rank with `SearchRanking` → page with a **keyset cursor**. Peak memory
+  ≈ one block + one page + frontier, independent of history length.
+- Cases with more than 500 hits are covered: 620 hits paged completely, a hit in the oldest block is never lost, new
+  messages during paging neither duplicate nor reorder; "one query reads exactly one block" is asserted structurally.
+- The cost is documented in the README: every page re-walks the blocks, so longer histories get slower — the direct
+  consequence of "no cap, no offset".
+
+### Backup v3: images and avatars travel with the backup
+
+- New top-level `media[]` (`id/kind/personaId/fileName/mime/bytes/data`, standard base64): persona avatars, the user's
+  own avatar, preset avatars and chat images all travel; `avatarUri` and `attachmentsJson` store bare file names and are
+  rewritten to freshly-named local files on import.
+- Limits: 128 MiB total, 8 MiB per image, JPEG/PNG/WebP only; oversized or corrupt entries are skipped with bilingual
+  warnings; import cap raised to 256 MiB.
+- v1/v2 backups remain readable (no `media` → old warnings); `fixtures/backup/` gained v3 golden samples read both ways.
+- Media is written before the database transaction and rolled back (files deleted) if the transaction fails; file names
+  and directories go through the ownership/traversal guards.
+
+### Documentation and the limitations list
+
+- The README's "known limitations" were re-audited: entries that are **not** limitations (no build artefacts in the repo,
+  token-statistics only, remote mode off by default, no cleartext in release builds, simulator Keychain) moved to the
+  design-stance section; entries this release fixed (search cap, paging cost, images not backed up, iOS second
+  implementation) were removed; genuine limits kept and written precisely (no CI, iOS background scheduling, per-page
+  block rescan, block accumulation while browsing both ways, no rebalancing, backup image limits).
+- `docs/ARCHITECTURE` gained "History storage: blocks" and a rewritten "Search" section and now describes the KMP agent
+  core; `docs/README` indexes `spec/messages-blocks`; `CONTRIBUTING` gained the "build AgentCoreKit before the iOS build"
+  step and its data/backup checklists now say v11 / v3.
+
+### Tests and builds
+
+| Target | Result |
+| --- | --- |
+| Android | **1044 tests / 0 failures** (plus 28 instrumented: v10→v11 migration, block maintenance) |
+| `:agentcore` (KMP jvmTest) | **60 tests / 0 failures** |
+| `:agentd` | **34 tests / 0 failures** |
+| iOS | **1263 tests / 0 failures** (Debug/Release builds, zero Swift warnings) |
+| Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:fatJar`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
+
+---
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans

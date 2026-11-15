@@ -114,7 +114,9 @@ sequenceDiagram
 「agent 逻辑」在本项目里指**决策**：这一轮回不回、什么时候醒、心跳概率、记忆该不该淡、工具参数怎么夹取。
 它**不包含**持久化——会话、记忆、念头、用量都在客户端数据库里。这个切分让「共享 + 服务化」同时变得可行。
 
-**0.11.0 起决策层只有一份 Kotlin 实现**：`agentcore/`（`:agentcore`，零第三方依赖、纯 JVM）。
+**决策层只有一份 Kotlin 实现**：`agentcore/`。0.11.0 起它是独立模块（`:app` 与 `agentd` 共用）；
+**0.12.0 起它是 Kotlin Multiplatform 模块**（`commonMain` + `jvmMain` + `iosMain`），并产出 iOS 静态
+framework `AgentCoreKit` —— iOS App 的四个 agent 决策因此也执行同一份 Kotlin 代码。
 
 ```mermaid
 flowchart TB
@@ -130,7 +132,8 @@ flowchart TB
   end
   subgraph ios["iOS 客户端"]
     I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
-    I2[NativeAgentCoreClient]
+    I2["KotlinAgentCoreClient（AgentCoreKit framework）"]
+    I2b["NativeAgentCoreClient（仅 macOS 单测回落）"]
     I3["RemoteAgentCoreClient（URLSession，环境变量/Info.plist）"]
   end
   subgraph server["agentd（服务端）"]
@@ -144,6 +147,7 @@ flowchart TB
   A3 --> A1
   A3 <--> S1
   I2 --> I1
+  I2b --> I1
   I3 --> I1
   I3 <--> S1
   S2 --> S1
@@ -154,7 +158,7 @@ flowchart TB
 
 | 形态 | 谁在用 | 一致性 | 离线 | 说明 |
 | --- | --- | --- | --- | --- |
-| **A 进程内** | Android（默认）、iOS（默认） | ✅ 同一份 `:agentcore` 实现（Android）；iOS 是契约对齐的 Swift 实现 | ✅ | 毫秒级纯函数，没有网络往返 |
+| **A 进程内** | Android（默认）、iOS（默认） | ✅ 同一份 `:agentcore` 实现（iOS 通过 `AgentCoreKit` framework） | ✅ | 毫秒级纯函数，没有网络往返 |
 | **B 内嵌服务** | Android 可选 | ✅ 服务端同一份代码 | ✅ | `agentd` 可运行在同一台机器/同一局域网，Android 通过 `-PagentCoreRemote=true` 指向它 |
 | **C 远程服务** | 两端都可选 | ✅ | ❌（失败自动回退本机） | 自建服务器 / 多设备场景；默认关闭，客户端会回退并记日志 |
 
@@ -168,12 +172,27 @@ flowchart TB
 - **为什么不是 KMP**：KMP 能让 iOS 也跑同一份 Kotlin，但需要 Kotlin/Native 工具链与 framework 打包；
   在引入它之前，先把契约、模块边界与客户端抽象建立起来，收益更确定、风险更小。KMP 仍是 Stage 2 的可选项。
 
-## 5.5 检索## 5.5 检索
+## 5.5 历史存储：区块
 
-聊天检索是**同一个语义在两端的两次实现**，靠 `spec/search/`（16 条用例）钉住：参数化 `LIKE` 粗筛
-（用户输入的 `%`/`_`/`\` 按普通字符处理）+ `ChineseTerms` 词元召回 → 内存精排（命中词元数 → `relevance`
-→ 时间 → id），候选上限 500。不建倒排索引表是刻意取舍：建表要把词元维护铺满每条写路径，并升 schema；
-检索是低频操作，几万条消息的粗筛是毫秒级。
+`0.12.0` 起会话历史按**区块**存储与读取（规范：`spec/messages-blocks/README.md`）：
+
+- `BLOCK_SIZE = 200`；`messages.blockIndex` + `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`
+  两张结构，两端 schema v11 逐字一致；
+- 写入走统一的块维护（追加满 200 开新块、按锚点插入落锚点块、删除重算边界、空块删行留编号空洞、不重平衡）；
+- **分页 = 区块**：首屏只读最新一块，向上读上一块（编号有空洞时按块表找实际的前一块），向下读下一块；
+  一页从不使用 offset，读取行数与历史长度无关；
+- 未读/已读/DND 仍走全表查询，不受窗口影响；
+- 备份仍是 v2 的「消息流」：导入时按顺序重建块，块元数据是派生数据、不进备份。
+
+## 5.6 检索
+
+聊天检索在两端语义一致，靠 `spec/search/`（16 条用例）钉住；`0.12.0` 起**没有候选上限**：
+
+- 枚举（可过滤人格/时间的）会话区块 → 逐块把消息读进内存 → 用共享的 `SearchRanking`
+  （命中词元数 ↓ → `relevance` ↓ → 时间 ↓ → id ↑）精排 → **键集游标**分页；
+- 峰值内存 ≈ 一块 + 一页 + frontier，与历史总长无关；
+- 代价：**每翻一页都会重新走一遍区块**（无上限与无 offset 的直接后果），延迟随历史块数线性增长；
+  这是刻意取舍，没有引入倒排索引表（那要把词元维护铺满每条写路径并升 schema）。
 
 ## 6. 迁移路径（分阶段、每步可回退）
 

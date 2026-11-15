@@ -45,7 +45,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [`MemoryLifecycle.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt) | 三档状态与阈值（沉底 0.45、归档 0.20、彻底遗忘 0.08 且 180 天没被提起）、每天的衰减与回血、钉住的下限 0.55、单次最多补算 14 天 |
+| [`MemoryLifecycle.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt) | 三档状态与阈值（沉底 0.45、归档 0.20、彻底遗忘 0.08 且 180 天没被提起）、每天的衰减与回血、钉住的下限 0.55、单次最多补算 14 天 |
 | [`ImportanceScoring.kt`](../../app/src/main/java/com/myfriend/app/domain/ImportanceScoring.kt) | `SHARED_CRITERIA`（什么值得记 / 不值得记 / 重要度 1–5）；整理器的 system 提示词与 JSON 容错解析；联网打分的提示词与解析 |
 | [`Recall.kt`](../../app/src/main/java/com/myfriend/app/domain/Recall.kt) | 三档 recall（`QUICK` / `NORMAL` / `DEEP`）、排序与中文段落渲染、depth 的宽松解析（数字 / 英文 / 中文别名） |
 

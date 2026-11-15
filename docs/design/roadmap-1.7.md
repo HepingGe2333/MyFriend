@@ -52,7 +52,7 @@
 
 ### 2. 点得开：链接与内置浏览器
 
-**识别**（[`LinkDetector.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
+**识别**（[`LinkDetector.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
 
 | 形态 | 例子 | 点击区域 |
 | --- | --- | --- |
@@ -99,7 +99,7 @@
 
 ### 4. 心跳：冲动什么时候来
 
-[`Heartbeat.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt) 负责读库与执行。
+[`Heartbeat.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt) 负责读库与执行。
 
 ```
 p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
@@ -116,7 +116,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 | 心情放大 | 1.15 / 1.35 / 1.55（强度 3/4/5） | 高兴和难过都会让人想找人说说话，平静不放大 |
 | 夹取 | 0.02 ～ 0.90 | 再低留一点念想，再高也不到「一定」 |
 
-**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
+**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
 
 每拍的顺序（先门槛、后掷骰子，省电也省额度）：
 
@@ -135,11 +135,11 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 5. 向量检索
 
-[`LocalEmbedding.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
+[`LocalEmbedding.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
 
 它**不是**神经网络 embedding——没有模型文件、不下载任何东西。做法是「字 n-gram 的带符号哈希」：
 
-1. 复用 [`ChineseTerms`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
+1. 复用 [`ChineseTerms`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
 2. 相邻二元组拼出字三元组（「项目」+「目压」→「项目压」），不重新扫正文；
 3. 没有语料库统计 DF，就用长度做静态先验：单字 0.8、二元组 1.0、三元组更高；
 4. 亚线性 TF（`1 + ln(1 + w)`），避免长记忆被一个高频词主导；
@@ -161,7 +161,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 6. 长会话的「滚动记忆」
 
-[`HistoryCompression.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt) 负责执行。
+[`HistoryCompression.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt) 负责执行。
 
 | 参数 | 值 | 意思 |
 | --- | --- | --- |

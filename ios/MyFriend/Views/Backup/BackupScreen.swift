@@ -8,7 +8,8 @@ import UniformTypeIdentifiers
 ///
 /// 三个不糊弄人的点：
 /// - 备份里**没有 API Key**（Keychain 不进备份），所以接回来以后要重新填一次 Key；
-/// - 备份里**没有图片**，只有「（发来一张图片）」这行文字；
+/// - 备份里**有图片，但有上限**（v3 起头像与聊天图片的二进制一起走：单张最多 8 MB、
+///   合计最多 128 MB），超出上限的那几张会跳过，导出之后单独告诉你跳过了几张；
 /// - 「替换」不再叠第二个确认框：上一个页面已经把「先吞掉本机、再照备份接回」写清楚了。
 struct BackupScreen: View {
     @EnvironmentObject private var env: AppEnvironment
@@ -25,6 +26,8 @@ struct BackupScreen: View {
     @State private var showPreview = false
     @State private var pendingAction: PendingAction?
     @State private var banner: MFAlert?
+    /// 导出成功后的提醒（目前只有「有几张图片超出上限没带走」），随成功横幅一起显示。
+    @State private var exportWarnings: [String] = []
 
     private var accent: Color { Color(argb: env.currentSettings.accentColor) }
 
@@ -150,6 +153,16 @@ struct BackupScreen: View {
             }
             .buttonStyle(.plain)
             .disabled(busy)
+
+            // 体积说明放在动作下面而不是藏进帮助页：用户在按下「带走」之前就该知道
+            // 图片会跟着走、而且有上限（单张 8 MB / 合计 128 MB / 整份 256 MB）。
+            Text(L("备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB。"))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
+                .padding(.top, 2)
+                .padding(.bottom, 8)
         }
     }
 
@@ -180,12 +193,12 @@ struct BackupScreen: View {
 
     private var honestyCard: some View {
         MFCard {
-            Text(L("哪些东西没跟着走"))
+            Text(L("哪些东西跟着走，哪些不跟"))
                 .font(.system(.body, design: .serif))
                 .padding(.bottom, 8)
 
             honestyRow(icon: "key", text: L("API Key 不在备份里。它存在这台手机的 Keychain 里，从来不进文件；接回来以后在「API 配置」里重新填一次就好。"))
-            honestyRow(icon: "photo", text: L("图片没有跟着备份走。备份里只有文字，那些带图片的消息会剩下「（发来一张图片）」这行字；头像也一样，换台手机之后会变回名字的首字。"))
+            honestyRow(icon: "photo", text: L("头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。"))
             honestyRow(icon: "iphone", text: L("聊天背景图的路径是这台手机上的本地路径，换机之后会失效，需要重新选一次。"))
         }
     }
@@ -282,18 +295,19 @@ struct BackupScreen: View {
         let name = backup.suggestedFileName()
         busy = true
         Task.detached(priority: .userInitiated) {
-            let outcome: Result<String, Error>
+            let outcome: Result<BackupExportResult, Error>
             do {
-                outcome = .success(try backup.export())
+                outcome = .success(try backup.exportWithWarnings())
             } catch {
                 outcome = .failure(error)
             }
             await MainActor.run {
                 busy = false
                 switch outcome {
-                case .success(let text):
+                case .success(let result):
                     exportingName = name
-                    exportingDocument = BackupJSONDocument(text: text)
+                    exportingDocument = BackupJSONDocument(text: result.text)
+                    exportWarnings = result.warnings
                     exporting = true
                 case .failure(let error):
                     banner = MFAlert(title: L("没能把他带走"), message: error.localizedDescription)
@@ -303,18 +317,23 @@ struct BackupScreen: View {
     }
 
     private func handleExportResult(_ result: Result<URL, Error>) {
+        // 先把这次导出的提醒取出来并清干净：取消 / 失败之后不该残留上一次的数字。
+        let warnings = exportWarnings
+        exportingDocument = nil
+        exportWarnings = []
         switch result {
         case .success(let url):
-            banner = MFAlert(
-                title: L("已经把他带走了"),
-                message: Lf("已经把他带走了：%@。放在安全的地方，换手机的时候还能接回来。", url.lastPathComponent)
-            )
+            var message = Lf("已经把他带走了：%@。放在安全的地方，换手机的时候还能接回来。", url.lastPathComponent)
+            // 图片超限不是失败：文件写出去了，但有几张没带走 —— 必须在这里说清楚。
+            if !warnings.isEmpty {
+                message += "\n" + warnings.joined(separator: "\n")
+            }
+            banner = MFAlert(title: L("已经把他带走了"), message: message)
         case .failure(let error):
             let nsError = error as NSError
             if nsError.code == NSUserCancelledError { return }
             banner = MFAlert(title: L("没能写进文件"), message: error.localizedDescription)
         }
-        exportingDocument = nil
     }
 
     // MARK: - 导入
@@ -333,7 +352,7 @@ struct BackupScreen: View {
             let scoped = url.startAccessingSecurityScopedResource()
             Task {
                 // 0.11.1 审计 P2-9：读文件 + JSON 预解析都在后台（`BackupImportLoader` 内部是
-                // `Task.detached` + 分块有界读取），主线程只 await 结果。64 MB 的 JSON 在
+                // `Task.detached` + 分块有界读取），主线程只 await 结果。256 MB 的 JSON 在
                 // main runloop 上做 UTF-8 解码 + JSONSerialization 是秒级卡顿。
                 let outcome = await BackupImportLoader.load(at: url)
                 if scoped { url.stopAccessingSecurityScopedResource() }
@@ -341,7 +360,7 @@ struct BackupScreen: View {
                     busy = false
                     switch outcome {
                     case .failure(let error):
-                        // 超限 / 读不出来：把具体原因给用户（「超过 64 MB」比「读不出来」有用）。
+                        // 超限 / 读不出来：把具体原因给用户（「超过 256 MB」比「读不出来」有用）。
                         banner = MFAlert(
                             title: L("这份备份读不出来"),
                             message: error.localizedDescription.isEmpty
@@ -530,7 +549,7 @@ private struct BackupPreviewSheet: View {
                                 .padding(.top, 4)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        Text(L("图片没有跟着备份走：带图片的消息只会剩下文字，头像也会变回名字首字。"))
+                        Text(L("备份里的头像与聊天图片会一起接回来；更早的备份（v2 及以前）里没有图片本体，那些带图片的消息只会剩下文字。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.top, 4)

@@ -220,81 +220,102 @@ interface ChatSessionDao {
 
 @Dao
 interface MessageDao {
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
-    fun observeBySession(sessionId: String): Flow<List<MessageEntity>>
+
+    // ---------------------------------------------------------------- 区块分页（v11）
 
     /**
-     * 聊天页首屏：只观察最近 [limit] 条（新的在前，调用方翻正序）。
+     * 「读某一块」（规范 §3：一页 = 一块）。
      *
-     * Room 的可观察查询会跟着 `messages` 表的变化重跑，所以「新消息追加 / 单条编辑 / 单条删除」
-     * 都会自动反映到这个窗口里，不需要界面自己拼。
-     */
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit")
-    fun observeRecentBySession(sessionId: String, limit: Int): Flow<List<MessageEntity>>
-
-    /**
-     * 聊天页「已经加载到的最早一条之后」的整个区间。
-     *
-     * 上滑加载更早时，游标往前挪，这个查询自然就多带回一段；因为它是可观察的，
-     * 窗口内任何一条消息被编辑/删除都会跟着更新，不会留下过期的旧行。
+     * `(sessionId, blockIndex, createdAt)` 上有索引，所以这条查询读多少行**只取决于这一块**
+     * （≤ `MessageBlocks.BLOCK_SIZE` 条，删除之后可能更少），与会话总长度无关。
      */
     @Query(
         """
-        SELECT * FROM messages WHERE sessionId = :sessionId
-        AND (createdAt > :sinceCreatedAt OR (createdAt = :sinceCreatedAt AND id >= :sinceId))
+        SELECT * FROM messages WHERE sessionId = :sessionId AND blockIndex = :blockIndex
         ORDER BY createdAt ASC, id ASC
         """
     )
-    fun observeSince(
-        sessionId: String,
-        sinceCreatedAt: Long,
-        sinceId: String
-    ): Flow<List<MessageEntity>>
+    suspend fun blockOf(sessionId: String, blockIndex: Int): List<MessageEntity>
 
     /**
-     * 有界窗口：从游标（含）往后最多 [limit] 条。
+     * 聊天页观察「已加载的那几块」。
      *
-     * 「从检索结果跳到很久以前那条消息」用它：窗口只覆盖目标附近的一段（审计 P2-13），
-     * 不再把「目标 → 最新」整段读进内存；要往更新处走时，界面上有「更新的消息」入口。
+     * 用可观察查询（而不是一次性快照）是必须的：块内任何一条被编辑/删除、块里追加了新消息，
+     * 列表都要跟着更新。块编号变化时由 ViewModel 重新订阅（`flatMapLatest`）。
      */
     @Query(
         """
-        SELECT * FROM messages WHERE sessionId = :sessionId
-        AND (createdAt > :sinceCreatedAt OR (createdAt = :sinceCreatedAt AND id >= :sinceId))
-        ORDER BY createdAt ASC, id ASC LIMIT :limit
+        SELECT * FROM messages WHERE sessionId = :sessionId AND blockIndex IN (:blockIndices)
+        ORDER BY blockIndex ASC, createdAt ASC, id ASC
         """
     )
-    fun observeWindow(
-        sessionId: String,
-        sinceCreatedAt: Long,
-        sinceId: String,
-        limit: Int
-    ): Flow<List<MessageEntity>>
+    fun observeBlocks(sessionId: String, blockIndices: List<Int>): Flow<List<MessageEntity>>
+
+    /** 块内第一条：删除之后重算 `first…` 用。 */
+    @Query(
+        """
+        SELECT * FROM messages WHERE sessionId = :sessionId AND blockIndex = :blockIndex
+        ORDER BY createdAt ASC, id ASC LIMIT 1
+        """
+    )
+    suspend fun firstInBlock(sessionId: String, blockIndex: Int): MessageEntity?
+
+    /** 块内最后一条：删除之后重算 `last…` 用。 */
+    @Query(
+        """
+        SELECT * FROM messages WHERE sessionId = :sessionId AND blockIndex = :blockIndex
+        ORDER BY createdAt DESC, id DESC LIMIT 1
+        """
+    )
+    suspend fun lastInBlock(sessionId: String, blockIndex: Int): MessageEntity?
+
+    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND blockIndex = :blockIndex")
+    suspend fun countInBlock(sessionId: String, blockIndex: Int): Int
 
     /**
-     * 往前翻一页：比 `(beforeCreatedAt, beforeId)` 更早的最近 [limit] 条（新的在前）。
+     * 一次删除会波及哪几块：`deleteAfterCursor` 之前先问一遍，删完只需重算这几块。
      *
-     * 用 `(createdAt, id)` 双列游标而不是只看时间：导入的备份、极端情况下同一毫秒写入的
-     * 两条消息不会因为时间相等而被跳过或重复。
+     * 只回编号，不 materialize 行；结果集大小 = 被删消息横跨的块数。
      */
     @Query(
         """
-        SELECT * FROM messages WHERE sessionId = :sessionId
-        AND (createdAt < :beforeCreatedAt OR (createdAt = :beforeCreatedAt AND id < :beforeId))
-        ORDER BY createdAt DESC, id DESC LIMIT :limit
+        SELECT DISTINCT blockIndex FROM messages WHERE sessionId = :sessionId
+        AND (createdAt > :createdAt OR (createdAt = :createdAt AND id > :id))
         """
     )
-    suspend fun pageBefore(
+    suspend fun blockIndicesAfter(sessionId: String, createdAt: Long, id: String): List<Int>
+
+    @Query("UPDATE messages SET blockIndex = :blockIndex WHERE id = :id")
+    suspend fun setBlockIndex(id: String, blockIndex: Int)
+
+    /**
+     * 把一段稳定序区间整体改成同一块（导入/重建时用：一块一条 UPDATE，而不是一条消息一条）。
+     *
+     * 区间两端都是**闭区间**，用 `(createdAt, id)` 双列比较，和排序键完全一致，
+     * 所以「哪些消息属于哪一块」不会因为同一毫秒而错位。
+     */
+    @Query(
+        """
+        UPDATE messages SET blockIndex = :blockIndex WHERE sessionId = :sessionId
+        AND (createdAt > :firstCreatedAt OR (createdAt = :firstCreatedAt AND id >= :firstId))
+        AND (createdAt < :lastCreatedAt OR (createdAt = :lastCreatedAt AND id <= :lastId))
+        """
+    )
+    suspend fun assignBlockRange(
         sessionId: String,
-        beforeCreatedAt: Long,
-        beforeId: String,
-        limit: Int
-    ): List<MessageEntity>
+        blockIndex: Int,
+        firstCreatedAt: Long,
+        firstId: String,
+        lastCreatedAt: Long,
+        lastId: String
+    ): Int
+
+    // ---------------------------------------------------------------- 读取
 
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt ASC, id ASC")
     suspend fun getBySession(sessionId: String): List<MessageEntity>
 
-    /** 只取最近 N 条：长会话不再把整段历史读进内存。 */
+    /** 只取最近 N 条：装配模型上下文用，长会话不再把整段历史读进内存。 */
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit")
     suspend fun recentBySession(sessionId: String, limit: Int): List<MessageEntity>
 
@@ -310,20 +331,6 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countInSession(sessionId: String): Int
-
-    /**
-     * 稳定序 `(createdAt, id)` 下严格早于这条消息的条数。
-     *
-     * 「跳到很久以前那条消息」只靠这个数字 + 一页对齐就能算出窗口起点，
-     * 不用一页页往回翻（审计 P2-13）。只回一个计数，不 materialize 任何行。
-     */
-    @Query(
-        """
-        SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId
-        AND (createdAt < :createdAt OR (createdAt = :createdAt AND id < :id))
-        """
-    )
-    suspend fun countBefore(sessionId: String, createdAt: Long, id: String): Int
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
@@ -342,19 +349,23 @@ interface MessageDao {
     suspend fun countUserMessagesSince(sessionId: String, since: Long): Int
 
     /** 某条用户消息之后有没有他真正说出口的话；界面靠它决定还要不要显示「已读」。 */
-    @Query("""
+    @Query(
+        """
         SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'ASSISTANT'
         AND status != 'ERROR' AND createdAt > :after ORDER BY createdAt ASC LIMIT 1
-    """)
+        """
+    )
     suspend fun firstAssistantAfter(sessionId: String, after: Long): MessageEntity?
 
     /** 这个人设说了多少句话（跨会话），用来判断是不是该引导一下心情了。 */
-    @Query("""
+    @Query(
+        """
         SELECT COUNT(*) FROM messages m
         INNER JOIN chat_sessions s ON s.id = m.sessionId
         WHERE s.personaId = :personaId AND m.role = 'ASSISTANT'
         AND m.status != 'ERROR' AND m.createdAt > :after
-    """)
+        """
+    )
     suspend fun countAssistantSince(personaId: String, after: Long): Int
 
     @Query("SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'ASSISTANT' AND status != 'ERROR' ORDER BY createdAt DESC LIMIT 1")
@@ -370,10 +381,12 @@ interface MessageDao {
      * 恰好全是助手消息（长回复、连续主动消息），就会出现「明明说过话却显示没说过」。
      * 这里直接从全表按时间倒序取第一条用户消息，结果与历史长度无关。
      */
-    @Query("""
+    @Query(
+        """
         SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
         AND content != '' ORDER BY createdAt DESC LIMIT 1
-    """)
+        """
+    )
     suspend fun lastUserMessage(sessionId: String): MessageEntity?
 
     /** 「对方上次说话」的时间戳；没有说过话时返回 null。 */
@@ -381,14 +394,26 @@ interface MessageDao {
     suspend fun lastUserMessageAt(sessionId: String): Long?
 
     /** 最近几条用户原话（闲逛找话题用）：按时间倒序，只要用户消息，不扫整段历史。 */
-    @Query("""
+    @Query(
+        """
         SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
         AND content != '' ORDER BY createdAt DESC LIMIT :limit
-    """)
+        """
+    )
     suspend fun recentUserMessages(sessionId: String, limit: Int): List<MessageEntity>
+
+    // ---------------------------------------------------------------- 写入
+    //
+    // 注意：**所有**会改变「会话里有哪些消息」的写入都必须经由
+    // `com.myfriend.app.data.repo.MessageBlockWriter`，由它同步维护 `message_blocks`
+    // 与 `messages.blockIndex`。直接调这里的 insert/delete 会绕过块维护。
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(message: MessageEntity)
+
+    /** 备份导入的批量插入（块编号随后由 `MessageBlockWriter` 整段重建）。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(messages: List<MessageEntity>)
 
     @Update
     suspend fun update(message: MessageEntity)
@@ -434,20 +459,24 @@ interface MessageDao {
     suspend fun deleteAll()
 
     /**
-     * 检索粗筛：SQL 由 [MessageSearchSql] 在运行时拼出来（人格 / 时间过滤 + 若干个 LIKE 词元 +
-     * LIMIT），所有值走绑定参数，用户输入永远不进 SQL 文本。
+     * 读**一块**里的消息（检索用；SQL 由 [MessageSearchSql] 在运行时拼出来）。
      *
-     * 为什么用 `@RawQuery` 而不是 `@Query`：关键词要按 [com.myfriend.app.domain.ChineseTerms]
-     * 切出**不定个数**的词元，每个词元一个 `LIKE`，注解里的静态 SQL 表达不了；手拼字符串又
-     * 会把用户输入拼进 SQL（注入风险），`@RawQuery` + [androidx.sqlite.db.SimpleSQLiteQuery]
-     * 既能动态拼装又能保持参数化。排序与展示顺序由 `SearchRanking` 在内存里重新算。
+     * 每条 SQL 只读一块，所以一次检索的峰值内存 ≈ 一块 + 一页 + frontier，与会话总长度无关
+     * （规范 §4）。`@RawQuery` 的理由与旧实现相同：关键词要切出不定个数的词元，每个词元一个
+     * `LIKE`，注解里的静态 SQL 表达不了；而手拼字符串会把用户输入拼进 SQL（注入风险），
+     * `@RawQuery` + `SimpleSQLiteQuery` 既能动态拼装又能保持参数化。
      */
     @RawQuery
-    suspend fun searchCandidates(query: SupportSQLiteQuery): List<MessageSearchRow>
+    suspend fun searchBlockMessages(query: SupportSQLiteQuery): List<MessageSearchRow>
 
-    /** 与 [searchCandidates] 同一套过滤条件的命中总数（`COUNT(*) AS total`）。 */
+    /**
+     * 后台回忆用的「最近若干条命中」粗筛（[MessageSearchSql.recentCandidatesQuery]）。
+     *
+     * 与检索页的逐块扫描分开：回忆是启发式、有界、不翻页；检索页是无上限、逐块、键集游标。
+     * 两条路共用的只有词元与 LIKE 转义。
+     */
     @RawQuery
-    suspend fun countSearchHits(query: SupportSQLiteQuery): List<SearchCountRow>
+    suspend fun searchRecentCandidates(query: SupportSQLiteQuery): List<MessageSearchRow>
 }
 
 @Dao

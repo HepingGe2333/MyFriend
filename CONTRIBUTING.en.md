@@ -30,13 +30,19 @@ Run at least the following before sending changes:
 # Android unit tests + build
 ./gradlew :app:testDebugUnitTest :app:assembleDebug
 
-# iOS logic tests (run on macOS, no simulator needed)
+# iOS: build the shared decision framework first (Kotlin Multiplatform; the app links it)
+ios/scripts/build-agentcore-framework.sh
+
+# iOS logic tests (run on macOS, no simulator, no framework needed)
 cd ios/MyFriendKit && swift test --disable-sandbox
 
 # iOS app build
 cd ios && xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
+
+`AgentCoreKit` is the Kotlin Multiplatform output of `agentcore/` — it *is* the iOS decision logic. The framework is a
+build artefact and is not committed; the Xcode project has a Run Script that builds it when missing.
 
 When changing the agent core service, also run `./gradlew :agentd:test` (plain JVM, no emulator needed).
 
@@ -115,7 +121,7 @@ The database schema is currently **v10** and the backup format is **v2**. The wo
 2. **Schema +1**: Room `@Database(version = N+1)` and iOS `Schema.version = N+1` (written into `user_version` when the database opens; the two numbers must still match); `app/schemas/<database>/<N+1>.json` is exported by KSP and must be committed with the PR.
 3. **Write the migration**: add `MIGRATION_N_(N+1)` in `MyFriendDatabase` on Android; on iOS add the matching logic to the DDL and `migrateLegacyData` in `Schema.swift` (adding tables/columns, idempotent). Destructive fallback or "drop and recreate" is forbidden.
 4. **Write migration tests**: Android covers the old database's tables and data in `app/src/androidTest/.../MyFriendDatabaseMigrationTest.kt`; iOS adds cases in `ios/MyFriendKit/Tests/MyFriendKitTests/Data/SchemaMigrationTests.swift`. Migrations must be idempotent.
-5. **Backup**: decide whether field additions/removals affect `BackupCodec`. If they do, bump `formatVersion`, change both `BackupCodec.*` implementations together, and **regenerate** `fixtures/backup/android-export-v2.json` and `ios-export-v2.json`. v1 samples are inputs only and are never rewritten.
+5. **Backup**: decide whether field additions/removals affect `BackupCodec`. If they do, bump `formatVersion`, change both `BackupCodec.*` implementations together, and **regenerate** `fixtures/backup/android-export-v3.json` and `ios-export-v3.json`. v1/v2 samples are inputs only and are never rewritten; the current format is v3.
 6. **Verify**: `BackupFixtureTest` (Android) and `BackupInteropTests` (iOS) must both pass, and old backups must still load.
 
 Field names, enum values and defaults follow [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) and the two `BackupCodec` implementations; field names must be identical on both sides.

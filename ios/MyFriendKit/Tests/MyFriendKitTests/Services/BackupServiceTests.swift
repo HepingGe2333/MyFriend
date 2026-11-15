@@ -11,6 +11,9 @@ final class BackupServiceTests: XCTestCase {
     private var settings: InMemorySettings!
     private var vectorIndex: MemoryVectorIndex!
     private var service: BackupService!
+    /// 附件目录（头像 + 聊天图）：每个用例一份临时目录，绝不往 `MediaStorage.shared` 里写测试数据。
+    private var attachments: URL!
+    private let fileManager = FileManager.default
 
     override func setUpWithError() throws {
         db = try TempDatabase()
@@ -23,9 +26,15 @@ final class BackupServiceTests: XCTestCase {
             )
         )
         vectorIndex = MemoryVectorIndex(stores: db.stores, now: { TestData.now })
+        attachments = fileManager.temporaryDirectory
+            .appendingPathComponent("mf-backup-service-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: attachments, withIntermediateDirectories: true)
         service = BackupService(
             stores: db.stores, settings: settings, vectorIndex: vectorIndex,
-            appVersion: "0.9.1-ios", now: { TestData.now }
+            appVersion: "0.9.1-ios",
+            avatarFileExists: { [fileManager] path in fileManager.fileExists(atPath: path) },
+            mediaDirectory: attachments,
+            now: { TestData.now }
         )
         try seed()
     }
@@ -36,6 +45,8 @@ final class BackupServiceTests: XCTestCase {
         settings = nil
         db.cleanUp()
         db = nil
+        if let attachments { try? fileManager.removeItem(at: attachments) }
+        attachments = nil
     }
 
     private func seed() throws {
@@ -102,7 +113,7 @@ final class BackupServiceTests: XCTestCase {
 
         let bundle = try XCTUnwrap(service.preview(fileText: json).bundle)
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 2)
+        XCTAssertEqual(bundle.formatVersion, 3)
         XCTAssertEqual(bundle.appVersion, "0.9.1-ios")
         XCTAssertTrue(bundle.apiKeysOmitted)
         XCTAssertEqual(bundle.personas.count, 2)
@@ -124,7 +135,9 @@ final class BackupServiceTests: XCTestCase {
         // 设置只带可移植那部分（1.9 只剩外观与「常驻思考」）。
         XCTAssertEqual(bundle.settings?.themeMode, "DARK")
         XCTAssertEqual(bundle.settings?.agentLoopEnabled, false)
-        XCTAssertEqual(bundle.formatVersion, 2)
+        XCTAssertEqual(bundle.formatVersion, 3)
+        // 没有图片时 media 是空数组（键永远存在）。
+        XCTAssertTrue(bundle.media.isEmpty)
     }
 
     // MARK: - 导出 → 清库 → 导入还原
@@ -195,6 +208,55 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertNotNil(message)
         XCTAssertTrue(message?.contains("不是一份有效的备份") == true)
         XCTAssertEqual(try db.stores.memories.count(), 2)
+    }
+
+    // MARK: - v11：备份仍是 v2，块元数据是派生的（导入时重建）
+
+    private func seedExtraMessages(_ count: Int) throws {
+        try db.stores.messages.upsert((0..<count).map { index in
+            TestData.message(
+                id: String(format: "extra-%03d", index),
+                role: index % 2 == 0 ? .user : .assistant,
+                content: "第 \(index) 句",
+                createdAt: TestData.now - 86_400_000 + Int64(index) * 1000
+            )
+        })
+    }
+
+    func testReplaceImportRebuildsBlocksWithTheAppendRule() throws {
+        try seedExtraMessages(250) // 原有 3 条 + 250 条 = 253 条 → 2 块
+        XCTAssertEqual(
+            try db.stores.messageBlocks.blocks(sessionId: "session-1").map(\.messageCount),
+            [200, 53]
+        )
+
+        let json = try service.export()
+        XCTAssertTrue(json.contains(#""formatVersion":3"#), "备份格式是 v3")
+        XCTAssertFalse(json.contains("blockIndex"), "块号是派生数据，绝不进备份")
+
+        let reset = DataReset(stores: db.stores, settings: settings, vectorIndex: vectorIndex)
+        _ = try reset.clearChats()
+        XCTAssertEqual(try db.stores.messageBlocks.count(), 0, "清空要把块一起清")
+
+        _ = try service.importBackup(text: json, mode: .replace)
+        XCTAssertEqual(try db.stores.messages.count(), 253)
+        let blocks = try db.stores.messageBlocks.blocks(sessionId: "session-1")
+        XCTAssertEqual(blocks.map(\.messageCount), [200, 53], "导入时按消息顺序用追加规则重建")
+        XCTAssertEqual(blocks.first?.firstMessageId, "msg-1")
+        XCTAssertTrue(try db.stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    func testMergeImportKeepsBlocksSelfConsistent() throws {
+        let json = try service.export()
+        _ = try service.importBackup(text: json, mode: .merge)
+        _ = try service.importBackup(text: json, mode: .merge)
+        XCTAssertEqual(try db.stores.messages.count(), 3)
+        XCTAssertEqual(
+            try db.stores.messageBlocks.blocks(sessionId: "session-1").map(\.messageCount),
+            [3],
+            "同 id 消息再导一次不该把块撑大"
+        )
+        XCTAssertTrue(try db.stores.messageBlocks.inconsistencies().isEmpty)
     }
 
     // MARK: - 与 Android 黄金样本互通
@@ -373,14 +435,14 @@ final class BackupServiceTests: XCTestCase {
         let huge = directory.appendingPathComponent("huge.json")
         FileManager.default.createFile(atPath: huge.path, contents: Data())
         let handle = try FileHandle(forWritingTo: huge)
-        // 稀疏文件：只改文件长度，不真的写 64 MB 数据。
+        // 稀疏文件：只改文件长度，不真的写 256 MB 数据。
         try handle.truncate(atOffset: UInt64(BackupService.maxImportBytes + 1))
         try handle.close()
 
         XCTAssertThrowsError(try service.readBackupText(at: huge)) { error in
             let importError = error as? BackupImportError
             XCTAssertEqual(importError?.message, BackupService.tooLargeMessage)
-            XCTAssertTrue(importError?.message.contains("64 MB") ?? false)
+            XCTAssertTrue(importError?.message.contains("256 MB") ?? false)
         }
 
         // 小文件照常读出来（闸不能把正常备份挡在外面）。
@@ -400,8 +462,12 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(try db.stores.personas.count(), 2)
     }
 
-    func testImportLimitBoundaryIs64MB() {
-        XCTAssertEqual(BackupService.maxImportBytes, 64 * 1024 * 1024)
+    func testImportLimitBoundaryIs256MB() {
+        // v3：128 MiB 图片 base64 之后约 171 MiB，加上文字仍在 256 MiB 之内。
+        XCTAssertEqual(BackupService.maxImportBytes, 256 * 1024 * 1024)
+        XCTAssertEqual(BackupService.maxExportBytes, 256 * 1024 * 1024)
+        XCTAssertEqual(BackupService.maxMediaBytes, 128 * 1024 * 1024)
+        XCTAssertEqual(BackupService.maxMediaFileBytes, 8 * 1024 * 1024)
     }
 
     // MARK: - 导出不带设备绝对路径（0.10.2 安全审计 P2-5）
@@ -434,16 +500,331 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(decoded.personas.first?.avatarUri, "file:///var/mobile/Containers/x/avatar-1.jpg")
     }
 
+    /// v3 的头像策略：只写**裸文件名**（与 Android `BackupAvatarPath.portable` 同一条规则）。
     func testExportedAvatarUriPolicy() {
         XCTAssertNil(BackupService.exportedAvatarUri(nil))
         XCTAssertNil(BackupService.exportedAvatarUri("   "))
+        // 承载设备路径的值一律收成裸名字（路径本身不写进备份）。
+        XCTAssertEqual(
+            BackupService.exportedAvatarUri("file:///var/mobile/Containers/Data/Application/ABC/attachments/avatar-1.jpg"),
+            "avatar-1.jpg"
+        )
+        XCTAssertEqual(
+            BackupService.exportedAvatarUri("FILE:///var/mobile/attachments/avatar-2.png"),
+            "avatar-2.png"
+        )
+        // 不是我们自己的头像文件（没有 `avatar-` 前缀）→ 不写，避免把 /etc/passwd 写成 passwd。
         XCTAssertNil(BackupService.exportedAvatarUri("file:///var/mobile/a.jpg"))
-        XCTAssertNil(BackupService.exportedAvatarUri("FILE:///var/mobile/a.jpg"))
         XCTAssertNil(BackupService.exportedAvatarUri("/var/mobile/a.jpg"))
-        // 非文件 URI 不是「设备路径」，保留（将来若支持网络头像，两端口径一致）。
-        XCTAssertEqual(BackupService.exportedAvatarUri("https://example.com/a.png"),
-                       "https://example.com/a.png")
-        XCTAssertEqual(BackupService.exportedAvatarUri("  https://example.com/a.png  "),
-                       "https://example.com/a.png")
+        XCTAssertNil(BackupService.exportedAvatarUri("file:///etc/passwd"))
+        // 带目录穿越的整条值直接拒绝。
+        XCTAssertNil(BackupService.exportedAvatarUri("file:///var/mobile/../databases/avatar-1.jpg"))
+        // 非文件 URI（网络头像 / content://）不是我们的文件：v3 不写（字节带不走）。
+        XCTAssertNil(BackupService.exportedAvatarUri("https://example.com/avatar-1.png"))
+        XCTAssertNil(BackupService.exportedAvatarUri("content://media/external/images/avatar-1.jpg"))
+        // 已经是裸名字的（导入后再导出）原样保留。
+        XCTAssertEqual(BackupService.exportedAvatarUri("  avatar-3.jpg  "), "avatar-3.jpg")
+    }
+
+    // MARK: - v3：头像与聊天图片真的跟着备份换手机
+
+    private static let jpegBytes = Data(base64Encoded: BackupSamples.sampleJPEGBase64)!
+    private static let pngBytes = Data(base64Encoded: BackupSamples.samplePNGBase64)!
+
+    /// 一个稳定的短摘要（FNV-1a 64）：报告里用它证明「换手机前后是同一批字节」。
+    private static func digest(_ data: Data) -> String {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in data {
+            hash = (hash ^ UInt64(byte)) &* 0x100_0000_01b3
+        }
+        return String(format: "%016llx", hash)
+    }
+
+    @discardableResult
+    private func writeMedia(_ name: String, _ data: Data, in directory: URL) throws -> String {
+        let url = directory.appendingPathComponent(name)
+        try data.write(to: url)
+        return url.absoluteString
+    }
+
+    private func restoredFileNames(in directory: URL) -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []).sorted()
+    }
+
+    /// 一次完整的换机：两台设备、两份目录、两份库。
+    func testV3RoundTripCarriesAvatarsAndChatImagesToANewPhone() throws {
+        // ---- 旧手机：两本人格头像、一张「我的头像」、一个预设头像、两张聊天图 ----
+        let persona1Avatar = try writeMedia("avatar-persona-1.jpg", Self.jpegBytes, in: attachments)
+        let persona2Avatar = try writeMedia("avatar-persona-2.png", Self.pngBytes, in: attachments)
+        let presetAvatar = try writeMedia("avatar-preset-1.png", Self.pngBytes, in: attachments)
+        let userAvatar = try writeMedia("avatar-me.jpg", Self.jpegBytes, in: attachments)
+        let chat1 = try writeMedia("chatImage-msg-1.jpg", Self.jpegBytes, in: attachments)
+        let chat2 = try writeMedia("chatImage-msg-2.png", Self.pngBytes, in: attachments)
+
+        var persona1 = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        persona1.avatarUri = persona1Avatar
+        try db.stores.personas.upsert(persona1)
+        var persona2 = try XCTUnwrap(try db.stores.personas.byId("persona-2"))
+        persona2.avatarUri = persona2Avatar
+        try db.stores.personas.upsert(persona2)
+        var preset = try XCTUnwrap(try db.stores.presets.byId("preset-1"))
+        preset.avatarUri = presetAvatar
+        try db.stores.presets.upsert(preset)
+        var current = settings.load()
+        current.myAvatarUri = userAvatar
+        settings.save(current)
+
+        func withAttachments(_ message: MessageEntity, _ json: String) -> MessageEntity {
+            var copy = message
+            copy.attachmentsJson = json
+            return copy
+        }
+        try db.stores.messages.upsert([
+            withAttachments(
+                try XCTUnwrap(try db.stores.messages.byId("msg-1")),
+                #"[{"uri":"\#(chat1)","mime":"image/jpeg","width":2,"height":2}]"#
+            ),
+            withAttachments(
+                try XCTUnwrap(try db.stores.messages.byId("msg-2")),
+                #"[{"uri":"\#(chat2)","mime":"image/png","width":2,"height":2}]"#
+            )
+        ])
+
+        // ---- 导出 ----
+        let exported = try service.exportWithWarnings()
+        XCTAssertTrue(exported.warnings.isEmpty, "没有超限时不该有导出提醒：\(exported.warnings)")
+        let bundle = try XCTUnwrap(BackupCodec.decode(exported.text).bundle)
+
+        XCTAssertEqual(bundle.media.count, 6, "两张人格头像 + 我的头像 + 预设头像 + 两张聊天图")
+        XCTAssertEqual(bundle.media.map(\.kind), [
+            "PERSONA_AVATAR", "PERSONA_AVATAR", "USER_AVATAR", "PERSONA_AVATAR", "CHAT_IMAGE", "CHAT_IMAGE"
+        ])
+        let totalMediaBytes = bundle.media.reduce(0) { $0 + $1.bytes }
+        XCTAssertEqual(totalMediaBytes, Self.jpegBytes.count * 3 + Self.pngBytes.count * 3)
+        for media in bundle.media {
+            let decoded = try XCTUnwrap(BackupMediaTransfer.decode(media.data))
+            XCTAssertEqual(decoded.count, media.bytes)
+            print("v3 export media: \(media.kind) \(media.fileName) \(media.bytes) bytes fnv=\(Self.digest(decoded))")
+        }
+
+        // 裸文件名 = 关联键；备份里**没有**设备路径。
+        XCTAssertEqual(bundle.personas.first { $0.id == "persona-1" }?.avatarUri, "avatar-persona-1.jpg")
+        XCTAssertEqual(bundle.personas.first { $0.id == "persona-2" }?.avatarUri, "avatar-persona-2.png")
+        XCTAssertEqual(bundle.presets.first?.avatarUri, "avatar-preset-1.png")
+        XCTAssertFalse(exported.text.contains("file:///"), "备份里不该出现设备绝对路径")
+        XCTAssertFalse(exported.text.contains(attachments.path), "备份里不该出现旧容器的目录")
+        XCTAssertFalse(exported.text.contains("/var/"))
+        // 「我的头像」不进 BackupSettings（那是设备路径），只以 USER_AVATAR 走 media。
+        XCTAssertFalse(exported.text.contains(userAvatar))
+        let messageUris = bundle.messages.flatMap { AttachmentsCodec.decode($0.attachmentsJson).map(\.uri) }
+        XCTAssertEqual(Set(messageUris), ["chatImage-msg-1.jpg", "chatImage-msg-2.png"])
+        for uri in messageUris {
+            XCTAssertFalse(uri.contains("/"), "v3 的附件 uri 只写裸文件名：\(uri)")
+        }
+        // USER_AVATAR 没有归属人格：JSON 里不写 personaId（预设头像也一样）。
+        let root = try XCTUnwrap(JSONValueParser.object(from: exported.text))
+        guard case .array(let mediaItems)? = root["media"] else { return XCTFail("media 段丢了") }
+        for item in mediaItems {
+            guard case .object(let object) = item,
+                  case .string(let kind)? = object["kind"],
+                  case .string(let fileName)? = object["fileName"] else {
+                return XCTFail("media 条目形状不对")
+            }
+            if kind == "USER_AVATAR" || fileName == "avatar-preset-1.png" {
+                XCTAssertNil(object["personaId"], "\(fileName) 不该写 personaId")
+            } else {
+                let expectedPersonaId = fileName == "avatar-persona-2.png" ? "persona-2" : "persona-1"
+                XCTAssertEqual(object["personaId"], .string(expectedPersonaId), fileName)
+            }
+        }
+
+        // ---- 新手机：空库 + 空附件目录 ----
+        let newDB = try TempDatabase()
+        defer { newDB.cleanUp() }
+        let newDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mf-backup-newphone-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: newDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: newDirectory) }
+        let newSettings = InMemorySettings()
+        let newService = BackupService(
+            stores: newDB.stores, settings: newSettings, appVersion: "0.12.0-ios",
+            avatarFileExists: { path in FileManager.default.fileExists(atPath: path) },
+            mediaDirectory: newDirectory,
+            now: { TestData.now }
+        )
+        let summary = try newService.importBackup(text: exported.text, mode: .replace)
+        XCTAssertEqual(summary.personas, 2)
+        XCTAssertEqual(summary.messages, bundle.messages.count)
+        XCTAssertFalse(
+            summary.warnings.contains { $0.contains("图片没有跟着备份走") },
+            "v3 备份里的图片不该再丢：\(summary.warnings)"
+        )
+        XCTAssertFalse(
+            summary.warnings.contains { $0.contains("头像文件找不到") },
+            "v3 备份里的头像不该再丢：\(summary.warnings)"
+        )
+
+        // 6 个文件真的落在新手机的附件目录里，名字是新的 UUID（绝不复用备份里的 fileName）。
+        let names = restoredFileNames(in: newDirectory)
+        XCTAssertEqual(names.count, 6)
+        XCTAssertEqual(names.filter { $0.hasPrefix("avatar-") }.count, 4)
+        XCTAssertEqual(names.filter { $0.hasPrefix("chatImage-") }.count, 2)
+        for name in names {
+            XCTAssertFalse(
+                ["avatar-persona-1.jpg", "avatar-persona-2.png", "avatar-preset-1.png",
+                 "avatar-me.jpg", "chatImage-msg-1.jpg", "chatImage-msg-2.png"].contains(name),
+                "落盘名必须重建，不能复用备份里的名字：\(name)"
+            )
+            let size = (try? newDirectory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+            let data = try Data(contentsOf: newDirectory.appendingPathComponent(name))
+            print("v3 import media: \(name) \(size) bytes fnv=\(Self.digest(data))")
+        }
+        XCTAssertEqual(
+            Set(names.map { $0.split(separator: ".").last.map(String.init) ?? "" }), ["jpg", "png"],
+            "扩展名来自 mime（jpeg→jpg / png→png）"
+        )
+
+        // 头像：人格/预设的 avatarUri 指向新文件，且字节与旧手机一致。
+        func assertRestoredAvatar(_ stored: String?, matchesOriginal original: Data, label: String) throws {
+            let uri = try XCTUnwrap(stored, "\(label) 的头像没接回来")
+            let url = try XCTUnwrap(URL(string: uri))
+            XCTAssertTrue(
+                AttachmentLocation.isWithin(newDirectory, url),
+                "\(label) 的头像要落在新附件目录里：\(uri)"
+            )
+            XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+            XCTAssertEqual(try Data(contentsOf: url), original, "\(label) 的字节要一模一样")
+        }
+        try assertRestoredAvatar(
+            newDB.stores.personas.byId("persona-1")?.avatarUri, matchesOriginal: Self.jpegBytes, label: "persona-1"
+        )
+        try assertRestoredAvatar(
+            newDB.stores.personas.byId("persona-2")?.avatarUri, matchesOriginal: Self.pngBytes, label: "persona-2"
+        )
+        try assertRestoredAvatar(
+            newDB.stores.presets.byId("preset-1")?.avatarUri, matchesOriginal: Self.pngBytes, label: "preset-1"
+        )
+        // 「我的头像」：设置里写成新路径。
+        try assertRestoredAvatar(newSettings.load().myAvatarUri, matchesOriginal: Self.jpegBytes, label: "我的头像")
+
+        // 聊天图片：消息的 attachmentsJson 指向新文件，元数据（mime / 宽高）还在。
+        for (messageId, expected) in [("msg-1", Self.jpegBytes), ("msg-2", Self.pngBytes)] {
+            let message = try XCTUnwrap(try newDB.stores.messages.byId(messageId))
+            let restored = AttachmentsCodec.decode(message.attachmentsJson)
+            XCTAssertEqual(restored.count, 1, "\(messageId) 应该接回一张图")
+            let attachment = try XCTUnwrap(restored.first)
+            let url = try XCTUnwrap(URL(string: attachment.uri))
+            XCTAssertTrue(AttachmentLocation.isWithin(newDirectory, url))
+            XCTAssertEqual(try Data(contentsOf: url), expected)
+            XCTAssertEqual(attachment.width, 2)
+            XCTAssertEqual(attachment.height, 2)
+            XCTAssertEqual(
+                attachment.mime,
+                messageId == "msg-1" ? "image/jpeg" : "image/png"
+            )
+            XCTAssertFalse(attachment.uri.contains("chatImage-msg-"), "不能指回旧文件名")
+        }
+    }
+
+    /// v1/v2 备份（没有 media）：行为与 v3 之前一字不差 —— 图片丢掉、给老警告，头像清空。
+    func testV1BackupWithoutMediaKeepsTheOldBehaviour() throws {
+        let directory = try XCTUnwrap(RepoLayout.backupFixtureDirectory())
+        let text = try String(
+            contentsOf: directory.appendingPathComponent("ios-export-v1.json"), encoding: .utf8
+        )
+        let summary = try service.importBackup(text: text, mode: .replace)
+
+        XCTAssertEqual(summary.personas, 1)
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("图片没有跟着备份走") },
+            "老备份没有 media，要保留老警告：\(summary.warnings)"
+        )
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("头像文件找不到") },
+            "老备份的头像路径在这台手机上没有文件：\(summary.warnings)"
+        )
+        XCTAssertFalse(
+            summary.warnings.contains { $0.contains("没接回来（文件损坏或格式不支持）") },
+            "没有 media 就不该有媒体警告：\(summary.warnings)"
+        )
+        let persona = try XCTUnwrap(try db.stores.personas.byId("ios-persona-1"))
+        XCTAssertNil(persona.avatarUri, "老备份里的设备路径一律不落库")
+        let messages = try db.stores.messages.bySession(BackupSamples.sessionId)
+        XCTAssertTrue(messages.allSatisfy { ($0.attachmentsJson ?? "").isEmpty }, "老备份的图片引用丢掉")
+        XCTAssertEqual(restoredFileNames(in: attachments), [], "老备份不会写任何媒体文件")
+    }
+
+    /// v2 备份（没有 media）也照样能接回来：同样只剩文字，但正文与记忆一条不少。
+    func testV2BackupWithoutMediaStillImports() throws {
+        let directory = try XCTUnwrap(RepoLayout.backupFixtureDirectory())
+        let text = try String(
+            contentsOf: directory.appendingPathComponent("ios-export-v2.json"), encoding: .utf8
+        )
+        let summary = try service.importBackup(text: text, mode: .replace)
+        XCTAssertEqual(summary.personas, 1)
+        XCTAssertEqual(summary.messages, 3)
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("图片没有跟着备份走") },
+            "\(summary.warnings)"
+        )
+        XCTAssertEqual(restoredFileNames(in: attachments), [])
+    }
+
+    /// 同一份 v3 备份接两次、换两台手机：落盘名各不相同（新 UUID），字节一致。
+    func testV3ImportGeneratesFreshFileNamesEveryTime() throws {
+        let avatarURL = try writeMedia("avatar-persona-1.jpg", Self.jpegBytes, in: attachments)
+        var persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        persona.avatarUri = avatarURL
+        try db.stores.personas.upsert(persona)
+        let text = try service.export()
+
+        func importOnFreshPhone() throws -> [String] {
+            let newDB = try TempDatabase()
+            defer { newDB.cleanUp() }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("mf-backup-phone-\(UUID().uuidString)", isDirectory: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            let backup = BackupService(
+                stores: newDB.stores, settings: InMemorySettings(),
+                avatarFileExists: { FileManager.default.fileExists(atPath: $0) },
+                mediaDirectory: directory, now: { TestData.now }
+            )
+            _ = try backup.importBackup(text: text, mode: .replace)
+            return restoredFileNames(in: directory)
+        }
+        let first = try importOnFreshPhone()
+        let second = try importOnFreshPhone()
+        XCTAssertEqual(first.count, 1)
+        XCTAssertEqual(second.count, 1)
+        XCTAssertNotEqual(first, second, "每次导入都要生成新的 UUID 文件名")
+        XCTAssertFalse(first[0].contains("avatar-persona-1"))
+    }
+
+    /// 媒体导入提醒：坏数据与超限分开计数，导入照样成功。
+    func testV3ImportWarnsSeparatelyForBrokenAndOversizedMedia() throws {
+        var bundle = BackupBundle(
+            personas: [BackupPersona(id: "persona-1", name: "林岸", avatarUri: "avatar-bad.jpg")]
+        )
+        bundle.media = [
+            BackupMedia(id: "m1", kind: "PERSONA_AVATAR", personaId: "persona-1",
+                        fileName: "avatar-bad.jpg", mime: "image/jpeg", bytes: 999,
+                        data: Data([0xFF, 0xD8]).base64EncodedString()),
+            BackupMedia(id: "m2", kind: "USER_AVATAR", fileName: "avatar-huge.jpg",
+                        mime: "image/jpeg", bytes: BackupService.maxMediaFileBytes + 1,
+                        data: Data([0xFF]).base64EncodedString())
+        ]
+        let summary = try service.importBundle(bundle, mode: .replace)
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("没接回来（文件损坏或格式不支持）") },
+            "\(summary.warnings)"
+        )
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("没有接回来（超出上限）") },
+            "\(summary.warnings)"
+        )
+        // 库里该有的人格还在，只是头像没了。
+        let persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        XCTAssertNil(persona.avatarUri)
+        XCTAssertNil(settings.load().myAvatarUri, "坏掉的 USER_AVATAR 不该写进设置")
     }
 }

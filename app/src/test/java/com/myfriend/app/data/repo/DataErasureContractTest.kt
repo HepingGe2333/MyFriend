@@ -465,23 +465,35 @@ class DataErasureContractTest {
      * 或者显式写进 allow-list 并说明理由。
      */
     @Test
-    fun `Entities 里的每一张表都在擦除清单里`() {
-        val entities = source("src/main/java/com/myfriend/app/data/local/Entities.kt")
-        val declared = Regex("""tableName\s*=\s*"([^"]+)"""")
-            .findAll(entities)
+    fun `库里出现的每一张表都能被删干净`() {
+        // 实体集中在两个文件：Entities.kt（业务表）与 MessageBlockDao.kt（v11 的区块元数据）。
+        val entities = Regex("""tableName\s*=\s*"([^"]+)"""")
+            .findAll(
+                source("src/main/java/com/myfriend/app/data/local/Entities.kt") +
+                    source("src/main/java/com/myfriend/app/data/local/MessageBlockDao.kt")
+            )
             .map { it.groupValues[1] }
             .toSet()
-        assertTrue("一张表都没读到，路径判断有问题", declared.size >= 17)
+        assertTrue("一张表都没读到，路径判断有问题", entities.size >= 17)
         val known = ErasableTable.entries.map { it.tableName }.toSet()
-        // 目前没有「刻意不擦除」的表：允许列表留空，加进来必须写理由。
-        val allowList = emptyMap<String, String>()
-        val missing = declared.filter { it !in known && it !in allowList }
+        // 派生表可以不走枚举：但它必须在 RoomErasureStore 里跟着父表一起删。
+        val derived = mapOf(
+            "message_blocks" to "messages 的派生元数据（没有独立原文），在 RoomErasureStore 的 MESSAGES 分支连带删除"
+        )
+        val missing = entities.filter { it !in known && it !in derived }
         assertEquals(
-            "以下真实表不在 ErasableTable 里（新的用户内容表必须能被删干净）：$missing",
+            "以下真实表既不在 ErasableTable 里、也不在派生表允许列表里（新的用户内容表必须能被删干净）：$missing",
             emptyList<String>(),
             missing
         )
         assertTrue("api_usage 必须在清单里（审计 P2-4）", "api_usage" in known)
+        derived.keys.forEach { table ->
+            val store = source("src/main/java/com/myfriend/app/data/repo/RoomErasureStore.kt")
+            assertTrue(
+                "派生表 $table 必须跟着父表在 RoomErasureStore 里删掉",
+                store.contains("blockWriter.deleteAll()") && store.contains("blockWriter.deletePersona(personaId)")
+            )
+        }
     }
 
     @Test
@@ -535,6 +547,14 @@ class DataErasureContractTest {
             store.contains("memoryReconsolidator.purgeVersions(")
         )
         assertTrue(
+            "v11 区块元数据跟着 messages 在一个分支里删（整库/按人两种口径都要有）",
+            store.contains("blockWriter.deleteAll()") && store.contains("blockWriter.deletePersona(personaId)")
+        )
+        assertTrue(
+            "删完会话之后回收孤儿块（异常导入/中断事务留下的行）",
+            store.contains("blockDao.deleteOrphans()")
+        )
+        assertTrue(
             "MemoryReconsolidator 必须提供删除清理入口",
             source("src/main/java/com/myfriend/app/data/repo/MemoryReconsolidator.kt")
                 .contains("suspend fun purgeVersions(")
@@ -551,7 +571,12 @@ class DataErasureContractTest {
         } else {
             File(appRoot, relative)
         }
-        return file.readText()
+        if (file.isFile) return file.readText()
+        // `:agentcore` 改成 KMP 之后源码搬进了 commonMain / jvmMain。
+        val relocated = listOf("commonMain", "jvmMain")
+            .map { sourceSet -> File(repoRoot(appRoot), relative.replace("src/main/kotlin", "src/$sourceSet/kotlin")) }
+            .firstOrNull { it.isFile }
+        return (relocated ?: file).readText()
     }
 
     /** 从 app 模块目录往上找仓库根（`File(".").parentFile == null`，不能直接用 parent）。 */

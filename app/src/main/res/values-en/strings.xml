@@ -37,7 +37,8 @@
     <string name="backup_section_title">Take him with you</string>
     <string name="backup_intro_title">He isn\'t a pile of data. He\'s someone you\'ve talked with for a long time.</string>
     <string name="backup_intro_body">Taking him with you packs his persona, every word you\'ve exchanged, the things he remembers, the rules he set for himself and the settings that can travel, all into one JSON file. After a new phone or a reinstall, use “Bring him back from a backup” below to put him back where he was.</string>
-    <string name="backup_safety_body">The backup holds your conversations and his memories, so keep it somewhere safe. API keys aren\'t in it — once he\'s back, just fill them in again under “API settings” on this phone. Avatar images don\'t travel either; pick one again after switching phones.</string>
+    <string name="backup_safety_body">The backup holds your conversations and his memories, so keep it somewhere safe. API keys aren\'t in it — once he\'s back, just fill them in again under “API settings” on this phone. Avatars and chat pictures travel with the backup too, so you won\'t have to pick them again on a new phone.</string>
+    <string name="backup_media_limits">Avatars and chat pictures are packed into the backup: at most %1$d MB each and %2$d MB in total; anything over that stays on the old phone. The backup file itself can be up to %3$d MB.</string>
     <string name="backup_export_row_title">Take him with you</string>
     <string name="backup_export_row_desc">Pick a place to save this JSON file</string>
     <string name="backup_import_row_title">Bring him back from a backup</string>
@@ -233,7 +234,8 @@
     <string name="chat_typing">Typing</string>
     <string name="chat_latest">Latest</string>
     <string name="chat_load_earlier">Scroll up to load earlier messages</string>
-    <string name="chat_back_to_latest">Newer messages below · back to latest</string>
+    <string name="chat_load_newer">Newer messages below · tap to load</string>
+    <string name="chat_loading_newer">Loading newer messages…</string>
     <string name="chat_loading_earlier">Loading earlier messages…</string>
     <string name="chat_stopped_status">Stopped</string>
     <string name="chat_scroll_to_bottom">Back to the latest</string>
@@ -396,7 +398,7 @@
     <string name="search_error_title">The search didn\'t finish</string>
     <string name="search_error_desc">Something went wrong reading your local history. Nothing is lost — just try again.</string>
     <string name="search_retry">Try again</string>
-    <string name="search_truncated">Too many matches — showing only the most recent %1$d.</string>
+    <string name="search_scanned_all_history">Searched the whole history — %1$d matches.</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -1008,7 +1010,7 @@
     <!-- Appearance -->
     <string name="settings_section_appearance">Appearance</string>
     <string name="settings_my_avatar">Your avatar</string>
-    <string name="settings_my_avatar_desc">Shown on your side of the chat; not carried over in a backup</string>
+    <string name="settings_my_avatar_desc">Shown on your side of the chat; it also comes back with your backup on a new phone (up to 8 MB)</string>
     <string name="settings_restore_default">Restore default</string>
     <string name="settings_theme_mode">Theme</string>
     <string name="settings_theme_mode_desc">Light, dark, or follow the system</string>
@@ -1373,6 +1375,19 @@
         <item quantity="one">%1$d message used to have a picture. The picture didn\'t travel with the backup, so only the text is back</item>
         <item quantity="other">%1$d messages used to have pictures. The pictures didn\'t travel with the backup, so only the text is back</item>
     </plurals>
+    <!-- v3: image bytes travel with the backup; one line each for the limit and for bad data. -->
+    <plurals name="backup_media_export_skipped">
+        <item quantity="one">%1$d picture didn\'t travel with the backup (over the size limit)</item>
+        <item quantity="other">%1$d pictures didn\'t travel with the backup (over the size limit)</item>
+    </plurals>
+    <plurals name="backup_media_import_skipped">
+        <item quantity="one">%1$d picture couldn\'t be restored (corrupt or unsupported)</item>
+        <item quantity="other">%1$d pictures couldn\'t be restored (corrupt or unsupported)</item>
+    </plurals>
+    <plurals name="backup_media_import_over_limit">
+        <item quantity="one">%1$d picture wasn\'t restored (over the size limit)</item>
+        <item quantity="other">%1$d pictures weren\'t restored (over the size limit)</item>
+    </plurals>
     <plurals name="backup_warn_configs_missing_key">
         <item quantity="one">%1$d API setup still needs a key (keys never travel in backups); fill it in under API settings</item>
         <item quantity="other">%1$d API setups still need a key (keys never travel in backups); fill them in under API settings</item>
@@ -1403,7 +1418,7 @@
     <string name="backup_fail_empty">This file is empty; he isn\'t in it.</string>
     <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
     <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
-    <string name="backup_fail_too_large">That file is too large (over %1$dMB) to be a MyFriend backup.</string>
+    <string name="backup_fail_too_large">That file is too large (over %1$d MB) to be a MyFriend backup. Backups with pictures are bigger, but should still stay well below this.</string>
     <string name="backup_fail_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to. The import was cancelled so it doesn\'t overwrite him on this phone.</string>
     <string name="backup_warn_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to, so importing it will be refused</string>
     <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>

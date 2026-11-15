@@ -1,22 +1,21 @@
 package com.myfriend.app.data.repo
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 /**
- * 检索升级的**语义边界**守卫（读源码，不跑 Room；和 `ChatPagingContractTest` 同一套做法）。
+ * 检索的**语义边界**守卫（读源码，不跑 Room；和 `ChatPagingContractTest` 同一套做法）。
  *
- * 这个项目没有 Room/Robolectric 单测环境，但检索最容易写坏的几件事都是「结构性的」：
+ * 0.12 的检索契约（规范 `spec/messages-blocks/README.md` §4）：
  *
- * 1. 粗筛必须走**参数化**的 `@RawQuery`（`MessageSearchSql` + `SimpleSQLiteQuery`），
- *    而不是把用户输入拼进 SQL 文本 —— 拼接出来的 SQL 看起来能跑，注射面却一直开着；
- * 2. 排序必须走跨端共享的 `SearchRanking`，摘要必须走 `SearchSnippet`；
- *    界面自己再截一次字符串，就一定会和 iOS 不一致；
- * 3. 跳转定位必须用**一次**计数算出有界窗口（`COUNT(*)` + `pageBefore` 取一页上下文），
- *    不许再「一页页往回爬」，也不许另写一条「按 id 查一条插进列表」的捷径；
- * 4. 检索**只读**：不写库、不碰网络。
+ * 1. **逐块**：先枚举块，再一条 SQL 读一块；不许再「一条 LIKE 扫全表 + LIMIT 500」；
+ * 2. **无上限**：没有候选池常量，`hasMore` 由键集游标决定，界面不再说「只显示最近 N 条」；
+ * 3. **参数化**：所有用户输入只进绑定参数（`MessageSearchSql` + `SimpleSQLiteQuery`）；
+ * 4. **排序/摘要仍走跨端共享的** `SearchRanking` / `SearchSnippet`；
+ * 5. 检索**只读**：不写库、不碰网络。
  */
 class SearchContractTest {
 
@@ -29,81 +28,121 @@ class SearchContractTest {
 
     private val chatRepo get() = source("src/main/java/com/myfriend/app/data/repo/ChatRepository.kt")
     private val daos get() = source("src/main/java/com/myfriend/app/data/local/Daos.kt")
+    private val blockDao get() = source("src/main/java/com/myfriend/app/data/local/MessageBlockDao.kt")
     private val sql get() = source("src/main/java/com/myfriend/app/data/local/MessageSearchSql.kt")
 
-    /** 截一段源码（从 marker 开始，到下一个 `\n    suspend fun ` 或 `\n    private fun ` 之前）。 */
+    /** 截一段源码（从 marker 开始，到下一个成员声明之前）。 */
     private fun block(text: String, marker: String): String {
         val index = text.indexOf(marker)
         assertTrue("找不到 $marker", index >= 0)
         val rest = text.substring(index + marker.length)
         val end = listOf(
-            rest.indexOf("\n    suspend fun "),
-            rest.indexOf("\n    fun "),
-            rest.indexOf("\n    private fun ")
-        ).filter { it >= 0 }.minOrNull() ?: rest.length
+            "\n    suspend fun ",
+            "\n    private suspend fun ",
+            "\n    private fun ",
+            "\n    fun "
+        ).filter { rest.indexOf(it) >= 0 }.minOfOrNull { rest.indexOf(it) } ?: rest.length
         return rest.substring(0, end)
+    }
+
+    @Test
+    fun `检索先枚举块 再一条 SQL 读一块`() {
+        assertTrue(
+            "枚举块走 MessageSearchSql.blocksQuery（只回 sessionId/blockIndex）",
+            chatRepo.contains("MessageSearchSql.blocksQuery(") && sql.contains("fun blocksQuery(")
+        )
+        assertTrue("块枚举走 blockDao", chatRepo.contains("blockDao.searchBlocks("))
+        assertTrue(
+            "读一块走 MessageSearchSql.blockScanQuery（blockIndex = ?）",
+            chatRepo.contains("MessageSearchSql.blockScanQuery(") &&
+                sql.contains("m.sessionId = ? AND m.blockIndex = ?")
+        )
+        assertTrue("读一块走 messageDao.searchBlockMessages", chatRepo.contains("messageDao.searchBlockMessages("))
+        assertTrue("块枚举是 @RawQuery", blockDao.contains("suspend fun searchBlocks("))
+        assertTrue("块内读取是 @RawQuery", daos.contains("suspend fun searchBlockMessages("))
+    }
+
+    @Test
+    fun `逐块扫描的引擎是 BlockSearch 没有候选上限`() {
+        assertTrue("遍历/选择在纯逻辑里（可单测）", chatRepo.contains("BlockSearch.page("))
+        assertTrue("引擎逐块读", source("src/main/java/com/myfriend/app/domain/BlockSearch.kt").contains("for (block in source.blocks(filter))"))
+        assertFalse("候选上限常量已删除", sql.contains("CANDIDATE_LIMIT"))
+        assertFalse("仓库里不再有 500 条候选池", chatRepo.contains("CANDIDATE_LIMIT"))
+        assertFalse("旧的 candidateQuery 已退役", sql.contains("fun candidateQuery("))
+        assertFalse("旧的 countQuery 已退役（总数在逐块扫描时数出来）", sql.contains("fun countQuery("))
+        assertTrue("总数是扫描出来的全部命中", chatRepo.contains("total = page.totalMatches"))
+    }
+
+    @Test
+    fun `翻页用键集游标 hasMore 由游标决定`() {
+        assertTrue("SearchQuery 带游标", chatRepo.contains("cursor: BlockSearch.Cursor? = null"))
+        assertTrue("SearchPage 带下一页游标", chatRepo.contains("val nextCursor: BlockSearch.Cursor? = null"))
+        assertTrue("hasMore 来自游标扫描结果", chatRepo.contains("hasMore = page.hasMore"))
+        assertFalse("不再按 offset 切片", chatRepo.contains(".drop(offset)"))
+        assertFalse("不再有 truncated（只显示最近 N 条）", chatRepo.contains("truncated"))
+        val engine = source("src/main/java/com/myfriend/app/domain/BlockSearch.kt")
+        assertTrue("游标四元组与排序键一致", engine.contains("(matchedTermCount, relevance, createdAt, id)"))
+        assertTrue("下一页只收严格排在游标之后的行", engine.contains("sortsAfter(hit.cursor(), cursor)"))
+    }
+
+    @Test
+    fun `界面不再显示只显示最近N条 改成已扫描全部历史`() {
+        val screen = source("src/main/java/com/myfriend/app/ui/screens/search/SearchScreen.kt")
+        val vm = source("src/main/java/com/myfriend/app/ui/screens/search/SearchViewModel.kt")
+        assertTrue("说明文案改成「已扫描全部历史」", screen.contains("R.string.search_scanned_all_history"))
+        assertFalse("旧的「只显示最近 N 条」已删除", screen.contains("R.string.search_truncated"))
+        assertFalse("状态里不再有 truncated", vm.contains("truncated"))
+        assertTrue(
+            "全部扫完才显示说明",
+            vm.contains("searched && !hasMore && !loading && hits.isNotEmpty()")
+        )
+        // 资源本身也要删掉，否则翻译里会留下一条永远不显示的文案。
+        val zh = source("src/main/res/values/strings.xml")
+        val en = source("src/main/res/values-en/strings.xml")
+        assertFalse(zh.contains("search_truncated"))
+        assertFalse(en.contains("search_truncated"))
+        assertTrue(zh.contains("search_scanned_all_history") && en.contains("search_scanned_all_history"))
     }
 
     @Test
     fun `检索粗筛是参数化的 RawQuery 而不是拼字符串`() {
         assertTrue(
-            "DAO 里的粗筛应该走 @RawQuery（见 MessageSearchSql）",
-            daos.contains("@RawQuery") && daos.contains("suspend fun searchCandidates(")
-        )
-        assertTrue(
             "Repository 要把 (sql, args) 交给 SimpleSQLiteQuery，值才会被绑定而不是拼进 SQL",
             chatRepo.contains("SimpleSQLiteQuery(")
         )
-        assertTrue("SQL 由 MessageSearchSql 统一生成", chatRepo.contains("MessageSearchSql.candidateQuery("))
-        assertFalse(
-            "旧的 messageDao.search(query) 必须退役：它把用户输入拼进 LIKE，且无法转义 % / _",
-            daos.contains("suspend fun search(query: String): List<MessageSearchRow>")
+        assertTrue(
+            "SQL 由 MessageSearchSql 统一生成",
+            sql.contains("fun blockScanQuery(") && sql.contains("fun blocksQuery(")
         )
         assertTrue(
             "MessageSearchSql 里必须声明 ESCAPE，% 和 _ 才是字面量",
             sql.contains("ESCAPE '\\\\'")
         )
+        assertFalse(
+            "旧的 messageDao.search(query) 必须退役：它把用户输入拼进 LIKE，且无法转义 % / _",
+            daos.contains("suspend fun search(query: String): List<MessageSearchRow>")
+        )
     }
 
     @Test
-    fun `检索结果是契约函数算出来的`() {
-        assertTrue("排序必须走跨端的 SearchRanking", chatRepo.contains("SearchRanking.rank("))
+    fun `排序与摘要仍然是跨端契约函数`() {
+        val engine = source("src/main/java/com/myfriend/app/domain/BlockSearch.kt")
+        assertTrue("命中判定用共享词元规则", engine.contains("SearchRanking.matchedTerms("))
+        assertTrue("相关度用共享实现", engine.contains("ChineseTerms.relevance("))
         assertTrue("摘要与高亮必须走 SearchSnippet", chatRepo.contains("SearchSnippet.build("))
         val block = block(chatRepo, "suspend fun searchMessages(")
-        assertTrue("过滤条件要同时进 SQL 粗筛与内存精排", block.contains("SearchFilter("))
+        assertTrue("过滤条件要同时进 SQL 与内存精排", block.contains("SearchFilter("))
     }
 
     @Test
-    fun `分页切在排序之后 不会把跨页顺序打乱`() {
-        val block = block(chatRepo, "suspend fun searchMessages(")
-        assertTrue(
-            "必须先 rank 再按 offset/limit 切片，否则每页各自排序会拼出乱序结果",
-            block.indexOf("SearchRanking.rank(") in 0 until block.indexOf(".drop(offset)")
-        )
-        assertTrue("分页用 offset/limit 切已排序结果", block.contains(".drop(offset)"))
-        assertTrue("hasMore 由「已排序结果还有没有下一段」决定", block.contains("hasMore = ranked.size > offset + limit"))
-    }
-
-    @Test
-    fun `跳转定位一次算出有界窗口 不再逐页往回爬`() {
-        val block = block(chatRepo, "suspend fun cursorContainingMessage(")
-        assertTrue(
-            "先 COUNT 目标之前有几条（只回一个数字，不 materialize 行）",
-            block.contains("messageDao.countBefore(")
-        )
-        assertTrue("再按消息总数算窗口计划", block.contains("MessageJump.plan("))
-        assertTrue(
-            "上下文起点只取一页（pageBefore + plan.contextRows），不是循环翻页",
-            block.contains("messageDao.pageBefore(") && !block.contains("while (")
-        )
-        assertTrue("目标消息必须属于这个会话", block.contains("target.sessionId != sessionId"))
+    fun `从检索定位到某个块 不再按条数窗口`() {
+        val block = block(chatRepo, "suspend fun blockContainingMessage(")
+        assertTrue("按消息的 blockIndex 定位", block.contains("target.blockIndex"))
+        assertTrue("两侧边界来自块表", block.contains("blocksAround(sessionId, target.blockIndex)"))
+        assertFalse("不再需要 COUNT(*) 算下标", block.contains("countBefore("))
         val vm = source("src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt")
-        assertTrue(
-            "聊天页要真的用上这个窗口（否则定位只是个死方法）",
-            vm.contains("chatRepository.cursorContainingMessage(sessionId, target)")
-        )
-        assertTrue("定位后按有界窗口观察", vm.contains("observeMessagesWindow("))
-        assertTrue("窗口起点与条数上界一起写进去", vm.contains("jumpWindow.value = window"))
+        assertTrue("聊天页真的用上它", vm.contains("chatRepository.blockContainingMessage(sessionId, target)"))
+        assertTrue("定位后换成目标那一块", vm.contains("MessageBlockPaging.onJump("))
     }
 
     @Test
@@ -117,5 +156,10 @@ class SearchContractTest {
         listOf("messageDao.insert", "runInference").forEach { forbidden ->
             assertFalse("会话检索路径里不该出现 $forbidden", sessionsBlock.contains(forbidden))
         }
+        assertTrue(
+            "检索路径里的 SQL 只通过 MessageSearchSql 生成（不手拼字符串）",
+            chatRepo.contains("MessageSearchSql.blocksQuery(") &&
+                chatRepo.contains("MessageSearchSql.blockScanQuery(")
+        )
     }
 }

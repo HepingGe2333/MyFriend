@@ -3,32 +3,45 @@ import Foundation
 
 /// iOS 侧的「黄金样本」。
 ///
-/// - `iosBundle()`：**v2**（1.9）结构，写进 `fixtures/backup/ios-export-v2.json`，
+/// - `iosBundle()`：**v3**（0.12）结构，写进 `fixtures/backup/ios-export-v3.json`，
 ///   Android 的 `BackupFixtureTest` 用它验证「iOS 导出的备份 Android 接得住」；
 /// - 值全部是 iOS 自己造的（名字、id 都不同），并且**每个可选字段都填上**：
 ///   「所有可选字段都非 nil」的样本能顺带检查「编码时字段一个不多一个不少」
 ///   （见 BackupCodecTests 的键集合断言）——漏字段是备份互通最隐蔽的 bug。
+/// - 图片用**真的** 2×2 小图（jpeg 632 字节 / png 75 字节）：base64 是标准字母表、
+///   带 padding、不换行，两端都能真的解码出一张图，而不是一段假字符串。
 ///
-/// v1 的样本（`ios-export-v1.json` / `android-export-v1.json`）留在仓库里当**输入**：
-/// 1.9 必须能读它们（§八「必须能读 v1 备份」），但不再写新的 v1。
+/// v1/v2 的样本（`ios-export-v1.json` / `android-export-v1.json` / `*-export-v2.json`）
+/// 留在仓库里当**输入**：v3 必须能读它们（「必须能读旧备份」），但不再写新的 v1/v2。
 enum BackupSamples {
+
+    /// 样本里那张 2×2 的 jpeg（632 字节）。
+    static let sampleJPEGBase64 = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAA0JCgsKCA0LCgsODg0PEyAVExISEyccHhcgLikxMC4pLSwzOko+MzZGNywtQFdBRkxOUlNSMj5aYVpQYEpRUk//2wBDAQ4ODhMREyYVFSZPNS01T09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT0//wAARCAACAAIDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwCeiiivMPZP/9k="
+    /// 样本里那张 2×2 的 png（75 字节）。
+    static let samplePNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGM8URHAwMDAxAAGABNiAZSfXW4zAAAAAElFTkSuQmCC"
+
+    /// 样本头像的**裸文件名**（v3 的关联键）：`personas.avatarUri` 与 `media[].fileName` 一致。
+    static let personaAvatarFileName = "avatar-ios-sample.jpg"
+    /// 样本聊天图片的**裸文件名**：`messages.attachmentsJson[].uri` 与 `media[].fileName` 一致。
+    static let chatImageFileName = "chatImage-ios-sample.png"
 
     static let personaId = "ios-persona-1"
     static let sessionId = "ios-session-1"
     static let configId = "ios-config-1"
     static let now: Int64 = 1_795_000_000_000
 
-    /// 完整样本（v2）：9 段全非空 + 设置段在内 + 人格的 9 个细分字段。
+    /// 完整样本（v3）：9 段全非空 + 设置段在内 + 人格的 9 个细分字段 + 2 张真图。
     static func iosBundle() -> BackupBundle {
         BackupBundle(
-            appVersion: "0.9.1-ios",
+            appVersion: "0.10.2-ios",
             exportedAt: now,
             personas: [
                 BackupPersona(
                     id: personaId,
                     name: "沈迟",
                     description: "在旧书店打工的人，说话慢，记性好",
-                    avatarUri: "file:///var/mobile/Containers/avatar-shenchi.png",
+                    // v3：只写裸文件名（关联键），二进制在 media 里。
+                    avatarUri: personaAvatarFileName,
                     avatarSeed: 12,
                     prompt: "你是沈迟，在旧书店打工，说话慢而具体。",
                     category: "朋友",
@@ -132,7 +145,8 @@ enum BackupSamples {
                     status: "COMPLETE",
                     model: "deepseek-chat",
                     edited: true,
-                    attachmentsJson: "[{\"uri\":\"file:///var/mobile/Containers/book.jpg\",\"mime\":\"image/jpeg\"}]",
+                    // v3：附件 uri 是裸文件名，本体在 media 的 CHAT_IMAGE 里。
+                    attachmentsJson: "[{\"uri\":\"chatImage-ios-sample.png\",\"mime\":\"image/png\",\"width\":2,\"height\":2}]",
                     toolTraceJson: "[{\"name\":\"web_search\",\"ok\":true}]"
                 ),
                 BackupMessage(
@@ -149,6 +163,28 @@ enum BackupSamples {
                     edited: false
                 )
             ],
+            // v3：两张图（人格头像 jpeg + 聊天图片 png）。fileName 是关联键，
+            // data 是标准 base64（带 padding、不换行），bytes 是解出来的原始字节数。
+            media: [
+                BackupMedia(
+                    id: "ios-media-1",
+                    kind: "PERSONA_AVATAR",
+                    personaId: personaId,
+                    fileName: personaAvatarFileName,
+                    mime: "image/jpeg",
+                    bytes: 632,
+                    data: sampleJPEGBase64
+                ),
+                BackupMedia(
+                    id: "ios-media-2",
+                    kind: "CHAT_IMAGE",
+                    personaId: personaId,
+                    fileName: chatImageFileName,
+                    mime: "image/png",
+                    bytes: 75,
+                    data: samplePNGBase64
+                )
+            ],
             presets: [
                 BackupPreset(
                     id: "ios-preset-1",
@@ -156,7 +192,8 @@ enum BackupSamples {
                     description: "话少，但记得住细节",
                     prompt: "你说话慢，先回应再展开。",
                     category: "朋友",
-                    avatarUri: "file:///var/mobile/Containers/preset.png",
+                    // 预设头像与人格头像指向同一张图（现实里「从人格另存为预设」就是这样）。
+                    avatarUri: personaAvatarFileName,
                     avatarSeed: 4,
                     createdAt: now - 259_200_000,
                     updatedAt: now - 86_400_000

@@ -34,18 +34,41 @@ final class AppWiringGuardTests: XCTestCase {
 
     // MARK: - 版本号（安全审计 P2-15 的 iOS 部分）
 
-    func testVersionIs111Build16ForBothConfigurations() throws {
+    /// Debug / Release 的版本号必须**两处一致**，而且不能退回到已经发过的旧版本。
+    ///
+    /// 这里原来硬编码 `0.11.1` / `16`：版本号一升，这条守卫就红，而它守的其实不是「某个具体数字」，
+    /// 而是「两个 configuration 一致 + 没退回旧版本」。改成读出来比较，版本归版本负责人，
+    /// 守卫只盯它真正关心的事（`MARKETING_VERSION` 由工程文件负责人维护，本测试不改工程）。
+    func testVersionIsConsistentForBothConfigurations() throws {
         let text = try source("MyFriend.xcodeproj/project.pbxproj")
-        XCTAssertEqual(
-            text.components(separatedBy: "MARKETING_VERSION = 0.11.1;").count - 1, 2,
-            "Debug / Release 两处都要是 0.11.1"
+        let marketing = Self.values(of: "MARKETING_VERSION", in: text)
+        let builds = Self.values(of: "CURRENT_PROJECT_VERSION", in: text)
+        // 「至少 Debug / Release 两处」：工程里新增 target 时（0.12 加了 iOS 测试 target）
+        // 这条守卫不该红，它守的是「两两一致 + 不回退」。
+        XCTAssertGreaterThanOrEqual(marketing.count, 2, "Debug / Release 两处都要有 MARKETING_VERSION")
+        XCTAssertGreaterThanOrEqual(builds.count, 2, "Debug / Release 两处都要有 CURRENT_PROJECT_VERSION")
+        XCTAssertEqual(Set(marketing).count, 1, "两处版本号必须一致：\(marketing)")
+        XCTAssertEqual(Set(builds).count, 1, "两处 build 号必须一致：\(builds)")
+
+        // 0.11.0 / 15 是已经发出去的版本：不允许回退（新版本号由发布流程决定）。
+        XCTAssertFalse(marketing.contains("0.11.0"), "不能退回 0.11.0")
+        XCTAssertFalse(builds.contains("15"), "不能退回 build 15")
+        let version = try XCTUnwrap(marketing.first)
+        XCTAssertTrue(
+            version.compare("0.11.1", options: .numeric) != .orderedAscending,
+            "版本号不该低于 0.11.1（当前 \(version)）"
         )
-        XCTAssertEqual(
-            text.components(separatedBy: "CURRENT_PROJECT_VERSION = 16;").count - 1, 2,
-            "Debug / Release 两处都要是 16"
-        )
-        XCTAssertFalse(text.contains("MARKETING_VERSION = 0.11.0;"))
-        XCTAssertFalse(text.contains("CURRENT_PROJECT_VERSION = 15;"))
+    }
+
+    /// 抓出工程文件里某个设置的所有取值。
+    private static func values(of key: String, in text: String) -> [String] {
+        text.components(separatedBy: "\n").compactMap { line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(key) = ") else { return nil }
+            return trimmed
+                .dropFirst("\(key) = ".count)
+                .trimmingCharacters(in: CharacterSet(charactersIn: ";"))
+        }
     }
 
     // MARK: - P1-3：聊天页窗口感知外部删除
@@ -130,9 +153,34 @@ final class AppWiringGuardTests: XCTestCase {
         XCTAssertTrue(text.contains("pulseTask?.cancel()"), "取消要真的 cancel")
     }
 
-    func testFocusWindowHasACapConstant() throws {
-        let text = try source("MyFriendKit/Sources/MyFriendKit/Domain/MessagePaging.swift")
-        XCTAssertTrue(text.contains("maxFocusWindowMessages"), "定位窗口要有条数上限")
-        XCTAssertTrue(text.contains("cap: Int = maxFocusWindowMessages"), "window(reaching:) 默认带上限")
+    /// v11：定位改成「目标块 + 往前一块上下文」，上限从「条数」变成「块数」——
+    /// 但「不能一路读到最早」这条保护必须还在（纯逻辑在 `MessageBlocks`，有单测）。
+    func testBlockFocusHasACapConstant() throws {
+        let text = try source("MyFriendKit/Sources/MyFriendKit/Domain/MessageBlocks.swift")
+        XCTAssertTrue(text.contains("focusContextBlocks"), "块定位要有上下文块数上限")
+        XCTAssertTrue(text.contains("contextBlocks: Int = focusContextBlocks"), "focus 默认带上限")
+        XCTAssertTrue(text.contains("maxGapScan"), "块号空洞的扫描要有上限（块表被写坏时不能死循环）")
+    }
+
+    /// v11 的区块分页接线：首屏读最新一块、向上/向下各读一块，且界面真的用了它们。
+    func testChatViewModelUsesBlockPaging() throws {
+        let viewModel = try source("MyFriend/Views/Chat/ChatViewModel.swift")
+        XCTAssertTrue(viewModel.contains("blocksAround(sessionId: sessionId)"), "首屏要读最新一块")
+        XCTAssertTrue(viewModel.contains("olderBlockIndex("), "向上加载要按块号找上一块")
+        XCTAssertTrue(viewModel.contains("newerBlockIndex("), "向下加载要按块号找下一块")
+        XCTAssertTrue(viewModel.contains("func loadNewerMessages()"), "v11 新增向下加载")
+        XCTAssertFalse(viewModel.contains("countBefore("), "旧的游标分页判到底要删掉")
+
+        let screen = try source("MyFriend/Views/Chat/ChatScreen.swift")
+        XCTAssertTrue(screen.contains("loadNewerRow"), "界面要有「下方还有更新的消息」提示行")
+        XCTAssertTrue(screen.contains("model.loadNewerMessages()"), "提示行要能触发向下加载")
+    }
+
+    /// 检索接线：逐块走完、没有候选上限。
+    func testSearchIsBlockWiseAndUncapped() throws {
+        let stores = try source("MyFriendKit/Sources/MyFriendKit/Data/Stores.swift")
+        XCTAssertTrue(stores.contains("enumerateBlocks(personaId:"), "检索要逐块枚举")
+        XCTAssertFalse(stores.contains("maxSearchCandidates"), "500 条候选上限要删掉")
+        XCTAssertFalse(stores.contains("candidateLimit"), "候选上限参数要删掉")
     }
 }

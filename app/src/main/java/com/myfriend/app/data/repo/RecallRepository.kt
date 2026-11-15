@@ -293,14 +293,14 @@ class RecallRepository @Inject constructor(
         val hits = mutableListOf<RecallHit>()
         // 聊天记录的粗筛和检索页共用一份 SQL（见 MessageSearchSql）：人格过滤直接进 SQL，
         // 召回也从「一条 LIKE」升级成「原文 + 中文词元若干条 LIKE」。
-        val query = MessageSearchSql.candidateQuery(
+        val query = MessageSearchSql.recentCandidatesQuery(
             text = term,
             personaId = personaId,
             limit = SEARCH_LIMIT
         )
         if (query.sql.isNotEmpty()) {
             val rows = runCatching {
-                messageDao.searchCandidates(SimpleSQLiteQuery(query.sql, query.args.toTypedArray()))
+                messageDao.searchRecentCandidates(SimpleSQLiteQuery(query.sql, query.args.toTypedArray()))
             }.getOrDefault(emptyList())
             rows.asSequence()
                 .filter { it.personaId == personaId && it.content.isNotBlank() }

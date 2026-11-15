@@ -124,6 +124,13 @@ final class PersonaDeletionTests: XCTestCase {
         XCTAssertEqual(outcome.nextDefaultPersonaId, otherId)
         XCTAssertTrue(outcome.activePersonaWasDeleted)
 
+        // v11：他那些对话的块也要跟着清掉（message_blocks 不能留下孤儿行）。
+        XCTAssertEqual(try temp.stores.messageBlocks.blockCount(sessionId: "s-1"), 0,
+                       "他的会话块必须清掉")
+        XCTAssertEqual(try temp.stores.messageBlocks.blockCount(sessionId: "s-2"), 1,
+                       "别人的块一行都不该动")
+        XCTAssertTrue(try temp.stores.messageBlocks.inconsistencies().isEmpty)
+
         // 别人的东西一样都没动。
         XCTAssertEqual(try temp.stores.messages.bySession("s-2").count, 1)
         XCTAssertEqual(try temp.stores.memories.byPersona(otherId).count, 1)

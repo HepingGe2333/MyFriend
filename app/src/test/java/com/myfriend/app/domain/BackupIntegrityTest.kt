@@ -167,8 +167,8 @@ class BackupIntegrityTest {
         val repo = source("src/main/java/com/myfriend/app/data/repo/BackupRepository.kt")
         val body = bodyOf(repo, "suspend fun importBundle(")
         val checkIndex = body.indexOf("BackupIntegrity.rejectionOf(bundle)")
-        // 注释里也会提到 database.withTransaction（「在 ... 之前」），所以找真正的赋值。
-        val transactionIndex = body.indexOf("val erasure = database.withTransaction")
+        // 注释里也会提到 database.withTransaction（「在 ... 之前」），所以找真正的调用。
+        val transactionIndex = body.indexOf("database.withTransaction {")
         assertTrue("importBundle 必须调用引用完整性闸", checkIndex >= 0)
         assertTrue("必须真的开事务写库", transactionIndex >= 0)
         assertTrue(

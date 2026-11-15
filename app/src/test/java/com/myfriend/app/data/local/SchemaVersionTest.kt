@@ -1,7 +1,9 @@
 package com.myfriend.app.data.local
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -140,6 +142,66 @@ class SchemaVersionTest {
             "这些迁移只在 MyFriendDatabase 里声明了，却没进 AppModule.addMigrations(...)，等于没写：$missing",
             missing.isEmpty()
         )
+    }
+
+    /**
+     * v11：区块分页的 schema 必须真的导出，而且列/主键/索引与规范一致。
+     *
+     * 规范 `spec/messages-blocks/README.md` §1 规定得很细（字段名、主键、两个索引），
+     * 少一个索引不会让功能「坏掉」，但会让「读一块」退化成扫一段历史——这种退化没有报错，
+     * 只有在长会话里才感觉得到，所以只能靠这里钉住。
+     */
+    @Test
+    fun `v11 的 schema 里区块列与区块表都在`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "11.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+
+        val messages = entities.first { it["tableName"]!!.jsonPrimitive.content == "messages" }
+        val messageFields = messages["fields"]!!.jsonArray.map { it.jsonObject }
+        val blockIndex = messageFields.firstOrNull { it["columnName"]!!.jsonPrimitive.content == "blockIndex" }
+            ?: error("v11 的 messages 里没有 blockIndex 列")
+        assertEquals("blockIndex 必须是 INTEGER", "INTEGER", blockIndex["affinity"]!!.jsonPrimitive.content)
+        assertEquals("blockIndex 必须 NOT NULL", true, blockIndex["notNull"]!!.jsonPrimitive.boolean)
+        assertEquals("blockIndex 默认值必须是 0", "0", blockIndex["defaultValue"]!!.jsonPrimitive.content)
+
+        val blocks = entities.first { it["tableName"]!!.jsonPrimitive.content == "message_blocks" }
+        val blockFields = blocks["fields"]!!.jsonArray.map { it.jsonObject["columnName"]!!.jsonPrimitive.content }
+        assertEquals(
+            "message_blocks 的列必须与规范 §1 完全一致",
+            listOf("sessionId", "blockIndex", "firstMessageId", "lastMessageId", "firstCreatedAt", "lastCreatedAt", "messageCount"),
+            blockFields
+        )
+        val primaryKey = blocks["primaryKey"]!!.jsonObject["columnNames"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals("主键必须是 (sessionId, blockIndex)", listOf("sessionId", "blockIndex"), primaryKey)
+
+        val blockIndices = blocks["indices"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertTrue(
+            "message_blocks(sessionId, blockIndex) 索引必须在：$blockIndices",
+            "index_message_blocks_sessionId_blockIndex" in blockIndices
+        )
+        val messageIndices = messages["indices"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertTrue(
+            "messages(sessionId, blockIndex, createdAt) 索引必须在：$messageIndices",
+            "index_messages_sessionId_blockIndex_createdAt" in messageIndices
+        )
+    }
+
+    @Test
+    fun `MIGRATION_10_11 走的是 MessageBlockMigration 且注册进了 Room`() {
+        val text = databaseSource.readText()
+        assertTrue(
+            "迁移实现应当收在 MessageBlockMigration（规则与 MessageBlocks 同源）",
+            text.contains("MessageBlockMigration.migrate10To11(db)")
+        )
+        val migration = File(databaseSource.parentFile, "MessageBlockMigration.kt").readText()
+        assertTrue("回填规则必须引用 MessageBlocks.BLOCK_SIZE", migration.contains("MessageBlocks.BLOCK_SIZE"))
+        assertTrue("回填必须按 (createdAt, id) 排序", migration.contains("ORDER BY `createdAt` ASC, `id` ASC"))
+        assertTrue("最后要删孤儿块", migration.contains("DELETE FROM `message_blocks` WHERE `sessionId` NOT IN"))
+        assertTrue(
+            "迁移必须幂等：加列前先查 PRAGMA，建表用 IF NOT EXISTS",
+            migration.contains("PRAGMA table_info") && migration.contains("CREATE TABLE IF NOT EXISTS")
+        )
+        assertTrue("MIGRATION_10_11 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_10_11"))
     }
 
     // ---------------------------------------------------------------- 解析源码

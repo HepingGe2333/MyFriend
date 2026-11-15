@@ -22,7 +22,8 @@
 
 | 目录 | 内容 |
 | --- | --- |
-| [spec/agent-core/](../spec/agent-core/README.md) | 决策层的行为用例（睡眠、`defer_reply`、主动上限、心跳、记忆衰减、工具参数），两端测试共读 |
+| [spec/agent-core/](../spec/agent-core/README.md) | 决策层的行为用例（睡眠、`defer_reply`、主动上限、心跳、记忆衰减、工具参数），两端测试共读；实现是 `agentcore/` 的 Kotlin Multiplatform 代码，iOS 经 `AgentCoreKit` framework 复用 |
+| [spec/messages-blocks/](../spec/messages-blocks/README.md) | 历史按 200 条一块存储、区块分页与「无候选上限」检索的存储/遍历契约 |
 | [spec/search/](../spec/search/README.md) | 聊天检索的摘要/高亮与排序/过滤规则 |
 | [fixtures/backup/](../fixtures/backup/README.md) | 备份 JSON 的黄金样本（v1 只读、v2 契约），两端互读 |
 

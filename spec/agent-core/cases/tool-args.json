@@ -5,7 +5,7 @@
   "authority": "android",
   "authorityNote": "数值边界来自 docs/ROADMAP-1.9.md §四 与两端工具 schema；Android ToolArgClamp 是权威、两端已共用同一组常量。",
   "kotlin": {
-    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/ToolArgClamp.kt",
+    "file": "agentcore/src/commonMain/kotlin/com/myfriend/app/domain/ToolArgClamp.kt",
     "symbol": "ToolArgClamp.clampImportance / clampCount / clampDeferMinutes"
   },
   "swift": {

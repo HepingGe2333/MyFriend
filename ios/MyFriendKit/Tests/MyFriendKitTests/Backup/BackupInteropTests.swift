@@ -5,11 +5,12 @@ import XCTest
 /// 跨端备份的「硬要求」：Android 导出的备份 iOS 能读、iOS 导出的备份 Android 能读。
 ///
 /// 两端在 `fixtures/backup/` 里各放一份黄金样本：
-/// - `android-export-v1.json` / `ios-export-v1.json`：1.8 时的形状。1.9 **只读不写**，
-///   用来钉住「必须能读 v1 备份」（§八）；
-/// - `android-export-v2.json`：由 Android 的 `BackupFixtureTest` 生成，这里只读；
-///   它可能比 iOS 这一版晚到（另一端也在写），所以缺失时跳过而不是红掉；
-/// - `ios-export-v2.json`：由**这个测试**生成，Android 侧会读它。
+/// - `android-export-v1.json` / `ios-export-v1.json`：1.8 时的形状；
+/// - `android-export-v2.json` / `ios-export-v2.json`：1.9 时的形状。
+///   v1/v2 都是**只读输入**：永远不重写，用来钉住「必须能读旧备份」；
+/// - `android-export-v3.json`：Android 的 `BackupFixtureTest` 生成（v3，带两张图片的
+///   base64），这里只读；它可能比 iOS 这一版晚到，所以缺失时跳过而不是红掉；
+/// - `ios-export-v3.json`：由**这个测试**生成，Android 侧会读它。
 ///
 /// 谁改了备份格式而没改另一端，任何一边的测试都会当场变红。
 final class BackupInteropTests: XCTestCase {
@@ -49,8 +50,8 @@ final class BackupInteropTests: XCTestCase {
         let bundle = try decodeSuccess(raw, allowWarnings: true)
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        // 读进来统一按本机版本记：再导出就是 v2。
-        XCTAssertEqual(bundle.formatVersion, 2)
+        // 读进来统一按本机版本记：再导出就是 v3。
+        XCTAssertEqual(bundle.formatVersion, 3)
         XCTAssertEqual(bundle.appVersion, "1.7.0")
         XCTAssertEqual(bundle.exportedAt, 1_794_500_000_000)
         XCTAssertTrue(bundle.apiKeysOmitted)
@@ -94,20 +95,22 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertFalse(BackupCodec.containsSecretField(raw))
     }
 
-    /// v1 的样本读进来、再导出，必须是 v2 的形状（不再带着那串旧开关）。
-    func testV1ImportReExportsAsV2() throws {
+    /// v1 的样本读进来、再导出，必须是 v3 的形状（不再带着那串旧开关）。
+    func testV1ImportReExportsAsV3() throws {
         let raw = try fixtureText("android-export-v1.json")
         let bundle = try decodeSuccess(raw, allowWarnings: true)
         let reEncoded = try BackupCodec.encode(bundle)
 
-        XCTAssertTrue(reEncoded.contains("\"formatVersion\":2"))
+        XCTAssertTrue(reEncoded.contains("\"formatVersion\":3"))
+        // v1 没有 media：再导出时是一个空数组（这个键永远存在）。
+        XCTAssertTrue(reEncoded.contains("\"media\":[]"))
         for removed in ["replyPace", "memoryEnabled", "autoMemoryEnabled",
                         "memoryConsolidationEnabled", "webSearchScoringEnabled",
                         "proactiveDailyLimit", "monthlyBudgetMicroUsd",
                         "overBudgetChatOnly", "inputPriceUsdPerMillion",
                         "outputPriceUsdPerMillion", "harnessMode", "harnessUrl",
                         "harnessSyncPath"] {
-            XCTAssertFalse(reEncoded.contains("\"\(removed)\""), "v2 里不该再有 \(removed)")
+            XCTAssertFalse(reEncoded.contains("\"\(removed)\""), "v3 里不该再有 \(removed)")
         }
         // 再读一遍仍然稳定：解→编→解 幂等。
         let second = try decodeSuccess(reEncoded)
@@ -117,24 +120,26 @@ final class BackupInteropTests: XCTestCase {
     func testIOSV1FixtureStillDecodes() throws {
         let raw = try fixtureText("ios-export-v1.json")
         let bundle = try decodeSuccess(raw, allowWarnings: true)
-        XCTAssertEqual(bundle.formatVersion, 2)
+        XCTAssertEqual(bundle.formatVersion, 3)
         XCTAssertFalse(bundle.personas.isEmpty)
         XCTAssertFalse(bundle.messages.isEmpty)
     }
 
-    // MARK: - Android v2 → iOS（对方还没生成时跳过）
+    // MARK: - Android v2 → iOS（旧样本，只读；缺失时跳过）
 
     func testAndroidV2FixtureDecodesWhenPresent() throws {
         let url = try fixtureDirectory().appendingPathComponent("android-export-v2.json")
         guard FileManager.default.fileExists(atPath: url.path) else {
-            // 两端并行实现：Android 的 v2 样本可能晚到。缺它就跳过，报告里会写清楚。
-            throw XCTSkip("android-export-v2.json 还不存在（Android 端尚未生成 v2 黄金样本）")
+            throw XCTSkip("android-export-v2.json 还不存在（历史样本可以缺席）")
         }
         let raw = try String(contentsOf: url, encoding: .utf8)
-        let bundle = try decodeSuccess(raw)
+        // v2 备份在 v3 里会多一句「格式是 v2，已按 v3 尽力读出来」的警告：允许。
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 2)
+        // 读进来统一按本机版本记（v1/v2 的文件不会把 v2 一路传下去）。
+        XCTAssertEqual(bundle.formatVersion, 3)
+        XCTAssertTrue(bundle.media.isEmpty, "v2 备份里没有 media，读出来是空数组")
         XCTAssertFalse(bundle.personas.isEmpty, "v2 样本至少要有一个人格")
         XCTAssertFalse(BackupCodec.containsSecretField(raw))
 
@@ -171,6 +176,70 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertFalse(settings.themeMode.isEmpty)
     }
 
+    // MARK: - Android v3 → iOS：图片二进制真的能跨端解码
+
+    /// Android 的 v3 样本：`media` 里的两张图必须真的能解码、字节数与声明一致，
+    /// 而且头像 / 附件的裸文件名都能在 `media` 里找到对应条目（关联键对得上）。
+    func testAndroidV3FixtureDecodesWhenPresent() throws {
+        let url = try fixtureDirectory().appendingPathComponent("android-export-v3.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            // 两端并行实现：Android 的 v3 样本可能晚到。缺它就跳过，报告里会写清楚。
+            throw XCTSkip("android-export-v3.json 还不存在（Android 端尚未生成 v3 黄金样本）")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let bundle = try decodeSuccess(raw)
+
+        XCTAssertEqual(bundle.format, "myfriend.backup")
+        XCTAssertEqual(bundle.formatVersion, 3)
+        XCTAssertFalse(bundle.media.isEmpty, "v3 样本必须带 media")
+        XCTAssertFalse(BackupCodec.containsSecretField(raw))
+
+        // 每一条都真的能解出一张图：bytes 是声明值，也是 `data` 解出来的字节数。
+        var fileNames = Set<String>()
+        for media in bundle.media {
+            XCTAssertTrue(
+                ["PERSONA_AVATAR", "USER_AVATAR", "CHAT_IMAGE"].contains(media.kind),
+                "不认识的 kind：\(media.kind)"
+            )
+            XCTAssertTrue(
+                ["image/jpeg", "image/png", "image/webp"].contains(media.mime),
+                "不支持的 mime：\(media.mime)"
+            )
+            XCTAssertTrue(BackupMediaTransfer.isSafeFileName(media.fileName), media.fileName)
+            XCTAssertGreaterThan(media.bytes, 0)
+            XCTAssertLessThanOrEqual(media.bytes, 8 * 1024 * 1024)
+            let decoded = try XCTUnwrap(
+                BackupMediaTransfer.decode(media.data),
+                "base64 解不出来：\(media.fileName)"
+            )
+            XCTAssertEqual(decoded.count, media.bytes, "\(media.fileName) 的 bytes 与解出来的字节数不一致")
+            XCTAssertEqual(BackupMediaTransfer.mime(forFileName: media.fileName), media.mime)
+            fileNames.insert(media.fileName)
+        }
+
+        // 关联键：头像与附件里写的裸文件名，必须都能在 media 里找到。
+        for persona in bundle.personas {
+            guard let avatarUri = persona.avatarUri else { continue }
+            XCTAssertFalse(avatarUri.contains("/"), "v3 的头像只写裸文件名：\(avatarUri)")
+            XCTAssertTrue(fileNames.contains(avatarUri), "头像 \(avatarUri) 在 media 里找不到")
+        }
+        for preset in bundle.presets {
+            guard let avatarUri = preset.avatarUri else { continue }
+            XCTAssertFalse(avatarUri.contains("/"))
+            XCTAssertTrue(fileNames.contains(avatarUri), "预设头像 \(avatarUri) 在 media 里找不到")
+        }
+        for message in bundle.messages {
+            for attachment in AttachmentsCodec.decode(message.attachmentsJson) {
+                XCTAssertFalse(attachment.uri.contains("/"), "v3 的附件 uri 只写裸文件名：\(attachment.uri)")
+                XCTAssertTrue(fileNames.contains(attachment.uri), "附件 \(attachment.uri) 在 media 里找不到")
+            }
+        }
+
+        // 再读一遍仍然稳定：解→编→解 幂等（base64 不会被重新排版）。
+        let reEncoded = try BackupCodec.encode(bundle)
+        XCTAssertEqual(try decodeSuccess(reEncoded), bundle)
+    }
+
     // MARK: - 往返：decode → encode → decode 必须相等
 
     func testAndroidV1FixtureSurvivesRoundTrip() throws {
@@ -196,12 +265,13 @@ final class BackupInteropTests: XCTestCase {
         let decoded = try decodeSuccess(json)
         XCTAssertEqual(decoded, bundle)
         XCTAssertTrue(json.contains("\"format\":\"myfriend.backup\""))
-        XCTAssertTrue(json.contains("\"formatVersion\":2"))
+        XCTAssertTrue(json.contains("\"formatVersion\":3"))
         XCTAssertTrue(json.contains("\"apiKeysOmitted\":true"))
         XCTAssertFalse(json.contains("\"apiKey\""))
 
         let directory = try fixtureDirectory()
-        let target = directory.appendingPathComponent("ios-export-v2.json")
+        // v1/v2 的样本是**只读输入**，绝不重写；v3 只写这一个文件。
+        let target = directory.appendingPathComponent("ios-export-v3.json")
         try json.write(to: target, atomically: true, encoding: .utf8)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
@@ -212,7 +282,8 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertEqual(onDisk, json)
         let reloaded = try decodeSuccess(onDisk)
         XCTAssertEqual(reloaded, bundle)
-        XCTAssertEqual(reloaded.formatVersion, 2)
+        XCTAssertEqual(reloaded.formatVersion, 3)
+        XCTAssertEqual(reloaded.media.count, 2, "v3 样本带两张真图")
         XCTAssertFalse(reloaded.personas.isEmpty)
         XCTAssertFalse(reloaded.sessions.isEmpty)
 

@@ -34,7 +34,8 @@
     <string name="backup_section_title">带走与接回来</string>
     <string name="backup_intro_title">他不是一份数据，是一个陪你聊过很久的人。</string>
     <string name="backup_intro_body">把他带走，会把人格、你们聊过的每一句、他记得的事、他给自己定的规矩和能带走的设置，一起打包成一份 JSON。换手机、重装 App 之后，用下面的「从备份里接他回来」把他接回原处。</string>
-    <string name="backup_safety_body">备份里有你们的聊天和记忆，放在安全的地方。API Key 不在备份里——接回来以后，在这台手机上的「API 配置」里重新填一次就好。头像图片不随备份走，换手机后重新选一张就好。</string>
+    <string name="backup_safety_body">备份里有你们的聊天和记忆，放在安全的地方。API Key 不在备份里——接回来以后，在这台手机上的「API 配置」里重新填一次就好。头像和聊天图片会跟着备份一起走，换手机后不用再选一次。</string>
+    <string name="backup_media_limits">头像和聊天图片会一起装进备份：单张最多 %1$d MB、全部最多 %2$d MB；超过上限的图片留在原机上，备份文件本身最大 %3$d MB。</string>
     <string name="backup_export_row_title">把他带走</string>
     <string name="backup_export_row_desc">选一个位置，把这份 JSON 存起来</string>
     <string name="backup_import_row_title">从备份里接他回来</string>
@@ -229,7 +230,8 @@
     <string name="chat_typing">正在输入</string>
     <string name="chat_latest">最新</string>
     <string name="chat_load_earlier">上滑加载更早的消息</string>
-    <string name="chat_back_to_latest">下面还有更新的消息 · 回到最新</string>
+    <string name="chat_load_newer">下面还有更新的消息 · 点击加载</string>
+    <string name="chat_loading_newer">正在加载更新的消息…</string>
     <string name="chat_loading_earlier">正在加载更早的消息…</string>
     <string name="chat_stopped_status">已停止</string>
     <string name="chat_scroll_to_bottom">回到底部</string>
@@ -392,7 +394,7 @@
     <string name="search_error_title">这次没搜成</string>
     <string name="search_error_desc">读取本地记录时出了点问题。记录还在，重试一次就好。</string>
     <string name="search_retry">重试</string>
-    <string name="search_truncated">命中太多，只显示最近的 %1$d 条。</string>
+    <string name="search_scanned_all_history">已扫描全部历史，共 %1$d 条命中。</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -989,7 +991,7 @@
     <!-- 外观 -->
     <string name="settings_section_appearance">外观</string>
     <string name="settings_my_avatar">我的头像</string>
-    <string name="settings_my_avatar_desc">聊天里显示在你这边；图片不跟着备份走</string>
+    <string name="settings_my_avatar_desc">聊天里显示在你这边；换手机时也会跟着备份回来（单张最多 8 MB）</string>
     <string name="settings_restore_default">恢复默认</string>
     <string name="settings_theme_mode">主题模式</string>
     <string name="settings_theme_mode_desc">浅色、深色或跟随系统</string>
@@ -1339,6 +1341,16 @@
     <plurals name="backup_warn_attachments">
         <item quantity="other">有 %1$d 句话原本带着图片，图片没有跟着备份走，现在只剩文字</item>
     </plurals>
+    <!-- v3：图片二进制开始跟着备份走，超限与坏数据各有一句。 -->
+    <plurals name="backup_media_export_skipped">
+        <item quantity="other">有 %1$d 张图片没有随备份带走（超出上限）</item>
+    </plurals>
+    <plurals name="backup_media_import_skipped">
+        <item quantity="other">有 %1$d 张图片没接回来（文件损坏或格式不支持）</item>
+    </plurals>
+    <plurals name="backup_media_import_over_limit">
+        <item quantity="other">有 %1$d 张图片没有接回来（超出上限）</item>
+    </plurals>
     <plurals name="backup_warn_configs_missing_key">
         <item quantity="other">有 %1$d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好</item>
     </plurals>
@@ -1367,7 +1379,7 @@
     <string name="backup_fail_invalid_json">这个文件读不出来：不是一份有效的备份 JSON。</string>
     <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
     <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
-    <string name="backup_fail_too_large">这个文件太大了（超过 %1$dMB），不像是一份 MyFriend 备份。</string>
+    <string name="backup_fail_too_large">这个文件太大了（超过 %1$d MB），不像是一份 MyFriend 备份。带图片的备份会更大，但正常也不该到这个量级。</string>
     <!-- 0.11.1 审计 P1-2：结构不完整（消息找不到会话 / 会话找不到人格……）的备份整份拒绝。 -->
     <string name="backup_fail_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，写不回来。为了不覆盖你手机上的他，这次导入已取消。</string>
     <string name="backup_warn_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，导入会被拒绝</string>

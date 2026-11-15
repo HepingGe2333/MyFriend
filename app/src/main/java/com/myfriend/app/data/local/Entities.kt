@@ -173,7 +173,10 @@ data class ChatSessionEntity(
     indices = [
         Index(value = ["sessionId", "createdAt"]),
         Index(value = ["sessionId", "role"]),
-        Index(value = ["createdAt"])
+        Index(value = ["createdAt"]),
+        // v11 区块分页：`WHERE sessionId = ? AND blockIndex = ? ORDER BY createdAt, id` 的覆盖索引，
+        // 让「读一块」与历史长度无关（规范 §3）。
+        Index(value = ["sessionId", "blockIndex", "createdAt"])
     ]
 )
 data class MessageEntity(
@@ -198,7 +201,16 @@ data class MessageEntity(
      * 已读不等于会回（见 defer_reply）：界面上只在「这一轮没有助手回复」时显示「已读」，
      * 免得每条消息都挂一个小字，那会像回执系统，而不像一个人。
      */
-    val readAt: Long? = null
+    val readAt: Long? = null,
+    /**
+     * 这条消息属于哪一块（v11，规范 §1）。
+     *
+     * 块 = 最多 [com.myfriend.app.domain.MessageBlocks.BLOCK_SIZE] 条的物理分页单位；
+     * 编号由 `MessageBlockWriter` 在**每一条写入路径**上维护，块表见 `MessageBlockEntity`。
+     * 默认值 0 让老库的 `ALTER TABLE` 不用回填两次，真正的回填由 `MIGRATION_10_11` 做。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val blockIndex: Int = 0
 )
 
 @Entity(tableName = "memories", indices = [Index(value = ["personaId"]), Index(value = ["personaId", "importance"]), Index(value = ["updatedAt"])])
@@ -396,9 +408,6 @@ data class MessageSearchRow(
     val createdAt: Long,
     val role: String
 )
-
-/** 检索命中的总条数（`COUNT(*) AS total` 的投影）。 */
-data class SearchCountRow(val total: Int)
 
 /**
  * 一次模型调用的 token 流水。

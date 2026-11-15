@@ -30,13 +30,19 @@
 # Android 单元测试 + 构建
 ./gradlew :app:testDebugUnitTest :app:assembleDebug
 
-# iOS 逻辑测试（macOS 上直接跑，不需要模拟器）
+# iOS：先构建共享决策层 framework（Kotlin Multiplatform，App 会链接它）
+ios/scripts/build-agentcore-framework.sh
+
+# iOS 逻辑测试（macOS 上直接跑，不需要模拟器，不链接该 framework）
 cd ios/MyFriendKit && swift test --disable-sandbox
 
 # iOS 应用构建
 cd ios && xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
+
+`AgentCoreKit` 是 `agentcore/` 的 Kotlin Multiplatform 产物（iOS App 的决策逻辑就是它）；framework 是构建产物、
+不进仓库，Xcode 工程里有一个 Run Script 会在缺失时自动构建。
 
 改到 agent 核心服务时，加跑 `./gradlew :agentd:test`（纯 JVM，不需要模拟器）。
 
@@ -115,7 +121,7 @@ MemoryRepository.getRelevant 之前读 getForPersona，
 2. **schema +1**：Room `@Database(version = N+1)`，iOS `Schema.version = N+1`（打开库时写入 `user_version`，两端数字仍需相等）；`app/schemas/<库名>/<N+1>.json` 由 KSP 自动导出，需要随 PR 提交。
 3. **写迁移**：Android 在 `MyFriendDatabase` 增加 `MIGRATION_N_(N+1)`；iOS 在 `Schema.swift` 的建表语句与 `migrateLegacyData`（补表 / 补列，必须幂等）里加对应逻辑；禁止使用 destructive fallback 或「删库重建」。
 4. **写迁移测试**：Android 在 `app/src/androidTest/.../MyFriendDatabaseMigrationTest.kt` 覆盖旧库打开后的表结构与数据；iOS 在 `ios/MyFriendKit/Tests/MyFriendKitTests/Data/SchemaMigrationTests.swift` 补迁移用例。迁移必须可重复执行（幂等）。
-5. **备份**：字段增删要判断是否影响 `BackupCodec`。影响则 `formatVersion` +1，两端 `BackupCodec.*` 一起改，并**重新生成** `fixtures/backup/android-export-v2.json` 与 `ios-export-v2.json`。v1 样本只作为输入，永不重写。
+5. **备份**：字段增删要判断是否影响 `BackupCodec`。影响则 `formatVersion` +1，两端 `BackupCodec.*` 一起改，并**重新生成** `fixtures/backup/android-export-v3.json` 与 `ios-export-v3.json`（当前版本；v1 / v2 样本只作为输入，永不重写）。
 6. **验证**：`BackupFixtureTest`（Android）与 `BackupInteropTests`（iOS）必须同时绿；再确认旧备份仍能读入。
 
 字段命名、枚举取值与默认值以 [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) 与两端 `BackupCodec` 为准；两端字段名必须逐字相同。

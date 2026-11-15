@@ -28,17 +28,20 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV10() throws {
-        XCTAssertEqual(Schema.version, 10)
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV11() throws {
+        XCTAssertEqual(Schema.version, 11, "v11 = 分块历史（messages.blockIndex + message_blocks）")
         XCTAssertEqual(Schema.tables.count, 13, "13 张记录型表")
         XCTAssertEqual(Schema.supplementaryTables.count, 2, "两张服务层用表")
-        XCTAssertEqual(Schema.allTables.count, 15, "与 Android Room v10 的 15 张业务表对齐")
+        XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
+        XCTAssertEqual(Schema.allTables.count, 16, "13 + 2 + message_blocks")
 
         let names = try stores.database.tableNames()
         for table in Schema.allTables {
             XCTAssertTrue(names.contains(table), "缺表：\(table)")
         }
-        XCTAssertEqual(try stores.database.userVersion(), 10)
+        // 规范点名要有的那张表（块分页与迁移都依赖它）。
+        XCTAssertTrue(names.contains("message_blocks"), "v11 必须建 message_blocks")
+        XCTAssertEqual(try stores.database.userVersion(), 11)
     }
 
     /// 建表语句的列顺序必须与实体映射的绑定顺序一致；
@@ -49,6 +52,7 @@ final class SQLiteStoreTests: XCTestCase {
             (ApiConfigEntity.tableName, ApiConfigEntity.columns),
             (ChatSessionEntity.tableName, ChatSessionEntity.columns),
             (MessageEntity.tableName, MessageEntity.columns),
+            (MessageBlockEntity.tableName, MessageBlockEntity.columns),
             (MemoryEntity.tableName, MemoryEntity.columns),
             (MemoryTermEntity.tableName, MemoryTermEntity.columns),
             (MemoryVectorEntity.tableName, MemoryVectorEntity.columns),
@@ -59,7 +63,7 @@ final class SQLiteStoreTests: XCTestCase {
             (AgentIntentEntity.tableName, AgentIntentEntity.columns),
             (ApiUsageEntity.tableName, ApiUsageEntity.columns)
         ]
-        XCTAssertEqual(Set(mappings.map(\.0)), Set(Schema.tables))
+        XCTAssertEqual(Set(mappings.map(\.0)), Set(Schema.tables + Schema.derivedTables))
 
         for (table, expectedColumns) in mappings {
             let statement = try stores.database.prepare("PRAGMA table_info(\(table))")
@@ -312,7 +316,7 @@ final class SQLiteStoreTests: XCTestCase {
 
         let reopened = try DatabaseStores.open(path: databaseURL.path)
         XCTAssertEqual(try reopened.memories.byId(memory.id), memory)
-        XCTAssertEqual(try reopened.database.userVersion(), 10)
+        XCTAssertEqual(try reopened.database.userVersion(), 11)
         stores = reopened
     }
 
@@ -322,7 +326,7 @@ final class SQLiteStoreTests: XCTestCase {
         try stores.memories.upsert(memory)
         try Schema.create(stores.database)
         XCTAssertEqual(try stores.memories.byId(memory.id), memory)
-        XCTAssertEqual(try stores.database.userVersion(), 10)
+        XCTAssertEqual(try stores.database.userVersion(), 11)
     }
 
     // MARK: - 样例

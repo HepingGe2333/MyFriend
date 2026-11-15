@@ -92,7 +92,7 @@
 
 ### 3. 记忆检索深度
 
-**中文倒排索引**：新表 `memory_terms(memoryId, term, weight)`，`index(term)`。[`ChineseTerms.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 纯 Kotlin：
+**中文倒排索引**：新表 `memory_terms(memoryId, term, weight)`，`index(term)`。[`ChineseTerms.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 纯 Kotlin：
 
 - 先归一化（全角转半角、小写、标点换空格），再**先删虚词再切字二元组**——「我养了猫」→「养猫」→ 养猫，避免三个词元全带虚词反而查不到「猫」；
 - 权重按同一段文本里的出现次数归一（出现最多的是 1.0），单个汉字权重 0.7；一条记忆最多 160 个词元、一次查询最多 24 个；
@@ -109,13 +109,13 @@
 
 **记忆结构化**：`memories` 多出 `tags`（≤5 个短词，JSON 数组）与 `happenedAt`（模型给「昨天 / 上周三 / 去年冬天」这类相对说法，用 `now` 换算成区间中点；算不出来就 null）。抽取器产出这两个字段，整理器的清单里看得见，`merge` 时要求保留（标签取各条的并集；发生时间取这批里按创建时间排第一的那条非空值）。
 
-**抽屉差异化衰减**（[`MemoryLifecycle.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt)）：`USER 0.55` / `SELF 0.8` / `EVENT 1.0`。USER 最慢，因为名字、忌口、家人这些事半年不提也不会变假；EVENT 是琐事，掉得快才合理。
+**抽屉差异化衰减**（[`MemoryLifecycle.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt)）：`USER 0.55` / `SELF 0.8` / `EVENT 1.0`。USER 最慢，因为名字、忌口、家人这些事半年不提也不会变假；EVENT 是琐事，掉得快才合理。
 
 **整理清单**从「最近 60 条」改成按抽屉各 30 条、总上限 90（[`MemoryConsolidator.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryConsolidator.kt)），让 USER 抽屉里的老事实不会被 EVENT 的琐事挤掉；某个抽屉不够 30 条时用剩下的按原顺序补满，总上限不变。
 
 ### 4. 回忆会被此刻的心情轻轻改写
 
-两个文件：[`domain/MemoryReconsolidation.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/MemoryReconsolidation.kt)（纯规则）与 [`data/repo/MemoryReconsolidator.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryReconsolidator.kt)（执行）。
+两个文件：[`domain/MemoryReconsolidation.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/MemoryReconsolidation.kt)（纯规则）与 [`data/repo/MemoryReconsolidator.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryReconsolidator.kt)（执行）。
 
 **什么时候做**：recall 之后由 `reconsiderAfterRecall()` 顺手触发，**不挡召回**（起在 app scope 里）。先摇骰子 34%，同一个人格两次之间至少隔 20 分钟；从这次真的被翻出来的记忆里随机挑 **1～2 条**，只挑够长（≥12 字）且没定型（`driftCount < 3`）的。
 
@@ -137,7 +137,7 @@ maxLengthRatio = 1.10 + 0.15×allowance；maxAddedChars = 14 + 46×allowance
 
 ### 5. 心情驱动行为
 
-[`MoodBehavior.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/MoodBehavior.kt) 把心情算成几个克制的数（不新建设置、不给滑杆）：
+[`MoodBehavior.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/MoodBehavior.kt) 把心情算成几个克制的数（不新建设置、不给滑杆）：
 
 | 心情 | tick 间隔乘数 | 每日主动上限 | 想上网 | 想分享 | 进聊天提示词的一句 |
 | --- | --- | --- | --- | --- | --- |
@@ -154,7 +154,7 @@ maxLengthRatio = 1.10 + 0.15×allowance；maxAddedChars = 14 + 46×allowance
 
 ### 6. 他此刻在做什么
 
-[`Presence.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Presence.kt) 是纯推导，先命中的赢：
+[`Presence.kt`](../../agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Presence.kt) 是纯推导，先命中的赢：
 
 | 优先级 | 状态 | 条件（窗口都是常量） |
 | --- | --- | --- |

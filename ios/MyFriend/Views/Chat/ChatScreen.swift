@@ -311,14 +311,14 @@ struct ChatScreen: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     Color.clear.frame(height: 1).id("chat-top")
-                    // 上滑到顶就取更早的一页（首屏 60 条，每次再 60 条）；加载中/到头了不显示。
+                    // 上滑到顶就取更早的一块（v11：一页 = 一块，最多 BLOCK_SIZE=200 条）；加载中/到头了不显示。
                     if model.hasMoreHistory || model.isLoadingEarlier {
                         loadEarlierRow
                             // id 带上已加载条数：这一页插进来之后视图会重建、`onAppear` 再触发一次，
                             // 于是「停在顶部」时能一页页接着取到最早，而不是卡在 120 条。
                             .id("chat-load-earlier-\(model.messages.count)")
                             // 只有「用户在往上翻」时才自动取：冷启动时列表在自动滚到底之前
-                            // 会短暂停在顶部，若这里无条件触发，一进来就白白多读 60 条。
+                            // 会短暂停在顶部，若这里无条件触发，一进来就白白多读一块。
                             .onAppear {
                                 if !autoFollow { model.loadEarlierMessages() }
                             }
@@ -361,6 +361,16 @@ struct ChatScreen: View {
                             )
                             .id(message.id)
                         }
+                    }
+                    // 往下滚到底就取**下一块**（v11 新增的向下加载）：不在最新位置时，
+                    // 以前只能「回到最新」，现在可以按块往下走，块与块之间没有空隙。
+                    if model.hasMoreNewer || model.isLoadingNewer {
+                        loadNewerRow
+                            .id("chat-load-newer-\(model.messages.count)")
+                            // 出现在屏幕里就说明用户已经翻到已加载窗口的底部：直接取下一块。
+                            // `isLoadingNewer` / `hasMoreNewer` 在 ViewModel 里挡住重复触发。
+                            .onAppear { model.loadNewerMessages() }
+                            .onTapGesture { model.loadNewerMessages() }
                     }
                     if model.isGenerating {
                         ChatStreamingBubble(
@@ -419,6 +429,21 @@ struct ChatScreen: View {
                     }
                 }
             }
+            // 分页验收（v11 的**向下加载**）：`simctl` 不能滑动，用它把列表滚到底，
+            // 露出「下方还有更新的消息」那一行并触发下一块（配合搜索结果定位到老消息使用）。
+            .onAppear {
+                guard ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_CHAT_DOWN"] == "1" else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    autoFollow = false   // 模拟「用户在翻历史」
+                    for _ in 0..<4 {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            proxy.scrollTo(bottomAnchor, anchor: .bottom)
+                        }
+                        try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    }
+                }
+            }
             #endif
         }
     }
@@ -428,6 +453,9 @@ struct ChatScreen: View {
         if !autoFollow && !model.messages.isEmpty {
             Button {
                 autoFollow = true
+                // 窗口不在最新块时，「回到最新」要先把下面的块取回来，否则只是滚到
+                // 「下方还有更新的消息」那一行就停住（v11 的向下加载）。
+                if model.hasMoreNewer { model.loadNewerMessages() }
                 scrollToBottom(proxy, animated: true)
             } label: {
                 HStack(spacing: 4) {
@@ -513,6 +541,23 @@ struct ChatScreen: View {
             } else {
                 Image(systemName: "arrow.up.circle")
                 Text(L("加载更早"))
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+    }
+
+    /// 列表底部的「下方还有更新的消息」：既是状态（转圈），也是触发器（滚到它就会取下一块）。
+    private var loadNewerRow: some View {
+        HStack(spacing: 6) {
+            if model.isLoadingNewer {
+                ProgressView().controlSize(.mini)
+                Text(L("正在加载更新的消息…"))
+            } else {
+                Image(systemName: "arrow.down.circle")
+                Text(L("下方还有更新的消息，点这里加载"))
             }
         }
         .font(.caption2)

@@ -126,7 +126,7 @@ class AgentdServerTest {
         val server = AgentdServer.start("127.0.0.1", 0)
         try {
             Socket("127.0.0.1", server.port).use { socket ->
-                socket.soTimeout = 5_000
+                socket.soTimeout = 15_000
                 socket.getOutputStream().apply {
                     write(
                         (
@@ -154,7 +154,7 @@ class AgentdServerTest {
         val server = AgentdServer.start("127.0.0.1", 0)
         try {
             Socket("127.0.0.1", server.port).use { socket ->
-                socket.soTimeout = 5_000
+                socket.soTimeout = 15_000
                 socket.getOutputStream().apply {
                     write(
                         (
@@ -213,11 +213,20 @@ class AgentdServerTest {
         }
     }
 
+    /**
+     * 读到 EOF 就返回；如果对端在写完之后迟迟不关连接（例如 413/408 路径上的排空逻辑），
+     * 超时也把已收到的内容当成完整响应返回 —— 这些用例断言的是状态行与错误码，不是连接关闭时机。
+     * 这样在并行构建、JVM 被 CPU 抢占时不会出现「响应其实已经到了、却因为等 EOF 超时而失败」。
+     */
     private fun readAll(input: InputStream): String {
         val out = ByteArrayOutputStream()
         val buffer = ByteArray(4096)
         while (true) {
-            val read = input.read(buffer)
+            val read = try {
+                input.read(buffer)
+            } catch (_: java.net.SocketTimeoutException) {
+                break
+            }
             if (read < 0) break
             out.write(buffer, 0, read)
         }

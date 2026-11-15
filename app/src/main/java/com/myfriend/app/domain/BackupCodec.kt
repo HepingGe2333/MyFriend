@@ -49,13 +49,19 @@ import java.util.Locale
  * 2. **读坏数据不许崩**。[decode] 永远返回 [BackupDecodeResult]，缺字段用默认值、未知字段忽略、
  *    坏条目跳过并记一条中文警告；版本比本机高时明确拒绝，而不是半懂不懂地写库。
  *
+ * v3（0.12）起，头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
+ * 每条是一张图（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）+ 标准 base64。
+ * `personas.avatarUri` / `presets.avatarUri` 仍写裸文件名，`messages.attachmentsJson`
+ * 也只写裸文件名（绝不写设备路径）；导入时用 `media[].fileName` 把引用接回**新的**本机文件。
+ * 上限（[BackupMediaLimits]）：单张 8 MiB、总量 128 MiB；超出的图片不带走并记 warning。
+ *
  * 结构上的取舍：
- * - 附件二进制不导（`attachmentsJson` 里的 uri 换机就失效），导入后这些消息只保留文字；
  * - `agentTicks` / `apiUsage` / `personaRevisions` 不导：那是过程流水，不是「他」；
  * - 设置只导能带走的（外观、常驻后台、正在聊的人）；1.9 起节奏、记忆开关、额度都从产品里删了；
- *   聊天背景图片是设备上的路径，不导。
+ *   聊天背景图片是设备上的路径，不导；
+ * - 孤儿图片文件不导：只收集本机当前还引用得到的头像与聊天图片。
  */
-const val BACKUP_FORMAT_VERSION: Int = 2
+const val BACKUP_FORMAT_VERSION: Int = 3
 
 /** 写在文件里的格式标记：拿错文件时能早点说「这不是他的备份」。 */
 const val BACKUP_FORMAT_NAME: String = "myfriend.backup"
@@ -77,6 +83,11 @@ data class BackupBundle(
     val memories: List<BackupMemory> = emptyList(),
     val sessions: List<BackupSession> = emptyList(),
     val messages: List<BackupMessage> = emptyList(),
+    /**
+     * 图片二进制（v3）。没有图片时是空数组，不是 null：老版本读新备份会当成未知字段忽略，
+     * 新版本读老备份则拿到空列表，行为与 v2 完全一致。
+     */
+    val media: List<BackupMedia> = emptyList(),
     val presets: List<BackupPreset> = emptyList(),
     val proactiveRules: List<BackupProactiveRule> = emptyList(),
     /** 他「想在某个时间段找你」的念头；过期就作废，属于可选内容。 */
@@ -208,7 +219,7 @@ data class BackupSession(
  * 一句话。
  *
  * [toolTraceJson] 原样带走（「他当时查了两个网页」这种痕迹也是相处的一部分）；
- * [attachmentsJson] 只留元数据，图片本体不导——换机后 uri 已经指不到东西了。
+ * [attachmentsJson] 只写裸文件名（v3）：图片本体在 `media` 里，导入时按文件名重建本机路径。
  */
 @Serializable
 data class BackupMessage(
@@ -227,6 +238,27 @@ data class BackupMessage(
     val toolTraceJson: String? = null,
     /** 模型看到这条用户消息的时刻；1.9 新增，可空。 */
     val readAt: Long? = null
+)
+
+/**
+ * 一张图片的二进制（v3）。
+ *
+ * [fileName] 是**源文件名**，也是它和 `personas.avatarUri` / `messages.attachmentsJson`
+ * 之间的关联键；导入时**不会**用它拼路径，落盘一律换成新的 UUID 文件名。
+ * [bytes] 是 [data] 解码后的字节数，用来在解码前挡住「声称很小、实际很大」的坏数据。
+ */
+@Serializable
+data class BackupMedia(
+    val id: String = "",
+    /** `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`（大小写敏感）。 */
+    val kind: String = "",
+    val personaId: String? = null,
+    /** 裸文件名（不含目录、不含 scheme）。 */
+    val fileName: String = "",
+    val mime: String = "image/jpeg",
+    val bytes: Int = 0,
+    /** 标准 base64（带 padding、不换行）。 */
+    val data: String = ""
 )
 
 @Serializable
@@ -347,7 +379,9 @@ sealed interface BackupDecodeResult {
     /** 读懂了。[warnings] 是结构化的「有东西没读出来 / 有东西带不回来」，由 UI 翻成句子。 */
     data class Success(
         val bundle: BackupBundle,
-        val warnings: List<BackupWarning> = emptyList()
+        val warnings: List<BackupWarning> = emptyList(),
+        /** v3 媒体段的提醒（坏条目 / 整段读不出来）；导入/预览都会带上。 */
+        val mediaWarnings: List<BackupMediaWarning> = emptyList()
     ) : BackupDecodeResult
 
     /** 读不懂：[reason] 是结构化原因，由 UI 翻成句子。 */
@@ -438,8 +472,8 @@ object BackupCodec {
         if (raw.isNullOrBlank()) return BackupDecodeResult.Failure(BackupFailure.EmptyFile)
         // 安全 P2-3：解析前再兜一次大小。读文件的闸（BoundedTextRead）挡的是 OOM 主路径，
         // 这里挡的是「别的调用方把一份超大字符串直接塞进来」（调试面板、将来的 CLI/同步）。
-        if (BackupLimits.isTooManyChars(raw.length)) {
-            return BackupDecodeResult.Failure(BackupFailure.TooLarge(BackupLimits.MAX_BACKUP_BYTES))
+        if (BackupMediaLimits.isTooManyChars(raw.length)) {
+            return BackupDecodeResult.Failure(BackupFailure.TooLarge(BackupMediaLimits.MAX_BACKUP_BYTES))
         }
 
         val root = runCatching { readJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
@@ -480,6 +514,9 @@ object BackupCodec {
         val configs =
             decodeList(root, "apiConfigs", BackupSection.API_CONFIG, warnings, BackupApiConfig.serializer()) { it.id }
 
+        val mediaWarnings = mutableListOf<BackupMediaWarning>()
+        val media = decodeMedia(root, mediaWarnings)
+
         val settings = root["settings"]?.takeIf { it !is JsonNull }?.let { element ->
             runCatching { readJson.decodeFromJsonElement(BackupSettings.serializer(), element) }
                 .getOrElse {
@@ -498,6 +535,7 @@ object BackupCodec {
             memories = memories,
             sessions = sessions,
             messages = messages,
+            media = media,
             presets = presets,
             proactiveRules = rules,
             agentIntents = intents,
@@ -509,7 +547,40 @@ object BackupCodec {
         if (BackupPreview.from(bundle).isEmpty) {
             warnings += BackupWarning.NoContent
         }
-        return BackupDecodeResult.Success(bundle, warnings)
+        return BackupDecodeResult.Success(bundle, warnings, mediaWarnings.toList())
+    }
+
+    /**
+     * v3 媒体段的宽容解码。
+     *
+     * 与 [decodeList] 同样的「能救几条是几条」：整段不是数组、某几条读不动都只记一条
+     * 媒体提醒，不让整份备份失败。注意这里**不按 id 过滤**：`media[].id` 只是给排查用的，
+     * 关联靠 `kind + fileName`，没有 id 的条目照样可以恢复图片。
+     */
+    private fun decodeMedia(
+        root: JsonObject,
+        mediaWarnings: MutableList<BackupMediaWarning>
+    ): List<BackupMedia> {
+        val element = root["media"] ?: return emptyList()
+        if (element is JsonNull) return emptyList()
+        val array = element as? JsonArray ?: run {
+            mediaWarnings += BackupMediaWarning.ImportSkipped(1)
+            return emptyList()
+        }
+        if (array.isEmpty()) return emptyList()
+        val decoded: List<BackupMedia> = runCatching {
+            readJson.decodeFromJsonElement(ListSerializer(BackupMedia.serializer()), array)
+        }.getOrElse {
+            var dropped = 0
+            val kept = array.mapNotNull { item ->
+                runCatching { readJson.decodeFromJsonElement(BackupMedia.serializer(), item) }
+                    .onFailure { dropped++ }
+                    .getOrNull()
+            }
+            if (dropped > 0) mediaWarnings += BackupMediaWarning.ImportSkipped(dropped)
+            kept
+        }
+        return decoded
     }
 
     /**
@@ -737,7 +808,15 @@ fun BackupSession.toEntity(): ChatSessionEntity = ChatSessionEntity(
     extractionEveryOverride = extractionEveryOverride?.coerceIn(3, 12)
 )
 
-fun MessageEntity.toBackupMessage(): BackupMessage = BackupMessage(
+/**
+ * 消息 → 备份。
+ *
+ * [chatImageFileNames] 是这次真的装进 `media` 的聊天图片文件名集合：只有它们会被写进
+ * `attachmentsJson`（裸文件名）。没有对应媒体的附件直接不写——换台手机它也恢复不出来。
+ */
+fun MessageEntity.toBackupMessage(
+    chatImageFileNames: Set<String> = emptySet()
+): BackupMessage = BackupMessage(
     id = id,
     sessionId = sessionId,
     personaId = personaId,
@@ -749,15 +828,16 @@ fun MessageEntity.toBackupMessage(): BackupMessage = BackupMessage(
     errorMessage = errorMessage,
     model = model,
     edited = edited,
-    attachmentsJson = attachmentsJson,
+    attachmentsJson = BackupAttachmentsPortable.portable(attachmentsJson, chatImageFileNames),
     toolTraceJson = toolTraceJson,
     readAt = readAt
 )
 
 /**
- * 消息接回来：`toolTraceJson` 保留（他当时做过什么），`attachmentsJson` 丢掉。
+ * 消息接回来：`toolTraceJson` 保留（他当时做过什么），`attachmentsJson` 默认丢掉。
  *
- * 图片本体不在备份里，那个 uri 在这台手机上指向空气；留着反而会让气泡显示一个破图。
+ * v3 由 `BackupRepository` 先用 `media` 重建附件、再 `copy(attachmentsJson = …)`；
+ * 这里保持「默认没有附件」，让「没有媒体可恢复」的旧备份仍然只留文字。
  */
 fun BackupMessage.toEntity(): MessageEntity = MessageEntity(
     id = id,

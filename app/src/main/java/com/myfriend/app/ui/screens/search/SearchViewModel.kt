@@ -9,6 +9,7 @@ import com.myfriend.app.data.repo.SEARCH_PAGE_SIZE
 import com.myfriend.app.data.repo.SearchHit
 import com.myfriend.app.data.repo.SearchQuery
 import com.myfriend.app.data.repo.SessionSearchHit
+import com.myfriend.app.domain.BlockSearch
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -60,11 +61,16 @@ data class SearchUiState(
     val timeFilter: SearchTimeFilter = SearchTimeFilter.ALL,
     val hits: List<SearchHit> = emptyList(),
     val sessions: List<SessionSearchHit> = emptyList(),
-    /** 命中总数（SQL 统计；可能大于已加载条数）。 */
+    /** 命中总数（逐块扫描时数出来的**全部**命中，没有候选上限）。 */
     val total: Int = 0,
     val hasMore: Boolean = false,
-    /** 命中数超过候选池上限：更早的命中不会出现在结果里（界面会说明）。 */
-    val truncated: Boolean = false,
+    /**
+     * 下一页的键集游标（`(matchedTermCount, relevance, createdAt, id)`）。
+     *
+     * 0.12 起翻页不用 offset：这样「翻页期间新增消息」既不会让结果重复，
+     * 也不会因为中间插了一条就让后面整页错位。
+     */
+    val nextCursor: BlockSearch.Cursor? = null,
     val loading: Boolean = false,
     val loadingMore: Boolean = false,
     val failed: Boolean = false,
@@ -79,6 +85,10 @@ data class SearchUiState(
             SearchTab.MESSAGES -> hits.isNotEmpty()
             SearchTab.SESSIONS -> sessions.isNotEmpty()
         }
+
+    /** 真的翻到最后一页了（界面据此说明「已扫描全部历史」，而不是「只显示最近 N 条」）。 */
+    val scannedAllHistory: Boolean
+        get() = tab == SearchTab.MESSAGES && searched && !hasMore && !loading && hits.isNotEmpty()
 }
 
 /**
@@ -162,7 +172,7 @@ class SearchViewModel @Inject constructor(
             _state.update {
                 it.copy(
                     hits = emptyList(), sessions = emptyList(), total = 0, hasMore = false,
-                    truncated = false, loading = false, loadingMore = false, failed = false,
+                    nextCursor = null, loading = false, loadingMore = false, failed = false,
                     searched = false
                 )
             }
@@ -187,7 +197,7 @@ class SearchViewModel @Inject constructor(
                 personaId = personaId,
                 since = since,
                 limit = SEARCH_PAGE_SIZE,
-                offset = 0
+                cursor = null
             )
         )
         result.fold(
@@ -198,7 +208,7 @@ class SearchViewModel @Inject constructor(
                         sessions = emptyList(),
                         total = page.total,
                         hasMore = page.hasMore,
-                        truncated = page.truncated,
+                        nextCursor = page.nextCursor,
                         loading = false,
                         loadingMore = false,
                         failed = false,
@@ -210,7 +220,7 @@ class SearchViewModel @Inject constructor(
                 _state.update {
                     it.copy(
                         hits = emptyList(), sessions = emptyList(), total = 0, hasMore = false,
-                        truncated = false, loading = false, loadingMore = false, failed = true, searched = true
+                        nextCursor = null, loading = false, loadingMore = false, failed = true, searched = true
                     )
                 }
             }
@@ -227,7 +237,7 @@ class SearchViewModel @Inject constructor(
                             hits = emptyList(),
                             total = sessions.size,
                             hasMore = false,
-                            truncated = false,
+                            nextCursor = null,
                             loading = false,
                             loadingMore = false,
                             failed = false,
@@ -239,7 +249,7 @@ class SearchViewModel @Inject constructor(
                     _state.update {
                         it.copy(
                             sessions = emptyList(), hits = emptyList(), total = 0, hasMore = false,
-                            truncated = false, loading = false, loadingMore = false, failed = true, searched = true
+                            nextCursor = null, loading = false, loadingMore = false, failed = true, searched = true
                         )
                     }
                 }
@@ -247,10 +257,13 @@ class SearchViewModel @Inject constructor(
     }
 
     /**
-     * 滚到底：追加下一页（每页 [SEARCH_PAGE_SIZE] 条）。
+     * 滚到底：追加下一页（每页 [SEARCH_PAGE_SIZE] 条，**键集游标**翻页）。
      *
      * 是否真的发查询由状态位决定（没有更多 / 正在加载 / 正在首次加载 / 不在消息分段都直接返回），
      * 所以界面可以放心地在每次滚动回调里调用它。
+     *
+     * 没有 offset、也没有候选上限：下一页会重新走一遍块，只收「严格排在游标之后」的行，
+     * 所以结果集完整、不重复，翻页途中来了新消息也不会打乱顺序。
      */
     fun loadMore() {
         val snapshot = _state.value
@@ -258,6 +271,7 @@ class SearchViewModel @Inject constructor(
         if (!snapshot.hasMore || snapshot.tab != SearchTab.MESSAGES) return
         val text = snapshot.query.trim()
         if (text.isEmpty()) return
+        val cursor = snapshot.nextCursor ?: return
         _state.update { it.copy(loadingMore = true) }
         moreJob = viewModelScope.launch {
             val since = snapshot.timeFilter.since(System.currentTimeMillis())
@@ -267,7 +281,7 @@ class SearchViewModel @Inject constructor(
                     personaId = snapshot.personaId,
                     since = since,
                     limit = SEARCH_PAGE_SIZE,
-                    offset = snapshot.hits.size
+                    cursor = cursor
                 )
             )
             result.fold(
@@ -281,7 +295,7 @@ class SearchViewModel @Inject constructor(
                                 hits = state.hits + page.hits.filterNot { hit -> state.hits.any { it.messageId == hit.messageId } },
                                 total = page.total,
                                 hasMore = page.hasMore,
-                                truncated = page.truncated,
+                                nextCursor = page.nextCursor,
                                 loadingMore = false
                             )
                         }

@@ -24,10 +24,14 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var presence = Presence()
     /// 首屏读完之前不画空会话引导，免得「先闪一下空状态再出现历史」。
     @Published private(set) var loaded = false
-    /// 窗口前面还有没有更早的消息（聊天页的「加载更早」）。
+    /// 已加载的窗口上面还有没有更早的一块（聊天页的「加载更早」）。
     @Published private(set) var hasMoreHistory = false
-    /// 正在取更早的一页：加载中不重复触发（滚到顶部时 `onAppear` 会反复喊）。
+    /// 已加载的窗口下面还有没有更新的一块（滚到底时加载下一块，v11 新增的向下加载）。
+    @Published private(set) var hasMoreNewer = false
+    /// 正在取更早的一块：加载中不重复触发（滚到顶部时 `onAppear` 会反复喊）。
     @Published private(set) var isLoadingEarlier = false
+    /// 正在取更新的一块（同上，滚到底会连喊几次）。
+    @Published private(set) var isLoadingNewer = false
     /// 有没有可用的 API 配置：没有就禁用输入栏并提示去设置。
     @Published private(set) var hasApiConfig = false
 
@@ -65,10 +69,7 @@ final class ChatViewModel: ObservableObject {
     /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
     @Published private(set) var lastNoReply: ChatNoReplyReason?
 
-    // MARK: - 分页
-
-    /// 首屏与每一页的条数。语义与 Android 侧的窗口化一致（见 `MessagePaging`）。
-    static let pageSize = MessagePaging.pageSize
+    // MARK: - 分页（v11：一页 = 一块，规范 `spec/messages-blocks/README.md` §3）
 
     // MARK: - 内部
 
@@ -76,6 +77,11 @@ final class ChatViewModel: ObservableObject {
     /// 这张会话在库里一共多少条（不是窗口里多少条）：用来判断「有没有新消息进来」。
     private var totalMessageCount = 0
     private var sessionId = ""
+    /// 窗口里已经加载了哪几块（闭区间；块号可能因为删空而有空洞）。
+    ///
+    /// 区块分页只认块号：「上面还有没有」= 比 `lowerBound` 更旧的块存不存在，
+    /// 「下面还有没有」= 比 `upperBound` 更新的块存不存在。不靠偏移量、也不数条数。
+    private var loadedBlockRange: ClosedRange<Int>?
     private var generationTask: Task<Void, Never>?
     /// 「他此刻」/ 心情的重算（30 秒一拍，只在页面可见且 App 在前台时跑）。
     private var pulseTask: Task<Void, Never>?
@@ -163,7 +169,7 @@ final class ChatViewModel: ObservableObject {
             persona = ((try? env.stores.personas.byId(personaId)) ?? nil) ?? persona
         }
 
-        // **窗口化**：只读最近一屏（首屏 60 条；已经上滑加载过的页也保住，不把人拽回顶上）。
+        // **区块化窗口**：首屏只读最新一块，已经上滑/下滑加载过的块也保住，不把人拽回顶上。
         // `messages.bySession` 是整段全量读取，长会话下是这一页最大的一块内存。
         if !preservingLoadedRange || messages.isEmpty {
             resetWindow(env)
@@ -199,14 +205,23 @@ final class ChatViewModel: ObservableObject {
         #endif
     }
 
-    /// 以「最近一屏（不小于已加载条数）」重置窗口。
+    /// 重置窗口：**只加载最新那一块**（首屏 1 块，规范 §3 Initial load）。
+    ///
+    /// 为什么从「最近 60 条」改成「最新块」：块是存储层的物理分页单位，
+    /// 首屏大小不再由界面常量决定 —— 会话短时一块就是全部，长时一块最多 200 条，
+    /// 读多少行与会话总长无关（`(sessionId, blockIndex)` 上有索引）。
     private func resetWindow(_ env: AppEnvironment) {
-        let window = max(Self.pageSize, messages.count)
-        messages = ((try? env.stores.messages.recent(sessionId: sessionId, limit: window)) ?? [])
+        if let window = ((try? env.stores.messages.blocksAround(sessionId: sessionId)) ?? nil) {
+            messages = window.messages
+            loadedBlockRange = window.blockIndex...window.blockIndex
+        } else {
+            messages = []
+            loadedBlockRange = nil
+        }
         totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
         refreshHasMore()
         #if DEBUG
-        DebugSeeding.log("[chat] window reset loaded=\(messages.count) total=\(totalMessageCount)")
+        DebugSeeding.log("[chat] window reset session=\(sessionId) blocks=\(loadedBlockRange.map { "\($0.lowerBound)...\($0.upperBound)" } ?? "-") loaded=\(messages.count) total=\(totalMessageCount)")
         #endif
     }
 
@@ -219,8 +234,11 @@ final class ChatViewModel: ObservableObject {
         persona = nil
         messages = []
         totalMessageCount = 0
+        loadedBlockRange = nil
         hasMoreHistory = false
+        hasMoreNewer = false
         isLoadingEarlier = false
+        isLoadingNewer = false
         // 停轮询：会话都不在了，每 20 秒重试只是白读库。
         messagePulseTask?.cancel()
         messagePulseTask = nil
@@ -246,95 +264,137 @@ final class ChatViewModel: ObservableObject {
         if !newer.isEmpty {
             messages = MessagePaging.appendingNewer(newer, to: messages)
         }
+        // 新消息可能已经开出了新的一块：把已加载区间的最新块号推到库里最新那一块，
+        // 否则「下面还有更新的消息」会在其实已经到底时还亮着。
+        if let last = ((try? env.stores.messages.lastBlockIndex(sessionId: sessionId)) ?? nil) {
+            let lower = loadedBlockRange?.lowerBound ?? last
+            let upper = max(last, loadedBlockRange?.upperBound ?? last)
+            loadedBlockRange = lower...upper
+        }
         totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId)) ?? messages.count)
         refreshHasMore()
     }
 
-    /// 窗口前面还有没有更早的消息。
+    /// 重新算「上面还有没有更早的一块 / 下面还有没有更新的一块」。
     ///
-    /// 用 `countBefore` 而不是「这一页满 60 就算还有」：恰好 60 条时后者会多显示一次
-    /// 「加载更早」，点下去发现没有——那是把边界判断推给用户。
+    /// 直接问块表（`olderBlockIndex` / `newerBlockIndex`），不数消息条数：
+    /// 块可能被删空而留下编号空洞，所以「上一块」不等于 `blockIndex - 1`。
     private func refreshHasMore() {
-        guard let env, let first = messages.first else {
+        guard let env, let range = loadedBlockRange else {
             hasMoreHistory = false
+            hasMoreNewer = false
             return
         }
-        let older = (try? env.stores.messages.countBefore(
-            sessionId: sessionId, createdAt: first.createdAt, id: first.id
-        )) ?? 0
-        hasMoreHistory = older > 0
+        hasMoreHistory = ((try? env.stores.messages.olderBlockIndex(
+            sessionId: sessionId, before: range.lowerBound
+        )) ?? nil) != nil
+        hasMoreNewer = ((try? env.stores.messages.newerBlockIndex(
+            sessionId: sessionId, after: range.upperBound
+        )) ?? nil) != nil
     }
 
-    /// 往上翻到顶：再取 60 条更早的，接在窗口前面。
+    /// 往上翻到顶：把**上一块**接在窗口前面（v11：一页 = 一块，规范 §3 Older）。
     ///
-    /// 三条保护：已经没有更早的了、正在取（滚到顶时 `onAppear` 会连喊几次）、
-    /// 取回来的 id 与窗口里已有的重复（同一毫秒落了两条消息时的兜底）。
+    /// 三条保护：已经没有更早的块了、正在取（滚到顶时 `onAppear` 会连喊几次）、
+    /// 取回来的 id 与窗口里已有的重复（`MessagePaging.prepend` 兜底，避免重复 id）。
     func loadEarlierMessages() {
-        guard let env, hasMoreHistory, !isLoadingEarlier, messages.first != nil else { return }
+        guard let env, hasMoreHistory, !isLoadingEarlier, loadedBlockRange != nil else { return }
         isLoadingEarlier = true
         #if DEBUG
         // 分页验收：让「正在加载更早…」这一帧停留得久一点，好让 simctl 截到图。
         if ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SLOW_PAGING"] == "1" {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 30_000_000_000)
-                self.appendEarlierPage(env: env)
+                self.appendOlderBlock(env)
             }
             return
         }
         #endif
-        appendEarlierPage(env: env)
+        appendOlderBlock(env)
     }
 
-    /// 取一页更早的接在窗口前面（调试慢速路径也复用它，逻辑只有一份）。
-    private func appendEarlierPage(env: AppEnvironment) {
-        guard let first = messages.first else {
-            isLoadingEarlier = false
+    /// 取上一块接在窗口前面（调试慢速路径也复用它，逻辑只有一份）。
+    private func appendOlderBlock(_ env: AppEnvironment) {
+        defer { isLoadingEarlier = false }
+        guard let range = loadedBlockRange,
+              let olderIndex = ((try? env.stores.messages.olderBlockIndex(
+                  sessionId: sessionId, before: range.lowerBound
+              )) ?? nil),
+              let window = ((try? env.stores.messages.block(olderIndex, sessionId: sessionId)) ?? nil),
+              !window.messages.isEmpty else {
+            hasMoreHistory = false
             return
         }
-        let older = ((try? env.stores.messages.pageBefore(
-            sessionId: sessionId,
-            createdAt: first.createdAt,
-            id: first.id,
-            limit: Self.pageSize
-        )) ?? [])
-        messages = MessagePaging.prepend(older, to: messages)
-        isLoadingEarlier = false
+        messages = MessagePaging.prepend(window.messages, to: messages)
+        loadedBlockRange = olderIndex...range.upperBound
         refreshHasMore()
         #if DEBUG
-        DebugSeeding.log("[chat] load earlier +\(older.count) loaded=\(messages.count) hasMore=\(hasMoreHistory)")
+        DebugSeeding.log("[chat] load earlier +\(window.messages.count) loaded=\(messages.count) hasMore=\(hasMoreHistory)")
+        #endif
+    }
+
+    /// 往下滚到底：把**下一块**接在窗口后面（v11 新增的向下加载，规范 §3 Newer）。
+    ///
+    /// 以前不在最新位置时只能「回到最新」（整段重读），会把用户正在看的历史丢掉；
+    /// 现在按块往下走，块与块之间没有空隙，读多少行也只与块大小有关。
+    func loadNewerMessages() {
+        guard let env, hasMoreNewer, !isLoadingNewer, loadedBlockRange != nil else { return }
+        isLoadingNewer = true
+        appendNewerBlock(env)
+    }
+
+    private func appendNewerBlock(_ env: AppEnvironment) {
+        defer { isLoadingNewer = false }
+        guard let range = loadedBlockRange,
+              let newerIndex = ((try? env.stores.messages.newerBlockIndex(
+                  sessionId: sessionId, after: range.upperBound
+              )) ?? nil),
+              let window = ((try? env.stores.messages.block(newerIndex, sessionId: sessionId)) ?? nil),
+              !window.messages.isEmpty else {
+            hasMoreNewer = false
+            return
+        }
+        // cap: .max —— 往下翻不能把人正在看的历史挤掉（块号区间还要靠它算「上面还有没有」）。
+        messages = MessagePaging.appendingNewer(window.messages, to: messages, cap: .max)
+        loadedBlockRange = range.lowerBound...newerIndex
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] load newer +\(window.messages.count) loaded=\(messages.count) hasMoreNewer=\(hasMoreNewer)")
         #endif
     }
 
     // MARK: - 从搜索结果定位到某条消息
 
-    /// 把目标消息所在的那一页读进窗口，然后让界面滚过去 + 短暂高亮。
+    /// 把目标消息所在的那一块读进窗口（再往前带一块上下文），然后让界面滚过去 + 短暂高亮。
     ///
-    /// 目标可能比首屏那 60 条早很多，所以这里复用 0.10.1 的游标分页：
-    /// 一页页往前取，直到它进入窗口（`MessagePaging.window(reaching:)` 里那段循环是纯逻辑，
-    /// 单测覆盖了「目标在很前面 / 目标已删除 / 加载器不给新页」三种边界）。
+    /// 目标可能比首屏那一块早很多：直接查它落在第几块（`SELECT blockIndex FROM messages`），
+    /// 只读那一块和它的上一块 —— 不再「一页页 60 条往前翻」，读的行数与目标有多久远无关。
+    /// 块定位的边界（目标块不存在 / 上一块被删空 / 有编号空洞）由 `MessageBlocks.focus` 兜住。
     ///
     /// 为什么定位之后不再跟随到底部：用户点的是「某条老消息」，把他拽到最新一句等于白点。
     /// `autoFollow` 由界面负责关掉（`ChatScreen` 在 onAppear 里做）。
     func focus(on messageId: String) {
         guard let env, !messageId.isEmpty else { return }
-        let result = MessagePaging.window(reaching: messageId, from: messages) { [weak self] oldest, _ in
-            guard let self, let oldest else { return nil }
-            return (try? env.stores.messages.pageBefore(
-                sessionId: self.sessionId,
-                createdAt: oldest.createdAt,
-                id: oldest.id,
-                limit: Self.pageSize
-            )) ?? []
-        }
-        messages = result.messages
-        refreshHasMore()
-        #if DEBUG
-        DebugSeeding.log("[chat] 定位 \(messageId)：窗口 \(messages.count) 条（往前 \(result.pagesLoaded) 页）found=\(result.found) hasMore=\(hasMoreHistory)")
-        #endif
-        guard result.found else {
+        guard let targetBlock = ((try? env.stores.messages.blockIndex(ofMessage: messageId)) ?? nil) else {
             showToast(L("没找到这条消息，可能已经被删掉了"))
             return
         }
+        let result = MessageBlocks.focus(targetMessageId: messageId, targetBlock: targetBlock) { index in
+            (try? env.stores.messages.block(index, sessionId: self.sessionId))?.messages
+        }
+        guard result.found else {
+            #if DEBUG
+            DebugSeeding.log("[chat] 定位 \(messageId) 失败：块 \(targetBlock) 里没有它")
+            #endif
+            showToast(L("没找到这条消息，可能已经被删掉了"))
+            return
+        }
+        messages = result.messages
+        loadedBlockRange = result.lowerBlockIndex...result.upperBlockIndex
+        refreshHasMore()
+        #if DEBUG
+        DebugSeeding.log("[chat] 定位 \(messageId)：块 \(result.lowerBlockIndex)...\(result.upperBlockIndex)（\(result.blocksLoaded) 块）窗口 \(messages.count) 条 hasMore=\(hasMoreHistory) hasNewer=\(hasMoreNewer)")
+        #endif
         scrollTargetId = messageId
         highlightedMessageId = messageId
         highlightTask?.cancel()

@@ -9,6 +9,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -220,12 +221,16 @@ class MyFriendDatabaseMigrationTest {
 
         val room = Room.databaseBuilder(context, MyFriendDatabase::class.java, DB_NAME)
             // 老用户可能从 v8 直接升到当前版本：迁移链要能一路走到底（v8→v9→v10）。
-            .addMigrations(MyFriendDatabase.MIGRATION_8_9, MyFriendDatabase.MIGRATION_9_10)
+            .addMigrations(
+                MyFriendDatabase.MIGRATION_8_9,
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11
+            )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 10", 10, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 11, opened.version)
             room.query("SELECT title FROM chat_sessions WHERE id = ?", arrayOf("session-1")).use { cursor ->
                 assertTrue("Room 打开后旧会话应该还在", cursor.moveToFirst())
                 assertEquals("旧会话", cursor.getString(0))
@@ -343,12 +348,16 @@ class MyFriendDatabaseMigrationTest {
         closeAllHelpers()
 
         val room = Room.databaseBuilder(context, MyFriendDatabase::class.java, DB_NAME)
-            .addMigrations(MyFriendDatabase.MIGRATION_8_9, MyFriendDatabase.MIGRATION_9_10)
+            .addMigrations(
+                MyFriendDatabase.MIGRATION_8_9,
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11
+            )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 10", 10, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 11, opened.version)
             room.query("SELECT COUNT(*) FROM personas", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals(2, cursor.getInt(0))
@@ -562,7 +571,8 @@ class MyFriendDatabaseMigrationTest {
             MyFriendDatabase.MIGRATION_6_7,
             MyFriendDatabase.MIGRATION_7_8,
             MyFriendDatabase.MIGRATION_8_9,
-            MyFriendDatabase.MIGRATION_9_10
+            MyFriendDatabase.MIGRATION_9_10,
+            MyFriendDatabase.MIGRATION_10_11
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -590,6 +600,212 @@ class MyFriendDatabaseMigrationTest {
             context.deleteDatabase(probeName)
         }
     }
+
+    // ---------- v10 → v11：区块 ----------
+
+    @Test
+    fun migrate10To11_回填块编号且一条消息都不丢() {
+        val db = createV10DatabaseWithMessages(sessionId = "session-1", messageCount = 450)
+
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+
+        // 1. 消息一条不少，正文也没被改写。
+        assertEquals("迁移不许丢消息", 450, db.count("messages"))
+        db.query("SELECT content FROM messages WHERE id = ?", arrayOf("m000")).use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("第 m000 条", cursor.getString(0))
+        }
+
+        // 2. blockIndex = 行号 / 200（0 起）。
+        db.query(
+            "SELECT id, blockIndex FROM messages WHERE sessionId = ? ORDER BY createdAt ASC, id ASC",
+            arrayOf("session-1")
+        ).use { cursor ->
+            var position = 0
+            while (cursor.moveToNext()) {
+                assertEquals(
+                    "第 $position 条消息的 blockIndex 应该是 ${position / 200}",
+                    position / 200,
+                    cursor.getInt(1)
+                )
+                position++
+            }
+            assertEquals("应该正好遍历 450 条", 450, position)
+        }
+
+        // 3. 块边界：200 / 200 / 50，首尾消息与时间都要对。
+        assertEquals("450 条应该切成 3 块", 3, db.count("message_blocks"))
+        db.query(
+            "SELECT sessionId, blockIndex, firstMessageId, lastMessageId, firstCreatedAt, lastCreatedAt, messageCount " +
+                "FROM message_blocks ORDER BY blockIndex"
+        ).use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("session-1", cursor.getString(0))
+            assertEquals(0, cursor.getInt(1))
+            assertEquals("m000", cursor.getString(2))
+            assertEquals("m199", cursor.getString(3))
+            assertEquals(BASE_TIME + 0L, cursor.getLong(4))
+            assertEquals(BASE_TIME + 199L, cursor.getLong(5))
+            assertEquals(200, cursor.getInt(6))
+
+            assertTrue(cursor.moveToNext())
+            assertEquals(1, cursor.getInt(1))
+            assertEquals("m200", cursor.getString(2))
+            assertEquals("m399", cursor.getString(3))
+            assertEquals(200, cursor.getInt(6))
+
+            assertTrue(cursor.moveToNext())
+            assertEquals("最后一块只有 50 条", 2, cursor.getInt(1))
+            assertEquals("m400", cursor.getString(2))
+            assertEquals("m449", cursor.getString(3))
+            assertEquals(50, cursor.getInt(6))
+
+            assertFalse("不该有第四块", cursor.moveToNext())
+        }
+
+        // 4. 两个索引都在（否则「读一块」会退化成扫历史）。
+        assertTrue(
+            "message_blocks(sessionId, blockIndex) 索引",
+            db.hasIndex("index_message_blocks_sessionId_blockIndex")
+        )
+        assertTrue(
+            "messages(sessionId, blockIndex, createdAt) 索引",
+            db.hasIndex("index_messages_sessionId_blockIndex_createdAt")
+        )
+    }
+
+    @Test
+    fun migrate10To11_空库也能迁移() {
+        val db = createLegacyDatabase(version = 8, ddl = V8_FULL_SCHEMA)
+        MyFriendDatabase.MIGRATION_8_9.migrate(db)
+        MyFriendDatabase.MIGRATION_9_10.migrate(db)
+        db.execSQL("PRAGMA user_version = 10")
+
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+
+        assertTrue("空库也要建出块表", db.hasTable("message_blocks"))
+        assertTrue("空库也要加 blockIndex 列", "blockIndex" in db.columnNames("messages"))
+        assertEquals(0, db.count("message_blocks"))
+        assertEquals(0, db.count("messages"))
+    }
+
+    @Test
+    fun migrate10To11_重复执行是幂等的() {
+        val db = createV10DatabaseWithMessages(sessionId = "session-1", messageCount = 450)
+
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+        val firstBlocks = dumpBlocks(db)
+        val firstAssignments = dumpAssignments(db)
+
+        // 第二次执行：加列要跳过（PRAGMA 判断）、块行先删后建，不允许报错或重复插。
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+
+        assertEquals("重复迁移不该改变块行", firstBlocks, dumpBlocks(db))
+        assertEquals("重复迁移不该改变块编号", firstAssignments, dumpAssignments(db))
+        assertEquals(3, db.count("message_blocks"))
+        assertEquals(450, db.count("messages"))
+    }
+
+    @Test
+    fun migrate10To11_孤儿块会被清掉() {
+        val db = createV10DatabaseWithMessages(sessionId = "session-1", messageCount = 10)
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+        db.execSQL(
+            """
+            INSERT INTO message_blocks (sessionId, blockIndex, firstMessageId, lastMessageId,
+                firstCreatedAt, lastCreatedAt, messageCount)
+            VALUES ('deleted-session', 0, 'ghost-1', 'ghost-1', 1, 1, 1)
+            """.trimIndent()
+        )
+
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+
+        db.query("SELECT COUNT(*) FROM message_blocks WHERE sessionId = 'deleted-session'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("会话不存在的块行必须被清掉", 0, cursor.getInt(0))
+        }
+    }
+
+    /**
+     * 最关键的一条：让 Room 自己打开 v10 旧库（10 → 11 自动迁移 + onValidateSchema）。
+     *
+     * 表校验会逐列比对，`blockIndex` 的 NOT NULL/DEFAULT、块表主键、两个索引少一个都会红。
+     */
+    @Test
+    fun migrate10To11_Room打开旧库时表校验通过() {
+        createV10DatabaseWithMessages(sessionId = "session-1", messageCount = 450)
+        closeAllHelpers()
+
+        val room = Room.databaseBuilder(context, MyFriendDatabase::class.java, DB_NAME)
+            .addMigrations(
+                MyFriendDatabase.MIGRATION_8_9,
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11
+            )
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val opened = room.openHelper.writableDatabase
+            assertEquals("Room 打开后 user_version 应该是 11", 11, opened.version)
+            room.query("SELECT COUNT(*) FROM messages", emptyArray()).use { cursor ->
+                cursor.moveToFirst()
+                assertEquals("Room 打开后消息一条不少", 450, cursor.getInt(0))
+            }
+            room.query("SELECT COUNT(*), MAX(blockIndex) FROM message_blocks", emptyArray()).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("块表要在 Room 校验之后仍然存在", 3, cursor.getInt(0))
+                assertEquals(2, cursor.getInt(1))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /** 造一个 v10 库：按 v8 建表 → 跑真实迁移到 v10 → 写入 [messageCount] 条消息。 */
+    private fun createV10DatabaseWithMessages(sessionId: String, messageCount: Int): SupportSQLiteDatabase {
+        val db = createLegacyDatabase(version = 8, ddl = V8_FULL_SCHEMA)
+        MyFriendDatabase.MIGRATION_8_9.migrate(db)
+        MyFriendDatabase.MIGRATION_9_10.migrate(db)
+        db.execSQL("PRAGMA user_version = 10")
+        insertSession(db, sessionId, "persona-1", null, BASE_TIME + messageCount)
+        repeat(messageCount) { index ->
+            insertMessageAt(db, "m%03d".format(index), sessionId, BASE_TIME + index)
+        }
+        return db
+    }
+
+    private fun insertMessageAt(
+        db: SupportSQLiteDatabase,
+        id: String,
+        sessionId: String,
+        createdAt: Long
+    ) {
+        db.execSQL(
+            """
+            INSERT INTO messages (
+                id, sessionId, personaId, role, content, createdAt, updatedAt,
+                status, errorMessage, model, edited, attachmentsJson, toolTraceJson, readAt
+            ) VALUES (?, ?, 'persona-1', 'USER', ?, ?, ?, 'COMPLETE', NULL, NULL, 0, NULL, NULL, NULL)
+            """.trimIndent(),
+            arrayOf(id, sessionId, "第 $id 条", createdAt, createdAt)
+        )
+    }
+
+    private fun dumpBlocks(db: SupportSQLiteDatabase): List<String> =
+        db.query("SELECT * FROM message_blocks ORDER BY sessionId, blockIndex").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add((0 until cursor.columnCount).joinToString("|") { cursor.getString(it).orEmpty() })
+                }
+            }
+        }
+
+    private fun dumpAssignments(db: SupportSQLiteDatabase): List<String> =
+        db.query("SELECT id, blockIndex FROM messages ORDER BY id").use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add("${cursor.getString(0)}=${cursor.getInt(1)}")
+            }
+        }
 
     // ---------- 造旧库 ----------
 
@@ -683,6 +899,9 @@ class MyFriendDatabaseMigrationTest {
         const val DB_NAME = "migration-test.db"
         // 这里刻意没有 CURRENT_VERSION：版本号已经改为运行时问 Room（见 currentDatabaseVersion），
         // 手写常量一旦忘了跟着升，这条测试就会绿得毫无意义。
+
+        /** v11 区块测试用的固定时间基准：消息 createdAt = BASE_TIME + 下标。 */
+        const val BASE_TIME = 1_700_000_000_000L
 
         const val LEGACY_MEMORY_ID = "memory-legacy-1"
         const val LEGACY_MEMORY_CONTENT = "她说过她妹妹在南方读大学"

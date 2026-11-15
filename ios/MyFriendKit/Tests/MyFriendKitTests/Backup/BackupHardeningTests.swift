@@ -43,7 +43,11 @@ final class BackupHardeningTests: XCTestCase {
         ])
     }
 
-    private func makeService(exportLimitBytes: Int = BackupService.maxExportBytes) -> BackupService {
+    private func makeService(
+        exportLimitBytes: Int = BackupService.maxExportBytes,
+        mediaByteLimit: Int = BackupService.maxMediaBytes,
+        mediaFileByteLimit: Int = BackupService.maxMediaFileBytes
+    ) -> BackupService {
         BackupService(
             stores: db.stores,
             settings: settings,
@@ -51,6 +55,8 @@ final class BackupHardeningTests: XCTestCase {
             avatarFileExists: { [fileManager] path in fileManager.fileExists(atPath: path) },
             mediaDirectory: attachments,
             exportLimitBytes: exportLimitBytes,
+            mediaByteLimit: mediaByteLimit,
+            mediaFileByteLimit: mediaFileByteLimit,
             now: { TestData.now }
         )
     }
@@ -59,7 +65,10 @@ final class BackupHardeningTests: XCTestCase {
 
     func testExportLimitDefaultsToImportLimit() {
         XCTAssertEqual(BackupService.maxExportBytes, BackupService.maxImportBytes)
-        XCTAssertEqual(BackupService.maxExportBytes, 64 * 1024 * 1024)
+        // v3 起图片二进制也进备份：128 MiB 原始字节 base64 之后约 171 MiB，闸抬到 256 MiB。
+        XCTAssertEqual(BackupService.maxExportBytes, 256 * 1024 * 1024)
+        XCTAssertEqual(BackupService.maxMediaBytes, 128 * 1024 * 1024)
+        XCTAssertEqual(BackupService.maxMediaFileBytes, 8 * 1024 * 1024)
     }
 
     /// 超限时明确报错、不返回半份 JSON（调用点因此不会写出文件）。
@@ -78,7 +87,7 @@ final class BackupHardeningTests: XCTestCase {
 
     func testExportUnderLimitStillWorks() throws {
         let text = try makeService(exportLimitBytes: 1 << 20).export()
-        XCTAssertTrue(text.contains("\"formatVersion\":2"))
+        XCTAssertTrue(text.contains("\"formatVersion\":3"))
         XCTAssertTrue(text.contains("在吗"))
     }
 
@@ -181,5 +190,226 @@ final class BackupHardeningTests: XCTestCase {
             return XCTFail("不存在的文件应当失败")
         }
         XCTAssertFalse(error.localizedDescription.isEmpty)
+    }
+
+    // MARK: - 4. v3 媒体：坏数据只跳过、绝不写坏路径（导入侧外部输入）
+
+    private func smallService(
+        mediaByteLimit: Int = BackupService.maxMediaBytes,
+        mediaFileByteLimit: Int = BackupService.maxMediaFileBytes
+    ) -> BackupService {
+        makeService(mediaByteLimit: mediaByteLimit, mediaFileByteLimit: mediaFileByteLimit)
+    }
+
+    /// 坏 base64 / 不支持的 mime / 文件名不安全 / 字节数与声明不符：全部跳过并计数，
+    /// 导入照样成功（一份备份里有一张坏图，不该让整次「接他回来」失败）。
+    func testImportSkipsBrokenMediaAndStillSucceeds() throws {
+        let bundle = BackupBundle(
+            personas: [
+                BackupPersona(id: "persona-1", name: "林岸", avatarUri: "avatar-bad.jpg"),
+                BackupPersona(id: "persona-2", name: "陈屿", avatarUri: "avatar-mime.jpg")
+            ],
+            sessions: [BackupSession(id: "session-1", personaId: "persona-1", model: "deepseek-chat",
+                                     title: "看图", createdAt: TestData.now, updatedAt: TestData.now)],
+            messages: [BackupMessage(
+                id: "msg-1", sessionId: "session-1", personaId: "persona-1", role: "USER",
+                content: "看图", createdAt: TestData.now,
+                attachmentsJson: #"[{"uri":"chatImage-bad.png","mime":"image/png"}]"#
+            )],
+            media: [
+                // 解不出来的 base64。
+                BackupMedia(id: "m1", kind: "PERSONA_AVATAR", personaId: "persona-1",
+                            fileName: "avatar-bad.jpg", mime: "image/jpeg", bytes: 4, data: "!!!!"),
+                // 不支持的 mime。
+                BackupMedia(id: "m2", kind: "PERSONA_AVATAR", personaId: "persona-2",
+                            fileName: "avatar-mime.jpg", mime: "application/pdf", bytes: 4,
+                            data: Data([0x25, 0x50, 0x44, 0x46]).base64EncodedString()),
+                // 声明的字节数与解出来的不一致（坏数据，按 Android 的口径算 invalid）。
+                BackupMedia(id: "m3", kind: "CHAT_IMAGE", personaId: nil,
+                            fileName: "chatImage-bad.png", mime: "image/png", bytes: 99,
+                            data: Data([0x89, 0x50]).base64EncodedString())
+            ]
+        )
+        // 让 chatImage-bad.png 变成「被引用」的条目（否则它会在落盘前就被过滤掉）。
+        try db.stores.messages.upsert([
+            TestData.message(id: "msg-1", role: .user, content: "看图", createdAt: TestData.now)
+        ])
+
+        let summary = try smallService().importBundle(bundle, mode: .replace)
+
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("没接回来（文件损坏或格式不支持）") },
+            "坏图要如实告诉用户：\(summary.warnings)"
+        )
+        let persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        XCTAssertNil(persona.avatarUri, "接不回来的头像要清空，别留一个永远加载不出来的地址")
+        let message = try XCTUnwrap(try db.stores.messages.byId("msg-1"))
+        XCTAssertNil(message.attachmentsJson, "没接回来的聊天图片不留坏引用")
+        XCTAssertEqual(
+            Set(try db.stores.personas.all().map(\.id)), ["persona-1", "persona-2"],
+            "坏媒体不影响别的内容"
+        )
+        // 一张都没写下去（坏数据不该在磁盘上留下痕迹）。
+        XCTAssertEqual(
+            (try? fileManager.contentsOfDirectory(atPath: attachments.path))?.count ?? 0, 0
+        )
+    }
+
+    /// 备份里没写 `avatarUri`、但 `media` 带着 `personaId`：按 personaId 兜底接回头像
+    /// （与 Android 的 `avatarsByPersonaId` 同一条规则）。
+    func testMediaAvatarIsRestoredByPersonaIdWhenAvatarUriIsMissing() throws {
+        let payload = Data([0xFF, 0xD8, 0xFF])
+        let summary = try smallService().importBundle(
+            BackupBundle(
+                personas: [BackupPersona(id: "persona-1", name: "林岸", avatarUri: nil)],
+                media: [BackupMedia(
+                    id: "m1", kind: "PERSONA_AVATAR", personaId: "persona-1",
+                    fileName: "avatar-by-id.jpg", mime: "image/jpeg", bytes: 3,
+                    data: payload.base64EncodedString()
+                )]
+            ),
+            mode: .replace
+        )
+        let stored = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        let uri = try XCTUnwrap(stored.avatarUri, "按 personaId 兜底也要把头像接回来")
+        let url = try XCTUnwrap(URL(string: uri))
+        XCTAssertTrue(AttachmentLocation.isWithin(attachments, url))
+        XCTAssertEqual(try Data(contentsOf: url), payload)
+        XCTAssertFalse(
+            summary.warnings.contains { $0.contains("头像文件找不到") },
+            "接回来了就不该再说「找不到」：\(summary.warnings)"
+        )
+    }
+
+    /// 不认识的 kind / 重复的同名条目：都只跳过并计数，不写文件、不崩。
+    func testUnknownKindAndDuplicateMediaAreSkippedAndCounted() throws {
+        let payload = Data([0xFF, 0xD8, 0xFF]).base64EncodedString()
+        let summary = try smallService().importBundle(
+            BackupBundle(media: [
+                BackupMedia(id: "m1", kind: "SOMETHING_NEW", fileName: "avatar-new.jpg",
+                            mime: "image/jpeg", bytes: 3, data: payload),
+                // 同 (kind, fileName) 出现两次：只认第一条，第二条算坏数据。
+                BackupMedia(id: "m2", kind: "USER_AVATAR", fileName: "avatar-dup.jpg",
+                            mime: "image/jpeg", bytes: 3, data: payload),
+                BackupMedia(id: "m3", kind: "USER_AVATAR", fileName: "avatar-dup.jpg",
+                            mime: "image/jpeg", bytes: 3, data: payload)
+            ]),
+            mode: .merge
+        )
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("没接回来（文件损坏或格式不支持）") },
+            "\(summary.warnings)"
+        )
+        let names = (try? fileManager.contentsOfDirectory(atPath: attachments.path)) ?? []
+        XCTAssertEqual(names.count, 1, "只该落下第一条 USER_AVATAR：\(names)")
+        XCTAssertTrue(names[0].hasPrefix("avatar-"))
+        XCTAssertEqual(try Data(contentsOf: attachments.appendingPathComponent(names[0])), Data([0xFF, 0xD8, 0xFF]))
+        XCTAssertEqual(settings.load().myAvatarUri, attachments.appendingPathComponent(names[0]).absoluteString)
+    }
+
+    /// 文件名带 `../` 或绝对路径：**不能**用它拼路径，也**不能**写到目录外。
+    func testRestorerRejectsTraversalFileNamesAndNeverWritesOutside() throws {
+        let outside = root.appendingPathComponent("myfriend.db")
+        try Data([0xFF, 0xD8]).write(to: outside)
+        let payload = Data([0xFF, 0xD8, 0xFF]).base64EncodedString()
+
+        let result = BackupMediaRestorer.restore(
+            entries: [
+                BackupMedia(id: "m1", kind: "PERSONA_AVATAR", fileName: "../../myfriend.db",
+                            mime: "image/jpeg", bytes: 3, data: payload),
+                BackupMedia(id: "m2", kind: "USER_AVATAR", fileName: "/etc/passwd",
+                            mime: "image/jpeg", bytes: 3, data: payload),
+                BackupMedia(id: "m3", kind: "CHAT_IMAGE", fileName: "a/b.png",
+                            mime: "image/png", bytes: 3, data: payload)
+            ],
+            directory: attachments
+        )
+        XCTAssertEqual(result.invalidCount, 3, "三种不安全名字都要被拒绝")
+        XCTAssertTrue(result.writtenFiles.isEmpty)
+        XCTAssertTrue(result.avatarsByFileName.isEmpty)
+        XCTAssertTrue(result.chatImagesByFileName.isEmpty)
+        // 目录外那个文件原样还在，内容没被覆盖。
+        XCTAssertEqual(try Data(contentsOf: outside), Data([0xFF, 0xD8]))
+        XCTAssertEqual((try? fileManager.contentsOfDirectory(atPath: attachments.path))?.count ?? 0, 0)
+    }
+
+    /// 目录归属守卫：文件名里带 `../` / 绝对路径时，一个字节都不会落到目录外。
+    func testMediaWriteGuardRefusesPathsOutsideTheDirectory() throws {
+        let outside = root.appendingPathComponent("escaped.jpg")
+        let payload = Data([0xFF, 0xD8, 0xFF])
+
+        XCTAssertNil(
+            BackupMediaTransfer.write(payload, as: "../escaped.jpg", in: attachments),
+            "带 ../ 的文件名必须被拒绝"
+        )
+        XCTAssertNil(
+            BackupMediaTransfer.write(payload, as: "..%2Fescaped.jpg", in: attachments),
+            "百分号转义的取值也是一样的坏名字"
+        )
+        XCTAssertNil(
+            BackupMediaTransfer.write(payload, as: "sub/escaped.jpg", in: attachments),
+            "带目录的文件名必须被拒绝"
+        )
+        XCTAssertFalse(fileManager.fileExists(atPath: outside.path), "目录外不能出现文件")
+        XCTAssertEqual((try? fileManager.contentsOfDirectory(atPath: attachments.path))?.count ?? 0, 0)
+
+        // 正常名字照写（守卫不能把合法写入也挡掉）。
+        let written = try XCTUnwrap(
+            BackupMediaTransfer.write(
+                payload, as: "avatar-00000000-0000-0000-0000-0000000000AA.jpg", in: attachments
+            )
+        )
+        XCTAssertTrue(AttachmentLocation.isWithin(attachments, written))
+        XCTAssertEqual(try Data(contentsOf: written), payload)
+    }
+
+    /// 单张超限：导出跳过并给一句「超出上限」的提醒，导入同样跳过并计数。
+    func testMediaPerFileLimitSkipsAndWarns() throws {
+        let big = attachments.appendingPathComponent("avatar-big.jpg")
+        try Data(repeating: 0x41, count: 2_000).write(to: big)
+        var persona = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        persona.avatarUri = big.absoluteString
+        try db.stores.personas.upsert(persona)
+
+        let service = smallService(mediaFileByteLimit: 1_000)
+        let result = try service.exportWithWarnings()
+        XCTAssertTrue(result.text.contains(#""media":[]"#), "超限的图不该写进 media")
+        XCTAssertEqual(result.warnings.count, 1)
+        XCTAssertTrue(result.warnings[0].contains("没有随备份带走（超出上限）"), result.warnings[0])
+
+        // 导入侧：声明 2000 字节 > 单张上限 1000 → 跳过并计「超出上限」。
+        let imported = try smallService(mediaFileByteLimit: 1_000).importBundle(
+            BackupBundle(media: [BackupMedia(
+                id: "m1", kind: "USER_AVATAR", fileName: "avatar-big.jpg", mime: "image/jpeg",
+                bytes: 2_000, data: Data(repeating: 0x41, count: 2_000).base64EncodedString()
+            )]),
+            mode: .merge
+        )
+        XCTAssertTrue(
+            imported.warnings.contains { $0.contains("没有接回来（超出上限）") },
+            "\(imported.warnings)"
+        )
+    }
+
+    /// 总量超限：导出停止收集、把剩下的都算进提醒；导入按累计预算跳过。
+    func testMediaTotalLimitStopsCollecting() throws {
+        try db.stores.personas.upsert([TestData.persona(id: "persona-2", name: "陈屿", isDefault: false)])
+        try Data([0xFF, 0xD8, 0x01]).write(to: attachments.appendingPathComponent("avatar-a.jpg"))
+        try Data([0xFF, 0xD8, 0x02]).write(to: attachments.appendingPathComponent("avatar-b.jpg"))
+        var first = try XCTUnwrap(try db.stores.personas.byId("persona-1"))
+        first.avatarUri = attachments.appendingPathComponent("avatar-a.jpg").absoluteString
+        try db.stores.personas.upsert(first)
+        var second = try XCTUnwrap(try db.stores.personas.byId("persona-2"))
+        second.avatarUri = attachments.appendingPathComponent("avatar-b.jpg").absoluteString
+        try db.stores.personas.upsert(second)
+
+        // 预算只够一张（3 字节）：第二张开始「停止收集」并被计数。
+        let result = try smallService(mediaByteLimit: 4).exportWithWarnings()
+        let bundle = try XCTUnwrap(BackupCodec.decode(result.text).bundle)
+        XCTAssertEqual(bundle.media.count, 1)
+        XCTAssertEqual(result.warnings.count, 1)
+        XCTAssertTrue(result.warnings[0].contains("超出上限"), result.warnings[0])
+        let withMedia = bundle.personas.filter { $0.avatarUri != nil }
+        XCTAssertEqual(withMedia.count, 1, "只有真的带走了字节的头像才写文件名")
     }
 }
