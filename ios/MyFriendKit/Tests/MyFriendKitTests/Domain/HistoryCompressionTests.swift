@@ -89,11 +89,13 @@ final class HistoryCompressionTests: XCTestCase {
 
     func testHugeCharsCompressEvenWithFewMessages() {
         // 三条很长的话（每条 9000 字）就够撑爆上下文了，等不到 12 条。
-        let long = (0..<27).map { index in
-            MsgView(id: "m\(index)",
-                    at: 1_000 + Int64(index) * step,
-                    fromUser: index % 2 == 0,
-                    text: index < 3 ? String(repeating: "长话", count: 4_500) : "短的")
+        let long: [MsgView] = (0..<27).map { (index: Int) -> MsgView in
+            // 拆成局部常量：整段构造函数里的三元 + String(repeating:) 在
+            // 较慢的 Swift 工具链上会「类型检查超时」（CI 实测）。
+            let at: Int64 = 1_000 + Int64(index) * step
+            let fromUser: Bool = index % 2 == 0
+            let text: String = index < 3 ? String(repeating: "长话", count: 4_500) : "短的"
+            return MsgView(id: "m\(index)", at: at, fromUser: fromUser, text: text)
         }
         let plan = HistoryCompression.plan(messages: long, summaryUpTo: nil, maxChars: 24_000)
         XCTAssertTrue(plan.shouldCompress)

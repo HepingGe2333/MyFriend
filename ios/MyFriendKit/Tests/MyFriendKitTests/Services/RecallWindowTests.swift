@@ -38,13 +38,13 @@ final class RecallWindowTests: XCTestCase {
 
     func testDeepRecallReadsABoundedWindowInsteadOfTheWholeSession() throws {
         // 300 条会话：关键词只出现在最早那批里（窗口之外找不到也无所谓，重点是别整段读）。
-        let messages = (0..<300).map { index in
-            TestData.message(
-                id: String(format: "m-%03d", index),
-                role: index % 2 == 0 ? .user : .assistant,
-                content: "第 \(index) 句：那天雪很大。",
-                createdAt: TestData.now - Int64(300 - index) * 1000
-            )
+        let messages: [MessageEntity] = (0..<300).map { (index: Int) -> MessageEntity in
+            // 拆成局部常量：整段构造函数在较慢的 Swift 工具链上会「类型检查超时」（CI 实测 272ms）。
+            let id: String = String(format: "m-%03d", index)
+            let role: MessageRole = index % 2 == 0 ? .user : .assistant
+            let content: String = "第 \(index) 句：那天雪很大。"
+            let createdAt: Int64 = TestData.now - Int64(300 - index) * 1000
+            return TestData.message(id: id, role: role, content: content, createdAt: createdAt)
         }
         try db.stores.messages.upsert(messages)
 
