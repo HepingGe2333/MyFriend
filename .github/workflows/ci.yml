@@ -138,7 +138,7 @@ jobs:
             -project ios/MyFriend.xcodeproj \
             -scheme MyFriend \
             -sdk iphonesimulator \
-            -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+            -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath ios/.build/DerivedData \
             -resultBundlePath ios/.build/MyFriend.xcresult \
             CODE_SIGNING_ALLOWED=NO \

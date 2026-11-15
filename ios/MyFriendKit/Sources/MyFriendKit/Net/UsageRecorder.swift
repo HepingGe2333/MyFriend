@@ -159,10 +159,8 @@ public struct UsageTotals: Equatable, Sendable {
                 )
             }
             // 用量相同时按 id 排一下：同样的数据两次打开顺序一致，界面不会抖。
-            .sorted { lhs, rhs in
-                lhs.totalTokens == rhs.totalTokens ? lhs.sessionId < rhs.sessionId
-                    : lhs.totalTokens > rhs.totalTokens
-            }
+            // 拆成两个比较避免三元表达式在部分 Swift 工具链上「类型检查超时」（CI 首次跑就撞到了）。
+            .sorted(by: UsageRecorder.usageOrder)
             .prefix(max(sessionLimit, 0))
             .map { $0 }
 
@@ -284,5 +282,16 @@ public final class UsageRecorder: UsageRecording {
     /// 用户选择删掉全部本地数据时，一起把流水清掉。
     public func wipe() {
         try? usage.deleteAll()
+    }
+}
+
+// 独立的比较函数：三元表达式在 Swift 5.9/6 的部分工具链上类型检查会超时（CI 实测），
+// 拆成显式的 if 分支既稳定也更好读。
+extension UsageRecorder {
+    fileprivate static func usageOrder(_ lhs: SessionUsage, _ rhs: SessionUsage) -> Bool {
+        if lhs.totalTokens == rhs.totalTokens {
+            return lhs.sessionId < rhs.sessionId
+        }
+        return lhs.totalTokens > rhs.totalTokens
     }
 }
