@@ -321,6 +321,79 @@ final class ToolExecutorTests: XCTestCase {
         XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "MyFriend/1.0")
     }
 
+    // MARK: - set_activity（人设引导 §4）
+
+    func testSetActivityClampsMinutesAndWritesActivityJson() async throws {
+        let result = await run("set_activity", arguments: [
+            "activity": "在事务所赶第三版方案",
+            "minutes": 600,
+            "kind": "work",
+            "availability": "limited"
+        ])
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(result.traceTitle, "去忙了")
+        XCTAssertTrue(result.contentForModel.contains("在事务所赶第三版方案"))
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        let activity = try XCTUnwrap(PersonaActivity.decode(persona.activityJson, now: now))
+        XCTAssertEqual(activity.minutes, ToolArgClamp.activityMinutesMax, "600 要夹到 480")
+        XCTAssertEqual(activity.kind, .work, "kind 归一化成大写枚举")
+        XCTAssertEqual(activity.availability, .limited)
+        XCTAssertEqual(activity.startedAt, now)
+        XCTAssertEqual(activity.until, now + Int64(ToolArgClamp.activityMinutesMax) * 60_000)
+        // 它不是作息：睡觉时间与免打扰一列都不能动。
+        XCTAssertNil(persona.quietSleepMinutes)
+        XCTAssertNil(persona.quietWakeMinutes)
+        XCTAssertFalse(persona.dndOnSleep)
+    }
+
+    func testSetActivityAcceptsShortMinutesAndClampsToFloor() async throws {
+        let result = await run("set_activity", arguments: ["activity": "下楼买杯咖啡", "minutes": 0])
+        XCTAssertTrue(result.ok)
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        XCTAssertEqual(PersonaActivity.decode(persona.activityJson, now: now)?.minutes, 15)
+    }
+
+    func testSetActivityNonNumericMinutesUsesDefault() async throws {
+        let result = await run("set_activity", arguments: ["activity": "在开会", "minutes": "abc"])
+        XCTAssertTrue(result.ok)
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        XCTAssertEqual(
+            PersonaActivity.decode(persona.activityJson, now: now)?.minutes,
+            ToolArgClamp.activityMinutesDefault
+        )
+    }
+
+    func testSetActivityDefaultsToBusyAndOtherKind() async throws {
+        let result = await run("set_activity", arguments: ["activity": "在收拾屋子"])
+        XCTAssertTrue(result.ok)
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        let activity = try XCTUnwrap(PersonaActivity.decode(persona.activityJson, now: now))
+        XCTAssertEqual(activity.availability, .busy, "没说 availability 就当他忙（不谎称有空）")
+        XCTAssertEqual(activity.kind, .other)
+    }
+
+    func testSetActivityRejectsEmptyActivity() async throws {
+        let result = await run("set_activity", arguments: ["activity": "   "])
+        XCTAssertFalse(result.ok)
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        XCTAssertNil(persona.activityJson)
+    }
+
+    /// 过期后不再算「在忙」：读取时判断（§4：不需要定时任务）。
+    func testActivityExpiresAfterUntil() async throws {
+        _ = await run("set_activity", arguments: ["activity": "在开会", "minutes": 30])
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        XCTAssertNotNil(PersonaActivity.decode(persona.activityJson, now: now + 10 * 60_000))
+        XCTAssertNil(PersonaActivity.decode(persona.activityJson, now: now + 40 * 60_000))
+        XCTAssertEqual(
+            PersonaActivity.proactiveGate(
+                PersonaActivity.decodeIgnoringExpiry(persona.activityJson),
+                now: now + 40 * 60_000
+            ),
+            .allow
+        )
+    }
+
     // MARK: - 夹具
 
     private func enableWebTools() async throws {

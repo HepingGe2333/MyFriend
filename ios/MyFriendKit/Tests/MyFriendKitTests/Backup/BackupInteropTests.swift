@@ -10,8 +10,9 @@ import XCTest
 ///   v1/v2 都是**只读输入**：永远不重写，用来钉住「必须能读旧备份」；
 /// - `android-export-v3.json`：Android 的 `BackupFixtureTest` 生成（v3，带两张图片的
 ///   base64），这里只读；它可能比 iOS 这一版晚到，所以缺失时跳过而不是红掉；
-/// - `ios-export-v4.json`：由**这个测试**生成（v4），Android 侧会读它。
-/// - `android-export-v4.json`：Android 的 v4 样本（带 `webToolsProvider`），只读；缺失时跳过。
+/// - `ios-export-v4.json`：v4 的历史样本，只读（证明 v4 仍然能读）。
+/// - `ios-export-v5.json`：由**这个测试**生成（v5，带世界/话风/活动），Android 侧会读它。
+/// - `android-export-v4.json` / `android-export-v5.json`：Android 的样本，只读；缺失时跳过。
 ///
 /// 谁改了备份格式而没改另一端，任何一边的测试都会当场变红。
 final class BackupInteropTests: XCTestCase {
@@ -52,7 +53,7 @@ final class BackupInteropTests: XCTestCase {
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
         // 读进来统一按本机版本记：再导出就是 v4。
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertEqual(bundle.appVersion, "1.7.0")
         XCTAssertEqual(bundle.exportedAt, 1_794_500_000_000)
         XCTAssertTrue(bundle.apiKeysOmitted)
@@ -102,7 +103,7 @@ final class BackupInteropTests: XCTestCase {
         let bundle = try decodeSuccess(raw, allowWarnings: true)
         let reEncoded = try BackupCodec.encode(bundle)
 
-        XCTAssertTrue(reEncoded.contains("\"formatVersion\":4"))
+        XCTAssertTrue(reEncoded.contains("\"formatVersion\":\(BackupCodec.formatVersion)"))
         // v1 没有 media：再导出时是一个空数组（这个键永远存在）。
         XCTAssertTrue(reEncoded.contains("\"media\":[]"))
         for removed in ["replyPace", "memoryEnabled", "autoMemoryEnabled",
@@ -121,7 +122,7 @@ final class BackupInteropTests: XCTestCase {
     func testIOSV1FixtureStillDecodes() throws {
         let raw = try fixtureText("ios-export-v1.json")
         let bundle = try decodeSuccess(raw, allowWarnings: true)
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertFalse(bundle.personas.isEmpty)
         XCTAssertFalse(bundle.messages.isEmpty)
     }
@@ -139,7 +140,7 @@ final class BackupInteropTests: XCTestCase {
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
         // 读进来统一按本机版本记（v1/v2 的文件不会把 v2 一路传下去）。
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertTrue(bundle.media.isEmpty, "v2 备份里没有 media，读出来是空数组")
         XCTAssertFalse(bundle.personas.isEmpty, "v2 样本至少要有一个人格")
         XCTAssertFalse(BackupCodec.containsSecretField(raw))
@@ -192,7 +193,7 @@ final class BackupInteropTests: XCTestCase {
         let bundle = try decodeSuccess(raw, allowWarnings: true)
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertFalse(bundle.media.isEmpty, "v3 样本必须带 media")
         // v1–v3 里没有 webToolsProvider：读成默认 MESSAGEAPI（这就是「旧备份仍能读」）。
         XCTAssertEqual(bundle.apiConfigs.first?.webToolsProvider, "MESSAGEAPI")
@@ -255,10 +256,11 @@ final class BackupInteropTests: XCTestCase {
             throw XCTSkip("android-export-v4.json 还不存在（Android 端尚未生成 v4 黄金样本）")
         }
         let raw = try String(contentsOf: url, encoding: .utf8)
-        let bundle = try decodeSuccess(raw)
+        // v4 按 v5 读会有一句「格式是 v4，已按 v5 尽力读出来」的警告：允许。
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertFalse(BackupCodec.containsSecretField(raw), "v4 备份同样不能带密钥")
         XCTAssertFalse(bundle.apiConfigs.isEmpty, "样本至少要有一条 API 配置")
         for config in bundle.apiConfigs {
@@ -272,6 +274,73 @@ final class BackupInteropTests: XCTestCase {
             bundle.apiConfigs.contains { $0.webToolsProvider != WebToolsProvider.messageAPI.rawValue },
             "Android 的 v4 样本里应当有一条非 MESSAGEAPI 的配置"
         )
+    }
+
+    // MARK: - Android v5 → iOS：人设引导三列能跨端读
+
+    /// Android 的 v5 样本：人格的世界 / 话风 / 活动、预设的世界 / 话风都要读得出来。
+    ///
+    /// 两端并行实现，Android 的 v5 样本可能晚到：缺文件就跳过并说明（不是静默通过）。
+    func testAndroidV5FixtureDecodesWhenPresent() throws {
+        let url = try fixtureDirectory().appendingPathComponent("android-export-v5.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("android-export-v5.json 还不存在（Android 端尚未生成 v5 黄金样本）")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let bundle = try decodeSuccess(raw)
+
+        XCTAssertEqual(bundle.format, "myfriend.backup")
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
+        XCTAssertFalse(BackupCodec.containsSecretField(raw), "v5 备份同样不能带密钥")
+
+        // 人格三列：至少要有一条带世界、话风或活动，且解析得开。
+        let withGuidance = bundle.personas.filter {
+            $0.worldJson != nil || $0.speechStyleJson != nil || $0.activityJson != nil
+        }
+        XCTAssertFalse(withGuidance.isEmpty, "Android 的 v5 样本里应当有人格带了人设引导字段")
+        for persona in withGuidance {
+            if let worldJson = persona.worldJson {
+                XCTAssertNotNil(WorldPreset.decode(worldJson), "世界 JSON 解析不开：\(worldJson)")
+            }
+            if let styleJson = persona.speechStyleJson {
+                XCTAssertNotNil(SpeechStyle.decode(styleJson), "话风 JSON 解析不开：\(styleJson)")
+            }
+            if let activityJson = persona.activityJson {
+                XCTAssertNotNil(
+                    PersonaActivity.decodeIgnoringExpiry(activityJson),
+                    "活动 JSON 解析不开：\(activityJson)"
+                )
+            }
+        }
+        // 预设的世界 / 话风同样要能读。
+        for preset in bundle.presets {
+            if let worldJson = preset.worldJson {
+                XCTAssertNotNil(WorldPreset.decode(worldJson))
+            }
+            if let styleJson = preset.speechStyleJson {
+                XCTAssertNotNil(SpeechStyle.decode(styleJson))
+            }
+        }
+        // 原始聊天记录绝不进备份（§3.3）：整份文件里不该出现「昵称：」这种记录形状的键。
+        XCTAssertFalse(raw.contains("\"transcript\""), "备份里不该有原始聊天记录")
+    }
+
+    // MARK: - v4 历史样本：仍然能读（只读输入）
+
+    func testIOSV4FixtureStillDecodesAsV5() throws {
+        let url = try fixtureDirectory().appendingPathComponent("ios-export-v4.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("ios-export-v4.json 不在仓库里")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion, "读进来统一按本机版本记")
+        XCTAssertFalse(bundle.personas.isEmpty)
+        // v4 没有这三列：读成 nil（= 没有世界/话风/活动），不报错、不编内容。
+        XCTAssertTrue(bundle.personas.allSatisfy { $0.worldJson == nil })
+        XCTAssertTrue(bundle.personas.allSatisfy { $0.speechStyleJson == nil })
+        XCTAssertTrue(bundle.personas.allSatisfy { $0.activityJson == nil })
+        XCTAssertTrue(bundle.presets.allSatisfy { $0.worldJson == nil && $0.speechStyleJson == nil })
     }
 
     // MARK: - 往返：decode → encode → decode 必须相等
@@ -290,7 +359,7 @@ final class BackupInteropTests: XCTestCase {
 
     // MARK: - iOS → Android
 
-    func testIOSExportV4IsWrittenForAndroidFixtureTest() throws {
+    func testIOSExportV5IsWrittenForAndroidFixtureTest() throws {
         let bundle = BackupSamples.iosBundle()
         let json = try BackupCodec.encode(bundle)
 
@@ -299,15 +368,15 @@ final class BackupInteropTests: XCTestCase {
         let decoded = try decodeSuccess(json)
         XCTAssertEqual(decoded, bundle)
         XCTAssertTrue(json.contains("\"format\":\"myfriend.backup\""))
-        XCTAssertTrue(json.contains("\"formatVersion\":4"))
+        XCTAssertTrue(json.contains("\"formatVersion\":\(BackupCodec.formatVersion)"))
         XCTAssertTrue(json.contains("\"webToolsProvider\":\"TAVILY\""),
                       "v4 导出必须带 provider（样本用的是非默认值，不能靠默认值蒙混）")
         XCTAssertTrue(json.contains("\"apiKeysOmitted\":true"))
         XCTAssertFalse(json.contains("\"apiKey\""))
 
         let directory = try fixtureDirectory()
-        // v1/v2/v3 的样本是**只读输入**，绝不重写；v4 只写这一个文件。
-        let target = directory.appendingPathComponent("ios-export-v4.json")
+        // v1–v4 的样本是**只读输入**，绝不重写；v5 只写这一个文件。
+        let target = directory.appendingPathComponent("ios-export-v5.json")
         try json.write(to: target, atomically: true, encoding: .utf8)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
@@ -318,7 +387,7 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertEqual(onDisk, json)
         let reloaded = try decodeSuccess(onDisk)
         XCTAssertEqual(reloaded, bundle)
-        XCTAssertEqual(reloaded.formatVersion, 4)
+        XCTAssertEqual(reloaded.formatVersion, BackupCodec.formatVersion)
         XCTAssertEqual(reloaded.media.count, 2, "样本带两张真图")
         XCTAssertFalse(reloaded.personas.isEmpty)
         XCTAssertFalse(reloaded.sessions.isEmpty)

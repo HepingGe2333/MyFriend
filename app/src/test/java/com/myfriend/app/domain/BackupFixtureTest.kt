@@ -18,23 +18,24 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 跨端备份的锚点（0.12 / 格式 v4）。
+ * 跨端备份的锚点（0.12 / 格式 v5）。
  *
  * 这份测试做五件事：
- * 1. 生成 `fixtures/backup/android-export-v4.json` —— Android 端导出的黄金样本，iOS 必须能读；
+ * 1. 生成 `fixtures/backup/android-export-v5.json` —— Android 端导出的黄金样本，iOS 必须能读；
  *    样本里带一张头像 jpeg 与一张聊天 png（base64），跨端要能逐字节解回来；
- * 2. 如果仓库里有 `fixtures/backup/ios-export-v4.json`，读回来断言关键字段还在；v3 仍可读；
+ *    同时带上 v5 的三个人设引导字段（worldJson / speechStyleJson / activityJson）；
+ * 2. 如果仓库里有 `fixtures/backup/ios-export-v5.json`，读回来断言关键字段还在；v4/v3 仍可读；
  * 3. **v1/v2 样本必须永远能读**：旧备份里的开关、节奏、额度字段被忽略，
  *    没有 `media` 时行为与本轮之前完全一致（图片只剩文字 + warning）；
  * 4. 任何一份样本都不允许带密钥字段 / 设备沙盒路径；
- * 5. v4 的 JSON 结构（provider 字段、字段名、大小写、base64 无换行）逐项钉死。
+ * 5. v5 的 JSON 结构（provider 字段、引导字段、字段名、大小写、base64 无换行）逐项钉死。
  *
  * 样本是写进仓库的，不是运行时临时文件：谁改了备份格式而没改另一端，测试立刻红。
  */
 class BackupFixtureTest {
 
     @Test
-    fun `生成 Android 端的 v4 黄金样本`() {
+    fun `生成 Android 端的 v5 黄金样本`() {
         val json = BackupCodec.encode(sampleBundle())
         assertTrue(BackupCodec.decode(json) is BackupDecodeResult.Success)
         assertTrue(!BackupCodec.containsSecretField(json))
@@ -45,20 +46,20 @@ class BackupFixtureTest {
 
         val dir = File("../fixtures/backup")
         dir.mkdirs()
-        val target = File(dir, "android-export-v4.json")
+        val target = File(dir, "android-export-v5.json")
         target.writeText(json)
         assertTrue(target.length() > 0)
         println("fixture written: " + target.absolutePath + " (" + target.length() + " bytes)")
     }
 
     @Test
-    fun `v4 样本往返后关键字段与图片字节仍然一致`() {
+    fun `v5 样本往返后关键字段与图片字节仍然一致`() {
         val original = sampleBundle()
         val decoded = BackupCodec.decode(BackupCodec.encode(original))
         val bundle = (decoded as BackupDecodeResult.Success).bundle
 
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(4, bundle.formatVersion)
+        assertEquals(5, bundle.formatVersion)
 
         val persona = bundle.personas.single()
         assertEquals(listOf("慢热", "嘴硬心软"), persona.traits)
@@ -73,6 +74,13 @@ class BackupFixtureTest {
         assertEquals(8, persona.wakeThreshold)
         assertTrue(persona.dndOnSleep)
         assertEquals("头像只写裸文件名", "avatar-fixture.jpg", persona.avatarUri)
+        // v5：人设引导字段原样往返。
+        assertTrue(persona.worldJson!!.contains("临港新城·云筑建筑事务所"))
+        assertTrue(persona.speechStyleJson!!.contains("简短直接"))
+        assertTrue(persona.activityJson!!.contains("在事务所赶第三版方案"))
+        val preset = bundle.presets.single()
+        assertTrue(preset.worldJson!!.contains("临港新城·云筑建筑事务所"))
+        assertTrue(preset.speechStyleJson!!.contains("简短直接"))
 
         // 一人一段：样本里只有一段，读回来也必须只有一段。
         assertEquals(1, bundle.sessions.size)
@@ -115,7 +123,7 @@ class BackupFixtureTest {
      * `data` 必须是标准 base64 且不带换行。
      */
     @Test
-    fun `v4 media 与 provider 的 JSON 结构逐项钉死`() {
+    fun `v5 media 与 provider 的 JSON 结构逐项钉死`() {
         val json = BackupCodec.encode(sampleBundle())
         // v4：provider 总是写出来（即使默认值），且只写 provider、不写 Key。
         assertTrue("v4 必须写 apiConfigs[].webToolsProvider", json.contains("\"webToolsProvider\":\"TAVILY\""))
@@ -142,6 +150,41 @@ class BackupFixtureTest {
         // bytes 是 JSON 数字，不是字符串。
         assertTrue(json.contains("\"bytes\":$JPEG_BYTES"))
         assertTrue(json.contains("\"bytes\":$PNG_BYTES"))
+
+        // v5：引导字段必须写出来（可空字段只有「有值」时才出现），且字段名与 iOS 一致。
+        listOf("\"worldJson\":", "\"speechStyleJson\":", "\"activityJson\":").forEach { marker ->
+            assertTrue("v5 备份缺少 $marker", json.contains(marker))
+        }
+    }
+
+    /**
+     * v4 样本仍然能读：它没有引导字段，读出来必须是 null（不是空字符串、更不是崩）。
+     * 这是跨端升级的基本盘：用户手里的旧备份不能因为一次格式升级变成不可读。
+     */
+    @Test
+    fun `v4 样本仍然可读且引导字段为空`() {
+        listOf("android-export-v4.json", "ios-export-v4.json").forEach { name ->
+            val file = File("../fixtures/backup/$name")
+            if (!file.exists()) {
+                println("skip: 没有找到 $name")
+                return@forEach
+            }
+            val result = BackupCodec.decode(file.readText())
+            val success = result as? BackupDecodeResult.Success
+            assertTrue("v4 样本 $name 读不出来：$result", success != null)
+            val bundle = success!!.bundle
+            assertEquals(5, bundle.formatVersion)
+            assertTrue(
+                "读 v4 要留一句格式提醒",
+                success.warnings.any { it is BackupWarning.OlderFormat && it.version == 4 }
+            )
+            val persona = bundle.personas.first()
+            assertNull("v4 没有世界预设", persona.worldJson)
+            assertNull("v4 没有话风", persona.speechStyleJson)
+            assertNull("v4 没有当前活动", persona.activityJson)
+            assertTrue("v4 的其余数据仍然在", persona.name.isNotBlank())
+            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+        }
     }
 
     @Test
@@ -157,7 +200,7 @@ class BackupFixtureTest {
             assertTrue("v1 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals("读 v1 备份时要按 v4 尽力读出来", 4, bundle.formatVersion)
+            assertEquals("读 v1 备份时要按当前格式尽力读出来", 5, bundle.formatVersion)
             assertTrue(bundle.personas.isNotEmpty())
             assertTrue(bundle.memories.isNotEmpty())
             assertTrue(bundle.sessions.isNotEmpty())
@@ -191,7 +234,7 @@ class BackupFixtureTest {
             assertTrue("v2 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals(4, bundle.formatVersion)
+            assertEquals(5, bundle.formatVersion)
             // v2 → v3 会留一句「旧格式尽力读」的提醒。
             assertTrue(
                 "读 v2 要留一句格式提醒",
@@ -204,10 +247,10 @@ class BackupFixtureTest {
     }
 
     @Test
-    fun `iOS 导出的 v4 样本 Android 也接得住`() {
-        val file = File("../fixtures/backup/ios-export-v4.json")
+    fun `iOS 导出的 v5 样本 Android 也接得住`() {
+        val file = File("../fixtures/backup/ios-export-v5.json")
         if (!file.exists()) {
-            println("skip: 还没有 iOS 导出的 v4 样本（iOS 端并行实现；不存在时跳过）")
+            println("skip: 还没有 iOS 导出的 v5 样本（iOS 端并行实现；不存在时跳过）")
             return
         }
         val result = BackupCodec.decode(file.readText())
@@ -215,7 +258,7 @@ class BackupFixtureTest {
         assertTrue("iOS 导出的 v3 备份读不出来：$result", success != null)
         val bundle = success!!.bundle
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(4, bundle.formatVersion)
+        assertEquals(5, bundle.formatVersion)
         assertTrue(bundle.personas.isNotEmpty())
         assertTrue(bundle.sessions.isNotEmpty())
         // 一人一段：同一人格不允许出现两段（备份是接口契约，iOS 也要满足）。
@@ -244,7 +287,7 @@ class BackupFixtureTest {
             val success = result as? BackupDecodeResult.Success
             assertTrue("v3 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
-            assertEquals("旧格式按 v4 读出来", 4, bundle.formatVersion)
+            assertEquals("旧格式按当前格式读出来", 5, bundle.formatVersion)
             assertTrue(
                 "读 v3 要留一句格式提醒",
                 success.warnings.any { it is BackupWarning.OlderFormat && it.version == 3 }
@@ -257,7 +300,7 @@ class BackupFixtureTest {
     }
 
     @Test
-    fun `v4 样本里的 provider 往返后仍然一致`() {
+    fun `v5 样本里的 provider 往返后仍然一致`() {
         val bundle = BackupBundle(
             personas = listOf(BackupPersona(id = "p-1", name = "阿深")),
             apiConfigs = listOf(
@@ -333,7 +376,20 @@ class BackupFixtureTest {
                     extractionEvery = 8,
                     sleepEnabled = true,
                     wakeThreshold = 8,
-                    dndOnSleep = true
+                    dndOnSleep = true,
+                    worldJson = "" +
+                        "{\"worldName\":\"临港新城·云筑建筑事务所\"," +
+                        "\"era\":\"当代，中国沿海新一线城市，2026 年\"," +
+                        "\"description\":\"他带着六人小组负责一个高层住宅项目。\"," +
+                        "\"schedule\":[{\"day\":\"工作日\",\"start\":\"09:00\",\"end\":\"18:30\",\"activity\":\"画图、审图\"}]," +
+                        "\"relationships\":[{\"name\":\"母亲\",\"relation\":\"母亲\",\"note\":\"每周三晚打电话\"}]," +
+                        "\"obligations\":[\"按节点交图\"]}",
+                    speechStyleJson = "" +
+                        "{\"tone\":\"简短直接，偏冷淡务实\",\"phrases\":[\"在忙，晚点说\",\"嗯，知道了\"]," +
+                        "\"habits\":[\"句子很短\"],\"avoid\":[\"长篇大论\"]}",
+                    activityJson = "" +
+                        "{\"kind\":\"WORK\",\"activity\":\"在事务所赶第三版方案\"," +
+                        "\"until\":1794505400000,\"availability\":\"BUSY\"}"
                 )
             ),
             memories = listOf(
@@ -431,7 +487,9 @@ class BackupFixtureTest {
                     prompt = "你是他安静的朋友。",
                     avatarSeed = 3,
                     createdAt = now - 172_800_000L,
-                    updatedAt = now - 172_800_000L
+                    updatedAt = now - 172_800_000L,
+                    worldJson = "{\"worldName\":\"临港新城·云筑建筑事务所\"}",
+                    speechStyleJson = "{\"tone\":\"简短直接\"}"
                 )
             ),
             proactiveRules = listOf(

@@ -214,7 +214,10 @@ class MediaReferenceGcTest {
         assertTrue("门面用批量引用查询", janitor.contains("referencedNames("))
         val storage = File("src/main/java/com/myfriend/app/util/MediaStorage.kt").readText()
         assertTrue("单点函数存在", storage.contains("suspend fun deleteIfUnreferenced("))
-        assertTrue("先查引用再删", storage.contains("referenced = referrer("))
+        assertTrue(
+            "引用查询与删除在同一个进程级临界区里（0.12 遗留缺陷 2）",
+            storage.contains("deleteUnreferencedFilesWithReferrer(")
+        )
         assertTrue(
             "归属守卫与引用守卫在同一个函数里",
             storage.contains("MediaOwnership.isWithin(file, roots)")

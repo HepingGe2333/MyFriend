@@ -25,17 +25,29 @@ final class PromptBuilderTests: XCTestCase {
     // MARK: - 段落顺序
 
     func testSystemPromptSegmentOrderMatchesAndroid() {
-        let text = PromptBuilder.systemPrompt(fullInput())
+        var input = fullInput()
+        input.personaName = "林深"
+        input.worldBlock = "\n\n# 你所在的世界\n当代，沿海城市。"
+        input.speechStyleBlock = "\n\n# 你怎么说话\n- 句子短。"
+        input.relationshipBlock = "\n\n# 你们的关系\n认识很多年。"
+        let text = PromptBuilder.systemPrompt(input)
+        let firstPersonRuleText = PromptBuilder.firstPersonRule(name: "林深")
+        // 规范 §1 的顺序：身份 → 世界 → 此刻状态 → 心情 → 话风 → 关系 → 记忆 → 摘要 →
+        // `---` → 主动能力 → 工具 → 边界 → 心情引导。
         let markers = [
             "【人格】",
-            "## 你记得的事",
-            "【更早之前你记得的】",
+            "# 你所在的世界",
+            "## 你此刻的状态",
             "## 你现在的心情",
             "今天话可以少一点",
-            "## 你此刻的状态",
+            "# 你怎么说话",
+            "# 你们的关系",
+            "## 你记得的事",
+            "【更早之前你记得的】",
             "\n\n---\n",
             "## 你可以主动联系对方",
             "## 你可以调用这些工具",
+            "# 边界",
             "## 心里那句话"
         ]
         var lastIndex = text.startIndex
@@ -46,8 +58,10 @@ final class PromptBuilderTests: XCTestCase {
             }
             lastIndex = range.upperBound
         }
-        // 人格在最前、心情引导在最后：这两条是最容易被人「顺手」挪动的。
-        XCTAssertTrue(text.hasPrefix("【人格】"))
+        // 身份在最前（`# 你是谁` + 第一人称规则，正文紧跟）、心情引导在最后：
+        // 这两条是最容易被人「顺手」挪动的。
+        XCTAssertTrue(text.hasPrefix("# 你是谁"))
+        XCTAssertTrue(text.contains(firstPersonRuleText))
         XCTAssertTrue(text.hasSuffix("……"))
     }
 
@@ -56,19 +70,30 @@ final class PromptBuilderTests: XCTestCase {
         let presence = try XCTUnwrap(text.range(of: "## 你此刻的状态"))
         let capability = try XCTUnwrap(text.range(of: "## 你可以主动联系对方"))
         // 记忆块自己开头也有一条 `---`（Android 的格式），所以从「此刻状态」之后再找分隔线。
-        let separator = try XCTUnwrap(text.range(of: "\n\n---\n", range: presence.upperBound..<text.endIndex))
+        // 「设定」与「规则」之间只有一条分隔线，且它后面**紧接着**主动唤醒能力。
+        let separator = try XCTUnwrap(
+            text.range(of: "\n\n---\n", options: .backwards, range: presence.upperBound..<capability.lowerBound)
+        )
         XCTAssertTrue(presence.lowerBound < separator.lowerBound)
         XCTAssertEqual(separator.upperBound, capability.lowerBound, "分隔线后面紧接着主动唤醒能力")
     }
 
     /// 空的可选段（没记忆、没摘要、没状态、没引导）不能留下多余的空行或标题。
+    ///
+    /// 唯一**永远存在**的可选段是「边界」：它是规范 §1.1 的硬约束，不能因为字段都没填就消失。
     func testEmptyOptionalSegmentsAddNothing() {
         let text = PromptBuilder.systemPrompt(SystemPromptInput(
             personaText: "人格", memoriesBlock: "", earlierMemoryBlock: "",
             moodBlock: "", moodPaceBlock: "", presenceBlock: "", moodNudgeBlock: "",
             proactiveCapability: "P", toolsCapability: "T"
         ))
-        XCTAssertEqual(text, "人格\n\n---\nP\n\nT")
+        XCTAssertEqual(
+            text,
+            "# 你是谁\n" + PromptBuilder.firstPersonRule(name: "") + "\n\n人格"
+                + "\n\n---\nP\n\nT\n\n" + PromptBuilder.defaultBoundary
+        )
+        XCTAssertFalse(text.contains("## 你此刻的状态"))
+        XCTAssertFalse(text.contains("## 你现在的心情"))
     }
 
     /// 默认输入里就带主动唤醒与工具能力（这两段不能忘）。
@@ -244,7 +269,7 @@ final class PromptBuilderTests: XCTestCase {
         )
     }
 
-    /// 五个字段全填：`## 你是谁` 下面按「性格 / 喜欢 / 习惯 / 过去 / 设定」分小节。
+    /// 五个字段全填：`# 你是谁` 下面按「性格 / 喜欢 / 习惯 / 过去 / 设定」分小节。
     func testPersonaSectionRendersEveryFilledField() {
         let section = PromptBuilder.personaSection(persona(
             traits: ["慢热", "嘴硬心软"],
@@ -253,7 +278,8 @@ final class PromptBuilderTests: XCTestCase {
             backstory: "在旧书店长大。",
             quirks: "叫他阿迟。"
         ))
-        XCTAssertTrue(section.hasPrefix("## 你是谁"))
+        XCTAssertTrue(section.hasPrefix("# 你是谁"))
+        XCTAssertTrue(section.contains("第一人称"), "身份段必须写明第一人称、不是助手")
         XCTAssertTrue(section.contains("你叫林岸，住在海边，说话慢一点。"), "自由文本提示词必须在")
         XCTAssertTrue(section.contains("### 性格"))
         XCTAssertTrue(section.contains("- 慢热"))
@@ -279,7 +305,11 @@ final class PromptBuilderTests: XCTestCase {
     /// 没填的字段整节不出现（不占位、不留空标题）。
     func testPersonaSectionOmitsEmptyFields() {
         let section = PromptBuilder.personaSection(persona())
-        XCTAssertEqual(section, "## 你是谁\n你叫林岸，住在海边，说话慢一点。")
+        XCTAssertEqual(
+            section,
+            "# 你是谁\n" + PromptBuilder.firstPersonRule(name: "林岸")
+                + "\n\n你叫林岸，住在海边，说话慢一点。"
+        )
         XCTAssertFalse(section.contains("### 性格"))
         XCTAssertFalse(section.contains("### 过去"))
     }
@@ -300,8 +330,110 @@ final class PromptBuilderTests: XCTestCase {
     func testLegacyPersonaWithoutProfileFieldsStillRenders() {
         let legacy = PersonaEntity(id: "p-2", name: "他", description: "一个朋友", prompt: "")
         let section = PromptBuilder.personaSection(legacy)
-        XCTAssertEqual(section, "## 你是谁\n你叫他。一个朋友")
+        XCTAssertEqual(
+            section,
+            "# 你是谁\n" + PromptBuilder.firstPersonRule(name: "他") + "\n\n你叫他。一个朋友"
+        )
         XCTAssertFalse(section.contains("###"))
+    }
+
+    // MARK: - 人设引导（0.12，`spec/persona-guidance/README.md` §1 / §6.3）
+
+    /// 世界、话风、边界三节都在；常用语最多引用 6 条；不出现第三人称模板占位。
+    func testGuidanceSectionsIncludeWorldStyleAndBoundary() {
+        let world = WorldPreset(
+            worldName: "临港新城·云筑建筑事务所",
+            era: "当代，中国沿海新一线城市，2026 年",
+            description: "事务所竞争激烈，甲方频繁改图。",
+            schedule: [WorldScheduleItem(day: "工作日", start: "09:00", end: "18:30",
+                                         activity: "在事务所画图、审图")],
+            relationships: [WorldRelationship(name: "母亲", relation: "母亲", note: "每周三晚打电话")],
+            obligations: ["按节点交图"]
+        )
+        let style = SpeechStyle(
+            tone: "简短直接，偏冷淡务实",
+            phrases: ["在忙，晚点说", "别想太多", "你先睡吧", "嗯，知道了", "我到了", "烦",
+                      "今天可能回不去吃饭了", "晚点给你电话"],
+            habits: ["句子很短"],
+            avoid: ["长篇大论"]
+        )
+        let now: Int64 = 1_795_000_000_000
+        let input = SystemPromptInput(
+            personaText: PromptBuilder.personaSection(
+                PersonaEntity(id: "p-1", name: "林深", prompt: "你在事务所画图。")
+            ),
+            personaName: "林深",
+            worldBlock: PromptBuilder.worldSection(world),
+            stateBlock: PromptBuilder.stateSection(
+                now: now,
+                activity: PersonaActivity(
+                    kind: .work, activity: "在事务所赶第三版方案", minutes: 90,
+                    availability: .busy, startedAt: now
+                )
+            ),
+            speechStyleBlock: PromptBuilder.speechStyleSection(style),
+            relationshipBlock: PromptBuilder.relationshipSection(
+                persona: PersonaEntity(id: "p-1", name: "林深", description: "认识很多年的朋友")
+            )
+        )
+        let text = PromptBuilder.systemPrompt(input)
+
+        // 六节齐全，且顺序固定（身份 → 世界 → 状态 → 话风 → 关系 → 边界）。
+        for marker in ["# 你是谁", "# 你所在的世界", "# 你此刻的状态", "# 你怎么说话",
+                       "# 你们的关系", "# 边界"] {
+            XCTAssertTrue(text.contains(marker), "缺这一节：\(marker)")
+        }
+        var cursor = text.startIndex
+        for marker in ["# 你是谁", "# 你所在的世界", "# 你此刻的状态", "# 你怎么说话",
+                       "# 你们的关系", "# 边界"] {
+            guard let range = text.range(of: marker, range: cursor..<text.endIndex) else {
+                XCTFail("顺序错位：\(marker)")
+                return
+            }
+            cursor = range.upperBound
+        }
+        // 世界细节、忙碌状态、常用语都在。
+        XCTAssertTrue(text.contains("在事务所画图、审图"))
+        XCTAssertTrue(text.contains("母亲"))
+        XCTAssertTrue(text.contains("在事务所赶第三版方案"))
+        XCTAssertTrue(text.contains("不谎称有空") || text.contains("明确说自己几点后再说"))
+        // phrases 最多 6 条（§1.1 第 4 条 / §6.3）。
+        let quotedPhrases = style.phrases.prefix(SpeechStyle.promptPhraseLimit)
+        for phrase in quotedPhrases {
+            XCTAssertTrue(text.contains("「\(phrase)」"), "前 6 条里缺：\(phrase)")
+        }
+        for phrase in style.phrases.dropFirst(SpeechStyle.promptPhraseLimit) {
+            XCTAssertFalse(text.contains("「\(phrase)」"), "第 7 条以后不该进提示词：\(phrase)")
+        }
+        // 不出现第三人称模板：没有 `{name}` / `{age}` 这类未替换的占位符。
+        XCTAssertFalse(text.contains("{name}"))
+        XCTAssertFalse(text.contains("{age}"))
+        XCTAssertFalse(text.contains("{occupation}"))
+        // 反例写法明确写了「不要」。
+        XCTAssertTrue(text.contains("不要用第三人称"))
+    }
+
+    /// 「此刻状态」没有活动时也要说清「没在忙什么」，不编造。
+    func testStateSectionWithoutActivitySaysNotBusy() {
+        let now: Int64 = 1_795_000_000_000
+        let text = PromptBuilder.stateSection(now: now, activity: nil)
+        XCTAssertTrue(text.contains("# 你此刻的状态"))
+        XCTAssertTrue(text.contains("没在忙什么"))
+        // 没有时间（now = 0）时整节不加：老调用点行为不变。
+        XCTAssertEqual(PromptBuilder.stateSection(now: 0, activity: nil), "")
+    }
+
+    /// 过期的活动不再影响语气（§4：到 until 自动失效）。
+    func testExpiredActivityIsIgnoredInPrompt() {
+        let now: Int64 = 1_800_000_000_000
+        let expired = PersonaActivity(
+            kind: .work, activity: "在开会", minutes: 30, availability: .busy,
+            startedAt: now - 60 * 60_000
+        )
+        XCTAssertFalse(expired.isActive(now: now))
+        let text = PromptBuilder.stateSection(now: now, activity: expired)
+        XCTAssertFalse(text.contains("在开会"))
+        XCTAssertTrue(text.contains("没在忙什么"))
     }
 
     // MARK: - 图片消息（多模态报文）

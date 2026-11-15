@@ -64,7 +64,7 @@ import java.util.Locale
  *   聊天背景图片是设备上的路径，不导；
  * - 孤儿图片文件不导：只收集本机当前还引用得到的头像与聊天图片。
  */
-const val BACKUP_FORMAT_VERSION: Int = 4
+const val BACKUP_FORMAT_VERSION: Int = 5
 
 /** 写在文件里的格式标记：拿错文件时能早点说「这不是他的备份」。 */
 const val BACKUP_FORMAT_NAME: String = "myfriend.backup"
@@ -159,7 +159,15 @@ data class BackupPersona(
     /** 睡眠中被唤醒需要的连续消息数（1–20）。 */
     val wakeThreshold: Int = 6,
     /** 睡前免打扰（模型可改，用户不能直接改）。 */
-    val dndOnSleep: Boolean = false
+    val dndOnSleep: Boolean = false,
+
+    // ---- v5：人设引导（世界预设 / 话风 / 当前活动） -------------------------
+    /** 世界预设 JSON（`WorldPresetCodec`）；旧备份没有这个字段，读出来是 null。 */
+    val worldJson: String? = null,
+    /** 话风 JSON（`SpeechStyleCodec`）。 */
+    val speechStyleJson: String? = null,
+    /** 当前活动 JSON（`PersonaActivityCodec`）；跨端接回来时如果已经过期，读取端会当作「没在忙」。 */
+    val activityJson: String? = null
 )
 
 /** 一条长期记忆，连「它还剩下多少分量」一起带走。 */
@@ -274,7 +282,10 @@ data class BackupPreset(
     val avatarUri: String? = null,
     val avatarSeed: Int = 0,
     val createdAt: Long = 0L,
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    /** v5：预设也可以带世界与话风；应用到人格时复制一份。 */
+    val worldJson: String? = null,
+    val speechStyleJson: String? = null
 )
 
 /** 他给自己定的主动节奏（每天几点 / 每几小时）。 */
@@ -712,7 +723,10 @@ fun PersonaEntity.toBackupPersona(): BackupPersona = BackupPersona(
     extractionEvery = extractionEvery.coerceIn(3, 12),
     sleepEnabled = sleepEnabled,
     wakeThreshold = SleepPolicy.normalizeThreshold(wakeThreshold),
-    dndOnSleep = dndOnSleep
+    dndOnSleep = dndOnSleep,
+    worldJson = worldJson,
+    speechStyleJson = speechStyleJson,
+    activityJson = activityJson
 )
 
 fun BackupPersona.toEntity(): PersonaEntity = PersonaEntity(
@@ -747,7 +761,10 @@ fun BackupPersona.toEntity(): PersonaEntity = PersonaEntity(
     extractionEvery = extractionEvery.coerceIn(3, 12),
     sleepEnabled = sleepEnabled,
     wakeThreshold = SleepPolicy.normalizeThreshold(wakeThreshold),
-    dndOnSleep = dndOnSleep
+    dndOnSleep = dndOnSleep,
+    worldJson = worldJson,
+    speechStyleJson = speechStyleJson,
+    activityJson = activityJson
 )
 
 fun MemoryEntity.toBackupMemory(): BackupMemory = BackupMemory(
@@ -900,7 +917,9 @@ fun PersonaPresetEntity.toBackupPreset(): BackupPreset = BackupPreset(
     avatarUri = BackupAvatarPath.portable(avatarUri),
     avatarSeed = avatarSeed,
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    worldJson = worldJson,
+    speechStyleJson = speechStyleJson
 )
 
 fun BackupPreset.toEntity(): PersonaPresetEntity = PersonaPresetEntity(
@@ -912,7 +931,9 @@ fun BackupPreset.toEntity(): PersonaPresetEntity = PersonaPresetEntity(
     avatarUri = avatarUri,
     avatarSeed = avatarSeed,
     createdAt = createdAt,
-    updatedAt = updatedAt
+    updatedAt = updatedAt,
+    worldJson = worldJson,
+    speechStyleJson = speechStyleJson
 )
 
 fun ProactiveRuleEntity.toBackupRule(): BackupProactiveRule = BackupProactiveRule(

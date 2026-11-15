@@ -17,6 +17,7 @@ import com.myfriend.app.domain.MoodBehavior
 import com.myfriend.app.domain.ProactiveCapInput
 import com.myfriend.app.domain.MoodTuning
 import com.myfriend.app.domain.MoodState
+import com.myfriend.app.domain.PersonaActivityCodec
 import com.myfriend.app.domain.ProactiveLevel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -96,6 +97,15 @@ class HeartbeatController @Inject constructor(
             return Beat(why = "他在睡觉")
         }
 
+        // 0.12 人设引导（规范 §4）：此刻在忙就别主动开口。
+        // 这与安静时段是两件可以同时存在的事：安静 = 不被打扰，活动 = 我在做事。
+        // 到 until 自动失效，由这里读取时判断，不另设定时任务。
+        val activity = runCatching { PersonaActivityCodec.decode(persona.activityJson) }.getOrNull()
+        val activityAvailability = activity?.availabilityAt(now)
+        if (activityAvailability == com.myfriend.app.domain.ActivityAvailability.BUSY) {
+            return Beat(why = "他正忙着：${activity?.activity.orEmpty().take(40)}")
+        }
+
         // 刚聊完先安静一会儿：收尾期不是「概率低一点」，而是这段时间根本不掷骰子。
         // 否则 p(0)=0.35 每半分钟掷一次，一分钟内六成会触发，「先降后升」等于不存在。
         val snapshot = snapshotFor(persona, settings, now)
@@ -113,7 +123,13 @@ class HeartbeatController @Inject constructor(
         // 拿的是上一次真正决定的节拍间隔（低电量时是 2 分钟），不是写死的 30 秒。
         val perMinute = Heartbeat.probability(minutes, snapshot.mood, now, hourOfDay(now))
         // 1.9：主动程度（人格字段）给心跳一个权重。1 的人很少心动，5 的人明显更黏。
-        val weighted = perMinute * ProactiveLevel.heartbeatWeight(persona.proactiveLevel)
+        // LIMITED：可以想起你，但明显更少（沿用同一条心跳曲线，只降权）。
+        val activityWeight = if (activityAvailability == com.myfriend.app.domain.ActivityAvailability.LIMITED) {
+            com.myfriend.app.domain.PersonaActivity.LIMITED_PROACTIVE_FACTOR
+        } else {
+            1.0
+        }
+        val weighted = perMinute * ProactiveLevel.heartbeatWeight(persona.proactiveLevel) * activityWeight
         val perBeat = Heartbeat.perBeatProbability(weighted, intervalMinutes()).coerceIn(0.0, 1.0)
         if (!Heartbeat.shouldFire(perBeat, roll)) return Beat(why = "")
 

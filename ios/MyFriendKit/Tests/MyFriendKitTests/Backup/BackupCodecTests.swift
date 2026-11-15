@@ -45,17 +45,17 @@ final class BackupCodecTests: XCTestCase {
         let reason = try? XCTUnwrap(result.failureReason)
         XCTAssertTrue(reason?.contains("v99") ?? false)
         XCTAssertTrue(reason?.contains("升级") ?? false)
-        XCTAssertTrue(reason?.contains("v4") ?? false)
+        XCTAssertTrue(reason?.contains("v\(BackupCodec.formatVersion)") ?? false)
     }
 
     func testLowerFormatVersionDecodesWithWarning() throws {
         let result = try success(#"{"format":"myfriend.backup","formatVersion":0,"personas":[{"id":"p1"}]}"#)
         XCTAssertEqual(result.bundle?.personas.count, 1)
-        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v4 尽力读出来"))
+        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v\(BackupCodec.formatVersion) 尽力读出来"))
         // v1 及更早的备份还要多一句：旧开关不再生效、一人只留最新一段（§八）。
         XCTAssertTrue(result.warnings.contains { $0.contains("1.9 之前的备份") })
         // 读进来以后统一按本机版本记，再导出不会把 v0 传下去。
-        XCTAssertEqual(result.bundle?.formatVersion, 4)
+        XCTAssertEqual(result.bundle?.formatVersion, BackupCodec.formatVersion)
     }
 
     // MARK: - 宽容：缺字段 / 未知字段 / 部分损坏
@@ -67,7 +67,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(bundle.messages.count, 0)
         XCTAssertNil(bundle.settings, "没写设置就不该覆盖本机设置")
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertTrue(result.warnings.contains("这份备份里没有他：既没有人格也没有记忆和对话"))
     }
 
@@ -75,7 +75,7 @@ final class BackupCodecTests: XCTestCase {
         let raw = """
         {
           "format": "myfriend.backup",
-          "formatVersion": 4,
+          "formatVersion": \(BackupCodec.formatVersion),
           "futureSection": [1, 2, 3],
           "personas": [
             {"id": "p1", "name": "他", "futureField": {"nested": [1, 2]}}
@@ -308,7 +308,9 @@ final class BackupCodecTests: XCTestCase {
              // 1.9 的细分字段（§三）
              "traits", "likes", "behaviors", "backstory", "quirks",
              "proactiveLevel", "memoryRetention", "extractionEvery",
-             "sleepEnabled", "wakeThreshold", "dndOnSleep"]
+             "sleepEnabled", "wakeThreshold", "dndOnSleep",
+             // v5 的人设引导（§1/§2/§3/§4）
+             "worldJson", "speechStyleJson", "activityJson"]
         )
         XCTAssertEqual(
             try keys(of: "memories"),
@@ -348,7 +350,9 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(
             try keys(of: "presets"),
             ["id", "name", "description", "prompt", "category", "avatarUri", "avatarSeed",
-             "createdAt", "updatedAt"]
+             "createdAt", "updatedAt",
+             // v5：预设也带世界与话风
+             "worldJson", "speechStyleJson"]
         )
         // 两条规则：DAILY 有 timeOfDayMinutes、INTERVAL 有 intervalMinutes，同样取并集。
         let expectedRuleKeys: Set<String> = [

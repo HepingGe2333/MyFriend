@@ -91,6 +91,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.myfriend.app.ui.common.ErrorText
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
+import com.myfriend.app.domain.PersonaActivity
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaTrait
 import com.myfriend.app.domain.ProactiveLevel
@@ -102,7 +103,9 @@ import com.myfriend.app.ui.components.ConfirmDialog
 import com.myfriend.app.ui.components.PersonaAvatar
 import com.myfriend.app.ui.components.PrimaryButton
 import com.myfriend.app.ui.components.SectionLabel
+import com.myfriend.app.ui.components.SpeechStyleCard
 import com.myfriend.app.ui.components.StyledOutlinedField
+import com.myfriend.app.ui.components.WorldPresetCard
 import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.ui.theme.avatarPalette
@@ -321,6 +324,17 @@ fun PersonaEditorScreen(
                         onAddTrait = viewModel::addTrait,
                         onTrait = viewModel::updateTrait,
                         onRemoveTrait = viewModel::removeTrait
+                    )
+
+                    PersonaGuidanceSection(
+                        form = state.form,
+                        currentActivity = state.currentActivity,
+                        worldFilling = state.worldFilling,
+                        speechSummarizing = state.speechSummarizing,
+                        onUpdate = viewModel::update,
+                        onFillWorld = viewModel::fillWorldWithAi,
+                        onSummarizeSpeech = viewModel::summarizeSpeech,
+                        onClearSpeech = viewModel::clearSpeech
                     )
 
                     SectionLabel(stringResource(R.string.persona_editor_api_section))
@@ -831,6 +845,96 @@ private fun CategorySection(category: String, onCategory: (String) -> Unit) {
         label = stringResource(R.string.persona_editor_category_custom_label),
         singleLine = true
     )
+}
+
+/**
+ * 世界与话风：可以覆盖从预设带进来的那一份，也可以在这里现填。
+ *
+ * 「当前活动」只读：那是模型用 `set_activity` 自己声明的，用户改不了（规范 §4），
+ * 这里只让用户看见「他正在做什么」。
+ */
+@Composable
+private fun PersonaGuidanceSection(
+    form: PersonaForm,
+    currentActivity: PersonaActivity?,
+    worldFilling: Boolean,
+    speechSummarizing: Boolean,
+    onUpdate: ((PersonaForm) -> PersonaForm) -> Unit,
+    onFillWorld: () -> Unit,
+    onSummarizeSpeech: () -> Unit,
+    onClearSpeech: () -> Unit
+) {
+    SectionLabel(stringResource(R.string.persona_editor_guidance_section))
+    Text(
+        stringResource(R.string.persona_editor_guidance_hint),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+    Spacer(Modifier.height(8.dp))
+    WorldPresetCard(
+        worldName = form.worldName,
+        era = form.era,
+        description = form.worldDescription,
+        scheduleJson = form.scheduleJson,
+        relationshipsJson = form.relationshipsJson,
+        obligationsText = form.obligationsText,
+        onWorldName = { value -> onUpdate { it.copy(worldName = value) } },
+        onEra = { value -> onUpdate { it.copy(era = value) } },
+        onDescription = { value -> onUpdate { it.copy(worldDescription = value) } },
+        onScheduleJson = { value -> onUpdate { it.copy(scheduleJson = value) } },
+        onRelationshipsJson = { value -> onUpdate { it.copy(relationshipsJson = value) } },
+        onObligationsText = { value -> onUpdate { it.copy(obligationsText = value) } },
+        onAiFill = onFillWorld,
+        aiFilling = worldFilling,
+        aiHint = null
+    )
+    Spacer(Modifier.height(10.dp))
+    SpeechStyleCard(
+        sampleText = form.speechSample,
+        tone = form.speechTone,
+        phrases = form.speechPhrases,
+        habitsText = form.speechHabits,
+        avoidText = form.speechAvoid,
+        source = form.speechSource.takeIf { it.isNotBlank() },
+        summarizing = speechSummarizing,
+        onSampleText = { value -> onUpdate { it.copy(speechSample = value) } },
+        onSummarize = onSummarizeSpeech,
+        onClear = onClearSpeech,
+        onTone = { value -> onUpdate { it.copy(speechTone = value) } },
+        onPhrases = { value -> onUpdate { it.copy(speechPhrases = value) } },
+        onHabitsText = { value -> onUpdate { it.copy(speechHabits = value) } },
+        onAvoidText = { value -> onUpdate { it.copy(speechAvoid = value) } }
+    )
+    Spacer(Modifier.height(14.dp))
+    SectionLabel(stringResource(R.string.persona_editor_activity_section))
+    Text(
+        text = activityLine(currentActivity),
+        style = MaterialTheme.typography.bodyMedium,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+    if (currentActivity?.isActive(System.currentTimeMillis()) == true) {
+        Text(
+            text = stringResource(
+                when (currentActivity.availability) {
+                    com.myfriend.app.domain.ActivityAvailability.BUSY -> R.string.persona_editor_activity_busy
+                    com.myfriend.app.domain.ActivityAvailability.LIMITED -> R.string.persona_editor_activity_limited
+                    com.myfriend.app.domain.ActivityAvailability.FREE -> R.string.persona_editor_activity_free
+                }
+            ),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp, start = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun activityLine(activity: PersonaActivity?): String {
+    if (activity == null || !activity.isActive(System.currentTimeMillis())) {
+        return stringResource(R.string.persona_editor_activity_none)
+    }
+    return stringResource(R.string.persona_editor_activity_line, activity.activity, activity.formatUntil())
 }
 
 // ---------------------------------------------------------------------------

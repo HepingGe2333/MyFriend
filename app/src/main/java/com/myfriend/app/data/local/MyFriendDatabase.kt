@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryVersionEntity::class,
         MemoryVectorEntity::class
     ],
-    version = 12,
+    version = 13,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -60,6 +60,43 @@ abstract class MyFriendDatabase : RoomDatabase() {
         const val NAME = "myfriend.db"
 
         /**
+         * v13：人设引导（`spec/persona-guidance/README.md` §2 / §3 / §4）。
+         *
+         * 只加可空列，不动任何既有数据：
+         * - `personas` 加 `worldJson` / `speechStyleJson` / `activityJson`；
+         * - `persona_presets` 加 `worldJson` / `speechStyleJson`（预设可以带世界与话风，
+         *   应用到人格时复制一份，之后预设变化不自动覆盖已有人格，见规范 §2.2）。
+         *
+         * 全部 `TEXT` 且默认 NULL：老库升级后读出来就是「没有世界 / 没学过话风 / 没在忙」，
+         * 行为与 v12 完全一致。
+         *
+         * 幂等：先查 `PRAGMA table_info`，列已经在就跳过。Room 跑迁移时自带事务，
+         * 但同一个 Migration 也可能被迁移测试或将来的「修复脚本」重复调用，
+         * 实现成幂等比依赖调用方更稳。
+         */
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                if ("worldJson" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `worldJson` TEXT")
+                }
+                if ("speechStyleJson" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `speechStyleJson` TEXT")
+                }
+                if ("activityJson" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `activityJson` TEXT")
+                }
+                val presetColumns = columns(db, "persona_presets")
+                if ("worldJson" !in presetColumns) {
+                    db.execSQL("ALTER TABLE `persona_presets` ADD COLUMN `worldJson` TEXT")
+                }
+                if ("speechStyleJson" !in presetColumns) {
+                    db.execSQL("ALTER TABLE `persona_presets` ADD COLUMN `speechStyleJson` TEXT")
+                }
+            }
+        }
+
+        /**
          * v12：`api_configs.webToolsProvider`（`spec/web-search/README.md` §1）。
          *
          * 只加一列，不动任何既有数据；默认 `'DEEPSEEK'`，所以老库里已有的联网配置升级后
@@ -83,8 +120,11 @@ abstract class MyFriendDatabase : RoomDatabase() {
         }
 
         /** 读 `api_configs` 现有列名（幂等迁移与测试共用同一段 SQL）。 */
-        private fun apiConfigColumns(db: SupportSQLiteDatabase): Set<String> =
-            db.query("PRAGMA table_info(`api_configs`)").use { cursor ->
+        private fun apiConfigColumns(db: SupportSQLiteDatabase): Set<String> = columns(db, "api_configs")
+
+        /** 读任意表的现有列名（v12/v13 的幂等迁移共用）。 */
+        private fun columns(db: SupportSQLiteDatabase, table: String): Set<String> =
+            db.query("PRAGMA table_info(`$table`)").use { cursor ->
                 buildSet {
                     while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
                 }

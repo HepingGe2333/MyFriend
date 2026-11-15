@@ -137,6 +137,8 @@ class PersonaRepository @Inject constructor(
             wakeThreshold = SleepPolicy.normalizeThreshold(draft.wakeThreshold),
             quietSleepMinutes = draft.quietSleepMinutes?.let(SleepPolicy::normalizeMinutes),
             quietWakeMinutes = draft.quietWakeMinutes?.let(SleepPolicy::normalizeMinutes),
+            worldJson = draft.worldJson?.trim()?.takeIf { it.isNotBlank() },
+            speechStyleJson = draft.speechStyleJson?.trim()?.takeIf { it.isNotBlank() },
             updatedAt = now
         )
         database.withTransaction {
@@ -310,7 +312,9 @@ class PersonaRepository @Inject constructor(
                 sleepEnabled = persona.sleepEnabled,
                 wakeThreshold = persona.wakeThreshold,
                 quietSleepMinutes = persona.quietSleepMinutes,
-                quietWakeMinutes = persona.quietWakeMinutes
+                quietWakeMinutes = persona.quietWakeMinutes,
+                worldJson = persona.worldJson,
+                speechStyleJson = persona.speechStyleJson
             )
         ).getOrThrow()
     }

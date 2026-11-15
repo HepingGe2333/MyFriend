@@ -238,10 +238,12 @@ final class ToolProtocolTests: XCTestCase {
 
     func testToolCatalogShape() {
         // 1.9 多了一个 `defer_reply`：模型可以用它说「这一轮先不回」（§四）。
-        XCTAssertEqual(ToolCatalog.all.count, 9)
+        // 0.12 多了一个 `set_activity`：模型可以声明「我接下来这段时间在做什么」（人设引导 §4）。
+        XCTAssertEqual(ToolCatalog.all.count, 10)
         XCTAssertEqual(ToolCatalog.all.map(\.name), [
             "think", "web_search", "web_fetch", "remember",
-            "update_persona", "set_quiet_hours", "set_mood", "recall", "defer_reply"
+            "update_persona", "set_quiet_hours", "set_activity", "set_mood", "recall",
+            "defer_reply"
         ])
         XCTAssertNotNil(ToolCatalog.byName(" recall "))
         XCTAssertNil(ToolCatalog.byName("nope"))
@@ -254,11 +256,54 @@ final class ToolProtocolTests: XCTestCase {
         // OpenAI tools 数组形状
         let json = ToolCatalog.toOpenAiToolsJson()
         let array = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
-        XCTAssertEqual(array?.count, 9)
+        XCTAssertEqual(array?.count, 10)
         XCTAssertEqual(array?.first?["type"] as? String, "function")
         let function = array?.first?["function"] as? [String: Any]
         XCTAssertEqual(function?["name"] as? String, "think")
         XCTAssertNotNil(function?["parameters"] as? [String: Any])
+    }
+
+    // MARK: - set_activity（人设引导 §4）
+
+    /// `set_activity` 的参数形状与契约一致（kind / availability 枚举、minutes 15–480）。
+    func testSetActivitySpecMatchesContract() throws {
+        let spec = try XCTUnwrap(ToolCatalog.byName("set_activity"))
+        let data = try XCTUnwrap(spec.parametersJson.data(using: .utf8))
+        let root = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let properties = try XCTUnwrap(root["properties"] as? [String: Any])
+        XCTAssertNotNil(properties["activity"])
+        XCTAssertNotNil(properties["minutes"])
+        let kind = try XCTUnwrap(properties["kind"] as? [String: Any])
+        XCTAssertEqual(kind["enum"] as? [String], ActivityKind.allCases.map(\.rawValue))
+        let availability = try XCTUnwrap(properties["availability"] as? [String: Any])
+        XCTAssertEqual(
+            availability["enum"] as? [String],
+            ActivityAvailability.allCases.map(\.rawValue)
+        )
+        let minutes = try XCTUnwrap(properties["minutes"] as? [String: Any])
+        XCTAssertEqual(minutes["minimum"] as? Int, ToolArgClamp.activityMinutesMin)
+        XCTAssertEqual(minutes["maximum"] as? Int, ToolArgClamp.activityMinutesMax)
+        // 只有 activity 是必填：模型不该因为不确定类型就不敢调用。
+        XCTAssertEqual(root["required"] as? [String], ["activity"])
+    }
+
+    /// 工具描述必须写清与 `set_quiet_hours` 的区别（规范 §4 明文要求）。
+    func testSetActivityDescriptionExplainsQuietHoursDifference() throws {
+        let activity = try XCTUnwrap(ToolCatalog.byName("set_activity"))
+        XCTAssertTrue(activity.description.contains("不是睡觉"), activity.description)
+        XCTAssertTrue(activity.description.contains("set_quiet_hours"), activity.description)
+        XCTAssertTrue(activity.description.contains("两者可以同时存在"), activity.description)
+        // 能力提示里也要有这个工具与它的取值范围。
+        let prompt = ToolCatalog.capabilityPrompt()
+        XCTAssertTrue(prompt.contains("- set_activity(activity, minutes?, kind?, availability?)"))
+        XCTAssertTrue(prompt.contains("15–480"))
+        XCTAssertTrue(prompt.contains("BUSY/LIMITED/FREE"))
+        // 动作卡片标题不裸露工具名。
+        let result = ToolResult(
+            invocation: ToolInvocation(name: "set_activity", argumentsJson: #"{"activity":"在开会"}"#),
+            ok: true, summary: "在开会", contentForModel: ""
+        )
+        XCTAssertEqual(ToolProtocol.describe(result).title, "去忙了")
     }
 
     // MARK: - 痕迹

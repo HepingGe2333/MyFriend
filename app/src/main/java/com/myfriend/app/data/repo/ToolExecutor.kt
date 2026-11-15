@@ -26,6 +26,7 @@ import com.myfriend.app.domain.MemoryDrawer
 import com.myfriend.app.domain.MemoryRow
 import com.myfriend.app.domain.MemoryScreening
 import com.myfriend.app.domain.MoodLexicon
+import com.myfriend.app.domain.PersonaActivityCodec
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaCardCodec
 import com.myfriend.app.domain.PersonaCardPatch
@@ -94,6 +95,7 @@ class ToolExecutor @Inject constructor(
             "remember" -> remember(invocation, persona, sessionId, now)
             "update_persona" -> updatePersona(invocation, persona, sessionId, now)
             "set_quiet_hours" -> setQuietHours(invocation, persona, now)
+            "set_activity" -> setActivity(invocation, persona, now)
             "set_mood" -> setMood(invocation, persona, now)
             "recall" -> recall(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
@@ -598,6 +600,69 @@ class ToolExecutor @Inject constructor(
             detail = ToolTraceText.quietHoursDetail(appContext, reason, dnd),
             modelSummary = "${formatClock(sleep)} 睡 · ${formatClock(wake)} 起",
             modelText = "作息已记下：${formatClock(sleep)} 到 ${formatClock(wake)} 是你的休息时间，这段时间不会有主动消息。$dndLine"
+        )
+    }
+
+    // ---------------------------------------------------------------- 占用时间
+
+    /**
+     * `set_activity`：接下来一段时间在做什么（规范 §4）。
+     *
+     * 与 `set_quiet_hours` 的分工写在工具描述里：安静时段是「不被打扰」，活动是「我在做事」，
+     * 两者可以同时存在。这里只落 `activityJson`；到点失效由读取方（提示词 / 心跳）判断，
+     * 不需要定时任务清理。
+     */
+    private suspend fun setActivity(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val text = invocation.argument("activity")?.trim().orEmpty()
+        if (text.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_FAILED))
+        // 夹取规则住在 :agentcore 的 ToolArgClamp（与 agentd / iOS 同一份契约，见
+        // `spec/agent-core/cases/tool-args.json` 的 activity 段）。数字写成字符串/非数字都认。
+        val effectiveMinutes = ToolArgClamp.clampActivityMinutes(
+            invocation.intArgument("minutes", ToolArgClamp.ACTIVITY_MINUTES_DEFAULT)
+        )
+        val kind = ToolArgClamp.normalizeActivityKind(invocation.argument("kind"))
+        val availability = ToolArgClamp.normalizeActivityAvailability(invocation.argument("availability"))
+        val activity = PersonaActivityCodec.fromTool(
+            kind = kind,
+            activity = text,
+            minutes = effectiveMinutes,
+            availability = availability,
+            now = now
+        )
+        runCatching {
+            personaDao.update(
+                persona.copy(
+                    activityJson = PersonaActivityCodec.encode(activity),
+                    updatedAt = now
+                )
+            )
+        }.getOrElse { return failure(invocation, it.toUserError()) }
+
+        val clock = activity.formatUntil()
+        val availabilityLine = when (activity.availability) {
+            com.myfriend.app.domain.ActivityAvailability.BUSY ->
+                "这段时间在忙，回复会更短更晚；不说自己有空。"
+            com.myfriend.app.domain.ActivityAvailability.LIMITED ->
+                "这段时间在忙，回得慢一点，但可以回。"
+            com.myfriend.app.domain.ActivityAvailability.FREE ->
+                "手头是这件事，但对方找你随时能聊。"
+        }
+        val modelText = buildString {
+            append("记下了：${activity.activity}，预计 $clock 结束（约 $effectiveMinutes 分钟）。")
+            append(availabilityLine)
+            append("对方不知道你调用了工具，也不用主动汇报；被问到再自然说。")
+        }
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.SET_ACTIVITY,
+            subtitle = ToolTraceText.activitySubtitle(appContext, activity),
+            detail = ToolTraceText.activityDetail(appContext, activity, effectiveMinutes),
+            modelSummary = "在忙：${activity.activity.take(24)} · 到 $clock",
+            modelText = modelText
         )
     }
 

@@ -207,6 +207,68 @@ final class ChatServiceTests: XCTestCase {
         return try XCTUnwrap(messages.first?["content"] as? String)
     }
 
+    // MARK: - 人设引导进提示词（0.12，§1）
+
+    /// 世界里的事实、话风、当前活动、边界都要真的出现在发出去的 system 里。
+    func testSystemPromptCarriesWorldSpeechStyleActivityAndBoundary() async throws {
+        try seedPersona()
+        var persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        persona.worldJson = WorldPreset(
+            worldName: "临港新城·云筑建筑事务所",
+            era: "当代，沿海城市",
+            description: "事务所竞争激烈，甲方频繁改图。",
+            schedule: [WorldScheduleItem(day: "工作日", start: "09:00", end: "18:30",
+                                         activity: "在事务所画图")],
+            relationships: [WorldRelationship(name: "老周", relation: "合伙人", note: "催图直接")],
+            obligations: ["按节点交图"]
+        ).jsonString()
+        persona.speechStyleJson = SpeechStyle(
+            tone: "简短直接，偏冷淡务实",
+            phrases: ["在忙，晚点说", "别想太多"],
+            habits: ["句子很短"],
+            avoid: ["长篇大论"]
+        ).jsonString()
+        let now = DomainClock.nowMillis
+        persona.activityJson = PersonaActivity(
+            kind: .work, activity: "在事务所赶第三版方案", minutes: 90,
+            availability: .busy, startedAt: now
+        ).jsonString()
+        try stores.personas.upsert(persona)
+        try seedConfig()
+        try seedSession()
+        try seedKey()
+        StubURLProtocol.enqueue(.sse("data: {\"choices\":[{\"delta\":{\"content\":\"嗯\"}}]}\n\ndata: [DONE]\n\n", splitEvery: 8))
+
+        _ = try await collect(service.send(sessionId: sessionId, text: "你在干嘛"))
+        let system = try systemPrompt()
+
+        XCTAssertTrue(system.contains("# 你是谁"))
+        XCTAssertTrue(system.contains("第一人称"), "身份段必须写明第一人称、不是助手")
+        XCTAssertTrue(system.contains("# 你所在的世界"))
+        XCTAssertTrue(system.contains("临港新城·云筑建筑事务所"))
+        XCTAssertTrue(system.contains("老周（合伙人）：催图直接")) 
+        XCTAssertTrue(system.contains("# 你此刻的状态"))
+        XCTAssertTrue(system.contains("在事务所赶第三版方案"))
+        XCTAssertTrue(system.contains("# 你怎么说话"))
+        XCTAssertTrue(system.contains("「在忙，晚点说」"))
+        XCTAssertTrue(system.contains("# 边界"))
+        XCTAssertFalse(system.contains("{name}"), "提示词里不能留未替换的占位符")
+    }
+
+    /// 没有世界/话风/活动时：不出现那几节，但不是崩——只有身份与边界。
+    func testSystemPromptWithoutGuidanceStillHasIdentityAndBoundary() async throws {
+        try seedReadySession()
+        StubURLProtocol.enqueue(.sse("data: {\"choices\":[{\"delta\":{\"content\":\"嗯\"}}]}\n\ndata: [DONE]\n\n", splitEvery: 8))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+        let system = try systemPrompt()
+        XCTAssertTrue(system.contains("# 你是谁"))
+        XCTAssertTrue(system.contains("# 边界"))
+        XCTAssertFalse(system.contains("# 你所在的世界"))
+        XCTAssertFalse(system.contains("# 你怎么说话"))
+        // 没有活动也要说清「没在忙什么」（§6.3）。
+        XCTAssertTrue(system.contains("没在忙什么"))
+    }
+
     // MARK: - 正常一轮
 
     func testSendStreamsDeltasPersistsMessagesAndRecordsUsage() async throws {

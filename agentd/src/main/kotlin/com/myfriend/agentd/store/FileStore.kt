@@ -89,6 +89,7 @@ class FileStore(
         const val MOODS_FILE = "moods.json"
         const val PRESENCE_FILE = "presence.json"
         const val USAGE_FILE = "usage.json"
+        const val PROACTIVE_STATE_FILE = "proactive_state.json"
         const val EVENTS_FILE = "events.jsonl"
         const val SESSIONS_DIR = "sessions"
         const val BLOCKS_DIR = "blocks"
@@ -140,6 +141,7 @@ class FileStore(
     private val apiConfigs = LinkedHashMap<String, ApiConfig>()
     private var settings: JsonValue.Obj = JsonValue.Obj()
     private var usage = LinkedHashMap<String, UsageTotal>()
+    private val proactiveStates = LinkedHashMap<String, ProactiveState>()
 
     /** 内存里的事件窗口（最早的会被裁剪；更早的从 [eventsFile] 读回）。 */
     private val events = ArrayDeque<StoredEvent>()
@@ -209,6 +211,25 @@ class FileStore(
     fun usage(personaId: String): UsageTotal = lock.withLock { usage[personaId] ?: UsageTotal() }
 
     fun usageAll(): Map<String, UsageTotal> = lock.withLock { LinkedHashMap(usage) }
+
+    /**
+     * 读某个人的主动记录；[today] 是**服务端本地自然日**（`yyyy-MM-dd`）。
+     *
+     * 跨日时只把计数当成 0（不立刻写盘）：没有真正开口的一天不该因为一次读就产生写操作。
+     * `lastProactiveAt` 原样返回，冷却期不会在零点被清掉。
+     */
+    fun proactiveState(personaId: String, today: String): ProactiveState = lock.withLock {
+        effectiveProactiveStateLocked(personaId, today)
+    }
+
+    /**
+     * 落一次「真的主动开口了」：计数 +1、日期翻新、`lastProactiveAt=at`，**同一把存储锁内**
+     * 更新内存并原子写 `proactive_state.json`。返回更新后的记录。
+     */
+    fun recordProactiveFired(personaId: String, at: Long, today: String): ProactiveState = lock.withLock {
+        requirePersonaLocked(personaId)
+        recordProactiveFiredLocked(personaId, at, today)
+    }
 
     fun apiConfigs(): List<ApiConfig> = lock.withLock { apiConfigs.values.toList() }
 
@@ -459,6 +480,46 @@ class FileStore(
             personaId = session.personaId,
             payload = linkedMapOf("message" to message.toJson())
         )
+        message
+    }
+
+    /**
+     * 主动消息的**原子落库入口**：每日上限 / 冷却复查 + 追加消息 + 更新主动记录，
+     * 全部在同一把存储锁内完成。
+     *
+     * 为什么不能「路由先读一次、再 append、再 record」：
+     * - 两个并发 tick（两个 `ProactiveTicker` 实例、或调试接口与定时器撞在一起）会同时读到
+     *   `count=0`，各发一条；这里在锁内复查，后到的那个返回 `null`；
+     * - 消息与计数必须一起可见：只写消息不写计数，重启后等于没发过（本次修复的缺陷）。
+     *
+     * @param dailyCap 今天允许的主动次数（引擎已经算过，包含心情修正）
+     * @param minGapMs 距上次主动开口至少多久（冷却期）；`<= 0` 表示不检查
+     * @return 真正落库的消息；被上限/冷却挡住时返回 `null`
+     */
+    fun appendProactiveMessageIfAllowed(
+        sessionId: String,
+        personaId: String,
+        content: String,
+        at: Long,
+        today: String,
+        dailyCap: Int,
+        minGapMs: Long
+    ): Message? = lock.withLock {
+        requirePersonaLocked(personaId)
+        val state = effectiveProactiveStateLocked(personaId, today)
+        if (dailyCap <= 0 || state.proactiveCountToday >= dailyCap) return@withLock null
+        if (minGapMs > 0 && state.lastProactiveAt > 0 && at - state.lastProactiveAt < minGapMs) {
+            return@withLock null
+        }
+        // ReentrantLock 可重入：appendMessage 内部再取一次锁不会死锁，但整段仍是同一个临界区
+        // （消息、会话、事件、主动计数在一次锁持有期间一起落盘）。
+        val message = appendMessage(
+            sessionId = sessionId,
+            role = MessageRole.ASSISTANT,
+            content = content,
+            source = MessageSource.PROACTIVE
+        )
+        recordProactiveFiredLocked(personaId, at, today)
         message
     }
 
@@ -719,6 +780,10 @@ class FileStore(
             val where = "${root.resolve(SETTINGS_FILE)}"
             val obj = json as? JsonValue.Obj ?: throw StoreCorruptionException("$where 不是 JSON 对象")
             settings = obj.optObj("settings", where) ?: JsonValue.Obj()
+        }
+        loadOptionalObjectList(root.resolve(PROACTIVE_STATE_FILE), "states") { obj, where ->
+            val state = ProactiveState.fromJson(obj, where)
+            proactiveStates[state.personaId] = state
         }
         if (Files.exists(root.resolve(SECRETS_FILE))) {
             // 0600 是承诺，不是建议：打开时再收紧一次（有人复制/解压可能带上更宽的权限）。
@@ -1088,6 +1153,11 @@ class FileStore(
         StoreJson.obj("configs" to StoreJson.arr(apiConfigs.values.map { it.toJson() }))
     )
 
+    private fun persistProactiveStateLocked() = writeJsonLocked(
+        root.resolve(PROACTIVE_STATE_FILE),
+        StoreJson.obj("states" to StoreJson.arr(proactiveStates.values.map { it.toJson() }))
+    )
+
     private fun readSecretsLocked(): Map<String, String> {
         val file = root.resolve(SECRETS_FILE)
         val json = readJsonFile(file) ?: return emptyMap()
@@ -1195,6 +1265,33 @@ class FileStore(
 
     private fun requirePersonaLocked(personaId: String) {
         if (personas.none { it.id == personaId }) throw IllegalArgumentException("人格不存在：$personaId")
+    }
+
+    /**
+     * 读路径的跨日归零：日期不是 [today] 时计数当 0，其余字段（尤其 `lastProactiveAt`）保留。
+     * 不写盘——只读不该产生副作用。
+     */
+    private fun effectiveProactiveStateLocked(personaId: String, today: String): ProactiveState {
+        val stored = proactiveStates[personaId]
+        if (stored == null) return ProactiveState(personaId = personaId, proactiveCountDate = today)
+        return if (stored.proactiveCountDate == today) {
+            stored
+        } else {
+            stored.copy(proactiveCountToday = 0, proactiveCountDate = today)
+        }
+    }
+
+    /** 写路径：跨日归零后 +1，并原子落盘。调用方必须已经持有 [lock]。 */
+    private fun recordProactiveFiredLocked(personaId: String, at: Long, today: String): ProactiveState {
+        val previous = effectiveProactiveStateLocked(personaId, today)
+        val updated = previous.copy(
+            lastProactiveAt = at,
+            proactiveCountToday = previous.proactiveCountToday + 1,
+            proactiveCountDate = today
+        )
+        proactiveStates[personaId] = updated
+        persistProactiveStateLocked()
+        return updated
     }
 
     private fun defaultPersonaIdLocked(): String =

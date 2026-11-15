@@ -1050,7 +1050,10 @@ public final class BackupService {
             backstory: persona.backstory, quirks: persona.quirks,
             proactiveLevel: persona.proactiveLevel, memoryRetention: persona.memoryRetention,
             extractionEvery: persona.extractionEvery, sleepEnabled: persona.sleepEnabled,
-            wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep
+            wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep,
+            // v5：人设引导三列原样带走（JSON 本身就是跨端契约，不做二次解释）。
+            worldJson: persona.worldJson, speechStyleJson: persona.speechStyleJson,
+            activityJson: persona.activityJson
         )
     }
 
@@ -1069,7 +1072,9 @@ public final class BackupService {
             backstory: persona.backstory, quirks: persona.quirks,
             proactiveLevel: persona.proactiveLevel, memoryRetention: persona.memoryRetention,
             extractionEvery: persona.extractionEvery, sleepEnabled: persona.sleepEnabled,
-            wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep
+            wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep,
+            worldJson: persona.worldJson, speechStyleJson: persona.speechStyleJson,
+            activityJson: persona.activityJson
         )
     }
 
@@ -1185,7 +1190,8 @@ public final class BackupService {
             id: preset.id, name: preset.name, description: preset.description,
             prompt: preset.prompt, category: preset.category,
             avatarUri: avatarUri,
-            avatarSeed: preset.avatarSeed, createdAt: preset.createdAt, updatedAt: preset.updatedAt
+            avatarSeed: preset.avatarSeed, createdAt: preset.createdAt, updatedAt: preset.updatedAt,
+            worldJson: preset.worldJson, speechStyleJson: preset.speechStyleJson
         )
     }
 
@@ -1193,7 +1199,8 @@ public final class BackupService {
         PersonaPresetEntity(
             id: preset.id, name: preset.name, description: preset.description,
             prompt: preset.prompt, category: preset.category, avatarUri: preset.avatarUri,
-            avatarSeed: preset.avatarSeed, createdAt: preset.createdAt, updatedAt: preset.updatedAt
+            avatarSeed: preset.avatarSeed, createdAt: preset.createdAt, updatedAt: preset.updatedAt,
+            worldJson: preset.worldJson, speechStyleJson: preset.speechStyleJson
         )
     }
 

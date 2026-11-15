@@ -24,7 +24,9 @@ public enum Schema {
     /// 1.9 = v10：一人一段会话（唯一索引 + 迁移）、消息已读、人格细分字段、会话覆盖两列。
     /// 0.12 = v11：分块历史（`messages.blockIndex` + `message_blocks`）、区块分页、无上限检索。
     /// 0.12（同版第二次 schema 变更）= v12：`api_configs.webToolsProvider`（搜索服务选择）。
-    public static let version: Int32 = 12
+    /// 0.12（人设引导）= v13：`personas.worldJson` / `speechStyleJson` / `activityJson`、
+    /// `persona_presets.worldJson` / `speechStyleJson`（见 `spec/persona-guidance/README.md` §5）。
+    public static let version: Int32 = 13
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -134,6 +136,26 @@ public enum Schema {
         ("dndOnSleep", "INTEGER")
     ]
 
+    /// v13 给 `personas` 加的列（人设引导，全部可空 = 没有世界预设 / 没学过话风 / 此刻没在忙）。
+    ///
+    /// 为什么原样存 JSON 文本而不是拆列：这三个东西永远是整组读写（提示词一次要拿全、
+    /// 编辑页一次保存、备份原样搬走），拆开只会多三张表和一堆 join；
+    /// 而且它们是「模型的说明书」，不是需要按字段查询的业务维度。
+    /// 解析永远宽容（`WorldPreset.decode` / `SpeechStyle.decode` / `PersonaActivity.decode`）。
+    public static let personaGuidanceColumns: [(name: String, ddl: String)] = [
+        ("worldJson", "TEXT"),
+        ("speechStyleJson", "TEXT"),
+        ("activityJson", "TEXT")
+    ]
+
+    /// v13 给 `persona_presets` 加的列：预设可以带世界与话风（应用到人格时复制过去）。
+    ///
+    /// 预设没有 `activityJson`：当前活动是「这个人此刻在做什么」，不是可套用的设定。
+    public static let presetGuidanceColumns: [(name: String, ddl: String)] = [
+        ("worldJson", "TEXT"),
+        ("speechStyleJson", "TEXT")
+    ]
+
     /// 1.9 给 `chat_sessions` 加的列（会话级覆盖，空 = 继承人格）。
     public static let sessionOverrideColumns: [(name: String, ddl: String)] = [
         ("memoryRetentionOverride", "INTEGER"),
@@ -176,6 +198,9 @@ public enum Schema {
             sleepEnabled INTEGER,
             wakeThreshold INTEGER,
             dndOnSleep INTEGER,
+            worldJson TEXT,
+            speechStyleJson TEXT,
+            activityJson TEXT,
             PRIMARY KEY (id)
         )
         """,
@@ -193,6 +218,8 @@ public enum Schema {
             avatarSeed INTEGER NOT NULL,
             createdAt INTEGER NOT NULL,
             updatedAt INTEGER NOT NULL,
+            worldJson TEXT,
+            speechStyleJson TEXT,
             PRIMARY KEY (id)
         )
         """,
@@ -492,7 +519,7 @@ public enum Schema {
     /// 幂等（全部 `IF NOT EXISTS`），所以每次启动都可以无脑调用；
     /// `user_version` 是「这份库的 schema 是第几版」的唯一事实来源。
     ///
-    /// 老库（v8–v11）走两条路：
+    /// 老库（v8–v12）走两条路：
     /// 1. 先补列 + 删多余的会话 + 建块表并回填块号（`migrateLegacyData`）——必须在建唯一索引**之前**；
     /// 2. 再跑一遍 `createStatements`，把缺的表与索引补齐。
     public static func create(_ database: SQLiteDatabase) throws {
@@ -513,10 +540,10 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10/v11 → v12
+    // MARK: - v8/v9/v10/v11/v12 → v13
 
-    /// 老库升到 v12：补列（含 v12 的 `webToolsProvider`）、清 Harness 列、一人一段、
-    /// 补默认配置、建块表并回填块号。
+    /// 老库升到 v13：补列（含 v12 的 `webToolsProvider` 与 v13 的人设引导三列）、清 Harness 列、
+    /// 一人一段、补默认配置、建块表并回填块号。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
     /// 迁移必须和建表在同一个事务里，否则「库是半新半旧」的状态比升级失败更糟。
@@ -529,6 +556,15 @@ public enum Schema {
     static func migrateLegacyData(_ database: SQLiteDatabase) throws {
         for column in personaProfileColumns {
             try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
+        // v13：世界预设 / 话风 / 当前活动。全部可空 —— 老数据没有这些设定是**正确**的状态，
+        // 回填一个空 JSON 只会让「没填过」和「填了又清空」变得无法区分。加列本身幂等。
+        for column in personaGuidanceColumns {
+            try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
+        for column in presetGuidanceColumns {
+            try addColumnIfMissing(database, table: "persona_presets",
+                                   column: column.name, type: column.ddl)
         }
         for column in sessionOverrideColumns {
             try addColumnIfMissing(database, table: "chat_sessions",

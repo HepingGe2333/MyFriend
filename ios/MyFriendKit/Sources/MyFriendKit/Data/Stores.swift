@@ -159,7 +159,9 @@ extension PersonaEntity: SQLiteRecord {
         // 1.9 的细分字段（三个列表列在库里是 TEXT(JSON 数组)）。
         "traits", "likes", "behaviors", "backstory", "quirks",
         "proactiveLevel", "memoryRetention", "extractionEvery",
-        "sleepEnabled", "wakeThreshold", "dndOnSleep"
+        "sleepEnabled", "wakeThreshold", "dndOnSleep",
+        // v13 的人设引导：世界预设 / 话风 / 当前活动（JSON 文本，可空）。
+        "worldJson", "speechStyleJson", "activityJson"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -176,7 +178,8 @@ extension PersonaEntity: SQLiteRecord {
             .optionalText(PersonaTags.encode(behaviors, limit: PersonaFieldLimits.maxBehaviors)),
             .optionalText(backstory), .optionalText(quirks),
             .int(proactiveLevel), .int(memoryRetention), .int(extractionEvery),
-            .bool(sleepEnabled), .int(wakeThreshold), .bool(dndOnSleep)
+            .bool(sleepEnabled), .int(wakeThreshold), .bool(dndOnSleep),
+            .optionalText(worldJson), .optionalText(speechStyleJson), .optionalText(activityJson)
         ]
     }
 
@@ -221,7 +224,11 @@ extension PersonaEntity: SQLiteRecord {
             sleepEnabled: try row.bool("sleepEnabled", true),
             wakeThreshold: try row.optionalInt("wakeThreshold")
                 ?? PersonaFieldLimits.wakeThresholdDefault,
-            dndOnSleep: try row.bool("dndOnSleep", false)
+            dndOnSleep: try row.bool("dndOnSleep", false),
+            // v13：三列可空；老库没有这三列时 `optionalText` 给 nil（= 没设定）。
+            worldJson: try row.optionalText("worldJson"),
+            speechStyleJson: try row.optionalText("speechStyleJson"),
+            activityJson: try row.optionalText("activityJson")
         )
     }
 }
@@ -510,13 +517,14 @@ extension PersonaPresetEntity: SQLiteRecord {
     public static let tableName = "persona_presets"
     public static let columns = [
         "id", "name", "description", "prompt", "category", "avatarUri", "avatarSeed",
-        "createdAt", "updatedAt"
+        "createdAt", "updatedAt", "worldJson", "speechStyleJson"
     ]
 
     public var bindings: [SQLiteValue] {
         [
             .text(id), .text(name), .text(description), .text(prompt), .text(category),
-            .optionalText(avatarUri), .int(avatarSeed), .int(createdAt), .int(updatedAt)
+            .optionalText(avatarUri), .int(avatarSeed), .int(createdAt), .int(updatedAt),
+            .optionalText(worldJson), .optionalText(speechStyleJson)
         ]
     }
 
@@ -530,7 +538,9 @@ extension PersonaPresetEntity: SQLiteRecord {
             avatarUri: try row.optionalText("avatarUri"),
             avatarSeed: try row.int("avatarSeed"),
             createdAt: try row.int64("createdAt"),
-            updatedAt: try row.int64("updatedAt")
+            updatedAt: try row.int64("updatedAt"),
+            worldJson: try row.optionalText("worldJson"),
+            speechStyleJson: try row.optionalText("speechStyleJson")
         )
     }
 }

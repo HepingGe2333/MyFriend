@@ -86,6 +86,11 @@ class ChineseLiteralGuardTest {
         // ---- 网络层：回灌给模型的内容 / 日志 ----
         "src/main/java/com/myfriend/app/network/WebSearchClient.kt" to
             "抓回来的网页正文的截断标记与日志：正文回灌给模型，日志不进界面",
+        // ---- 0.12 人设引导：话风/世界补全的提示词与本地兜底 ----
+        "src/main/java/com/myfriend/app/data/ai/SpeechStyleSummarizer.kt" to
+            "话风总结提示词（规范 §6.1 原文）与本地兜底说明：面向模型 / 落库的风格值，不是界面文案",
+        "src/main/java/com/myfriend/app/data/ai/WorldPresetExpander.kt" to
+            "世界预设补全提示词（规范 §6.2 原文）：面向模型，不进界面",
     )
 
     @Test

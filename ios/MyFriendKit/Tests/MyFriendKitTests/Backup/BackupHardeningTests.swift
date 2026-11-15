@@ -87,7 +87,7 @@ final class BackupHardeningTests: XCTestCase {
 
     func testExportUnderLimitStillWorks() throws {
         let text = try makeService(exportLimitBytes: 1 << 20).export()
-        XCTAssertTrue(text.contains("\"formatVersion\":4"))
+        XCTAssertTrue(text.contains("\"formatVersion\":\(BackupCodec.formatVersion)"))
         XCTAssertTrue(text.contains("在吗"))
     }
 

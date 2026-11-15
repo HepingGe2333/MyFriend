@@ -25,7 +25,12 @@ data class PersonaDraft(
     val sleepEnabled: Boolean = true,
     val wakeThreshold: Int = 6,
     val quietSleepMinutes: Int? = null,
-    val quietWakeMinutes: Int? = null
+    val quietWakeMinutes: Int? = null,
+    // ---- 0.12 人设引导（schema v13） ----------------------------------------
+    /** 世界预设 JSON；null/空表示没有世界预设（退回纯人设）。 */
+    val worldJson: String? = null,
+    /** 话风 JSON；null/空表示没学过话风。 */
+    val speechStyleJson: String? = null
 )
 
 data class ApiConfigDraft(

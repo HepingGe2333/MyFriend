@@ -45,6 +45,8 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.myfriend.app.R
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
+import com.myfriend.app.ui.components.SpeechStyleCard
+import com.myfriend.app.ui.components.WorldPresetCard
 import com.myfriend.app.ui.components.PersonaAvatar
 import com.myfriend.app.ui.components.PrimaryButton
 import com.myfriend.app.ui.components.SectionLabel
@@ -204,6 +206,41 @@ fun PresetEditorScreen(
                 stringResource(R.string.preset_editor_prompt_hint),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(22.dp))
+            WorldPresetCard(
+                worldName = state.form.worldName,
+                era = state.form.era,
+                description = state.form.worldDescription,
+                scheduleJson = state.form.scheduleJson,
+                relationshipsJson = state.form.relationshipsJson,
+                obligationsText = state.form.obligationsText,
+                onWorldName = { value -> viewModel.update { it.copy(worldName = value) } },
+                onEra = { value -> viewModel.update { it.copy(era = value) } },
+                onDescription = { value -> viewModel.update { it.copy(worldDescription = value) } },
+                onScheduleJson = { value -> viewModel.update { it.copy(scheduleJson = value) } },
+                onRelationshipsJson = { value -> viewModel.update { it.copy(relationshipsJson = value) } },
+                onObligationsText = { value -> viewModel.update { it.copy(obligationsText = value) } },
+                onAiFill = viewModel::fillWorldWithAi,
+                aiFilling = state.worldFilling,
+                aiHint = null
+            )
+            Spacer(Modifier.height(10.dp))
+            SpeechStyleCard(
+                sampleText = state.form.speechSample,
+                tone = state.form.speechTone,
+                phrases = state.form.speechPhrases,
+                habitsText = state.form.speechHabits,
+                avoidText = state.form.speechAvoid,
+                source = state.form.speechSource.takeIf { it.isNotBlank() },
+                summarizing = state.speechSummarizing,
+                onSampleText = { value -> viewModel.update { it.copy(speechSample = value) } },
+                onSummarize = viewModel::summarizeSpeech,
+                onClear = viewModel::clearSpeech,
+                onTone = { value -> viewModel.update { it.copy(speechTone = value) } },
+                onPhrases = { value -> viewModel.update { it.copy(speechPhrases = value) } },
+                onHabitsText = { value -> viewModel.update { it.copy(speechHabits = value) } },
+                onAvoidText = { value -> viewModel.update { it.copy(speechAvoid = value) } }
             )
             Spacer(Modifier.height(24.dp))
         }

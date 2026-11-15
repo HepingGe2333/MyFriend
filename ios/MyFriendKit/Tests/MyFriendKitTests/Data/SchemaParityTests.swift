@@ -82,6 +82,64 @@ final class SchemaParityTests: XCTestCase {
         }
     }
 
+    /// v13 的人设引导列：`personas` / `persona_presets` 与 Android 逐字一致（列名、顺序、可空）。
+    ///
+    /// 只比列，不比索引：这两张表的索引名在 iOS 侧本来就是「按查询写的」，
+    /// 它们不参与跨端数据交换（备份 JSON 才是契约），比索引只会比出一堆无关差异。
+    /// Android 还没导出 v13 时整条跳过（与上面那条同一个口径）。
+    func testGuidanceColumnsMatchAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        // 只比 v13 新加的那几列：更早的列在 iOS 上一直是「可空 + 代码默认值」，
+        // Android 后来给它们补了 DEFAULT（历史差异，不属于这一版的范围）。
+        let expected: [(table: String, columns: [(name: String, ddl: String)])] = [
+            ("personas", Schema.personaGuidanceColumns),
+            ("persona_presets", Schema.presetGuidanceColumns)
+        ]
+        for item in expected {
+            let entity = try XCTUnwrap(
+                entities[item.table], "Android v\(Schema.version) 里没有这张表：\(item.table)"
+            )
+            let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])
+            let byName = Dictionary(
+                uniqueKeysWithValues: fields.compactMap { field -> (String, [String: Any])? in
+                    guard let name = field["columnName"] as? String else { return nil }
+                    return (name, field)
+                }
+            )
+            for column in item.columns {
+                let field = try XCTUnwrap(
+                    byName[column.name],
+                    "Android v\(Schema.version) 的 \(item.table) 缺列：\(column.name)"
+                )
+                XCTAssertEqual(
+                    field["affinity"] as? String, "TEXT",
+                    "\(item.table).\(column.name) 两端类型必须一致"
+                )
+                XCTAssertEqual(
+                    field["notNull"] as? Bool ?? false, false,
+                    "\(item.table).\(column.name) 必须可空（空 = 没有设定）"
+                )
+                XCTAssertNil(
+                    field["defaultValue"] as? String,
+                    "\(item.table).\(column.name) 不该有默认值（null 才是「没填过」）"
+                )
+                XCTAssertTrue(
+                    try columnNames(table: item.table).contains(column.name),
+                    "iOS 缺列：\(item.table).\(column.name)"
+                )
+            }
+        }
+    }
+
+    private func columnNames(table: String) throws -> [String] {
+        let statement = try temp.stores.database.prepare("PRAGMA table_info(\(table))")
+        var names: [String] = []
+        while try statement.step() {
+            names.append(try SQLiteRow(statement: statement).text("name", ""))
+        }
+        return names
+    }
+
     /// 列名、顺序、affinity、`NOT NULL`、默认值都要一模一样。
     private func assertColumns(table: String, match entity: [String: Any]) throws {
         let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])

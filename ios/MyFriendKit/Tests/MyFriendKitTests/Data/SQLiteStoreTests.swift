@@ -28,8 +28,9 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV12() throws {
-        XCTAssertEqual(Schema.version, 12, "v12 = 搜索服务选择（api_configs.webToolsProvider）")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV13() throws {
+        XCTAssertEqual(Schema.version, 13,
+                       "v13 = 人设引导（personas.worldJson/speechStyleJson/activityJson + 预设两列）")
         XCTAssertEqual(Schema.tables.count, 13, "13 张记录型表")
         XCTAssertEqual(Schema.supplementaryTables.count, 2, "两张服务层用表")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
@@ -41,7 +42,7 @@ final class SQLiteStoreTests: XCTestCase {
         }
         // 规范点名要有的那张表（块分页与迁移都依赖它）。
         XCTAssertTrue(names.contains("message_blocks"), "v11 必须建 message_blocks")
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
     /// 建表语句的列顺序必须与实体映射的绑定顺序一致；
@@ -317,7 +318,7 @@ final class SQLiteStoreTests: XCTestCase {
 
         let reopened = try DatabaseStores.open(path: databaseURL.path)
         XCTAssertEqual(try reopened.memories.byId(memory.id), memory)
-        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         stores = reopened
     }
 
@@ -327,7 +328,7 @@ final class SQLiteStoreTests: XCTestCase {
         try stores.memories.upsert(memory)
         try Schema.create(stores.database)
         XCTAssertEqual(try stores.memories.byId(memory.id), memory)
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
     // MARK: - 样例

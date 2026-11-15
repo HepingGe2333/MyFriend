@@ -185,6 +185,44 @@ public final class PersonaCardRepository {
         }
     }
 
+    /// 当前活动（`set_activity` 工具）：只写 `activityJson` 一列。
+    ///
+    /// 为什么它不属于人设卡：卡是「他是谁」（长期、可版本化），活动是「他此刻在做什么」
+    /// （十几分钟到几小时就过期）。把它塞进卡会让每次 `set_activity` 都变成一次人设变更，
+    /// 版本号乱涨、镜像 prompt 反复重写。所以它单独一列、不产生新版本、不重写 prompt。
+    @discardableResult
+    public func setActivity(personaId: String, activity: PersonaActivity?) -> Result<Void, Error> {
+        Result {
+            guard var persona = try stores.personas.byId(personaId) else {
+                throw PersonaCardRepositoryError.personaNotFound
+            }
+            persona.activityJson = activity?.jsonString()
+            persona.updatedAt = now()
+            try stores.personas.upsert(persona)
+        }
+    }
+
+    /// 世界预设 / 话风（预设编辑器与 AI 补全的落库入口）。
+    ///
+    /// 传 nil 就是清空（用户点「清空」时同一句话），不是「保持原样」——
+    /// 想保持原样就别调它。同样不产生新版本：这两样是「环境与说话方式」，不是人格本身。
+    @discardableResult
+    public func saveGuidance(
+        personaId: String,
+        worldJson: String?,
+        speechStyleJson: String?
+    ) -> Result<Void, Error> {
+        Result {
+            guard var persona = try stores.personas.byId(personaId) else {
+                throw PersonaCardRepositoryError.personaNotFound
+            }
+            persona.worldJson = PromptGuidanceJSON.clean(worldJson)
+            persona.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
+            persona.updatedAt = now()
+            try stores.personas.upsert(persona)
+        }
+    }
+
     /// 给 App 装配用：编辑页把结构化字段拆开传进来，内部组装成 `PersonaCard` 再走 `saveCard`。
     ///
     /// 返回 `true` 表示真的写了（卡有变化），`false` 表示和库里一样、什么都没动。

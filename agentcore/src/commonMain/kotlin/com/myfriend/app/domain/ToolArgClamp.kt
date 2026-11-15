@@ -43,9 +43,51 @@ object ToolArgClamp {
     /** 缺省推迟 45 分钟（规格 §四）。 */
     const val MINUTES_DEFAULT = 45
 
+    // ---------------------------------------------------------------- set_activity
+
+    /** 「占用时间」的分钟数：15 分钟到 8 小时（`spec/persona-guidance/README.md` §4）。 */
+    const val ACTIVITY_MINUTES_MIN = 15
+    const val ACTIVITY_MINUTES_MAX = 480
+
+    /** 缺省 60 分钟：模型没写时按「一个小时」算。 */
+    const val ACTIVITY_MINUTES_DEFAULT = 60
+
+    /** `set_activity` 的 kind 枚举；认不出的值一律 OTHER。 */
+    val ACTIVITY_KINDS = listOf("WORK", "COMMUTE", "MEAL", "SOCIAL", "CHORE", "STUDY", "REST", "OTHER")
+
+    /** `set_activity` 的 availability 枚举；认不出的值按最常见、最保守的 BUSY。 */
+    val ACTIVITY_AVAILABILITIES = listOf("BUSY", "LIMITED", "FREE")
+
     fun clampImportance(value: Int): Int = value.coerceIn(IMPORTANCE_MIN, IMPORTANCE_MAX)
 
     fun clampCount(value: Int): Int = value.coerceIn(COUNT_MIN, COUNT_MAX)
 
     fun clampDeferMinutes(value: Int): Int = value.coerceIn(MINUTES_MIN, MINUTES_MAX)
+
+    /** 活动时长：越界夹到边界。 */
+    fun clampActivityMinutes(value: Int): Int =
+        value.coerceIn(ACTIVITY_MINUTES_MIN, ACTIVITY_MINUTES_MAX)
+
+    /**
+     * 活动时长的宽松入口（`tool-args.json` 的 `minutes: "abc"` 用例）。
+     *
+     * 非数字 / 空 / 认不出 → [ACTIVITY_MINUTES_DEFAULT]，再夹一次边界。
+     * 数字字符串按数字处理（模型经常把数字写成字符串）。
+     */
+    fun clampActivityMinutes(raw: String?): Int {
+        val parsed = raw?.trim()?.toIntOrNull() ?: return ACTIVITY_MINUTES_DEFAULT
+        return clampActivityMinutes(parsed)
+    }
+
+    /** kind 归一化：大小写不敏感；空/认不出 → OTHER。 */
+    fun normalizeActivityKind(raw: String?): String {
+        val cleaned = raw?.trim()?.uppercase() ?: ""
+        return if (cleaned in ACTIVITY_KINDS) cleaned else "OTHER"
+    }
+
+    /** availability 归一化：大小写不敏感；空/认不出 → BUSY。 */
+    fun normalizeActivityAvailability(raw: String?): String {
+        val cleaned = raw?.trim()?.uppercase() ?: ""
+        return if (cleaned in ACTIVITY_AVAILABILITIES) cleaned else "BUSY"
+    }
 }

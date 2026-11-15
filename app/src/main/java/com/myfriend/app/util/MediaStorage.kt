@@ -75,37 +75,41 @@ object MediaStorage {
                 }
             }
             val targetFile = File(dir, "avatar-${UUID.randomUUID()}.jpg")
-            var written = 0L
-            for (quality in AvatarImagePolicy.qualityLadder()) {
-                targetFile.outputStream().use { output ->
-                    scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)
+            // 写文件、改名、返回引用都在同一个媒体文件临界区里（见 MediaFileGc.ioMutex）：
+            // 删除路径的「查引用 + 删」也在同一把锁里，不会把刚写好的头像当成无引用删掉。
+            MediaFileGc.withFileIoLock {
+                var written = 0L
+                for (quality in AvatarImagePolicy.qualityLadder()) {
+                    targetFile.outputStream().use { output ->
+                        scaled.compress(Bitmap.CompressFormat.JPEG, quality, output)
+                    }
+                    written = targetFile.length()
+                    if (AvatarImagePolicy.fits(written)) break
                 }
-                written = targetFile.length()
-                if (AvatarImagePolicy.fits(written)) break
-            }
-            scaled.recycle()
-            if (!AvatarImagePolicy.fits(written)) {
-                targetFile.delete()
-                error(context.getString(R.string.media_error_too_big_to_compress))
-            }
-            // 文件名带内容哈希前缀：同一张头像重复选两次仍各留一份（头像有「换头像删旧文件」的
-            // 生命周期，共用一份会被删坏），但哈希前缀让「这张图到底是不是重复」一眼可查。
-            val hash = runCatching { BackupMediaRestorer.sha256Hex(targetFile.readBytes()).take(16) }
-                .getOrDefault("")
-            val named = if (hash.isEmpty()) {
-                targetFile
-            } else {
-                File(dir, "avatar-$hash-${UUID.randomUUID()}.jpg")
-            }
-            if (named !== targetFile) {
-                if (!targetFile.renameTo(named)) {
-                    // 改名失败不该让「换头像」失败：保留原文件名，功能优先。
-                    Uri.fromFile(targetFile).toString()
+                scaled.recycle()
+                if (!AvatarImagePolicy.fits(written)) {
+                    targetFile.delete()
+                    error(context.getString(R.string.media_error_too_big_to_compress))
+                }
+                // 文件名带内容哈希前缀：同一张头像重复选两次仍各留一份（头像有「换头像删旧文件」的
+                // 生命周期，共用一份会被删坏），但哈希前缀让「这张图到底是不是重复」一眼可查。
+                val hash = runCatching { BackupMediaRestorer.sha256Hex(targetFile.readBytes()).take(16) }
+                    .getOrDefault("")
+                val named = if (hash.isEmpty()) {
+                    targetFile
                 } else {
-                    Uri.fromFile(named).toString()
+                    File(dir, "avatar-$hash-${UUID.randomUUID()}.jpg")
                 }
-            } else {
-                Uri.fromFile(targetFile).toString()
+                if (named !== targetFile) {
+                    if (!targetFile.renameTo(named)) {
+                        // 改名失败不该让「换头像」失败：保留原文件名，功能优先。
+                        Uri.fromFile(targetFile).toString()
+                    } else {
+                        Uri.fromFile(named).toString()
+                    }
+                } else {
+                    Uri.fromFile(targetFile).toString()
+                }
             }
         }
     }
@@ -304,25 +308,29 @@ object MediaStorage {
                 // 内容寻址：同一张图重复选只留一份 `chat-<sha256前16>.<ext>`。
                 // 不用 UUID 是刻意的——文件名就是去重索引，不需要新增表。
                 val hash = BackupMediaRestorer.sha256Hex(bytes).take(16)
-                val target = File(dir, "chat-$hash.$extension")
-                if (!target.isFile || target.length() != bytes.size.toLong()) {
-                    val temp = File(dir, "chat-$hash.tmp-${UUID.randomUUID()}")
-                    runCatching { temp.writeBytes(bytes) }.getOrElse {
-                        temp.delete()
-                        error(context.getString(R.string.media_error_process_failed))
+                // 「写文件 + 返回引用」必须在媒体文件临界区里（见 MediaFileGc.ioMutex）：
+                // 否则删除路径可能刚查完「没人引用」，这里就把同名文件写回去并被删掉。
+                MediaFileGc.withFileIoLock {
+                    val target = File(dir, "chat-$hash.$extension")
+                    if (!target.isFile || target.length() != bytes.size.toLong()) {
+                        val temp = File(dir, "chat-$hash.tmp-${UUID.randomUUID()}")
+                        runCatching { temp.writeBytes(bytes) }.getOrElse {
+                            temp.delete()
+                            error(context.getString(R.string.media_error_process_failed))
+                        }
+                        if (target.exists()) target.delete()
+                        if (!temp.renameTo(target)) {
+                            temp.delete()
+                            if (!target.isFile) error(context.getString(R.string.media_error_process_failed))
+                        }
                     }
-                    if (target.exists()) target.delete()
-                    if (!temp.renameTo(target)) {
-                        temp.delete()
-                        if (!target.isFile) error(context.getString(R.string.media_error_process_failed))
-                    }
+                    MessageAttachment(
+                        uri = Uri.fromFile(target).toString(),
+                        mime = mime,
+                        width = 0,
+                        height = 0
+                    )
                 }
-                MessageAttachment(
-                    uri = Uri.fromFile(target).toString(),
-                    mime = mime,
-                    width = 0,
-                    height = 0
-                )
             }
         }
 
@@ -457,8 +465,9 @@ object MediaStorage {
             candidates += file
         }
         if (candidates.isEmpty()) return@withContext 0
-        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
-        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+        // 引用查询 + 删除在同一个进程级临界区里（见 MediaFileGc.ioMutex）；
+        // 不能把 referrer 提前调用完再传集合，否则「查完 → 删」之间又会出现 TOCTOU。
+        MediaFileGc.deleteUnreferencedFilesWithReferrer(candidates) { names -> referrer(names) }
     }
 
     /**
@@ -479,8 +488,9 @@ object MediaStorage {
             file.isFile && file.name.startsWith(CHAT_IMAGE_PREFIX) && file.name !in keepFileNames
         }
         if (candidates.isEmpty()) return@withContext 0
-        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
-        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+        // 引用查询 + 删除在同一个进程级临界区里（见 MediaFileGc.ioMutex）；
+        // 不能把 referrer 提前调用完再传集合，否则「查完 → 删」之间又会出现 TOCTOU。
+        MediaFileGc.deleteUnreferencedFilesWithReferrer(candidates) { names -> referrer(names) }
     }
 
     /**
@@ -505,8 +515,9 @@ object MediaStorage {
             canonical !in keepPaths
         }
         if (candidates.isEmpty()) return@withContext 0
-        val referenced = referrer(candidates.map { it.name }.distinct().toSet())
-        MediaFileGc.deleteUnreferencedFiles(candidates) { name -> name in referenced }
+        // 引用查询 + 删除在同一个进程级临界区里（见 MediaFileGc.ioMutex）；
+        // 不能把 referrer 提前调用完再传集合，否则「查完 → 删」之间又会出现 TOCTOU。
+        MediaFileGc.deleteUnreferencedFilesWithReferrer(candidates) { names -> referrer(names) }
     }
 
     /**

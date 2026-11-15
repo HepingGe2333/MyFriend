@@ -52,4 +52,39 @@ public enum ToolArgClamp {
     public static func clampDeferMinutes(_ value: Int) -> Int {
         min(max(value, minutesMin), minutesMax)
     }
+
+    // MARK: set_activity（人设引导 §4）
+
+    /// 「他接下来这段时间在做什么」的持续分钟数：15 分钟到 8 小时。
+    ///
+    /// 边界与契约逐字一致（`spec/agent-core/cases/tool-args.json` 的 `activity.rules.minutes`）：
+    /// 下界 15 是因为「忙 5 分钟」没有意义（模型下次开口时它已经过期），
+    /// 上界 480 是因为超过 8 小时的「活动」不再是活动，而是忘了收尾的状态。
+    public static let activityMinutesMin = 15
+    public static let activityMinutesMax = 480
+    /// 模型没写 / 写了个不是数字的东西时按 60 分钟算。
+    public static let activityMinutesDefault = 60
+
+    /// 夹取一个确定是数字的值。
+    public static func clampActivityMinutes(_ value: Int) -> Int {
+        min(max(value, activityMinutesMin), activityMinutesMax)
+    }
+
+    /// 从任意 JSON 值夹取：数字、数字字符串都认；认不出（null / "abc" / 布尔 / 数组）走默认值。
+    ///
+    /// 为什么不像 `clampImportance` 那样只收 `Int`：工具参数是模型写的，
+    /// `{"minutes":"abc"}` 是真实会出现的形状（契约里就有这条用例）。
+    public static func activityMinutes(_ raw: Any?) -> Int {
+        if let number = raw as? NSNumber {
+            // JSON 的 true/false 也会是 NSNumber（CFBoolean）：那不是分钟数。
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return activityMinutesDefault }
+            return clampActivityMinutes(number.intValue)
+        }
+        if let text = raw as? String {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let value = Int(trimmed) else { return activityMinutesDefault }
+            return clampActivityMinutes(value)
+        }
+        return activityMinutesDefault
+    }
 }

@@ -102,7 +102,7 @@ final class SchemaMigrationTests: XCTestCase {
         let stores = try DatabaseStores.open(path: databasePath)
 
         // 1) 版本号与唯一索引。
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
         let indexNames = try indexNames(stores.database)
         XCTAssertTrue(indexNames.contains(Schema.uniquePersonaSessionIndex), "唯一索引必须建起来")
 
@@ -149,7 +149,7 @@ final class SchemaMigrationTests: XCTestCase {
         stores = nil
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         XCTAssertEqual(try reopened.sessions.count(), 1)
         XCTAssertEqual(try reopened.messages.count(), 1)
         XCTAssertNotNil(try reopened.personas.byId(personaId))
@@ -161,7 +161,7 @@ final class SchemaMigrationTests: XCTestCase {
     /// 空库也能正常建起来（迁移不能只在「有数据」时才成立）。
     func testFreshDatabaseHasEverything() throws {
         let stores = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
         XCTAssertTrue(try indexNames(stores.database).contains(Schema.uniquePersonaSessionIndex))
         XCTAssertEqual(try stores.personas.count(), 0)
         XCTAssertEqual(try stores.sessions.count(), 0)
@@ -189,13 +189,13 @@ final class SchemaMigrationTests: XCTestCase {
         var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
         try stores?.database.execute("DROP TABLE agent_ticks")
         try stores?.database.execute("DROP TABLE memory_echoes")
-        XCTAssertEqual(try stores?.database.userVersion(), 12)
+        XCTAssertEqual(try stores?.database.userVersion(), Schema.version)
         XCTAssertFalse(try XCTUnwrap(stores).database.hasTable(Schema.agentTicksTable))
         stores = nil
 
         // 「升级后第一次启动」：同一个路径再打开一次。
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         let names = try reopened.database.tableNames()
         for table in Schema.supplementaryTables {
             XCTAssertTrue(names.contains(table), "老库升级后缺表：\(table)")
@@ -309,7 +309,7 @@ final class SchemaMigrationTests: XCTestCase {
         try seedV10Database(messageCount: 250)
         let stores = try DatabaseStores.open(path: databasePath)
 
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
         XCTAssertTrue(try stores.database.hasTable(Schema.messageBlocksTable), "v11 要建块表")
         XCTAssertEqual(try stores.messages.count(), 250, "迁移不能丢消息")
 
@@ -361,7 +361,7 @@ final class SchemaMigrationTests: XCTestCase {
         try seedV10Database(messageCount: 0)
         let stores = try DatabaseStores.open(path: databasePath)
 
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
         XCTAssertEqual(try stores.messages.count(), 0)
         XCTAssertEqual(try stores.messageBlocks.count(), 0)
         XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
@@ -430,7 +430,7 @@ final class SchemaMigrationTests: XCTestCase {
         try seedV11Database()
         let stores = try DatabaseStores.open(path: databasePath)
 
-        XCTAssertEqual(try stores.database.userVersion(), 12)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
         let columns = try columnNames(stores.database, table: "api_configs")
         XCTAssertTrue(columns.contains(Schema.webToolsProviderColumn.name), "v12 必须补上 webToolsProvider")
         XCTAssertTrue(columns.contains("webToolsEnabled"), "老列不能因为迁移丢掉")
@@ -509,7 +509,7 @@ final class SchemaMigrationTests: XCTestCase {
         stores = nil
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         XCTAssertTrue(
             try columnNames(reopened.database, table: "api_configs")
                 .contains(Schema.webToolsProviderColumn.name)
@@ -527,7 +527,7 @@ final class SchemaMigrationTests: XCTestCase {
         stores = nil
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         XCTAssertEqual(try reopened.apiConfigs.count(), 1)
         XCTAssertEqual(
             try reopened.apiConfigs.byId("config-v11")?.webToolsProvider,
@@ -536,6 +536,134 @@ final class SchemaMigrationTests: XCTestCase {
         )
         let columns = try columnNames(reopened.database, table: "api_configs")
         XCTAssertEqual(columns.filter { $0 == Schema.webToolsProviderColumn.name }.count, 1)
+    }
+
+    // MARK: - v12 → v13：人设引导三列（`spec/persona-guidance/README.md` §5）
+
+    /// 造一个「v12 的库」：把 v13 加的五列拆掉、灌一份人格与预设、版本号记回 12。
+    ///
+    /// 与上面的用例同一个手法：在真库上回退，测到的就是真实的 `Schema.create` 升级路径。
+    private func seedV12Database() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        for column in Schema.personaGuidanceColumns {
+            try database.execute("ALTER TABLE personas DROP COLUMN \(column.name)")
+        }
+        for column in Schema.presetGuidanceColumns {
+            try database.execute("ALTER TABLE persona_presets DROP COLUMN \(column.name)")
+        }
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt, traits, likes)
+            VALUES ('\(personaId)', '林深', 'v12 的人格', 7, '你叫林深。', '朋友', 3,
+                    1, 1, \(now), '["慢热"]', '["夜里散步"]')
+            """)
+        try database.execute("""
+            INSERT INTO persona_presets (id, name, description, prompt, category, avatarSeed,
+                                         createdAt, updatedAt)
+            VALUES ('preset-v12', '旧预设', '', '预设提示词', '朋友', 3, 1, \(now))
+            """)
+        try database.setUserVersion(12)
+        stores = nil
+        database.close()
+    }
+
+    /// v12 → v13：数据一条不丢，新列默认 NULL（= 没有世界 / 话风 / 活动），版本号升到 13。
+    func testV12ToV13AddsGuidanceColumnsWithoutLosingData() throws {
+        try seedV12Database()
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
+        let personaColumns = try columnNames(stores.database, table: "personas")
+        for column in Schema.personaGuidanceColumns {
+            XCTAssertTrue(personaColumns.contains(column.name), "缺列：personas.\(column.name)")
+        }
+        let presetColumns = try columnNames(stores.database, table: "persona_presets")
+        for column in Schema.presetGuidanceColumns {
+            XCTAssertTrue(presetColumns.contains(column.name), "缺列：persona_presets.\(column.name)")
+        }
+
+        // 数据不丢：旧的细分字段与预设都还在。
+        let persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        XCTAssertEqual(persona.name, "林深")
+        XCTAssertEqual(persona.version, 3)
+        XCTAssertEqual(persona.traits, ["慢热"])
+        XCTAssertEqual(persona.likes, ["夜里散步"])
+        // 新列默认 null：老数据「没有世界/话风」是正确状态，不回填空 JSON。
+        XCTAssertNil(persona.worldJson)
+        XCTAssertNil(persona.speechStyleJson)
+        XCTAssertNil(persona.activityJson)
+
+        let preset = try XCTUnwrap(try stores.presets.byId("preset-v12"))
+        XCTAssertEqual(preset.prompt, "预设提示词")
+        XCTAssertNil(preset.worldJson)
+        XCTAssertNil(preset.speechStyleJson)
+
+        // 新列可写：写一份世界 + 话风，关掉再打开还在（实体绑定与列顺序都对得上）。
+        var updated = persona
+        updated.worldJson = WorldPreset(worldName: "临港新城", description: "沿海城市").jsonString()
+        updated.speechStyleJson = SpeechStyle(tone: "简短直接", phrases: ["在忙，晚点说"]).jsonString()
+        updated.activityJson = PersonaActivity(
+            kind: .work, activity: "在事务所赶图", minutes: 90, availability: .busy, startedAt: now
+        ).jsonString()
+        try stores.personas.upsert(updated)
+        stores.database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        let reloaded = try XCTUnwrap(try reopened.personas.byId(personaId))
+        XCTAssertEqual(WorldPreset.decode(reloaded.worldJson)?.worldName, "临港新城")
+        XCTAssertEqual(SpeechStyle.decode(reloaded.speechStyleJson)?.phrases, ["在忙，晚点说"])
+        XCTAssertEqual(PersonaActivity.decode(reloaded.activityJson, now: now)?.activity, "在事务所赶图")
+        // 二次打开不会重复加列（ALTER TABLE 会直接报错）。
+        XCTAssertEqual(
+            try reopened.database.scalarInt64(
+                "SELECT COUNT(*) FROM pragma_table_info('personas') WHERE name = 'worldJson'", []
+            ),
+            1
+        )
+    }
+
+    /// 空库（v12 但一个人格都没有）也要能升上来：列补齐、没有数据也成立。
+    func testV12EmptyDatabaseMigratesToV13() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        for column in Schema.personaGuidanceColumns {
+            try database.execute("ALTER TABLE personas DROP COLUMN \(column.name)")
+        }
+        for column in Schema.presetGuidanceColumns {
+            try database.execute("ALTER TABLE persona_presets DROP COLUMN \(column.name)")
+        }
+        try database.setUserVersion(12)
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertEqual(try reopened.personas.count(), 0)
+        for column in Schema.personaGuidanceColumns {
+            XCTAssertTrue(
+                try columnNames(reopened.database, table: "personas").contains(column.name),
+                "空库升级也缺列：\(column.name)"
+            )
+        }
+    }
+
+    /// 迁移幂等：同一份 v12 库连开两次，列还是一列、数据还是一份。
+    func testV13MigrationIsIdempotent() throws {
+        try seedV12Database()
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        _ = stores
+        stores = nil
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertEqual(try reopened.personas.count(), 1)
+        XCTAssertEqual(try reopened.presets.count(), 1)
+        let columns = try columnNames(reopened.database, table: "personas")
+        for column in Schema.personaGuidanceColumns {
+            XCTAssertTrue(columns.contains(column.name))
+        }
     }
 
     // MARK: - 小工具

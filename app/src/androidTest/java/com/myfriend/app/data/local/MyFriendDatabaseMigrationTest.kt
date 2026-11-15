@@ -225,13 +225,14 @@ class MyFriendDatabaseMigrationTest {
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
-                MyFriendDatabase.MIGRATION_11_12
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 12, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 13, opened.version)
             room.query("SELECT title FROM chat_sessions WHERE id = ?", arrayOf("session-1")).use { cursor ->
                 assertTrue("Room 打开后旧会话应该还在", cursor.moveToFirst())
                 assertEquals("旧会话", cursor.getString(0))
@@ -353,13 +354,14 @@ class MyFriendDatabaseMigrationTest {
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
-                MyFriendDatabase.MIGRATION_11_12
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 12, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 13, opened.version)
             room.query("SELECT COUNT(*) FROM personas", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals(2, cursor.getInt(0))
@@ -556,6 +558,139 @@ class MyFriendDatabaseMigrationTest {
         )
     }
 
+    // ---------- v12 → v13：人设引导 ----------
+
+    @Test
+    fun migrate12To13_保留人格与预设并给可空引导字段() {
+        val db = createV12DatabaseWithGuidanceData()
+
+        MyFriendDatabase.MIGRATION_12_13.migrate(db)
+
+        listOf("worldJson", "speechStyleJson", "activityJson").forEach { column ->
+            assertTrue("v13 应该给 personas 加上 $column，实际 ${
+                db.columnNames("personas")
+            }", column in db.columnNames("personas"))
+        }
+        listOf("worldJson", "speechStyleJson").forEach { column ->
+            assertTrue("v13 应该给 persona_presets 加上 $column", column in db.columnNames("persona_presets"))
+        }
+
+        // 旧数据一个字都不能少，新列必须是 NULL（不是空字符串）。
+        db.query(
+            "SELECT name, prompt, worldJson, speechStyleJson, activityJson FROM personas WHERE id = 'persona-1'"
+        ).use { cursor ->
+            assertTrue("迁移把人格弄丢了", cursor.moveToFirst())
+            assertEquals("林深", cursor.getString(0))
+            assertEquals("你是林深，说话从容、克制。", cursor.getString(1))
+            assertNull("老库没有世界预设", cursor.getString(2))
+            assertNull("老库没有话风", cursor.getString(3))
+            assertNull("老库没有当前活动", cursor.getString(4))
+        }
+        db.query("SELECT name, worldJson, speechStyleJson FROM persona_presets WHERE id = 'preset-1'").use { cursor ->
+            assertTrue("迁移把预设弄丢了", cursor.moveToFirst())
+            assertEquals("安静的朋友", cursor.getString(0))
+            assertNull(cursor.getString(1))
+            assertNull(cursor.getString(2))
+        }
+        assertEquals(1, db.count("personas"))
+        assertEquals(1, db.count("persona_presets"))
+    }
+
+    @Test
+    fun migrate12To13_空库也能迁移() {
+        val db = createV12DatabaseWithGuidanceData(insertData = false)
+
+        MyFriendDatabase.MIGRATION_12_13.migrate(db)
+
+        assertTrue("空库也要加列", "worldJson" in db.columnNames("personas"))
+        assertTrue("空库也要加列", "activityJson" in db.columnNames("personas"))
+        assertTrue("空库也要加列", "speechStyleJson" in db.columnNames("persona_presets"))
+        assertEquals(0, db.count("personas"))
+        assertEquals(0, db.count("persona_presets"))
+    }
+
+    @Test
+    fun migrate12To13_重复执行是幂等的() {
+        val db = createV12DatabaseWithGuidanceData()
+        MyFriendDatabase.MIGRATION_12_13.migrate(db)
+        // 迁移后用户填了世界：再跑一次不能把它抹掉。
+        db.execSQL("UPDATE personas SET worldJson = '{\"worldName\":\"某城\"}' WHERE id = 'persona-1'")
+
+        MyFriendDatabase.MIGRATION_12_13.migrate(db)
+
+        db.query("SELECT worldJson FROM personas WHERE id = 'persona-1'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("重复迁移不该覆盖已有世界", "{\"worldName\":\"某城\"}", cursor.getString(0))
+        }
+        assertEquals(1, db.count("personas"))
+    }
+
+    /**
+     * 最关键的一条：让 Room 自己打开 v12 旧库（12 → 13 + onValidateSchema）。
+     * 表校验会比对列类型与可空性，DDL 与 Entities 对不上就会红。
+     */
+    @Test
+    fun migrate12To13_Room打开旧库时表校验通过() {
+        createV12DatabaseWithGuidanceData()
+        closeAllHelpers()
+
+        val room = Room.databaseBuilder(context, MyFriendDatabase::class.java, DB_NAME)
+            .addMigrations(
+                MyFriendDatabase.MIGRATION_8_9,
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
+            )
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val opened = room.openHelper.writableDatabase
+            assertEquals("Room 打开后 user_version 应该是 13", 13, opened.version)
+            room.query("SELECT name, worldJson FROM personas WHERE id = 'persona-1'", emptyArray()).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("林深", cursor.getString(0))
+                assertNull(cursor.getString(1))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    /** 造一个 v12 库：v8 → 真实迁移到 v12，再写入一条人格与一条预设。 */
+    private fun createV12DatabaseWithGuidanceData(insertData: Boolean = true): SupportSQLiteDatabase {
+        val db = createLegacyDatabase(version = 8, ddl = V8_FULL_SCHEMA)
+        MyFriendDatabase.MIGRATION_8_9.migrate(db)
+        MyFriendDatabase.MIGRATION_9_10.migrate(db)
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+        MyFriendDatabase.MIGRATION_11_12.migrate(db)
+        db.execSQL("PRAGMA user_version = 12")
+        if (insertData) {
+            db.execSQL(
+                """
+                INSERT INTO personas (
+                    id, name, description, avatarSeed, prompt, category, version,
+                    isDefault, createdAt, updatedAt
+                ) VALUES (
+                    'persona-1', '林深', '一个温柔而安静的朋友', 7,
+                    '你是林深，说话从容、克制。', '朋友', 1, 1, 1700000000000, 1700000000000
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO persona_presets (
+                    id, name, description, prompt, category, avatarSeed, createdAt, updatedAt
+                ) VALUES (
+                    'preset-1', '安静的朋友', '话不多，但一直在', '你是他安静的朋友。', '朋友', 3,
+                    1700000000000, 1700000000000
+                )
+                """.trimIndent()
+            )
+        }
+        return db
+    }
+
     // ---------- 迁移链完整性 ----------
 
     @Test
@@ -575,7 +710,8 @@ class MyFriendDatabaseMigrationTest {
             MyFriendDatabase.MIGRATION_8_9,
             MyFriendDatabase.MIGRATION_9_10,
             MyFriendDatabase.MIGRATION_10_11,
-            MyFriendDatabase.MIGRATION_11_12
+            MyFriendDatabase.MIGRATION_11_12,
+            MyFriendDatabase.MIGRATION_12_13
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -744,13 +880,14 @@ class MyFriendDatabaseMigrationTest {
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
-                MyFriendDatabase.MIGRATION_11_12
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 12", 12, opened.version)
+            assertEquals("Room 打开后 user_version 应该是 13", 13, opened.version)
             room.query("SELECT COUNT(*) FROM messages", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals("Room 打开后消息一条不少", 450, cursor.getInt(0))
@@ -835,13 +972,14 @@ class MyFriendDatabaseMigrationTest {
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
-                MyFriendDatabase.MIGRATION_11_12
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 12", 12, opened.version)
+            assertEquals("Room 打开后 user_version 应该是 13", 13, opened.version)
             room.query("SELECT webToolsProvider FROM api_configs WHERE id = 'config-1'", emptyArray()).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 // Room 的 schema 校验要求列默认值仍是 'DEEPSEEK'；代码层归一化成 MESSAGEAPI。

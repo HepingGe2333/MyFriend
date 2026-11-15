@@ -121,6 +121,46 @@ data class Persona(
     }
 }
 
+// ---------------------------------------------------------------------- proactive_state.json
+
+/**
+ * 每个「人格」的主动开口记录（服务端权威模式 §3.4）。
+ *
+ * 这三格以前只活在 [com.myfriend.agentd.proactive.ProactiveScheduler] 的进程内 overlay 里，
+ * 重启就归零：当日次数 / 上次开口时间一起丢，于是服务重启后可能重复开口或超出每日上限。
+ * 现在落到独立文件 `proactive_state.json`（不改 `personas.json` 的既有契约）：
+ *
+ * - [lastProactiveAt]：上次真正落库的主动消息时刻（毫秒）；`0` = 从没发过；
+ * - [proactiveCountToday]：**该自然日**已经开口的次数；
+ * - [proactiveCountDate]：上面那个计数属于哪个本地自然日（`yyyy-MM-dd`）。
+ *
+ * 跨日归零不靠定时任务：读取时发现 [proactiveCountDate] 不是今天，就把计数当成 0；
+ * 下一次真正开口时写成 1。`lastProactiveAt` **不随日期清空** —— 冷却期是「距离上次开口多久」，
+ * 跨过零点也该继续生效。
+ */
+data class ProactiveState(
+    val personaId: String,
+    val lastProactiveAt: Long = 0L,
+    val proactiveCountToday: Int = 0,
+    val proactiveCountDate: String = ""
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "personaId" to str(personaId),
+        "lastProactiveAt" to num(lastProactiveAt),
+        "proactiveCountToday" to num(proactiveCountToday),
+        "proactiveCountDate" to str(proactiveCountDate)
+    )
+
+    companion object {
+        fun fromJson(value: JsonValue.Obj, where: String): ProactiveState = ProactiveState(
+            personaId = value.reqString("personaId", where),
+            lastProactiveAt = value.optLong("lastProactiveAt", where) ?: 0L,
+            proactiveCountToday = value.optInt("proactiveCountToday", where) ?: 0,
+            proactiveCountDate = value.optString("proactiveCountDate", where) ?: ""
+        )
+    }
+}
+
 // ---------------------------------------------------------------------- sessions.json
 
 data class Session(

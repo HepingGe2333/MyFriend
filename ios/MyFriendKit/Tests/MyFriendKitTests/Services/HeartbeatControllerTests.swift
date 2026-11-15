@@ -76,6 +76,55 @@ final class HeartbeatControllerTests: XCTestCase {
         XCTAssertTrue(tickCalls.isEmpty, "收尾期不掷骰子，更不该叫他去思考")
     }
 
+    // MARK: - 占用时间（人设引导 §4）：BUSY 不张口、LIMITED 降概率
+
+    private func setActivity(_ activity: PersonaActivity) throws {
+        var persona = TestData.persona()
+        persona.activityJson = activity.jsonString()
+        try db.stores.personas.upsert(persona)
+    }
+
+    func testBusyActivitySkipsProactiveBeat() async throws {
+        try setLastInteraction(minutesAgo: 120)
+        try setActivity(PersonaActivity(
+            kind: .work, activity: "在事务所赶图", minutes: 120,
+            availability: .busy, startedAt: TestData.now - 60_000
+        ))
+        let controller = makeController(roll: { 0.0 })   // 骰子一定中，但不该走到掷骰子
+        let beat = await controller.beat(now: TestData.now)
+        XCTAssertFalse(beat.fired)
+        XCTAssertEqual(beat.why, "他在忙")
+        XCTAssertTrue(tickCalls.isEmpty, "在忙的时候不该叫他去思考怎么开口")
+    }
+
+    func testLimitedActivityLowersProbabilityWithoutBlocking() async throws {
+        try setLastInteraction(minutesAgo: 120)
+        try setActivity(PersonaActivity(
+            kind: .work, activity: "在开会", minutes: 120,
+            availability: .limited, startedAt: TestData.now - 60_000
+        ))
+        // 骰子一定中：LIMITED 只是把概率压到 0.4 倍，不是「禁止开口」（§4）。
+        let certain = await makeController(roll: { 0.0 }).beat(now: TestData.now)
+        XCTAssertNotEqual(certain.why, "他在忙", "LIMITED 不是 BUSY")
+        XCTAssertTrue(certain.fired, "骰子必中时半忙仍然会开口")
+        // 高骰子一定不中：概率被压过之后这一拍就不该开口。
+        let unlikely = await makeController(roll: { 0.99 }).beat(now: TestData.now)
+        XCTAssertFalse(unlikely.fired)
+        XCTAssertFalse(tickCalls.isEmpty, "上面那次必中的拍子应当真的叫过他")
+    }
+
+    /// 过期的活动不该继续影响主动（读取时判断，不需要定时任务）。
+    func testExpiredActivityDoesNotBlockProactive() async throws {
+        try setLastInteraction(minutesAgo: 120)
+        try setActivity(PersonaActivity(
+            kind: .work, activity: "在开会", minutes: 30,
+            availability: .busy, startedAt: TestData.now - 60 * 60_000
+        ))
+        let controller = makeController(roll: { 0.0 })
+        let beat = await controller.beat(now: TestData.now)
+        XCTAssertNotEqual(beat.why, "他在忙")
+    }
+
     // MARK: - 掷中后重置
 
     func testFiringRunsAgentLoopAndResetsClock() async throws {

@@ -81,7 +81,15 @@ data class PersonaEntity(
     val wakeThreshold: Int = 6,
     /** 睡前是否开启免打扰。由模型在动作里改，用户不直接改。 */
     @ColumnInfo(defaultValue = "0")
-    val dndOnSleep: Boolean = false
+    val dndOnSleep: Boolean = false,
+
+    // ---- 0.12 人设引导（schema v13） -----------------------------------------
+    /** 世界预设 JSON（[com.myfriend.app.domain.WorldPresetCodec]），为空表示没有世界预设。 */
+    val worldJson: String? = null,
+    /** 话风 JSON（[com.myfriend.app.domain.SpeechStyleCodec]），为空表示没学过话风。 */
+    val speechStyleJson: String? = null,
+    /** 他此刻在做什么（[com.myfriend.app.domain.PersonaActivityCodec]）；到点自动失效。 */
+    val activityJson: String? = null
 )
 
 @Entity(
@@ -298,7 +306,11 @@ data class PersonaPresetEntity(
     val avatarUri: String?,
     val avatarSeed: Int,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /** 世界预设 JSON（v13）；预设应用到人格时复制一份，之后互不覆盖。 */
+    val worldJson: String? = null,
+    /** 话风 JSON（v13）。 */
+    val speechStyleJson: String? = null
 )
 
 @Entity(

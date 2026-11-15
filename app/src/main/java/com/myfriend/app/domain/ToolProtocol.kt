@@ -52,6 +52,7 @@ object ToolCatalog {
     const val REMEMBER = "remember"
     const val UPDATE_PERSONA = "update_persona"
     const val SET_QUIET_HOURS = "set_quiet_hours"
+    const val SET_ACTIVITY = "set_activity"
     const val SET_MOOD = "set_mood"
     const val RECALL = "recall"
     const val DEFER_REPLY = "defer_reply"
@@ -73,7 +74,13 @@ object ToolCatalog {
         "你对自己的设定有了新的认识、想调整表达方式或偏好时才调用；patch 只写要改的字段，不要整段重写。"
 
     private const val SET_QUIET_HOURS_DESCRIPTION =
-        "你想按自己的作息休息、或想避开某些时段时调用；对方正需要陪伴时不要随便设。"
+        "你想按自己的作息休息、或想避开某些时段时调用；对方正需要陪伴时不要随便设。" +
+            "它管的是「不被打扰」（睡觉/安静时段），不是「我在做事」——在忙某件具体的事用 set_activity。"
+
+    private const val SET_ACTIVITY_DESCRIPTION =
+        "你接下来一段时间要在忙某件具体的事（工作、通勤、吃饭、社交、家务、学习、休息……）时调用；" +
+            "它管的是「我在做事」以及这段忙到什么时候，不等同于安静时段（set_quiet_hours），两者可以同时存在。" +
+            "只是随口说「我去忙了」、或对方正着急需要你时，不要用它把话说死。"
 
     private const val SET_MOOD_DESCRIPTION =
         "你此刻的心情跟刚才不一样了才调用（开心、累、烦躁、想念……）；一次只写此刻真实的那一个词，别为了有变化而编。"
@@ -152,6 +159,19 @@ object ToolCatalog {
         }
     """
 
+    private const val SET_ACTIVITY_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "kind": {"type": "string", "enum": ["WORK", "COMMUTE", "MEAL", "SOCIAL", "CHORE", "STUDY", "REST", "OTHER"], "description": "这件事属于哪一类，默认 OTHER"},
+            "activity": {"type": "string", "description": "用你自己的口吻一句话说清在做什么，例如「在事务所赶第三版方案」"},
+            "minutes": {"type": "integer", "minimum": 15, "maximum": 480, "description": "预计还要多久（分钟），15-480，默认 60"},
+            "availability": {"type": "string", "enum": ["BUSY", "LIMITED", "FREE"], "description": "这段时间忙不忙：BUSY 回复更短更晚、不主动开口；LIMITED 回得慢；FREE 只是手头有这件事"}
+          },
+          "required": ["activity"]
+        }
+    """
+
     private const val SET_MOOD_PARAMETERS = """
         {
           "type": "object",
@@ -192,6 +212,7 @@ object ToolCatalog {
         ToolSpec(REMEMBER, REMEMBER_DESCRIPTION, REMEMBER_PARAMETERS.trimIndent()),
         ToolSpec(UPDATE_PERSONA, UPDATE_PERSONA_DESCRIPTION, UPDATE_PERSONA_PARAMETERS.trimIndent()),
         ToolSpec(SET_QUIET_HOURS, SET_QUIET_HOURS_DESCRIPTION, SET_QUIET_HOURS_PARAMETERS.trimIndent()),
+        ToolSpec(SET_ACTIVITY, SET_ACTIVITY_DESCRIPTION, SET_ACTIVITY_PARAMETERS.trimIndent()),
         ToolSpec(SET_MOOD, SET_MOOD_DESCRIPTION, SET_MOOD_PARAMETERS.trimIndent()),
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
         ToolSpec(DEFER_REPLY, DEFER_REPLY_DESCRIPTION, DEFER_REPLY_PARAMETERS.trimIndent())
@@ -229,11 +250,11 @@ object ToolCatalog {
         ${if (webEnabled) "- web_search(query, count?)：要最新事实、价格或你不确定的信息时用。\n        - web_fetch(url)：拿到链接读全文时用。" else "- 你现在没有联网能力。涉及实时信息时，老实说自己不确定，别编。"}
         - remember(content, drawer, importance)：值得长期记的事才记，drawer 取 SELF/USER/EVENT，importance 1-5。
         - update_persona(patch, reason)：有新认识才改，patch 只写要改的字段。
-        - set_quiet_hours(sleep_at, wake_at, reason)：想按作息休息时用。
+        - set_quiet_hours(sleep_at, wake_at)：想按作息休息时用。
+        - set_activity(kind, activity, minutes?)：在忙时用。
         - set_mood(mood, intensity?, reason?)：心情真变了才记一个词。
         - recall(query, depth)：想不起对方提过的事、或要找旧聊天时用；depth 1/2/3，越深翻得越久；闲聊别用。
-        - defer_reply(minutes?, reason?)：这一轮先不回时用。调用后不会发出任何消息，对方只看到「已读」；
-          过一会儿（默认 45 分钟，5–720 分钟）由你自己再决定要不要开口。
+        - defer_reply(minutes?, reason?)：这一轮先不回时用；对方只看到「已读」，过一会儿再由你决定要不要开口。
 
         不支持原生调用时，用代码块（可连写）：
         ```${ToolProtocol.BLOCK_LANGUAGE}
@@ -461,6 +482,7 @@ object ToolProtocol {
                 "作息：${sleepAt ?: "?"} 睡，${wakeAt ?: "?"} 醒"
             }
         }
+        ToolCatalog.SET_ACTIVITY -> invocation.argument("activity")?.take(80)?.let { "在忙：$it" }
         else -> null
     }
 

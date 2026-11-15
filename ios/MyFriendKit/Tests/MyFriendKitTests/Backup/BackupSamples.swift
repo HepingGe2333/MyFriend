@@ -3,8 +3,10 @@ import Foundation
 
 /// iOS 侧的「黄金样本」。
 ///
-/// - `iosBundle()`：**v4**（0.12）结构，写进 `fixtures/backup/ios-export-v4.json`，
-///   Android 的 `BackupFixtureTest` 用它验证「iOS 导出的备份 Android 接得住」；
+/// - `iosBundle()`：**v5**（0.12，schema v13，人设引导）结构，写进
+///   `fixtures/backup/ios-export-v5.json`，Android 的 `BackupFixtureTest` 用它验证
+///   「iOS 导出的备份 Android 接得住」；`ios-export-v4.json` 从那以后是**只读输入**
+///   （证明 v4 仍然能读），不再重写；
 /// - 值全部是 iOS 自己造的（名字、id 都不同），并且**每个可选字段都填上**：
 ///   「所有可选字段都非 nil」的样本能顺带检查「编码时字段一个不多一个不少」
 ///   （见 BackupCodecTests 的键集合断言）——漏字段是备份互通最隐蔽的 bug。
@@ -69,7 +71,11 @@ enum BackupSamples {
                     extractionEvery: 9,
                     sleepEnabled: true,
                     wakeThreshold: 4,
-                    dndOnSleep: true
+                    dndOnSleep: true,
+                    // v5：人设引导三列，全部非空 —— 「所有可选字段都填上」这条规矩同样适用。
+                    worldJson: #"{"description":"临港新城的老城区，事务所常年加班。","era":"当代，沿海城市，2026 年","obligations":["按节点交图"],"relationships":[{"name":"老周","note":"催图直接","relation":"合伙人"}],"schedule":[{"activity":"在旧书店理书","day":"工作日","end":"18:00","start":"09:00"}],"worldName":"临港新城·旧书店"}"#,
+                    speechStyleJson: #"{"avoid":["长篇大论"],"habits":["句子很短"],"phrases":["在忙，晚点说","嗯，知道了"],"source":"model","tone":"简短直接，偏冷淡务实"}"#,
+                    activityJson: #"{"activity":"在整理新到的一批旧书","availability":"LIMITED","kind":"WORK","minutes":60,"startedAt":1795000000000,"until":1795003600000}"#
                 )
             ],
             memories: [
@@ -196,7 +202,10 @@ enum BackupSamples {
                     avatarUri: personaAvatarFileName,
                     avatarSeed: 4,
                     createdAt: now - 259_200_000,
-                    updatedAt: now - 86_400_000
+                    updatedAt: now - 86_400_000,
+                    // v5：预设也带世界与话风（应用到人格时复制过去）。
+                    worldJson: #"{"description":"旧书店所在的街区。","era":"当代","obligations":[],"relationships":[],"schedule":[],"worldName":"临港新城·旧书店"}"#,
+                    speechStyleJson: #"{"avoid":[],"habits":["少用感叹号"],"phrases":["大概吧"],"source":"manual","tone":"慢，具体"}"#
                 )
             ],
             proactiveRules: [

@@ -253,6 +253,20 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 睡前是否开启免打扰。**模型可改**，用户不能直接改（§六）。
     public var dndOnSleep: Bool
 
+    // MARK: v13 的人设引导字段（`spec/persona-guidance/README.md` §5）
+    //
+    // 全部可空：null = 没有世界预设 / 没学过话风 / 此刻没在忙。
+    // 三列都是 JSON 文本（宽容解析，坏 JSON 等于没有），理由见 `Schema.personaGuidanceColumns`。
+
+    /// 世界预设 JSON（`WorldPreset`）：他所在的世界、日程、关系、义务。
+    public var worldJson: String?
+    /// 话风 JSON（`SpeechStyle`）：tone / phrases / habits / avoid。
+    ///
+    /// 只存**总结后的风格数据**：原始聊天记录不落库、不进日志、不进备份（§3.3）。
+    public var speechStyleJson: String?
+    /// 当前活动的 JSON（`PersonaActivity`）：他在做什么、忙到什么时候。
+    public var activityJson: String?
+
     public init(
         id: String,
         name: String,
@@ -285,7 +299,10 @@ public struct PersonaEntity: Equatable, Sendable {
         extractionEvery: Int = PersonaFieldLimits.extractionEveryDefault,
         sleepEnabled: Bool = true,
         wakeThreshold: Int = PersonaFieldLimits.wakeThresholdDefault,
-        dndOnSleep: Bool = false
+        dndOnSleep: Bool = false,
+        worldJson: String? = nil,
+        speechStyleJson: String? = nil,
+        activityJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -319,6 +336,10 @@ public struct PersonaEntity: Equatable, Sendable {
         self.sleepEnabled = sleepEnabled
         self.wakeThreshold = PersonaFieldLimits.clampWakeThreshold(wakeThreshold)
         self.dndOnSleep = dndOnSleep
+        // JSON 一律走宽容清洗：空串 / 坏 JSON 都当「没有」（§2.1 / §3.2）。
+        self.worldJson = PromptGuidanceJSON.clean(worldJson)
+        self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
+        self.activityJson = PromptGuidanceJSON.clean(activityJson)
     }
 
     /// 长文本字段的清洗：去首尾空白，超长截断（不是拒绝，老数据可能很长）。
@@ -779,6 +800,9 @@ public struct PersonaPresetEntity: Equatable, Sendable {
     public var avatarSeed: Int
     public var createdAt: Int64
     public var updatedAt: Int64
+    /// v13：预设自带的世界预设与话风（应用预设时**复制**到人格，之后预设变化不自动覆盖人格）。
+    public var worldJson: String?
+    public var speechStyleJson: String?
 
     public init(
         id: String,
@@ -789,7 +813,9 @@ public struct PersonaPresetEntity: Equatable, Sendable {
         avatarUri: String? = nil,
         avatarSeed: Int = 0,
         createdAt: Int64 = 0,
-        updatedAt: Int64 = 0
+        updatedAt: Int64 = 0,
+        worldJson: String? = nil,
+        speechStyleJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -800,6 +826,8 @@ public struct PersonaPresetEntity: Equatable, Sendable {
         self.avatarSeed = avatarSeed
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.worldJson = PromptGuidanceJSON.clean(worldJson)
+        self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
     }
 }
 

@@ -35,6 +35,7 @@ class ToolTraceTextTest {
         ToolTraceTitle.UPDATE_PERSONA to ("调整了自己的人设" to "Adjusted his profile"),
         ToolTraceTitle.PERSONA_UNCHANGED to ("想了想，没有改" to "Thought it over, left it unchanged"),
         ToolTraceTitle.SET_QUIET_HOURS to ("安排了自己的作息" to "Set his sleep hours"),
+        ToolTraceTitle.SET_ACTIVITY to ("在忙一件事" to "Busy with something"),
         ToolTraceTitle.SET_MOOD to ("心情变了" to "Mood changed"),
         ToolTraceTitle.RECALL to ("回想了一下" to "Recalled"),
         ToolTraceTitle.DEFER_REPLY to ("决定先不回" to "Decided not to reply yet"),

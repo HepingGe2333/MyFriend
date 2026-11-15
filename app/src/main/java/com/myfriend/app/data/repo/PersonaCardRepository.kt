@@ -7,7 +7,11 @@ import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.PersonaPendingPatchDao
 import com.myfriend.app.data.local.PersonaPendingPatchEntity
 import com.myfriend.app.data.local.PersonaRevisionDao
+import com.myfriend.app.domain.PersonaActivityCodec
 import com.myfriend.app.domain.PersonaCard
+import com.myfriend.app.domain.PromptBuilder
+import com.myfriend.app.domain.SpeechStyleCodec
+import com.myfriend.app.domain.WorldPresetCodec
 import com.myfriend.app.domain.PersonaCardCodec
 import com.myfriend.app.domain.PersonaCardPatch
 import com.myfriend.app.domain.PersonaCardPrompt
@@ -59,27 +63,37 @@ class PersonaCardRepository @Inject constructor(
 
     /**
      * 聊天/主动消息要用的系统人格文本。
-     * 有卡时用「稳定策略 + 按预算渲染的卡」，没卡时退回旧的一段提示词。
      *
-     * 1.9 起在最后追加「## 你是谁」：性格 / 喜欢 / 习惯 / 过去 / 设定。
+     * 0.12 起统一走 [PromptBuilder] 的五段结构（身份 → 世界 → 此刻状态 → 话风 → 关系）：
+     * 主动思考与主动开口看到的「他是谁」和聊天里完全一致，世界/话风/当前活动都会带进去。
+     * 记忆、工具说明、语言指令这些可变部分仍由调用方自己接在后面；边界由这里收尾。
+     *
+     * `budget` 保留给旧调用方兼容，新的五段结构本身已经按字段长度裁剪（见 `PromptBuilder`）；
      * 没填的字段整段不出现；`proactiveLevel` 与 `memoryRetention` 是行为参数，刻意不进正文。
      */
     suspend fun systemText(
         persona: PersonaEntity,
-        budget: PromptBudget = PromptBudget.NORMAL
+        budget: PromptBudget = PromptBudget.NORMAL,
+        now: Long = System.currentTimeMillis()
     ): String {
         val card = readCard(persona)
-        val base = if (card.isEmpty() && persona.prompt.isNotBlank()) {
-            persona.prompt
-        } else {
-            buildString {
-                append(PersonaCardPrompt.stableStrategy(card))
-                append("\n\n")
-                append(PersonaCardPrompt.renderContext(card, budget))
-            }.trim()
-        }
-        val profile = PersonaProfile.promptBlock(persona)
-        return if (profile.isBlank()) base else "$base\n\n$profile"
+        val base = PromptBuilder.base(
+            PromptBuilder.Inputs(
+                name = persona.name,
+                age = card.identity.age,
+                role = card.identity.role,
+                relation = card.identity.relation,
+                address = card.voice.address,
+                card = card,
+                legacyPrompt = persona.prompt,
+                profileBlock = PersonaProfile.promptBlock(persona),
+                world = WorldPresetCodec.decode(persona.worldJson),
+                speech = SpeechStyleCodec.decode(persona.speechStyleJson),
+                activity = PersonaActivityCodec.decode(persona.activityJson),
+                now = now
+            )
+        )
+        return "$base\n\n${PromptBuilder.boundaries()}"
     }
 
     /** 第一次用到这张卡时把它落库，之后 AI 才能按字段改。 */

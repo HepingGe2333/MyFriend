@@ -27,6 +27,7 @@
 | --- | --- |
 | [spec/agent-core/](../spec/agent-core/README.md) | 决策层的行为用例（睡眠、`defer_reply`、主动上限、心跳、记忆衰减、工具参数），两端测试共读；实现是 `agentcore/` 的 Kotlin Multiplatform 代码，iOS 经 `AgentCoreKit` framework 复用 |
 | [spec/messages-blocks/](../spec/messages-blocks/README.md) | 历史按 200 条一块存储、区块分页与「无候选上限」检索的存储/遍历契约 |
+| [spec/persona-guidance/](../spec/persona-guidance/README.md) | 人设引导契约：系统提示词分段、世界预设、话风学习、`set_activity` 工具（含实测提示词） |
 | [spec/web-search/](../spec/web-search/README.md) | `web_search` 的多 provider 契约（MessageAPI / Tavily / Brave / Serper / 自建）与 `web_fetch` 行为 |
 | [web-search-live-check.md](web-search-live-check.md) | 各搜索 provider 的**真实接口实测**（字段形状、状态码、延迟），不含密钥 |
 | [spec/search/](../spec/search/README.md) | 聊天检索的摘要/高亮与排序/过滤规则 |

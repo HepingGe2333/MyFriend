@@ -20,7 +20,11 @@ data class PresetDraft(
     val prompt: String,
     val category: String,
     val avatarUri: String?,
-    val avatarSeed: Int
+    val avatarSeed: Int,
+    /** 世界预设 JSON（v13）；null 表示这个预设不带世界。 */
+    val worldJson: String? = null,
+    /** 话风 JSON（v13）。 */
+    val speechStyleJson: String? = null
 )
 
 @Serializable
@@ -84,7 +88,9 @@ class PresetRepository @Inject constructor(
             avatarUri = draft.avatarUri,
             avatarSeed = draft.avatarSeed,
             createdAt = existing?.createdAt ?: now,
-            updatedAt = now
+            updatedAt = now,
+            worldJson = draft.worldJson?.takeIf { it.isNotBlank() },
+            speechStyleJson = draft.speechStyleJson?.takeIf { it.isNotBlank() }
         )
         if (existing == null) presetDao.insert(entity) else presetDao.update(entity)
         // 换了头像：旧的按引用回收（预设之间/与人格之间可能共用同一个文件）。
@@ -131,7 +137,9 @@ class PresetRepository @Inject constructor(
                 prompt = persona.prompt,
                 category = persona.category,
                 avatarUri = persona.avatarUri,
-                avatarSeed = persona.avatarSeed
+                avatarSeed = persona.avatarSeed,
+                worldJson = persona.worldJson,
+                speechStyleJson = persona.speechStyleJson
             )
         ).getOrThrow()
     }
@@ -156,7 +164,9 @@ class PresetRepository @Inject constructor(
                 prompt = preset.prompt,
                 category = preset.category,
                 defaultApiConfigId = defaultApiConfigId,
-                modelOverride = null
+                modelOverride = null,
+                worldJson = preset.worldJson,
+                speechStyleJson = preset.speechStyleJson
             )
         ).getOrThrow()
     }

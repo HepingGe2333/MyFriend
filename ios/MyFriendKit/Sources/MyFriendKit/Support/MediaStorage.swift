@@ -1170,6 +1170,21 @@ public final class MediaStorage {
 
     private let fileManager: FileManager
 
+    /// 媒体文件写/删的**进程级**互斥锁（0.12 遗留缺陷 2）。
+    ///
+    /// `fileManager` 的「查引用 → 删文件」与 `saveImage` 的「写文件 → 返回引用」以前是两步，
+    /// 并发选图（同一内容哈希 → 同一个文件名）时可能把刚被引用的文件删掉。
+    /// 用 `NSRecursiveLock` 而不是串行队列：这些方法都是同步的，调用方（UI/后台）不该被
+    /// 迫切换成异步；可重入只是防御，正常路径不会嵌套。
+    private static let mediaFileLock = NSRecursiveLock()
+
+    /// 在媒体文件临界区里执行 `body`。生产代码的写/删与测试的锁契约都走这里。
+    func withMediaFileLock<T>(_ body: () throws -> T) rethrows -> T {
+        Self.mediaFileLock.lock()
+        defer { Self.mediaFileLock.unlock() }
+        return try body()
+    }
+
     public init(directory: URL, fileManager: FileManager = .default) {
         self.directory = directory
         self.fileManager = fileManager
@@ -1243,31 +1258,35 @@ public final class MediaStorage {
         }
         // 重复选同一张图：压缩后的字节相同 → 复用已有文件（文件名带 SHA-256 前缀）。
         let contentHash = ImageContentHash.shortPrefix(data)
-        if let existing = MediaFileNaming.existingFile(
-            kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
-        ) {
+        // 「复用已有文件 / 写新文件 + 返回引用」必须在同一个媒体文件临界区里：
+        // 删除路径的「查引用 + 删」也拿这把锁，不能出现「刚查完无引用，这里又把同名文件返回」。
+        return try withMediaFileLock {
+            if let existing = MediaFileNaming.existingFile(
+                kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
+            ) {
+                return MessageAttachment(
+                    uri: existing.absoluteString,
+                    mime: MessageAttachment.defaultMime,
+                    width: decoded.width,
+                    height: decoded.height
+                )
+            }
+            let target = directory.appendingPathComponent(
+                MediaFileNaming.fileName(kind: kind, contentHash: contentHash), isDirectory: false
+            )
+            do {
+                try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+                try data.write(to: target, options: .atomic)
+            } catch {
+                throw StorageError.writeFailed
+            }
             return MessageAttachment(
-                uri: existing.absoluteString,
+                uri: target.absoluteString,
                 mime: MessageAttachment.defaultMime,
                 width: decoded.width,
                 height: decoded.height
             )
         }
-        let target = directory.appendingPathComponent(
-            MediaFileNaming.fileName(kind: kind, contentHash: contentHash), isDirectory: false
-        )
-        do {
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            try data.write(to: target, options: .atomic)
-        } catch {
-            throw StorageError.writeFailed
-        }
-        return MessageAttachment(
-            uri: target.absoluteString,
-            mime: MessageAttachment.defaultMime,
-            width: decoded.width,
-            height: decoded.height
-        )
     }
 
     // MARK: 读
@@ -1362,18 +1381,22 @@ public final class MediaStorage {
     /// - Returns: 文件确实被删掉了才返回 true。
     @discardableResult
     public func deleteIfUnreferenced(_ uriString: String?, references: MediaReferences) -> Bool {
-        guard let uriString,
-              let fileName = MediaReferences.fileName(from: uriString),
-              let url = fileURL(for: uriString),
-              AttachmentLocation.isWithin(directory, url) else { return false }
-        // 只删普通文件：即使目录归属判定被绕过，也不能对子目录做递归删除。
-        guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
-            return false
+        // 「解析路径 + 查引用 + 删文件」全部在同一把进程级媒体锁里（见 `mediaFileLock`）：
+        // 并发 `saveImage` 对同一内容哈希文件做「写文件 + 返回引用」时，两边不会交错。
+        withMediaFileLock {
+            guard let uriString,
+                  let fileName = MediaReferences.fileName(from: uriString),
+                  let url = fileURL(for: uriString),
+                  AttachmentLocation.isWithin(directory, url) else { return false }
+            // 只删普通文件：即使目录归属判定被绕过，也不能对子目录做递归删除。
+            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true else {
+                return false
+            }
+            guard let referenced = try? references.isReferenced(
+                fileName: fileName, uriString: uriString
+            ), referenced == false else { return false }
+            return (try? fileManager.removeItem(at: url)) != nil
         }
-        guard let referenced = try? references.isReferenced(
-            fileName: fileName, uriString: uriString
-        ), referenced == false else { return false }
-        return (try? fileManager.removeItem(at: url)) != nil
     }
 
     /// 单条附件的便捷入口（界面撤掉一张待发送图片时用）。

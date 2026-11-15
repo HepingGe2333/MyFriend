@@ -39,6 +39,27 @@ struct PersonaEditorScreen: View {
     @State private var behaviors: [String] = []
     @State private var backstory = ""
     @State private var quirks = ""
+    // 人设引导（0.12）：世界设定 / 话风。都是「可留空」的补充设定，提示词里空着就整节不出现。
+    @State private var worldName = ""
+    @State private var worldEra = ""
+    @State private var worldDescription = ""
+    @State private var worldScheduleText = ""
+    @State private var worldRelationsText = ""
+    @State private var worldObligationsText = ""
+    /// 载入时的世界 JSON：用来判断「这次有没有真的动过」（不动就不写库，别把版本/时间戳白推一次）。
+    @State private var initialWorldJson: String?
+    @State private var speechTone = ""
+    @State private var speechPhrases: [String] = []
+    @State private var speechHabits: [String] = []
+    @State private var speechAvoid: [String] = []
+    @State private var speechSource: SpeechStyleSource = .model
+    @State private var initialSpeechStyleJson: String?
+    /// 用户粘贴的聊天记录：**只在这个页面的内存里**，不落库、不进日志、不进备份。
+    @State private var transcript = ""
+    @State private var worldBusy = false
+    @State private var styleBusy = false
+    /// 他此刻在做什么（只读：`set_activity` 由他自己写，用户不能改）。
+    @State private var activityLine = ""
     @State private var proactiveLevel = PersonaFieldLimits.proactiveLevelDefault
     @State private var memoryRetention = PersonaFieldLimits.memoryRetentionDefault
     @State private var extractionEvery = PersonaFieldLimits.extractionEveryDefault
@@ -65,6 +86,8 @@ struct PersonaEditorScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 identityCard
+                worldCard
+                speechCard
                 characterCard
                 storyCard
                 personaCardCard
@@ -214,6 +237,153 @@ struct PersonaEditorScreen: View {
     }
 
     // MARK: - 性格 / 喜欢 / 习惯
+
+    // MARK: - 世界设定（人设引导 §2）
+
+    private var worldCard: some View {
+        MFCard {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L("世界设定"))
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                if worldBusy {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button(L("AI 补全")) { Task { await expandWorld() } }
+                        .font(.footnote)
+                        .tint(accent)
+                        .disabled(worldIsEmptyInput)
+                }
+            }
+            MFNote(text: L("他在哪儿生活、平时怎么过。留空就只有人格，没有世界。"))
+
+            FieldCaption(L("世界 / 城市"), hint: L("一句话，例如「临港新城·云筑建筑事务所」。"))
+            TextField(L("比如：临港新城·云筑建筑事务所"), text: $worldName)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+                .padding(.bottom, 14)
+
+            FieldCaption(L("时代与地点"), hint: L("例如「当代，中国沿海新一线城市，2026 年」。"))
+            TextField(L("比如：当代，中国沿海新一线城市"), text: $worldEra)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+                .padding(.bottom, 14)
+
+            FieldCaption(L("世界与他的处境"), hint: L("100–200 字：世界长什么样、他在里面是什么处境。"))
+            multilineField($worldDescription, height: 92, placeholder: L("比如：事务所竞争激烈、甲方频繁改图，他带组赶一个高层住宅项目。"))
+                .padding(.bottom, 14)
+
+            FieldCaption(L("日程"), hint: L("一行一条，例如「工作日 09:00-18:30 在事务所画图」。"))
+            multilineField($worldScheduleText, height: 76, placeholder: L("工作日 09:00-18:30 在事务所画图"))
+                .padding(.bottom, 14)
+
+            FieldCaption(L("关系"), hint: L("一行一条，例如「母亲（母亲）：每周三晚打电话」。"))
+            multilineField($worldRelationsText, height: 60, placeholder: L("母亲（母亲）：每周三晚打电话"))
+                .padding(.bottom, 14)
+
+            FieldCaption(L("要承担的事"), hint: L("一行一条：他必须做的事与压力。"))
+            multilineField($worldObligationsText, height: 56, placeholder: L("按节点交图"))
+
+            MFNote(text: L("AI 只是帮你起个头：随时可以手填、改，也可以完全不用它。补全只用上面的介绍与「个人设定」，不会上传对话。"))
+            if !worldIsCleared {
+                Button(L("清空世界设定"), role: .destructive) { clearWorld() }
+                    .font(.footnote)
+                    .padding(.top, 8)
+            }
+        }
+    }
+
+    // MARK: - 话风（人设引导 §3）
+
+    private var speechCard: some View {
+        MFCard {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L("话风"))
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                if styleBusy {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button(L("总结话风")) { Task { await summarizeStyle() } }
+                        .font(.footnote)
+                        .tint(accent)
+                        .disabled(transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            MFNote(text: L("他怎么说话：句子长短、口头禅、不说什么。留空就用默认的短句口语。"))
+
+            FieldCaption(
+                L("粘贴一段聊天记录"),
+                hint: L("支持「昵称：内容」或多行纯文本；只用来总结风格，不会存下来、也不会进备份。")
+            )
+            multilineField($transcript, height: 96, placeholder: L("林深：在忙，晚点说\n林深：你先睡吧，不用等我"))
+                .padding(.bottom, 6)
+            HStack(spacing: 12) {
+                Button(L("清空记录")) { transcript = "" }
+                    .font(.footnote)
+                    .disabled(transcript.isEmpty)
+                Spacer()
+                Text(Lf("%d 字", transcript.count))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.bottom, 14)
+
+            if speechSource == .heuristic {
+                MFNote(
+                    text: L("这是本地粗略总结，可以手动修改。"),
+                    icon: "exclamationmark.triangle"
+                )
+                .padding(.bottom, 8)
+            }
+
+            FieldCaption(L("说话风格"), hint: L("一句话概括，例如「简短直接，偏冷淡务实」。"))
+            TextField(L("比如：简短直接，偏冷淡务实"), text: $speechTone)
+                .textFieldStyle(.plain)
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+                .padding(.bottom, 8)
+
+            TagEditor(
+                title: L("常用语"),
+                hint: L("最多 12 条；提示词里只引用前 6 条，一次回复最多自然带 1 处。"),
+                suggestions: [],
+                limit: SpeechStyle.maxPhrases,
+                values: $speechPhrases,
+                accent: accent
+            )
+            MFRowDivider(leadingInset: 0)
+            TagEditor(
+                title: L("语言习惯"),
+                hint: L("句子长短、标点、语气词、表情这些。"),
+                suggestions: [],
+                limit: SpeechStyle.maxHabits,
+                values: $speechHabits,
+                accent: accent
+            )
+            MFRowDivider(leadingInset: 0)
+            TagEditor(
+                title: L("不要出现"),
+                hint: L("他绝不会说的话的样子。"),
+                suggestions: [],
+                limit: SpeechStyle.maxAvoid,
+                values: $speechAvoid,
+                accent: accent
+            )
+
+            MFNote(text: L("聊天记录只在这一次总结里用：不落库、不进日志、不进备份。"))
+            if !speechIsCleared {
+                Button(L("清空话风"), role: .destructive) { clearSpeech() }
+                    .font(.footnote)
+                    .padding(.top, 8)
+            }
+        }
+    }
 
     private var characterCard: some View {
         MFCard {
@@ -650,6 +820,18 @@ struct PersonaEditorScreen: View {
 
     private var sleepCard: some View {
         MFCard {
+            // 当前活动只读：`set_activity` 是他自己的动作，界面只显示「他正在做什么」。
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(L("他正在做什么"))
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                Text(activityLine.isEmpty ? L("没在忙什么") : activityLine)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.trailing)
+            }
+            MFNote(text: L("这一栏由他自己更新（他会在对话里说自己接下来要忙什么），你不用填。"))
+            MFRowDivider(leadingInset: 0)
             Toggle(isOn: $sleepEnabled) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(L("他会自己睡觉"))
@@ -789,6 +971,157 @@ struct PersonaEditorScreen: View {
         return L("留空使用 API 配置中的模型")
     }
 
+    // MARK: - 人设引导：编辑中的世界 / 话风 / 活动
+
+    /// 多行输入框（世界描述、日程、聊天记录都用它）。
+    private func multilineField(_ text: Binding<String>, height: CGFloat, placeholder: String) -> some View {
+        ZStack(alignment: .topLeading) {
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 14)
+            }
+            TextEditor(text: text)
+                .font(.footnote)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: height)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+        }
+        .background(fieldBackground)
+    }
+
+    /// 编辑中的世界预设（字段 → 结构；空的整块就是空预设）。
+    private var editingWorld: WorldPreset {
+        WorldPreset(
+            worldName: worldName,
+            era: worldEra,
+            description: worldDescription,
+            schedule: WorldPreset.parseScheduleLines(worldScheduleText),
+            relationships: WorldPreset.parseRelationshipLines(worldRelationsText),
+            obligations: WorldPreset.parseObligationLines(worldObligationsText)
+        )
+    }
+
+    private var editingSpeechStyle: SpeechStyle {
+        SpeechStyle(
+            tone: speechTone,
+            phrases: speechPhrases,
+            habits: speechHabits,
+            avoid: speechAvoid,
+            source: speechSource
+        )
+    }
+
+    /// 世界输入全空时不显示「清空」按钮，也不发补全请求。
+    private var worldIsCleared: Bool {
+        editingWorld.isEmpty
+    }
+
+    /// AI 补全要一句「角色简介」：优先用一句话介绍，其次用个人设定；
+    /// 两者都空就没有可补全的输入（按钮置灰）。
+    private var worldIsEmptyInput: Bool {
+        let summaryText = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let quirksText = quirks.trimmingCharacters(in: .whitespacesAndNewlines)
+        return summaryText.isEmpty && quirksText.isEmpty
+    }
+
+    private var speechIsCleared: Bool {
+        editingSpeechStyle.isEmpty
+    }
+
+    /// 把世界结构写回编辑字段（载入与 AI 补全共用一条路径，避免两边长得不一样）。
+    private func apply(world: WorldPreset?) {
+        worldName = world?.worldName ?? ""
+        worldEra = world?.era ?? ""
+        worldDescription = world?.description ?? ""
+        worldScheduleText = world.map { WorldPreset.scheduleLines($0.schedule) } ?? ""
+        worldRelationsText = world.map { WorldPreset.relationshipLines($0.relationships) } ?? ""
+        worldObligationsText = world.map { WorldPreset.obligationLines($0.obligations) } ?? ""
+    }
+
+    private func apply(style: SpeechStyle?) {
+        speechTone = style?.tone ?? ""
+        speechPhrases = style?.phrases ?? []
+        speechHabits = style?.habits ?? []
+        speechAvoid = style?.avoid ?? []
+        speechSource = style?.source ?? .model
+    }
+
+    private func clearWorld() {
+        apply(world: nil)
+        initialWorldJson = nil
+    }
+
+    private func clearSpeech() {
+        apply(style: nil)
+        transcript = ""
+        initialSpeechStyleJson = nil
+    }
+
+    /// 这次请求用哪份配置：与聊天同一个口径（`AppEnvironment.resolveConfig`）。
+    private func guidanceConfig() -> (config: CompletionConfig, model: String)? {
+        guard let resolved = env.resolvedChatConfig() else { return nil }
+        return (CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey), resolved.model)
+    }
+
+    private func expandWorld() async {
+        guard let resolved = guidanceConfig() else {
+            banner = MFAlert(
+                title: L("还没有可用的 API 配置"),
+                message: L("先在设置里配一个模型，再来补全世界；下面的字段随时可以手填。")
+            )
+            return
+        }
+        let summaryText = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let quirksText = quirks.trimmingCharacters(in: .whitespacesAndNewlines)
+        let brief = [summaryText, quirksText].filter { !$0.isEmpty }.joined(separator: "\n")
+        worldBusy = true
+        let expander = WorldPresetExpander.makeDefault()
+        let result = await expander.expand(
+            personaSummary: brief,
+            config: resolved.config,
+            model: resolved.model
+        )
+        worldBusy = false
+        apply(world: result.preset)
+        if !result.usedModel {
+            banner = MFAlert(
+                title: L("这次没补成"),
+                message: L("已经先填了一份本地草稿（只有你自己的描述），可以直接改，或者稍后再试。")
+            )
+        }
+    }
+
+    private func summarizeStyle() async {
+        guard let resolved = guidanceConfig() else {
+            banner = MFAlert(
+                title: L("还没有可用的 API 配置"),
+                message: L("先在设置里配一个模型，再来总结话风；也可以手填风格与常用语。")
+            )
+            return
+        }
+        styleBusy = true
+        let summarizer = SpeechStyleSummarizer.makeDefault()
+        let result = await summarizer.summarize(
+            transcript: transcript,
+            config: resolved.config,
+            model: resolved.model
+        )
+        styleBusy = false
+        apply(style: result.style)
+        // 聊天记录用完即弃（§3.3）：总结完就把它从界面状态里清掉，没有第二处引用。
+        transcript = ""
+        if !result.usedModel {
+            banner = MFAlert(
+                title: L("这次是本地粗略总结"),
+                message: L("没有用上模型，按字面规则大致总结了一版；常用语只有重复出现的句子，可以手动补。")
+            )
+        }
+    }
+
     // MARK: - 载入与保存
 
     private func loadIfNeeded() {
@@ -817,6 +1150,17 @@ struct PersonaEditorScreen: View {
         wakeThreshold = persona.wakeThreshold
         sleepTime = Self.time(fromMinutes: SleepSchedule.sleepMinutes(persona))
         wakeTime = Self.time(fromMinutes: SleepSchedule.wakeMinutes(persona))
+        // 人设引导：世界 / 话风 / 当前活动。坏 JSON 等于没有（宽容解析），界面不报错。
+        initialWorldJson = persona.worldJson
+        apply(world: WorldPreset.decode(persona.worldJson))
+        initialSpeechStyleJson = persona.speechStyleJson
+        apply(style: SpeechStyle.decode(persona.speechStyleJson))
+        let now = DomainClock.nowMillis
+        if let activity = PersonaActivity.decode(persona.activityJson, now: now) {
+            activityLine = Lf("%@（到 %@ 结束）", activity.activity, activity.untilClockText())
+        } else {
+            activityLine = ""
+        }
         // 人设卡：有卡读卡，没卡从旧提示词里临时拆一份（只读，不写库，与 Android 一致）。
         let loadedCard = env.personaCards.readCard(persona)
         card = loadedCard
@@ -860,6 +1204,17 @@ struct PersonaEditorScreen: View {
         if sleepEnabled {
             entity.quietSleepMinutes = sleepMinutes
             entity.quietWakeMinutes = wakeMinutes
+        }
+        // 人设引导：世界与话风整组落库（空 = 清空），活动不动——那是他自己的状态。
+        let worldJson = editingWorld.isEmpty ? nil : editingWorld.jsonString()
+        let speechJson = editingSpeechStyle.isEmpty ? nil : editingSpeechStyle.jsonString()
+        // 只有真的动过才写：`initialWorldJson` / `initialSpeechStyleJson` 是载入时的原文，
+        // 没改过就原样留着（免得每次保存都把两段 JSON 重新序列化一遍、把 updatedAt 白推一次）。
+        if PromptGuidanceJSON.clean(initialWorldJson) != worldJson {
+            entity.worldJson = worldJson
+        }
+        if PromptGuidanceJSON.clean(initialSpeechStyleJson) != speechJson {
+            entity.speechStyleJson = speechJson
         }
         entity.updatedAt = now
         if existing == nil {

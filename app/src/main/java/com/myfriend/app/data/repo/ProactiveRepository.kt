@@ -41,6 +41,7 @@ import java.time.ZonedDateTime
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.random.Random
 
 /**
  * 主动唤醒规则：到点由 WorkManager 唤醒，用该人格绑定的 API 生成一条真实消息，
@@ -269,7 +270,11 @@ class ProactiveRepository @Inject constructor(
             val error = runCatching { fire(rule, now) }.exceptionOrNull()
             // 按他自己定的作息在睡觉：不算失败，照常排下一次，也不打扰对方。
             val asleep = error is AsleepException
+            // 正在忙（BUSY）或 LIMITED 没掷中：不算失败，但下一次要排到活动结束附近/稍后，
+            // 不能按规则原节奏立刻再来一遍。
+            val deferred = error as? ActivityDeferredException
             val next = when {
+                deferred != null -> deferred.resumeAt
                 error == null || asleep -> computeNextTrigger(rule.kind, rule.timeOfDayMinutes, rule.intervalMinutes, now)
                 else -> now + RETRY_DELAY_MS
             }
@@ -278,7 +283,7 @@ class ProactiveRepository @Inject constructor(
                 nextTriggerAt = next,
                 at = now,
                 // 落库的是错误令牌而不是中文句子：界面按当前语言翻译，老数据（非令牌）原样显示。
-                error = if (asleep) null else error?.toUserError()?.let(UserErrorTokens::encode),
+                error = if (asleep || deferred != null) null else error?.toUserError()?.let(UserErrorTokens::encode),
                 now = System.currentTimeMillis()
             )
             if (error == null) fired++
@@ -309,6 +314,22 @@ class ProactiveRepository @Inject constructor(
     private suspend fun fire(rule: ProactiveRuleEntity, now: Long) {
         val persona = personaDao.getById(rule.personaId) ?: userError(DomainErrorCode.PERSONA_GONE)
         if (personaCardRepository.isAsleep(persona, minuteOfDay(now))) throw AsleepException()
+
+        // 0.12 遗留缺陷 3：定时规则也要看「他此刻在做什么」。
+        // 顺序刻意放在睡眠检查之后：作息（set_quiet_hours）仍然优先，活动只是第二道门；
+        // BUSY 直接跳过（排到活动结束），LIMITED 按注入的随机降概率，过期活动视为 FREE。
+        val activityGate = ProactiveActivityGate.evaluate(
+            activityJson = persona.activityJson,
+            now = now,
+            roll = Random.nextDouble()
+        )
+        if (!activityGate.shouldProceed) {
+            throw ActivityDeferredException(
+                reason = "activity_${activityGate.block.name.lowercase()}",
+                resumeAt = activityGate.resumeAt.coerceAtLeast(now + 1)
+            )
+        }
+
         val session = rule.sessionId?.let { sessionDao.getById(it) }
             ?: chatRepository.getOrCreateForPersona(persona.id)
         val configId = session.apiConfigId ?: persona.defaultApiConfigId
@@ -437,6 +458,9 @@ class ProactiveRepository @Inject constructor(
 
     /** 他按自己的作息在睡觉：不是失败，照常排下一次。 */
     private class AsleepException : Exception(UserError.Domain(DomainErrorCode.ASLEEP).debugText())
+
+    /** 他正在忙 / LIMITED 这次没掷中：不是失败，下一次排到活动结束附近或稍后。 */
+    private class ActivityDeferredException(reason: String, val resumeAt: Long) : Exception(reason)
 
     private companion object {
         const val RETRY_DELAY_MS = 30 * 60 * 1000L

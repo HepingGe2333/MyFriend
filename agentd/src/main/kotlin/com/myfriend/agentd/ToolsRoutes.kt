@@ -17,15 +17,16 @@ import com.myfriend.agentd.search.SearchException
 import com.myfriend.agentd.search.SearchLimits
 import com.myfriend.agentd.search.SearchRequest
 import com.myfriend.agentd.store.FileStore
-import com.myfriend.agentd.store.MessageRole
-import com.myfriend.agentd.store.MessageSource
 import com.myfriend.agentd.store.Persona
 import com.myfriend.agentd.store.Session
 import com.myfriend.agentd.store.StoreJson
 import com.myfriend.app.core.json.Json
 import com.myfriend.app.core.json.JsonParseException
 import com.myfriend.app.core.json.JsonValue
+import com.myfriend.app.domain.Heartbeat
 import java.time.Clock
+import java.time.Instant
+import java.time.LocalDate
 import kotlin.random.Random
 
 /**
@@ -303,7 +304,7 @@ internal class ProactiveTicker(
     private val engine = ProactiveEngine(clock = clock, roll = roll)
     private val scheduler = ProactiveScheduler(
         engine = engine,
-        source = ProactiveSource { targets() },
+        source = ProactiveSource { now -> targets(now) },
         sink = ProactiveSink { decision -> append(decision) },
         clock = clock
     )
@@ -316,9 +317,9 @@ internal class ProactiveTicker(
     }
 
     /** 只有「有人格的会话」才参与判定：没有会话就没有落库的地方，不掷骰子。 */
-    private fun targets(): List<ProactiveTarget> = store.personas().mapNotNull { persona ->
+    private fun targets(now: Long): List<ProactiveTarget> = store.personas().mapNotNull { persona ->
         val session = latestSessionFor(persona.id) ?: return@mapNotNull null
-        ProactiveTarget(persona = personaState(persona, session), level = LevelPolicy())
+        ProactiveTarget(persona = personaState(persona, session, now), level = LevelPolicy())
     }
 
     /**
@@ -326,31 +327,46 @@ internal class ProactiveTicker(
      *
      * 刻意用保守默认值：`sleepEnabled = false`（服务端拿不到「他现在睡没睡」的客户端状态，不猜）、
      * 唤醒阈值/作息窗口用 [PersonaState] 的默认值、主动程度用 [LevelPolicy] 的默认值。
-     * 唯一从存储层读的两件事是**最近互动时间**（会话的 `lastMessageAt`）与**心情**。
+     * 从存储层读的是**最近互动时间**（会话的 `lastMessageAt`）、**心情**，以及
+     * **当日已主动次数 / 上次主动时刻**（`proactive_state.json`，进程重启也不丢）。
      */
-    private fun personaState(persona: Persona, session: Session): PersonaState {
+    private fun personaState(persona: Persona, session: Session, now: Long): PersonaState {
         val mood = store.mood(persona.id)?.let { stored ->
             MoodState(label = stored.label, intensity = stored.intensity, updatedAt = stored.updatedAt)
         } ?: MoodState()
+        // 每日上限按服务端本地自然日算；跨日时 store 会把计数读成 0。
+        val proactive = store.proactiveState(persona.id, localDate(now))
         return PersonaState(
             personaId = persona.id,
             displayName = persona.name,
             sleepEnabled = false,
             lastInteractionAt = session.lastMessageAt ?: 0L,
+            lastProactiveAt = proactive.lastProactiveAt,
+            proactiveCountToday = proactive.proactiveCountToday,
             mood = mood
         )
     }
 
-    /** 掷中之后落一条 `role = ASSISTANT, source = PROACTIVE` 的消息（契约 §3.3/§3.4 的同一套消息表）。 */
+    /**
+     * 掷中之后落一条 `role = ASSISTANT, source = PROACTIVE` 的消息（契约 §3.3/§3.4 的同一套消息表）。
+     *
+     * 落库与「今天第几次 / 上次什么时候」由 [FileStore.appendProactiveMessageIfAllowed] 在**同一把
+     * 存储锁内**完成：并发的两个 tick 只有一个能真正写进去（后到的在锁内复查上限/冷却），
+     * 进程重启后也能从 `proactive_state.json` 读回真实计数。
+     */
     private fun append(decision: ProactiveDecision) {
         val pending: PendingProactive = decision.pending ?: return
         val session = latestSessionFor(decision.targetPersonaId) ?: return
-        val message = store.appendMessage(
+        val at = pending.createdAt
+        val message = store.appendProactiveMessageIfAllowed(
             sessionId = session.id,
-            role = MessageRole.ASSISTANT,
+            personaId = decision.targetPersonaId,
             content = pending.text,
-            source = MessageSource.PROACTIVE
-        )
+            at = at,
+            today = localDate(at),
+            dailyCap = decision.dailyCap,
+            minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong()
+        ) ?: return
         fired += FiredProactive(
             personaId = decision.targetPersonaId,
             sessionId = session.id,
@@ -358,6 +374,10 @@ internal class ProactiveTicker(
             reason = decision.reason.code
         )
     }
+
+    /** 服务端本地自然日（`yyyy-MM-dd`）；主动计数与每日上限都按它翻页。 */
+    private fun localDate(now: Long): String =
+        LocalDate.ofInstant(Instant.ofEpochMilli(now), clock.zone).toString()
 
     /** 这个人格最近活跃的会话（主动消息写到这里）。 */
     private fun latestSessionFor(personaId: String): Session? =

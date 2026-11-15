@@ -11,11 +11,21 @@ import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.PersonaCardRepository
 import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.data.ai.SpeechStyleResult
+import com.myfriend.app.data.ai.SpeechStyleSource
+import com.myfriend.app.data.ai.SpeechStyleSummarizer
+import com.myfriend.app.data.ai.WorldPresetExpander
 import com.myfriend.app.domain.AvatarDraftFiles
+import com.myfriend.app.domain.PersonaActivity
+import com.myfriend.app.domain.PersonaActivityCodec
 import com.myfriend.app.domain.PersonaCard
 import com.myfriend.app.domain.PersonaProfile
 import com.myfriend.app.domain.ProactiveLevel
 import com.myfriend.app.domain.SleepPolicy
+import com.myfriend.app.domain.SpeechStyle
+import com.myfriend.app.domain.SpeechStyleCodec
+import com.myfriend.app.domain.WorldPreset
+import com.myfriend.app.domain.WorldPresetCodec
 import com.myfriend.app.domain.PersonaDraft
 import com.myfriend.app.domain.PersonaTrait
 import com.myfriend.app.util.MediaStorage
@@ -59,7 +69,20 @@ data class PersonaForm(
     /** 睡觉 / 醒来的 HH:mm；留空用默认 23:30–08:00。 */
     val sleepAt: String = "",
     val wakeAt: String = "",
-    val wakeThreshold: Int = 6
+    val wakeThreshold: Int = 6,
+    // ---- 0.12 人设引导：世界 / 话风 / 当前活动（v13） ------------------------
+    val worldName: String = "",
+    val era: String = "",
+    val worldDescription: String = "",
+    val scheduleJson: String = "",
+    val relationshipsJson: String = "",
+    val obligationsText: String = "",
+    val speechTone: String = "",
+    val speechPhrases: List<String> = emptyList(),
+    val speechHabits: String = "",
+    val speechAvoid: String = "",
+    val speechSample: String = "",
+    val speechSource: String = ""
 ) {
     val traits: List<String> get() = parseList(traitsText)
     val likes: List<String> get() = parseList(likesText)
@@ -90,7 +113,11 @@ data class PersonaEditorUiState(
     val loading: Boolean = true,
     val saving: Boolean = false,
     val isNew: Boolean = true,
-    val isDefault: Boolean = false
+    val isDefault: Boolean = false,
+    /** 他此刻在做什么（只读展示；到点自动按「没在忙什么」显示）。 */
+    val currentActivity: PersonaActivity? = null,
+    val worldFilling: Boolean = false,
+    val speechSummarizing: Boolean = false
 ) {
     val isDirty: Boolean get() = form != initialForm || card != initialCard
     val boundConfig: ApiConfigEntity? get() = configs.firstOrNull { it.id == form.defaultApiConfigId }
@@ -106,6 +133,8 @@ class PersonaEditorViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val personaRepository: PersonaRepository,
     private val personaCardRepository: PersonaCardRepository,
+    private val speechStyleSummarizer: SpeechStyleSummarizer,
+    private val worldPresetExpander: WorldPresetExpander,
     apiConfigRepository: ApiConfigRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -124,6 +153,8 @@ class PersonaEditorViewModel @Inject constructor(
                     events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_persona_missing)))
                     _state.update { it.copy(loading = false) }
                 } else {
+                    val world = WorldPresetCodec.decode(persona.worldJson)
+                    val speech = SpeechStyleCodec.decode(persona.speechStyleJson)
                     val form = PersonaForm(
                         name = persona.name,
                         description = persona.description,
@@ -153,7 +184,17 @@ class PersonaEditorViewModel @Inject constructor(
                         sleepEnabled = persona.sleepEnabled,
                         sleepAt = persona.quietSleepMinutes?.let { formatClock(it) }.orEmpty(),
                         wakeAt = persona.quietWakeMinutes?.let { formatClock(it) }.orEmpty(),
-                        wakeThreshold = SleepPolicy.normalizeThreshold(persona.wakeThreshold)
+                        wakeThreshold = SleepPolicy.normalizeThreshold(persona.wakeThreshold),
+                        worldName = world?.worldName.orEmpty(),
+                        era = world?.era.orEmpty(),
+                        worldDescription = world?.description.orEmpty(),
+                        scheduleJson = WorldPresetCodec.encodeSchedule(world?.schedule.orEmpty()),
+                        relationshipsJson = WorldPresetCodec.encodeRelationships(world?.relationships.orEmpty()),
+                        obligationsText = world?.obligations.orEmpty().joinToString("\n"),
+                        speechTone = speech?.tone.orEmpty(),
+                        speechPhrases = speech?.phrases.orEmpty(),
+                        speechHabits = speech?.habits.orEmpty().joinToString("\n"),
+                        speechAvoid = speech?.avoid.orEmpty().joinToString("\n")
                     )
                     // 还没有卡时，这里会从旧的一整段提示词里尽力拆一份出来（只读，不写库）。
                     val card = runCatching { personaCardRepository.cardOf(persona.id) }
@@ -166,6 +207,7 @@ class PersonaEditorViewModel @Inject constructor(
                             card = card,
                             initialCard = card,
                             isDefault = persona.isDefault,
+                            currentActivity = PersonaActivityCodec.decode(persona.activityJson),
                             loading = false
                         )
                     }
@@ -271,6 +313,115 @@ class PersonaEditorViewModel @Inject constructor(
         }
     }
 
+    /** 「AI 补全」：用简介/提示词补一个世界预设（失败时保留角色名 + 空数组）。 */
+    fun fillWorldWithAi() {
+        val current = _state.value
+        if (current.worldFilling) return
+        val form = current.form
+        val brief = listOf(form.description, form.prompt).firstOrNull { it.isNotBlank() }.orEmpty()
+        viewModelScope.launch {
+            _state.update { it.copy(worldFilling = true) }
+            val result = runCatching { worldPresetExpander.expand(brief = brief, name = form.name) }.getOrNull()
+            _state.update { state ->
+                state.copy(
+                    worldFilling = false,
+                    form = if (result == null) state.form else state.form.copy(
+                        worldName = result.preset.worldName,
+                        era = result.preset.era,
+                        worldDescription = result.preset.description,
+                        scheduleJson = WorldPresetCodec.encodeSchedule(result.preset.schedule),
+                        relationshipsJson = WorldPresetCodec.encodeRelationships(result.preset.relationships),
+                        obligationsText = result.preset.obligations.joinToString("\n")
+                    )
+                )
+            }
+            events.send(
+                PersonaEditorEvent.Message(
+                    context.getString(
+                        if (result == null || result.isFallback) {
+                            R.string.guidance_world_ai_fallback
+                        } else {
+                            R.string.guidance_world_ai_llm
+                        }
+                    )
+                )
+            )
+        }
+    }
+
+    /** 「总结」：粘贴的聊天记录 → 话风；失败走本地兜底并明确标注。 */
+    fun summarizeSpeech() {
+        val current = _state.value
+        if (current.speechSummarizing) return
+        val sample = current.form.speechSample.trim()
+        if (sample.isBlank()) {
+            viewModelScope.launch {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_speech_sample_required)))
+            }
+            return
+        }
+        viewModelScope.launch {
+            _state.update { it.copy(speechSummarizing = true) }
+            val result = runCatching { speechStyleSummarizer.summarize(sample) }
+                .getOrElse { SpeechStyleResult(SpeechStyle(), SpeechStyleSource.HEURISTIC) }
+            _state.update { state ->
+                state.copy(
+                    speechSummarizing = false,
+                    form = state.form.copy(
+                        speechTone = result.style.tone,
+                        speechPhrases = result.style.phrases,
+                        speechHabits = result.style.habits.joinToString("\n"),
+                        speechAvoid = result.style.avoid.joinToString("\n"),
+                        speechSource = result.source
+                    )
+                )
+            }
+            if (result.isHeuristic) {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_speech_summarize_failed)))
+            }
+        }
+    }
+
+    fun clearSpeech() {
+        _state.update {
+            it.copy(
+                form = it.form.copy(
+                    speechTone = "",
+                    speechPhrases = emptyList(),
+                    speechHabits = "",
+                    speechAvoid = "",
+                    speechSample = "",
+                    speechSource = ""
+                )
+            )
+        }
+    }
+
+    private fun buildWorldJson(form: PersonaForm): String? {
+        val schedule = WorldPresetCodec.decodeSchedule(form.scheduleJson) ?: return null
+        val relationships = WorldPresetCodec.decodeRelationships(form.relationshipsJson) ?: return null
+        val world = WorldPreset(
+            worldName = form.worldName,
+            era = form.era,
+            description = form.worldDescription,
+            schedule = schedule,
+            relationships = relationships,
+            obligations = form.obligationsText.lineSequence().map { it.trim() }
+                .filter { it.isNotBlank() }.toList()
+        )
+        return if (world.isEmpty() || world.worldName.isBlank()) null else WorldPresetCodec.encode(world)
+    }
+
+    private fun buildSpeechJson(form: PersonaForm): String? {
+        val speech = SpeechStyle(
+            tone = form.speechTone,
+            phrases = form.speechPhrases,
+            habits = form.speechHabits.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList(),
+            avoid = form.speechAvoid.lineSequence().map { it.trim() }.filter { it.isNotBlank() }.toList()
+        )
+        return if (speech.isEmpty()) null else SpeechStyleCodec.encode(speech)
+    }
+
     fun save() {
         val current = _state.value
         if (current.saving) return
@@ -284,6 +435,18 @@ class PersonaEditorViewModel @Inject constructor(
         if (form.prompt.isBlank()) {
             viewModelScope.launch {
                 events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_prompt_required)))
+            }
+            return
+        }
+        if (WorldPresetCodec.decodeSchedule(form.scheduleJson) == null) {
+            viewModelScope.launch {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_world_schedule_invalid)))
+            }
+            return
+        }
+        if (WorldPresetCodec.decodeRelationships(form.relationshipsJson) == null) {
+            viewModelScope.launch {
+                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_world_relationships_invalid)))
             }
             return
         }
@@ -311,7 +474,9 @@ class PersonaEditorViewModel @Inject constructor(
                     sleepEnabled = form.sleepEnabled,
                     wakeThreshold = form.wakeThreshold,
                     quietSleepMinutes = parseClock(form.sleepAt),
-                    quietWakeMinutes = parseClock(form.wakeAt)
+                    quietWakeMinutes = parseClock(form.wakeAt),
+                    worldJson = buildWorldJson(form)?.takeIf { it.isNotBlank() },
+                    speechStyleJson = buildSpeechJson(form)?.takeIf { it.isNotBlank() }
                 )
             )
             if (result.isFailure) {

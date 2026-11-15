@@ -224,6 +224,29 @@ keep running without any background process (contract: `docs/design/server-autho
   wired yet** (P1b).
 - **Tests**: full batch — Android **1139 / 101 classes / 0 failures** (+54), `:agentcore` 60, `:agentd` **244** (+17 route cases), iOS **1386 / 0 failures** (+71, 2 benchmark tests skipped by default); Debug/Release and lint all pass.
 
+
+### 0.12 follow-up 4 (no version bump): persona guidance — world presets, speech-style learning, activity tool, prompt rewrite
+
+This round upgrades "does the model sound like this person" from a single persona blurb to
+"identity + world + current state + speech style + relationship + boundaries", validated against the DeepSeek official
+API from this machine (contract and live notes: `spec/persona-guidance/README.md`).
+
+- **World preset**: the world/city the persona lives in, era, schedule, relationships and obligations; schema v13
+  (`personas` and `persona_presets` gain `worldJson`), backup v5; the preset editor gained a "world" card
+  (hand-written or AI-expanded).
+- **Speech-style learning**: paste a WeChat/QQ transcript → the LLM summarises `tone` / `phrases` / `habits` / `avoid`
+  (prompt verified to return valid JSON); without an API key or on failure a local heuristic fallback is used.
+  **The raw transcript is never stored, logged or backed up.**
+- **`set_activity` tool**: the persona can declare what it is doing for the next while (not sleep):
+  `kind/activity/minutes/availability`; `BUSY` suppresses proactive messages, shortens replies and states when it is free
+  again; `LIMITED` lowers the probability; it expires automatically.
+- **Prompt rewrite**: `# who you are → # the world you live in → # your state right now → # how you speak →
+  # your relationship → # boundaries`; first person, no narration, no persona summary, no deciding for the user,
+  at most one signature phrase per reply. Both `PromptBuilder`s updated.
+- **Backup v5**: `personas[]` carries world/style/activity, `presets[]` carries world/style; v1–v4 still readable.
+- Leftovers fixed: agentd proactive counters are now persisted (survive restarts, reset across local midnight, concurrent ticks fire once), both platforms serialise "write file + return reference" with "check references + delete file" behind one file lock (media TOCTOU), and Android proactive rules now respect the `BUSY` gate.
+- Tests: full batch — Android **1210 / 111 classes / 0 failures**, `:agentcore` 60, `:agentd` **249**, iOS **1453 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans

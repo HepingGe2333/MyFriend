@@ -41,7 +41,13 @@ public let backupFormatName: String = "myfriend.backup"
 /// v4（0.12，schema v12）：`apiConfigs[]` 增加 `webToolsProvider`（缺字段默认 MESSAGEAPI；
 /// 0.12 之前这个 provider 叫 DEEPSEEK，读旧备份时归一化）。
 /// 搜索 Key 仍然**永不进备份**（与 LLM Key 同一条规矩）；v1–v3 备份继续能读。
-public let backupFormatVersion: Int = 4
+///
+/// v5（0.12，schema v13，人设引导 `spec/persona-guidance/README.md` §5）：
+/// - `personas[]` 增加 `worldJson` / `speechStyleJson` / `activityJson`（都可空）；
+/// - `presets[]` 增加 `worldJson` / `speechStyleJson`（都可空）。
+/// 三段都是「总结后的设定」，**不含原始聊天记录**（§3.3：原文不进备份）。
+/// v1–v4 备份继续能读（缺字段 → nil → 该人格没有世界/话风，行为与旧版本完全一致）。
+public let backupFormatVersion: Int = 5
 
 // MARK: - 顶层
 
@@ -165,6 +171,12 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
     public var sleepEnabled: Bool
     public var wakeThreshold: Int
     public var dndOnSleep: Bool
+    /// v5：世界预设 JSON（`WorldPreset` 的宽容 JSON；空 = 没有世界）。
+    public var worldJson: String?
+    /// v5：话风 JSON（`SpeechStyle`；只含总结后的风格，**不含原始聊天记录**，§3.3）。
+    public var speechStyleJson: String?
+    /// v5：当前活动 JSON（`PersonaActivity`；过期的活动读进来会自然失效）。
+    public var activityJson: String?
 
     public init(
         id: String = "",
@@ -198,7 +210,10 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         extractionEvery: Int = PersonaFieldLimits.extractionEveryDefault,
         sleepEnabled: Bool = true,
         wakeThreshold: Int = PersonaFieldLimits.wakeThresholdDefault,
-        dndOnSleep: Bool = false
+        dndOnSleep: Bool = false,
+        worldJson: String? = nil,
+        speechStyleJson: String? = nil,
+        activityJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -232,6 +247,9 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         self.sleepEnabled = sleepEnabled
         self.wakeThreshold = PersonaFieldLimits.clampWakeThreshold(wakeThreshold)
         self.dndOnSleep = dndOnSleep
+        self.worldJson = PromptGuidanceJSON.clean(worldJson)
+        self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
+        self.activityJson = PromptGuidanceJSON.clean(activityJson)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -242,6 +260,7 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         case traits, likes, behaviors, backstory, quirks
         case proactiveLevel, memoryRetention, extractionEvery
         case sleepEnabled, wakeThreshold, dndOnSleep
+        case worldJson, speechStyleJson, activityJson
     }
 }
 
@@ -529,6 +548,9 @@ public struct BackupPreset: Equatable, Sendable, Encodable {
     public var avatarSeed: Int
     public var createdAt: Int64
     public var updatedAt: Int64
+    /// v5：预设自带的世界预设与话风（应用预设时复制到人格）。
+    public var worldJson: String?
+    public var speechStyleJson: String?
 
     public init(
         id: String = "",
@@ -539,7 +561,9 @@ public struct BackupPreset: Equatable, Sendable, Encodable {
         avatarUri: String? = nil,
         avatarSeed: Int = 0,
         createdAt: Int64 = 0,
-        updatedAt: Int64 = 0
+        updatedAt: Int64 = 0,
+        worldJson: String? = nil,
+        speechStyleJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -550,10 +574,13 @@ public struct BackupPreset: Equatable, Sendable, Encodable {
         self.avatarSeed = avatarSeed
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.worldJson = PromptGuidanceJSON.clean(worldJson)
+        self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, description, prompt, category, avatarUri, avatarSeed, createdAt, updatedAt
+        case worldJson, speechStyleJson
     }
 }
 
@@ -871,7 +898,11 @@ extension BackupPersona {
             sleepEnabled: try json.bool("sleepEnabled", true),
             wakeThreshold: try json.optionalInt("wakeThreshold")
                 ?? PersonaFieldLimits.wakeThresholdDefault,
-            dndOnSleep: try json.bool("dndOnSleep", false)
+            dndOnSleep: try json.bool("dndOnSleep", false),
+            // v5 的人设引导三列：v1–v4 的备份里没有，读成 nil 正是「没有设定」。
+            worldJson: try json.optionalText("worldJson"),
+            speechStyleJson: try json.optionalText("speechStyleJson"),
+            activityJson: try json.optionalText("activityJson")
         )
     }
 }
@@ -981,7 +1012,9 @@ extension BackupPreset {
             avatarUri: try json.optionalText("avatarUri"),
             avatarSeed: try json.int("avatarSeed"),
             createdAt: try json.int64("createdAt"),
-            updatedAt: try json.int64("updatedAt")
+            updatedAt: try json.int64("updatedAt"),
+            worldJson: try json.optionalText("worldJson"),
+            speechStyleJson: try json.optionalText("speechStyleJson")
         )
     }
 }

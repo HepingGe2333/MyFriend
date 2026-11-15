@@ -145,6 +145,21 @@ public final class HeartbeatController {
             return Beat(why: "他在睡觉")
         }
 
+        // 占用时间（`spec/persona-guidance/README.md` §4）：
+        // - BUSY：这段不主动开口（对方先说话仍然会回，只是更短）；
+        // - LIMITED：照常想，但概率打折（半忙不是「不想你」，只是「这会儿不方便」）。
+        // 它与安静时段是两件事：睡觉 = 不被打扰，活动 = 我在做事；两者可以同时存在。
+        let activity = PersonaActivity.decode(persona.activityJson, now: at)
+        var activityFactor = 1.0
+        switch PersonaActivity.proactiveGate(activity, now: at) {
+        case .skip:
+            return Beat(why: "他在忙")
+        case .slowDown(let factor):
+            activityFactor = factor
+        case .allow:
+            break
+        }
+
         // 刚聊完先安静一会儿：收尾期不是「概率低一点」，而是这段时间根本不掷骰子。
         // 否则 p(0)=0.35 每半分钟掷一次，一分钟内六成会触发，「先降后升」等于不存在。
         let snapshot = snapshotFor(persona: persona, settings: settings, now: at)
@@ -166,7 +181,7 @@ public final class HeartbeatController {
             mood: snapshot.mood,
             now: at,
             hourOfDay: ServiceTime.hourOfDay(at)
-        ) * ProactiveLevel.heartbeatWeight(persona.proactiveLevel)
+        ) * ProactiveLevel.heartbeatWeight(persona.proactiveLevel) * activityFactor
         let perBeat = Heartbeat.perBeatProbability(perMinute: perMinute, intervalMinutes: intervalMinutes())
         if !Heartbeat.shouldFire(probability: perBeat, roll: dice) { return Beat(why: "") }
 

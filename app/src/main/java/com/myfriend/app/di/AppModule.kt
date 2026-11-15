@@ -29,6 +29,8 @@ import com.myfriend.app.data.local.ProactiveRuleDao
 import com.myfriend.app.BuildConfig
 import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.core.AgentCoreClients
+import com.myfriend.app.data.ai.DefaultJsonLlmClient
+import com.myfriend.app.data.ai.JsonLlmClient
 import com.myfriend.app.data.repo.AndroidErasureFiles
 import com.myfriend.app.data.repo.MediaReferenceSource
 import com.myfriend.app.data.repo.RoomErasureStore
@@ -73,7 +75,8 @@ object AppModule {
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
-                MyFriendDatabase.MIGRATION_11_12
+                MyFriendDatabase.MIGRATION_11_12,
+                MyFriendDatabase.MIGRATION_12_13
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -244,4 +247,14 @@ object AppModule {
     @Singleton
     fun provideRegistry(openAi: OpenAiAdapter, gemini: GeminiAdapter, claude: ClaudeAdapter): AiProviderRegistry =
         AiProviderRegistry(openAi, gemini, claude)
+
+    /**
+     * 话风/世界补全用的一次性 JSON 调用。
+     *
+     * 接口只暴露「给我一段 JSON」，生产实现复用现有 API 配置与 Provider 适配器；
+     * 单测里注入假实现就能把各种坏输出跑一遍（不需要网络、不需要数据库）。
+     */
+    @Provides
+    @Singleton
+    fun provideJsonLlmClient(impl: DefaultJsonLlmClient): JsonLlmClient = impl
 }

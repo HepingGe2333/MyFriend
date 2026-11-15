@@ -115,7 +115,7 @@ final class BackupServiceTests: XCTestCase {
 
         let bundle = try XCTUnwrap(service.preview(fileText: json).bundle)
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         XCTAssertEqual(bundle.appVersion, "0.9.1-ios")
         XCTAssertTrue(bundle.apiKeysOmitted)
         XCTAssertEqual(bundle.personas.count, 2)
@@ -138,7 +138,7 @@ final class BackupServiceTests: XCTestCase {
         // 设置只带可移植那部分（1.9 只剩外观与「常驻思考」）。
         XCTAssertEqual(bundle.settings?.themeMode, "DARK")
         XCTAssertEqual(bundle.settings?.agentLoopEnabled, false)
-        XCTAssertEqual(bundle.formatVersion, 4)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
         // 没有图片时 media 是空数组（键永远存在）。
         XCTAssertTrue(bundle.media.isEmpty)
     }
@@ -292,7 +292,8 @@ final class BackupServiceTests: XCTestCase {
         )
 
         let json = try service.export()
-        XCTAssertTrue(json.contains(#""formatVersion":4"#), "备份格式是 v4")
+        XCTAssertTrue(json.contains(#""formatVersion":"# + String(BackupCodec.formatVersion)),
+                      "备份格式跟着 `backupFormatVersion` 走")
         XCTAssertFalse(json.contains("blockIndex"), "块号是派生数据，绝不进备份")
 
         let reset = DataReset(stores: db.stores, settings: settings, vectorIndex: vectorIndex)

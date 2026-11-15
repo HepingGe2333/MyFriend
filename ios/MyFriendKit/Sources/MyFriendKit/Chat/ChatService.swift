@@ -550,15 +550,28 @@ public final class ChatService {
             let moodState = mood.current(personaId: persona.id, now: timestamp)
             let nudge = mood.reflectionNudge(personaId: persona.id, now: timestamp)
 
+            // 人设引导（`spec/persona-guidance/README.md` §1）：世界 → 此刻状态 → 话风 → 关系，
+            // 四段都从人格上那三个 JSON 列读出来；坏 JSON / 空字段都安静地整节不出现。
+            let world = WorldPreset.decode(persona.worldJson)
+            let speechStyle = SpeechStyle.decode(persona.speechStyleJson)
+            let activity = PersonaActivity.decode(persona.activityJson, now: timestamp)
             let system = PromptBuilder.systemPrompt(SystemPromptInput(
                 personaText: personaText?(persona) ?? PromptBuilder.personaSection(persona),
+                personaName: persona.name,
+                worldBlock: PromptBuilder.worldSection(world),
+                stateBlock: PromptBuilder.stateSection(
+                    now: timestamp,
+                    activity: activity,
+                    presenceDetail: presenceDetail?(persona.id)
+                ),
+                speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
+                relationshipBlock: PromptBuilder.relationshipSection(persona: persona),
                 memoriesBlock: memoriesBlock,
                 earlierMemoryBlock: HistoryCompression.memoryBlock(
                     summary: session.historySummary, summarizedUpTo: session.historySummarizedUpTo
                 ),
                 moodBlock: MoodPrompt.line(moodState),
                 moodPaceBlock: MoodBehavior.promptLine(moodState, now: timestamp),
-                presenceBlock: PromptBuilder.presenceBlock(detail: presenceDetail?(persona.id)),
                 moodNudgeBlock: nudge ?? "",
                 proactiveCapability: ProactiveCapabilityPrompt.text,
                 toolsCapability: ToolCatalog.capabilityPrompt(webEnabled: config.webToolsEnabled),

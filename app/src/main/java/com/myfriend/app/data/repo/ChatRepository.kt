@@ -42,6 +42,9 @@ import com.myfriend.app.domain.MessageAttachment
 import com.myfriend.app.domain.MoodBehavior
 import com.myfriend.app.domain.MoodPrompt
 import com.myfriend.app.domain.OpenSessionTracker
+import com.myfriend.app.domain.PersonaActivityCodec
+import com.myfriend.app.domain.PersonaProfile
+import com.myfriend.app.domain.PromptBuilder
 import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.PersonaSwitchResult
 import com.myfriend.app.domain.DomainErrorCode
@@ -56,11 +59,13 @@ import com.myfriend.app.domain.UserErrorTokens
 import com.myfriend.app.domain.SleepDecision
 import com.myfriend.app.domain.SleepInput
 import com.myfriend.app.domain.SleepPolicy
+import com.myfriend.app.domain.SpeechStyleCodec
 import com.myfriend.app.domain.ToolCatalog
 import com.myfriend.app.domain.ToolProtocol
 import com.myfriend.app.domain.ToolResult
 import com.myfriend.app.domain.ToolTraceCodec
 import com.myfriend.app.domain.ToolTraceItem
+import com.myfriend.app.domain.WorldPresetCodec
 import com.myfriend.app.network.ApiException
 import com.myfriend.app.network.toUserError
 import com.myfriend.app.network.userError
@@ -1371,26 +1376,47 @@ class ChatRepository @Inject constructor(
         val presenceLine = presenceLine(persona.id)
         // 更早之前他记得的：只有真的压过（有摘要、也有压到哪一条的时间点）才注入。
         val memoryOfEarlier = HistoryCompression.memoryBlock(session.historySummary, session.historySummarizedUpTo)
-        val system = buildString {
-            append(personaCardRepository.systemText(persona))
-            if (memories.isNotEmpty()) append(memoryRepository.formatForPrompt(memories))
-            append(memoryOfEarlier)
-            append(moodLine)
-            append(moodPace)
-            append(presenceLine)
-            append("\n\n---\n")
-            append(ProactiveProtocol.CAPABILITY_PROMPT)
-            append("\n\n")
-            append(ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled))
-            append(moodNudge)
-            // 最后一节：用对方的语言回答。脚手架保持中文，这一节跟着 App 语言走。
-            append(
-                LanguageDirective.section(
+        // 0.12 人设引导：系统提示词按规范 §1 的五段顺序拼（身份 → 世界 → 此刻状态 → 话风 → 关系），
+        // 记忆 / 念头 / 工具说明放在边界之前；边界与语言指令由 PromptBuilder 统一收尾。
+        val now = System.currentTimeMillis()
+        val card = personaCardRepository.readCard(persona)
+        val minuteOfDay = runCatching {
+            Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
+        }.getOrDefault(12 * 60)
+        val asleep = runCatching { personaCardRepository.isAsleep(persona, minuteOfDay) }.getOrDefault(false)
+        val system = PromptBuilder.system(
+            PromptBuilder.Inputs(
+                name = persona.name,
+                age = card.identity.age,
+                role = card.identity.role,
+                relation = card.identity.relation,
+                address = card.voice.address,
+                card = card,
+                legacyPrompt = persona.prompt,
+                profileBlock = PersonaProfile.promptBlock(persona),
+                world = WorldPresetCodec.decode(persona.worldJson),
+                speech = SpeechStyleCodec.decode(persona.speechStyleJson),
+                activity = PersonaActivityCodec.decode(persona.activityJson),
+                now = now,
+                zone = ZoneId.systemDefault(),
+                moodBlock = moodLine,
+                asleep = asleep,
+                extraStatus = listOf(moodPace, presenceLine(persona.id)).filter { it.isNotBlank() }
+                    .joinToString("\n"),
+                variableBlocks = listOfNotNull(
+                    memoryRepository.formatForPrompt(memories).takeIf { memories.isNotEmpty() },
+                    memoryOfEarlier.takeIf { it.isNotBlank() },
+                    "---\n" + ProactiveProtocol.CAPABILITY_PROMPT,
+                    ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled),
+                    moodNudge.takeIf { it.isNotBlank() }
+                ),
+                // 语言指令跟着 App 语言走，脚手架保持中文。
+                languageSection = LanguageDirective.section(
                     appContext.getString(R.string.prompt_language_directive),
                     LanguageDirective.languageName()
                 )
             )
-        }
+        )
         return listOf(WireMessage("system", system)) + trimmed
     }
 
@@ -1403,8 +1429,8 @@ class ChatRepository @Inject constructor(
      * 拿不到或者没内容就当没有这一行——状态不该成为聊天里的一个障碍。
      */
     private suspend fun presenceLine(personaId: String): String = runCatching {
-        val detail = presenceRepository.current(personaId).detail.trim()
-        if (detail.isBlank()) "" else "\n\n## 你此刻的状态\n$detail"
+        // 这一段现在并进 PromptBuilder 的「你此刻的状态」，只返回正文，不再自己带标题。
+        presenceRepository.current(personaId).detail.trim()
     }.getOrDefault("")
 
     private fun trimHistory(history: List<WireMessage>): List<WireMessage> {

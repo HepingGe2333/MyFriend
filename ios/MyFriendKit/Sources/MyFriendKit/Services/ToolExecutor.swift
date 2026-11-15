@@ -106,6 +106,8 @@ public final class ToolExecutor: ToolRunning {
             return updatePersona(invocation, persona: persona, sessionId: sessionId, now: at)
         case "set_quiet_hours":
             return setQuietHours(invocation, persona: persona, now: at)
+        case "set_activity":
+            return setActivity(invocation, persona: persona, sessionId: sessionId, now: at)
         case "set_mood":
             return setMood(invocation, persona: persona, now: at)
         case "recall":
@@ -660,6 +662,75 @@ public final class ToolExecutor: ToolRunning {
             subtitle: clock,
             detail: detail,
             modelText: "作息已记下：\(ProactiveProtocol.formatTimeOfDay(sleep)) 到 \(ProactiveProtocol.formatTimeOfDay(wake)) 是你的休息时间，这段时间不会有主动消息。\(dndPromptLine)"
+        )
+    }
+
+    // MARK: - 占用时间（人设引导 §4）
+
+    /// 他主动声明「接下来这段时间在做什么」。
+    ///
+    /// 三件事一起做：
+    /// 1. `minutes` 夹在 15–480、`kind` / `availability` 归一到枚举（契约
+    ///    `spec/agent-core/cases/tool-args.json` 的 `activity` 用例）；
+    /// 2. 写 `personas.activityJson`（`until = now + minutes`，读取时判断是否过期）；
+    /// 3. 回一句中文，让模型知道「这段时间你的语气该是什么样」。
+    ///
+    /// 与 `set_quiet_hours` 的分工写进工具描述（§4 明文要求）：安静时段是「不被打扰」，
+    /// 活动是「我在做事」。所以这里**不动** `quitSleep/quietWake`，也不动 `dndOnSleep`。
+    private func setActivity(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Int64
+    ) -> ToolResult {
+        let raw = (invocation.argument("activity") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return failure(invocation, String(localized: "没有写要去忙什么")) }
+        // 参数按「模型可能给什么」的原始形状交给 `ToolArgClamp`：0 → 15、600 → 480、"abc" → 60。
+        let rawMinutes = Self.argumentsObject(invocation.argumentsJson)?["minutes"]
+        let activity = PersonaActivity(
+            kind: ActivityKind(stored: invocation.argument("kind")),
+            activity: raw,
+            minutes: ToolArgClamp.activityMinutes(rawMinutes),
+            availability: ActivityAvailability(stored: invocation.argument("availability")),
+            startedAt: now
+        )
+        switch personaCards.setActivity(personaId: persona.id, activity: activity) {
+        case .failure(let error):
+            return failure(invocation, error.localizedDescription.isEmpty
+                ? String(localized: "这次没记下来") : error.localizedDescription)
+        case .success:
+            break
+        }
+        // 界面那一行（跟随界面语言）与提示词那一行（脚手架保持中文）分开：与 set_quiet_hours 同一口径。
+        let clock = activity.untilClockText()
+        let availabilityLine: String
+        let promptTail: String
+        switch activity.availability {
+        case .busy:
+            availabilityLine = String(localized: "这段时间不会主动来找你；你说话他会回，但更短，也会说清楚几点后再说。")
+            promptTail = "这段时间你不太有空：回复更短、更晚，明确说自己几点后再说；不要谎称有空，"
+                + "也不要主动开新话题。"
+        case .limited:
+            availabilityLine = String(localized: "这段时间他回得慢，会说明自己在忙。")
+            promptTail = "这段时间你在忙：可以回，但回得短、回得慢，先说一句自己在忙。"
+        case .free:
+            availabilityLine = String(localized: "这段时间他有空。")
+            promptTail = "这段时间你有空，照常说话。"
+        }
+        let subtitle = String(
+            format: String(localized: "%@ · 约到 %@"),
+            String(raw.prefix(40)), clock
+        )
+        let detail = (activity.activity.isEmpty ? subtitle : activity.activity + "\n")
+            + availabilityLine + String(format: String(localized: "（到 %@ 自动结束）"), clock)
+        return success(
+            invocation,
+            title: String(localized: "去忙了"),
+            subtitle: String(subtitle.prefix(40)),
+            detail: detail,
+            modelText: "接下来 \(activity.minutes) 分钟你在「\(activity.activity)」（大约到 \(clock)）。"
+                + promptTail
+                + "对方不需要知道你在用一个工具，也不用主动汇报日程；聊到相关的事自然带一句就好。"
         )
     }
 

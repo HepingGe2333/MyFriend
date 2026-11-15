@@ -327,7 +327,7 @@ class ToolProtocolTest {
 
     @Test
     fun catalogExposesSpecsByName() {
-        assertEquals(9, ToolCatalog.all.size)
+        assertEquals(10, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))

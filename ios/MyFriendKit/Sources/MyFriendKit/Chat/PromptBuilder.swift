@@ -31,6 +31,19 @@ public struct SystemPromptInput {
     /// 有结构化人设卡时应当是人设卡渲染结果；iOS 的人设卡渲染还没移植，
     /// 调用方现在传 `persona.prompt`（Android 里那份 prompt 本身就是人设卡的镜像）。
     public var personaText: String
+    /// 人格名字：只用于「你不是助手，你是 X 本人」这一句与反例里的第三人称提醒。空 = 不点名。
+    public var personaName: String
+    /// 世界预设那一段（`WorldPreset.renderForPrompt()`，人设引导 §1/§2）。
+    public var worldBlock: String
+    /// 「# 你此刻的状态」整段（时间 + 当前活动 + 他在做什么）。
+    /// 空串 = 不加（老调用点 / 测试不必关心时间）。
+    public var stateBlock: String
+    /// 话风那一段（`SpeechStyle.renderForPrompt()`，人设引导 §3）。
+    public var speechStyleBlock: String
+    /// 「# 你们的关系」那一段（关系、亲密度、称呼）。
+    public var relationshipBlock: String
+    /// 「# 边界」那一段：可以覆盖，默认是 `PromptBuilder.boundarySection`。
+    public var boundaryBlock: String
     /// 记忆块（Android: `memoryRepository.formatForPrompt(memories)`），空串表示这次没挑到记忆。
     public var memoriesBlock: String
     /// 会话滚动摘要块（`HistoryCompression.memoryBlock(session.historySummary, …)`）。
@@ -40,6 +53,9 @@ public struct SystemPromptInput {
     /// 心情驱动的语气分寸（`MoodBehavior.promptLine(mood)`）。
     public var moodPaceBlock: String
     /// 「他此刻在做什么」那一段；为空表示不加（状态不该成为聊天里的障碍）。
+    ///
+    /// 0.12 起由 `stateBlock` 承担（它把时间、活动、在场合成一段）；
+    /// 这个字段保留是为了老调用点与测试不用改签名 —— `stateBlock` 为空时仍然会用它。
     public var presenceBlock: String
     /// 周期性心情引导（`MoodPrompt.reflectionNudge`）；不该问的时候是空串。
     public var moodNudgeBlock: String
@@ -53,6 +69,12 @@ public struct SystemPromptInput {
 
     public init(
         personaText: String = "",
+        personaName: String = "",
+        worldBlock: String = "",
+        stateBlock: String = "",
+        speechStyleBlock: String = "",
+        relationshipBlock: String = "",
+        boundaryBlock: String = PromptBuilder.defaultBoundary,
         memoriesBlock: String = "",
         earlierMemoryBlock: String = "",
         moodBlock: String = "",
@@ -64,6 +86,12 @@ public struct SystemPromptInput {
         languageDirective: String = ""
     ) {
         self.personaText = personaText
+        self.personaName = personaName
+        self.worldBlock = worldBlock
+        self.stateBlock = stateBlock
+        self.speechStyleBlock = speechStyleBlock
+        self.relationshipBlock = relationshipBlock
+        self.boundaryBlock = boundaryBlock
         self.memoriesBlock = memoriesBlock
         self.earlierMemoryBlock = earlierMemoryBlock
         self.moodBlock = moodBlock
@@ -102,22 +130,40 @@ public enum PromptBuilder {
 
     // MARK: - system
 
-    /// 把各段按 Android 的顺序拼起来。
+    /// 把各段拼起来。
     ///
-    /// 顺序（逐段对照 `ChatRepository.buildContext` 的 STATELESS 分支）：
-    /// 人格 → 记忆 → 滚动摘要 → 心情 → 语气分寸 → 此刻状态 → `---` →
-    /// 主动唤醒能力 → 工具能力 → 心情引导。
+    /// 顺序按 `spec/persona-guidance/README.md` §1（**规范：越靠前越强，顺序不可乱**）：
+    ///
+    /// ```
+    /// # 你是谁       —— 身份、第一人称、不是助手
+    /// # 你所在的世界  —— 世界预设（World Preset）
+    /// # 你此刻的状态  —— 时间、当前活动/忙碌、心情、在场
+    /// # 你怎么说话    —— 话风（tone/habits/avoid + 常用语）
+    /// # 你们的关系    —— 与用户的关系、亲密度、称呼
+    /// 记忆 / 滚动摘要  —— 「他记得什么」（不属于人设引导，紧跟关系之后）
+    /// ---
+    /// 主动唤醒能力 / 工具能力
+    /// # 边界         —— 不暴露 AI、不旁白、不总结人设、不替用户决定
+    /// 心情引导 / 语言
+    /// ```
+    ///
+    /// 「边界」放在能力说明之后、最后的输出规则之前：它是**规则**，不是设定；
+    /// 压在尾巴上模型更容易当成硬约束而不是「人物简介的一部分」。
     public static func systemPrompt(_ input: SystemPromptInput) -> String {
-        var text = input.personaText
-        text += input.memoriesBlock
-        text += input.earlierMemoryBlock
+        var text = identityBlock(input.personaText, name: input.personaName)
+        text += input.worldBlock
+        text += stateSection(input.stateBlock, legacyPresence: input.presenceBlock)
         text += input.moodBlock
         text += input.moodPaceBlock
-        text += input.presenceBlock
+        text += input.speechStyleBlock
+        text += input.relationshipBlock
+        text += input.memoriesBlock
+        text += input.earlierMemoryBlock
         text += sectionSeparator
         text += input.proactiveCapability
         text += "\n\n"
         text += input.toolsCapability
+        text += boundaryBlock(input.boundaryBlock)
         text += input.moodNudgeBlock
         text += languageSection(input.languageDirective)
         return text
@@ -138,9 +184,117 @@ public enum PromptBuilder {
         return "\n\n" + trimmed
     }
 
+    // MARK: - 人设引导（0.12，`spec/persona-guidance/README.md`）
+
+    /// 「# 边界」那一段（规范 §1.1 的七条强制规则里，属于「不许做什么」的那些）。
+    ///
+    /// 为什么写死在这里而不是让调用方传：这七条是**所有端一致**的硬约束，
+    /// 让它可覆盖只会让某一端悄悄少一条；`SystemPromptInput.boundaryBlock` 只用于
+    /// 特殊场景（比如主动消息要更短的一段），默认永远是这一段。
+    ///
+    /// 文案里刻意写出**反例**（§1.2）：模型对「不要写成 …」的服从度明显高于抽象要求。
+    public static let defaultBoundary = """
+    # 边界
+    - 不解释 AI 身份、不复述人设、不总结这段对话，也不替对方做决定。
+    - 不写动作描写、不写括号里的神态；不要用第三人称讲自己（不要「他觉得」「他叹了口气」这种）。
+    - 不知道的事就说「不清楚」「回头再说」，不要编造现实世界的事实。
+    - 不要心理分析对方（不要「你是不是因为……」），也不要每句都用同一个口头禅开头。
+    """
+
+    /// 第一人称规则（§1.1 第 1 条）。`name` 空时不点名，避免出现「你是 本人」这种句子。
+    public static func firstPersonRule(name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "你不是助手，你就是这个人本人。用第一人称「我」说话；不要用第三人称自述，也不要旁白式描述自己。"
+        }
+        return "你不是助手，你是\(trimmed)本人。用第一人称「我」说话；不要用「\(trimmed)觉得」「他说」这种第三人称自述，也不要旁白式描述自己。"
+    }
+
+    /// 把「人格正文」包成 `# 你是谁` 一节；正文自己已经带了第一人称规则时不重复写。
+    ///
+    /// 为什么需要判断「已经带了」：`personaSection` 会带上规则，人设卡渲染的正文不会；
+    /// 两者都可能从 App 层传进来，重复两遍规则会白烧 token 且显得啰嗦。
+    public static func identityBlock(_ personaText: String, name: String) -> String {
+        let body = personaText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !body.isEmpty else { return "" }
+        if body.contains("第一人称") { return body }
+        return "# 你是谁\n" + firstPersonRule(name: name) + "\n\n" + body
+    }
+
+    /// 世界预设那一段（空预设返回空串，整节不出现）。
+    public static func worldSection(_ world: WorldPreset?) -> String {
+        guard let world else { return "" }
+        let rendered = world.renderForPrompt()
+        return rendered.isEmpty ? "" : "\n\n" + rendered
+    }
+
+    /// 话风那一段（空风格返回空串）。
+    public static func speechStyleSection(_ style: SpeechStyle?) -> String {
+        guard let style else { return "" }
+        let rendered = style.renderForPrompt()
+        return rendered.isEmpty ? "" : "\n\n" + rendered
+    }
+
+    /// 「# 你们的关系」：称呼、关系、亲密度。
+    ///
+    /// 数据来源是结构化人设卡的 `identity.relation` / `voice.address` / `bond`，
+    /// 再退回人格的一句话描述。全都为空就整节不出现（不写「你们关系很好」这种空话）。
+    public static func relationshipSection(persona: PersonaEntity) -> String {
+        var parts: [String] = []
+        let card = PersonaCardCodec.decode(persona.personaCardJson)
+        let relation = card.identity.relation.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !relation.isEmpty { parts.append("你和他：\(relation)。") }
+        let address = card.voice.address.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !address.isEmpty { parts.append("你叫他「\(address)」。") }
+        let bond = card.bond.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !bond.isEmpty { parts.append(bond) }
+        let description = persona.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        if parts.isEmpty, !description.isEmpty { parts.append(description) }
+        guard !parts.isEmpty else { return "" }
+        return "\n\n# 你们的关系\n" + parts.joined(separator: "\n")
+    }
+
+    /// 「# 你此刻的状态」整段：现在是几点、他在做什么、忙不忙。
+    ///
+    /// 规范 §6.3 的形状：
+    /// `现在是{weekday HH:mm}。{activity 或「没在忙什么」}{；心情：…}{；已经睡了…}`
+    /// 这里只负责「时间 + 活动 + 在场」；心情由 `MoodPrompt` 那两段跟在后面。
+    public static func stateSection(
+        now: Int64,
+        activity: PersonaActivity?,
+        presenceDetail: String? = nil,
+        calendar: Calendar = ServiceTime.calendar()
+    ) -> String {
+        guard now > 0 else { return "" }
+        let clock = PromptClock.weekdayText(now, calendar: calendar) + " "
+            + PromptClock.clockText(now, calendar: calendar)
+        var line = "现在是\(clock)。"
+        if let activity, activity.isActive(now: now) {
+            line += activity.renderStateLine(now: now, calendar: calendar)
+        } else {
+            line += "没在忙什么。"
+        }
+        var lines = ["# 你此刻的状态", line]
+        let presence = (presenceDetail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !presence.isEmpty { lines.append("（你自己的状态：\(presence)）") }
+        return "\n\n" + lines.joined(separator: "\n")
+    }
+
+    /// system 里那一段：优先用渲染好的 `stateBlock`；老调用点只给了 `presenceBlock` 时保持原样。
+    static func stateSection(_ rendered: String, legacyPresence: String) -> String {
+        if !rendered.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return rendered }
+        return legacyPresence
+    }
+
+    /// 把「边界」那一段拼进 system；传空串 = 整节不出现（只有测试会这么用）。
+    public static func boundaryBlock(_ custom: String) -> String {
+        let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : "\n\n" + trimmed
+    }
+
     // MARK: - 人格小节（1.9）
 
-    /// 把人格的自由文本提示词 + 五个结构化字段拼成「## 你是谁」下的一段。
+    /// 把人格的自由文本提示词 + 五个结构化字段拼成「# 你是谁」下的一段。
     ///
     /// 为什么要有这一层：1.9 把「他是谁」拆成了可单独填的字段（性格 / 喜欢 / 习惯 / 过去 / 设定），
     /// 但用户仍然可以直接写一整段提示词。两者都在时，原则是「自由文本是主体，结构化字段是补充」：
@@ -151,7 +305,7 @@ public enum PromptBuilder {
     public static func personaSection(_ persona: PersonaEntity) -> String {
         let body = personaProfileBody(persona)
         guard !body.isEmpty else { return "" }
-        return "## 你是谁\n" + body
+        return "# 你是谁\n" + firstPersonRule(name: persona.name) + "\n\n" + body
     }
 
     /// 只有「他是谁」的正文，不带 `## 你是谁` 这个标题 —— 给已经有自己标题的拼装器用

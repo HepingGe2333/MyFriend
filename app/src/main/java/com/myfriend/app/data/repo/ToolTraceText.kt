@@ -3,7 +3,9 @@ package com.myfriend.app.data.repo
 import android.content.Context
 import androidx.annotation.StringRes
 import com.myfriend.app.R
+import com.myfriend.app.domain.ActivityAvailability
 import com.myfriend.app.domain.MoodState
+import com.myfriend.app.domain.PersonaActivity
 import com.myfriend.app.domain.RecallDepth
 import com.myfriend.app.domain.RecallHit
 import com.myfriend.app.domain.RecallKind
@@ -39,6 +41,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     UPDATE_PERSONA(R.string.tool_trace_update_persona),
     PERSONA_UNCHANGED(R.string.tool_trace_persona_unchanged),
     SET_QUIET_HOURS(R.string.tool_trace_set_quiet_hours),
+    SET_ACTIVITY(R.string.tool_trace_set_activity),
     SET_MOOD(R.string.tool_trace_set_mood),
     RECALL(R.string.tool_trace_recall),
     DEFER_REPLY(R.string.tool_trace_defer_reply),
@@ -53,6 +56,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.REMEMBER -> REMEMBER
             ToolCatalog.UPDATE_PERSONA -> UPDATE_PERSONA
             ToolCatalog.SET_QUIET_HOURS -> SET_QUIET_HOURS
+            ToolCatalog.SET_ACTIVITY -> SET_ACTIVITY
             ToolCatalog.SET_MOOD -> SET_MOOD
             ToolCatalog.RECALL -> RECALL
             ToolCatalog.DEFER_REPLY -> DEFER_REPLY
@@ -77,6 +81,29 @@ object ToolTraceText {
         context.getString(R.string.tool_trace_recall_empty)
     } else {
         context.resources.getQuantityString(R.plurals.tool_trace_recall_hits, hits, hits)
+    }
+
+    /**
+     * 活动副标题：「在事务所赶图 · 到 21:30」。
+     *
+     * 显示的是他的一句话 + 结束时间，不显示 kind 原值（规范 §4）。
+     */
+    fun activitySubtitle(context: Context, activity: PersonaActivity): String =
+        context.getString(
+            R.string.tool_trace_activity_subtitle,
+            activity.activity.take(40),
+            activity.formatUntil()
+        )
+
+    /** 活动展开正文：多久、忙到什么程度；安静时段是另一件事，这里只解释活动。 */
+    fun activityDetail(context: Context, activity: PersonaActivity, minutes: Int): String {
+        val base = context.getString(R.string.tool_trace_activity_detail, minutes, activity.formatUntil())
+        val availability = when (activity.availability) {
+            ActivityAvailability.BUSY -> context.getString(R.string.tool_trace_activity_busy)
+            ActivityAvailability.LIMITED -> context.getString(R.string.tool_trace_activity_limited)
+            ActivityAvailability.FREE -> context.getString(R.string.tool_trace_activity_free)
+        }
+        return base + "\n" + availability
     }
 
     /** 作息副标题：「08:00 睡 · 07:00 起」。 */

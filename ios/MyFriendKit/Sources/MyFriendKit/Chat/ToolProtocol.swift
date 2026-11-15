@@ -42,6 +42,8 @@ public enum ToolCatalog {
     public static let remember = "remember"
     public static let updatePersona = "update_persona"
     public static let setQuietHours = "set_quiet_hours"
+    /// 人设引导 §4：模型主动声明「我接下来这段时间在做什么」（非睡眠）。
+    public static let setActivity = "set_activity"
     public static let setMood = "set_mood"
     public static let recall = "recall"
     /// 1.9：这一轮他选择先不说话（§四）。它不是「工具」，是**回复节奏**的一部分：
@@ -54,6 +56,12 @@ public enum ToolCatalog {
     private static let rememberDescription = "值得长期记住的事（对方的偏好、重要经历、你们的约定）才调用；一次性的情绪、寒暄、临时安排不要记。"
     private static let updatePersonaDescription = "你对自己的设定有了新的认识、想调整表达方式或偏好时才调用；patch 只写要改的字段，不要整段重写。"
     private static let setQuietHoursDescription = "你想按自己的作息休息、或想避开某些时段时调用；对方正需要陪伴时不要随便设。"
+    /// 与 `set_quiet_hours` 的分工必须写清（规范 §4 明文要求）：
+    /// 安静时段是「不被打扰」，活动是「我在做事」——两者可以同时存在。
+    private static let setActivityDescription = "你接下来这一段时间要做事（上班、通勤、吃饭、开会、赶工、做家务、看书、休息）时调用；" +
+        "它只表示「我在做事、可能回得慢」，不是睡觉——睡觉请用 set_quiet_hours，两者可以同时存在。" +
+        "写清楚做什么、大概多少分钟、这段时间能不能回（BUSY 在忙 / LIMITED 回得慢 / FREE 有空）；" +
+        "同一件事不要反复调用，状态变了再更新。"
     private static let setMoodDescription = "你此刻的心情跟刚才不一样了才调用（开心、累、烦躁、想念……）；一次只写此刻真实的那一个词，别为了有变化而编。"
     private static let recallDescription = "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己看过什么的时候调用；depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。"
     private static let deferReplyDescription = "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
@@ -113,6 +121,19 @@ public enum ToolCatalog {
     }
     """
 
+    private static let setActivityParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "activity": {"type": "string", "description": "你在做什么，一句话，例如「在事务所赶第三版方案」"},
+        "minutes": {"type": "integer", "minimum": 15, "maximum": 480, "description": "大概还要多久，分钟；默认 60，最少 15，最多 480"},
+        "kind": {"type": "string", "enum": ["WORK", "COMMUTE", "MEAL", "SOCIAL", "CHORE", "STUDY", "REST", "OTHER"], "description": "活动类型；不确定就写 OTHER"},
+        "availability": {"type": "string", "enum": ["BUSY", "LIMITED", "FREE"], "description": "这段时间能不能回：BUSY 在忙，LIMITED 回得慢，FREE 有空；默认 BUSY"}
+      },
+      "required": ["activity"]
+    }
+    """
+
     private static let setQuietHoursParameters = """
     {
       "type": "object",
@@ -166,6 +187,7 @@ public enum ToolCatalog {
         ToolSpec(name: remember, description: rememberDescription, parametersJson: rememberParameters),
         ToolSpec(name: updatePersona, description: updatePersonaDescription, parametersJson: updatePersonaParameters),
         ToolSpec(name: setQuietHours, description: setQuietHoursDescription, parametersJson: setQuietHoursParameters),
+        ToolSpec(name: setActivity, description: setActivityDescription, parametersJson: setActivityParameters),
         ToolSpec(name: setMood, description: setMoodDescription, parametersJson: setMoodParameters),
         ToolSpec(name: recall, description: recallDescription, parametersJson: recallParameters),
         ToolSpec(name: deferReply, description: deferReplyDescription,
@@ -235,7 +257,9 @@ public enum ToolCatalog {
         lines.append(contentsOf: [
             "- remember(content, drawer, importance)：值得长期记的事才记，drawer 取 SELF/USER/EVENT，importance 1-5。",
             "- update_persona(patch, reason)：有新认识才改，patch 只写要改的字段。",
-            "- set_quiet_hours(sleep_at, wake_at, reason)：想按作息休息时用。",
+            "- set_quiet_hours(sleep_at, wake_at, reason)：想按作息休息（睡觉/不被打扰）时用。",
+            "- set_activity(activity, minutes?, kind?, availability?)：要做事、会回得慢时用（上班/通勤/吃饭/赶工）；",
+            "  它不是睡觉（睡觉用 set_quiet_hours，两者可同时存在）；minutes 15–480，availability 取 BUSY/LIMITED/FREE，默认 BUSY。",
             "- set_mood(mood, intensity?, reason?)：心情真变了才记一个词。",
             "- recall(query, depth)：想不起对方提过的事、或要找旧聊天时用；depth 1/2/3，越深翻得越久；闲聊别用。",
             "- defer_reply(minutes?, reason?)：这一轮先不回时用。调用后不会发出任何消息，对方只看到「已读」；",
@@ -518,6 +542,7 @@ public enum ToolProtocol {
         case ToolCatalog.remember: title = String(localized: "记住了一件事")
         case ToolCatalog.updatePersona: title = String(localized: "调整了自己的人设")
         case ToolCatalog.setQuietHours: title = String(localized: "安排了自己的作息")
+        case ToolCatalog.setActivity: title = String(localized: "去忙了")
         case ToolCatalog.setMood: title = String(localized: "心情变了")
         case ToolCatalog.recall: title = String(localized: "回想了一下")
         case ToolCatalog.deferReply: title = String(localized: "决定先不回")
@@ -572,6 +597,11 @@ public enum ToolProtocol {
             return "过 \(minutes) 分钟再说"
         case ToolCatalog.updatePersona:
             return invocation.argument("reason").map { "原因：\(String($0.prefix(120)))" }
+        case ToolCatalog.setActivity:
+            let text = invocation.argument("activity") ?? ""
+            let minutes = invocation.intArgument("minutes", default: ToolArgClamp.activityMinutesDefault)
+            if text.isEmpty { return nil }
+            return "要去忙：\(String(text.prefix(80)))（约 \(ToolArgClamp.clampActivityMinutes(minutes)) 分钟）"
         case ToolCatalog.setQuietHours:
             let sleepAt = invocation.argument("sleep_at")
             let wakeAt = invocation.argument("wake_at")

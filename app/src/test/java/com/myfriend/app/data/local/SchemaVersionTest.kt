@@ -248,6 +248,62 @@ class SchemaVersionTest {
         assertTrue("MIGRATION_11_12 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_11_12"))
     }
 
+    /**
+     * v13：人设引导的三列（`spec/persona-guidance/README.md` §2 / §3 / §4）。
+     *
+     * 列名、类型、可空性逐项钉死：全部 `TEXT` 且可空，老库升级后读出来是 NULL（= 没有世界 /
+     * 没学过话风 / 没在忙），行为与 v12 完全一致。`api_configs` 的旧默认值刻意**没有**被这次
+     * 迁移改动（v12 的 `webToolsProvider DEFAULT 'DEEPSEEK'` 仍然在）。
+     */
+    @Test
+    fun `v13 的 schema 里人设与预设都有引导字段且都可空`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "13.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+
+        val personas = entities.first { it["tableName"]!!.jsonPrimitive.content == "personas" }
+        val personaFields = personas["fields"]!!.jsonArray.map { it.jsonObject }.associateBy {
+            it["columnName"]!!.jsonPrimitive.content
+        }
+        listOf("worldJson", "speechStyleJson", "activityJson").forEach { column ->
+            val field = personaFields[column] ?: error("v13 的 personas 里没有 $column")
+            assertEquals("$column 必须是 TEXT", "TEXT", field["affinity"]!!.jsonPrimitive.content)
+            assertEquals("$column 必须可空（老库默认 NULL）", false, field["notNull"]!!.jsonPrimitive.boolean)
+        }
+
+        val presets = entities.first { it["tableName"]!!.jsonPrimitive.content == "persona_presets" }
+        val presetFields = presets["fields"]!!.jsonArray.map { it.jsonObject }.associateBy {
+            it["columnName"]!!.jsonPrimitive.content
+        }
+        listOf("worldJson", "speechStyleJson").forEach { column ->
+            val field = presetFields[column] ?: error("v13 的 persona_presets 里没有 $column")
+            assertEquals("$column 必须是 TEXT", "TEXT", field["affinity"]!!.jsonPrimitive.content)
+            assertEquals("$column 必须可空", false, field["notNull"]!!.jsonPrimitive.boolean)
+        }
+
+        // api_configs 的 v12 默认值不能被这次迁移顺手改掉。
+        val apiConfigs = entities.first { it["tableName"]!!.jsonPrimitive.content == "api_configs" }
+        val provider = apiConfigs["fields"]!!.jsonArray.map { it.jsonObject }
+            .first { it["columnName"]!!.jsonPrimitive.content == "webToolsProvider" }
+        assertEquals("v12 的旧默认值必须保留", "'DEEPSEEK'", provider["defaultValue"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `MIGRATION_12_13 幂等 只加可空列 且注册进了 Room`() {
+        val text = databaseSource.readText()
+        val start = text.indexOf("MIGRATION_12_13 = object : Migration(12, 13)")
+        assertTrue("没找到 MIGRATION_12_13 的声明", start >= 0)
+        val block = text.substring(start, minOf(text.length, start + 1800))
+        listOf(
+            "ALTER TABLE `personas` ADD COLUMN `worldJson` TEXT",
+            "ALTER TABLE `personas` ADD COLUMN `speechStyleJson` TEXT",
+            "ALTER TABLE `personas` ADD COLUMN `activityJson` TEXT",
+            "ALTER TABLE `persona_presets` ADD COLUMN `worldJson` TEXT",
+            "ALTER TABLE `persona_presets` ADD COLUMN `speechStyleJson` TEXT"
+        ).forEach { ddl -> assertTrue("DDL 必须与规范一致：$ddl", block.contains(ddl)) }
+        assertTrue("加列前要先查 PRAGMA table_info", block.contains("PRAGMA table_info"))
+        assertTrue("MIGRATION_12_13 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_12_13"))
+    }
+
     // ---------------------------------------------------------------- 解析源码
 
     private data class DeclaredMigration(val from: Int, val to: Int)
