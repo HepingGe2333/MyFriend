@@ -47,5 +47,6 @@ Recorded so they are not re-reported as new findings:
 
 ## Process
 
-The audit procedure used by the maintainer's automation (scope, output location, fix/test requirements) is documented in
-[`AGENTS.md`](../../AGENTS.md) — it is operational guidance, not project documentation.
+Audits are requested by the maintainers, run read-only (an auditor may not change the code under review), and each
+finding is fixed together with a test before the next release. The reports themselves are the record; there is no
+separate process document in this repository.

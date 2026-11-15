@@ -31,18 +31,18 @@ v2; **no behaviour changes**.
 
 ### Documentation structure
 
-- New **`AGENTS.md`** at the repository root: the single place for AI agents and automation — which directories are
-  artefacts, where a version bump has to be applied, workspace build commands, parallel-work conventions, the
-  data/contract checklist, the audit procedure and the definition of done. It is explicitly marked as *not* project
-  documentation.
-- Removed `docs/VERSIONING.md` / `.en.md`: "how an agent should bump the version" moved into `AGENTS.md`; the
-  maintainer-facing policy and release checklist stay in the "Versioning and releases" section of `CONTRIBUTING`.
+- **Operating instructions for AI agents and automation moved out of the repository**: artefact directories, where a
+  version bump has to be applied, workspace build commands, parallel-work conventions, the data/contract checklist, the
+  audit procedure and the definition of done belong to the maintainer's local workspace (`.agents/`, not shipped).
+  The repository keeps human-facing documentation only; the maintainer-facing version policy and release checklist stay
+  in the "Versioning and releases" section of `CONTRIBUTING`.
+- Removed `docs/VERSIONING.md` / `.en.md`: the maintainer content moved into `CONTRIBUTING`, the rest is local workspace guidance.
 - New **`docs/README.md`**: a human-facing index (project docs, cross-platform contracts, sub-project docs, doc-writing
   rules).
 - `docs/ROADMAP-1.x.md` moved to **`docs/design/`** with a "historical design record" banner: they describe the behaviour
   spec of a past release, kept for tracing decisions, not as current documentation.
 - `docs/audits/README.md` rewritten for readers: how to read the severity levels, which release fixed which report, and
-  the **accepted risks**. The "how to run an audit" procedure moved to `AGENTS.md`.
+  the **accepted risks**. How to run an audit is no longer documented in the repository.
 
 ### Documentation hygiene
 
