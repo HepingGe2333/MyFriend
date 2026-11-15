@@ -210,10 +210,16 @@ public extension AgentCoreClient {
     /// - 回退/本机模式：记一条静默诊断（不刷日志）后回退到 `nativeFallback`，
     ///   行为与 0.11.0 一致（每次失败由 `FallbackAgentCoreClient` 记一行）。
     ///
+    /// **0.12.0：iOS App 构建里 `nativeFallback` 恒为 `nil`。** Swift 的
+    /// `NativeAgentCoreClient` 被 `#if !os(iOS)` 排除，调用点传进来的是
+    /// `AgentCoreNativeFallback` 的返回值（iOS = nil）；此时失败按「可见」处理、直接上抛，
+    /// 不再回落到第二份实现。macOS `swift test` 里行为与以前完全一样（见
+    /// `AgentCoreNativeFallback.resolve`）。
+    ///
     /// 取消（用户点了停止）不算失败：保持 `CancellationError`，不记录、不回退。
     func decide<T>(
         endpoint: String,
-        nativeFallback: @Sendable () -> T,
+        nativeFallback: (@Sendable () -> T)?,
         _ attempt: () async throws -> T
     ) async throws -> T {
         do {
@@ -224,8 +230,7 @@ public extension AgentCoreClient {
             let strict = AgentCoreDiagnostics.shared.record(
                 endpoint: endpoint, mode: agentCoreMode, error: error
             )
-            if strict { throw error }
-            return nativeFallback()
+            return try AgentCoreNativeFallback.resolve(error, strict: strict, fallback: nativeFallback)
         }
     }
 }

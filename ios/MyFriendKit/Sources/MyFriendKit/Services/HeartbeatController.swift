@@ -106,7 +106,7 @@ public final class HeartbeatController {
         intents: AgentIntentSupport,
         ticks: AgentTickStoring,
         mood: MoodRepository,
-        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
+        agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         tickRunner: @escaping (Int64) async -> AgentLoop.Outcome?,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
@@ -180,20 +180,27 @@ public final class HeartbeatController {
         // `proactiveCap(level:moodIntensity:)` 只有强度。
         // 0.11.1 审计 P2-1：同上 —— 严格模式的失败在 `decide` 里已经记成可见诊断并抛出，
         // 这里不再「假装什么都没发生」地静默回退（回退路径只给普通 remote 模式）。
-        let baseCap = (try? await agentCore.decide(
+        // iOS 上没有 Swift 回落（`AgentCoreNativeFallback.proactiveCap` 返回 nil），
+        // 失败后仍然要一个 baseCap：用 Kotlin（与默认本机实现同一份 `:agentcore`）再算一次。
+        let decidedCap = try? await agentCore.decide(
             endpoint: "proactive-cap",
-            nativeFallback: {
-                NativeAgentCoreClient().proactiveCapNow(
-                    level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
-                )
-            }
+            nativeFallback: AgentCoreNativeFallback.proactiveCap(
+                level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+            )
         ) {
             try await agentCore.proactiveCap(
                 level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
             )
-        }) ?? NativeAgentCoreClient().proactiveCapNow(
-            level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
-        )
+        }
+        let baseCap: Int
+        if let decidedCap {
+            baseCap = decidedCap
+        } else {
+            // `??` 的右侧是 autoclosure，不能在这里 await —— 失败路径必须显式写出来。
+            baseCap = await AgentCoreNativeFallback.proactiveCapAfterStrictFailure(
+                level: persona.proactiveLevel, moodIntensity: snapshot.mood.intensity
+            )
+        }
         let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: snapshot.tuning)
         if dailyCap <= 0 { return Beat(why: "主动消息关掉了") }
         let spoken = intents.spokenToday(personaId: persona.id, now: at)

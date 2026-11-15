@@ -92,8 +92,8 @@ fun BackupSection(
                 stringResource(
                     R.string.backup_media_limits,
                     BackupMediaLimits.MAX_MEDIA_FILE_BYTES / (1024 * 1024),
-                    BackupMediaLimits.MAX_MEDIA_BYTES / (1024 * 1024),
-                    BackupMediaLimits.MAX_BACKUP_BYTES / (1024 * 1024)
+                    BackupMediaLimits.effectiveMediaBudget() / (1024 * 1024),
+                    BackupMediaLimits.effectiveBackupBytes() / (1024 * 1024)
                 ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -222,11 +222,11 @@ fun rememberBackupTransfer(
             val read = runCatching {
                 withContext(Dispatchers.IO) {
                     val declared = context.contentResolver.declaredSizeBytes(uri)
-                    if (declared != null && declared >= 0 && BackupMediaLimits.isTooLarge(declared)) {
-                        throw BoundedTextRead.TooLarge(BackupMediaLimits.MAX_BACKUP_BYTES)
+                    if (declared != null && declared >= 0 && declared > BackupMediaLimits.effectiveBackupBytes()) {
+                        throw BoundedTextRead.TooLarge(BackupMediaLimits.effectiveBackupBytes())
                     }
                     context.contentResolver.openInputStream(uri)?.use { input ->
-                        BoundedTextRead.read(input, BackupMediaLimits.MAX_BACKUP_BYTES)
+                        BoundedTextRead.read(input, BackupMediaLimits.effectiveBackupBytes())
                     }
                 }
             }

@@ -12,12 +12,12 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.12.0`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
-| 数据库 schema | v11（消息按 200 条一块存储；Android Room `@Database(version = 11)` 与 iOS SQLite `user_version = 11` 对齐） |
-| 备份格式 | v3（`format = "myfriend.backup"`、`formatVersion = 3`，图片与头像随备份走；v1 / v2 仍可读） |
+| 版本 | `0.13.0`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
+| 数据库 schema | v12（消息按 200 条一块存储；搜索 provider 记在 `api_configs`；两端版本号对齐） |
+| 备份格式 | v4（`format = "myfriend.backup"`、`formatVersion = 4`，图片与头像随备份走、搜索 provider 随配置走；v1–v3 仍可读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 1044 条（`:app:testDebugUnitTest`，另有 28 条 instrumented）、`:agentcore` 60 条、`:agentd` 34 条、iOS 1263 条（`swift test`） |
-| 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
+| 单元测试 | Android 1072 条（96 类）+ 47 条 instrumented、`:agentcore` 60 条、`:agentd` 53 条、iOS 1305 条（`swift test`） |
+| 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
 
 ## 特性概览
 
@@ -152,7 +152,6 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 
 ## 已知限制
 
-- **没有 CI**：两端测试、构建、迁移测试与 lint 都靠本地命令；PR 评审以本地运行结果为准。
 - **iOS 后台不完全实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；
   回到前台时按错过的时间补算一次。这是 iOS 平台约束，不是可配置项。
 - **检索每翻一页都会重新走一遍历史区块**：这是「没有候选上限、也不使用 offset」的代价——首屏很快，但历史越长、
@@ -161,6 +160,8 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 - **区块不做重平衡**：极端删除后可能出现只有几条消息的块，块编号会出现空洞（分页按块表跳过空洞）。
 - **备份里的图片有上限**：总量 128 MiB、单张 8 MiB，只带 JPEG / PNG / WebP；超出或格式不支持时**跳过并明确告警**，
   GIF / HEIC / 视频不随备份走。
+- **大库检索有性能上限**：无候选上限的代价是「每翻一页重扫历史区块」，10 万条量级的实测数字与结论见
+  [docs/performance.md](docs/performance.md)。
 
 ## 贡献与许可
 

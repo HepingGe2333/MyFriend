@@ -2,14 +2,14 @@ import Foundation
 import XCTest
 @testable import MyFriendKit
 
-/// iOS 的表结构和 Android Room 导出 schema 的**逐字对照**（v11：`messages` + `message_blocks`）。
+/// iOS 的表结构和 Android Room 导出 schema 的**逐字对照**（`messages` + `message_blocks`）。
 ///
 /// 为什么需要这条：两端共用备份 JSON，但库里结构与「块」的语义必须一致，
 /// 否则同一段历史在 Android 上分块、在 iOS 上不分块，或者 `blockIndex` 的默认值 / 索引不同，
-/// 迁移与分页就会各说各话。Android 的导出文件（`app/schemas/.../11.json`）是这件事的**唯一出处**，
+/// 迁移与分页就会各说各话。Android 的导出文件（`app/schemas/.../<version>.json`）是这件事的**唯一出处**，
 /// 这里直接读它、和 iOS 真库的 `PRAGMA` 结果对比，而不是再抄一份 DDL 常量。
 ///
-/// 文件不存在就 skip（iOS 单独 checkout / Android 还没导出 v11 时正常）：
+/// 文件不存在就 skip（iOS 单独 checkout / Android 还没导出当前版本时正常）：
 /// 与 `AgentCoreResponseGoldenTests` 读 Kotlin 协议文件同一个套路。
 final class SchemaParityTests: XCTestCase {
 
@@ -47,11 +47,13 @@ final class SchemaParityTests: XCTestCase {
         guard let root = Self.repositoryRoot() else {
             throw XCTSkip("找不到仓库根（需要 settings.gradle.kts + app/schemas/）")
         }
+        // 按**当前** schema 版本找文件：v11→v12 升级时 Android 会导出 12.json，
+        // 这里如果还硬编码 11.json，就会拿一份旧版本来对照新模式而红掉。
         let file = root.appendingPathComponent(
-            "app/schemas/com.myfriend.app.data.local.MyFriendDatabase/11.json"
+            "app/schemas/com.myfriend.app.data.local.MyFriendDatabase/\(Schema.version).json"
         )
         guard let data = try? Data(contentsOf: file) else {
-            throw XCTSkip("Android 还没有导出 v11 schema：\(file.path)")
+            throw XCTSkip("Android 还没有导出 v\(Schema.version) schema：\(file.path)")
         }
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let database = object["database"] as? [String: Any],
@@ -70,10 +72,10 @@ final class SchemaParityTests: XCTestCase {
 
     // MARK: - 对照
 
-    func testV11TablesMatchAndroidRoomExport() throws {
+    func testCurrentVersionTablesMatchAndroidRoomExport() throws {
         let entities = try roomEntities()
         for table in ["messages", Schema.messageBlocksTable] {
-            let entity = try XCTUnwrap(entities[table], "Android v11 里没有这张表：\(table)")
+            let entity = try XCTUnwrap(entities[table], "Android v\(Schema.version) 里没有这张表：\(table)")
             try assertColumns(table: table, match: entity)
             try assertIndices(table: table, match: entity)
             try assertPrimaryKey(table: table, match: entity)

@@ -60,9 +60,14 @@ xcrun simctl io booted screenshot /tmp/ios.png
 
 `agentcore/` 是 Kotlin Multiplatform 工程，iOS 侧产出静态 framework `AgentCoreKit`。
 App 里四个 agent 决策（睡眠判定 / `defer_reply` 计划 / 每日主动上限 / 工具参数夹取）直接调
-Kotlin `InProcessAgentCore`，与 Android、`agentd` 是**同一份**实现（`commonMain`）；
-Swift 的 `NativeAgentCoreClient` 只留给 macOS 上的 `swift test`（那边链接不了 iOS framework），
-以及模拟器上「两条实现互相比对」的测试。
+Kotlin `InProcessAgentCore`，与 Android、`agentd` 是**同一份**实现（`commonMain`）。
+
+**Swift 实现只在 macOS 的测试构建里存在**（0.12.0）：`NativeAgentCoreClient` 整个类型包在
+`#if !os(iOS)` 里，App 的运行时（模拟器/真机）里没有第二份可执行的判定实现。四个调用点的
+回落统一走 `AgentCoreNativeFallback`：iOS 上它返回 `nil`，`decide` 失败只记诊断并上抛，
+不会悄悄回落到 Swift；macOS `swift test` 上它返回 Swift 闭包，所以那边仍然同时覆盖两条实现。
+这条边界由 `AppWiringGuardTests.testSwiftDecisionImplementationIsExcludedFromIOSBuilds`
+（源码扫描）守着：iOS 条件块内不得出现 `NativeAgentCoreClient()`，服务调用点也不得引用它。
 
 ### 1. 先构建 framework（一次就够；改了 `agentcore/` 再跑）
 

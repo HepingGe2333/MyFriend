@@ -1,6 +1,6 @@
 import Foundation
 
-/// SQLite 建表语句：表名与列名逐字对齐 Android Room v11
+/// SQLite 建表语句：表名与列名逐字对齐 Android Room v12
 /// （`spec/messages-blocks/README.md` 的 `messages.blockIndex` + `message_blocks`）。
 ///
 /// 为什么不直接用 `Entities.kt` 的 data class 生成：SQLite 的列顺序、`NOT NULL`、
@@ -8,9 +8,10 @@ import Foundation
 /// 也让 iOS 这边的库结构和 Android 的导出文件可以直接 diff。
 ///
 /// 几点与 Room 的对齐说明：
-/// - `user_version = 11`：Room 用 version 表达 schema 演进，iOS 用同一个数字，
-///   这样「这份库是 v11」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
-///   + `message_blocks`，见 `spec/messages-blocks/README.md`）。
+/// - `user_version = 12`：Room 用 version 表达 schema 演进，iOS 用同一个数字，
+///   这样「这份库是 v12」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
+///   + `message_blocks`，见 `spec/messages-blocks/README.md`；v12 = 联网工具可以选
+///   第三方搜索服务：`api_configs.webToolsProvider`，见 `spec/web-search/README.md`）。
 /// - 不建 `room_master_table`：那是 Room 用来校验 identityHash 的内部表，
 ///   iOS 不读 Room 的迁移历史；真正需要互通的是**备份 JSON**，不是数据库文件。
 /// - 布尔一律 `INTEGER NOT NULL`（0/1），枚举一律 `TEXT`（存 Kotlin 枚举名），
@@ -22,7 +23,8 @@ public enum Schema {
     ///
     /// 1.9 = v10：一人一段会话（唯一索引 + 迁移）、消息已读、人格细分字段、会话覆盖两列。
     /// 0.12 = v11：分块历史（`messages.blockIndex` + `message_blocks`）、区块分页、无上限检索。
-    public static let version: Int32 = 11
+    /// 0.12（同版第二次 schema 变更）= v12：`api_configs.webToolsProvider`（搜索服务选择）。
+    public static let version: Int32 = 12
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -102,6 +104,15 @@ public enum Schema {
 
     /// v11 给 `messages` 加的列：块号（默认 0，迁移里按 `(createdAt, id)` 回填）。
     public static let messageBlockColumn = (name: "blockIndex", ddl: "INTEGER NOT NULL DEFAULT 0")
+
+    /// v12 给 `api_configs` 加的列：联网工具用哪个搜索服务（`spec/web-search/README.md` §1）。
+    ///
+    /// `NOT NULL DEFAULT 'DEEPSEEK'` 是规范里逐字写明的：老库补列时每一行都自动落到
+    /// 「DeepSeek 官方接口」，与 0.12 之前的行为完全一致；新库也拿同一个默认值。
+    public static let webToolsProviderColumn = (
+        name: "webToolsProvider",
+        ddl: "TEXT NOT NULL DEFAULT 'DEEPSEEK'"
+    )
 
     /// 1.9 给 `personas` 加的列（迁移按这个顺序 ADD COLUMN，老库补列也用它）。
     ///
@@ -208,6 +219,7 @@ public enum Schema {
             createdAt INTEGER NOT NULL,
             updatedAt INTEGER NOT NULL,
             webToolsEnabled INTEGER NOT NULL DEFAULT 0,
+            webToolsProvider TEXT NOT NULL DEFAULT 'DEEPSEEK',
             webToolsBaseUrl TEXT NOT NULL DEFAULT '',
             webToolsApiKeyCipher TEXT,
             PRIMARY KEY (id)
@@ -479,7 +491,7 @@ public enum Schema {
     /// 幂等（全部 `IF NOT EXISTS`），所以每次启动都可以无脑调用；
     /// `user_version` 是「这份库的 schema 是第几版」的唯一事实来源。
     ///
-    /// 老库（v8/v9/v10）走两条路：
+    /// 老库（v8–v11）走两条路：
     /// 1. 先补列 + 删多余的会话 + 建块表并回填块号（`migrateLegacyData`）——必须在建唯一索引**之前**；
     /// 2. 再跑一遍 `createStatements`，把缺的表与索引补齐。
     public static func create(_ database: SQLiteDatabase) throws {
@@ -500,9 +512,10 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10 → v11
+    // MARK: - v8/v9/v10/v11 → v12
 
-    /// 老库升到 v11：补列、清 Harness 列、一人一段、补默认配置、建块表并回填块号。
+    /// 老库升到 v12：补列（含 v12 的 `webToolsProvider`）、清 Harness 列、一人一段、
+    /// 补默认配置、建块表并回填块号。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
     /// 迁移必须和建表在同一个事务里，否则「库是半新半旧」的状态比升级失败更糟。
@@ -524,6 +537,12 @@ public enum Schema {
         try addColumnIfMissing(
             database, table: "messages",
             column: messageBlockColumn.name, type: messageBlockColumn.ddl
+        )
+        // v12：搜索服务选择。`addColumnIfMissing` 本身幂等，重复打开不会重复加列；
+        // 列上的 DEFAULT 让老行直接读成 DEEPSEEK（与迁移前行为一致）。
+        try addColumnIfMissing(
+            database, table: "api_configs",
+            column: webToolsProviderColumn.name, type: webToolsProviderColumn.ddl
         )
 
         // Harness 三列：1.9 整组删除。留着它们会让「没有默认值的 NOT NULL 列」
@@ -564,6 +583,16 @@ public enum Schema {
                    ) - 1) / \(MessageBlocks.blockSize) AS blockIndex
             FROM messages m
             """)
+        // TEMP 表没有索引时，下面这条 UPDATE 的相关子查询是 O(n²)：10 万条实测 123.5s，
+        // 加索引后 0.0085s（大库基准的发现）。索引只服务于这次迁移，迁移结束随 TEMP 表一起消失。
+        try database.execute(
+            "CREATE INDEX IF NOT EXISTS temp.idx_message_block_assignment_messageId " +
+                "ON message_block_assignment(messageId)"
+        )
+        try database.execute(
+            "CREATE INDEX IF NOT EXISTS temp.idx_message_block_assignment_session_block " +
+                "ON message_block_assignment(sessionId, blockIndex)"
+        )
         // 空库：TEMP 表存在但没有行，两条语句都是空操作。
         try database.execute("""
             UPDATE messages
@@ -696,8 +725,8 @@ public enum Schema {
         let newColumns = [
             "id", "name", "provider", "baseUrl", "apiKeyCipher", "model", "customHeadersJson",
             "allowInsecureHttp", "temperature", "topP", "maxOutputTokens", "frequencyPenalty",
-            "presencePenalty", "createdAt", "updatedAt", "webToolsEnabled", "webToolsBaseUrl",
-            "webToolsApiKeyCipher"
+            "presencePenalty", "createdAt", "updatedAt", "webToolsEnabled", "webToolsProvider",
+            "webToolsBaseUrl", "webToolsApiKeyCipher"
         ]
         let existing = newColumns.filter { columnExists(database, table: "api_configs", column: $0) }
         guard existing.contains("id") else { return }

@@ -1,5 +1,6 @@
 package com.myfriend.app.data.repo
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -24,7 +25,10 @@ class DataResilienceContractTest {
     private val backupCodec get() = source("src/main/java/com/myfriend/app/domain/BackupCodec.kt")
     private val apiConfig get() = source("src/main/java/com/myfriend/app/data/repo/ApiConfigRepository.kt")
     private val secretCipher get() = source("src/main/java/com/myfriend/app/data/secure/SecretCipher.kt")
-    private val webTools get() = source("src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt")
+    private val webTools get() = source("src/main/java/com/myfriend/app/network/WebSearchClient.kt")
+    private val toolExecutor get() = source("src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt")
+    private val apiEditorVm get() = source("src/main/java/com/myfriend/app/ui/screens/apiconfig/ApiEditorViewModel.kt")
+    private val apiEditorScreen get() = source("src/main/java/com/myfriend/app/ui/screens/apiconfig/ApiEditorScreen.kt")
 
     // ------------------------------------------------------------------ 审计 P2-6
 
@@ -164,8 +168,15 @@ class DataResilienceContractTest {
         assertTrue("按声明的文件大小先拒绝", section.contains("declaredSizeBytes("))
         assertTrue("读的时候按字节设上限", section.contains("BoundedTextRead.read("))
         assertFalse("不再 readText() 整份读进内存", section.contains(".bufferedReader()?.use { it.readText() }"))
-        // v3：媒体 base64 让备份变大，字符数闸随之提到 256 MiB（BackupMediaLimits）。
-        assertTrue("解析前再兜一次字符数", backupCodec.contains("BackupMediaLimits.isTooManyChars("))
+        // v3：媒体 base64 让备份变大；0.13.0 起解析前的字符闸按可用堆收紧。
+        assertTrue(
+            "解析前再兜一次字符数（按可用堆收紧）",
+            backupCodec.contains("BackupMediaLimits.effectiveBackupBytes()")
+        )
+        assertTrue(
+            "上限按可用堆收紧",
+            backupCodec.contains("raw.length.toLong() > BackupMediaLimits.effectiveBackupBytes()")
+        )
         assertTrue("超限给资源化错误", section.contains("BackupFailure.TooLarge("))
     }
 
@@ -203,6 +214,53 @@ class DataResilienceContractTest {
             "拒绝原因要能上屏（资源化）",
             source("src/main/java/com/myfriend/app/ui/common/ErrorText.kt").contains("NetworkErrorKind.WebUrlRejected")
         )
+    }
+
+    // ------------------------------------------------------------------ 联网 provider（v12）
+
+    @Test
+    fun `保存配置读写 provider 且切换时不丢地址与 Key`() {
+        val save = bodyOf(apiConfig, "suspend fun save(")
+        assertTrue("save 要接收 provider", save.contains("webToolsProvider: String = WebToolsProviders.DEEPSEEK"))
+        assertTrue("落库前归一化脏值", save.contains("webToolsProvider = WebToolsProviders.normalize(webToolsProvider)"))
+        assertTrue("地址照旧落库（空字符串语义保留）", save.contains("webToolsBaseUrl = webToolsBaseUrl.trim()"))
+        assertTrue("专用 Key 走原来的加密/保留/清除三态", save.contains("webToolsApiKeyCipher = webToolsKeyCipher"))
+    }
+
+    @Test
+    fun `GENERIC 必须填地址 其它地址要过 NetworkGuard 与 WebUrlPolicy`() {
+        val validate = bodyOf(apiConfig, "private suspend fun validateWebTools(")
+        assertTrue("空地址只在 GENERIC 且联网开启时才报错", validate.contains("WebToolsProviders.GENERIC") && validate.contains("NetworkErrorKind.WebBaseMissing"))
+        assertTrue("显式地址必须过 NetworkGuard", validate.contains("NetworkGuard.parseHttpUrl(webBaseUrl, entity.allowInsecureHttp)"))
+        assertTrue("公网 provider 的地址不能被指到内网", validate.contains("WebUrlPolicy.check(webBaseUrl)"))
+        assertTrue("自建 GENERIC 允许内网地址", validate.contains("allowsPrivateBaseUrl(provider)"))
+        assertTrue("保存与备份导入共用校验", bodyOf(apiConfig, "suspend fun validateEntity(").contains("validateWebTools(entity)"))
+    }
+
+    @Test
+    fun `ToolExecutor 把 provider 交给新客户端并保留默认地址语义`() {
+        val access = bodyOf(toolExecutor, "private suspend fun webAccess(")
+        assertTrue("读 provider", access.contains("WebToolsProviders.normalize(config.webToolsProvider)"))
+        assertTrue("DEEPSEEK 默认用 LLM base URL", access.contains("WebToolsProviders.DEEPSEEK_FALLBACK_BASE"))
+        assertTrue("缺 Key 不再等同于联网关闭", access.contains("key.orEmpty()"))
+        assertTrue("搜索调用带 provider", bodyOf(toolExecutor, "private suspend fun webSearch(").contains("provider = access.provider"))
+        assertTrue("抓取调用带 provider", bodyOf(toolExecutor, "private suspend fun webFetch(").contains("provider = access.provider"))
+    }
+
+    @Test
+    fun `设置页能选五家 provider 且保存时带上`() {
+        assertTrue("ViewModel 状态里有 provider", apiEditorVm.contains("val webToolsProvider: String"))
+        assertTrue("读取已保存的 provider", apiEditorVm.contains("WebToolsProviders.normalize(config.webToolsProvider)"))
+        assertTrue("切换 provider", apiEditorVm.contains("fun setWebToolsProvider("))
+        assertTrue("保存时传给仓储", apiEditorVm.contains("webToolsProvider = current.webToolsProvider"))
+        assertTrue("界面遍历五家", apiEditorScreen.contains("WebToolsProviders.all.forEach"))
+        listOf(
+            "api_web_provider_deepseek", "api_web_provider_tavily", "api_web_provider_brave",
+            "api_web_provider_serper", "api_web_provider_generic"
+        ).forEach { key ->
+            assertTrue("$key 中文资源", source("src/main/res/values/strings.xml").contains("name=\"$key\""))
+            assertTrue("$key 英文资源", source("src/main/res/values-en/strings.xml").contains("name=\"$key\""))
+        }
     }
 
     // ------------------------------------------------------------------ 审计 P2-14
@@ -368,7 +426,7 @@ class DataResilienceContractTest {
     // ------------------------------------------------------------------ 0.11.1 审计：发布构建（P2-14）
 
     @Test
-    fun `release 构建强制进程内 并且版本号是 0_11_1`() {
+    fun `release 构建强制进程内 并且版本号精确是 0_13_0`() {
         val gradle = source("build.gradle.kts")
         val release = gradle.substringAfter("buildTypes {", "")
             .substringAfter("release {", "")
@@ -381,14 +439,38 @@ class DataResilienceContractTest {
             "release 不把编译期地址打进包（remote 已强制 false，baseUrl 留空）",
             release.contains("AGENT_CORE_BASE_URL")
         )
-        // 版本号本身由发布流程决定（0.12.0 已升到 17）：这里只守「只增不减」和语义化格式。
+        // 版本号钉死**具体数字**（0.12.0 / 18），不再用「≥ 17 / 格式合法」。
+        //
+        // 为什么精确断言更好：版本号是发布契约的一部分，Android 的 versionCode 决定更新能否
+        // 覆盖安装，versionName 是用户看到的发布号。宽泛断言（「只增不减」「0.x.y」）在
+        // 「改了版本号却忘改另一端」「忘了升版本」时仍然是绿的——它只证明数字长得像版本号。
+        // 精确断言把「升级时漏改任何一处」变成一条失败的测试。
+        //
+        // 维护方式：版本号的唯一来源是 `app/build.gradle.kts`（Android）与
+        // `ios/MyFriend.xcodeproj/project.pbxproj` 的 `CURRENT_PROJECT_VERSION` /
+        // `MARKETING_VERSION`（iOS）。升版本时这三处（Android 2 个值 + iOS 4 处 = Debug/Release
+        // 各一份）和本测试里的期望值一起改；iOS 侧还有
+        // `AppWiringGuardTests.testVersionIsConsistentForBothConfigurations` 钉同一组数字。
         val versionCode = Regex("""versionCode\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt()
             ?: error("build.gradle.kts 里找不到 versionCode")
-        assertTrue("versionCode 必须递增（0.11.x 已经是 16）", versionCode >= 17)
-        assertTrue(
-            "versionName 必须是 0.x.y",
-            Regex("""versionName\s*=\s*"0\.\d+\.\d+"""").containsMatchIn(gradle)
-        )
+        assertEquals("versionCode 必须精确等于 19（0.13.0）", 19, versionCode)
+        val versionName = Regex("""versionName\s*=\s*"([^"]+)"""")
+            .find(gradle)?.groupValues?.get(1)
+            ?: error("build.gradle.kts 里找不到 versionName")
+        assertEquals("versionName 必须精确等于 0.13.0", "0.13.0", versionName)
+
+        // 两端构建号相等 + 两处配置一致：Android 与 iOS 发布的必须是同一个版本。
+        val pbxproj = File(projectRoot(), "../ios/MyFriend.xcodeproj/project.pbxproj")
+        assertTrue("找不到 iOS 工程文件：${pbxproj.absolutePath}", pbxproj.isFile)
+        val pbx = pbxproj.readText()
+        val iosBuilds = Regex("""CURRENT_PROJECT_VERSION = (\d+);""")
+            .findAll(pbx).map { it.groupValues[1] }.toSet()
+        val iosVersions = Regex("""MARKETING_VERSION = ([^;]+);""")
+            .findAll(pbx).map { it.groupValues[1].trim() }.toSet()
+        assertEquals("iOS 工程必须有 CURRENT_PROJECT_VERSION（Debug/Release 各一处以上）", 1, iosBuilds.size)
+        assertEquals("iOS 工程必须有 MARKETING_VERSION（Debug/Release 各一处以上）", 1, iosVersions.size)
+        assertEquals("Android 与 iOS 的构建号必须相等", setOf(versionCode.toString()), iosBuilds)
+        assertEquals("Android 与 iOS 的版本名必须相等", setOf(versionName), iosVersions)
     }
 
     @Test

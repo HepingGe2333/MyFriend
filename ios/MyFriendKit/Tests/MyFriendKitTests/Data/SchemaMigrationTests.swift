@@ -2,7 +2,8 @@ import Foundation
 import XCTest
 @testable import MyFriendKit
 
-/// v8/v9/v10 → v11 的迁移（§2.2 与 `spec/messages-blocks/README.md` §5）。
+/// v8/v9/v10 → v12 的迁移（§2.2、`spec/messages-blocks/README.md` §5 与
+/// `spec/web-search/README.md` §1）。
 ///
 /// 这是 1.9 唯一会**删用户数据**的地方（一人一段，其余会话连同消息直接删），
 /// 所以它必须被一条真库测试钉住：造一个 1.8 形状的旧库，打开它，然后逐条核对
@@ -101,7 +102,7 @@ final class SchemaMigrationTests: XCTestCase {
         let stores = try DatabaseStores.open(path: databasePath)
 
         // 1) 版本号与唯一索引。
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
         let indexNames = try indexNames(stores.database)
         XCTAssertTrue(indexNames.contains(Schema.uniquePersonaSessionIndex), "唯一索引必须建起来")
 
@@ -148,7 +149,7 @@ final class SchemaMigrationTests: XCTestCase {
         stores = nil
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 11)
+        XCTAssertEqual(try reopened.database.userVersion(), 12)
         XCTAssertEqual(try reopened.sessions.count(), 1)
         XCTAssertEqual(try reopened.messages.count(), 1)
         XCTAssertNotNil(try reopened.personas.byId(personaId))
@@ -160,7 +161,7 @@ final class SchemaMigrationTests: XCTestCase {
     /// 空库也能正常建起来（迁移不能只在「有数据」时才成立）。
     func testFreshDatabaseHasEverything() throws {
         let stores = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
         XCTAssertTrue(try indexNames(stores.database).contains(Schema.uniquePersonaSessionIndex))
         XCTAssertEqual(try stores.personas.count(), 0)
         XCTAssertEqual(try stores.sessions.count(), 0)
@@ -188,13 +189,13 @@ final class SchemaMigrationTests: XCTestCase {
         var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
         try stores?.database.execute("DROP TABLE agent_ticks")
         try stores?.database.execute("DROP TABLE memory_echoes")
-        XCTAssertEqual(try stores?.database.userVersion(), 11)
+        XCTAssertEqual(try stores?.database.userVersion(), 12)
         XCTAssertFalse(try XCTUnwrap(stores).database.hasTable(Schema.agentTicksTable))
         stores = nil
 
         // 「升级后第一次启动」：同一个路径再打开一次。
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 11)
+        XCTAssertEqual(try reopened.database.userVersion(), 12)
         let names = try reopened.database.tableNames()
         for table in Schema.supplementaryTables {
             XCTAssertTrue(names.contains(table), "老库升级后缺表：\(table)")
@@ -308,7 +309,7 @@ final class SchemaMigrationTests: XCTestCase {
         try seedV10Database(messageCount: 250)
         let stores = try DatabaseStores.open(path: databasePath)
 
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
         XCTAssertTrue(try stores.database.hasTable(Schema.messageBlocksTable), "v11 要建块表")
         XCTAssertEqual(try stores.messages.count(), 250, "迁移不能丢消息")
 
@@ -360,7 +361,7 @@ final class SchemaMigrationTests: XCTestCase {
         try seedV10Database(messageCount: 0)
         let stores = try DatabaseStores.open(path: databasePath)
 
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
         XCTAssertEqual(try stores.messages.count(), 0)
         XCTAssertEqual(try stores.messageBlocks.count(), 0)
         XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
@@ -397,6 +398,110 @@ final class SchemaMigrationTests: XCTestCase {
         try Schema.backfillMessageBlocks(stores.database)
         XCTAssertEqual(try stores.messageBlocks.count(), 0, "孤儿块必须删掉")
         XCTAssertTrue(try stores.messageBlocks.inconsistencies().isEmpty)
+    }
+
+    // MARK: - v11 → v12：搜索服务选择（`spec/web-search/README.md` §1）
+
+    /// 造一个「v11 的库」：当前 schema 建好后把 v12 加的列拆掉、灌一条配置、
+    /// 把版本号记回 11 —— 和上面的 v8/v10 用例同一个手法，测的就是真实升级路径。
+    private func seedV11Database(configId: String = "config-v11") throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        try database.execute("ALTER TABLE api_configs DROP COLUMN webToolsProvider")
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt)
+            VALUES ('\(personaId)', '林岸', 'v11 的数据', 7, '你叫林岸。', '朋友', 2, 1, 1, \(now))
+            """)
+        try database.execute("""
+            INSERT INTO api_configs (id, name, provider, baseUrl, model, customHeadersJson,
+                                     allowInsecureHttp, createdAt, updatedAt,
+                                     webToolsEnabled, webToolsBaseUrl, webToolsApiKeyCipher)
+            VALUES ('\(configId)', '旧配置', 'OPENAI', 'https://api.example.com', 'deepseek-chat',
+                    '{}', 0, 1, \(now), 1, 'https://api.deepseek.com', NULL)
+            """)
+        try database.setUserVersion(11)
+        stores = nil
+        database.close()
+    }
+
+    /// v11 → v12：加列、老数据不丢、老配置默认 DEEPSEEK，且新 provider 能正常写读。
+    func testV11ToV12AddsProviderColumnAndPreservesData() throws {
+        try seedV11Database()
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.database.userVersion(), 12)
+        let columns = try columnNames(stores.database, table: "api_configs")
+        XCTAssertTrue(columns.contains(Schema.webToolsProviderColumn.name), "v12 必须补上 webToolsProvider")
+        XCTAssertTrue(columns.contains("webToolsEnabled"), "老列不能因为迁移丢掉")
+        XCTAssertTrue(columns.contains("webToolsBaseUrl"))
+        XCTAssertTrue(columns.contains("webToolsApiKeyCipher"))
+
+        // 老数据不丢：人格、配置、以及配置里的每一个非 provider 字段都还在。
+        XCTAssertNotNil(try stores.personas.byId(personaId))
+        let config = try XCTUnwrap(try stores.apiConfigs.byId("config-v11"))
+        XCTAssertEqual(config.name, "旧配置")
+        XCTAssertEqual(config.baseUrl, "https://api.example.com")
+        XCTAssertEqual(config.model, "deepseek-chat")
+        XCTAssertTrue(config.webToolsEnabled)
+        XCTAssertEqual(config.webToolsBaseUrl, "https://api.deepseek.com")
+        XCTAssertEqual(config.webToolsProvider, WebToolsProvider.deepSeek.rawValue, "老配置默认 DEEPSEEK")
+
+        // 新值能写能读（迁移不是把这一列变成只读的占位）。
+        var updated = config
+        updated.webToolsProvider = WebToolsProvider.tavily.rawValue
+        try stores.apiConfigs.upsert(updated)
+        XCTAssertEqual(
+            try stores.apiConfigs.byId("config-v11")?.webToolsProvider,
+            WebToolsProvider.tavily.rawValue
+        )
+
+        // 新建配置也能落到默认值。
+        try stores.apiConfigs.upsert(ApiConfigEntity(
+            id: "config-v12-new", name: "迁移后新建", baseUrl: "https://x.example",
+            model: "deepseek-chat"
+        ))
+        XCTAssertEqual(
+            try stores.apiConfigs.byId("config-v12-new")?.webToolsProvider,
+            WebToolsProvider.deepSeek.rawValue
+        )
+    }
+
+    /// 空库（有表、没数据）从 v11 升上来：列补上、版本对、不报错。
+    func testV11ToV12OnEmptyDatabase() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        try stores?.database.execute("ALTER TABLE api_configs DROP COLUMN webToolsProvider")
+        try stores?.database.setUserVersion(11)
+        stores = nil
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertTrue(
+            try columnNames(reopened.database, table: "api_configs")
+                .contains(Schema.webToolsProviderColumn.name)
+        )
+        XCTAssertEqual(try reopened.apiConfigs.count(), 0)
+    }
+
+    /// 同一份 v11 库打开两次：列不会重复、用户自己选的 provider 不会被迁移重置。
+    func testV12MigrationIsIdempotent() throws {
+        try seedV11Database()
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        var config = try XCTUnwrap(try stores?.apiConfigs.byId("config-v11"))
+        config.webToolsProvider = WebToolsProvider.serper.rawValue
+        try stores?.apiConfigs.upsert(config)
+        stores = nil
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), 12)
+        XCTAssertEqual(try reopened.apiConfigs.count(), 1)
+        XCTAssertEqual(
+            try reopened.apiConfigs.byId("config-v11")?.webToolsProvider,
+            WebToolsProvider.serper.rawValue,
+            "迁移不能把用户已经选好的搜索服务改回默认值"
+        )
+        let columns = try columnNames(reopened.database, table: "api_configs")
+        XCTAssertEqual(columns.filter { $0 == Schema.webToolsProviderColumn.name }.count, 1)
     }
 
     // MARK: - 小工具

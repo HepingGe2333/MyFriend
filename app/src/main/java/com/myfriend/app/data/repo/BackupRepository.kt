@@ -380,7 +380,13 @@ class BackupRepository @Inject constructor(
                 else -> false
             }
         }
-        val restoredMedia = BackupMediaRestorer.restore(restorableMedia, avatarDir, mediaDir)
+        val restoredMedia = BackupMediaRestorer.restore(
+            entries = restorableMedia,
+            avatarDir = avatarDir,
+            chatDir = mediaDir,
+            // 导入压缩：头像长边 512 / 聊天图 1600、JPEG 85、透明垫白底，输出字节有上限（0.12）。
+            compressor = { bytes, mime, kind -> MediaStorage.compressBackupImage(bytes, mime, kind) }
+        )
         val mediaWarnings = restoredMedia.warnings.toMutableList()
         val restoredChatFileNames = restoredMedia.chatImagesByFileName.values.map { it.file.name }.toSet()
 

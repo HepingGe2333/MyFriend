@@ -11,29 +11,30 @@ import com.myfriend.app.data.local.PersonaPresetEntity
 import com.myfriend.app.data.local.ProactiveRuleEntity
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
 /**
- * 跨端备份的锚点（0.12 / 格式 v3）。
+ * 跨端备份的锚点（0.12 / 格式 v4）。
  *
  * 这份测试做五件事：
- * 1. 生成 `fixtures/backup/android-export-v3.json` —— Android 端导出的黄金样本，iOS 必须能读；
+ * 1. 生成 `fixtures/backup/android-export-v4.json` —— Android 端导出的黄金样本，iOS 必须能读；
  *    样本里带一张头像 jpeg 与一张聊天 png（base64），跨端要能逐字节解回来；
- * 2. 如果仓库里有 `fixtures/backup/ios-export-v3.json`，读回来断言关键字段还在；
+ * 2. 如果仓库里有 `fixtures/backup/ios-export-v4.json`，读回来断言关键字段还在；v3 仍可读；
  * 3. **v1/v2 样本必须永远能读**：旧备份里的开关、节奏、额度字段被忽略，
  *    没有 `media` 时行为与本轮之前完全一致（图片只剩文字 + warning）；
  * 4. 任何一份样本都不允许带密钥字段 / 设备沙盒路径；
- * 5. v3 的 JSON 结构（字段名、大小写、base64 无换行）逐项钉死。
+ * 5. v4 的 JSON 结构（provider 字段、字段名、大小写、base64 无换行）逐项钉死。
  *
  * 样本是写进仓库的，不是运行时临时文件：谁改了备份格式而没改另一端，测试立刻红。
  */
 class BackupFixtureTest {
 
     @Test
-    fun `生成 Android 端的 v3 黄金样本`() {
+    fun `生成 Android 端的 v4 黄金样本`() {
         val json = BackupCodec.encode(sampleBundle())
         assertTrue(BackupCodec.decode(json) is BackupDecodeResult.Success)
         assertTrue(!BackupCodec.containsSecretField(json))
@@ -44,20 +45,20 @@ class BackupFixtureTest {
 
         val dir = File("../fixtures/backup")
         dir.mkdirs()
-        val target = File(dir, "android-export-v3.json")
+        val target = File(dir, "android-export-v4.json")
         target.writeText(json)
         assertTrue(target.length() > 0)
         println("fixture written: " + target.absolutePath + " (" + target.length() + " bytes)")
     }
 
     @Test
-    fun `v3 样本往返后关键字段与图片字节仍然一致`() {
+    fun `v4 样本往返后关键字段与图片字节仍然一致`() {
         val original = sampleBundle()
         val decoded = BackupCodec.decode(BackupCodec.encode(original))
         val bundle = (decoded as BackupDecodeResult.Success).bundle
 
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(3, bundle.formatVersion)
+        assertEquals(4, bundle.formatVersion)
 
         val persona = bundle.personas.single()
         assertEquals(listOf("慢热", "嘴硬心软"), persona.traits)
@@ -114,8 +115,12 @@ class BackupFixtureTest {
      * `data` 必须是标准 base64 且不带换行。
      */
     @Test
-    fun `v3 media 的 JSON 结构逐项钉死`() {
+    fun `v4 media 与 provider 的 JSON 结构逐项钉死`() {
         val json = BackupCodec.encode(sampleBundle())
+        // v4：provider 总是写出来（即使默认值），且只写 provider、不写 Key。
+        assertTrue("v4 必须写 apiConfigs[].webToolsProvider", json.contains("\"webToolsProvider\":\"TAVILY\""))
+        assertTrue("provider 不是 Key，不能被当成密钥拦下", !BackupCodec.containsSecretField(json))
+        assertFalse("v4 仍然不许带 webToolsApiKeyCipher", json.contains("webToolsApiKeyCipher"))
         // 顶层 media 是数组；每条含 7 个字段，名字与大小写与 iOS 完全一致。
         listOf(
             "\"media\":[", "\"id\":", "\"kind\":\"PERSONA_AVATAR\"", "\"kind\":\"CHAT_IMAGE\"",
@@ -152,7 +157,7 @@ class BackupFixtureTest {
             assertTrue("v1 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals("读 v1 备份时要按 v3 尽力读出来", 3, bundle.formatVersion)
+            assertEquals("读 v1 备份时要按 v4 尽力读出来", 4, bundle.formatVersion)
             assertTrue(bundle.personas.isNotEmpty())
             assertTrue(bundle.memories.isNotEmpty())
             assertTrue(bundle.sessions.isNotEmpty())
@@ -186,7 +191,7 @@ class BackupFixtureTest {
             assertTrue("v2 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals(3, bundle.formatVersion)
+            assertEquals(4, bundle.formatVersion)
             // v2 → v3 会留一句「旧格式尽力读」的提醒。
             assertTrue(
                 "读 v2 要留一句格式提醒",
@@ -199,10 +204,10 @@ class BackupFixtureTest {
     }
 
     @Test
-    fun `iOS 导出的 v3 样本 Android 也接得住`() {
-        val file = File("../fixtures/backup/ios-export-v3.json")
+    fun `iOS 导出的 v4 样本 Android 也接得住`() {
+        val file = File("../fixtures/backup/ios-export-v4.json")
         if (!file.exists()) {
-            println("skip: 还没有 iOS 导出的 v3 样本")
+            println("skip: 还没有 iOS 导出的 v4 样本（iOS 端并行实现；不存在时跳过）")
             return
         }
         val result = BackupCodec.decode(file.readText())
@@ -210,7 +215,7 @@ class BackupFixtureTest {
         assertTrue("iOS 导出的 v3 备份读不出来：$result", success != null)
         val bundle = success!!.bundle
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(3, bundle.formatVersion)
+        assertEquals(4, bundle.formatVersion)
         assertTrue(bundle.personas.isNotEmpty())
         assertTrue(bundle.sessions.isNotEmpty())
         // 一人一段：同一人格不允许出现两段（备份是接口契约，iOS 也要满足）。
@@ -225,6 +230,46 @@ class BackupFixtureTest {
             assertEquals("media.bytes 与 base64 解出的字节数不一致：${media.fileName}", media.bytes, bytes!!.size)
         }
         assertTrue(!BackupCodec.containsSecretField(file.readText()))
+    }
+
+    @Test
+    fun `v3 样本仍然可读 且 provider 默认 DEEPSEEK`() {
+        listOf("android-export-v3.json", "ios-export-v3.json").forEach { name ->
+            val file = File("../fixtures/backup/$name")
+            if (!file.exists()) {
+                println("skip: 没有找到 $name")
+                return@forEach
+            }
+            val result = BackupCodec.decode(file.readText())
+            val success = result as? BackupDecodeResult.Success
+            assertTrue("v3 样本 $name 读不出来：$result", success != null)
+            val bundle = success!!.bundle
+            assertEquals("旧格式按 v4 读出来", 4, bundle.formatVersion)
+            assertTrue(
+                "读 v3 要留一句格式提醒",
+                success.warnings.any { it is BackupWarning.OlderFormat && it.version == 3 }
+            )
+            val config = bundle.apiConfigs.firstOrNull() ?: error("$name 没有 apiConfigs")
+            assertEquals("v3 备份缺 provider 时默认 DEEPSEEK", "DEEPSEEK", config.webToolsProvider)
+            assertTrue("v3 的图片也要还在", bundle.media.isNotEmpty())
+            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+        }
+    }
+
+    @Test
+    fun `v4 样本里的 provider 往返后仍然一致`() {
+        val bundle = BackupBundle(
+            personas = listOf(BackupPersona(id = "p-1", name = "阿深")),
+            apiConfigs = listOf(
+                BackupApiConfig(id = "a-1", name = "联网", webToolsProvider = "BRAVE"),
+                BackupApiConfig(id = "a-2", name = "默认", webToolsProvider = "DEEPSEEK")
+            )
+        )
+        val encoded = BackupCodec.encode(bundle)
+        assertTrue("默认值也要写出来", encoded.contains("\"webToolsProvider\":\"DEEPSEEK\""))
+        assertTrue(encoded.contains("\"webToolsProvider\":\"BRAVE\""))
+        val decoded = (BackupCodec.decode(encoded) as BackupDecodeResult.Success).bundle
+        assertEquals(listOf("BRAVE", "DEEPSEEK"), decoded.apiConfigs.map { it.webToolsProvider })
     }
 
     private fun jpegBytes(): ByteArray = BackupBase64.decode(JPEG_BASE64)!!
@@ -415,6 +460,8 @@ class BackupFixtureTest {
                     baseUrl = "http://10.0.2.2:8787/v1",
                     model = "myfriend-reference",
                     allowInsecureHttp = true,
+                    // v4：provider 一定要写进导出（非默认值便于跨端验证）。
+                    webToolsProvider = "TAVILY",
                     createdAt = now - 86_400_000L,
                     updatedAt = now - 86_400_000L
                 )

@@ -24,8 +24,9 @@ import Foundation
 //
 // ## iOS 与 Android 的已知差异（都写在报告里，不是静默空实现）
 //
-// - `web_search` / `web_fetch` 走 DeepSeek 官方 Search/Fetch 接口（`Net/WebToolsClient.swift`），
-//   与 Android 的 `DeepSeekWebTools` 同协议；没开联网 / 没 Key 时明确说「这个人格还没有开启联网」；
+// - `web_search` / `web_fetch` 走 `Net/WebToolsClient.swift`：0.12 起支持 DeepSeek / Tavily /
+//   Brave / Serper / 自建服务五个 provider（规范 `spec/web-search/README.md`）。工具协议与
+//   回灌给模型的文本形状不变；没开联网说「这个人格还没有开启联网」，缺 Key 则明确说缺 Key；
 // - Android 搜到东西后会另开一次「用完即弃」的打分（`WebSearchScorer`）把值得记的写进长期记忆，
 //   iOS 这一步还没接（见报告）——搜索本身不受影响；
 // - `persona_revisions` / `persona_pending_patches` 两张表 iOS 没有，所以改人设直接生效、版本号靠
@@ -66,7 +67,7 @@ public final class ToolExecutor: ToolRunning {
         echoes: MemoryEchoStoring? = nil,
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
-        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
+        agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -266,10 +267,14 @@ public final class ToolExecutor: ToolRunning {
         }
     }
 
-    /// 只有开了联网、并且拿得到 Key，工具才可用。
+    /// 只有开了联网、并且拿得到配置，工具才可用。
     ///
     /// 与 Android 的 `webAccess` 一样先看这一轮绑定的配置，再看人格的默认配置；
     /// 联网工具自己的 Key 优先，没有才复用主 Key。
+    ///
+    /// 0.12 起**缺 Key 不再等同于「没开联网」**：Key 空着也返回 access，由客户端抛
+    /// `.missingAPIKey`，这样用户看到的是「这个配置还没有填搜索 Key」，而不是一句
+    /// 让人以为人格没联网的错话（GENERIC 自建服务本来就可以不要 Key）。
     private func webAccess(persona: PersonaEntity, sessionId: String) -> WebToolsAccess? {
         let sessionConfigId = (try? stores.sessions.byId(sessionId))??.apiConfigId
         let configId = (sessionConfigId?.isEmpty == false ? sessionConfigId : nil)
@@ -278,15 +283,25 @@ public final class ToolExecutor: ToolRunning {
             return nil
         }
         guard config.webToolsEnabled else { return nil }
-        let baseUrl = config.webToolsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? Self.defaultWebToolsBase
-            : config.webToolsBaseUrl
+
+        let provider = WebToolsProvider(stored: config.webToolsProvider)
+        // 库里留空 = 用默认：DeepSeek 跟 LLM 配置的地址走，Tavily/Brave/Serper 用规范默认值；
+        // GENERIC 没有默认值，留空就保持空（客户端会明确报「地址不合法」，绝不猜地址）。
+        let configuredBase = config.webToolsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseUrl = configuredBase.isEmpty
+            ? (provider.resolvedBaseUrl(llmBaseUrl: config.baseUrl) ?? "")
+            : configuredBase
         let key = (apiKeys.webToolsAPIKey(for: config.id)?.trimmingCharacters(in: .whitespacesAndNewlines))
             .flatMap { $0.isEmpty ? nil : $0 }
             ?? (apiKeys.apiKey(for: config.id)?.trimmingCharacters(in: .whitespacesAndNewlines))
                 .flatMap { $0.isEmpty ? nil : $0 }
-        guard let key else { return nil }
-        return WebToolsAccess(baseUrl: baseUrl, apiKey: key, allowInsecureHttp: config.allowInsecureHttp)
+            ?? ""
+        return WebToolsAccess(
+            baseUrl: baseUrl,
+            apiKey: key,
+            allowInsecureHttp: config.allowInsecureHttp,
+            provider: provider
+        )
     }
 
     /// 搜索打分：把结果压成一段摘要交给打分器，失败 / 没配置都安静跳过。
@@ -671,9 +686,9 @@ public final class ToolExecutor: ToolRunning {
             // 而不是悄悄用本机结果糊过去。普通回退模式照旧（`decide` 内部回退本机）。
             plan = try await agentCore.decide(
                 endpoint: "defer-plan",
-                nativeFallback: {
-                    NativeAgentCoreClient().deferPlanNow(minutes: minutes, reason: reason, now: now)
-                }
+                nativeFallback: AgentCoreNativeFallback.deferPlan(
+                    minutes: minutes, reason: reason, now: now
+                )
             ) {
                 try await agentCore.deferPlan(minutes: minutes, reason: reason, now: now)
             }
@@ -730,7 +745,7 @@ public final class ToolExecutor: ToolRunning {
         // 普通回退模式由 `decide` 静默用本机夹一次。
         return try await agentCore.decide(
             endpoint: "tool-args",
-            nativeFallback: { NativeAgentCoreClient().clampToolArgsNow(tool: tool, args: args) }
+            nativeFallback: AgentCoreNativeFallback.clampToolArgs(tool: tool, args: args)
         ) {
             try await agentCore.clampToolArgs(tool: tool, args: args)
         }

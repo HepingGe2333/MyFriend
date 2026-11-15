@@ -75,6 +75,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.domain.ApiKeyState
+import com.myfriend.app.domain.WebToolsProviders
 import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
 import com.myfriend.app.ui.components.BottomSheetHandle
@@ -386,12 +387,42 @@ fun ApiEditorScreen(
                                 }
                                 if (state.webToolsEnabled) {
                                     Spacer(Modifier.height(14.dp))
+                                    Text(
+                                        stringResource(R.string.api_field_web_provider),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(8.dp))
+                                    Row(
+                                        Modifier.horizontalScroll(rememberScrollState()),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        WebToolsProviders.all.forEach { provider ->
+                                            WebProviderChip(
+                                                label = stringResource(webProviderLabelRes(provider)),
+                                                selected = state.webToolsProvider == provider,
+                                                onClick = { viewModel.setWebToolsProvider(provider) }
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.height(8.dp))
+                                    Text(
+                                        stringResource(webProviderHintRes(state.webToolsProvider)),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Spacer(Modifier.height(14.dp))
+                                    val provider = WebToolsProviders.normalize(state.webToolsProvider)
                                     StyledOutlinedField(
                                         value = state.webToolsBaseUrl,
                                         onValueChange = { value -> viewModel.update { it.copy(webToolsBaseUrl = value.trim()) } },
                                         label = stringResource(R.string.api_field_web_base_url),
-                                        placeholder = "https://api.deepseek.com",
-                                        supportingText = stringResource(R.string.api_field_web_base_url_hint)
+                                        placeholder = webProviderPlaceholder(provider),
+                                        supportingText = if (provider == WebToolsProviders.GENERIC) {
+                                            stringResource(R.string.api_field_web_base_url_hint_generic)
+                                        } else {
+                                            stringResource(R.string.api_field_web_base_url_hint)
+                                        }
                                     )
                                     Spacer(Modifier.height(14.dp))
                                     StyledOutlinedField(
@@ -400,7 +431,11 @@ fun ApiEditorScreen(
                                             viewModel.update { it.copy(webToolsApiKey = value.trim(), webToolsKeyCleared = false) }
                                         },
                                         label = stringResource(R.string.api_field_web_key),
-                                        placeholder = stringResource(R.string.api_field_web_key_placeholder),
+                                        placeholder = if (provider == WebToolsProviders.GENERIC) {
+                                            stringResource(R.string.api_field_web_key_placeholder_optional)
+                                        } else {
+                                            stringResource(R.string.api_field_web_key_placeholder)
+                                        },
                                         singleLine = true,
                                         visualTransformation = if (webToolsKeyVisible) VisualTransformation.None else PasswordVisualTransformation(),
                                         trailingIcon = {
@@ -567,6 +602,55 @@ private fun ProviderOption(label: String, selected: Boolean, available: Boolean,
         }
     }
 }
+
+@Composable
+private fun WebProviderChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) LocalAccentColor.current.copy(alpha = 0.13f) else MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (selected) LocalAccentColor.current.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outlineVariant
+        )
+    ) {
+        Text(
+            label,
+            modifier = Modifier.padding(horizontal = 13.dp, vertical = 9.dp),
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected) LocalAccentColor.current else MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+private fun webProviderLabelRes(provider: String): Int = when (WebToolsProviders.normalize(provider)) {
+    WebToolsProviders.TAVILY -> R.string.api_web_provider_tavily
+    WebToolsProviders.BRAVE -> R.string.api_web_provider_brave
+    WebToolsProviders.SERPER -> R.string.api_web_provider_serper
+    WebToolsProviders.GENERIC -> R.string.api_web_provider_generic
+    else -> R.string.api_web_provider_deepseek
+}
+
+private fun webProviderHintRes(provider: String): Int = when (WebToolsProviders.normalize(provider)) {
+    WebToolsProviders.TAVILY -> R.string.api_web_provider_tavily_hint
+    WebToolsProviders.BRAVE -> R.string.api_web_provider_brave_hint
+    WebToolsProviders.SERPER -> R.string.api_web_provider_serper_hint
+    WebToolsProviders.GENERIC -> R.string.api_web_provider_generic_hint
+    else -> R.string.api_web_provider_deepseek_hint
+}
+
+/** 占位符只是提示，不会写进库；留空语义由 provider 的默认地址决定。 */
+private fun webProviderPlaceholder(provider: String): String =
+    WebToolsProviders.defaultBaseUrl(provider)
+        ?: if (WebToolsProviders.normalize(provider) == WebToolsProviders.GENERIC) {
+            "https://search.example.com/search"
+        } else {
+            WebToolsProviders.DEEPSEEK_FALLBACK_BASE
+        }
 
 @Composable
 private fun ModelPickerSheet(

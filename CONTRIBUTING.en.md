@@ -61,6 +61,30 @@ cd ios/MyFriendKit && swift test --disable-sandbox --filter BackupInteropTests
 
 `--disable-sandbox` exists for running the local SPM package tests in restricted environments; it can be omitted when the environment allows.
 
+### What CI runs, and how to reproduce it locally
+
+On every push to `main` / `dev/**` and every pull request targeting `main`, GitHub Actions runs [`.github/workflows/ci.yml`](.github/workflows/ci.yml). A final `ci-ok` job passes only when both platform jobs pass, so it can be used as the required merge check; a newer run on the same branch cancels the older one.
+
+- **`android`** (`ubuntu-latest`, JDK 17): restores the Gradle cache, runs unit tests (`:app:testDebugUnitTest`, `:agentcore:test`, `:agentd:test`), then the build + lint (`:app:assembleDebug`, `:agentd:build`, `:app:lintDebug`). Test and lint reports are uploaded as artifacts even on failure.
+- **`ios`** (`macos-latest`, JDK 17 + the runner's Xcode): restores `~/.gradle` / `~/.konan`, builds `AgentCoreKit.xcframework` with `ios/scripts/build-agentcore-framework.sh`, runs `swift test --disable-sandbox` in `ios/MyFriendKit`, and finally compiles the app and test target with `xcodebuild ... build-for-testing`. The `.xcresult` and build logs are kept on failure too.
+
+Reproduce locally with the same task names (CI only adds `--console=plain`):
+
+```bash
+# Android
+./gradlew :app:testDebugUnitTest :agentcore:test :agentd:test
+./gradlew :app:assembleDebug :agentd:build :app:lintDebug
+
+# iOS: the framework must be built before Xcode links the app
+ios/scripts/build-agentcore-framework.sh
+(cd ios/MyFriendKit && swift test --disable-sandbox)
+xcodebuild -project ios/MyFriend.xcodeproj -scheme MyFriend \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath ios/.build/DerivedData CODE_SIGNING_ALLOWED=NO build-for-testing
+```
+
+`build-for-testing` only compiles and does not boot a simulator; UI and database-migration cases still need to run locally (see `connectedDebugAndroidTest` and Xcode Test above). If your local Xcode does not have an `iPhone 17 Pro` simulator, use any iPhone name from `xcrun simctl list devices available` for `-destination`; the Gradle task names stay the same as CI.
+
 ## Code style
 
 - **Android**: Kotlin + Compose, `kotlin.code.style=official`. Algorithms and boundary conditions belong in pure `domain/` functions with unit tests, not inside Composables; Composables only own state and layout.

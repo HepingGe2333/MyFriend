@@ -446,11 +446,105 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/chat/completions') {
       return await handleChat(req, res)
     }
+    // 第三方搜索 provider 的本地 mock（spec/web-search §2）。五家的响应形状都不一样，
+    // 本地联调时只改 App 设置里的「搜索服务」就能把四条解析路径都走一遍。
+    const mockStatus = Number(req.headers['x-mock-status'] || 0)
+    const forcedError = () => json(res, mockStatus, { error: { message: `mock status ${mockStatus}` } })
+
+    // TAVILY: POST {base}/search，Authorization: Bearer <key>
+    // SERPER: POST {base}/search，X-API-KEY: <key>
+    if (req.method === 'POST' && url.pathname === '/search') {
+      if (mockStatus) return forcedError()
+      const body = JSON.parse(await readBody(req))
+      const provider = req.headers['x-api-key'] ? 'SERPER' : 'TAVILY'
+      const query = String(body.query || body.q || '')
+      console.log(`[search] provider=${provider} query=${JSON.stringify(query)}`)
+      if (provider === 'SERPER') {
+        return json(res, 200, {
+          organic: [
+            {
+              title: `Serper：关于「${query}」的一条`,
+              link: 'https://example.com/serper-a',
+              snippet: `这是 Serper mock 返回的摘要（${query}）。`,
+              date: new Date().toISOString().slice(0, 10),
+            },
+            {
+              title: `Serper：另一个说法 ${query}`,
+              link: 'https://example.com/serper-b',
+              snippet: '第二条结果的摘要。',
+            },
+          ],
+        })
+      }
+      return json(res, 200, {
+        query,
+        results: [
+          {
+            title: `Tavily：关于「${query}」的一条`,
+            url: 'https://example.com/tavily-a',
+            content: `这是 Tavily mock 返回的摘要（${query}）。`,
+            published_date: new Date().toISOString().slice(0, 10),
+          },
+          {
+            title: `Tavily：另一个说法 ${query}`,
+            url: 'https://example.com/tavily-b',
+            content: '第二条结果的摘要。',
+          },
+        ],
+      })
+    }
+
+    // BRAVE: GET {base}/web/search?q=...&count=...
+    if (req.method === 'GET' && url.pathname === '/res/v1/web/search') {
+      if (mockStatus) return forcedError()
+      const query = url.searchParams.get('q') || ''
+      console.log(`[search] provider=BRAVE query=${JSON.stringify(query)}`)
+      return json(res, 200, {
+        web: {
+          results: [
+            {
+              title: `Brave：关于「${query}」的一条`,
+              url: 'https://example.com/brave-a',
+              description: `这是 Brave mock 返回的摘要（${query}）。`,
+              age: '1 day ago',
+            },
+            {
+              title: `Brave：另一个说法 ${query}`,
+              url: 'https://example.com/brave-b',
+              description: '第二条结果的摘要。',
+            },
+          ],
+        },
+      })
+    }
+
+    // GENERIC: POST {base}（base 原样使用，本地用 /generic 当自建服务）
+    if (req.method === 'POST' && url.pathname === '/generic') {
+      if (mockStatus) return forcedError()
+      const body = JSON.parse(await readBody(req))
+      const query = String(body.query || '')
+      console.log(`[search] provider=GENERIC query=${JSON.stringify(query)}`)
+      return json(res, 200, {
+        results: [
+          {
+            title: `Generic：关于「${query}」的一条`,
+            url: 'https://example.com/generic-a',
+            snippet: `这是 GENERIC mock 返回的摘要（${query}）。`,
+          },
+          {
+            title: `Generic：另一个说法 ${query}`,
+            url: 'https://example.com/generic-b',
+            snippet: '第二条结果的摘要。',
+          },
+        ],
+      })
+    }
+
     // DeepSeek 联网工具的两个端点：搜索 / 抓取（本地参考实现，不联网）。
     if (req.method === 'POST' && url.pathname === '/v1/tools/search') {
       const body = JSON.parse(await readBody(req))
       const query = String(body.query || body.q || '')
-      console.log(`[tools/search] query=${JSON.stringify(query)}`)
+      console.log(`[tools/search] provider=DEEPSEEK query=${JSON.stringify(query)}`)
       return json(res, 200, {
         results: [
           {
@@ -478,7 +572,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/v1/tools/fetch') {
       const body = JSON.parse(await readBody(req))
       const target = String(body.url || '')
-      console.log(`[tools/fetch] url=${JSON.stringify(target)}`)
+      console.log(`[tools/fetch] provider=DEEPSEEK url=${JSON.stringify(target)}`)
       return json(res, 200, {
         url: target,
         title: '抓到的页面标题',

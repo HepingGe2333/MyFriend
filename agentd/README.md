@@ -33,8 +33,10 @@ and both JVM clients compile against it:
 - `:agentd` never re-implements a rule: its handlers validate the HTTP request and then call
   `InProcessAgentCore` (the same object Android uses in-process).
 - iOS now links the same Kotlin implementation as a static `AgentCoreKit.framework` built from
-  `:agentcore`'s iOS targets (`ios/scripts/build-agentcore-framework.sh`); the older Swift mirror
-  reads the same `spec/agent-core/cases/*.json` contract files and is being retired.
+  `:agentcore`'s iOS targets (`ios/scripts/build-agentcore-framework.sh`). The older Swift mirror
+  (`NativeAgentCoreClient`) is **compiled only in the macOS test build** as of 0.12.0 — the iOS app
+  runtime has no second, executable decision implementation; both sides still read the same
+  `spec/agent-core/cases/*.json` contract files.
 
 The HTTP layer is a ~250-line minimal HTTP/1.1 loop built on `ServerSocket` (one request per
 connection, `Connection: close`; no keep-alive, no chunked, no TLS). It replaced the JDK's
@@ -48,7 +50,7 @@ library, no DI container, no logging framework, no coroutines.
 Runtime classpath of the distribution is exactly `agentd.jar` + `agentcore.jar` + Kotlin stdlib
 (+ the stdlib's `annotations` transitive).
 
-Version: `0.11.0`. Included in the root build as `:agentd`, deliberately **not** a dependency
+Version: `0.11.1`. Included in the root build as `:agentd`, deliberately **not** a dependency
 of `:app`.
 
 ## Run it
@@ -82,13 +84,18 @@ Options:
 | `--host` | `127.0.0.1` | Bind address. `0.0.0.0` means **anyone on the network can call it** — there is no TLS and (unless `--token` is set) no auth. Only use it on a trusted LAN or behind your own auth/proxy. |
 | `--port` | `8788` | Listen port. |
 | `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `MYFRIEND_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
+| `--rate-limit <n>` | `60` | Per-source requests per minute. `0` turns rate limiting **off**. Also `MYFRIEND_AGENTD_RATE_LIMIT`. |
+| `--rate-burst <n>` | `30` | Token-bucket capacity (how many idle requests may burst). Must be ≥ 1. Also `MYFRIEND_AGENTD_RATE_BURST`. |
 | `--help` / `-h` | — | Usage. |
+
+Flags win over environment variables, which win over the defaults (so a container can pin the
+values via env and still override one of them for a one-off test).
 
 Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8788/health
-# {"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
+# {"ok":true,"service":"myfriend-agentd","version":"0.11.1"}
 
 # only when --token is set:
 curl -s -H "Authorization: Bearer $MYFRIEND_AGENTD_TOKEN" http://127.0.0.1:8788/health
@@ -108,6 +115,7 @@ one client cannot take it down or make it amplify traffic. All of it is covered 
 | Workers | 4 fixed threads + a bounded 64-connection queue | Slow clients can occupy at most the pool; `/health` keeps responding on the remaining threads, and a full queue closes new connections instead of growing memory |
 | Error bodies | message ≤ 512 chars | Client input is never echoed (unknown tool / long path / invalid JSON are answered with fixed text); `500` is a fixed message + random `errorId`, details only go to stderr |
 | Auth | optional `--token` | Missing/wrong `Authorization: Bearer …` → `401 unauthorized` (constant-time compare) |
+| Rate limit | 60 req/min per source, burst 30 (`RateLimiter`) | Over budget → `429 rate_limited` + `Retry-After: <seconds>`; `/health` has its own bucket; `--rate-limit 0` disables it (see [Rate limiting](#rate-limiting-0120)) |
 
 The timeout is enforced as a **total per-request deadline** (request line + headers + body), not a
 per-read timeout: a client that sends one byte every few seconds is cut off at 5 s as well. After
@@ -121,9 +129,168 @@ name and the build version (the audit accepted this; see 0.11.1 P2-15). When `--
 `/health` requires the token too.
 
 **Known limitation:** the token is a shared secret over plain HTTP. It stops random LAN clients
-and accidental exposure, not an active network attacker; for that you still need TLS/reverse proxy.
-The Android remote client does not send `Authorization` yet, so keep `--token` off until the client
-is updated (or use it with a proxy that injects the header).
+and accidental exposure, not an active network attacker; for that you still need TLS/reverse proxy
+(see [Deployment and TLS](#deployment-and-tls-0120)). The Android/iOS remote clients do not send
+`Authorization` yet, so keep `--token` off until the clients are updated — or let the reverse proxy
+inject the `Authorization: Bearer …` header (the proxy holds the token, clients only speak HTTPS).
+
+## Rate limiting (0.12.0)
+
+Every source (the request's TCP peer address, as a string) gets its own **token bucket**:
+
+- refill rate `--rate-limit` per minute (default **60**, i.e. one token per second);
+- capacity `--rate-burst` (default **30**): a client that has been idle may burst up to 30
+  requests, then it is throttled to the refill rate;
+- each request takes one token. When the bucket is empty the server answers
+  `429 rate_limited` with a `Retry-After: <seconds>` header (always ≥ 1) **before** reading the
+  request body, so an over-quota client cannot make the service read 1 MiB or parse JSON;
+- the limiter runs **before authentication**: an over-quota client gets `429` even with a wrong
+  token (it saves the constant-time compare, and leaves no `401` vs `200` difference to probe);
+- `--rate-limit 0` / `MYFRIEND_AGENTD_RATE_LIMIT=0` disables it completely (no buckets are kept).
+
+`GET /health` is rate limited **in its own bucket**. The trade-off:
+
+- sharing one bucket would let business traffic (or — behind a reverse proxy — *everyone*, because
+  all requests then come from the proxy's IP) exhaust the quota and turn health probes into `429`,
+  which looks like "the service is down" to an orchestrator;
+- a separate bucket keeps probes meaningful while still bounding `/health` (it is not a free
+  bypass), at the cost of one extra counter per source.
+
+Implementation notes (`agentd/src/main/kotlin/com/myfriend/agentd/RateLimiter.kt`):
+
+- state per source is `(tokens, lastRefillNanos)` in a `LinkedHashMap(accessOrder = true)`; nothing
+  runs in the background — a bucket refills lazily when that source next appears;
+- the map is **bounded** (`DEFAULT_MAX_TRACKED_CLIENTS = 4096`). On overflow it first drops buckets
+  that have already refilled to full (dropping those is equivalent to keeping them), then evicts
+  the least-recently-used source. Scanning many spoofed sources therefore cannot grow memory;
+- the limiter is checked per connection on the worker thread; a throttled client only gets an
+  immediate `429`, so it never blocks other sources and never holds a worker for long;
+- the clock is injectable (`clock: () -> Long`), so the unit tests never sleep.
+
+**Proxy caveat:** this is *per TCP peer*, not per real user. Behind Caddy/Nginx/Traefik every
+request arrives from `127.0.0.1`, so all users share one bucket — either raise `--rate-limit`
+accordingly or do the per-user limiting at the proxy and treat `agentd`'s limiter as a
+backstop. `X-Forwarded-For` is deliberately **not** trusted (it is trivially spoofable unless you
+validate the proxy's address); if you need per-client limits behind a proxy, do it there.
+
+## Deployment and TLS (0.12.0)
+
+> **The service itself speaks plain HTTP only. Never expose it directly to the public internet.**
+>
+> There is no built-in TLS and no plan to add self-signed certificates: a hand-rolled TLS
+> listener would mean owning certificate loading, ALPN/HTTP/2, cipher configuration and renewal —
+> all of which a reverse proxy already does correctly. `agentd` stays a loopback-bound plaintext
+> service; TLS terminates at the proxy.
+
+Recommended shape:
+
+```
+App (HTTPS) ──► Caddy / Nginx / Traefik  (TLS, HTTP/2, edge limits)
+                                   │  plain HTTP to 127.0.0.1
+                                   ▼
+                            agentd --host 127.0.0.1 --port 8788
+```
+
+Rules that matter:
+
+1. **Bind to loopback.** Keep the default `--host 127.0.0.1` (or bind the proxy and `agentd` to
+   distinct loopback addresses). `--host 0.0.0.0` is only for a trusted LAN / container network,
+   and even then put auth in front.
+2. **Terminate TLS in the proxy**, not in `agentd`. Get certificates from your proxy's ACME
+   support (Caddy automatic HTTPS, certbot for Nginx, Traefik's resolver).
+3. **Keep the token.** With a proxy in front, `--token` (or `MYFRIEND_AGENTD_TOKEN`) is still
+   useful as a second factor, and you can keep it out of the client entirely: let the proxy add
+   `Authorization: Bearer …` on the upstream request. Do not put the token in a URL or in the
+   repository.
+4. **Keep request buffering on** (Nginx default) so `agentd` receives `Content-Length`; with
+   `proxy_request_buffering off` a chunked request from the client is forwarded as chunked and
+   `agentd` answers `411 length_required` by design.
+5. **Limit at both layers.** Keep `agentd`'s per-source bucket (it is the only thing that survives
+   a proxy misconfiguration) and add an edge limit keyed by real client IP at the proxy.
+6. **Log and monitor 429/5xx**, and expose only the four `/v1/core/*` routes plus `/health`.
+
+Minimal Nginx (TLS + HTTP/2 + edge rate limit):
+
+```nginx
+# http {} block:
+limit_req_zone $binary_remote_addr zone=agentd:10m rate=60r/m;
+
+server {
+    listen 443 ssl;
+    http2 on;                       # nginx ≥ 1.25.1; older: `listen 443 ssl http2;`
+    server_name agent.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/agent.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/agent.example.com/privkey.pem;
+
+    client_max_body_size 1m;        # agentd 自己也会拒绝 >1 MiB
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location / {
+        limit_req zone=agentd burst=20 nodelay;
+
+        proxy_pass http://127.0.0.1:8788;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        # 若启用了 --token，由代理注入（客户端不需要知道 token）：
+        # proxy_set_header Authorization "Bearer <token>";
+        proxy_request_buffering on;  # 上游必须收到 Content-Length（agentd 拒绝 chunked）
+        proxy_read_timeout 10s;
+    }
+}
+```
+
+Minimal Caddy (automatic TLS, HTTP/2 and HTTP/3):
+
+```caddyfile
+agent.example.com {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:8788 {
+        header_up Host {host}
+        # 若启用了 --token，由 Caddy 注入；客户端只走 HTTPS：
+        # header_up Authorization "Bearer <token>"
+    }
+}
+```
+
+Caddy's core has no rate limiter; either keep `agentd`'s bucket (default 60/min) or use a
+rate-limit plugin at the edge. Traefik: use `reverseProxy` + `rateLimit` middleware the same way.
+
+### Configure the clients against the proxy
+
+Both mobile clients build the remote base URL from a build switch / environment variable, and the
+release builds only allow **HTTPS** (cleartext is limited to debug builds / local development):
+
+- **Android** (build switch; release forces in-process, so this is a debug/QA path):
+
+  ```bash
+  ./gradlew :app:assembleDebug     -PagentCoreRemote=true     -PagentCoreBaseUrl=https://agent.example.com
+  ```
+
+  `http://10.0.2.2:8788` still works for the emulator against a local, plaintext `agentd`;
+  anything non-loopback should be `https://…` because the Android release manifest forbids
+  cleartext. The path is appended to the base URL (`/v1/core/...`), so the proxy must forward
+  those paths untouched (the examples above do).
+
+- **iOS** (same `AgentCoreClient` layer, configured at launch):
+
+  ```bash
+  SIMCTL_CHILD_MYFRIEND_AGENT_CORE=remote \
+  SIMCTL_CHILD_MYFRIEND_AGENT_CORE_URL=https://agent.example.com \
+  xcrun simctl launch booted com.myfriend.app.ios
+  ```
+
+  The release Info.plist only keeps `NSAllowsLocalNetworking`; arbitrary cleartext is a
+  debug-build-only thing (`Config/Info-Debug.plist`). Use an `https://` base URL in any build
+  that leaves the device.
+
+**Token vs. clients:** neither remote client sends `Authorization` today, so a token-enabled
+`agentd` answers `401` to them. Either (a) keep `--token` off and rely on proxy auth (mTLS,
+OAuth2-proxy, IP allowlist) — acceptable only because the service is not publicly reachable — or
+(b) enable the token and have the proxy inject the header as shown above. Do not disable the token
+"because it is only HTTPS": the proxy is exactly the place where an injected header keeps the
+secret out of the clients while still authenticating them.
 
 ## Point the Android client at it
 
@@ -174,7 +341,7 @@ Path and field names are not duplicated in the service: both sides read them fro
 ### `GET /health`
 
 ```json
-{"ok":true,"service":"myfriend-agentd","version":"0.11.0"}
+{"ok":true,"service":"myfriend-agentd","version":"0.11.1"}
 ```
 
 The version is exposed on purpose (clients and humans use it to verify which build is answering);
@@ -299,6 +466,7 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
 | 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
 | 413 | `content_too_large` | Declared or accumulated body exceeds 1 MiB. |
+| 429 | `rate_limited` | This source exceeded its token bucket; the response carries `Retry-After: <seconds>` (see “Rate limiting”). |
 | 500 | `internal_error` | Unexpected server-side failure; the response is a fixed message plus a random `errorId`, never the exception text. |
 
 ## Why this shape
@@ -343,17 +511,19 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 
 ## What this service does **not** do yet
 
-- **No TLS and no rate limiting.** It binds to `127.0.0.1` by default; `--host 0.0.0.0` makes it
-  reachable by the whole network. Since 0.11.1 there is an optional shared token (`--token`),
-  a 1 MiB request-body cap, a 5 s read timeout and 4 fixed worker threads (see
-  “Limits, timeouts and auth” above) — but a token over plain HTTP is not a substitute for TLS,
-  and a determined client can still slow the service down. Treat `0.0.0.0` as “trusted network
-  only”.
+- **No TLS of its own.** It binds to `127.0.0.1` by default and speaks plain HTTP; TLS and
+  HTTP/2 belong in the reverse proxy in front of it (see “Deployment and TLS” above). Since 0.11.1
+  there is also an optional shared token (`--token`), a 1 MiB request-body cap, a 5 s read timeout
+  and 4 fixed worker threads; since 0.12.0 a per-source token bucket (`--rate-limit` /
+  `--rate-burst`). A token over plain HTTP is still not a substitute for TLS, and `0.0.0.0`
+  remains “trusted network / behind a proxy only”.
 - No persistence: it does not touch SQLite/Room, does not write `agent_intents`, does not store
   memories. It only exposes deterministic pure functions.
 - No LLM calls, no prompting, no streaming.
 - Android does not start it as an embedded service; remote mode is a development build switch.
-  iOS has its own Swift mirror and does not call this service.
+  iOS does not call this service by default either: its in-process decisions run the same Kotlin
+  `:agentcore` code, and remote mode (also a build/launch switch) points at this service. The old
+  Swift mirror only exists in the macOS test build now — see `docs/IOS-PARITY.md`.
 - Only four functions are exposed. Adding more means adding an `AgentCore` method, a route in
   `Api.kt`, and a test — the shared implementation is already in `:agentcore`.
 
@@ -373,6 +543,13 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   check that the route table comes from `AgentCoreProtocol`; 0.11.1 additions cover 413 (8 MiB
   body), no-echo of long tool names/paths, generic 500, deeply nested / `1e308` / `NaN` /
   duplicate-key / over-long-string JSON, and a legal 256 KiB body.
-- `AgentdServerTest` — 5 integration tests on a real `ServerSocket`-based server (port 0): normal
+- `AgentdServerTest` — 8 integration tests on a real `ServerSocket`-based server (port 0): normal
   requests, half-open body (health stays fast, then `408`), oversized declared body (`413`),
-  chunked body (`411`), and the optional token (`401`/`200`).
+  chunked body (`411`), the optional token (`401`/`200`), and 0.12.0 rate limiting
+  (`429` + `Retry-After`, `/health` in its own bucket, `--rate-limit 0` disabling it).
+- `MainOptionsTest` — 9 tests for flag/environment parsing and precedence (`--rate-limit`,
+  `--rate-burst`, `MYFRIEND_AGENTD_RATE_LIMIT`, invalid values rejected before the server starts).
+- `RateLimiterTest` — 7 tests for the token bucket itself (burst, refill, capped refill, per-source
+  isolation, disabling, bounded map / LRU eviction) with an injected clock, so none of them sleep.
+
+`:agentd:test` is 53 tests in total.

@@ -28,17 +28,29 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${AGENTCORE_FRAMEWORK_OUT:-$ROOT/ios/.build/agentcore}"
 CONFIGURATION="${AGENTCORE_FRAMEWORK_CONFIGURATION:-Debug}"
 TARGETS_RAW="${AGENTCORE_FRAMEWORK_TARGETS:-iosSimulatorArm64 iosArm64 iosX64}"
-GRADLE="$ROOT/.tooling/gradle-8.9/bin/gradle"
-
-if [[ ! -x "$GRADLE" ]]; then
-  echo "找不到 Gradle：$GRADLE（仓库自带 .tooling/gradle-8.9）" >&2
+# Gradle 解析顺序：显式 GRADLE -> 仓库自带 .tooling -> 仓库自带 wrapper（CI/新克隆上只有 wrapper）。
+if [[ -n "${GRADLE:-}" && -x "${GRADLE:-}" ]]; then
+  :
+elif [[ -x "$ROOT/.tooling/gradle-8.9/bin/gradle" ]]; then
+  GRADLE="$ROOT/.tooling/gradle-8.9/bin/gradle"
+elif [[ -x "$ROOT/gradlew" ]]; then
+  GRADLE="$ROOT/gradlew"
+else
+  echo "找不到 Gradle：请设置 GRADLE，或在仓库根运行 ./gradlew" >&2
   exit 1
 fi
 
-export JAVA_HOME="${JAVA_HOME:-/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home}"
-export ANDROID_HOME="${ANDROID_HOME:-$ROOT/.tooling/android-sdk}"
+if [[ -z "${JAVA_HOME:-}" && -d /Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home ]]; then
+  export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home
+fi
+if [[ -d "$ROOT/.tooling/android-sdk" ]]; then
+  export ANDROID_HOME="${ANDROID_HOME:-$ROOT/.tooling/android-sdk}"
+fi
 export ANDROID_USER_HOME="${ANDROID_USER_HOME:-$ROOT/.tooling/android-user}"
-export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.tooling/build-home}"
+# 工作区里把缓存放在 .tooling；CI/新克隆没有 .tooling 时用默认的 ~/.gradle。
+if [[ -d "$ROOT/.tooling" ]]; then
+  export GRADLE_USER_HOME="${GRADLE_USER_HOME:-$ROOT/.tooling/build-home}"
+fi
 export TMPDIR="${TMPDIR:-$ROOT/.tooling/tmp}"
 # 默认把 Kotlin/Native 工具链放在仓库内（~/.konan 在受限沙箱里往往不可写）。
 export KONAN_DATA_DIR="${KONAN_DATA_DIR:-$ROOT/.tooling/konan}"

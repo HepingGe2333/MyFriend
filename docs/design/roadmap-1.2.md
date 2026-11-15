@@ -88,7 +88,7 @@
 | 工具清单与两种协议 | [`ToolProtocol.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt) |
 | 工具执行（含失败兜底） | [`ToolExecutor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |
 | 工具痕迹（可展开） | [`ToolTrace.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolTrace.kt) |
-| DeepSeek 联网 | [`DeepSeekWebTools.kt`](../../app/src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt) |
+| DeepSeek 联网 | [`DeepSeekWebTools.kt`](../../app/src/main/java/com/myfriend/app/network/WebSearchClient.kt) |
 | 人设卡结构 / 渲染 / 补丁 | [`PersonaCard.kt`](../../app/src/main/java/com/myfriend/app/domain/PersonaCard.kt) |
 | 人设卡持久化与待确认补丁 | [`PersonaCardRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/PersonaCardRepository.kt) |
 | 记忆筛查 | [`MemoryScreening.kt`](../../app/src/main/java/com/myfriend/app/domain/MemoryScreening.kt) |

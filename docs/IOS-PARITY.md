@@ -143,8 +143,24 @@ API Key 放 Keychain（Android 端是 Keystore 加密后的 DataStore 字符串�
 ## 六点五、共享决策层（0.12.0 起）
 
 `:agentcore` 已是 Kotlin Multiplatform 模块（`commonMain` + `jvmMain` + `iosMain`），产出 iOS 静态 framework
-`AgentCoreKit`。iOS App 的四个 agent 决策（睡眠、`defer_reply`、主动上限、工具参数夹取）**执行的是同一份 Kotlin 代码**；
-Swift 实现只作为 macOS 上 `swift test` 的回落与契约测试的另一半。构建步骤见 `CONTRIBUTING` 与 `ios/README.md`。
+`AgentCoreKit`。iOS App 的四个 agent 决策（睡眠、`defer_reply`、主动上限、工具参数夹取）**执行的是同一份 Kotlin 代码**
+（`KotlinAgentCoreClient` → `InProcessAgentCore.shared`，只有类型转换，没有判定逻辑）。
+
+**iOS App 的运行时只有 Kotlin，没有第二份可执行的 Swift 决策实现**（0.12.0）：
+
+- `NativeAgentCoreClient`（Swift 实现，委托 `SleepGate` / `DeferReply` / `ProactiveLevel` /
+  `ToolArgClamp`）整个类型包在 `#if !os(iOS)` 里，**只在 macOS 的 `swift test` 构建**中编译；
+- 四个调用点（`ChatService` / `HeartbeatController` / `AgentLoop` / `ToolExecutor`）统一走
+  `AgentCoreNativeFallback`：iOS 上它返回 `nil`，`decide(endpoint:nativeFallback:)` 失败只记
+  `AgentCoreDiagnostics` 诊断并**上抛**，绝不回落到 Swift；macOS 上它返回 Swift 闭包，
+  `swift test` 因此仍然覆盖两条实现；
+- 契约对照变成「两边各自对同一批 `spec/agent-core/cases/*.json`」：macOS 上 Swift 实现跑这批用例，
+  iOS 测试 target 里 Kotlin 实现对同一批用例（Swift 不再参与 iOS 比对）；
+- `AppWiringGuardTests.testSwiftDecisionImplementationIsExcludedFromIOSBuilds` 是源码扫描守卫：
+  Swift 实现必须在 `#if !os(iOS)` 块内、iOS 条件块内不得出现 `NativeAgentCoreClient()`、
+  四个服务调用点不得引用它。
+
+构建步骤见 `CONTRIBUTING` 与 `ios/README.md`。
 
 ## 七、进度
 
@@ -160,7 +176,7 @@ Swift 实现只作为 macOS 上 `swift test` 的回落与契约测试的另一�
 
 | 0.9.1：图片消息、头像、内存上限、工具执行器、主动唤醒页面、人设卡、压缩编排、通知与后台调度 | ✅ | iOS **810 条**单测全绿、`xcodebuild` BUILD SUCCEEDED；模拟器实测发图 / 工具调用 / 规则落库与开关 / 重启后回声仍在 |
 
-iOS 侧合计 **1263 条单测**（`swift test --disable-sandbox`），Android 侧 **1044 条**（`:app:testDebugUnitTest`），
+iOS 侧合计 **1305 条单测**（`swift test --disable-sandbox`），Android 侧 **1072+ 条**（`:app:testDebugUnitTest`），
 两端都绿；两端 App 都能编译（Android `assembleDebug`、iOS `xcodebuild … build`）。
 
 ### 1.9 里两端必须一致的三个取舍（规格没写死，已对齐）
@@ -176,7 +192,8 @@ iOS 侧合计 **1263 条单测**（`swift test --disable-sandbox`），Android �
 > 0.9.1 补掉了：图片附件、聊天侧工具执行器、主动唤醒规则落库 + 界面、历史压缩编排、人设卡编辑器、通知与 BGTask 注册。
 > 0.10.1 补掉了：聊天分页（两端）、iOS 的 `web_search` 后打分、记忆回声清理、「现在试一次」+ 失败原因、编译警告清零。
 > 0.10.2 补掉了：聊天历史检索（iOS 从零新建）与「点结果跳回该消息并高亮」；并按三份审计修掉 1 个 P0 / 17 个 P1。
-> 0.11.0 补掉了：agent 决策层的客户端/服务端分层（Android 用共享 `:agentcore`，iOS 用契约对齐的 Swift 实现 + 可切远程 `agentd`），以及三份审计剩下的 P2 项。
+XX（Android 用共享 `:agentcore`，iOS 用契约对齐的 Swift 实现 + 可切远程 `agentd`），以及三份审计剩下的 P2 项。
+> 0.12.0 补掉了：iOS App 的四个决策改走同一份 Kotlin（`AgentCoreKit`），Swift 实现收窄为**只在 macOS 测试构建存在**；`agentd` 加了按来源限流（429 + `Retry-After`）与 TLS 部署说明。
 > 下面这张表是**现在**还差的。
 
 | 缺口 | 现状 |

@@ -10,7 +10,8 @@ import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.secure.SecretCipher
 import com.myfriend.app.domain.MessageWindows
 import com.myfriend.app.domain.PersonaCard
-import com.myfriend.app.network.DeepSeekWebTools
+import com.myfriend.app.domain.WebToolsProviders
+import com.myfriend.app.network.WebSearchClient
 import com.myfriend.app.network.WebSearchHit
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -55,7 +56,7 @@ data class IdleBrowseOutcome(
  */
 @Singleton
 class IdleBrowsing @Inject constructor(
-    private val webTools: DeepSeekWebTools,
+    private val webTools: WebSearchClient,
     private val apiConfigRepository: ApiConfigRepository,
     private val personaDao: PersonaDao,
     private val sessionDao: ChatSessionDao,
@@ -175,6 +176,7 @@ class IdleBrowsing @Inject constructor(
         for (query in queries) {
             guarded {
                 webTools.search(
+                    provider = access.provider,
                     baseUrl = access.baseUrl,
                     apiKey = access.apiKey,
                     query = query,
@@ -284,13 +286,26 @@ class IdleBrowsing @Inject constructor(
 
     private suspend fun accessOf(config: ApiConfigEntity): WebAccess? = runCatching<WebAccess?> {
         if (!config.webToolsEnabled) return@runCatching null
-        val baseUrl = config.webToolsBaseUrl.ifBlank { DEFAULT_DEEPSEEK_BASE }
+        val provider = WebToolsProviders.normalize(config.webToolsProvider)
+        val baseUrl = config.webToolsBaseUrl.trim().ifBlank {
+            if (provider == WebToolsProviders.DEEPSEEK) {
+                config.baseUrl.trim().ifBlank { WebToolsProviders.DEEPSEEK_FALLBACK_BASE }
+            } else {
+                ""
+            }
+        }
         // 联网专用 Key 优先；没单独配就复用主 Key（与 ToolExecutor.webAccess 一致）。
         val key = config.webToolsApiKeyCipher?.let { ciphertext ->
             runCatching { secretCipher.decrypt(ciphertext) }.getOrNull()
         } ?: runCatching { apiConfigRepository.resolve(config.id)?.apiKey }.getOrNull()
-        if (key.isNullOrBlank()) return@runCatching null
-        WebAccess(baseUrl = baseUrl, apiKey = key.trim(), allowInsecureHttp = config.allowInsecureHttp)
+        // 自浏览至少得有一把 Key（GENERIC 除外：自建服务允许无鉴权）。
+        if (key.isNullOrBlank() && WebToolsProviders.requiresApiKey(provider)) return@runCatching null
+        WebAccess(
+            provider = provider,
+            baseUrl = baseUrl,
+            apiKey = key.orEmpty().trim(),
+            allowInsecureHttp = config.allowInsecureHttp
+        )
     }.getOrNull()
 
     // ---------------------------------------------------------------- 最近对话（只取短片段）
@@ -328,13 +343,13 @@ class IdleBrowsing @Inject constructor(
     }
 
     private data class WebAccess(
+        val provider: String,
         val baseUrl: String,
         val apiKey: String,
         val allowInsecureHttp: Boolean
     )
 
     private companion object {
-        const val DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
         const val NOT_CONFIGURED_MESSAGE = "还没给他配联网工具的 Key"
         const val SEARCH_COUNT = 6
         const val MAX_HITS = 12

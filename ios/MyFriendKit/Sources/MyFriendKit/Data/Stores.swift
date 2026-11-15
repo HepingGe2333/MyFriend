@@ -232,7 +232,7 @@ extension ApiConfigEntity: SQLiteRecord {
         "id", "name", "provider", "baseUrl", "apiKeyCipher", "model", "customHeadersJson",
         "allowInsecureHttp", "temperature", "topP", "maxOutputTokens", "frequencyPenalty",
         "presencePenalty", "createdAt",
-        "updatedAt", "webToolsEnabled", "webToolsBaseUrl", "webToolsApiKeyCipher"
+        "updatedAt", "webToolsEnabled", "webToolsProvider", "webToolsBaseUrl", "webToolsApiKeyCipher"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -242,7 +242,8 @@ extension ApiConfigEntity: SQLiteRecord {
             .bool(allowInsecureHttp), .optionalReal(temperature), .optionalReal(topP),
             .optionalInt(maxOutputTokens), .optionalReal(frequencyPenalty),
             .optionalReal(presencePenalty), .int(createdAt), .int(updatedAt),
-            .bool(webToolsEnabled), .text(webToolsBaseUrl), .optionalText(webToolsApiKeyCipher)
+            .bool(webToolsEnabled), .text(webToolsProvider),
+            .text(webToolsBaseUrl), .optionalText(webToolsApiKeyCipher)
         ]
     }
 
@@ -264,6 +265,9 @@ extension ApiConfigEntity: SQLiteRecord {
             createdAt: try row.int64("createdAt"),
             updatedAt: try row.int64("updatedAt"),
             webToolsEnabled: try row.bool("webToolsEnabled"),
+            webToolsProvider: try row.text(
+                "webToolsProvider", WebToolsProvider.deepSeek.rawValue
+            ),
             webToolsBaseUrl: try row.text("webToolsBaseUrl"),
             webToolsApiKeyCipher: try row.optionalText("webToolsApiKeyCipher")
         )

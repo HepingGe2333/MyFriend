@@ -6,7 +6,7 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 备份 v3（图片随备份走）的**接线契约**。
+ * 备份 v3/v4（图片随备份走 + 导入压缩）的**接线契约**。
  *
  * 纯逻辑部分（base64 / 打包 / 落盘 / 附件重写）在 `BackupMediaTest` 里有真单测；
  * 这里只钉住「BackupRepository 真的把那套逻辑接上了」——这类问题最典型的形态是
@@ -20,8 +20,9 @@ class BackupMediaWiringContractTest {
     private val storage get() = source("src/main/java/com/myfriend/app/util/MediaStorage.kt")
 
     @Test
-    fun `格式版本是 v3 且顶层有 media`() {
-        assertTrue("BackupCodec 的版本常量要改成 3", codec.contains("BACKUP_FORMAT_VERSION: Int = 3"))
+    fun `格式版本是 v4 且顶层有 media`() {
+        assertTrue("BackupCodec 的版本常量要改成 4", codec.contains("BACKUP_FORMAT_VERSION: Int = 4"))
+        assertTrue("v4 的配置段要带 webToolsProvider", codec.contains("val webToolsProvider: String = WebToolsProviders.DEEPSEEK"))
         assertTrue("顶部结构要有 media 数组", codec.contains("val media: List<BackupMedia> = emptyList()"))
         assertTrue("media 的 7 个字段", listOf(
             "val id: String", "val kind: String", "val personaId: String?", "val fileName: String",
@@ -63,8 +64,25 @@ class BackupMediaWiringContractTest {
     @Test
     fun `媒体落盘有目录归属守卫 且不拿备份文件名拼路径`() {
         assertTrue("落盘要过 MediaOwnership", media.contains("MediaOwnership.isWithin(target"))
-        assertTrue("备份文件名只做关联键", media.contains("newName(prefix, extension)"))
+        assertTrue("备份文件名只做关联键", media.contains("newName(prefix, outputExtension, outputBytes)"))
         assertTrue("设备路径解析要过归属守卫", storage.contains("fun ownedFile("))
+    }
+
+    @Test
+    fun `导入真的接了媒体压缩与内容哈希去重`() {
+        val import = bodyOf("suspend fun importBundle(")
+        assertTrue(
+            "导入必须把 MediaStorage 的压缩器传给 restorer",
+            import.contains("compressor = { bytes, mime, kind -> MediaStorage.compressBackupImage(bytes, mime, kind) }")
+        )
+        assertTrue("压缩器要真的用 Android Bitmap 重编码", storage.contains("fun compressBackupImage("))
+        assertTrue("透明图垫白底", storage.contains("flattenForJpeg(scaled)"))
+        assertTrue("上限来自 BackupMediaLimits", storage.contains("BackupMediaLimits.outputLimit(kind)"))
+        assertTrue("压缩质量先 85", storage.contains("intArrayOf(85, 80, 75, 70, 65, 60, 55, 50)"))
+        // 去重：聊天图片用纯内容名（可以复用同一份文件），头像保留 UUID（避免删一个坏另一个）。
+        assertTrue("聊天图按内容寻址命名", media.contains("\"\$prefix\$hash.\$extension\""))
+        assertTrue("头像保留 UUID", media.contains("\"\$prefix\$hash-\${UUID.randomUUID()}.\$extension\""))
+        assertTrue("存储选图也按内容哈希去重", storage.contains("val target = File(dir, \"chat-\$hash.\$extension\")"))
     }
 
     /** 从 [marker] 起截到本类下一个成员声明之前（够用即可）。 */

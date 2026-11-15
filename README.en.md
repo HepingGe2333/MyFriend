@@ -12,12 +12,12 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 
 | Item | Value |
 | --- | --- |
-| Version | `0.12.0` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
-| Database schema | v11 (messages stored in blocks of 200; Android Room `@Database(version = 11)` aligned with iOS SQLite `user_version = 11`) |
-| Backup format | v3 (`format = "myfriend.backup"`, `formatVersion = 3`; images and avatars travel with the backup, v1/v2 still readable) |
+| Version | `0.13.0` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
+| Database schema | v12 (messages stored in blocks of 200; the search provider lives in `api_configs`; both platforms aligned) |
+| Backup format | v4 (`format = "myfriend.backup"`, `formatVersion = 4`; images and avatars travel with the backup and the search provider with the config; v1–v3 still readable) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 1044 on Android (`:app:testDebugUnitTest`, plus 28 instrumented), 60 in `:agentcore`, 34 in `:agentd`, 1263 on iOS (`swift test`) |
-| CI | None yet; all tests and builds run from local commands |
+| Unit tests | 1072 on Android (96 classes) + 47 instrumented, 60 in `:agentcore`, 53 in `:agentd`, 1305 on iOS (`swift test`) |
+| CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
 
 ## Feature overview
 
@@ -145,7 +145,6 @@ The full index is [docs/README.md](docs/README.md) (in Chinese); the documents m
 
 ## Known limitations
 
-- **No CI**: tests, builds, migration tests and lint run locally; pull requests are reviewed against local results.
 - **iOS background work is not real-time**: `BGAppRefreshTask` / `BGProcessingTask` are scheduled by the system, so background
   heartbeat and daily consolidation may run late; missed time is caught up once on foreground. This is an iOS platform
   constraint, not a setting.
@@ -157,6 +156,8 @@ The full index is [docs/README.md](docs/README.md) (in Chinese); the documents m
   gaps (paging looks up the block table and skips gaps).
 - **Backup images are capped**: 128 MiB total, 8 MiB per image, JPEG/PNG/WebP only; anything over the limit or of an
   unsupported format is **skipped with an explicit warning** — GIF, HEIC and video never travel with a backup.
+- **Search has a performance ceiling on large histories**: the price of "no candidate cap" is that every page re-walks the
+  blocks; the 100k-message numbers and conclusion are in [docs/performance.md](docs/performance.md).
 
 ## Contributing & license
 

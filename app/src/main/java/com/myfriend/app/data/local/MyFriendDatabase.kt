@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryVersionEntity::class,
         MemoryVectorEntity::class
     ],
-    version = 11,
+    version = 12,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -55,6 +55,33 @@ abstract class MyFriendDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "myfriend.db"
+
+        /**
+         * v12：`api_configs.webToolsProvider`（`spec/web-search/README.md` §1）。
+         *
+         * 只加一列，不动任何既有数据；默认 `DEEPSEEK`，所以老库里已有的联网配置升级后
+         * 仍走原来的 DeepSeek 工具端点，换 provider 是用户之后在设置页里显式做的选择。
+         *
+         * 幂等：先查 `PRAGMA table_info`，列已经在就跳过。Room 跑迁移时自带事务，
+         * 但同一个 Migration 也可能被迁移测试或将来的「修复脚本」重复调用，
+         * 实现成幂等比依赖调用方更稳。
+         */
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                if ("webToolsProvider" in apiConfigColumns(db)) return
+                db.execSQL(
+                    "ALTER TABLE `api_configs` ADD COLUMN `webToolsProvider` TEXT NOT NULL DEFAULT 'DEEPSEEK'"
+                )
+            }
+        }
+
+        /** 读 `api_configs` 现有列名（幂等迁移与测试共用同一段 SQL）。 */
+        private fun apiConfigColumns(db: SupportSQLiteDatabase): Set<String> =
+            db.query("PRAGMA table_info(`api_configs`)").use { cursor ->
+                buildSet {
+                    while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name")))
+                }
+            }
 
         /**
          * v11：会话历史的**区块**（规范 `spec/messages-blocks/README.md`）。

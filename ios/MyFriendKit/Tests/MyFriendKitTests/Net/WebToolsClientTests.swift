@@ -286,27 +286,29 @@ final class WebToolsClientTests: XCTestCase {
 
     // MARK: - 错误
 
-    /// HTTP 非 2xx：message 取响应体里的 error.message；拿不到就用中文兜底。
-    func testHttpErrorUsesServerMessageOrChineseFallback() async throws {
+    /// HTTP 非 2xx：message 是「带 provider 名与状态的中文」，原始响应体只进日志（截 200 字符）。
+    func testHttpErrorCarriesProviderAndStatusAndLogsTruncatedBody() async throws {
         StubURLProtocol.enqueue(
-            .json(#"{"error":{"message":"联网工具服务开小差了"}}"#, status: 500),
-            .json("oops", status: 500)
+            .json(#"{"error":{"message":"联网工具服务开小差了"}}"#, status: 500)
         )
-        let client = makeClient()
+        let logs = LogBox()
+        let client = WebToolsClient(session: StubURLProtocol.makeSession(), log: { logs.append($0) })
 
-        let withServerMessage = await assertFailure(
-            .http(status: 500, message: "联网工具服务开小差了")
+        let failure = await assertFailure(
+            .http(status: 500, message: WebToolsClient.httpMessage(provider: .deepSeek, status: 500))
         ) {
             _ = try await client.search(query: "坏服务", access: self.access())
         }
-        XCTAssertEqual(withServerMessage?.errorDescription, "联网工具服务开小差了",
-                       "有 error.message 就用它")
-
-        let fallback = await assertFailure(.http(status: 500, message: "联网工具返回了 HTTP 500")) {
-            _ = try await client.search(query: "坏服务", access: self.access())
-        }
-        // 兜底文案必须是中文（模型会把 message 原样抄进回复）。
-        XCTAssertNotNil(fallback?.message.range(of: "\\p{Han}", options: .regularExpression))
+        let message = failure?.message ?? ""
+        XCTAssertTrue(message.contains("DEEPSEEK"), "要带 provider 名：\(message)")
+        XCTAssertTrue(message.contains("500"), "要带状态码：\(message)")
+        XCTAssertNotNil(message.range(of: "\\p{Han}", options: .regularExpression),
+                        "模型会把 message 原样抄进回复，必须是中文：\(message)")
+        // 日志里有原始响应体（方便排查），但模型看不到它。
+        let log = try XCTUnwrap(logs.lines.first)
+        XCTAssertTrue(log.contains("DEEPSEEK"), log)
+        XCTAssertTrue(log.contains("HTTP 500"), log)
+        XCTAssertFalse(message.contains("联网工具服务开小差了"), "原始响应体不能回灌给模型")
     }
 
     /// http:// 但没打开「允许不安全 HTTP」：直接判配置错误，一个字节都不发。
@@ -361,6 +363,7 @@ final class WebToolsClientTests: XCTestCase {
             .emptyQuery,
             .missingAPIKey,
             .http(status: 500, message: ""),
+            .responseTooLarge(2 * 1024 * 1024 + 1),
             .network("")
         ]
         for failure in failures {
@@ -369,5 +372,24 @@ final class WebToolsClientTests: XCTestCase {
                             "\(failure) 的 message 应该是中文：\(failure.message)")
             XCTAssertEqual(failure.errorDescription, failure.message)
         }
+    }
+}
+
+
+/// 收集客户端日志（只用于断言「原始响应体没有漏给模型」）。
+private final class LogBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String] = []
+
+    var lines: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+
+    func append(_ line: String) {
+        lock.lock()
+        storage.append(line)
+        lock.unlock()
     }
 }

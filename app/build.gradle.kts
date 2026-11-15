@@ -45,10 +45,13 @@ android {
         // 内测版本号：0.9.0 → 0.10.0 → 0.10.2 → 0.11.0，本次 0.11.1（审计修复：备份引用完整性 /
         // 定位窗口 / 事务外删文件 / 主线程 IO / 深链校验 / i18n 守卫）。
         // versionCode 只增不减，升级路径才不会断。
-        versionCode = 18
-        versionName = "0.12.0"
+        versionCode = 19
+        versionName = "0.13.0"
         vectorDrawables { useSupportLibrary = true }
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // 0.12：仪器化 UI 测试要在真实 DI 图上跑（@HiltAndroidTest 只认 Hilt 的测试
+        // Application），所以换成 Hilt 官方规定的 runner；它其余行为与
+        // AndroidJUnitRunner 完全一致（迁移/块维护那 28 条照旧）。
+        testInstrumentationRunner = "com.myfriend.app.HiltTestRunner"
 
         // agent 决策层走哪条路：默认进程内（InProcessAgentCoreClient），行为与 0.10.x 完全一致。
         //
@@ -193,6 +196,14 @@ dependencies {
     androidTestImplementation("androidx.test:core:1.6.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.room:room-testing:2.6.1")
+
+    // 0.12 Compose UI 行为测试（首屏一块 / 上下一块 / 定位高亮 / 发送失败 / 清空重开）：
+    // - ui-test-junit4：语义树断言 + 滚动/输入注入；版本由上面的 Compose BOM 决定。
+    // - hilt-android-testing + 测试源集里的 hilt 编译器：@HiltAndroidTest 注入**真实**仓库图
+    //   （真 Room、真 ChatRepository），不引入假客户端，也不给生产代码开口子。
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("com.google.dagger:hilt-android-testing:2.52")
+    kspAndroidTest("com.google.dagger:hilt-compiler:2.52")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

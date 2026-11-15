@@ -126,7 +126,15 @@ data class ApiConfigEntity(
     @ColumnInfo(defaultValue = "")
     val webToolsBaseUrl: String = "",
     /** 联网工具专用的密钥（加密存储）；留空则复用主 Key。 */
-    val webToolsApiKeyCipher: String? = null
+    val webToolsApiKeyCipher: String? = null,
+    /**
+     * 搜索后端（schema v12）：`DEEPSEEK` | `TAVILY` | `BRAVE` | `SERPER` | `GENERIC`。
+     *
+     * 用字符串而不是枚举：备份格式本来就是字符串契约，遇到旧版本/手写脏值时要能退回默认，
+     * 而不是让 Room 在反序列化时直接抛异常。合法值与默认地址见 [com.myfriend.app.domain.WebToolsProviders]。
+     */
+    @ColumnInfo(defaultValue = "'DEEPSEEK'")
+    val webToolsProvider: String = "DEEPSEEK"
 )
 
 /**

@@ -19,6 +19,7 @@ import com.myfriend.app.data.repo.ChatRepository
 import com.myfriend.app.data.repo.ImportMode
 import com.myfriend.app.data.repo.PersonaRepository
 import com.myfriend.app.data.repo.PresetRepository
+import com.myfriend.app.data.repo.PersonaRepositoryInitializer
 import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.UsageTotals
 import com.myfriend.app.domain.BackupDecodeResult
@@ -80,6 +81,7 @@ class SettingsViewModel @Inject constructor(
     apiConfigRepository: ApiConfigRepository,
     private val apiUsageRepository: ApiUsageRepository,
     private val backupRepository: BackupRepository,
+    private val personaInitializer: PersonaRepositoryInitializer,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -206,7 +208,9 @@ class SettingsViewModel @Inject constructor(
                 presetRepository.wipeAll()
                 // 媒体文件（files/media + files/avatars）由 ChatRepository.wipeAllData 内的
                 // DataEraser 一并清掉：删表与删文件走同一份清单，避免两处各自漏。
-                settingsRepository.resetAll()
+                settingsRepository.resetAll(preserveSeedMarker = false)
+                // 与 iOS 对齐：清空之后按当前语言重新播种，别让用户面对一个空白 App。
+                personaInitializer.seedIfNeeded()
             }.onSuccess { message.value = context.getString(R.string.settings_wiped) }
                 .onFailure { message.value = ErrorText.of(context, it, R.string.settings_error_delete) }
             busy.value = false

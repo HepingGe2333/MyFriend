@@ -10,6 +10,7 @@ import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.domain.ApiConfigDraft
 import com.myfriend.app.domain.ApiKeyState
+import com.myfriend.app.domain.WebToolsProviders
 import com.myfriend.app.network.ProviderCapabilities
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -49,6 +50,8 @@ data class ApiEditorUiState(
     val frequencyPenalty: String = "",
     val presencePenalty: String = "",
     val webToolsEnabled: Boolean = false,
+    /** 搜索后端（schema v12）；空/脏值会被仓储层归一化成 DEEPSEEK。 */
+    val webToolsProvider: String = WebToolsProviders.DEEPSEEK,
     val webToolsBaseUrl: String = "",
     /** 仅存在于内存；为空表示复用主 Key。 */
     val webToolsApiKey: String = "",
@@ -107,6 +110,7 @@ class ApiEditorViewModel @Inject constructor(
                             frequencyPenalty = config.frequencyPenalty?.formatNumber().orEmpty(),
                             presencePenalty = config.presencePenalty?.formatNumber().orEmpty(),
                             webToolsEnabled = config.webToolsEnabled,
+                            webToolsProvider = WebToolsProviders.normalize(config.webToolsProvider),
                             webToolsBaseUrl = config.webToolsBaseUrl,
                             webToolsApiKey = "",
                             webToolsKeyStored = repository.hasWebToolsKey(config),
@@ -137,6 +141,17 @@ class ApiEditorViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 切换搜索服务：只改 provider，保留已经填写的地址与已保存的 Key。
+     *
+     * 「换服务」时用户可能只是想先看看别的 provider 的默认地址说明，不该顺手丢掉手里的配置；
+     * 地址留空语义也保留（留空 = 用该 provider 的默认地址，不把默认值写进库）。
+     */
+    fun setWebToolsProvider(provider: String) {
+        val normalized = WebToolsProviders.normalize(provider)
+        _state.update { it.copy(webToolsProvider = normalized) }
+    }
+
     fun resetParameters() {
         _state.update {
             it.copy(
@@ -160,7 +175,8 @@ class ApiEditorViewModel @Inject constructor(
                 webToolsEnabled = current.webToolsEnabled,
                 webToolsBaseUrl = current.webToolsBaseUrl,
                 webToolsApiKey = current.webToolsApiKey,
-                clearWebToolsApiKey = current.webToolsKeyCleared
+                clearWebToolsApiKey = current.webToolsKeyCleared,
+                webToolsProvider = current.webToolsProvider
             )
             _state.update { it.copy(saving = false) }
             result.onSuccess { events.send(ApiEditorEvent.Saved(it)) }

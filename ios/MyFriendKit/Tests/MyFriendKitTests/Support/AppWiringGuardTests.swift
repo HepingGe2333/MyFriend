@@ -34,30 +34,200 @@ final class AppWiringGuardTests: XCTestCase {
 
     // MARK: - 版本号（安全审计 P2-15 的 iOS 部分）
 
-    /// Debug / Release 的版本号必须**两处一致**，而且不能退回到已经发过的旧版本。
+    /// Debug / Release 的版本号必须**精确等于发布值**（0.12.0 / 18），而且各 configuration 一致。
     ///
-    /// 这里原来硬编码 `0.11.1` / `16`：版本号一升，这条守卫就红，而它守的其实不是「某个具体数字」，
-    /// 而是「两个 configuration 一致 + 没退回旧版本」。改成读出来比较，版本归版本负责人，
-    /// 守卫只盯它真正关心的事（`MARKETING_VERSION` 由工程文件负责人维护，本测试不改工程）。
+    /// 为什么从「彼此一致 + 不回退」改回精确断言：版本号是发布契约的一部分 ——
+    /// `CURRENT_PROJECT_VERSION` 决定 App Store 能否覆盖升级，`MARKETING_VERSION` 是用户看到的
+    /// 版本。「两个 configuration 一致」只证明它们长得一样，证明不了「这次发布真的升到了
+    /// 0.12.0 / 18」：忘了升版本、或者只升了 Android 没升 iOS，旧断言都是绿的。
+    /// 钉死具体数字之后，漏改任意一端/任意一处都会红。
+    ///
+    /// 维护方式：版本号的唯一来源是 `app/build.gradle.kts`（Android：versionCode/versionName）
+    /// 与本工程文件 `MyFriend.xcodeproj/project.pbxproj`（iOS：`CURRENT_PROJECT_VERSION` /
+    /// `MARKETING_VERSION`，Debug/Release 各一处，另外 0.12.0 的 iOS 测试 target 也有）。
+    /// 升版本时改这些值，并同步改本测试与 Android 的
+    /// `DataResilienceContractTest`（那边还会断言两端构建号/版本名相等）。
     func testVersionIsConsistentForBothConfigurations() throws {
         let text = try source("MyFriend.xcodeproj/project.pbxproj")
         let marketing = Self.values(of: "MARKETING_VERSION", in: text)
         let builds = Self.values(of: "CURRENT_PROJECT_VERSION", in: text)
-        // 「至少 Debug / Release 两处」：工程里新增 target 时（0.12 加了 iOS 测试 target）
-        // 这条守卫不该红，它守的是「两两一致 + 不回退」。
+        // 结构断言：「至少 Debug / Release 两处」+ 所有 configuration 一致。工程里新增 target
+        // 时（0.12 加了 iOS 测试 target）数量会变，但每一处仍然必须是同一个值。
         XCTAssertGreaterThanOrEqual(marketing.count, 2, "Debug / Release 两处都要有 MARKETING_VERSION")
         XCTAssertGreaterThanOrEqual(builds.count, 2, "Debug / Release 两处都要有 CURRENT_PROJECT_VERSION")
         XCTAssertEqual(Set(marketing).count, 1, "两处版本号必须一致：\(marketing)")
         XCTAssertEqual(Set(builds).count, 1, "两处 build 号必须一致：\(builds)")
 
-        // 0.11.0 / 15 是已经发出去的版本：不允许回退（新版本号由发布流程决定）。
-        XCTAssertFalse(marketing.contains("0.11.0"), "不能退回 0.11.0")
-        XCTAssertFalse(builds.contains("15"), "不能退回 build 15")
-        let version = try XCTUnwrap(marketing.first)
+        // 精确断言：0.12.0 / 18。改版本时忘了改这里 → 红；改这里忘了改工程文件 → 也红。
+        XCTAssertEqual(Set(marketing), ["0.13.0"], "MARKETING_VERSION 必须精确等于 0.13.0：\(marketing)")
+        XCTAssertEqual(Set(builds), ["19"], "CURRENT_PROJECT_VERSION 必须精确等于 19：\(builds)")
+    }
+
+    // MARK: - Swift 第二实现只在 macOS 测试构建里（0.12.0）
+
+    /// iOS App 的运行时只能有 Kotlin 决策实现（同一份 `:agentcore`）。
+    ///
+    /// 0.12.0 之前的失败方式很隐蔽：iOS App 已经默认走 `KotlinAgentCoreClient`，但
+    /// `NativeAgentCoreClient`（Swift 实现）仍然被编译进 App，四个服务里的
+    /// `decide(endpoint:nativeFallback:)` 回落闭包还直接构造它 —— 运行时不走，可它是
+    /// 又一份可执行的判定实现，随时可能被「顺手回退」用上。
+    ///
+    /// 这条守卫是源码扫描（macOS 上可跑）：按真实构建条件算出「iOS 构建会编译的源码」，
+    /// 其中不允许出现 `NativeAgentCoreClient`；Swift 实现必须整个在 `#if !os(iOS)` 里；
+    /// 四个服务调用点也不许引用它（它们统一走 `AgentCoreNativeFallback`，iOS 上返回 nil）。
+    func testSwiftDecisionImplementationIsExcludedFromIOSBuilds() throws {
+        let client = try source("MyFriendKit/Sources/MyFriendKit/Core/AgentCoreClient.swift")
+
+        // 1. Swift 实现类型必须整体在 `#if !os(iOS)` 条件块里。
+        let nonIOSBlocks = Self.conditionalBlocks(in: client, opening: "#if !os(iOS)")
+        XCTAssertFalse(nonIOSBlocks.isEmpty, "AgentCoreClient.swift 里找不到 #if !os(iOS)")
         XCTAssertTrue(
-            version.compare("0.11.1", options: .numeric) != .orderedAscending,
-            "版本号不该低于 0.11.1（当前 \(version)）"
+            nonIOSBlocks.contains { $0.contains("public struct NativeAgentCoreClient: AgentCoreClient") },
+            "NativeAgentCoreClient 必须整体包在 #if !os(iOS) 里"
         )
+
+        // 2. 更硬的一条：按 `#if os(iOS)` / `#else` 真实求值，iOS 构建的源码里一次都不许出现它。
+        //    （只看 `#if os(iOS)` 块不够 —— `#else` 分支里的调用也会进 macOS，而不是 iOS。）
+        for path in [
+            "MyFriendKit/Sources/MyFriendKit/Core/AgentCoreClient.swift",
+            "MyFriendKit/Sources/MyFriendKit/Core/AgentCoreClientKotlin.swift",
+            "MyFriendKit/Sources/MyFriendKit/Core/AgentCoreObservability.swift"
+        ] {
+            let iosText = Self.iosBuildText(try source(path))
+            // 只盯「代码」而不是注释：文档里提到类型名是允许的，`NativeAgentCoreClient(`
+            // 和类型声明才是会进二进制的实现。
+            XCTAssertFalse(
+                iosText.contains("NativeAgentCoreClient(") || iosText.contains("struct NativeAgentCoreClient"),
+                "\(path) 的 iOS 构建里出现了 Swift 决策实现（应被 #if !os(iOS) 排除）"
+            )
+        }
+
+        // 3. 服务层调用点一律走 AgentCoreNativeFallback（iOS 上返回 nil），不许自己构造 Swift 实现。
+        for path in [
+            "Chat/ChatService.swift",
+            "Services/HeartbeatController.swift",
+            "Services/AgentLoop.swift",
+            "Services/ToolExecutor.swift"
+        ] {
+            let text = try source("MyFriendKit/Sources/MyFriendKit/\(path)")
+            XCTAssertFalse(
+                text.contains("NativeAgentCoreClient"),
+                "\(path) 不能引用 NativeAgentCoreClient：iOS 构建里这个类型不存在"
+            )
+            XCTAssertTrue(
+                text.contains("AgentCoreNativeFallback"),
+                "\(path) 的回落必须经由 AgentCoreNativeFallback（iOS 上返回 nil → 上抛）"
+            )
+        }
+
+        // 4. iOS 的本机实现只能是 Kotlin，而且 framework 是硬依赖（不许静默退回 Swift）。
+        let kotlin = try source("MyFriendKit/Sources/MyFriendKit/Core/AgentCoreClientKotlin.swift")
+        XCTAssertTrue(kotlin.contains("#if os(iOS)"), "KotlinAgentCoreClient 只能在 iOS 构建里编译")
+        XCTAssertTrue(kotlin.contains("import AgentCoreKit"), "iOS 构建必须硬链接 AgentCoreKit")
+        XCTAssertFalse(kotlin.contains("NativeAgentCoreClient()"), "Kotlin 桥不能构造 Swift 实现")
+    }
+
+    /// 按真实构建条件算出「iOS 构建会参与编译的源码」。
+    ///
+    /// 只认 `os(iOS)` / `!os(iOS)`（这个仓库的条件编译就这么几种）；遇到别的条件直接
+    /// `XCTFail`，逼作者把守卫一起更新，而不是让守卫悄悄漏掉一段代码。
+    private static func iosBuildText(_ text: String) -> String {
+        struct Frame {
+            let parent: Bool
+            var taken: Bool
+            var active: Bool
+        }
+        var stack: [Frame] = []
+        var included: [String] = []
+        func currentActive() -> Bool { stack.last?.active ?? true }
+
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("#if ") {
+                let condition = String(trimmed.dropFirst(4)).trimmingCharacters(in: .whitespaces)
+                let parent = currentActive()
+                let value = evaluateIOSCondition(condition)
+                stack.append(Frame(parent: parent, taken: value, active: parent && value))
+                continue
+            }
+            if trimmed.hasPrefix("#elseif ") {
+                let condition = String(trimmed.dropFirst(8)).trimmingCharacters(in: .whitespaces)
+                guard var frame = stack.popLast() else {
+                    XCTFail("#elseif 没有配对的 #if")
+                    continue
+                }
+                let value = evaluateIOSCondition(condition)
+                frame.active = frame.parent && !frame.taken && value
+                frame.taken = frame.taken || value
+                stack.append(frame)
+                continue
+            }
+            if trimmed == "#else" {
+                guard var frame = stack.popLast() else {
+                    XCTFail("#else 没有配对的 #if")
+                    continue
+                }
+                frame.active = frame.parent && !frame.taken
+                stack.append(frame)
+                continue
+            }
+            if trimmed.hasPrefix("#endif") {
+                guard !stack.isEmpty else {
+                    XCTFail("#endif 没有配对的 #if")
+                    continue
+                }
+                stack.removeLast()
+                continue
+            }
+            // 注释里提到类型名不算实现（文档需要解释这件事）；只扫描真正会编译的代码行。
+            if currentActive(), !Self.isCommentLine(trimmed) { included.append(line) }
+        }
+        XCTAssertTrue(stack.isEmpty, "条件编译块没有配对的 #endif")
+        return included.joined(separator: "\n")
+    }
+
+    private static func isCommentLine(_ trimmed: String) -> Bool {
+        trimmed.hasPrefix("//") || trimmed.hasPrefix("/*") || trimmed.hasPrefix("*") || trimmed.hasPrefix("*/")
+    }
+
+    private static func evaluateIOSCondition(_ condition: String) -> Bool {
+        switch condition {
+        case "os(iOS)":
+            return true
+        case "!os(iOS)":
+            return false
+        default:
+            XCTFail("未知的条件编译 #if \(condition)：请更新 AppWiringGuardTests 的求值")
+            return true
+        }
+    }
+
+    /// 取出所有以 `opening` 开头的条件编译块（支持嵌套 `#if`，`#else` 不改变层级）。
+    private static func conditionalBlocks(in text: String, opening: String) -> [String] {
+        var blocks: [String] = []
+        var depth = 0
+        var current: [String] = []
+        for line in text.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if depth == 0, trimmed.hasPrefix(opening) {
+                depth = 1
+                current = [line]
+                continue
+            }
+            guard depth > 0 else { continue }
+            current.append(line)
+            if trimmed.hasPrefix("#if ") || trimmed.hasPrefix("#if(") {
+                depth += 1
+            } else if trimmed.hasPrefix("#endif") {
+                depth -= 1
+                if depth == 0 {
+                    blocks.append(current.joined(separator: "\n"))
+                    current = []
+                }
+            }
+        }
+        XCTAssertEqual(depth, 0, "条件编译块没有配对的 #endif（从 \(opening) 开始）")
+        return blocks
     }
 
     /// 抓出工程文件里某个设置的所有取值。

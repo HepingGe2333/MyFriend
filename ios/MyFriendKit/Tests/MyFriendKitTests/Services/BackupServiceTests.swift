@@ -98,7 +98,9 @@ final class BackupServiceTests: XCTestCase {
                 id: "config-1", name: "DeepSeek 官方", provider: .openai,
                 baseUrl: "https://api.deepseek.com", apiKeyCipher: "keychain-ref-1",
                 model: "deepseek-chat", customHeadersJson: #"{"X-App":"myfriend"}"#,
-                createdAt: TestData.now - 1000, updatedAt: TestData.now
+                createdAt: TestData.now - 1000, updatedAt: TestData.now,
+                webToolsEnabled: true, webToolsProvider: "SERPER",
+                webToolsBaseUrl: "https://google.serper.dev"
             )
         )
     }
@@ -113,7 +115,7 @@ final class BackupServiceTests: XCTestCase {
 
         let bundle = try XCTUnwrap(service.preview(fileText: json).bundle)
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 3)
+        XCTAssertEqual(bundle.formatVersion, 4)
         XCTAssertEqual(bundle.appVersion, "0.9.1-ios")
         XCTAssertTrue(bundle.apiKeysOmitted)
         XCTAssertEqual(bundle.personas.count, 2)
@@ -126,6 +128,7 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertEqual(bundle.agentIntents.count, 1)
         XCTAssertEqual(bundle.memoryConsolidations.count, 1)
         XCTAssertEqual(bundle.apiConfigs.count, 1)
+        XCTAssertEqual(bundle.apiConfigs.first?.webToolsProvider, "SERPER", "v4 导出总是写 provider")
         // 会话的滚动摘要三个字段一起带走，否则换端后他会「突然忘事」。
         XCTAssertEqual(bundle.sessions.first?.summary, "你提过下个月要去哈尔滨，怕冷。")
         XCTAssertEqual(bundle.sessions.first?.summarizedUpTo, TestData.now - 86_400_000)
@@ -135,9 +138,67 @@ final class BackupServiceTests: XCTestCase {
         // 设置只带可移植那部分（1.9 只剩外观与「常驻思考」）。
         XCTAssertEqual(bundle.settings?.themeMode, "DARK")
         XCTAssertEqual(bundle.settings?.agentLoopEnabled, false)
-        XCTAssertEqual(bundle.formatVersion, 3)
+        XCTAssertEqual(bundle.formatVersion, 4)
         // 没有图片时 media 是空数组（键永远存在）。
         XCTAssertTrue(bundle.media.isEmpty)
+    }
+
+    /// v1–v3 备份里没有 `webToolsProvider`：接回来以后按规范默认 DEEPSEEK，
+    /// 而不是把空串或 null 写进库（否则联网工具会在 provider 解析处变成「不认识」）。
+    func testImportingV3BackupDefaultsProviderToDeepSeek() throws {
+        let directory = try XCTUnwrap(RepoLayout.backupFixtureDirectory())
+        let text = try String(
+            contentsOf: directory.appendingPathComponent("android-export-v3.json"), encoding: .utf8
+        )
+        let summary = try service.importBackup(text: text, mode: .replace)
+        let config = try XCTUnwrap(try db.stores.apiConfigs.byId("a-1"))
+        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK")
+        XCTAssertFalse(config.webToolsEnabled)
+
+        // v3 的图片仍然能导：头像接回来、聊天图的 attachmentsJson 指向新文件。
+        XCTAssertFalse(
+            summary.warnings.contains { $0.contains("没接回来（文件损坏或格式不支持）") },
+            "v3 里的真图不该被新压缩逻辑判成坏图：\(summary.warnings)"
+        )
+        let persona = try XCTUnwrap(
+            try db.stores.personas.byId("11111111-1111-1111-1111-111111111111")
+        )
+        XCTAssertNotNil(persona.avatarUri, "v3 头像要接回来")
+        let messagesWithImages = try db.stores.messages.all().filter {
+            !AttachmentsCodec.decode($0.attachmentsJson).isEmpty
+        }
+        XCTAssertEqual(messagesWithImages.count, 1, "v3 聊天图要接回来")
+        XCTAssertEqual(
+            AttachmentsCodec.decode(messagesWithImages.first?.attachmentsJson).first?.mime,
+            "image/jpeg",
+            "导入统一重压为 JPEG"
+        )
+    }
+
+    /// 合并导入时 provider 不跟着备份改：本机地址为空时，provider 决定 Key 发到哪家服务，
+    /// 照备份改 provider 等于把本机 Key 交给第三方（与「地址不迁移」同一条安全边界）。
+    func testMergeKeepsLocalProviderAndWarns() throws {
+        var bundle = BackupSamples.iosBundle()
+        bundle.apiConfigs = [BackupApiConfig(
+            id: "config-1", name: "备份里的配置", provider: "OPENAI",
+            baseUrl: "https://api.deepseek.com", model: "deepseek-chat",
+            webToolsEnabled: true, webToolsProvider: "TAVILY",
+            webToolsBaseUrl: "https://api.deepseek.com",
+            createdAt: TestData.now, updatedAt: TestData.now
+        )]
+        try db.stores.apiConfigs.upsert(ApiConfigEntity(
+            id: "config-1", name: "本机配置", provider: .openai,
+            baseUrl: "https://api.deepseek.com", model: "deepseek-chat",
+            webToolsEnabled: false, webToolsProvider: "DEEPSEEK",
+            webToolsBaseUrl: ""
+        ))
+        let summary = try service.importBundle(bundle, mode: .merge)
+        let config = try XCTUnwrap(try db.stores.apiConfigs.byId("config-1"))
+        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK", "本机 provider 不能被备份改掉")
+        XCTAssertTrue(
+            summary.warnings.contains { $0.contains("搜索服务保持本机设置") },
+            "保留本机设置要上报警告：\(summary.warnings)"
+        )
     }
 
     // MARK: - 导出 → 清库 → 导入还原
@@ -231,7 +292,7 @@ final class BackupServiceTests: XCTestCase {
         )
 
         let json = try service.export()
-        XCTAssertTrue(json.contains(#""formatVersion":3"#), "备份格式是 v3")
+        XCTAssertTrue(json.contains(#""formatVersion":4"#), "备份格式是 v4")
         XCTAssertFalse(json.contains("blockIndex"), "块号是派生数据，绝不进备份")
 
         let reset = DataReset(stores: db.stores, settings: settings, vectorIndex: vectorIndex)
@@ -664,10 +725,12 @@ final class BackupServiceTests: XCTestCase {
             "v3 备份里的头像不该再丢：\(summary.warnings)"
         )
 
-        // 6 个文件真的落在新手机的附件目录里，名字是新的 UUID（绝不复用备份里的 fileName）。
+        // 文件真的落在新手机的附件目录里，名字是新的 UUID（绝不复用备份里的 fileName）。
+        // 0.12 起按 SHA-256 去重：两个 png 头像（persona-2 / preset）与两个 jpeg 头像
+        // （persona-1 / 我的头像）分别共用同一个文件，所以 6 条 media 只落 4 个文件。
         let names = restoredFileNames(in: newDirectory)
-        XCTAssertEqual(names.count, 6)
-        XCTAssertEqual(names.filter { $0.hasPrefix("avatar-") }.count, 4)
+        XCTAssertEqual(names.count, 4, "内容相同的头像应当去重：\(names)")
+        XCTAssertEqual(names.filter { $0.hasPrefix("avatar-") }.count, 2)
         XCTAssertEqual(names.filter { $0.hasPrefix("chatImage-") }.count, 2)
         for name in names {
             XCTAssertFalse(
@@ -675,17 +738,18 @@ final class BackupServiceTests: XCTestCase {
                  "avatar-me.jpg", "chatImage-msg-1.jpg", "chatImage-msg-2.png"].contains(name),
                 "落盘名必须重建，不能复用备份里的名字：\(name)"
             )
+            XCTAssertTrue(name.contains("-"), "文件名要带 SHA-256 前缀：\(name)")
             let size = (try? newDirectory.appendingPathComponent(name).resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             let data = try Data(contentsOf: newDirectory.appendingPathComponent(name))
             print("v3 import media: \(name) \(size) bytes fnv=\(Self.digest(data))")
         }
         XCTAssertEqual(
-            Set(names.map { $0.split(separator: ".").last.map(String.init) ?? "" }), ["jpg", "png"],
-            "扩展名来自 mime（jpeg→jpg / png→png）"
+            Set(names.map { $0.split(separator: ".").last.map(String.init) ?? "" }), ["jpg"],
+            "导入一律重新压成 JPEG（透明图垫白底），所以扩展名全是 jpg"
         )
 
         // 头像：人格/预设的 avatarUri 指向新文件，且字节与旧手机一致。
-        func assertRestoredAvatar(_ stored: String?, matchesOriginal original: Data, label: String) throws {
+        func assertRestoredAvatar(_ stored: String?, label: String) throws -> URL {
             let uri = try XCTUnwrap(stored, "\(label) 的头像没接回来")
             let url = try XCTUnwrap(URL(string: uri))
             XCTAssertTrue(
@@ -693,35 +757,44 @@ final class BackupServiceTests: XCTestCase {
                 "\(label) 的头像要落在新附件目录里：\(uri)"
             )
             XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
-            XCTAssertEqual(try Data(contentsOf: url), original, "\(label) 的字节要一模一样")
+            // 导入会重新压（长边 ≤512、0.85、白底），所以比对的是「能解出一张 2×2 的 JPEG」，
+            // 不是「字节和旧手机一模一样」（那会让规范化永远不生效）。
+            let data = try Data(contentsOf: url)
+            XCTAssertEqual(data.prefix(2), Data([0xFF, 0xD8]), "\(label) 应当落成 JPEG")
+            XCTAssertLessThanOrEqual(data.count, ImageEncodingPolicy.avatarMaxBytes)
+            let pixelSize = try XCTUnwrap(ImageThumbnailDecoder.pixelSize(url: url))
+            XCTAssertEqual(pixelSize.width, 2)
+            XCTAssertEqual(pixelSize.height, 2)
+            return url
         }
-        try assertRestoredAvatar(
-            newDB.stores.personas.byId("persona-1")?.avatarUri, matchesOriginal: Self.jpegBytes, label: "persona-1"
+        let persona1AvatarURL = try assertRestoredAvatar(
+            newDB.stores.personas.byId("persona-1")?.avatarUri, label: "persona-1"
         )
-        try assertRestoredAvatar(
-            newDB.stores.personas.byId("persona-2")?.avatarUri, matchesOriginal: Self.pngBytes, label: "persona-2"
+        let persona2AvatarURL = try assertRestoredAvatar(
+            newDB.stores.personas.byId("persona-2")?.avatarUri, label: "persona-2"
         )
-        try assertRestoredAvatar(
-            newDB.stores.presets.byId("preset-1")?.avatarUri, matchesOriginal: Self.pngBytes, label: "preset-1"
+        let presetAvatarURL = try assertRestoredAvatar(
+            newDB.stores.presets.byId("preset-1")?.avatarUri, label: "preset-1"
         )
-        // 「我的头像」：设置里写成新路径。
-        try assertRestoredAvatar(newSettings.load().myAvatarUri, matchesOriginal: Self.jpegBytes, label: "我的头像")
+        // 「我的头像」：设置里写成新路径，并与 persona-1 的 jpeg 头像去重成同一个文件。
+        let myAvatarURL = try assertRestoredAvatar(newSettings.load().myAvatarUri, label: "我的头像")
+        XCTAssertEqual(persona1AvatarURL, myAvatarURL, "内容相同的头像要去重到同一个文件")
+        XCTAssertEqual(persona2AvatarURL, presetAvatarURL, "内容相同的头像要去重到同一个文件")
 
         // 聊天图片：消息的 attachmentsJson 指向新文件，元数据（mime / 宽高）还在。
-        for (messageId, expected) in [("msg-1", Self.jpegBytes), ("msg-2", Self.pngBytes)] {
+        for messageId in ["msg-1", "msg-2"] {
             let message = try XCTUnwrap(try newDB.stores.messages.byId(messageId))
             let restored = AttachmentsCodec.decode(message.attachmentsJson)
             XCTAssertEqual(restored.count, 1, "\(messageId) 应该接回一张图")
             let attachment = try XCTUnwrap(restored.first)
             let url = try XCTUnwrap(URL(string: attachment.uri))
             XCTAssertTrue(AttachmentLocation.isWithin(newDirectory, url))
-            XCTAssertEqual(try Data(contentsOf: url), expected)
+            let data = try Data(contentsOf: url)
+            XCTAssertEqual(data.prefix(2), Data([0xFF, 0xD8]), "聊天图也要压成 JPEG")
+            XCTAssertLessThanOrEqual(data.count, ImageEncodingPolicy.chatMaxBytes)
             XCTAssertEqual(attachment.width, 2)
             XCTAssertEqual(attachment.height, 2)
-            XCTAssertEqual(
-                attachment.mime,
-                messageId == "msg-1" ? "image/jpeg" : "image/png"
-            )
+            XCTAssertEqual(attachment.mime, "image/jpeg", "导入统一成 JPEG（透明图垫白底）")
             XCTAssertFalse(attachment.uri.contains("chatImage-msg-"), "不能指回旧文件名")
         }
     }

@@ -50,7 +50,7 @@ class AgentdServerTest {
             assertEquals(200, health.statusCode())
             assertTrue(health.headers().firstValue("Content-Type").orElse("").contains("application/json"))
             assertEquals(
-                """{"ok":true,"service":"myfriend-agentd","version":"0.11.1"}""",
+                """{"ok":true,"service":"myfriend-agentd","version":"0.13.0"}""",
                 health.body()
             )
 
@@ -208,6 +208,88 @@ class AgentdServerTest {
             val defer = post(port, "/v1/core/defer-plan", """{"now":0}""", token)
             assertEquals(200, defer.statusCode())
             assertTrue(defer.body().contains(""""minutes":45"""))
+        } finally {
+            server.stop()
+        }
+    }
+
+    // ------------------------------------------------------------------ 0.12.0 限流
+
+    /** 连续请求打空令牌桶：第 3 个必须 429，且带 Retry-After（单位秒、≥ 1）。 */
+    @Test
+    fun `rate limited core requests answer 429 with Retry-After`() {
+        val server = AgentdServer.start(
+            "127.0.0.1", 0,
+            rateLimiter = RateLimiter(perMinute = 6, burst = 2)
+        )
+        try {
+            val port = server.port
+            repeat(2) {
+                assertEquals(200, post(port, "/v1/core/defer-plan", """{"now":0}""").statusCode())
+            }
+            val limited = post(port, "/v1/core/defer-plan", """{"now":0}""")
+            assertEquals(429, limited.statusCode())
+            assertTrue("错误码要稳定：${limited.body()}", limited.body().contains("rate_limited"))
+            val retryAfter = limited.headers().firstValue("Retry-After").orElse("")
+            assertTrue(
+                "429 必须带 Retry-After（≥1 秒），实际：$retryAfter",
+                (retryAfter.toIntOrNull() ?: 0) >= 1
+            )
+        } finally {
+            server.stop()
+        }
+    }
+
+    /**
+     * `/health` 单独计一个桶：业务流量打满配额时探针仍然能拿到 200。
+     *
+     * 这是有意的取舍（见 README「限流」）：反代后面所有请求折叠成同一个 IP，
+     * 共用桶会让「配额用尽」在运维眼里变成「服务挂了」。
+     */
+    @Test
+    fun `health has its own rate limit bucket`() {
+        val server = AgentdServer.start(
+            "127.0.0.1", 0,
+            rateLimiter = RateLimiter(perMinute = 6, burst = 2)
+        )
+        try {
+            val port = server.port
+            repeat(2) {
+                assertEquals(200, post(port, "/v1/core/defer-plan", """{"now":0}""").statusCode())
+            }
+            assertEquals(
+                "业务桶先打空",
+                429,
+                post(port, "/v1/core/defer-plan", """{"now":0}""").statusCode()
+            )
+            // /health 有自己的桶（burst=2）：两次 200，第三次 429 —— 它不是无限额度的旁路。
+            assertEquals(200, get(port, "/health").statusCode())
+            assertEquals(200, get(port, "/health").statusCode())
+            val limited = get(port, "/health")
+            assertEquals(429, limited.statusCode())
+            assertTrue(
+                "Retry-After 至少 1 秒",
+                (limited.headers().firstValue("Retry-After").orElse("").toIntOrNull() ?: 0) >= 1
+            )
+        } finally {
+            server.stop()
+        }
+    }
+
+    /** `--rate-limit 0`（`RateLimiter(perMinute = 0)`）：怎么打都不限流。 */
+    @Test
+    fun `rate limiting can be disabled`() {
+        val server = AgentdServer.start(
+            "127.0.0.1", 0,
+            rateLimiter = RateLimiter(perMinute = 0, burst = 1)
+        )
+        try {
+            val port = server.port
+            repeat(10) { index ->
+                val response = post(port, "/v1/core/defer-plan", """{"now":$index}""")
+                assertEquals("第 $index 个请求被限流了", 200, response.statusCode())
+            }
+            repeat(10) { assertEquals(200, get(port, "/health").statusCode()) }
         } finally {
             server.stop()
         }

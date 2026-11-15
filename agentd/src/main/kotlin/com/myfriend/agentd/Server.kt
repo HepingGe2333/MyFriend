@@ -46,7 +46,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * - 处理请求的是 [WORKER_THREADS] 个固定线程 + 有界队列：慢连接最多占满池子，`/health`
  *   在别的线程上照常响应；队列满了直接关连接（不无限堆积）；
  * - 可选共享 token：所有请求（含 `/health`）要求 `Authorization: Bearer <token>`，
- *   常数时间比较，缺失/错误回 401。
+ *   常数时间比较，缺失/错误回 401；
+ * - 按来源的令牌桶限流（[RateLimiter]）：超限回 429 + `Retry-After`，`/health` 有自己
+ *   的桶（见 [rateLimitKey]），所以业务流量打满配额时探针仍然能立刻拿到 200。
+ *
+ * 限流与鉴权都在**读完请求头、读 body 之前**判定：超限/未授权请求不会被读进 1 MiB 内存，
+ * worker 立刻释放（未读的 body 由 [drainAndClose] 短时间排空后关闭）。
  */
 object AgentdServer {
 
@@ -89,6 +94,8 @@ object AgentdServer {
         """{"error":{"message":"请求格式不正确","code":"bad_request"}}"""
     private const val ERROR_INTERNAL =
         """{"error":{"message":"服务内部错误","code":"internal_error"}}"""
+    private const val ERROR_RATE_LIMITED =
+        """{"error":{"message":"请求过于频繁，请稍后再试","code":"rate_limited"}}"""
 
     /** 起好的服务：监听 socket + 处理线程池 + accept 线程，`stop()` 时一起关掉。 */
     class StartedServer internal constructor(
@@ -103,7 +110,14 @@ object AgentdServer {
         fun stop(delaySeconds: Int = 0) {
             runCatching { serverSocket.close() }
             runCatching { acceptor.interrupt() }
-            for (socket in openSockets.toList()) runCatching { socket.close() }
+            // 直接迭代快照，不用 `toList()`：Collection.toList() 在 size == 1 时会自己调一次
+            // `iterator().next()`，而 worker 的 finally 可能正好在 size() 与 iterator() 之间
+            // 把最后一个 socket 移掉 —— 那会抛 NoSuchElementException 把 stop() 打断。
+            val iterator = openSockets.iterator()
+            while (iterator.hasNext()) {
+                val socket = iterator.next()
+                runCatching { socket.close() }
+            }
             runCatching { openSockets.clear() }
             workers.shutdownNow()
         }
@@ -114,8 +128,15 @@ object AgentdServer {
      *
      * @param host 绑定地址（默认 `127.0.0.1`，由 `Main` 决定）。
      * @param token 非 null 时启用共享 token 校验（所有路径，包含 `/health`）。
+     * @param rateLimiter 按来源的令牌桶；默认 60 请求/分钟、突发 30。
+     *   传 `RateLimiter(perMinute = 0, burst = 1)` 即关闭限流。
      */
-    fun start(host: String, port: Int, token: String? = null): StartedServer {
+    fun start(
+        host: String,
+        port: Int,
+        token: String? = null,
+        rateLimiter: RateLimiter = RateLimiter()
+    ): StartedServer {
         require(host.isNotBlank()) { "host 不能为空" }
         require(token == null || token.isNotBlank()) { "token 不能是空串" }
 
@@ -140,7 +161,7 @@ object AgentdServer {
             daemonThreads("agentd-worker")
         )
         val acceptor = Thread(
-            { acceptLoop(serverSocket, workers, openSockets, token) },
+            { acceptLoop(serverSocket, workers, openSockets, token, rateLimiter) },
             "agentd-accept"
         ).apply {
             // 非守护线程：`main` 打印完用法就返回了，靠它把 JVM 留在前台（`stop()` / Ctrl-C 退出）。
@@ -154,7 +175,8 @@ object AgentdServer {
         serverSocket: ServerSocket,
         workers: ThreadPoolExecutor,
         openSockets: MutableSet<Socket>,
-        token: String?
+        token: String?,
+        rateLimiter: RateLimiter
     ) {
         while (!serverSocket.isClosed) {
             val socket = try {
@@ -164,7 +186,7 @@ object AgentdServer {
             }
             openSockets.add(socket)
             try {
-                workers.execute { handleConnection(socket, token, openSockets) }
+                workers.execute { handleConnection(socket, token, rateLimiter, openSockets) }
             } catch (_: RejectedExecutionException) {
                 // 队列满了：直接关连接，别让攻击者把内存也堆满。
                 openSockets.remove(socket)
@@ -175,7 +197,12 @@ object AgentdServer {
 
     // ------------------------------------------------------------------ 一条连接
 
-    private fun handleConnection(socket: Socket, token: String?, openSockets: MutableSet<Socket>) {
+    private fun handleConnection(
+        socket: Socket,
+        token: String?,
+        rateLimiter: RateLimiter,
+        openSockets: MutableSet<Socket>
+    ) {
         try {
             socket.tcpNoDelay = true
             socket.soTimeout = READ_TIMEOUT_MS.toInt()
@@ -183,7 +210,7 @@ object AgentdServer {
             val output = BufferedOutputStream(socket.getOutputStream())
             val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(READ_TIMEOUT_MS)
             try {
-                handleRequest(socket, input, output, deadlineNanos, token)
+                handleRequest(socket, input, output, deadlineNanos, token, rateLimiter)
             } finally {
                 // 响应已经 flush；先半关输出让客户端读到 EOF，再短时间排空输入（减少 RST 丢响应）。
                 drainAndClose(socket, input)
@@ -201,17 +228,19 @@ object AgentdServer {
         input: InputStream,
         output: OutputStream,
         deadlineNanos: Long,
-        token: String?
+        token: String?,
+        rateLimiter: RateLimiter
     ) {
-        val request = try {
-            readRequest(input, output, deadlineNanos)
-        } catch (timeout: RequestTimeoutException) {
+        // 先只读到请求头：超时/超限/畸形请求和下面两条「早退」都不需要把 body 读进内存。
+        val head = try {
+            readHead(input, deadlineNanos)
+        } catch (_: RequestTimeoutException) {
             reply(socket, output, 408, ERROR_TIMEOUT)
             return
-        } catch (tooLarge: BodyTooLargeException) {
+        } catch (_: BodyTooLargeException) {
             reply(socket, output, 413, ERROR_TOO_LARGE)
             return
-        } catch (lengthRequired: LengthRequiredException) {
+        } catch (_: LengthRequiredException) {
             reply(socket, output, 411, ERROR_LENGTH_REQUIRED)
             return
         } catch (_: BadRequestException) {
@@ -221,16 +250,40 @@ object AgentdServer {
             return // 客户端提前断开
         }
 
-        if (!authorized(request.headers, token)) {
+        // 限流在鉴权之前、读 body 之前：超限客户端拿不到「读 1 MiB + 解析 JSON」的算力，
+        // 也挡住拿错误 token 反复试的请求。key 带 scope：`/health` 与业务接口分开记账。
+        val client = socket.inetAddress?.hostAddress ?: "unknown"
+        val rateDecision = rateLimiter.tryAcquire(rateLimitKey(client, head.target))
+        if (!rateDecision.allowed) {
+            reply(
+                socket, output, 429, ERROR_RATE_LIMITED,
+                extraHeaders = mapOf("Retry-After" to rateDecision.retryAfterSeconds.toString())
+            )
+            return
+        }
+
+        if (!authorized(head.headers, token)) {
             reply(socket, output, 401, ERROR_UNAUTHORIZED, extraHeaders = mapOf("WWW-Authenticate" to "Bearer"))
             return
         }
 
+        val body = try {
+            readBody(input, output, deadlineNanos, head)
+        } catch (_: RequestTimeoutException) {
+            reply(socket, output, 408, ERROR_TIMEOUT)
+            return
+        } catch (_: BadRequestException) {
+            reply(socket, output, 400, ERROR_BAD_REQUEST)
+            return
+        } catch (_: IOException) {
+            return // 客户端提前断开
+        }
+
         val response: Response = try {
             AgentdApi.handle(
-                method = request.method,
-                rawPath = request.target,
-                body = String(request.body, StandardCharsets.UTF_8)
+                method = head.method,
+                rawPath = head.target,
+                body = String(body, StandardCharsets.UTF_8)
             )
         } catch (_: Exception) {
             // AgentdApi 自己会兜住所有异常；这里只是防御，不让 handler 的 bug 打挂线程。
@@ -240,16 +293,30 @@ object AgentdServer {
         reply(socket, output, response.status, response.body)
     }
 
+    /**
+     * 限流的记账 key：**`/health` 单独一个桶**。
+     *
+     * 取舍：如果 `/health` 和业务接口共用一个桶，一个把配额打满的客户端（或者反向代理后面
+     * 折叠成同一个来源 IP 的所有人）会让健康检查也回 429 —— 运维看到的是「服务挂了」，
+     * 实际只是配额用尽。分开记账的代价只是一行状态，好处是探针永远拿得到真实状态；
+     * 两个桶仍各自受限，`/health` 不会成为绕过限流的口子。
+     */
+    private fun rateLimitKey(client: String, target: String): String {
+        val path = target.substringBefore('?')
+        return if (path == "/health") "health|$client" else "core|$client"
+    }
+
     // ------------------------------------------------------------------ 解析请求
 
-    private data class Request(
+    /** 请求行 + 头部（body 之前的部分）。 */
+    private data class RequestHead(
         val method: String,
         val target: String,
         val headers: Map<String, String>,
-        val body: ByteArray
+        val contentLength: Long?
     )
 
-    private fun readRequest(input: InputStream, output: OutputStream, deadlineNanos: Long): Request {
+    private fun readHead(input: InputStream, deadlineNanos: Long): RequestHead {
         val requestLine = readLine(input, deadlineNanos, MAX_REQUEST_LINE_BYTES, "请求行")
         val parts = requestLine.split(' ')
         if (parts.size != 3) throw BadRequestException()
@@ -288,13 +355,20 @@ object AgentdServer {
         }
         if (contentLength != null && contentLength < 0) throw BadRequestException()
         if (contentLength != null && contentLength > MAX_BODY_BYTES) throw BodyTooLargeException()
+        return RequestHead(method, target, headers, contentLength)
+    }
 
-        if (contentLength == null || contentLength == 0L) {
-            return Request(method, target, headers, ByteArray(0))
-        }
+    private fun readBody(
+        input: InputStream,
+        output: OutputStream,
+        deadlineNanos: Long,
+        head: RequestHead
+    ): ByteArray {
+        val contentLength = head.contentLength ?: return ByteArray(0)
+        if (contentLength == 0L) return ByteArray(0)
 
         // curl 对大 body 会发 Expect: 100-continue；先回一个 100，客户端才会开始发 body。
-        if (headers["expect"]?.equals("100-continue", ignoreCase = true) == true) {
+        if (head.headers["expect"]?.equals("100-continue", ignoreCase = true) == true) {
             output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
             output.flush()
         }
@@ -310,7 +384,7 @@ object AgentdServer {
             if (n < 0) throw BadRequestException() // 客户端提前断开
             read += n
         }
-        return Request(method, target, headers, body)
+        return body
     }
 
     /**
@@ -426,6 +500,7 @@ object AgentdServer {
         408 -> "Request Timeout"
         411 -> "Length Required"
         413 -> "Payload Too Large"
+        429 -> "Too Many Requests"
         500 -> "Internal Server Error"
         else -> "Unknown"
     }

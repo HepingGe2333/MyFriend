@@ -61,6 +61,30 @@ cd ios/MyFriendKit && swift test --disable-sandbox --filter BackupInteropTests
 
 `--disable-sandbox` 供受限环境下本地 SPM 包跑测试使用；环境正常时可以省略。
 
+### CI 会跑什么、本地怎么复现 CI
+
+每次 push 到 `main` / `dev/**`、以及向 `main` 发起 PR 时，GitHub Actions 会执行 [`.github/workflows/ci.yml`](.github/workflows/ci.yml)。两个平台 job 都成功时汇总 job `ci-ok` 才通过，因此可以直接把它当作合并前的必过检查；同一分支的新运行会取消旧运行。
+
+- **`android`**（`ubuntu-latest`，JDK 17）：恢复 Gradle 缓存后，先跑单元测试（`:app:testDebugUnitTest`、`:agentcore:test`、`:agentd:test`），再跑构建 + lint（`:app:assembleDebug`、`:agentd:build`、`:app:lintDebug`）。测试报告与 lint 报告即使失败也会作为 artifact 上传。
+- **`ios`**（`macos-latest`，JDK 17 + runner 自带 Xcode）：恢复 `~/.gradle` / `~/.konan` 缓存，先用 `ios/scripts/build-agentcore-framework.sh` 生成 `AgentCoreKit.xcframework`，再跑 `ios/MyFriendKit` 的 `swift test --disable-sandbox`，最后用 `xcodebuild ... build-for-testing` 编译 App 与测试 target。`.xcresult` 与构建日志同样在失败时保留。
+
+本地用同样的任务名复现（任务名与 CI 一致；CI 额外加了 `--console=plain`）：
+
+```bash
+# Android
+./gradlew :app:testDebugUnitTest :agentcore:test :agentd:test
+./gradlew :app:assembleDebug :agentd:build :app:lintDebug
+
+# iOS：framework 必须先于 Xcode 构建
+ios/scripts/build-agentcore-framework.sh
+(cd ios/MyFriendKit && swift test --disable-sandbox)
+xcodebuild -project ios/MyFriend.xcodeproj -scheme MyFriend \
+  -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -derivedDataPath ios/.build/DerivedData CODE_SIGNING_ALLOWED=NO build-for-testing
+```
+
+`build-for-testing` 只编译、不启动模拟器；真机/模拟器上的 UI 与数据库迁移用例仍需在本地跑（见上面的 `connectedDebugAndroidTest` 与 Xcode Test）。如果本机 Xcode 没有 `iPhone 17 Pro` 模拟器，把 `-destination` 的 `name` 换成 `xcrun simctl list devices available` 里已有的 iPhone 即可；Gradle 任务名与 CI 保持一致。
+
 ## 代码风格
 
 - **Android**：Kotlin + Compose，`kotlin.code.style=official`。算法与边界条件放在 `domain/` 的纯函数里并配单元测试，不要埋进 Composable；Composable 只负责状态与布局。

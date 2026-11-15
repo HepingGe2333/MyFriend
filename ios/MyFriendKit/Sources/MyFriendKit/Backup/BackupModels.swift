@@ -37,7 +37,10 @@ public let backupFormatName: String = "myfriend.backup"
 ///   `messages.attachmentsJson[].uri` 也只写裸文件名（`chatImage-<uuid>.jpg`）：
 ///   这个裸名是「引用 ↔ media」的关联键，换机后本机路径由导入侧重新生成；
 /// - 上限：单张 8 MiB、全部合计 128 MiB，整份备份（含 base64 膨胀）读写上限 256 MiB。
-public let backupFormatVersion: Int = 3
+///
+/// v4（0.12，schema v12）：`apiConfigs[]` 增加 `webToolsProvider`（缺字段默认 DEEPSEEK）。
+/// 搜索 Key 仍然**永不进备份**（与 LLM Key 同一条规矩）；v1–v3 备份继续能读。
+public let backupFormatVersion: Int = 4
 
 // MARK: - 顶层
 
@@ -722,6 +725,9 @@ public struct BackupApiConfig: Equatable, Sendable, Encodable {
     public var frequencyPenalty: Double?
     public var presencePenalty: Double?
     public var webToolsEnabled: Bool
+    /// 搜索服务：`DEEPSEEK` / `TAVILY` / `BRAVE` / `SERPER` / `GENERIC`（v4 新增）。
+    /// 缺字段（v1–v3 备份）默认 `DEEPSEEK`，与升级前的行为完全一致。
+    public var webToolsProvider: String
     public var webToolsBaseUrl: String
     public var createdAt: Int64
     public var updatedAt: Int64
@@ -739,6 +745,7 @@ public struct BackupApiConfig: Equatable, Sendable, Encodable {
         frequencyPenalty: Double? = nil,
         presencePenalty: Double? = nil,
         webToolsEnabled: Bool = false,
+        webToolsProvider: String = "DEEPSEEK",
         webToolsBaseUrl: String = "",
         createdAt: Int64 = 0,
         updatedAt: Int64 = 0
@@ -755,6 +762,7 @@ public struct BackupApiConfig: Equatable, Sendable, Encodable {
         self.frequencyPenalty = frequencyPenalty
         self.presencePenalty = presencePenalty
         self.webToolsEnabled = webToolsEnabled
+        self.webToolsProvider = webToolsProvider
         self.webToolsBaseUrl = webToolsBaseUrl
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -763,7 +771,8 @@ public struct BackupApiConfig: Equatable, Sendable, Encodable {
     enum CodingKeys: String, CodingKey {
         case id, name, provider, baseUrl, model
         case allowInsecureHttp, temperature, topP, maxOutputTokens, frequencyPenalty
-        case presencePenalty, webToolsEnabled, webToolsBaseUrl, createdAt, updatedAt
+        case presencePenalty, webToolsEnabled, webToolsProvider, webToolsBaseUrl
+        case createdAt, updatedAt
     }
 }
 
@@ -1047,6 +1056,7 @@ extension BackupApiConfig {
             frequencyPenalty: try json.optionalDouble("frequencyPenalty"),
             presencePenalty: try json.optionalDouble("presencePenalty"),
             webToolsEnabled: try json.bool("webToolsEnabled"),
+            webToolsProvider: try json.text("webToolsProvider", "DEEPSEEK"),
             webToolsBaseUrl: try json.text("webToolsBaseUrl"),
             createdAt: try json.int64("createdAt"),
             updatedAt: try json.int64("updatedAt")

@@ -13,9 +13,13 @@ import com.myfriend.app.domain.ApiConfigRules
 import com.myfriend.app.domain.ApiKeyPolicy
 import com.myfriend.app.domain.ApiKeyState
 import com.myfriend.app.domain.DomainErrorCode
+import com.myfriend.app.domain.WebToolsProviders
+import com.myfriend.app.domain.WebUrlPolicy
 import com.myfriend.app.network.ConnectionTestResult
 import com.myfriend.app.domain.ResolvedApiConfig
 import com.myfriend.app.network.AiProviderRegistry
+import com.myfriend.app.network.ApiException
+import com.myfriend.app.domain.NetworkErrorKind
 import com.myfriend.app.network.NetworkGuard
 import com.myfriend.app.network.userError
 import kotlinx.coroutines.flow.Flow
@@ -93,7 +97,8 @@ class ApiConfigRepository @Inject constructor(
         webToolsEnabled: Boolean = false,
         webToolsBaseUrl: String = "",
         webToolsApiKey: String = "",
-        clearWebToolsApiKey: Boolean = false
+        clearWebToolsApiKey: Boolean = false,
+        webToolsProvider: String = WebToolsProviders.DEEPSEEK
     ): Result<String> = runCatching {
         val existing = draft.id?.let { apiConfigDao.getById(it) }
         if (existing != null && existing.id != draft.id) userError(DomainErrorCode.API_CONFIG_NOT_FOUND)
@@ -127,6 +132,8 @@ class ApiConfigRepository @Inject constructor(
             frequencyPenalty = draft.frequencyPenalty,
             presencePenalty = draft.presencePenalty,
             webToolsEnabled = webToolsEnabled,
+            // 空/脏值收敛到合法 provider；切换 provider 只改这一列，地址与 Key 原样保留。
+            webToolsProvider = WebToolsProviders.normalize(webToolsProvider),
             webToolsBaseUrl = webToolsBaseUrl.trim(),
             webToolsApiKeyCipher = webToolsKeyCipher,
             createdAt = existing?.createdAt ?: now,
@@ -158,6 +165,7 @@ class ApiConfigRepository @Inject constructor(
         if (entity.model.trim().length > 160) userError(DomainErrorCode.MODEL_ID_TOO_LONG)
         if (!registry.capabilities(entity.provider).available) userError(DomainErrorCode.PROVIDER_RESERVED)
         validateHeaders(entity.customHeadersJson)
+        validateWebTools(entity)
         ApiConfigRules.paramError(
             temperature = entity.temperature,
             topP = entity.topP,
@@ -165,6 +173,30 @@ class ApiConfigRepository @Inject constructor(
             frequencyPenalty = entity.frequencyPenalty,
             presencePenalty = entity.presencePenalty
         )?.let { userError(it) }
+    }
+
+    /**
+     * 联网工具地址的校验（设置页保存与备份导入共用）。
+     *
+     * - 显式填了地址：必须过 [NetworkGuard]（http(s)、明文开关语义）；除自建 [WebToolsProviders.GENERIC]
+     *   之外还要过 [WebUrlPolicy]，避免把「第三方搜索服务地址」指到内网/本机；
+     * - 留空：除 GENERIC（自建服务没有默认地址）外都合法，运行时用 provider 的默认地址；
+     * - 以上检查与 `webToolsEnabled` 无关地执行（留着一个坏地址，等打开开关时才报错更难排查），
+     *   只有「GENERIC 必须填地址」这一条仅在联网开关打开时强制。
+     */
+    private suspend fun validateWebTools(entity: ApiConfigEntity) {
+        val provider = WebToolsProviders.normalize(entity.webToolsProvider)
+        val webBaseUrl = entity.webToolsBaseUrl.trim()
+        if (webBaseUrl.isEmpty()) {
+            if (entity.webToolsEnabled && provider == WebToolsProviders.GENERIC) {
+                throw ApiException(NetworkErrorKind.WebBaseMissing)
+            }
+            return
+        }
+        NetworkGuard.parseHttpUrl(webBaseUrl, entity.allowInsecureHttp)
+        if (!WebToolsProviders.allowsPrivateBaseUrl(provider)) {
+            WebUrlPolicy.check(webBaseUrl)?.let { throw ApiException(NetworkErrorKind.WebUrlRejected(it)) }
+        }
     }
 
     /**

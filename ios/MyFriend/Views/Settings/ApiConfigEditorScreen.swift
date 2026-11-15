@@ -26,6 +26,12 @@ struct ApiConfigEditorScreen: View {
     @State private var maxTokensText = ""
     @State private var topPText = ""
 
+    @State private var webToolsEnabled = false
+    @State private var webToolsProvider: WebToolsProvider = .deepSeek
+    @State private var webToolsBaseUrl = ""
+    @State private var webToolsKeyInput = ""
+    @State private var hasExistingWebToolsKey = false
+
     @State private var loaded = false
     @State private var testing = false
     @State private var testMessage: String?
@@ -45,6 +51,7 @@ struct ApiConfigEditorScreen: View {
             VStack(alignment: .leading, spacing: 20) {
                 basicsCard
                 paramsCard
+                webToolsCard
                 networkCard
                 connectionCard
                 if !isNew { deleteCard }
@@ -78,6 +85,7 @@ struct ApiConfigEditorScreen: View {
                 switch action {
                 case .deleteConfig: deleteConfig()
                 case .clearKey: clearSavedKey()
+                case .clearWebToolsKey: clearSavedWebToolsKey()
                 }
             }
             Button(L("取消"), role: .cancel) { pendingAction = nil }
@@ -217,6 +225,117 @@ struct ApiConfigEditorScreen: View {
         .padding(.bottom, 10)
     }
 
+    // MARK: - 联网工具
+
+    /// 联网工具（`web_search` / `web_fetch`）的搜索服务配置。
+    ///
+    /// 这一节只在打开「联网工具」之后才展开：关掉时它连字段都不出现，表单不会莫名其妙
+    /// 长出五六个跟聊天无关的输入框。DEEPSEEK 复用上面聊天的地址与 Key（所以留空就行），
+    /// GENERIC 是自建服务、没有默认地址，必须填完整地址。
+    private var webToolsCard: some View {
+        MFCard {
+            MFToggleRow(
+                icon: "globe",
+                title: L("联网工具"),
+                subtitle: L("让他能搜索和读网页。关掉以后，这两个工具对他不可用。"),
+                isOn: $webToolsEnabled,
+                tint: accent
+            )
+
+            if webToolsEnabled {
+                FieldLabel(L("搜索服务"), hint: L("用哪家的搜索接口。DeepSeek 官方接口和聊天共用同一个地址与 Key。"))
+                MFChoiceBar(options: webToolsProviderOptions, selection: $webToolsProvider, accent: accent)
+                    .padding(.top, 4)
+                    .padding(.bottom, 14)
+
+                FieldLabel("Base URL", hint: webToolsBaseHint)
+                TextField(webToolsBasePlaceholder, text: $webToolsBaseUrl)
+                    .textFieldStyle(.plain)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(fieldBackground)
+                    .padding(.bottom, webToolsBaseInvalid ? 4 : 14)
+
+                if webToolsBaseInvalid {
+                    Text(L("这个地址不能用：只支持 http/https，不能是本机或内网地址。"))
+                        .font(.caption)
+                        .foregroundStyle(MFUI.danger)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.bottom, 14)
+                }
+
+                FieldLabel(L("搜索 Key"), hint: webToolsKeyHint)
+                SecureField(
+                    "",
+                    text: $webToolsKeyInput,
+                    prompt: Text(hasExistingWebToolsKey ? L("已保存 · 留空不修改") : L("留空会复用上面的 API Key"))
+                )
+                .textFieldStyle(.plain)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .padding(.vertical, 8)
+                .padding(.horizontal, 10)
+                .background(fieldBackground)
+
+                if hasExistingWebToolsKey {
+                    HStack(spacing: 8) {
+                        Text(L("这台手机已经存了联网 Key，界面上不会显示它。"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(L("清掉")) { pendingAction = .clearWebToolsKey }
+                            .font(.caption)
+                            .tint(MFUI.danger)
+                    }
+                    .padding(.top, 6)
+                }
+
+                MFNote(text: L("搜索 Key 与主 Key 一样只存在 Keychain 里，不进数据库、不进备份。"))
+                    .padding(.top, 10)
+            }
+        }
+    }
+
+    private var webToolsProviderOptions: [(WebToolsProvider, String)] {
+        WebToolsProvider.allCases.map { ($0, Self.webToolsProviderLabel($0)) }
+    }
+
+    /// 产品名（Tavily / Brave / Serper）不翻译：它们就是服务自己的名字。
+    private static func webToolsProviderLabel(_ provider: WebToolsProvider) -> String {
+        switch provider {
+        case .deepSeek: return L("DeepSeek 官方")
+        case .tavily: return "Tavily"
+        case .brave: return "Brave"
+        case .serper: return "Serper"
+        case .generic: return L("自建服务")
+        }
+    }
+
+    private var webToolsBasePlaceholder: String {
+        switch webToolsProvider {
+        case .deepSeek: return L("留空就用上面聊天配置的地址")
+        case .tavily: return "https://api.tavily.com"
+        case .brave: return "https://api.search.brave.com/res/v1"
+        case .serper: return "https://google.serper.dev"
+        case .generic: return L("https://你的搜索服务地址/search")
+        }
+    }
+
+    private var webToolsBaseHint: String {
+        webToolsProvider == .generic
+            ? L("自建服务必须填完整地址，请求会原样发到这个地址。")
+            : L("留空就用默认地址；填了会覆盖默认值。")
+    }
+
+    private var webToolsKeyHint: String {
+        webToolsProvider == .generic
+            ? L("自建服务不需要 Key 的话可以留空。")
+            : L("这一项可以留空：留空就复用上面的 API Key。")
+    }
+
     // MARK: - 网络
 
     private var networkCard: some View {
@@ -307,6 +426,11 @@ struct ApiConfigEditorScreen: View {
         maxTokensText = config.maxOutputTokens.map { "\($0)" } ?? ""
         topPText = Self.format(config.topP)
         hasExistingKey = env.apiKeys.isConfigured(for: config.id)
+        webToolsEnabled = config.webToolsEnabled
+        webToolsProvider = WebToolsProvider(stored: config.webToolsProvider)
+        webToolsBaseUrl = config.webToolsBaseUrl
+        hasExistingWebToolsKey = (env.apiKeys.webToolsAPIKey(for: config.id) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
     }
 
     private func save() {
@@ -326,6 +450,10 @@ struct ApiConfigEditorScreen: View {
         entity.temperature = parsedDouble(temperatureText, range: 0...2)
         entity.topP = parsedDouble(topPText, range: 0...1)
         entity.maxOutputTokens = parsedInt(maxTokensText)
+        entity.webToolsEnabled = webToolsEnabled
+        entity.webToolsProvider = webToolsProvider.rawValue
+        // 空串是合法值：默认地址由客户端按 provider 解析，不在这里替用户填死。
+        entity.webToolsBaseUrl = trimmedWebToolsBaseUrl
         entity.updatedAt = now
 
         do {
@@ -333,6 +461,10 @@ struct ApiConfigEditorScreen: View {
             let typedKey = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if !typedKey.isEmpty {
                 try env.apiKeys.setAPIKey(typedKey, for: entity.id)
+            }
+            let typedWebToolsKey = webToolsKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !typedWebToolsKey.isEmpty {
+                try env.apiKeys.setWebToolsAPIKey(typedWebToolsKey, for: entity.id)
             }
             // 「删除全部本地数据」之后重新播种的会话还没有绑定配置（那时一个配置都没有）：
             // 新配置存下来时补一次绑定，否则第一次发消息只会得到「请先为该会话选择 API 配置」。
@@ -360,6 +492,17 @@ struct ApiConfigEditorScreen: View {
             try env.apiKeys.setAPIKey(nil, for: configId)
             hasExistingKey = false
             apiKeyInput = ""
+        } catch {
+            banner = MFAlert(title: L("没能清掉"), message: error.localizedDescription)
+        }
+    }
+
+    private func clearSavedWebToolsKey() {
+        guard let configId else { return }
+        do {
+            try env.apiKeys.setWebToolsAPIKey(nil, for: configId)
+            hasExistingWebToolsKey = false
+            webToolsKeyInput = ""
         } catch {
             banner = MFAlert(title: L("没能清掉"), message: error.localizedDescription)
         }
@@ -417,6 +560,10 @@ struct ApiConfigEditorScreen: View {
 
     // MARK: - 校验与解析
 
+    private var trimmedWebToolsBaseUrl: String {
+        webToolsBaseUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private var canSave: Bool {
         !trimmedName.isEmpty
             && !trimmedBaseUrl.isEmpty
@@ -424,6 +571,16 @@ struct ApiConfigEditorScreen: View {
             && !temperatureInvalid
             && !topPInvalid
             && !maxTokensInvalid
+            && !webToolsBaseInvalid
+    }
+
+    /// 联网工具的地址校验：关掉联网工具时不校验；GENERIC 没有默认地址，必须填；
+    /// 填了就得是可以真正发出去的 http(s) 地址（本机 / 内网 / 带账号密码都由 `WebUrlPolicy` 拦）。
+    private var webToolsBaseInvalid: Bool {
+        guard webToolsEnabled else { return false }
+        if webToolsProvider == .generic && trimmedWebToolsBaseUrl.isEmpty { return true }
+        guard !trimmedWebToolsBaseUrl.isEmpty else { return false }
+        return WebUrlPolicy.check(trimmedWebToolsBaseUrl) != nil
     }
 
     private var temperatureInvalid: Bool { !validatedDouble(temperatureText, range: 0...2) }
@@ -465,15 +622,17 @@ struct ApiConfigEditorScreen: View {
             .fill(Color.secondary.opacity(0.08))
     }
 
-    /// 两个会删东西的确认共用同一个弹窗（同一层视图挂多个 `confirmationDialog` 只有最后一个可靠）。
+    /// 几个会删东西的确认共用同一个弹窗（同一层视图挂多个 `confirmationDialog` 只有最后一个可靠）。
     private enum PendingAction {
         case deleteConfig
         case clearKey
+        case clearWebToolsKey
 
         var title: String {
             switch self {
             case .deleteConfig: return L("删除这个 API 配置？")
             case .clearKey: return L("清掉已保存的 Key？")
+            case .clearWebToolsKey: return L("清掉联网 Key？")
             }
         }
 
@@ -481,6 +640,7 @@ struct ApiConfigEditorScreen: View {
             switch self {
             case .deleteConfig: return L("删除")
             case .clearKey: return L("清掉")
+            case .clearWebToolsKey: return L("清掉")
             }
         }
 
@@ -488,6 +648,7 @@ struct ApiConfigEditorScreen: View {
             switch self {
             case .deleteConfig: return L("这台手机上存的 Key 也会一起删掉。")
             case .clearKey: return L("清掉以后，这个配置就用不了了；重新填一个就行。")
+            case .clearWebToolsKey: return L("清掉以后，联网搜索会复用上面的 API Key；想再单独填就重新输入。")
             }
         }
     }

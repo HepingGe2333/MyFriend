@@ -2,18 +2,22 @@ import Foundation
 import XCTest
 @testable import MyFriend
 
-/// **iOS 模拟器专用**：Kotlin 客户端与 Swift 实现的行为等价性。
+/// **iOS 模拟器专用**：Kotlin 实现真的被接进 App，而且与共享契约一致。
 ///
 /// 为什么要有这一组测试（`swift test` 覆盖不到）：
 ///
 /// 0.12.0 起 iOS App 的 agent 决策走 Kotlin `AgentCoreKit.InProcessAgentCore`（与 Android、
-/// `agentd` 同一份 `:agentcore`），Swift 实现只留给 macOS 的 `swift test`。也就是说
-/// **App 的决策路径在 macOS 上根本编译不进去**，只有在这台模拟器上跑一遍才能证明：
+/// `agentd` 同一份 `:agentcore`）。Swift 实现（`NativeAgentCoreClient`）从 0.12.0 起包在
+/// `#if !os(iOS)` 里，**iOS 构建里根本不存在** —— 所以这组测试只验证两件事：
 ///
 /// 1. 工程真的链上了 `AgentCoreKit`（工厂默认给出 `KotlinAgentCoreClient`，启动日志写
 ///    `agent core: kotlin`，Kotlin/Native 的 ObjC 类已在进程里注册）；
-/// 2. 两条实现跑 `spec/agent-core/cases/*.json` 的输出**逐字段相同** —— 睡眠 / defer 计划 /
-///    主动上限 / 工具参数夹取四个决策全覆盖。
+/// 2. Kotlin 实现跑 `spec/agent-core/cases/*.json` 的输出与契约**逐字段相同** —— 睡眠 /
+///    defer 计划 / 主动上限 / 工具参数夹取四个决策全覆盖。
+///
+/// 「两条实现互相比对」不再在 iOS 上做：Swift 实现只存在于 macOS 的 `swift test`，
+/// 那边用同一批 spec 用例对照（`AgentCoreSpecTests` / `AgentCoreClientTests`）。两端的等价性
+/// 因此由「各自对同一份契约」保证，而不是由 iOS 构建偷偷带一份 Swift 实现来比对。
 ///
 /// 用例文件不是抄来的：工程里对 `spec/agent-core/cases` 建了文件夹引用，测试 bundle 里
 /// 带的就是仓库里那一份（Android 的 `AgentCoreSpecTest` 读同一批文件）。
@@ -25,9 +29,6 @@ import XCTest
 ///   -derivedDataPath .build/DerivedData test
 /// ```
 final class AgentCoreKotlinParityTests: XCTestCase {
-
-    /// Swift 实现（0.12.0 起只给 macOS `swift test` 与这组比对用）。
-    private static let swiftClient: any AgentCoreClient = NativeAgentCoreClient()
 
     /// App 装配真正会拿到的那个「本机实现」。iOS 上它必须是 Kotlin —— 见下面的接线测试。
     private let wired: any AgentCoreClient = AgentCoreClientFactory.makeNative()
@@ -87,47 +88,13 @@ final class AgentCoreKotlinParityTests: XCTestCase {
         for item in try loadCases("sleep-decision") {
             let input = try Self.sleepInput(from: item.input)
             let kotlin = try await wired.sleepDecision(input)
-            let swift = try await Self.swiftClient.sleepDecision(input)
 
-            XCTAssertEqual(kotlin, swift, "[\(item.name)] Kotlin ⇄ Swift 睡眠判定不一致")
-            // 顺带把契约本身钉一下：两条实现都不许偏离 spec。
+            // 把契约本身钉一下：Kotlin 实现不许偏离 spec。
             XCTAssertEqual(kotlin.wake, try item.expect.bool("shouldReply"), "[\(item.name)] wake")
             XCTAssertEqual(kotlin.moodRelaxed, try item.expect.bool("woken"), "[\(item.name)] moodRelaxed")
             XCTAssertEqual(kotlin.marksRead, try item.expect.bool("marksRead"), "[\(item.name)] marksRead")
             XCTAssertEqual(kotlin.asleep, try item.expect.bool("asleep"), "[\(item.name)] asleep")
             XCTAssertEqual(kotlin.dnd, try item.expect.bool("dnd"), "[\(item.name)] dnd")
-        }
-    }
-
-    /// 契约用例之外再补几个边界：跨午夜窗口、阈值刚好等于/差一条、关掉睡眠、免打扰。
-    func testSleepDecisionParityOnExtraInputs() async throws {
-        let inputs: [SleepInput] = [
-            SleepInput(sleepEnabled: true, dndOnSleep: false,
-                       sleepMinutes: 1380, wakeMinutes: 420, nowMinutes: 23 * 60 + 30,
-                       userMessagesInWindow: 0, wakeThreshold: 3),
-            SleepInput(sleepEnabled: true, dndOnSleep: false,
-                       sleepMinutes: 1380, wakeMinutes: 420, nowMinutes: 2 * 60,
-                       userMessagesInWindow: 3, wakeThreshold: 3),
-            SleepInput(sleepEnabled: true, dndOnSleep: false,
-                       sleepMinutes: 1380, wakeMinutes: 420, nowMinutes: 2 * 60,
-                       userMessagesInWindow: 2, wakeThreshold: 3),
-            SleepInput(sleepEnabled: true, dndOnSleep: true,
-                       sleepMinutes: 1380, wakeMinutes: 420, nowMinutes: 2 * 60,
-                       userMessagesInWindow: 10, wakeThreshold: 3),
-            SleepInput(sleepEnabled: false, dndOnSleep: false,
-                       sleepMinutes: nil, wakeMinutes: nil, nowMinutes: 2 * 60,
-                       userMessagesInWindow: 0, wakeThreshold: 3),
-            SleepInput(sleepEnabled: true, dndOnSleep: false,
-                       sleepMinutes: nil, wakeMinutes: nil, nowMinutes: 0,
-                       userMessagesInWindow: 0, wakeThreshold: 0),
-            SleepInput(sleepEnabled: true, dndOnSleep: false,
-                       sleepMinutes: 0, wakeMinutes: 0, nowMinutes: 23 * 60 + 59,
-                       userMessagesInWindow: 1, wakeThreshold: 1)
-        ]
-        for input in inputs {
-            let kotlin = try await wired.sleepDecision(input)
-            let swift = try await Self.swiftClient.sleepDecision(input)
-            XCTAssertEqual(kotlin, swift, "睡眠判定不一致：\(input)")
         }
     }
 
@@ -140,9 +107,7 @@ final class AgentCoreKotlinParityTests: XCTestCase {
             let now = try item.input.int64("now")
 
             let kotlin = try await wired.deferPlan(minutes: minutes, reason: reason, now: now)
-            let swift = try await Self.swiftClient.deferPlan(minutes: minutes, reason: reason, now: now)
 
-            XCTAssertEqual(kotlin, swift, "[\(item.name)] Kotlin ⇄ Swift defer 计划不一致")
             XCTAssertEqual(kotlin.minutes, try item.expect.int("minutes"), "[\(item.name)] minutes")
             XCTAssertEqual(kotlin.reason, try item.expect.string("reason"), "[\(item.name)] reason")
             XCTAssertEqual(kotlin.earliestAt, try item.expect.int64("earliestAt"), "[\(item.name)] earliestAt")
@@ -154,9 +119,10 @@ final class AgentCoreKotlinParityTests: XCTestCase {
     func testDeferPlanParityKeeps64BitTimestamps() async throws {
         for now in [Int64(0), 1_760_000_000_000, 4_102_444_800_000, Int64.max / 2] {
             let kotlin = try await wired.deferPlan(minutes: 45, reason: "在忙", now: now)
-            let swift = try await Self.swiftClient.deferPlan(minutes: 45, reason: "在忙", now: now)
-            XCTAssertEqual(kotlin, swift, "now=\(now) 时两条实现不一致")
+            // Int64 不能被 Kotlin/Native 的桥截成 32 位：earliestAt/latestAt 必须原样往回走。
             XCTAssertEqual(kotlin.earliestAt, now + 45 * 60_000, "now=\(now) 时 earliestAt 不对")
+            XCTAssertEqual(kotlin.latestAt, kotlin.earliestAt + 30 * 60_000, "now=\(now) 时窗口宽度不对")
+            XCTAssertEqual(kotlin.minutes, 45)
         }
     }
 
@@ -168,9 +134,7 @@ final class AgentCoreKotlinParityTests: XCTestCase {
             let moodIntensity = (item.input["mood"] as? [String: Any])?.optionalInt("intensity")
 
             let kotlin = try await wired.proactiveCap(level: level, moodIntensity: moodIntensity)
-            let swift = try await Self.swiftClient.proactiveCap(level: level, moodIntensity: moodIntensity)
 
-            XCTAssertEqual(kotlin, swift, "[\(item.name)] Kotlin ⇄ Swift 主动上限不一致")
             // 协议只回**基础值**（心情修正留在调用点的 MoodBehavior）：与 spec 的 baseDailyCap 对齐。
             XCTAssertEqual(kotlin, try item.expect.int("baseDailyCap"), "[\(item.name)] baseDailyCap")
         }
@@ -180,8 +144,11 @@ final class AgentCoreKotlinParityTests: XCTestCase {
         for level in [-5, -1, 0, 1, 2, 3, 4, 5, 6, 99] {
             for intensity in [nil, 0, 3, 5] {
                 let kotlin = try await wired.proactiveCap(level: level, moodIntensity: intensity)
-                let swift = try await Self.swiftClient.proactiveCap(level: level, moodIntensity: intensity)
-                XCTAssertEqual(kotlin, swift, "level=\(level) intensity=\(String(describing: intensity)) 不一致")
+                // 契约只有一条：夹到 1–5，只按主动程度换算（moodIntensity 不移动基础值）。
+                XCTAssertEqual(
+                    kotlin, min(max(level, 1), 5),
+                    "level=\(level) intensity=\(String(describing: intensity)) 的夹取不对"
+                )
             }
         }
     }
@@ -194,43 +161,44 @@ final class AgentCoreKotlinParityTests: XCTestCase {
             let args = try item.input.object("args").mapValues(AgentCoreJSON.value(from:))
 
             let kotlin = try await wired.clampToolArgs(tool: tool, args: args)
-            let swift = try await Self.swiftClient.clampToolArgs(tool: tool, args: args)
             let expected = try item.expect.object("args").mapValues(AgentCoreJSON.value(from:))
 
-            XCTAssertEqual(kotlin, swift, "[\(item.name)] Kotlin ⇄ Swift 夹取结果不一致")
             XCTAssertEqual(kotlin, expected, "[\(item.name)] 夹取结果与契约不一致")
         }
     }
 
     /// 数值/布尔/空值/嵌套结构跨 ObjC 桥的往返：Kotlin 只夹已知数值键，其余必须原样带回。
     ///
-    /// 这一条专门盯两个已知的桥陷阱：
+    /// 这一条专门盯两个已知的桥陷阱（期望值直接写死，不再和 Swift 实现比）：
     /// - Kotlin 的 `Boolean` 回来是 `KotlinBoolean`（不是 CFBoolean），按数值读会把 true 变成 1；
     /// - Swift `Int` 过去是 Kotlin `Long`，`intArgument` 必须认得出（否则静默用缺省值）。
-    func testClampToolArgsParityOnBridgeEdgeCases() async throws {
-        let cases: [(tool: String, args: [String: JSONValue])] = [
-            (AgentCoreTool.remember, [
-                "content": .string("她说怕冷"),
-                "flag": .bool(true),
-                "off": .bool(false),
-                "nothing": .null,
-                "nested": .object(["a": .int(1), "b": .array([.string("x"), .int(2)])]),
-                "items": .array([.int(1), .string("two"), .bool(true), .null])
-            ]),
-            (AgentCoreTool.remember, ["importance": .double(4.0)]),
-            (AgentCoreTool.remember, ["importance": .string("5")]),
-            (AgentCoreTool.remember, ["importance": .bool(true)]),
-            (AgentCoreTool.remember, ["importance": .null]),
-            (AgentCoreTool.webSearch, ["count": .string("99")]),
-            (AgentCoreTool.webSearch, ["count": .int(-3)]),
-            (AgentCoreTool.webSearch, [:]),
-            (AgentCoreTool.deferReply, ["minutes": .int(1000), "reason": .string(" 在忙 ")]),
-            ("unknown_tool", ["weight": .int(7), "name": .string("n"), "ratio": .double(0.5)])
+    func testClampToolArgsSurvivesTheKotlinBridge() async throws {
+        let edgeArgs: [String: JSONValue] = [
+            "content": .string("她说怕冷"),
+            "flag": .bool(true),
+            "off": .bool(false),
+            "nothing": .null,
+            "nested": .object(["a": .int(1), "b": .array([.string("x"), .int(2)])]),
+            "items": .array([.int(1), .string("two"), .bool(true), .null])
         ]
-        for (tool, args) in cases {
+        let cases: [(tool: String, args: [String: JSONValue], expected: [String: JSONValue])] = [
+            // 非数值的 importance（布尔/null/对象）按「没给」处理 → 缺省值 3。
+            (AgentCoreTool.remember, edgeArgs, edgeArgs.merging(["importance": .int(3)]) { _, new in new }),
+            (AgentCoreTool.remember, ["importance": .double(4.0)], ["importance": .int(4)]),
+            (AgentCoreTool.remember, ["importance": .string("5")], ["importance": .int(5)]),
+            (AgentCoreTool.remember, ["importance": .bool(true)], ["importance": .int(3)]),
+            (AgentCoreTool.remember, ["importance": .null], ["importance": .int(3)]),
+            (AgentCoreTool.webSearch, ["count": .string("99")], ["count": .int(12)]),
+            (AgentCoreTool.webSearch, ["count": .int(-3)], ["count": .int(1)]),
+            (AgentCoreTool.webSearch, [:], ["count": .int(6)]),
+            // 只夹数字：reason 原样保留（trim 是 defer-plan 端点的事，不是工具参数夹取）。
+            (AgentCoreTool.deferReply, ["minutes": .int(1000), "reason": .string(" 在忙 ")], ["minutes": .int(720), "reason": .string(" 在忙 ")]),
+            // 不认识的工具原样返回（拒绝未知工具是服务端 HTTP 层的事）。
+            ("unknown_tool", ["weight": .int(7), "name": .string("n"), "ratio": .double(0.5)], ["weight": .int(7), "name": .string("n"), "ratio": .double(0.5)])
+        ]
+        for (tool, args, expected) in cases {
             let kotlin = try await wired.clampToolArgs(tool: tool, args: args)
-            let swift = try await Self.swiftClient.clampToolArgs(tool: tool, args: args)
-            XCTAssertEqual(kotlin, swift, "tool=\(tool) args=\(args) 时两条实现不一致")
+            XCTAssertEqual(kotlin, expected, "tool=\(tool) args=\(args) 的夹取结果不对")
         }
     }
 

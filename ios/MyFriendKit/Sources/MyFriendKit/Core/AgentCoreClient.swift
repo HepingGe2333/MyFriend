@@ -10,8 +10,10 @@ import Foundation
 //   同一份 `:agentcore` 代码）。只有类型转换，没有判定逻辑。
 // - `NativeAgentCoreClient`：Swift 实现，直接委托 `SleepGate` / `DeferReply` / `ProactiveLevel` /
 //   `ToolArgClamp`。这四个纯函数是**唯一真源**，这里不复制任何判定逻辑，只做参数整形
-//   （与 Android 的 `InProcessAgentCore` 一一对应）。0.12.0 起它只在 macOS `swift test`
-//   （链接不了 iOS framework 的场合）与「模拟器上两条实现互相比对」的测试里被使用。
+//   （与 Android 的 `InProcessAgentCore` 一一对应）。
+//   **0.12.0 起整个类型包在 `#if !os(iOS)` 里，只存在于 macOS 的 `swift test` 构建**
+//   （iOS App 链接不了 macOS 的测试构建，也不需要第二份实现）。iOS 构建里没有可执行的 Swift
+//   决策实现：`AgentCoreNativeFallback` 一律返回 nil，`decide` 失败只记诊断并上抛。
 // - `RemoteAgentCoreClient`：调 `agentd` 的四个 `/v1/core/*` 端点。失败要能被看见
 //   （HTTP 状态、错误体、坏 JSON、超时都翻成 `AgentCoreClientError`）。
 // - `FallbackAgentCoreClient`：先试远程，失败回退本机并记一条日志。
@@ -34,7 +36,9 @@ import Foundation
 //
 // 默认的 `.native` 在 iOS App 构建里就是 Kotlin（`KotlinAgentCoreClient` →
 // `AgentCoreKit.InProcessAgentCore`），启动时日志写一行 `agent core: kotlin`；
-// 在 macOS `swift test` 里是 Swift `NativeAgentCoreClient`（framework 链接不了）。
+// 在 macOS `swift test` 里是 Swift `NativeAgentCoreClient`（那一份只在 macOS 编译）。
+// iOS App 的运行时**只有** Kotlin：Swift 实现、以及所有引用它的回落闭包，都被
+// `#if !os(iOS)` 排除（`AgentCoreNativeFallback` / `AppWiringGuardTests` 守着这件事）。
 //
 // ```
 // # 本机（默认）：零网络请求
@@ -317,9 +321,17 @@ extension AgentCoreClientError: LocalizedError {
     }
 }
 
-// MARK: - 本机实现
+// MARK: - 本机实现（只在 macOS 测试构建里存在）
+
+#if !os(iOS)
 
 /// 本机实现：直接委托 Domain 里的四个纯函数，**一行判定逻辑都不复制**。
+///
+/// **0.12.0 起这个类型只存在于 macOS 的 `swift test` 构建里**：iOS App 的本机实现是
+/// `KotlinAgentCoreClient`（同一份 `:agentcore`），App 的运行时里不应该再链接第二份可执行的
+/// Swift 决策实现。因此整个类型（以及 `AgentCoreNativeFallback` 里引用它的那段）都被
+/// `#if !os(iOS)` 排除；`AgentCoreNativeFallback` 在 iOS 上返回 `nil`，
+/// `decide(endpoint:nativeFallback:_:)` 于是只记诊断并上抛。
 public struct NativeAgentCoreClient: AgentCoreClient {
 
     public init() {}
@@ -425,6 +437,8 @@ public struct NativeAgentCoreClient: AgentCoreClient {
         return out
     }
 }
+
+#endif
 
 // MARK: - 远程实现
 
@@ -775,7 +789,9 @@ public struct FallbackAgentCoreClient: AgentCoreClient {
     public init(
         mode: AgentCoreMode = .remote(preferredFallback: true),
         remote: any AgentCoreClient,
-        native: any AgentCoreClient = NativeAgentCoreClient(),
+        // iOS 上没有 Swift 实现：默认「本机」走工厂（iOS = Kotlin，macOS = Swift）。
+        // 这里不直接写 `NativeAgentCoreClient()`，那样 iOS 构建会编译失败。
+        native: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         log: @escaping @Sendable (String) -> Void = { _ in },
         breaker: AgentCoreCircuitBreaker? = AgentCoreCircuitBreaker()
     ) {
@@ -998,6 +1014,91 @@ public enum AgentCoreClientFactory {
             return nil
         }
         return url
+    }
+}
+
+// MARK: - 本机回落（只在 macOS 测试构建里存在）
+
+/// 调用点用的「Swift 本机回落」。
+///
+/// **iOS App 构建里没有可执行的 Swift 决策实现**：`NativeAgentCoreClient` 整个类型包在
+/// `#if !os(iOS)` 里，所以本枚举在 iOS 上只返回 `nil`。`decide(endpoint:nativeFallback:_:)`
+/// 拿到 nil 时只记诊断并上抛 —— 不会再悄悄回落到 Swift（见 [resolve]）。
+///
+/// 为什么不让调用点自己写 `#if os(iOS)`：四个服务（ChatService / HeartbeatController /
+/// AgentLoop / ToolExecutor）里会各自长一份条件编译；集中在这里之后，「iOS 上有没有 Swift
+/// 回落」只有一个答案，源码守卫测试也只需要盯这一处（`AppWiringGuardTests`）。
+internal enum AgentCoreNativeFallback {
+
+    static func sleepDecision(_ input: SleepInput) -> (@Sendable () -> SleepReplyDecision)? {
+        #if os(iOS)
+        return nil
+        #else
+        return { NativeAgentCoreClient().sleepDecisionNow(input).replyDecision }
+        #endif
+    }
+
+    static func deferPlan(minutes: Int?, reason: String?, now: Int64) -> (@Sendable () -> DeferPlan)? {
+        #if os(iOS)
+        return nil
+        #else
+        return { NativeAgentCoreClient().deferPlanNow(minutes: minutes, reason: reason, now: now) }
+        #endif
+    }
+
+    static func proactiveCap(level: Int, moodIntensity: Int?) -> (@Sendable () -> Int)? {
+        #if os(iOS)
+        return nil
+        #else
+        return { NativeAgentCoreClient().proactiveCapNow(level: level, moodIntensity: moodIntensity) }
+        #endif
+    }
+
+    static func clampToolArgs(
+        tool: String,
+        args: [String: JSONValue]
+    ) -> (@Sendable () -> [String: JSONValue])? {
+        #if os(iOS)
+        return nil
+        #else
+        return { NativeAgentCoreClient().clampToolArgsNow(tool: tool, args: args) }
+        #endif
+    }
+
+    /// 心跳 / 主动循环在 `decide` 失败后仍然要一个 `baseCap`（不能整拍停摆）。
+    ///
+    /// iOS：用 Kotlin 客户端再算一次（与默认本机实现同一份 `:agentcore`；Kotlin 不抛错，
+    /// `try?` 只是防御），最后再退到共享域函数 `ProactiveLevel.dailyCap`。
+    /// macOS：还是 Swift 实现（`swift test` 的对照物）。
+    static func proactiveCapAfterStrictFailure(level: Int, moodIntensity: Int?) async -> Int {
+        #if os(iOS)
+        if let cap = try? await KotlinAgentCoreClient().proactiveCap(level: level, moodIntensity: moodIntensity) {
+            return cap
+        }
+        return ProactiveLevel.dailyCap(level)
+        #else
+        return NativeAgentCoreClient().proactiveCapNow(level: level, moodIntensity: moodIntensity)
+        #endif
+    }
+
+    /// `decide(endpoint:nativeFallback:_:)` 的失败处理 —— iOS 与 macOS 的语义差别只在这里。
+    ///
+    /// - iOS：没有 Swift 回落，记录（由调用方做）之后直接上抛。
+    /// - macOS：严格模式上抛；带回退模式用 `fallback`（为 nil 时也上抛）。
+    static func resolve<T>(
+        _ error: Error,
+        strict: Bool,
+        fallback: (@Sendable () -> T)?
+    ) throws -> T {
+        #if os(iOS)
+        // iOS App 的运行时只有 Kotlin 本机实现（它不会失败）；能走到这里说明是远程失败之类
+        // 需要被看见的异常 —— 按「失败可见」处理，绝不回落到 Swift。
+        throw error
+        #else
+        if strict { throw error }
+        guard let fallback else { throw error }
+        return fallback()
+        #endif
     }
 }
 

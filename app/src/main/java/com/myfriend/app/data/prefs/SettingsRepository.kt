@@ -93,12 +93,18 @@ class SettingsRepository @Inject constructor(
     }
     suspend fun setHapticsEnabled(enabled: Boolean) = edit { it[Keys.haptics] = enabled }
 
-    suspend fun resetAll() {
-        // Preserve the seed marker so deleting all data does not resurrect sample personas.
+    /**
+     * 清空所有设置。
+     *
+     * [preserveSeedMarker] 默认 `true`：普通「重置设置」不应该把示例人格再播回来。
+     * 「删除全部数据」传 `false` —— 那是「这台手机上的你重新开始」，与 iOS 对齐：
+     * 清完之后按当前语言重新播种三个人格，而不是得到一个空白 App。
+     */
+    suspend fun resetAll(preserveSeedMarker: Boolean = true) {
         val seeded = context.settingsDataStore.data.first()[Keys.seeded] ?: false
         context.settingsDataStore.edit {
             it.clear()
-            if (seeded) it[Keys.seeded] = true
+            if (preserveSeedMarker && seeded) it[Keys.seeded] = true
         }
     }
 

@@ -204,6 +204,46 @@ class SchemaVersionTest {
         assertTrue("MIGRATION_10_11 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_10_11"))
     }
 
+    /**
+     * v12：`api_configs.webToolsProvider`（`spec/web-search/README.md` §1）。
+     *
+     * 规范把列名、类型、默认值写死了；默认值写错（例如 `DEEPSEEK` 少了引号）在 SQLite 里
+     * 不会报错，只会让老库升级后读出一个空字符串，然后被 provider 归一化悄悄退回 DEEPSEEK——
+     * 看起来「能用」，实际是把规范里的默认值丢了。这里逐项钉住。
+     */
+    @Test
+    fun `v12 的 schema 里有 webToolsProvider 且默认值是 DEEPSEEK`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "12.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+        val apiConfigs = entities.first { it["tableName"]!!.jsonPrimitive.content == "api_configs" }
+        val fields = apiConfigs["fields"]!!.jsonArray.map { it.jsonObject }
+        val provider = fields.firstOrNull { it["columnName"]!!.jsonPrimitive.content == "webToolsProvider" }
+            ?: error("v12 的 api_configs 里没有 webToolsProvider 列")
+        assertEquals("webToolsProvider 必须是 TEXT", "TEXT", provider["affinity"]!!.jsonPrimitive.content)
+        assertEquals("webToolsProvider 必须 NOT NULL", true, provider["notNull"]!!.jsonPrimitive.boolean)
+        assertEquals(
+            "webToolsProvider 的默认值必须是 'DEEPSEEK'（含 SQL 引号）",
+            "'DEEPSEEK'",
+            provider["defaultValue"]!!.jsonPrimitive.content
+        )
+    }
+
+    @Test
+    fun `MIGRATION_11_12 幂等且注册进了 Room`() {
+        val text = databaseSource.readText()
+        val start = text.indexOf("MIGRATION_11_12 = object : Migration(11, 12)")
+        assertTrue("没找到 MIGRATION_11_12 的声明", start >= 0)
+        val block = text.substring(start, minOf(text.length, start + 900))
+        assertTrue("加列前要先查 PRAGMA table_info", block.contains("PRAGMA table_info"))
+        assertTrue(
+            "DDL 必须与规范逐字一致",
+            block.contains(
+                "ALTER TABLE `api_configs` ADD COLUMN `webToolsProvider` TEXT NOT NULL DEFAULT 'DEEPSEEK'"
+            )
+        )
+        assertTrue("MIGRATION_11_12 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_11_12"))
+    }
+
     // ---------------------------------------------------------------- 解析源码
 
     private data class DeclaredMigration(val from: Int, val to: Int)

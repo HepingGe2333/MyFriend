@@ -3,7 +3,7 @@ import Foundation
 
 /// iOS 侧的「黄金样本」。
 ///
-/// - `iosBundle()`：**v3**（0.12）结构，写进 `fixtures/backup/ios-export-v3.json`，
+/// - `iosBundle()`：**v4**（0.12）结构，写进 `fixtures/backup/ios-export-v4.json`，
 ///   Android 的 `BackupFixtureTest` 用它验证「iOS 导出的备份 Android 接得住」；
 /// - 值全部是 iOS 自己造的（名字、id 都不同），并且**每个可选字段都填上**：
 ///   「所有可选字段都非 nil」的样本能顺带检查「编码时字段一个不多一个不少」
@@ -12,7 +12,7 @@ import Foundation
 ///   带 padding、不换行，两端都能真的解码出一张图，而不是一段假字符串。
 ///
 /// v1/v2 的样本（`ios-export-v1.json` / `android-export-v1.json` / `*-export-v2.json`）
-/// 留在仓库里当**输入**：v3 必须能读它们（「必须能读旧备份」），但不再写新的 v1/v2。
+/// 留在仓库里当**输入**：v4 必须能读它们（「必须能读旧备份」），但不再写新的 v1/v2/v3。
 enum BackupSamples {
 
     /// 样本里那张 2×2 的 jpeg（632 字节）。
@@ -33,7 +33,7 @@ enum BackupSamples {
     /// 完整样本（v3）：9 段全非空 + 设置段在内 + 人格的 9 个细分字段 + 2 张真图。
     static func iosBundle() -> BackupBundle {
         BackupBundle(
-            appVersion: "0.10.2-ios",
+            appVersion: "0.12.0-ios",
             exportedAt: now,
             personas: [
                 BackupPersona(
@@ -281,7 +281,10 @@ enum BackupSamples {
                     frequencyPenalty: 0.1,
                     presencePenalty: 0.2,
                     webToolsEnabled: true,
-                    webToolsBaseUrl: "https://api.deepseek.com",
+                    // v4：样本刻意用一个**非默认**的 provider，证明「导出总是写」，
+                    // 而不是靠缺字段默认值蒙混过关。
+                    webToolsProvider: "TAVILY",
+                    webToolsBaseUrl: "https://api.tavily.com",
                     createdAt: now - 172_800_000,
                     updatedAt: now - 86_400_000
                 )

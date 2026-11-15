@@ -255,6 +255,72 @@ final class ToolExecutorTests: XCTestCase {
         XCTAssertEqual(root["query"] as? String, "今天的重要新闻")
     }
 
+    // MARK: - 0.12：五个搜索服务接线
+
+    /// TAVILY：base 留空用规范默认地址；没有联网专用 Key 时复用主 Key。
+    func testWebSearchUsesTavilyDefaultBaseAndFallsBackToMainKey() async throws {
+        try temp.stores.apiConfigs.upsert(ApiConfigEntity(
+            id: "config-1", name: "测试配置", provider: .openai,
+            baseUrl: "https://api.example.com", model: "deepseek-chat",
+            webToolsEnabled: true, webToolsProvider: "TAVILY", webToolsBaseUrl: ""
+        ))
+        try apiKeys.setAPIKey("sk-main", for: "config-1")
+        StubURLProtocol.enqueue(.json("""
+        {"results":[{"title":"塔维利","url":"https://example.com/t","content":"摘要"}]}
+        """))
+
+        let result = await run("web_search", arguments: ["query": "今天", "count": 2])
+        XCTAssertTrue(result.ok, result.errorMessage ?? "")
+        XCTAssertTrue(result.contentForModel.contains("https://example.com/t"))
+        XCTAssertEqual(StubURLProtocol.recordedRequests.first?.url?.absoluteString,
+                       "https://api.tavily.com/search")
+        let body = try XCTUnwrap(StubURLProtocol.recordedBodies.first)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertEqual(json["api_key"] as? String, "sk-main", "联网 Key 留空时复用主 Key")
+        XCTAssertEqual(json["max_results"] as? Int, 2)
+    }
+
+    /// 缺 Key 时不能再报「这个人格还没有开启联网」：那是另一件事，会让用户去开关里瞎找。
+    func testWebSearchMissingKeyIsAnExplicitKeyError() async throws {
+        try temp.stores.apiConfigs.upsert(ApiConfigEntity(
+            id: "config-1", name: "测试配置", provider: .openai,
+            baseUrl: "https://api.example.com", model: "deepseek-chat",
+            webToolsEnabled: true, webToolsProvider: "DEEPSEEK",
+            webToolsBaseUrl: "https://api.deepseek.com"
+        ))
+        let result = await run("web_search", arguments: ["query": "今天"])
+        XCTAssertFalse(result.ok)
+        XCTAssertNotEqual(result.errorMessage, "这个人格还没有开启联网")
+        XCTAssertTrue(result.errorMessage?.contains("API Key") == true, result.errorMessage ?? "")
+        XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "没有 Key 不该发请求")
+    }
+
+    /// 非 DEEPSEEK 的 web_fetch 由本端 GET，HTML 去掉标签后回灌给模型；工具结果文本形状不变。
+    func testWebFetchClientSideStripsHTMLAndKeepsResultShape() async throws {
+        try temp.stores.apiConfigs.upsert(ApiConfigEntity(
+            id: "config-1", name: "测试配置", provider: .openai,
+            baseUrl: "https://api.example.com", model: "deepseek-chat",
+            webToolsEnabled: true, webToolsProvider: "SERPER",
+            webToolsBaseUrl: "https://google.serper.dev"
+        ))
+        try apiKeys.setWebToolsAPIKey("sk-web", for: "config-1")
+        StubURLProtocol.enqueue(.json(
+            "<html><head><title>一篇文章</title><style>x{}</style></head><body>" +
+            "<script>alert(1)</script><p>正文第一段</p><p>正文第二段</p></body></html>"
+        ))
+        let result = await run("web_fetch", arguments: ["url": "https://example.com/post"])
+        XCTAssertTrue(result.ok, result.errorMessage ?? "")
+        XCTAssertEqual(result.traceTitle, "读了网页")
+        XCTAssertTrue(result.contentForModel.contains("《一篇文章》"))
+        XCTAssertTrue(result.contentForModel.contains("https://example.com/post"))
+        XCTAssertTrue(result.contentForModel.contains("正文第一段"))
+        XCTAssertFalse(result.contentForModel.contains("<p>"), "HTML 标签要去掉")
+        XCTAssertFalse(result.contentForModel.contains("alert(1)"), "脚本要去掉")
+        let request = try XCTUnwrap(StubURLProtocol.recordedRequests.first)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "MyFriend/1.0")
+    }
+
     // MARK: - 夹具
 
     private func enableWebTools() async throws {

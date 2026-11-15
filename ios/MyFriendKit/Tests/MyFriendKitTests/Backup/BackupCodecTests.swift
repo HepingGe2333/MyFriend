@@ -45,17 +45,17 @@ final class BackupCodecTests: XCTestCase {
         let reason = try? XCTUnwrap(result.failureReason)
         XCTAssertTrue(reason?.contains("v99") ?? false)
         XCTAssertTrue(reason?.contains("升级") ?? false)
-        XCTAssertTrue(reason?.contains("v3") ?? false)
+        XCTAssertTrue(reason?.contains("v4") ?? false)
     }
 
     func testLowerFormatVersionDecodesWithWarning() throws {
         let result = try success(#"{"format":"myfriend.backup","formatVersion":0,"personas":[{"id":"p1"}]}"#)
         XCTAssertEqual(result.bundle?.personas.count, 1)
-        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v3 尽力读出来"))
+        XCTAssertTrue(result.warnings.contains("备份格式是 v0，已按 v4 尽力读出来"))
         // v1 及更早的备份还要多一句：旧开关不再生效、一人只留最新一段（§八）。
         XCTAssertTrue(result.warnings.contains { $0.contains("1.9 之前的备份") })
         // 读进来以后统一按本机版本记，再导出不会把 v0 传下去。
-        XCTAssertEqual(result.bundle?.formatVersion, 3)
+        XCTAssertEqual(result.bundle?.formatVersion, 4)
     }
 
     // MARK: - 宽容：缺字段 / 未知字段 / 部分损坏
@@ -67,7 +67,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(bundle.messages.count, 0)
         XCTAssertNil(bundle.settings, "没写设置就不该覆盖本机设置")
         XCTAssertEqual(bundle.format, "myfriend.backup")
-        XCTAssertEqual(bundle.formatVersion, 3)
+        XCTAssertEqual(bundle.formatVersion, 4)
         XCTAssertTrue(result.warnings.contains("这份备份里没有他：既没有人格也没有记忆和对话"))
     }
 
@@ -75,7 +75,7 @@ final class BackupCodecTests: XCTestCase {
         let raw = """
         {
           "format": "myfriend.backup",
-          "formatVersion": 3,
+          "formatVersion": 4,
           "futureSection": [1, 2, 3],
           "personas": [
             {"id": "p1", "name": "他", "futureField": {"nested": [1, 2]}}
@@ -212,6 +212,29 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertFalse(result.warnings.contains { $0.contains("设置") })
     }
 
+    // MARK: - v4：apiConfigs[].webToolsProvider
+
+    /// v1–v3 的备份里没有这一列：必须读成 DEEPSEEK，而不是报错或变成空串。
+    func testApiConfigProviderDefaultsToDeepSeekWhenAbsent() throws {
+        let raw = #"{"format":"myfriend.backup","formatVersion":3,"apiConfigs":[{"id":"c1","name":"旧配置"}]}"#
+        let config = try XCTUnwrap(try success(raw).bundle?.apiConfigs.first)
+        XCTAssertEqual(config.webToolsProvider, "DEEPSEEK")
+    }
+
+    /// v4 写出去一定要带 provider（即使等于默认值），读回来保持一致。
+    func testApiConfigProviderIsAlwaysWrittenAndRoundTrips() throws {
+        var bundle = BackupSamples.iosBundle()
+        bundle.apiConfigs = [
+            BackupApiConfig(id: "c1", name: "默认", webToolsProvider: "DEEPSEEK"),
+            BackupApiConfig(id: "c2", name: "自建", webToolsProvider: "GENERIC")
+        ]
+        let json = try BackupCodec.encode(bundle)
+        XCTAssertTrue(json.contains("\"webToolsProvider\":\"DEEPSEEK\""), "默认值也要写（规范 §6）")
+        XCTAssertTrue(json.contains("\"webToolsProvider\":\"GENERIC\""))
+        let decoded = try XCTUnwrap(BackupCodec.decode(json).bundle)
+        XCTAssertEqual(decoded.apiConfigs.map(\.webToolsProvider), ["DEEPSEEK", "GENERIC"])
+    }
+
     // MARK: - 密钥：结构里没有，导出前再查一遍
 
     func testSecretMarkerTableMatchesAndroid() {
@@ -338,7 +361,8 @@ final class BackupCodecTests: XCTestCase {
             try keys(of: "apiConfigs"),
             ["id", "name", "provider", "baseUrl", "model",
              "allowInsecureHttp", "temperature", "topP", "maxOutputTokens",
-             "frequencyPenalty", "presencePenalty", "webToolsEnabled", "webToolsBaseUrl",
+             "frequencyPenalty", "presencePenalty", "webToolsEnabled", "webToolsProvider",
+             "webToolsBaseUrl",
              "createdAt", "updatedAt"]
         )
 

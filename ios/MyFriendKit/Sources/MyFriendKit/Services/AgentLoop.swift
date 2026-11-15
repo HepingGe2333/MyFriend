@@ -97,7 +97,7 @@ public final class AgentLoop {
         ticks: AgentTickStoring,
         presence: PresenceRepository,
         mood: MoodRepository,
-        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
+        agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         random: @escaping () -> Double = { Double.random(in: 0..<1) },
         openSessionId: @escaping () -> String? = { nil },
@@ -181,20 +181,27 @@ public final class AgentLoop {
         // 0.11.1 审计 P2-1：严格模式失败会记进 `AgentCoreDiagnostics`（计数 + 可见日志）
         // 并抛出来，这里用 `try?` 收住是为了「一次心跳不因为内核不可用而整拍停摆」；
         // 严格模式本身已经把失败变得可观测，不再是无声的假回退。
-        let baseCap = (try? await agentCore.decide(
+        // iOS 上没有 Swift 回落（`AgentCoreNativeFallback.proactiveCap` 返回 nil），
+        // 失败后仍然要一个 baseCap：用 Kotlin（与默认本机实现同一份 `:agentcore`）再算一次。
+        let decidedCap = try? await agentCore.decide(
             endpoint: "proactive-cap",
-            nativeFallback: {
-                NativeAgentCoreClient().proactiveCapNow(
-                    level: persona.proactiveLevel, moodIntensity: moodState.intensity
-                )
-            }
+            nativeFallback: AgentCoreNativeFallback.proactiveCap(
+                level: persona.proactiveLevel, moodIntensity: moodState.intensity
+            )
         ) {
             try await agentCore.proactiveCap(
                 level: persona.proactiveLevel, moodIntensity: moodState.intensity
             )
-        }) ?? NativeAgentCoreClient().proactiveCapNow(
-            level: persona.proactiveLevel, moodIntensity: moodState.intensity
-        )
+        }
+        let baseCap: Int
+        if let decidedCap {
+            baseCap = decidedCap
+        } else {
+            // `??` 的右侧是 autoclosure，不能在这里 await —— 失败路径必须显式写出来。
+            baseCap = await AgentCoreNativeFallback.proactiveCapAfterStrictFailure(
+                level: persona.proactiveLevel, moodIntensity: moodState.intensity
+            )
+        }
         let dailyCap = MoodBehavior.effectiveDailyCap(baseCap: baseCap, tuning: tuning)
 
         let contextText = buildContext(

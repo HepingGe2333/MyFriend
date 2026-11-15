@@ -234,17 +234,45 @@ final class MediaStorageTests: XCTestCase {
     }
 
     func testDeleteRemovesFileButKeepsOthers() throws {
+        // 两张**不同**的图（尺寸不同 → 压缩后字节不同）：删一张不能连带删另一张。
         let first = try storage.saveImage(data: makeJPEG(width: 200, height: 200), kind: .chatImage)
-        let second = try storage.saveImage(data: makeJPEG(width: 200, height: 200), kind: .chatImage)
+        let second = try storage.saveImage(data: makeJPEG(width: 240, height: 240), kind: .chatImage)
 
         XCTAssertTrue(storage.fileExists(first))
         XCTAssertTrue(storage.fileExists(second))
+        XCTAssertNotEqual(first.uri, second.uri)
         storage.delete(first)
         XCTAssertFalse(storage.fileExists(first))
         XCTAssertTrue(storage.fileExists(second))
 
         storage.deleteAttachments(in: AttachmentsCodec.encode([second]))
         XCTAssertFalse(storage.fileExists(second))
+    }
+
+    /// 重复选同一张图：压缩后的 SHA-256 相同 → 复用同一个文件（不新增表）。
+    func testSaveImageDeduplicatesSameContentByHash() throws {
+        let jpeg = try makeJPEG(width: 600, height: 400)
+        let first = try storage.saveImage(data: jpeg, kind: .chatImage)
+        let second = try storage.saveImage(data: jpeg, kind: .chatImage)
+
+        XCTAssertEqual(first.uri, second.uri, "同一张图两次落盘应当复用同一个文件")
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: storage.directory.path).count, 1,
+            "目录里只该有一个文件"
+        )
+        let name = (first.uri as NSString).lastPathComponent
+        let hash = ImageContentHash.shortPrefix(try Data(contentsOf: XCTUnwrap(storage.fileURL(for: first.uri))))
+        XCTAssertTrue(name.hasPrefix("chatImage-\(hash)-"), "文件名要带 SHA-256 前缀：\(name)")
+    }
+
+    /// 不同图仍然各存一份（去重不能把内容不一样的图合并）。
+    func testDifferentImagesAreNotDeduplicated() throws {
+        let first = try storage.saveImage(data: makeJPEG(width: 300, height: 200), kind: .chatImage)
+        let second = try storage.saveImage(data: makeJPEG(width: 301, height: 200), kind: .chatImage)
+        XCTAssertNotEqual(first.uri, second.uri)
+        XCTAssertEqual(
+            try FileManager.default.contentsOfDirectory(atPath: storage.directory.path).count, 2
+        )
     }
 
     func testTotalBytesOnDiskTracksStoredFiles() throws {

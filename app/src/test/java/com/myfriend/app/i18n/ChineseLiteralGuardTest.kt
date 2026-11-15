@@ -84,8 +84,8 @@ class ChineseLiteralGuardTest {
         "src/main/java/com/myfriend/app/data/repo/WebSearchScorer.kt" to
             "网页打分/记笔记提示词与留痕",
         // ---- 网络层：回灌给模型的内容 / 日志 ----
-        "src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt" to
-            "抓回来的网页正文的截断标记：属于回灌给模型的正文，不是界面文案",
+        "src/main/java/com/myfriend/app/network/WebSearchClient.kt" to
+            "抓回来的网页正文的截断标记与日志：正文回灌给模型，日志不进界面",
     )
 
     @Test

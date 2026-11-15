@@ -28,8 +28,8 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV11() throws {
-        XCTAssertEqual(Schema.version, 11, "v11 = 分块历史（messages.blockIndex + message_blocks）")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV12() throws {
+        XCTAssertEqual(Schema.version, 12, "v12 = 搜索服务选择（api_configs.webToolsProvider）")
         XCTAssertEqual(Schema.tables.count, 13, "13 张记录型表")
         XCTAssertEqual(Schema.supplementaryTables.count, 2, "两张服务层用表")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
@@ -41,7 +41,7 @@ final class SQLiteStoreTests: XCTestCase {
         }
         // 规范点名要有的那张表（块分页与迁移都依赖它）。
         XCTAssertTrue(names.contains("message_blocks"), "v11 必须建 message_blocks")
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
     }
 
     /// 建表语句的列顺序必须与实体映射的绑定顺序一致；
@@ -115,7 +115,8 @@ final class SQLiteStoreTests: XCTestCase {
             createdAt: 1_700_000_000_000,
             updatedAt: 1_700_000_100_000,
             webToolsEnabled: true,
-            webToolsBaseUrl: "https://api.deepseek.com",
+            webToolsProvider: "TAVILY",
+            webToolsBaseUrl: "https://api.tavily.com",
             webToolsApiKeyCipher: "keychain-ref-2"
         )
         try stores.apiConfigs.upsert(config)
@@ -316,7 +317,7 @@ final class SQLiteStoreTests: XCTestCase {
 
         let reopened = try DatabaseStores.open(path: databaseURL.path)
         XCTAssertEqual(try reopened.memories.byId(memory.id), memory)
-        XCTAssertEqual(try reopened.database.userVersion(), 11)
+        XCTAssertEqual(try reopened.database.userVersion(), 12)
         stores = reopened
     }
 
@@ -326,7 +327,7 @@ final class SQLiteStoreTests: XCTestCase {
         try stores.memories.upsert(memory)
         try Schema.create(stores.database)
         XCTAssertEqual(try stores.memories.byId(memory.id), memory)
-        XCTAssertEqual(try stores.database.userVersion(), 11)
+        XCTAssertEqual(try stores.database.userVersion(), 12)
     }
 
     // MARK: - 样例

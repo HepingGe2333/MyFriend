@@ -194,7 +194,7 @@ public final class ChatService {
         log: ((String) -> Void)? = nil,
         languageDirective: (() -> String?)? = nil,
         media: MediaStorage = .shared,
-        agentCore: any AgentCoreClient = NativeAgentCoreClient(),
+        agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.stores = stores
@@ -499,7 +499,7 @@ public final class ChatService {
             // 普通 `remote` 模式仍静默回退本机（每次失败由 `FallbackAgentCoreClient` 记日志）。
             let sleepDecision = try await agentCore.decide(
                 endpoint: "sleep-decision",
-                nativeFallback: { NativeAgentCoreClient().sleepDecisionNow(sleepInput).replyDecision }
+                nativeFallback: AgentCoreNativeFallback.sleepDecision(sleepInput)
             ) {
                 try await agentCore.sleepDecision(sleepInput).replyDecision
             }
@@ -613,11 +613,9 @@ public final class ChatService {
                     // 失败时的兜底只为「严格远程」联调模式准备，正常装配下有 Fallback 顶着。
                     let plan = try await agentCore.decide(
                         endpoint: "defer-plan",
-                        nativeFallback: {
-                            NativeAgentCoreClient().deferPlanNow(
-                                minutes: deferMinutes, reason: deferReason, now: deferAt
-                            )
-                        }
+                        nativeFallback: AgentCoreNativeFallback.deferPlan(
+                            minutes: deferMinutes, reason: deferReason, now: deferAt
+                        )
                     ) {
                         try await agentCore.deferPlan(
                             minutes: deferMinutes, reason: deferReason, now: deferAt

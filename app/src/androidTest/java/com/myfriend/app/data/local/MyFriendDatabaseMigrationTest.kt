@@ -224,13 +224,14 @@ class MyFriendDatabaseMigrationTest {
             .addMigrations(
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
-                MyFriendDatabase.MIGRATION_10_11
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 11, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 12, opened.version)
             room.query("SELECT title FROM chat_sessions WHERE id = ?", arrayOf("session-1")).use { cursor ->
                 assertTrue("Room 打开后旧会话应该还在", cursor.moveToFirst())
                 assertEquals("旧会话", cursor.getString(0))
@@ -351,13 +352,14 @@ class MyFriendDatabaseMigrationTest {
             .addMigrations(
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
-                MyFriendDatabase.MIGRATION_10_11
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 11, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", 12, opened.version)
             room.query("SELECT COUNT(*) FROM personas", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals(2, cursor.getInt(0))
@@ -572,7 +574,8 @@ class MyFriendDatabaseMigrationTest {
             MyFriendDatabase.MIGRATION_7_8,
             MyFriendDatabase.MIGRATION_8_9,
             MyFriendDatabase.MIGRATION_9_10,
-            MyFriendDatabase.MIGRATION_10_11
+            MyFriendDatabase.MIGRATION_10_11,
+            MyFriendDatabase.MIGRATION_11_12
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -740,13 +743,14 @@ class MyFriendDatabaseMigrationTest {
             .addMigrations(
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
-                MyFriendDatabase.MIGRATION_10_11
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 11", 11, opened.version)
+            assertEquals("Room 打开后 user_version 应该是 12", 12, opened.version)
             room.query("SELECT COUNT(*) FROM messages", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals("Room 打开后消息一条不少", 450, cursor.getInt(0))
@@ -760,6 +764,157 @@ class MyFriendDatabaseMigrationTest {
             room.close()
         }
     }
+
+    // ---------- v11 → v12：搜索 provider ----------
+
+    @Test
+    fun migrate11To12_保留配置与联网字段并给默认provider() {
+        val db = createV11DatabaseWithConfig()
+
+        MyFriendDatabase.MIGRATION_11_12.migrate(db)
+
+        assertTrue("v12 应该给 api_configs 加上 webToolsProvider", "webToolsProvider" in db.columnNames("api_configs"))
+        db.query(
+            "SELECT name, baseUrl, webToolsEnabled, webToolsBaseUrl, webToolsApiKeyCipher, webToolsProvider FROM api_configs WHERE id = 'config-1'"
+        ).use { cursor ->
+            assertTrue("迁移把 API 配置弄丢了", cursor.moveToFirst())
+            assertEquals("config-1", cursor.getString(0))
+            assertEquals("https://api.example.com", cursor.getString(1))
+            assertEquals(1, cursor.getInt(2))
+            assertEquals("https://search.example.com", cursor.getString(3))
+            assertEquals("LOCAL-WEB-CIPHER", cursor.getString(4))
+            assertEquals("老配置必须默认走 DEEPSEEK", "DEEPSEEK", cursor.getString(5))
+        }
+    }
+
+    @Test
+    fun migrate11To12_空库也能迁移() {
+        val db = createV11DatabaseWithConfig(insertConfig = false)
+
+        MyFriendDatabase.MIGRATION_11_12.migrate(db)
+
+        assertTrue("空库也要加列", "webToolsProvider" in db.columnNames("api_configs"))
+        assertEquals(0, db.count("api_configs"))
+    }
+
+    @Test
+    fun migrate11To12_重复执行是幂等的() {
+        val db = createV11DatabaseWithConfig()
+
+        MyFriendDatabase.MIGRATION_11_12.migrate(db)
+        // 迁移后再把 provider 改成 TAVILY：重复执行不能把用户的选择重置成默认值。
+        db.execSQL("UPDATE api_configs SET webToolsProvider = 'TAVILY' WHERE id = 'config-1'")
+
+        MyFriendDatabase.MIGRATION_11_12.migrate(db)
+
+        db.query("SELECT webToolsProvider FROM api_configs WHERE id = 'config-1'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("重复迁移不该覆盖已有 provider", "TAVILY", cursor.getString(0))
+        }
+        assertEquals(1, db.count("api_configs"))
+    }
+
+    /**
+     * 最关键的一条：让 Room 自己打开 v11 旧库（11 → 12 + onValidateSchema）。
+     * 表校验会比对列类型与默认值，DDL 与 Entities 对不上就会红。
+     */
+    @Test
+    fun migrate11To12_Room打开旧库时表校验通过() {
+        createV11DatabaseWithConfig()
+        closeAllHelpers()
+
+        val room = Room.databaseBuilder(context, MyFriendDatabase::class.java, DB_NAME)
+            .addMigrations(
+                MyFriendDatabase.MIGRATION_8_9,
+                MyFriendDatabase.MIGRATION_9_10,
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12
+            )
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val opened = room.openHelper.writableDatabase
+            assertEquals("Room 打开后 user_version 应该是 12", 12, opened.version)
+            room.query("SELECT webToolsProvider FROM api_configs WHERE id = 'config-1'", emptyArray()).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("DEEPSEEK", cursor.getString(0))
+            }
+        } finally {
+            room.close()
+        }
+    }
+
+    @Test
+    fun provider读写往返_切换时候保留地址与密文() = kotlinx.coroutines.runBlocking {
+        val room = Room.inMemoryDatabaseBuilder(context, MyFriendDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        try {
+            val dao = room.apiConfigDao()
+            val original = testApiConfig()
+            dao.insert(original)
+            assertEquals("DEEPSEEK", dao.getById("config-1")?.webToolsProvider)
+
+            // 模拟设置页切换 provider：只换这一列，地址与密文保持原值。
+            dao.update(original.copy(webToolsProvider = "TAVILY"))
+            val switched = dao.getById("config-1") ?: error("配置不见了")
+            assertEquals("TAVILY", switched.webToolsProvider)
+            assertEquals("https://search.example.com", switched.webToolsBaseUrl)
+            assertEquals("LOCAL-WEB-CIPHER", switched.webToolsApiKeyCipher)
+        } finally {
+            room.close()
+        }
+    }
+
+    /** 造一个 v11 库：v8 → 真实迁移到 v11，再写入一条带联网字段的配置。 */
+    private fun createV11DatabaseWithConfig(insertConfig: Boolean = true): SupportSQLiteDatabase {
+        val db = createLegacyDatabase(version = 8, ddl = V8_FULL_SCHEMA)
+        MyFriendDatabase.MIGRATION_8_9.migrate(db)
+        MyFriendDatabase.MIGRATION_9_10.migrate(db)
+        MyFriendDatabase.MIGRATION_10_11.migrate(db)
+        db.execSQL("PRAGMA user_version = 11")
+        if (insertConfig) {
+            db.execSQL(
+                """
+                INSERT INTO api_configs (
+                    id, name, provider, baseUrl, apiKeyCipher, model, customHeadersJson,
+                    allowInsecureHttp, temperature, topP, maxOutputTokens, frequencyPenalty,
+                    presencePenalty, createdAt, updatedAt, webToolsEnabled, webToolsBaseUrl,
+                    webToolsApiKeyCipher
+                ) VALUES (
+                    'config-1', 'config-1', 'OPENAI', 'https://api.example.com', NULL, 'gpt-test', '{}',
+                    0, NULL, NULL, NULL, NULL,
+                    NULL, 1700000000000, 1700000000000, 1, 'https://search.example.com',
+                    'LOCAL-WEB-CIPHER'
+                )
+                """.trimIndent()
+            )
+        }
+        return db
+    }
+
+    private fun testApiConfig(): com.myfriend.app.data.local.ApiConfigEntity =
+        com.myfriend.app.data.local.ApiConfigEntity(
+            id = "config-1",
+            name = "config-1",
+            provider = com.myfriend.app.data.local.ProviderType.OPENAI,
+            baseUrl = "https://api.example.com",
+            apiKeyCipher = null,
+            model = "gpt-test",
+            customHeadersJson = "{}",
+            allowInsecureHttp = false,
+            temperature = null,
+            topP = null,
+            maxOutputTokens = null,
+            frequencyPenalty = null,
+            presencePenalty = null,
+            createdAt = 1_700_000_000_000L,
+            updatedAt = 1_700_000_000_000L,
+            webToolsEnabled = true,
+            webToolsBaseUrl = "https://search.example.com",
+            webToolsApiKeyCipher = "LOCAL-WEB-CIPHER",
+            webToolsProvider = "DEEPSEEK"
+        )
 
     /** 造一个 v10 库：按 v8 建表 → 跑真实迁移到 v10 → 写入 [messageCount] 条消息。 */
     private fun createV10DatabaseWithMessages(sessionId: String, messageCount: Int): SupportSQLiteDatabase {

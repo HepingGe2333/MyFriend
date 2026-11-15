@@ -1,6 +1,7 @@
 package com.myfriend.app.domain
 
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 
 /**
@@ -29,6 +30,25 @@ object BackupMediaLimits {
     /** 单张图片的原始字节上限：8 MiB。 */
     const val MAX_MEDIA_FILE_BYTES: Int = 8 * 1024 * 1024
 
+    /** 导入压缩后头像的字节上限：400 KiB（`spec/web-search` 之外，0.12 媒体压缩约定）。 */
+    const val MAX_AVATAR_OUTPUT_BYTES: Int = 400 * 1024
+
+    /** 导入压缩后聊天图片的字节上限：800 KiB。 */
+    const val MAX_CHAT_OUTPUT_BYTES: Int = 800 * 1024
+
+    /** 导入压缩后的长边上限：头像 512、聊天图片 1600。 */
+    const val AVATAR_MAX_EDGE: Int = 512
+    const val CHAT_MAX_EDGE: Int = 1600
+
+    /** 导入重编码的 JPEG 质量（压不进字节上限时才逐档下调）。 */
+    const val JPEG_QUALITY: Int = 85
+
+    fun outputLimit(kind: String): Int =
+        if (BackupMediaKind.isAvatar(kind)) MAX_AVATAR_OUTPUT_BYTES else MAX_CHAT_OUTPUT_BYTES
+
+    fun maxEdge(kind: String): Int =
+        if (BackupMediaKind.isAvatar(kind)) AVATAR_MAX_EDGE else CHAT_MAX_EDGE
+
     /**
      * 整份备份文件（含 base64 膨胀与文本）的读入上限：256 MiB。
      *
@@ -41,6 +61,20 @@ object BackupMediaLimits {
     const val MAX_BACKUP_CHARS: Int = 256 * 1024 * 1024
 
     fun isTooLarge(byteCount: Long): Boolean = byteCount > MAX_BACKUP_BYTES
+
+    /**
+     * 按**可用堆**算媒体预算（大库基准的结论：整份 JSON 在内存里，峰值约为媒体原始字节的 5–6 倍）。
+     *
+     * base64 ≈ ×1.35，JSON 字符串在 JVM 里是 UTF-16（×2），编码/解码时还要一份副本（再 ×2），
+     * 实测 500×800KB（335MB 原始）在 192MB 堆上必定 OOM。所以预算取 `可用堆 / 12`，再与
+     * [MAX_MEDIA_BYTES] 取小。堆很大时行为与之前一致；小堆机器上宁可少带几张图。
+     */
+    fun effectiveMediaBudget(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Long =
+        minOf(MAX_MEDIA_BYTES, maxHeapBytes / 12).coerceAtLeast(4L * 1024 * 1024)
+
+    /** 导入时整份 JSON 的上限：`min(256MiB, 可用堆/8)`（解析前要按字符读入，UTF-16 占两倍）。 */
+    fun effectiveBackupBytes(maxHeapBytes: Long = Runtime.getRuntime().maxMemory()): Long =
+        minOf(MAX_BACKUP_BYTES, maxHeapBytes / 8).coerceAtLeast(8L * 1024 * 1024)
 
     fun isTooManyChars(charCount: Int): Boolean = charCount > MAX_BACKUP_CHARS
 
@@ -230,6 +264,18 @@ data class BackupMediaCandidate(
     val mime: String
 )
 
+/**
+ * 导入时重编码后的一张图（媒体压缩的落点）。
+ *
+ * 压缩实现放在 `util/MediaStorage`（要 Android Bitmap），domain 只认这个结构，
+ * 这样 `BackupMediaRestorer` 的纯 JVM 单测可以传假压缩器，不必拉 Android 图形栈。
+ */
+data class BackupCompressedImage(
+    val bytes: ByteArray,
+    val mime: String = "image/jpeg",
+    val extension: String = "jpg"
+)
+
 /** 打包结果：写进 JSON 的 media 列表 + 因为超限没带走的张数。 */
 data class BackupMediaPackResult(
     val media: List<BackupMedia>,
@@ -249,7 +295,7 @@ object BackupMediaPacker {
 
     fun pack(
         candidates: List<BackupMediaCandidate>,
-        totalBudget: Long = BackupMediaLimits.MAX_MEDIA_BYTES,
+        totalBudget: Long = BackupMediaLimits.effectiveMediaBudget(),
         perFileLimit: Int = BackupMediaLimits.MAX_MEDIA_FILE_BYTES
     ): BackupMediaPackResult {
         val packed = mutableListOf<BackupMedia>()
@@ -332,9 +378,14 @@ object BackupMediaRestorer {
         entries: List<BackupMedia>,
         avatarDir: File,
         chatDir: File,
-        totalBudget: Long = BackupMediaLimits.MAX_MEDIA_BYTES,
+        totalBudget: Long = BackupMediaLimits.effectiveMediaBudget(),
         perFileLimit: Int = BackupMediaLimits.MAX_MEDIA_FILE_BYTES,
-        newName: (prefix: String, extension: String) -> String = ::defaultNewName
+        /**
+         * 落盘前的重编码（生产路径传 `MediaStorage::compressBackupImage`）。
+         * null 表示原样落盘——只给纯逻辑测试/基准用，正式导入不应为 null。
+         */
+        compressor: ((bytes: ByteArray, mime: String, kind: String) -> BackupCompressedImage?)? = null,
+        newName: (prefix: String, extension: String, bytes: ByteArray) -> String = ::defaultNewName
     ): BackupMediaRestoreResult {
         if (entries.isEmpty()) return BackupMediaRestoreResult()
 
@@ -381,6 +432,36 @@ object BackupMediaRestorer {
                 overLimit++
                 return@forEach
             }
+            // 总量按**原始**字节计（压缩前），避免「压缩后变小」成为绕过 128 MiB 预算的口子。
+            total += bytes.size
+
+            // v4 媒体压缩：头像长边 512 / 聊天图 1600、JPEG 85、透明垫白底；
+            // 压不出来（坏图 / 压不进字节上限）就跳过并计数，绝不让导入整体失败。
+            val compressed = compressor?.let { compress ->
+                runCatching { compress(bytes, mime, kind) }.getOrNull()
+            }
+            if (compressor != null && compressed == null) {
+                invalid++
+                return@forEach
+            }
+            val outputBytes = compressed?.bytes ?: bytes
+            if (outputBytes.isEmpty() || outputBytes.size > perFileLimit) {
+                invalid++
+                return@forEach
+            }
+            if (compressed != null && outputBytes.size > BackupMediaLimits.outputLimit(kind)) {
+                invalid++
+                return@forEach
+            }
+            val outputMime = (compressed?.mime ?: mime).trim().lowercase()
+            if (!BackupMediaFormats.isSupported(outputMime)) {
+                invalid++
+                return@forEach
+            }
+            val outputExtension = compressed?.extension?.trim()?.lowercase()
+                ?.takeIf { it.isNotEmpty() }
+                ?: BackupMediaFormats.extensionOf(outputMime)
+                ?: run { invalid++; return@forEach }
 
             val isAvatar = BackupMediaKind.isAvatar(kind)
             if (isAvatar && !avatarReady) {
@@ -393,33 +474,40 @@ object BackupMediaRestorer {
             }
             val dir = if (isAvatar) avatarDir else chatDir
             val prefix = if (isAvatar) AvatarPrefix else ChatPrefix
-            val target = File(dir, newName(prefix, extension))
+            val target = File(dir, newName(prefix, outputExtension, outputBytes))
             // 目录归属守卫：写之前确认目标确实落在我们自己的媒体目录里。
             if (!BackupAvatarPath.isSafeName(target.name) || !MediaOwnership.isWithin(target, listOf(dir))) {
                 invalid++
                 return@forEach
             }
+            // 内容寻址去重：同名（= 同一张图）已经在磁盘上就不再写第二份。
+            // 聊天图片用纯内容名（chat-<sha16>.jpg），头像仍然带 UUID（见 defaultNewName 的注释）。
+            var created = false
             if (target.exists()) {
-                invalid++
-                return@forEach
+                val reusable = target.isFile && runCatching { target.length() == outputBytes.size.toLong() }.getOrDefault(false)
+                if (!reusable) {
+                    invalid++
+                    return@forEach
+                }
+            } else {
+                val writtenOk = runCatching {
+                    target.writeBytes(outputBytes)
+                    target.isFile && target.length() == outputBytes.size.toLong()
+                }.getOrDefault(false)
+                if (!writtenOk) {
+                    runCatching { target.delete() }
+                    invalid++
+                    return@forEach
+                }
+                created = true
+                written += target
             }
-            val writtenOk = runCatching {
-                target.writeBytes(bytes)
-                target.isFile && target.length() == bytes.size.toLong()
-            }.getOrDefault(false)
-            if (!writtenOk) {
-                runCatching { target.delete() }
-                invalid++
-                return@forEach
-            }
-            total += bytes.size
-            written += target
             val restored = RestoredBackupMedia(
                 kind = kind,
                 fileName = entry.fileName,
                 file = target,
                 uri = fileUri(target),
-                mime = mime
+                mime = outputMime
             )
             when (kind) {
                 BackupMediaKind.PERSONA_AVATAR -> {
@@ -428,22 +516,28 @@ object BackupMediaRestorer {
                         val personaId = entry.personaId?.trim().orEmpty()
                         if (personaId.isNotEmpty()) avatarsByPersonaId.putIfAbsent(personaId, restored)
                     } else {
-                        written -= target
-                        runCatching { target.delete() }
+                        if (created) {
+                            written -= target
+                            runCatching { target.delete() }
+                        }
                         invalid++
                     }
                 }
                 BackupMediaKind.USER_AVATAR -> {
                     if (userAvatar == null) userAvatar = restored else {
-                        written -= target
-                        runCatching { target.delete() }
+                        if (created) {
+                            written -= target
+                            runCatching { target.delete() }
+                        }
                         invalid++
                     }
                 }
                 else -> {
                     if (chatImages.putIfAbsent(restored.fileName, restored) != null) {
-                        written -= target
-                        runCatching { target.delete() }
+                        if (created) {
+                            written -= target
+                            runCatching { target.delete() }
+                        }
                         invalid++
                     }
                 }
@@ -479,8 +573,36 @@ object BackupMediaRestorer {
     private fun ensureDirectory(dir: File): Boolean =
         runCatching { (dir.isDirectory || dir.mkdirs()) && dir.isDirectory }.getOrDefault(false)
 
-    private fun defaultNewName(prefix: String, extension: String): String =
-        "$prefix${UUID.randomUUID()}.$extension"
+    /**
+     * 落盘文件名。
+     *
+     * - 聊天图片：`chat-<sha256前16>.jpg` —— 纯内容寻址，同一张图重复导入/重复选择只留一份。
+     *   名字里没有 UUID，所以 `clearChatImages()` 的 `chat-*` 语义不变。
+     * - 头像：`avatar-<sha256前16>-<uuid>.jpg` —— 头像有「换头像时删旧文件」的生命周期
+     *   （`MediaStorage.deleteAvatar`），两张人格共用一份文件会在改其中一个时把另一个删坏；
+     *   所以头像只把哈希当索引前缀，仍然保持一文一文件。
+     */
+    internal fun defaultNewName(prefix: String, extension: String, bytes: ByteArray): String {
+        val hash = sha256Hex(bytes).take(16)
+        return if (prefix == AvatarPrefix) {
+            "$prefix$hash-${UUID.randomUUID()}.$extension"
+        } else {
+            "$prefix$hash.$extension"
+        }
+    }
+
+    /** 内容哈希（SHA-256 十六进制小写）。导出去重与落盘命名共用。 */
+    internal fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val hex = CharArray(digest.size * 2)
+        val alphabet = "0123456789abcdef"
+        digest.forEachIndexed { index, byte ->
+            val value = byte.toInt() and 0xFF
+            hex[index * 2] = alphabet[value ushr 4]
+            hex[index * 2 + 1] = alphabet[value and 0x0F]
+        }
+        return String(hex)
+    }
 }
 
 /**

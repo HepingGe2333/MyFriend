@@ -13,6 +13,10 @@ import android.util.Log
 import com.myfriend.app.R
 import com.myfriend.app.domain.AvatarImagePolicy
 import com.myfriend.app.domain.BackupAvatarPath
+import com.myfriend.app.domain.BackupCompressedImage
+import com.myfriend.app.domain.BackupMediaKind
+import com.myfriend.app.domain.BackupMediaLimits
+import com.myfriend.app.domain.BackupMediaRestorer
 import com.myfriend.app.domain.ImageContextBudget
 import com.myfriend.app.domain.MediaOwnership
 import com.myfriend.app.domain.MessageAttachment
@@ -27,6 +31,9 @@ object MediaStorage {
     private const val MAX_BYTES = 20L * 1024 * 1024
     private const val MAX_IMAGE_DIMENSION = 1568
     private const val MAX_CHAT_IMAGE_BYTES = 4 * 1024 * 1024
+
+    /** 备份导入重编码的质量阶梯：先按约定 85，压不进上限才降。 */
+    private val QUALITY_LADDER = intArrayOf(85, 80, 75, 70, 65, 60, 55, 50)
 
     /** 头像文件目录：files/avatars，和聊天图片的 files/media 分开，清理时互不牵连。 */
     private const val AVATAR_DIR = "avatars"
@@ -81,7 +88,25 @@ object MediaStorage {
                 targetFile.delete()
                 error(context.getString(R.string.media_error_too_big_to_compress))
             }
-            Uri.fromFile(targetFile).toString()
+            // 文件名带内容哈希前缀：同一张头像重复选两次仍各留一份（头像有「换头像删旧文件」的
+            // 生命周期，共用一份会被删坏），但哈希前缀让「这张图到底是不是重复」一眼可查。
+            val hash = runCatching { BackupMediaRestorer.sha256Hex(targetFile.readBytes()).take(16) }
+                .getOrDefault("")
+            val named = if (hash.isEmpty()) {
+                targetFile
+            } else {
+                File(dir, "avatar-$hash-${UUID.randomUUID()}.jpg")
+            }
+            if (named !== targetFile) {
+                if (!targetFile.renameTo(named)) {
+                    // 改名失败不该让「换头像」失败：保留原文件名，功能优先。
+                    Uri.fromFile(targetFile).toString()
+                } else {
+                    Uri.fromFile(named).toString()
+                }
+            } else {
+                Uri.fromFile(targetFile).toString()
+            }
         }
     }
 
@@ -192,6 +217,64 @@ object MediaStorage {
     }
 
     /**
+     * 备份导入时的媒体压缩（`spec/web-search` 之外的 0.12 媒体约定）。
+     *
+     * - 头像长边 ≤ [BackupMediaLimits.AVATAR_MAX_EDGE]（512）、聊天图 ≤ 1600；
+     * - 统一重编码成 JPEG，质量从 85 起；压不进字节上限（头像 400 KiB / 聊天图 800 KiB）
+     *   才逐档降到 50；
+     * - 透明图先垫白底（JPEG 没有 alpha，否则透明区域会变黑）；
+     * - 坏图 / 压不进上限返回 null，由调用方跳过并计数，绝不让整份备份导入失败。
+     *
+     * 只在 Android 上可用（Bitmap），所以放在 util；`BackupMediaRestorer` 通过函数参数接收它，
+     * 纯 JVM 单测可以传假压缩器。
+     */
+    fun compressBackupImage(bytes: ByteArray, mime: String, kind: String): BackupCompressedImage? =
+        runCatching {
+            if (bytes.isEmpty()) return@runCatching null
+            val maxEdge = BackupMediaLimits.maxEdge(kind)
+            val byteLimit = BackupMediaLimits.outputLimit(kind)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@runCatching null
+            val longest = maxOf(bounds.outWidth, bounds.outHeight)
+            var sample = 1
+            while (longest / sample > maxEdge * 2) sample *= 2
+            val options = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)
+                ?: return@runCatching null
+            // scaledSize 返回 null 表示「本来就在上限以内，不用缩」，不是失败。
+            val target = ImageContextBudget.scaledSize(decoded.width, decoded.height, maxEdge)
+            val scaled = if (target == null || (decoded.width == target.first && decoded.height == target.second)) {
+                decoded
+            } else {
+                Bitmap.createScaledBitmap(decoded, target.first, target.second, true).also { out ->
+                    if (out !== decoded) decoded.recycle()
+                }
+            }
+            // transparency → 白底；没有 alpha 的图原样用。
+            val flattened = flattenForJpeg(scaled)
+            val buffer = ByteArrayOutputStream()
+            var output: ByteArray? = null
+            try {
+                for (quality in QUALITY_LADDER) {
+                    buffer.reset()
+                    flattened.compress(Bitmap.CompressFormat.JPEG, quality, buffer)
+                    if (buffer.size() in 1..byteLimit) {
+                        output = buffer.toByteArray()
+                        break
+                    }
+                }
+            } finally {
+                if (flattened !== scaled) flattened.recycle()
+                scaled.recycle()
+            }
+            output?.let { BackupCompressedImage(bytes = it, mime = "image/jpeg", extension = "jpg") }
+        }.getOrNull()
+
+    /**
      * 把相册图片缩放后复制到私有目录，返回可长期引用的附件。
      * 视觉模型对图片尺寸敏感，长边限制在 1568px 可以在清晰度与请求体积之间取平衡。
      */
@@ -202,21 +285,41 @@ object MediaStorage {
                 val bitmap = decodeScaled(context, source)
                 val sourceMime = context.contentResolver.getType(source).orEmpty()
                 val usePng = sourceMime == "image/png"
-                val target = File(dir, "chat-${UUID.randomUUID()}.${if (usePng) "png" else "jpg"}")
+                val extension = if (usePng) "png" else "jpg"
+                val mime = if (usePng) "image/png" else "image/jpeg"
+                val format = if (usePng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
+                val buffer = ByteArrayOutputStream()
                 var quality = if (usePng) 100 else 88
-                var written = writeBitmap(bitmap, target, usePng, quality)
-                while (written > MAX_CHAT_IMAGE_BYTES && quality > 55 && !usePng) {
+                buffer.reset()
+                bitmap.compress(format, quality, buffer)
+                while (!usePng && buffer.size() > MAX_CHAT_IMAGE_BYTES && quality > 55) {
                     quality -= 12
-                    written = writeBitmap(bitmap, target, usePng, quality)
+                    buffer.reset()
+                    bitmap.compress(format, quality, buffer)
                 }
                 bitmap.recycle()
-                if (written <= 0L) {
-                    target.delete()
-                    error(context.getString(R.string.media_error_process_failed))
+                val bytes = buffer.toByteArray()
+                if (bytes.isEmpty()) error(context.getString(R.string.media_error_process_failed))
+
+                // 内容寻址：同一张图重复选只留一份 `chat-<sha256前16>.<ext>`。
+                // 不用 UUID 是刻意的——文件名就是去重索引，不需要新增表。
+                val hash = BackupMediaRestorer.sha256Hex(bytes).take(16)
+                val target = File(dir, "chat-$hash.$extension")
+                if (!target.isFile || target.length() != bytes.size.toLong()) {
+                    val temp = File(dir, "chat-$hash.tmp-${UUID.randomUUID()}")
+                    runCatching { temp.writeBytes(bytes) }.getOrElse {
+                        temp.delete()
+                        error(context.getString(R.string.media_error_process_failed))
+                    }
+                    if (target.exists()) target.delete()
+                    if (!temp.renameTo(target)) {
+                        temp.delete()
+                        if (!target.isFile) error(context.getString(R.string.media_error_process_failed))
+                    }
                 }
                 MessageAttachment(
                     uri = Uri.fromFile(target).toString(),
-                    mime = if (usePng) "image/png" else "image/jpeg",
+                    mime = mime,
                     width = 0,
                     height = 0
                 )
@@ -436,12 +539,6 @@ object MediaStorage {
         val options = BitmapFactory.Options().apply { inSampleSize = sample }
         return context.contentResolver.openInputStream(source)?.use { BitmapFactory.decodeStream(it, null, options) }
             ?: error(context.getString(R.string.media_error_unreadable))
-    }
-
-    private fun writeBitmap(bitmap: Bitmap, target: File, usePng: Boolean, quality: Int): Long {
-        val format = if (usePng) Bitmap.CompressFormat.PNG else Bitmap.CompressFormat.JPEG
-        target.outputStream().use { output -> bitmap.compress(format, quality, output) }
-        return target.length()
     }
 
     /**

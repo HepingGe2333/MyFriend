@@ -309,6 +309,94 @@ class BackupMediaTest {
     }
 
     // ------------------------------------------------------------------
+    // v4：导入压缩 + 内容哈希去重
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `导入时压缩器输出被落盘 同一张聊天图只留一份`() {
+        val root = tempDir("compress")
+        val avatarDir = File(root, "avatars").apply { mkdirs() }
+        val mediaDir = File(root, "media").apply { mkdirs() }
+        val original = pngBytes(120)
+        val compressed = jpegBytes(60)
+        val entries = listOf(
+            BackupMedia(
+                id = "1", kind = BackupMediaKind.CHAT_IMAGE, fileName = "chat-a.png",
+                mime = "image/png", bytes = original.size, data = BackupBase64.encode(original)
+            ),
+            BackupMedia(
+                // 不同源文件名、同样的内容：导入后应该指向同一个内容寻址文件。
+                id = "2", kind = BackupMediaKind.CHAT_IMAGE, fileName = "chat-b.png",
+                mime = "image/png", bytes = original.size, data = BackupBase64.encode(original)
+            )
+        )
+        val restored = BackupMediaRestorer.restore(
+            entries = entries,
+            avatarDir = avatarDir,
+            chatDir = mediaDir,
+            compressor = { _, _, _ -> BackupCompressedImage(compressed, "image/jpeg", "jpg") }
+        )
+
+        assertTrue("压缩成功时不该有 warning：${restored.warnings}", restored.warnings.isEmpty())
+        assertEquals("两张同图只该落一份", 1, restored.writtenFiles.size)
+        assertEquals(2, restored.chatImagesByFileName.size)
+        val a = restored.chatImagesByFileName.getValue("chat-a.png")
+        val b = restored.chatImagesByFileName.getValue("chat-b.png")
+        assertEquals("同内容要复用同一份文件", a.file, b.file)
+        assertTrue("落盘的是压缩后的字节", a.file.readBytes().contentEquals(compressed))
+        assertTrue("文件名是 chat-<sha16>.jpg", Regex("""chat-[0-9a-f]{16}\.jpg""").matches(a.file.name))
+        assertEquals("image/jpeg", a.mime)
+        assertEquals("压缩后不应该再有原图大小的副本", 1, mediaDir.listFiles()!!.count { it.isFile })
+    }
+
+    @Test
+    fun `压缩失败或超出输出上限时跳过并计数`() {
+        val root = tempDir("compress-fail")
+        val avatarDir = File(root, "avatars").apply { mkdirs() }
+        val mediaDir = File(root, "media").apply { mkdirs() }
+        val bytes = jpegBytes(40)
+        fun entry(id: String) = BackupMedia(
+            id = id, kind = BackupMediaKind.CHAT_IMAGE, fileName = "chat-$id.jpg",
+            mime = "image/jpeg", bytes = bytes.size, data = BackupBase64.encode(bytes)
+        )
+        val failed = BackupMediaRestorer.restore(
+            listOf(entry("1")), avatarDir, mediaDir,
+            compressor = { _, _, _ -> null }
+        )
+        assertTrue(failed.warnings.contains(BackupMediaWarning.ImportSkipped(1)))
+        assertTrue(failed.writtenFiles.isEmpty())
+
+        val tooLarge = BackupMediaRestorer.restore(
+            listOf(entry("2")), avatarDir, mediaDir,
+            compressor = { _, _, _ ->
+                BackupCompressedImage(ByteArray(BackupMediaLimits.MAX_CHAT_OUTPUT_BYTES + 1))
+            }
+        )
+        assertTrue(tooLarge.warnings.contains(BackupMediaWarning.ImportSkipped(1)))
+        assertTrue(tooLarge.writtenFiles.isEmpty())
+    }
+
+    @Test
+    fun `压缩上限常量与规范一致`() {
+        assertEquals(512, BackupMediaLimits.AVATAR_MAX_EDGE)
+        assertEquals(1600, BackupMediaLimits.CHAT_MAX_EDGE)
+        assertEquals(400 * 1024, BackupMediaLimits.outputLimit(BackupMediaKind.PERSONA_AVATAR))
+        assertEquals(800 * 1024, BackupMediaLimits.outputLimit(BackupMediaKind.CHAT_IMAGE))
+        assertEquals(85, BackupMediaLimits.JPEG_QUALITY)
+    }
+
+    @Test
+    fun `头像保持一文一文件 聊天图才是内容寻址`() {
+        val bytes = jpegBytes(30)
+        val avatar = BackupMediaRestorer.defaultNewName(BackupMediaRestorer.AvatarPrefix, "jpg", bytes)
+        val chat = BackupMediaRestorer.defaultNewName(BackupMediaRestorer.ChatPrefix, "jpg", bytes)
+        assertTrue("头像要带 UUID，避免删除一个头像时把共用的文件删掉", avatar.contains("-"))
+        assertTrue("头像名以 avatar- 开头", avatar.startsWith("avatar-"))
+        assertEquals("同一份内容生成同名聊天图片", chat, BackupMediaRestorer.defaultNewName("chat-", "jpg", bytes))
+        assertTrue("聊天图片名是内容哈希", Regex("""chat-[0-9a-f]{16}\.jpg""").matches(chat))
+    }
+
+    // ------------------------------------------------------------------
     // v1/v2 兼容 + 导入大小闸
     // ------------------------------------------------------------------
 

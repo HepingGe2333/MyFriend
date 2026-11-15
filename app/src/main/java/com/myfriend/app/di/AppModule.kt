@@ -69,7 +69,8 @@ object AppModule {
                 MyFriendDatabase.MIGRATION_7_8,
                 MyFriendDatabase.MIGRATION_8_9,
                 MyFriendDatabase.MIGRATION_9_10,
-                MyFriendDatabase.MIGRATION_10_11
+                MyFriendDatabase.MIGRATION_10_11,
+                MyFriendDatabase.MIGRATION_11_12
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，

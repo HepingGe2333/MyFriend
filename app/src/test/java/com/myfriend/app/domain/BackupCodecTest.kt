@@ -136,6 +136,7 @@ class BackupCodecTest {
         createdAt = 1_700_000_000_000L,
         updatedAt = 1_700_000_100_000L,
         webToolsEnabled = true,
+        webToolsProvider = "SERPER",
         webToolsBaseUrl = "https://api.deepseek.com",
         webToolsApiKeyCipher = "WEB-CIPHER-SHOULD-NOT-LEAK"
     )
@@ -297,6 +298,7 @@ class BackupCodecTest {
         assertFalse("Authorization 不能出现", encoded.contains("Authorization"))
         assertFalse("Key 明文不能出现", encoded.contains("sk-should-not-leak"))
         assertTrue("要写明没带 Key", encoded.contains("\"apiKeysOmitted\":true"))
+        assertTrue("v4 要写 provider", encoded.contains("\"webToolsProvider\":\"SERPER\""))
         assertFalse(BackupCodec.containsSecretField(encoded))
     }
 
@@ -317,8 +319,10 @@ class BackupCodecTest {
         assertEquals("deepseek-chat", backup.model)
         assertEquals("OPENAI", backup.provider)
         assertTrue(backup.webToolsEnabled)
+        assertEquals("v4 要带着 provider", "SERPER", backup.webToolsProvider)
 
         val restored = backup.toNewEntity().entity
+        assertEquals("接回来的配置保留 provider", "SERPER", restored.webToolsProvider)
         assertNull("新配置没有 Key，等用户在这台手机上重新填", restored.apiKeyCipher)
         assertNull(restored.webToolsApiKeyCipher)
         assertEquals("{}", restored.customHeadersJson)
@@ -332,7 +336,8 @@ class BackupCodecTest {
         val incoming = local.toBackupApiConfig().copy(
             baseUrl = "https://new.example.com",
             model = "new-model",
-            webToolsEnabled = false
+            webToolsEnabled = false,
+            webToolsProvider = "GENERIC"
         )
 
         val merged = incoming.mergeInto(local)
@@ -342,6 +347,7 @@ class BackupCodecTest {
         assertTrue("地址被拒绝时要在导入摘要里说明", merged.addressKept)
         assertEquals("new-model", merged.entity.model)
         assertFalse(merged.entity.webToolsEnabled)
+        assertEquals("provider 不是敏感字段，可以跟着备份走", "GENERIC", merged.entity.webToolsProvider)
         assertEquals(local.apiKeyCipher, merged.entity.apiKeyCipher)
         assertEquals(local.webToolsApiKeyCipher, merged.entity.webToolsApiKeyCipher)
         assertEquals(local.customHeadersJson, merged.entity.customHeadersJson)

@@ -65,7 +65,7 @@ final class BackupHardeningTests: XCTestCase {
 
     func testExportLimitDefaultsToImportLimit() {
         XCTAssertEqual(BackupService.maxExportBytes, BackupService.maxImportBytes)
-        // v3 起图片二进制也进备份：128 MiB 原始字节 base64 之后约 171 MiB，闸抬到 256 MiB。
+        // v3 起图片二进制也进备份（v4 只是加了 provider 字段，媒体闸不变）：128 MiB 原始字节 base64 之后约 171 MiB，闸抬到 256 MiB。
         XCTAssertEqual(BackupService.maxExportBytes, 256 * 1024 * 1024)
         XCTAssertEqual(BackupService.maxMediaBytes, 128 * 1024 * 1024)
         XCTAssertEqual(BackupService.maxMediaFileBytes, 8 * 1024 * 1024)
@@ -87,7 +87,7 @@ final class BackupHardeningTests: XCTestCase {
 
     func testExportUnderLimitStillWorks() throws {
         let text = try makeService(exportLimitBytes: 1 << 20).export()
-        XCTAssertTrue(text.contains("\"formatVersion\":3"))
+        XCTAssertTrue(text.contains("\"formatVersion\":4"))
         XCTAssertTrue(text.contains("在吗"))
     }
 
@@ -258,13 +258,15 @@ final class BackupHardeningTests: XCTestCase {
     /// 备份里没写 `avatarUri`、但 `media` 带着 `personaId`：按 personaId 兜底接回头像
     /// （与 Android 的 `avatarsByPersonaId` 同一条规则）。
     func testMediaAvatarIsRestoredByPersonaIdWhenAvatarUriIsMissing() throws {
-        let payload = Data([0xFF, 0xD8, 0xFF])
+        // 导入会重新压成 JPEG（长边 ≤512、0.85、白底），所以这里放一张**真图**；
+        // 断言的是「接回来了、落在我们的目录里、还是一张能解开的图」，不是原字节相同。
+        let payload = Data(base64Encoded: BackupSamples.sampleJPEGBase64)!
         let summary = try smallService().importBundle(
             BackupBundle(
                 personas: [BackupPersona(id: "persona-1", name: "林岸", avatarUri: nil)],
                 media: [BackupMedia(
                     id: "m1", kind: "PERSONA_AVATAR", personaId: "persona-1",
-                    fileName: "avatar-by-id.jpg", mime: "image/jpeg", bytes: 3,
+                    fileName: "avatar-by-id.jpg", mime: "image/jpeg", bytes: payload.count,
                     data: payload.base64EncodedString()
                 )]
             ),
@@ -274,7 +276,9 @@ final class BackupHardeningTests: XCTestCase {
         let uri = try XCTUnwrap(stored.avatarUri, "按 personaId 兜底也要把头像接回来")
         let url = try XCTUnwrap(URL(string: uri))
         XCTAssertTrue(AttachmentLocation.isWithin(attachments, url))
-        XCTAssertEqual(try Data(contentsOf: url), payload)
+        let pixelSize = try XCTUnwrap(ImageThumbnailDecoder.pixelSize(url: url))
+        XCTAssertEqual(pixelSize.width, 2)
+        XCTAssertEqual(pixelSize.height, 2)
         XCTAssertFalse(
             summary.warnings.contains { $0.contains("头像文件找不到") },
             "接回来了就不该再说「找不到」：\(summary.warnings)"
@@ -283,16 +287,17 @@ final class BackupHardeningTests: XCTestCase {
 
     /// 不认识的 kind / 重复的同名条目：都只跳过并计数，不写文件、不崩。
     func testUnknownKindAndDuplicateMediaAreSkippedAndCounted() throws {
-        let payload = Data([0xFF, 0xD8, 0xFF]).base64EncodedString()
+        let payload = Data(base64Encoded: BackupSamples.sampleJPEGBase64)!
+        let encoded = payload.base64EncodedString()
         let summary = try smallService().importBundle(
             BackupBundle(media: [
                 BackupMedia(id: "m1", kind: "SOMETHING_NEW", fileName: "avatar-new.jpg",
-                            mime: "image/jpeg", bytes: 3, data: payload),
+                            mime: "image/jpeg", bytes: payload.count, data: encoded),
                 // 同 (kind, fileName) 出现两次：只认第一条，第二条算坏数据。
                 BackupMedia(id: "m2", kind: "USER_AVATAR", fileName: "avatar-dup.jpg",
-                            mime: "image/jpeg", bytes: 3, data: payload),
+                            mime: "image/jpeg", bytes: payload.count, data: encoded),
                 BackupMedia(id: "m3", kind: "USER_AVATAR", fileName: "avatar-dup.jpg",
-                            mime: "image/jpeg", bytes: 3, data: payload)
+                            mime: "image/jpeg", bytes: payload.count, data: encoded)
             ]),
             mode: .merge
         )
@@ -303,7 +308,8 @@ final class BackupHardeningTests: XCTestCase {
         let names = (try? fileManager.contentsOfDirectory(atPath: attachments.path)) ?? []
         XCTAssertEqual(names.count, 1, "只该落下第一条 USER_AVATAR：\(names)")
         XCTAssertTrue(names[0].hasPrefix("avatar-"))
-        XCTAssertEqual(try Data(contentsOf: attachments.appendingPathComponent(names[0])), Data([0xFF, 0xD8, 0xFF]))
+        XCTAssertTrue(names[0].contains("-"), "v12 起文件名带 SHA-256 前缀：\(names[0])")
+        XCTAssertNotNil(ImageThumbnailDecoder.pixelSize(url: attachments.appendingPathComponent(names[0])))
         XCTAssertEqual(settings.load().myAvatarUri, attachments.appendingPathComponent(names[0]).absoluteString)
     }
 

@@ -1,0 +1,285 @@
+package com.myfriend.app.ui
+
+import android.content.Context
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.ComposeTestRule
+import androidx.compose.ui.test.hasScrollToIndexAction
+import androidx.lifecycle.SavedStateHandle
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
+import com.myfriend.app.data.local.ApiConfigEntity
+import com.myfriend.app.data.local.ChatSessionEntity
+import com.myfriend.app.data.local.MessageEntity
+import com.myfriend.app.data.local.MessageRole
+import com.myfriend.app.data.local.MessageStatus
+import com.myfriend.app.data.local.MyFriendDatabase
+import com.myfriend.app.data.local.PersonaEntity
+import com.myfriend.app.data.local.ProviderType
+import com.myfriend.app.data.local.SeedPersonas
+import com.myfriend.app.data.prefs.AppSettings
+import com.myfriend.app.data.prefs.SettingsRepository
+import com.myfriend.app.data.repo.ApiConfigRepository
+import com.myfriend.app.data.repo.ChatRepository
+import com.myfriend.app.data.repo.MemoryRepository
+import com.myfriend.app.data.repo.MessageBlockWriter
+import com.myfriend.app.data.repo.MoodRepository
+import com.myfriend.app.data.repo.PersonaCardRepository
+import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.data.repo.PresenceRepository
+import com.myfriend.app.data.repo.ProactiveRepository
+import com.myfriend.app.ui.screens.chat.ChatScreen
+import com.myfriend.app.ui.screens.chat.ChatUiState
+import com.myfriend.app.ui.screens.chat.ChatViewModel
+import com.myfriend.app.ui.theme.MyFriendTheme
+import com.myfriend.app.util.ChatNotifier
+import java.time.LocalDate
+import java.time.ZoneId
+import java.util.UUID
+
+/**
+ * 一条播种好的会话：人格 + 会话 + 按 `m000..mNNN` 命名的消息。
+ *
+ * 消息正文就是它的 id：Compose 的文本断言要求精确匹配，
+ * 用「m000」这种字符串既好读，也不会跟日期分隔条、时间戳撞上。
+ */
+data class SeededConversation(
+    val persona: PersonaEntity,
+    val session: ChatSessionEntity,
+    val messageIds: List<String>
+) {
+    val newestId: String get() = messageIds.last()
+    val oldestId: String get() = messageIds.first()
+
+    fun idAt(index: Int): String = messageIds[index]
+}
+
+/**
+ * 聊天页 UI 行为测试的夹具。
+ *
+ * 为什么是「真依赖图 + 真 Room」而不是假 Repo：
+ *
+ * - 这些测试要钉的恰恰是**分页契约**（首屏只读最新一块、上/下各一块、定位跳到目标块），
+ *   而块窗口是在 `ChatRepository` + `MessageBlockWriter` + 真实 SQLite 上算出来的：
+ *   换成内存假实现，等于把要验证的东西替换掉了；
+ * - `ChatViewModel` 的构造参数是 11 个具体仓库（没有一个接口），
+ *   所以夹具只能从 Hilt 图里拿真货（见 [ChatUiBehaviorSupport] 的用法）。
+ *
+ * 夹具只对 `ChatScreen` 的输出做空回调：测试不跳转，也不碰导航。
+ */
+class ChatUiHarness(
+    val context: Context,
+    private val db: MyFriendDatabase,
+    private val blockWriter: MessageBlockWriter,
+    private val chatRepository: ChatRepository,
+    private val personaRepository: PersonaRepository,
+    private val apiConfigRepository: ApiConfigRepository,
+    private val memoryRepository: MemoryRepository,
+    private val personaCardRepository: PersonaCardRepository,
+    private val moodRepository: MoodRepository,
+    private val presenceRepository: PresenceRepository,
+    private val proactiveRepository: ProactiveRepository,
+    private val settingsRepository: SettingsRepository,
+    private val chatNotifier: ChatNotifier
+) {
+
+    val personaDao get() = db.personaDao()
+    val sessionDao get() = db.chatSessionDao()
+    val messageDao get() = db.messageDao()
+    val apiConfigDao get() = db.apiConfigDao()
+    val database get() = db
+
+    suspend fun seedPersona(name: String = DEFAULT_PERSONA_NAME): PersonaEntity {
+        // 种子的文案（名字/简介/提示词/分类）都来自当前语言资源，是「真实人格」的最短路径。
+        val template = SeedPersonas.build(context, System.currentTimeMillis()).first()
+        val persona = template.copy(id = UUID.randomUUID().toString(), name = name)
+        personaDao.insert(persona)
+        return persona
+    }
+
+    suspend fun seedApiConfig(name: String = DEFAULT_CONFIG_NAME): ApiConfigEntity {
+        val now = System.currentTimeMillis()
+        // 直接落一行配置：UI 只关心「有没有绑定配置」（标题栏那枚点、发送键是否可点），
+        // 密钥留空不影响这条路径，也避免在测试里搬 SecretCipher。
+        val config = ApiConfigEntity(
+            id = UUID.randomUUID().toString(),
+            name = name,
+            provider = ProviderType.OPENAI,
+            baseUrl = "https://example.invalid/v1",
+            apiKeyCipher = null,
+            model = "test-model",
+            customHeadersJson = "{}",
+            allowInsecureHttp = false,
+            temperature = null,
+            topP = null,
+            maxOutputTokens = null,
+            frequencyPenalty = null,
+            presencePenalty = null,
+            createdAt = now,
+            updatedAt = now
+        )
+        apiConfigDao.insert(config)
+        return config
+    }
+
+    /**
+     * 播一段会话：`messageCount` 条消息按 `m000..mNNN` 落库，时间戳是「当天 10:00 + n 秒」。
+     *
+     * 时间戳特意压在同一个自然日的上午：日期分隔条只会出现一条，
+     * 列表下标（`load-earlier` / 分隔条 / 消息）才是可预测的。
+     */
+    suspend fun seedConversation(
+        messageCount: Int,
+        withConfig: Boolean = true,
+        personaName: String = DEFAULT_PERSONA_NAME
+    ): SeededConversation {
+        val persona = seedPersona(personaName)
+        val config = if (withConfig) seedApiConfig() else null
+        val session = chatRepository.createSession(persona.id, config?.id).getOrThrow()
+
+        val baseTime = sameDayBaseTime()
+        val ids = (0 until messageCount).map { index -> messageId(index) }
+        ids.forEachIndexed { index, id ->
+            blockWriter.append(
+                MessageEntity(
+                    id = id,
+                    sessionId = session.id,
+                    personaId = persona.id,
+                    // 一来一往：分页断言与气泡左右无关，但真话轮次更像真实会话。
+                    role = if (index % 2 == 0) MessageRole.USER else MessageRole.ASSISTANT,
+                    content = id,
+                    createdAt = baseTime + index * 1_000L,
+                    updatedAt = baseTime + index * 1_000L,
+                    status = MessageStatus.COMPLETE,
+                    errorMessage = null,
+                    model = null,
+                    edited = false
+                )
+            )
+        }
+        return SeededConversation(persona, session, ids)
+    }
+
+    /** 往已有会话里追加一条消息（块维护照旧走生产写入器）。 */
+    suspend fun appendMessage(session: ChatSessionEntity, id: String, createdAt: Long) {
+        blockWriter.append(
+            MessageEntity(
+                id = id,
+                sessionId = session.id,
+                personaId = session.personaId,
+                role = MessageRole.USER,
+                content = id,
+                createdAt = createdAt,
+                updatedAt = createdAt,
+                status = MessageStatus.COMPLETE,
+                errorMessage = null,
+                model = null,
+                edited = false
+            )
+        )
+    }
+
+    /**
+     * 造一个挂在测试自有 [ViewModelStore] 上的 ViewModel。
+     *
+     * 不直接 `ChatViewModel(...)` 而绕一层 store：测试结束 `store.clear()` 会走 `onCleared`，
+     * 把 `viewModelScope` 里那些「观察块 / 标记已读」的协程收掉，
+     * 免得它们活到下一个测试、在清库之后还去写库。
+     */
+    fun viewModel(
+        store: ViewModelStore,
+        sessionId: String,
+        focusMessageId: String? = null
+    ): ChatViewModel {
+        val args = buildMap<String, Any?> {
+            put("sessionId", sessionId)
+            if (focusMessageId != null) put("messageId", focusMessageId)
+        }
+        val handle = SavedStateHandle(args)
+        val factory = object : ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : ViewModel> create(modelClass: Class<T>): T = ChatViewModel(
+                savedStateHandle = handle,
+                chatRepository = chatRepository,
+                personaRepository = personaRepository,
+                apiConfigRepository = apiConfigRepository,
+                memoryRepository = memoryRepository,
+                personaCardRepository = personaCardRepository,
+                moodRepository = moodRepository,
+                presenceRepository = presenceRepository,
+                proactiveRepository = proactiveRepository,
+                settingsRepository = settingsRepository,
+                chatNotifier = chatNotifier,
+                context = context
+            ) as T
+        }
+        return ViewModelProvider(store, factory)[ChatViewModel::class.java]
+    }
+
+    /** 「清空全部聊天与记忆」（设置页那条入口最终调的就是它）。 */
+    suspend fun clearAllChatData() = chatRepository.clearAllChatData()
+
+    /** 「删除全部本地数据」（设置页那条入口最终调的就是它）。 */
+    suspend fun wipeAllData() = chatRepository.wipeAllData()
+
+    /** 启动编排里补会话那一步：一人一段，缺的补上。 */
+    suspend fun ensureSessionsForAll(): Int = personaRepository.ensureSessionsForAll()
+
+    /** 偏好恢复默认（`deleteAllData` 的最后一步）。 */
+    suspend fun resetSettings(preserveSeedMarker: Boolean = true) =
+        settingsRepository.resetAll(preserveSeedMarker = preserveSeedMarker)
+
+    companion object {
+        const val DEFAULT_PERSONA_NAME = "测试联系人"
+        const val DEFAULT_CONFIG_NAME = "测试配置"
+
+        fun messageId(index: Int): String = "m%03d".format(index)
+
+        /** 当天上午 10 点：450 条消息（每条 +1s）不会跨日，日期分隔条稳定只有一条。 */
+        fun sameDayBaseTime(): Long {
+            val zone = ZoneId.systemDefault()
+            return LocalDate.now(zone).atTime(10, 0).atZone(zone).toInstant().toEpochMilli()
+        }
+    }
+}
+
+/**
+ * 只装主题 + `ChatScreen` 的宿主。
+ *
+ * `ChatScreen` 是唯一入口（`ChatMessageList` 是 private），所以 UI 断言只能落在
+ * 真实页面渲染出来的语义树上：消息正文、入口文案、输入框、失败提示都是真控件。
+ */
+@Composable
+fun ChatUiHost(viewModel: ChatViewModel) {
+    MyFriendTheme(AppSettings(animationsEnabled = false)) {
+        Surface(Modifier.fillMaxSize()) {
+            ChatScreen(
+                onBack = {},
+                onOpenPersona = {},
+                onOpenMemory = {},
+                onOpenEvolution = {},
+                onOpenApiConfigs = {},
+                onOpenProactive = {},
+                onSwitchSession = {},
+                onOpenSettings = {},
+                onOpenLink = {},
+                viewModel = viewModel
+            )
+        }
+    }
+}
+
+/** 聊天消息列表（LazyColumn）——只有它带 `scrollToIndex`，所以能唯一定位。 */
+fun ComposeTestRule.chatList() = onNode(hasScrollToIndexAction())
+
+/** 等 ViewModel 真的读到会话（`loaded`）并满足 [predicate]。 */
+fun ComposeTestRule.awaitChatState(
+    viewModel: ChatViewModel,
+    timeoutMillis: Long = 15_000L,
+    predicate: (ChatUiState) -> Boolean
+) {
+    waitUntil(timeoutMillis) { predicate(viewModel.uiState.value) }
+}

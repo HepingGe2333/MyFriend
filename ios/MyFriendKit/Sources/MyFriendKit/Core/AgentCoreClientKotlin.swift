@@ -12,7 +12,8 @@ import Foundation
 //
 // - `KotlinAgentCoreClient`：`AgentCoreClient` 的四个方法原样转发给 Kotlin
 //   `InProcessAgentCore.shared`，只做**参数整形与返回类型转换**（不复制任何判定逻辑）。
-//   与 `NativeAgentCoreClient`（Swift 实现）在同一张协议后面，可以互换。
+//   与 `NativeAgentCoreClient`（Swift 实现，0.12.0 起只在 macOS 测试构建里存在）在同一张
+//   协议后面，可以互换；iOS App 的运行时里只有这一份 Kotlin 实现。
 // - `AgentCoreKotlinJSONBridge`（`AgentCoreClientKotlinBridge.swift`）：
 //   `[String: JSONValue]` ⇄ Kotlin `Map<String, Any?>` 的桥。那一段是纯 Foundation
 //   （不引用任何 Kotlin 符号），所以 macOS 的 `swift test` 也能单测。
@@ -24,7 +25,8 @@ import Foundation
 //
 // - iOS App 构建（Xcode，`FRAMEWORK_SEARCH_PATHS` 指向 `AgentCoreKit.xcframework`）：
 //   `#if os(iOS)` 成立 → 工厂默认返回 `KotlinAgentCoreClient`；
-// - macOS `swift test`：`os(iOS)` 不成立 → 同一份源码退回 Swift `NativeAgentCoreClient`。
+// - macOS `swift test`：`os(iOS)` 不成立 → Swift `NativeAgentCoreClient`（那个类型被
+//   `#if !os(iOS)` 包着，iOS 构建里根本不存在）。
 //
 // 判定为什么用 `os(iOS)` 而不是 `canImport(AgentCoreKit)`：`canImport` 在 framework 缺失时
 // 是**静默**退成 Swift —— 编译通过、测试通过、只有 App 在悄悄跑另一份实现；更要命的是

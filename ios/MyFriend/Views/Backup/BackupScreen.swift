@@ -156,7 +156,7 @@ struct BackupScreen: View {
 
             // 体积说明放在动作下面而不是藏进帮助页：用户在按下「带走」之前就该知道
             // 图片会跟着走、而且有上限（单张 8 MB / 合计 128 MB / 整份 256 MB）。
-            Text(L("备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB。"))
+            Text(L("备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB；可用内存较小的时候会自动收紧。"))
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -198,7 +198,7 @@ struct BackupScreen: View {
                 .padding(.bottom, 8)
 
             honestyRow(icon: "key", text: L("API Key 不在备份里。它存在这台手机的 Keychain 里，从来不进文件；接回来以后在「API 配置」里重新填一次就好。"))
-            honestyRow(icon: "photo", text: L("头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。"))
+            honestyRow(icon: "photo", text: L("头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB（小内存机型会更少）；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。"))
             honestyRow(icon: "iphone", text: L("聊天背景图的路径是这台手机上的本地路径，换机之后会失效，需要重新选一次。"))
         }
     }

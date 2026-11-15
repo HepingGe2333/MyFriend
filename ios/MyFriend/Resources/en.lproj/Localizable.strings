@@ -698,8 +698,13 @@
 "聊天" = "Chats";
 "联网工具地址不是合法的 http/https 链接" = "The web tool address isn't a valid http/https link";
 "联网工具请求失败，请检查网络后重试" = "The web tool request failed. Check your network and try again.";
-"联网工具请求失败，请稍后再试" = "The web tool request failed. Try again in a moment.";
 "联网工具调用失败，请稍后再试" = "The web tool call failed. Try again in a moment.";
+"联网工具返回了 HTTP %d" = "The web tools returned HTTP %d";
+"联网服务的响应太大了（超过 2 MiB），已经拒绝" = "The web service response is too large (over 2 MiB), so it was rejected";
+"「%@」说没有权限（HTTP %d），检查一下搜索服务的 Key" = "“%@” says you don't have permission (HTTP %d); check the search service key";
+"「%@」限流了（HTTP %d），过一会儿再试" = "“%@” is rate-limiting (HTTP %d); try again in a moment";
+"「%@」暂时不可用（HTTP %d），过一会儿再试" = "“%@” is temporarily unavailable (HTTP %d); try again in a moment";
+"「%@」返回了 HTTP %d，检查一下地址与 Key" = "“%@” returned HTTP %d; check the address and key";
 "联网搜索" = "Web search";
 "认真回忆" = "Really trying to remember";
 "记下了（还在确认）" = "Noted (still confirming)";
@@ -922,8 +927,8 @@
 
 // 0.12 备份格式 v3：图片（头像 / 聊天图片）跟着备份走，以及它的上限与坏数据提醒。
 "哪些东西跟着走，哪些不跟" = "What travels with him, and what doesn't";
-"头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。" = "Avatars and chat pictures travel with the backup: the image bytes live inside the JSON, so they come back on a new phone. The cost is a bigger file, so there are limits — up to 8 MB per picture and 128 MB in total. Pictures over the limit are left out, and you'll be told how many after exporting.";
-"备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB。" = "Pictures in a backup are capped: 8 MB each, 128 MB in total, and 256 MB for the whole file.";
+"头像和聊天图片会跟着备份走：图片二进制就装在 JSON 里，换台手机也能照着接回来。代价是备份文件会变大，所以有上限——单张最多 8 MB，全部图片合计最多 128 MB（小内存机型会更少）；超出上限的那几张不会进备份，导出之后会告诉你跳过了几张。" = "Avatars and chat pictures travel with the backup: the image bytes live inside the JSON, so they come back on a new phone. The cost is a bigger file, so there are limits — up to 8 MB per picture and 128 MB in total (less on phones with little memory). Pictures over the limit are left out, and you'll be told how many after exporting.";
+"备份里图片有上限：单张 8 MB、全部合计 128 MB，整份备份最大 256 MB；可用内存较小的时候会自动收紧。" = "Pictures in a backup are capped: 8 MB each, 128 MB in total, and 256 MB for the whole file; the caps tighten automatically on devices with little memory.";
 "备份里的头像与聊天图片会一起接回来；更早的备份（v2 及以前）里没有图片本体，那些带图片的消息只会剩下文字。" = "Avatars and chat pictures in this backup will come back too. Older backups (v2 and earlier) never carried the image bytes, so those messages keep only their text.";
 "有 %d 张图片没有随备份带走（超出上限）" = "%d pictures weren't included in the backup (over the size limit)";
 "有 %d 张图片没有随备份带走（超出上限）.one" = "%d picture wasn't included in the backup (over the size limit)";
@@ -932,3 +937,26 @@
 "有 %d 张图片没有接回来（超出上限）" = "%d pictures weren't restored (over the size limit)";
 "有 %d 张图片没有接回来（超出上限）.one" = "%d picture wasn't restored (over the size limit)";
 "媒体" = "Media";
+
+// 0.12 web tools: search service selection.
+"联网工具" = "Web tools";
+"让他能搜索和读网页。关掉以后，这两个工具对他不可用。" = "Let him search and read web pages. When this is off, neither tool is available to him.";
+"搜索服务" = "Search service";
+"用哪家的搜索接口。DeepSeek 官方接口和聊天共用同一个地址与 Key。" = "Which search API to use. DeepSeek's official API shares the address and Key of the chat model.";
+"DeepSeek 官方" = "DeepSeek official";
+"自建服务" = "Self-hosted";
+"留空就用上面聊天配置的地址" = "Leave empty to use the chat address above";
+"https://你的搜索服务地址/search" = "https://your-search-service/search";
+"自建服务必须填完整地址，请求会原样发到这个地址。" = "A self-hosted service needs its full address; requests go to exactly this address.";
+"留空就用默认地址；填了会覆盖默认值。" = "Leave empty to use the default address; anything here overrides it.";
+"搜索 Key" = "Search Key";
+"自建服务不需要 Key 的话可以留空。" = "Leave empty if your self-hosted service doesn't need a Key.";
+"这一项可以留空：留空就复用上面的 API Key。" = "This one can stay empty: the API Key above is reused then.";
+"留空会复用上面的 API Key" = "Leave empty to reuse the API Key above";
+"这台手机已经存了联网 Key，界面上不会显示它。" = "This phone already has a web tools Key saved; it isn't shown here.";
+"搜索 Key 与主 Key 一样只存在 Keychain 里，不进数据库、不进备份。" = "Like the main Key, the search Key lives only in the Keychain — not in the database, not in backups.";
+"清掉联网 Key？" = "Clear the web tools Key?";
+"清掉以后，联网搜索会复用上面的 API Key；想再单独填就重新输入。" = "After clearing, web search reuses the API Key above; type a new one to keep a separate Key.";
+"这个地址不能用：只支持 http/https，不能是本机或内网地址。" = "This address can't be used: only http/https is allowed, and it can't point to this device or a private network.";
+
+"配置「%@」的搜索服务保持本机设置（不会跟着备份改）" = "The search service for “%@” stays as it is on this phone (it won't follow the backup)";

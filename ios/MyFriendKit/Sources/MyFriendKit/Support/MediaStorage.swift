@@ -1,4 +1,5 @@
 import CoreGraphics
+import CryptoKit
 import Foundation
 import ImageIO
 
@@ -48,6 +49,9 @@ public enum ImageEncodingPolicy {
     public static let avatarJPEGQuality = 0.82
     /// 头像体积上限（约 400KB）。
     public static let avatarMaxBytes = 400 * 1024
+
+    /// 备份导入统一用的 JPEG 质量（规范要求 0.85；选图路径仍按上面对应 kind 的质量）。
+    public static let backupImportJPEGQuality = 0.85
 
     /// 选图体积的硬上限：比这个还大就直接告诉用户「换一张小的」。
     public static let maxInputBytes = 20 * 1024 * 1024
@@ -113,6 +117,212 @@ public enum ImageEncodingPolicy {
     }
 }
 
+// MARK: - 图片压缩（选图与备份导入共用）
+
+/// 内容哈希：文件名里的「这张图是什么」。
+///
+/// 为什么用 SHA-256：同一张照片从相册选两次、或同一份 v3 备份接两次，压缩后的字节
+/// 完全一致，用哈希就能在不新增表的前提下认出来「已经有这张图了」。
+public enum ImageContentHash {
+
+    public static func sha256Hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 文件名里用的短前缀（前 16 个十六进制字符，64 bit）。
+    public static func shortPrefix(_ data: Data) -> String {
+        String(sha256Hex(data).prefix(16))
+    }
+}
+
+/// 图片压缩：把任意输入（jpeg/png/webp、带透明通道）变成「长边受限 + 白底 + JPEG」。
+///
+/// 与选图路径的关系：选图以前已经会缩尺寸、按质量阶梯压；这里把「白底」与「体积上限」
+/// 抽出来，备份导入（规范要求长边 ≤512/≤1600、JPEG 0.85、透明垫白底）直接复用同一套，
+/// 避免两条路径各写一份压缩参数。
+public enum ImageCompressor {
+
+    /// 从原始字节压缩。解码不了返回 nil（调用方把它算作坏图，而不是让导入失败）。
+    public static func compressedJPEG(
+        data: Data,
+        kind: MediaKind,
+        quality: Double = ImageEncodingPolicy.backupImportJPEGQuality
+    ) -> Data? {
+        guard !data.isEmpty,
+              let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let decoded = downscaledImage(source: source, maxPixelSize: ImageEncodingPolicy.longEdge(for: kind))
+        else { return nil }
+        return compressedJPEG(image: decoded, kind: kind, quality: quality)
+    }
+
+    /// 从已经解码的图压缩（选图路径手上就是一张缩略图）。
+    ///
+    /// 两条约束同时成立：**长边不超过该 kind 的上限**、**字节数不超过该 kind 的预算**。
+    /// 极端噪点图在目标长边 + 最低质量下仍超预算时，会再等比缩一档尺寸（1200×800 这种），
+    /// 而不是把一张超预算的图原样落盘 —— 备份/网盘同步对「单张 800KB」更敏感。
+    public static func compressedJPEG(
+        image: CGImage,
+        kind: MediaKind,
+        quality: Double
+    ) -> Data? {
+        var current = image
+        var maxEdge = ImageEncodingPolicy.longEdge(for: kind)
+        for _ in 0..<6 {
+            if let flattened = flattenedOnWhite(current),
+               let encoded = encodedUnderLimit(
+                   flattened,
+                   quality: quality,
+                   byteLimit: ImageEncodingPolicy.byteLimit(for: kind)
+               ) {
+                return encoded
+            }
+            // 质量已经降到 0.55 还超：再缩一档尺寸（每档 3/4），直到落进体积上限。
+            let nextEdge = max(64, maxEdge * 3 / 4)
+            guard nextEdge < maxEdge,
+                  let smaller = resized(current, maxPixelSize: nextEdge) else { break }
+            current = smaller
+            maxEdge = nextEdge
+        }
+        // 极端图片（几乎全是噪点）：至少给一张压过的图，而不是把这张图丢掉。
+        return flattenedOnWhite(current).flatMap {
+            encodeJPEG($0, quality: ImageEncodingPolicy.minimumQuality)
+        }
+    }
+
+    /// 按 ImageIO 的缩略图路径解码（EXIF 方向会被摆正，不把整图读进内存）。
+    public static func downscaledImage(source: CGImageSource, maxPixelSize: Int) -> CGImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: max(1, maxPixelSize)
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    /// 透明垫白底：JPEG 没有 alpha 通道，不垫底的话透明区域会变成黑块（相册里的抠图很常见）。
+    public static func flattenedOnWhite(_ image: CGImage) -> CGImage? {
+        let width = max(1, image.width)
+        let height = max(1, image.height)
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    /// 等比缩到长边 ≤ maxPixelSize（不放大）。
+    public static func resized(_ image: CGImage, maxPixelSize: Int) -> CGImage? {
+        let fitted = ImageEncodingPolicy.fittedSize(
+            width: image.width, height: image.height, longEdge: maxPixelSize
+        )
+        guard fitted.width != image.width || fitted.height != image.height else { return image }
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: fitted.width,
+            height: fitted.height,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: fitted.width, height: fitted.height))
+        return context.makeImage()
+    }
+
+    /// 0.85 → 0.75 → 0.65 → 0.55 的质量阶梯，取第一个落进体积上限的；
+    /// 都超就返回 nil，让调用方再缩一档尺寸（而不是把超限的图原样落盘）。
+    public static func encodedUnderLimit(_ image: CGImage, quality: Double, byteLimit: Int) -> Data? {
+        for candidate in ImageEncodingPolicy.qualityLadder(from: quality) {
+            guard let encoded = encodeJPEG(image, quality: candidate) else { continue }
+            if encoded.count <= byteLimit { return encoded }
+        }
+        return nil
+    }
+
+    /// JPEG 编码（与 MediaStorage 原来那份逐字相同，只是抽成静态函数给两条路径共用）。
+    public static func encodeJPEG(_ image: CGImage, quality: Double) -> Data? {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            data as CFMutableData, "public.jpeg" as CFString, 1, nil
+        ) else { return nil }
+        let properties: [CFString: Any] = [
+            kCGImageDestinationLossyCompressionQuality: quality
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return data as Data
+    }
+}
+
+/// 附件文件名的内容哈希前缀（与 `BackupMediaTransfer.newFileName` 的落盘规则同源）。
+///
+/// 结构：`<kind 前缀><sha256 前 16 位>-<uuid>.<ext>`，例如
+/// `chatImage-3f2a9c0d1e4b5a69-1D9E….jpg`。UUID 保证「同名不覆盖」，哈希前缀负责去重。
+public enum MediaFileNaming {
+
+    public static let hashPrefixLength = 16
+
+    public static func fileName(kind: MediaKind, contentHash: String, uuid: UUID = UUID()) -> String {
+        "\(kind.rawValue)-\(contentHash)-\(uuid.uuidString).jpg"
+    }
+
+    public static func fileName(kind: BackupMediaKind, contentHash: String, uuid: UUID = UUID()) -> String {
+        "\(kind.fileNamePrefix)\(contentHash)-\(uuid.uuidString).jpg"
+    }
+
+    /// 目录里是否已经有一张**同样内容**的图（文件名前缀 = kind + 哈希）。
+    public static func existingFile(
+        kind: MediaKind,
+        contentHash: String,
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        existingFile(prefix: "\(kind.rawValue)-\(contentHash)-", in: directory, fileManager: fileManager)
+    }
+
+    public static func existingFile(
+        kind: BackupMediaKind,
+        contentHash: String,
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        existingFile(prefix: "\(kind.fileNamePrefix)\(contentHash)-", in: directory, fileManager: fileManager)
+    }
+
+    static func existingFile(
+        prefix: String,
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) -> URL? {
+        guard let items = try? fileManager.contentsOfDirectory(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey]
+        ) else { return nil }
+        guard let match = items.first(where: { url in
+            url.lastPathComponent.hasPrefix(prefix)
+                && (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        }) else { return nil }
+        // 用**逻辑目录**拼回路径，而不是枚举出来的 URL：macOS 的临时目录是
+        // `/var` → `/private/var` 的符号链接，枚举会返回解析后的路径，和第一次写入用的
+        // `/var/...` 长得不一样 —— 两者指向同一个文件，但字符串比较会失败，
+        // 而 `attachmentsJson` 里存的 uri 会来回抖动。统一成目录的逻辑路径。
+        return directory.standardizedFileURL
+            .appendingPathComponent(match.lastPathComponent, isDirectory: false)
+            .standardizedFileURL
+    }
+}
+
 /// 内存预算：缩略图缓存能占多少。
 ///
 /// 为什么按比例而不是写死 48MB：小内存设备（3GB）上 48MB 会明显挤压聊天本身；
@@ -170,8 +380,29 @@ public enum ImageThumbnailDecoder {
 
     /// 原图像素尺寸（只看元数据，不解码像素）。
     public static func pixelSize(url: URL) -> (width: Int, height: Int)? {
-        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return pixelSize(source: source)
+    }
+
+    /// 这份字节的**真实**格式是不是 JPEG（不看备份里声明的 mime：外部输入可能写错）。
+    ///
+    /// 只有真 JPEG 才可能「保留原图」：PNG/WebP 可能带透明通道，必须重压并垫白底。
+    public static func isJPEG(data: Data) -> Bool {
+        guard !data.isEmpty, let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let type = CGImageSourceGetType(source) else { return false }
+        return (type as String) == "public.jpeg"
+    }
+
+    /// 原始字节的像素尺寸（只看元数据，不解码像素）：备份导入判断「原图是否已满足长边上限」用。
+    public static func pixelSize(data: Data) -> (width: Int, height: Int)? {
+        guard !data.isEmpty, let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            return nil
+        }
+        return pixelSize(source: source)
+    }
+
+    private static func pixelSize(source: CGImageSource) -> (width: Int, height: Int)? {
+        guard let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any]
         else { return nil }
         let width = (properties[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (properties[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
@@ -418,13 +649,37 @@ public enum BackupMediaKind: String, CaseIterable, Sendable {
         case .chatImage: return MediaKind.chatImage.rawValue + "-"
         }
     }
+
+    /// 备份里的类型 → 压缩策略（头像 512、聊天图 1600）。
+    public var mediaKind: MediaKind {
+        switch self {
+        case .personaAvatar, .userAvatar: return .avatar
+        case .chatImage: return .chatImage
+        }
+    }
 }
 
 /// v3 备份里媒体的硬上限（两端同一组数字，改了就是格式变更）。
 public enum BackupMediaLimits {
 
-    /// 一份备份里全部媒体的**原始**字节上限：128 MiB。
+    /// 一份备份里全部媒体的**原始**字节上限：128 MiB（硬上限，实际还会按可用内存收紧）。
     public static let maxTotalBytes = 128 * 1024 * 1024
+
+    /// 当前可用内存（iOS 13+ 用 `os_proc_available_memory`，拿不到时退回物理内存的 1/3）。
+    public static func availableMemoryBytes() -> Int {
+        #if os(iOS)
+        let available = os_proc_available_memory()
+        if available > 0 { return available }
+        #endif
+        return Int(ProcessInfo.processInfo.physicalMemory / 3)
+    }
+
+    /// 按可用内存算媒体预算：整份 JSON 在内存里，峰值约为媒体原始字节的 5–6 倍
+    /// （base64 ×1.35、字符串副本、解码缓冲）。500×800 KB 在 192 MB 堆上必定 OOM，
+    /// 所以预算取 `可用内存 / 12`，再与 [maxTotalBytes] 取小；小堆机型宁可少带几张图。
+    public static func effectiveTotalBytes(available: Int = availableMemoryBytes()) -> Int {
+        max(4 * 1024 * 1024, min(maxTotalBytes, available / 12))
+    }
     /// 单个文件的**原始**字节上限：8 MiB。
     public static let maxFileBytes = 8 * 1024 * 1024
     /// `media[].fileName` 最长多少字节（只用来挡垃圾，比我们自己写的名字宽松得多）。
@@ -509,12 +764,19 @@ public enum BackupMediaTransfer {
         return isSafeFileName(name) ? name : nil
     }
 
-    /// 导入时的落盘文件名：`avatar-<uuid>.<ext>` / `chatImage-<uuid>.<ext>`。
+    /// 导入时的落盘文件名：`avatar-<hash>-<uuid>.<ext>` / `chatImage-<hash>-<uuid>.<ext>`。
     ///
     /// 永远不复用备份里的 `fileName`：备份是外部输入，不能让它决定往哪个路径写字节。
-    public static func newFileName(kind: BackupMediaKind, mime: String, uuid: UUID = UUID()) -> String? {
+    /// `contentHash` 是压缩后字节的 SHA-256 短前缀（重复导入时据此复用同一张图）。
+    public static func newFileName(
+        kind: BackupMediaKind,
+        mime: String,
+        contentHash: String? = nil,
+        uuid: UUID = UUID()
+    ) -> String? {
         guard let fileExtension = fileExtension(forMime: mime) else { return nil }
-        return "\(kind.fileNamePrefix)\(uuid.uuidString).\(fileExtension)"
+        let hashPart = contentHash.map { "\($0)-" } ?? ""
+        return "\(kind.fileNamePrefix)\(hashPart)\(uuid.uuidString).\(fileExtension)"
     }
 
     // MARK: base64
@@ -613,7 +875,7 @@ public enum BackupMediaPacker {
 
     public static func pack(
         candidates: [BackupMediaCandidate],
-        totalBudget: Int = BackupMediaLimits.maxTotalBytes,
+        totalBudget: Int = BackupMediaLimits.effectiveTotalBytes(),
         perFileBudget: Int = BackupMediaLimits.maxFileBytes,
         fileManager: FileManager = .default
     ) -> Result {
@@ -712,7 +974,7 @@ public enum BackupMediaRestorer {
     public static func restore(
         entries: [BackupMedia],
         directory: URL,
-        totalBudget: Int = BackupMediaLimits.maxTotalBytes,
+        totalBudget: Int = BackupMediaLimits.effectiveTotalBytes(),
         perFileBudget: Int = BackupMediaLimits.maxFileBytes,
         fileManager: FileManager = .default,
         newUUID: () -> UUID = { UUID() }
@@ -758,22 +1020,63 @@ public enum BackupMediaRestorer {
                 result.invalidCount += 1
                 continue
             }
+            // 输入闸（规范里的单张 8 MiB / 总量 128 MiB）按**原始字节**算：
+            // 超限的图连压缩都不做，避免用一张畸形大图做像素解码。
             if data.count > perFileBudget || total + data.count > totalBudget {
                 result.overLimitCount += 1
                 continue
             }
-            guard let newName = BackupMediaTransfer.newFileName(kind: kind, mime: mime, uuid: newUUID()),
-                  let target = BackupMediaTransfer.write(data, as: newName, in: directory, fileManager: fileManager)
-            else {
+            total += data.count
+
+            // 落盘前压缩：头像长边 ≤512、聊天图 ≤1600，JPEG 0.85、透明垫白底，
+            // 体积上限沿用选图路径的 400KB / 800KB。解不出来的图算坏图（跳过并计数）。
+            guard let recompressed = ImageCompressor.compressedJPEG(
+                data: data, kind: kind.mediaKind
+            ) else {
                 result.invalidCount += 1
                 continue
             }
-            total += data.count
+            // 大库基准的发现：对本来就更小的低质量 JPEG，重编码反而变大（301KB→547KB）。
+            // 只在「原图本来就是 JPEG（无透明通道）、尺寸已满足长边上限、字节已在上限内、
+            // 重编码确实更大」时保留原图。PNG/WebP 一律重压：它们可能带 alpha，必须垫白底；
+            // 保留原图也不能破坏「导入统一成 JPEG + 透明垫白」这条契约。
+            let originalSize = ImageThumbnailDecoder.pixelSize(data: data)
+            let originalFitsLongEdge = originalSize.map {
+                max($0.width, $0.height) <= ImageEncodingPolicy.longEdge(for: kind.mediaKind)
+            } ?? false
+            let keepOriginal = ImageThumbnailDecoder.isJPEG(data: data)
+                && originalFitsLongEdge
+                && data.count <= ImageEncodingPolicy.byteLimit(for: kind.mediaKind)
+                && recompressed.count >= data.count
+            let payload = keepOriginal ? data : recompressed
+            let payloadMime = "image/jpeg"
+            let compressed = payload
+            let contentHash = ImageContentHash.shortPrefix(compressed)
+
+            // 去重（不新增表）：压缩后字节相同 = 同一张图，目录里已有就直接复用那个文件。
+            // 文件名里的 SHA-256 前缀就是「有没有这张图」的唯一索引。
+            let target: URL
+            if let existing = MediaFileNaming.existingFile(
+                kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
+            ) {
+                target = existing
+            } else {
+                guard let newName = BackupMediaTransfer.newFileName(
+                    kind: kind, mime: payloadMime, contentHash: contentHash, uuid: newUUID()
+                ),
+                      let written = BackupMediaTransfer.write(
+                          compressed, as: newName, in: directory, fileManager: fileManager
+                      ) else {
+                    result.invalidCount += 1
+                    continue
+                }
+                result.writtenFiles.append(written)
+                target = written
+            }
             writtenKeys.insert(key)
-            result.writtenFiles.append(target)
             let restored = RestoredBackupMedia(
                 kind: kind, fileName: fileName, fileURL: target,
-                uri: target.absoluteString, mime: mime
+                uri: target.absoluteString, mime: "image/jpeg"
             )
             switch kind {
             case .personaAvatar:
@@ -929,29 +1232,32 @@ public final class MediaStorage {
 
     private func saveImage(source: CGImageSource, kind: MediaKind) throws -> MessageAttachment {
         let limit = ImageEncodingPolicy.longEdge(for: kind)
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: limit
-        ]
-        guard let decoded = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+        guard let decoded = ImageCompressor.downscaledImage(source: source, maxPixelSize: limit) else {
             throw StorageError.unreadable
         }
-
-        let target = directory.appendingPathComponent(
-            "\(kind.rawValue)-\(UUID().uuidString).jpg", isDirectory: false
-        )
-        var lastData: Data?
-        for quality in ImageEncodingPolicy.qualityLadder(from: ImageEncodingPolicy.jpegQuality(for: kind)) {
-            guard let encoded = encodeJPEG(decoded, quality: quality) else { continue }
-            lastData = encoded
-            if !ImageEncodingPolicy.exceedsByteLimit(encoded.count, kind: kind) {
-                break
-            }
+        // 透明垫白底 + 质量阶梯 + 体积上限：与备份导入共用同一个压缩器（两条路径不会漂）。
+        guard let data = ImageCompressor.compressedJPEG(
+            image: decoded, kind: kind, quality: ImageEncodingPolicy.jpegQuality(for: kind)
+        ) else {
+            throw StorageError.unreadable
         }
-        guard let data = lastData else { throw StorageError.unreadable }
+        // 重复选同一张图：压缩后的字节相同 → 复用已有文件（文件名带 SHA-256 前缀）。
+        let contentHash = ImageContentHash.shortPrefix(data)
+        if let existing = MediaFileNaming.existingFile(
+            kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
+        ) {
+            return MessageAttachment(
+                uri: existing.absoluteString,
+                mime: MessageAttachment.defaultMime,
+                width: decoded.width,
+                height: decoded.height
+            )
+        }
+        let target = directory.appendingPathComponent(
+            MediaFileNaming.fileName(kind: kind, contentHash: contentHash), isDirectory: false
+        )
         do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
             try data.write(to: target, options: .atomic)
         } catch {
             throw StorageError.writeFailed
@@ -962,19 +1268,6 @@ public final class MediaStorage {
             width: decoded.width,
             height: decoded.height
         )
-    }
-
-    private func encodeJPEG(_ image: CGImage, quality: Double) -> Data? {
-        let data = NSMutableData()
-        guard let destination = CGImageDestinationCreateWithData(
-            data as CFMutableData, "public.jpeg" as CFString, 1, nil
-        ) else { return nil }
-        let properties: [CFString: Any] = [
-            kCGImageDestinationLossyCompressionQuality: quality
-        ]
-        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
-        guard CGImageDestinationFinalize(destination) else { return nil }
-        return data as Data
     }
 
     // MARK: 读

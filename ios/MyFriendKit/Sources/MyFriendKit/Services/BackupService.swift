@@ -156,15 +156,21 @@ public final class BackupService {
     /// （读之前看文件大小、解析之前看 UTF-8 字节数）不变，只是数字跟着格式一起抬到 256 MiB。
     public static let maxImportBytes = 256 * 1024 * 1024
 
+    /// 读入/解析上限按可用内存收紧：整份 JSON 要按字符读入（UTF-16 占两倍），
+    /// 256 MiB 的文本在 192 MB 堆上不可能完成。取 `min(256 MiB, 可用内存/8)`。
+    public static func effectiveImportBytes(available: Int = BackupMediaLimits.availableMemoryBytes()) -> Int {
+        max(8 * 1024 * 1024, min(maxImportBytes, available / 8))
+    }
+
     /// 导出的体积上限：与导入同一个数字（0.11.1 审计 P1-4）。
     ///
     /// 以前导出没有上限、导入有闸：聊天量大时能导出一份「自己导不回来」的备份，
     /// 而用户到换机那天才发现 —— 唯一的迁移手段变成死文件。现在导出到上限就明确报错
     /// （`export()` 抛 `BackupImportError`，界面显示「没能把他带走」），绝不返回半份 JSON。
-    public static let maxExportBytes = maxImportBytes
+    public static var maxExportBytes: Int { effectiveImportBytes() }
 
     /// 一份备份里全部图片的**原始**字节上限：128 MiB（与 Android 同一组数字）。
-    public static let maxMediaBytes = BackupMediaLimits.maxTotalBytes
+    public static var maxMediaBytes: Int { BackupMediaLimits.effectiveTotalBytes() }
     /// 单张图片的**原始**字节上限：8 MiB。
     public static let maxMediaFileBytes = BackupMediaLimits.maxFileBytes
 
@@ -457,7 +463,7 @@ public final class BackupService {
     public static func readBoundedText(
         at url: URL,
         fileManager: FileManager = .default,
-        maxBytes: Int = BackupService.maxImportBytes
+        maxBytes: Int = BackupService.effectiveImportBytes()
     ) throws -> String {
         let size = (try? fileManager.attributesOfItem(atPath: url.path))?[.size] as? NSNumber
         if let bytes = size?.intValue, bytes > maxBytes {
@@ -507,7 +513,7 @@ public final class BackupService {
     /// 从 JSON 文本把他接回来。读不懂就抛 `BackupImportError`，库里什么都不改。
     public func importBackup(text: String, mode: ImportMode) throws -> ImportSummary {
         // 解析之前再判一次：调用方可能绕过 `readBackupText`（备份来自剪贴板、测试、旧代码）。
-        guard text.utf8.count <= Self.maxImportBytes else {
+        guard text.utf8.count <= Self.effectiveImportBytes() else {
             throw BackupImportError(Self.tooLargeMessage)
         }
         switch BackupCodec.decode(text) {
@@ -775,6 +781,11 @@ public final class BackupService {
                         if merge.keptLocalInsecureHttp {
                             warnings.append(
                                 String(format: String(localized: "配置「%@」的「允许不安全 HTTP」保持本机设置，不改从备份"), merge.entity.name)
+                            )
+                        }
+                        if merge.keptLocalProvider {
+                            warnings.append(
+                                String(format: String(localized: "配置「%@」的搜索服务保持本机设置（不会跟着备份改）"), merge.entity.name)
                             )
                         }
                     } else {
@@ -1240,7 +1251,9 @@ public final class BackupService {
             maxOutputTokens: config.maxOutputTokens,
             frequencyPenalty: config.frequencyPenalty,
             presencePenalty: config.presencePenalty,
-            webToolsEnabled: config.webToolsEnabled, webToolsBaseUrl: config.webToolsBaseUrl,
+            webToolsEnabled: config.webToolsEnabled,
+            webToolsProvider: WebToolsProvider(stored: config.webToolsProvider).rawValue,
+            webToolsBaseUrl: config.webToolsBaseUrl,
             createdAt: config.createdAt, updatedAt: config.updatedAt
         )
     }
@@ -1252,6 +1265,8 @@ public final class BackupService {
         var foreignBaseUrl: String?
         /// 备份想把「允许不安全 HTTP」改成本机不同的值（已拒绝）。
         var keptLocalInsecureHttp: Bool
+        /// 备份里的搜索服务与本机不同（已保留本机 provider，理由见 `mergeInto`）。
+        var keptLocalProvider: Bool
 
         /// 便捷取用：绝大多数调用方只关心实体。
         var merged: ApiConfigEntity { entity }
@@ -1277,6 +1292,14 @@ public final class BackupService {
         merged.frequencyPenalty = imported.frequencyPenalty ?? existing.frequencyPenalty
         merged.presencePenalty = imported.presencePenalty ?? existing.presencePenalty
         merged.webToolsEnabled = imported.webToolsEnabled
+        // 搜索服务也属于「这台设备把 Key 发给谁」的一部分：本机 `webToolsBaseUrl` 为空时，
+        // provider 决定默认地址（DeepSeek 官方 vs Tavily/Brave/Serper/自建）。若照备份改 provider
+        // 而不改地址，本机存的 DeepSeek Key 就会发到备份指定的那家服务上去 —— 等于把 Key 交给
+        // 第三方。所以 provider 与本机不同时保留本机值并上报警告；新配置（本机没有）才采用备份值。
+        let importedProvider = WebToolsProvider(stored: imported.webToolsProvider).rawValue
+        let localProvider = WebToolsProvider(stored: existing.webToolsProvider).rawValue
+        let keptLocalProvider = importedProvider != localProvider
+        merged.webToolsProvider = localProvider
 
         // 地址：同源才接受（尾部斜杠/`/v1` 写法差异不算不同）；不同就保留本机值。
         let importedBase = NetworkGuard.normalizeBaseUrl(imported.baseUrl)
@@ -1300,7 +1323,8 @@ public final class BackupService {
         return ApiConfigMerge(
             entity: merged,
             foreignBaseUrl: foreignBaseUrl,
-            keptLocalInsecureHttp: keptLocalInsecureHttp
+            keptLocalInsecureHttp: keptLocalInsecureHttp,
+            keptLocalProvider: keptLocalProvider
         )
     }
 
@@ -1327,6 +1351,7 @@ public final class BackupService {
             createdAt: imported.createdAt > 0 ? imported.createdAt : now,
             updatedAt: imported.updatedAt > 0 ? imported.updatedAt : now,
             webToolsEnabled: imported.webToolsEnabled,
+            webToolsProvider: WebToolsProvider(stored: imported.webToolsProvider).rawValue,
             webToolsBaseUrl: imported.webToolsBaseUrl,
             webToolsApiKeyCipher: nil
         )

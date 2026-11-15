@@ -20,6 +20,8 @@ import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.prefs.AppSettings
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.prefs.ThemeMode
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
@@ -49,7 +51,8 @@ import java.util.Locale
  * 2. **读坏数据不许崩**。[decode] 永远返回 [BackupDecodeResult]，缺字段用默认值、未知字段忽略、
  *    坏条目跳过并记一条中文警告；版本比本机高时明确拒绝，而不是半懂不懂地写库。
  *
- * v3（0.12）起，头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
+ * v4（0.12）在 v3 的媒体之上加了 `apiConfigs[].webToolsProvider`（搜索后端，默认 DEEPSEEK）；
+ * v3 的媒体规则不变：头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
  * 每条是一张图（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）+ 标准 base64。
  * `personas.avatarUri` / `presets.avatarUri` 仍写裸文件名，`messages.attachmentsJson`
  * 也只写裸文件名（绝不写设备路径）；导入时用 `media[].fileName` 把引用接回**新的**本机文件。
@@ -61,7 +64,7 @@ import java.util.Locale
  *   聊天背景图片是设备上的路径，不导；
  * - 孤儿图片文件不导：只收集本机当前还引用得到的头像与聊天图片。
  */
-const val BACKUP_FORMAT_VERSION: Int = 3
+const val BACKUP_FORMAT_VERSION: Int = 4
 
 /** 写在文件里的格式标记：拿错文件时能早点说「这不是他的备份」。 */
 const val BACKUP_FORMAT_NAME: String = "myfriend.backup"
@@ -332,6 +335,7 @@ data class BackupMemoryConsolidation(
  * 也没有 `customHeadersJson`（自定义 Header 里可能藏着 `Authorization: Bearer sk-…`）。
  * 接回来以后：地址、模型、开关都在，Key 需要在这台手机上重新填一次。
  */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class BackupApiConfig(
     val id: String = "",
@@ -347,6 +351,13 @@ data class BackupApiConfig(
     val presencePenalty: Double? = null,
     val webToolsEnabled: Boolean = false,
     val webToolsBaseUrl: String = "",
+    /**
+     * 搜索后端（v4）。缺字段的老备份读到默认 `DEEPSEEK`；导出时**总是写**这一列
+     * （即使值等于默认），否则「v3 备份导入后 provider 默认 DEEPSEEK」与
+     * 「v4 备份里确实带了 provider」这两件事在 JSON 上分不出来。
+     */
+    @EncodeDefault(EncodeDefault.Mode.ALWAYS)
+    val webToolsProvider: String = WebToolsProviders.DEEPSEEK,
     val createdAt: Long = 0L,
     val updatedAt: Long = 0L
 )
@@ -472,8 +483,8 @@ object BackupCodec {
         if (raw.isNullOrBlank()) return BackupDecodeResult.Failure(BackupFailure.EmptyFile)
         // 安全 P2-3：解析前再兜一次大小。读文件的闸（BoundedTextRead）挡的是 OOM 主路径，
         // 这里挡的是「别的调用方把一份超大字符串直接塞进来」（调试面板、将来的 CLI/同步）。
-        if (BackupMediaLimits.isTooManyChars(raw.length)) {
-            return BackupDecodeResult.Failure(BackupFailure.TooLarge(BackupMediaLimits.MAX_BACKUP_BYTES))
+        if (raw.length.toLong() > BackupMediaLimits.effectiveBackupBytes()) {
+            return BackupDecodeResult.Failure(BackupFailure.TooLarge(BackupMediaLimits.effectiveBackupBytes()))
         }
 
         val root = runCatching { readJson.parseToJsonElement(raw) }.getOrNull() as? JsonObject
@@ -994,6 +1005,7 @@ fun ApiConfigEntity.toBackupApiConfig(): BackupApiConfig = BackupApiConfig(
     frequencyPenalty = frequencyPenalty,
     presencePenalty = presencePenalty,
     webToolsEnabled = webToolsEnabled,
+    webToolsProvider = WebToolsProviders.normalize(webToolsProvider),
     webToolsBaseUrl = webToolsBaseUrl,
     createdAt = createdAt,
     updatedAt = updatedAt
@@ -1053,6 +1065,8 @@ fun BackupApiConfig.mergeInto(existing: ApiConfigEntity): MergedApiConfig {
         frequencyPenalty = frequencyPenalty ?: existing.frequencyPenalty,
         presencePenalty = presencePenalty ?: existing.presencePenalty,
         webToolsEnabled = webToolsEnabled,
+        // provider 是非敏感字段，可以跟着备份走；地址与 Key 仍保留本机值。
+        webToolsProvider = WebToolsProviders.normalize(webToolsProvider),
         webToolsBaseUrl = existing.webToolsBaseUrl,
         updatedAt = updatedAt.takeIf { it > 0L } ?: existing.updatedAt
     )
@@ -1092,6 +1106,7 @@ fun BackupApiConfig.toNewEntity(): MergedApiConfig {
         createdAt = createdAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
         updatedAt = updatedAt.takeIf { it > 0L } ?: System.currentTimeMillis(),
         webToolsEnabled = webToolsEnabled,
+        webToolsProvider = WebToolsProviders.normalize(webToolsProvider),
         webToolsBaseUrl = webToolsBaseUrl,
         webToolsApiKeyCipher = null
     )

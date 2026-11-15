@@ -38,7 +38,8 @@ import com.myfriend.app.domain.UserErrorTokens
 import com.myfriend.app.domain.debugText
 import com.myfriend.app.network.ApiException
 import com.myfriend.app.network.toUserError
-import com.myfriend.app.network.DeepSeekWebTools
+import com.myfriend.app.domain.WebToolsProviders
+import com.myfriend.app.network.WebSearchClient
 import com.myfriend.app.network.WebSearchHit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -63,7 +64,7 @@ class ToolExecutor @Inject constructor(
     /** agent 决策（defer_reply 计划 / 工具参数夹取）：默认进程内，可切 agentd，失败自动回退。 */
     private val agentCore: AgentCoreClient,
     @ApplicationContext private val appContext: Context,
-    private val webTools: DeepSeekWebTools,
+    private val webTools: WebSearchClient,
     private val apiConfigRepository: ApiConfigRepository,
     private val memoryRepository: MemoryRepository,
     private val recallRepository: RecallRepository,
@@ -179,6 +180,7 @@ class ToolExecutor @Inject constructor(
         val access = webAccess(persona, configId) ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_WEB_DISABLED))
         return runCatching {
             val hits = webTools.search(
+                provider = access.provider,
                 baseUrl = access.baseUrl,
                 apiKey = access.apiKey,
                 query = query.take(128),
@@ -217,7 +219,11 @@ class ToolExecutor @Inject constructor(
                         query = query.take(128),
                         hitsSummary = hits.take(6).joinToString("\n") { hit ->
                             "- ${hit.title.ifBlank { hit.url }}" +
-                                if (hit.summary.isNotBlank()) "：${hit.summary.take(120)}" else ""
+                                when {
+                                    hit.summary.isNotBlank() -> "：${hit.summary.take(120)}"
+                                    hit.snippet.isNotBlank() -> "：${hit.snippet.take(120)}"
+                                    else -> ""
+                                }
                         }
                     )
                 }
@@ -258,6 +264,7 @@ class ToolExecutor @Inject constructor(
         val access = webAccess(persona, configId) ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_WEB_DISABLED))
         return runCatching {
             val page = webTools.fetch(
+                provider = access.provider,
                 baseUrl = access.baseUrl,
                 apiKey = access.apiKey,
                 url = url,
@@ -288,12 +295,22 @@ class ToolExecutor @Inject constructor(
             ?: persona.defaultApiConfigId?.let { apiConfigRepository.getById(it) }
             ?: return null
         if (!config.webToolsEnabled) return null
-        val baseUrl = config.webToolsBaseUrl.ifBlank { DEFAULT_DEEPSEEK_BASE }
+        val provider = WebToolsProviders.normalize(config.webToolsProvider)
+        // DEEPSEEK 的默认地址是「LLM 配置的 base URL」（规范 §1）；其余 provider 留空交给
+        // WebSearchClient 用各自的默认地址，GENERIC 留空会在发请求前报 WebBaseMissing。
+        val baseUrl = config.webToolsBaseUrl.trim().ifBlank {
+            if (provider == WebToolsProviders.DEEPSEEK) {
+                config.baseUrl.trim().ifBlank { WebToolsProviders.DEEPSEEK_FALLBACK_BASE }
+            } else {
+                ""
+            }
+        }
+        // 缺 Key 不再等同于「联网没开」：GENERIC 允许无 Key，其余 provider 由客户端给出
+        // WebKeyMissing 的明确错误（规范 §5：不许静默空结果）。专用 Key 为空时沿用主 Key。
         val key = config.webToolsApiKeyCipher?.let { ciphertext ->
             runCatching { secretCipher.decrypt(ciphertext) }.getOrNull()
         } ?: runCatching { apiConfigRepository.resolve(config.id)?.apiKey }.getOrNull()
-        if (key.isNullOrBlank()) return null
-        return WebAccess(baseUrl, key, config.allowInsecureHttp)
+        return WebAccess(provider, baseUrl, key.orEmpty(), config.allowInsecureHttp)
     }
 
     private fun renderHits(hits: List<WebSearchHit>): String = buildString {
@@ -698,9 +715,10 @@ class ToolExecutor @Inject constructor(
         )
     }
 
-    private data class WebAccess(val baseUrl: String, val apiKey: String, val allowInsecureHttp: Boolean)
-
-    private companion object {
-        const val DEFAULT_DEEPSEEK_BASE = "https://api.deepseek.com"
-    }
+    private data class WebAccess(
+        val provider: String,
+        val baseUrl: String,
+        val apiKey: String,
+        val allowInsecureHttp: Boolean
+    )
 }
