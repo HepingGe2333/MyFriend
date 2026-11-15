@@ -20,7 +20,12 @@ final class ProactiveRuleServiceTests: XCTestCase {
         temp = try TempDatabase()
         try temp.stores.personas.upsert(TestData.persona(id: personaId))
         try temp.stores.sessions.upsert(TestData.session(id: sessionId, personaId: personaId))
-        service = ProactiveRuleService(stores: temp.stores, now: { self.now })
+        // 固定时区：presenter 的「今天/明天」与 createFromProposal 的 nextTriggerAt 必须用同一本日历，
+        // 否则 CI（UTC）上 22:30 会被算成次日 06:30。
+        service = ProactiveRuleService(
+            stores: temp.stores, now: { self.now },
+            calendar: ServiceTime.calendar(TimeZone(identifier: "Asia/Shanghai")!)
+        )
     }
 
     override func tearDownWithError() throws {
@@ -198,7 +203,8 @@ final class ProactiveRuleServiceTests: XCTestCase {
         let rule = try XCTUnwrap(try temp.stores.proactiveRules.byId(id))
         let morning = ServiceTime.startOfDay(now, calendar: shanghai) + 9 * 60 * 60_000
         let row = ProactiveRulePresenter.present(
-            rule: rule, personaName: "林深", now: morning, calendar: shanghai
+            rule: rule, personaName: "林深", now: morning, calendar: shanghai,
+            locale: Locale(identifier: "zh_CN")
         )
         XCTAssertEqual(row.personaName, "林深")
         XCTAssertEqual(row.note, "睡前问一句今天过得怎么样")
@@ -243,7 +249,8 @@ final class ProactiveRuleServiceTests: XCTestCase {
                 id: "r-later", personaId: personaId, kind: .daily,
                 timeOfDayMinutes: 20 * 60, note: "晚上好", nextTriggerAt: later
             ),
-            personaName: "林深", now: now, calendar: shanghai
+            personaName: "林深", now: now, calendar: shanghai,
+            locale: Locale(identifier: "zh_CN")
         )
         XCTAssertTrue(laterRow.nextLabel.hasPrefix("下次大概 "), laterRow.nextLabel)
         XCTAssertTrue(laterRow.nextLabel.contains("20:00"), laterRow.nextLabel)

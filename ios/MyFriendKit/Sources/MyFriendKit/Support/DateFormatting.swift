@@ -10,12 +10,17 @@ import Foundation
 public enum BackupDateFormatting {
 
     /// 「2026年11月14日 01:40」；`at <= 0` 表示时间不详。
-    public static func moment(_ at: Int64) -> String {
+    public static func moment(
+        _ at: Int64,
+        locale: Locale = .current,
+        timeZone: TimeZone = .current
+    ) -> String {
         guard at > 0 else { return String(localized: "时间不详") }
         // 跟着界面语言走：中文是「2026年11月14日 01:40」，英文是 "Nov 14, 2026 at 1:40 AM"。
+        // locale/timeZone 可注入：CI 跑在 en_US/UTC 上，测试要能钉住两种语言与时区。
         let formatter = DateFormatter()
-        formatter.locale = Locale.current
-        formatter.timeZone = TimeZone.current
+        formatter.locale = locale
+        formatter.timeZone = timeZone
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date(millis: at))
@@ -51,6 +56,10 @@ public func backupFileName(now: Int64 = currentTimeMillis()) -> String {
 }
 
 /// 「2026年11月14日 01:40」，给界面和摘要共用（与 Android 的 `formatBackupMoment` 同文案）。
-public func formatBackupMoment(_ at: Int64) -> String {
-    BackupDateFormatting.moment(at)
+public func formatBackupMoment(
+    _ at: Int64,
+    locale: Locale = .current,
+    timeZone: TimeZone = .current
+) -> String {
+    BackupDateFormatting.moment(at, locale: locale, timeZone: timeZone)
 }

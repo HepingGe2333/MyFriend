@@ -560,7 +560,8 @@ public enum ProactiveRulePresenter {
         rule: ProactiveRuleEntity,
         personaName: String?,
         now: Int64 = DomainClock.nowMillis,
-        calendar: Calendar = ServiceTime.calendar()
+        calendar: Calendar = ServiceTime.calendar(),
+        locale: Locale = .current
     ) -> ProactiveRulePresentation {
         let note = rule.note.trimmingCharacters(in: .whitespacesAndNewlines)
         let hint = rule.hint.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -572,7 +573,7 @@ public enum ProactiveRulePresenter {
             hint: hint,
             kindLabel: kindLabel(rule),
             scheduleLabel: scheduleLabel(rule),
-            nextLabel: nextLabel(rule, now: now, calendar: calendar),
+            nextLabel: nextLabel(rule, now: now, calendar: calendar, locale: locale),
             sourceLabel: rule.source == .ai ? String(localized: "他自己安排的") : String(localized: "你设的"),
             enabled: rule.enabled,
             nextTriggerAt: rule.nextTriggerAt,
@@ -588,11 +589,17 @@ public enum ProactiveRulePresenter {
         rules: [ProactiveRuleEntity],
         personas: [PersonaEntity],
         now: Int64 = DomainClock.nowMillis,
-        calendar: Calendar = ServiceTime.calendar()
+        calendar: Calendar = ServiceTime.calendar(),
+        locale: Locale = .current
     ) -> [ProactiveRulePresentation] {
         let names = Dictionary(uniqueKeysWithValues: personas.map { ($0.id, $0.name) })
         return rules
-            .map { present(rule: $0, personaName: names[$0.personaId], now: now, calendar: calendar) }
+            .map {
+                present(
+                    rule: $0, personaName: names[$0.personaId], now: now,
+                    calendar: calendar, locale: locale
+                )
+            }
             .sorted { lhs, rhs in
                 if lhs.enabled != rhs.enabled { return lhs.enabled }
                 if lhs.nextTriggerAt != rhs.nextTriggerAt { return lhs.nextTriggerAt < rhs.nextTriggerAt }
@@ -626,7 +633,8 @@ public enum ProactiveRulePresenter {
     static func nextLabel(
         _ rule: ProactiveRuleEntity,
         now: Int64,
-        calendar: Calendar
+        calendar: Calendar,
+        locale: Locale = .current
     ) -> String {
         guard rule.enabled else { return String(localized: "现在关着") }
         guard rule.nextTriggerAt > 0 else { return String(localized: "下次时间还没排定") }
@@ -638,7 +646,7 @@ public enum ProactiveRulePresenter {
             == ServiceTime.startOfDay(now, calendar: calendar) + 24 * 60 * 60_000 {
             day = String(localized: "明天")
         } else {
-            day = formatDay(next, calendar: calendar)
+            day = formatDay(next, calendar: calendar, locale: locale)
         }
         return String(
             format: String(localized: "下次大概 %@ %@ 前后"),
@@ -652,11 +660,12 @@ public enum ProactiveRulePresenter {
         return calendar.component(.hour, from: date) * 60 + calendar.component(.minute, from: date)
     }
 
-    static func formatDay(_ millis: Int64, calendar: Calendar) -> String {
+    static func formatDay(_ millis: Int64, calendar: Calendar, locale: Locale = .current) -> String {
         let date = Date(timeIntervalSince1970: Double(millis) / 1000)
         let formatter = DateFormatter()
-        formatter.locale = Locale.current
+        formatter.locale = locale
         formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
         formatter.setLocalizedDateFormatFromTemplate("MMMd")
         return formatter.string(from: date)
     }

@@ -33,11 +33,18 @@ final class PresenceRepositoryTests: XCTestCase {
 
     func testIdleWhenNothingHappenedAndSelfDescriptionIsFirstPerson() throws {
         try db.stores.personas.upsert(TestData.persona())
-        let current = presence.current(personaId: "persona-1")
+        // 用「当地 00:13」构造时钟：TestData.now 是固定 epoch，CI 跑在 UTC 上时当地小时数会变，
+        // 「深夜措辞」这条断言就失去意义。
+        var localNow = ServiceTime.startOfDay(TestData.now) + 13 * 60 * 1_000
+        let localIntents = AgentIntentSupport(stores: db.stores, ticks: ticks, now: { localNow })
+        let localPresence = PresenceRepository(
+            stores: db.stores, ticks: ticks, intents: localIntents, now: { localNow }
+        )
+        let current = localPresence.current(personaId: "persona-1")
         XCTAssertEqual(current.kind, .idle)
         XCTAssertTrue(current.isMeaningful())
         // 固定时钟是当地 00:13：深夜的措辞与白天不同，且他自己不会说「他有好一阵没动静」。
-        XCTAssertTrue(current.detail.contains("这么晚"))
+        XCTAssertTrue(current.detail.contains("这么晚"), "当地 00:13 应当是深夜措辞：\(current.detail)")
         XCTAssertFalse(current.detail.contains("他有好一阵"))
     }
 

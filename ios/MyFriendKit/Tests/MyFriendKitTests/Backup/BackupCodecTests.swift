@@ -591,9 +591,21 @@ final class BackupCodecTests: XCTestCase {
 
     func testMomentFormattingIsChineseAndStable() {
         XCTAssertEqual(formatBackupMoment(0), "时间不详")
-        // 固定时间戳的文案形状（时区不同只影响具体时刻，不影响「年/月/日」的形状）。
-        let text = formatBackupMoment(1_763_053_200_000)
-        XCTAssertTrue(text.range(of: #"^\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}$"#, options: .regularExpression) != nil,
-                      "实际：\(text)")
+        // 显式钉住语言与时区：CI 跑在 en_US/UTC 上，靠 Locale.current 会得到英文文案。
+        let zh = formatBackupMoment(
+            1_763_053_200_000,
+            locale: Locale(identifier: "zh_CN"),
+            timeZone: TimeZone(identifier: "Asia/Shanghai")!
+        )
+        XCTAssertTrue(
+            zh.range(of: #"^\d{4}年\d{1,2}月\d{1,2}日 \d{2}:\d{2}$"#, options: .regularExpression) != nil,
+            "实际：\(zh)"
+        )
+        let en = formatBackupMoment(
+            1_763_053_200_000,
+            locale: Locale(identifier: "en_US"),
+            timeZone: TimeZone(identifier: "Asia/Shanghai")!
+        )
+        XCTAssertTrue(en.contains("2025"), "英文文案应含年份：\(en)")
     }
 }
