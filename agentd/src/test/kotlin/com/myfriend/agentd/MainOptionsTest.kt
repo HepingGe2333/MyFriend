@@ -30,6 +30,36 @@ class MainOptionsTest {
     }
 
     @Test
+    fun `data directory is configurable by flag and environment`() {
+        assertEquals("默认相对工作目录", "./agentd-data", parse().dataDir)
+        assertEquals("/tmp/agentd-data", parse("--data", "/tmp/agentd-data").dataDir)
+        assertEquals("/tmp/agentd-other", parse("--data=/tmp/agentd-other").dataDir)
+        assertEquals(
+            "/tmp/agentd-env",
+            parse(env = mapOf("MYFRIEND_AGENTD_DATA" to "/tmp/agentd-env")).dataDir
+        )
+        assertEquals(
+            "命令行优先于环境变量",
+            "/tmp/agentd-cli",
+            parse("--data", "/tmp/agentd-cli", env = mapOf("MYFRIEND_AGENTD_DATA" to "/tmp/agentd-env")).dataDir
+        )
+        assertEquals(
+            "空白环境变量回退默认值",
+            "./agentd-data",
+            parse(env = mapOf("MYFRIEND_AGENTD_DATA" to "   ")).dataDir
+        )
+    }
+
+    @Test
+    fun `blank data directory is rejected`() {
+        for (args in listOf(arrayOf("--data", "   "), arrayOf("--data="))) {
+            val failure = runCatching { parse(*args) }.exceptionOrNull()
+            assertTrue("${args.toList()} 应该解析失败：$failure", failure is IllegalArgumentException)
+            assertTrue(failure?.message?.contains("--data") == true)
+        }
+    }
+
+    @Test
     fun `rate limit flags are parsed in both spellings`() {
         assertEquals(15, parse("--rate-limit", "15").rateLimitPerMinute)
         assertEquals(15, parse("--rate-limit=15").rateLimitPerMinute)

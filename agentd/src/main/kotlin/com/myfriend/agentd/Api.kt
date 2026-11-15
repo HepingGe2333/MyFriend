@@ -42,8 +42,8 @@ object AgentdApi {
 
     data class Response(val status: Int, val body: String)
 
-    /** 可预期的请求错误：由 [handle] 翻成统一错误体。 */
-    private class ApiFailure(val status: Int, val code: String, message: String) : Exception(message)
+    /** 可预期的请求错误：由 [handle] 翻成统一错误体；服务端权威路由也复用它。 */
+    internal class ApiFailure(val status: Int, val code: String, message: String) : Exception(message)
 
     fun handle(method: String, rawPath: String, body: String?): Response {
         val path = rawPath.substringBefore('?')
@@ -200,13 +200,17 @@ object AgentdApi {
      *
      * `internal` 是为了让测试直接钉住「不泄漏异常文本」这条规则（不用先构造一个真能抛异常的请求）。
      */
-    internal fun unexpectedFailureResponse(failure: Exception): Response {
+    internal fun unexpectedFailureResponse(failure: Exception): Response =
+        errorResponse(500, "internal_error", internalErrorMessage(failure))
+
+    /** 500 的对外文案（固定模板 + 随机编号）；流式路径也能用它，保证不泄漏异常文本。 */
+    internal fun internalErrorMessage(failure: Exception): String {
         val errorId = newErrorId()
         logInternalError(errorId, failure)
-        return errorResponse(500, "internal_error", "服务内部错误（错误编号 $errorId）")
+        return "服务内部错误（错误编号 $errorId）"
     }
 
-    private fun errorResponse(status: Int, code: String, message: String): Response = Response(
+    internal fun errorResponse(status: Int, code: String, message: String): Response = Response(
         status,
         Json.stringify(
             JsonValue.Obj(

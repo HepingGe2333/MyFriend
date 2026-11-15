@@ -1,5 +1,8 @@
 package com.myfriend.agentd
 
+import com.myfriend.agentd.store.FileStore
+import java.nio.file.Path
+
 /**
  * `agentd` 的入口。
  *
@@ -16,6 +19,10 @@ package com.myfriend.agentd
  * 0.12.0 起再加一层按来源的令牌桶限流（`--rate-limit` / `--rate-burst`），
  * 但仍然**没有 TLS**——见 README 的「限流」与「部署与 TLS」两节。
  *
+ * 0.12.0 的服务端权威模式把状态也搬到了服务端：`--data <目录>`（或 `MYFRIEND_AGENTD_DATA`）指向
+ * 一个数据目录，默认 `./agentd-data`。**目录不存在/为空时自动播种** 3 个人格 + 1 个示例会话，
+ * 已存在则原样读回。数据格式与原子写见 `store/FileStore.kt` 与 README 的「服务端权威模式」一节。
+ *
  * 客户端（Android/iOS 远程模式）目前不发 `Authorization`，所以默认不设 token；
  * 设了 token 之后所有请求（含 `/health`）都必须带 `Authorization: Bearer <token>`。
  */
@@ -30,8 +37,17 @@ fun main(args: Array<String>) {
         return
     }
     val rateLimiter = RateLimiter(options.rateLimitPerMinute, options.rateBurst)
+    val dataDir = Path.of(options.dataDir).toAbsolutePath().normalize()
+    val store = try {
+        FileStore.open(dataDir)
+    } catch (failure: Exception) {
+        System.err.println("数据目录初始化失败（$dataDir）：${failure.message}")
+        System.err.println("（目录里有不认识的版本/坏文件时不会静默重建；换一个空目录或用 --data 指定别的目录）")
+        kotlin.system.exitProcess(1)
+    }
+    val services = AgentdServices(store)
     val server: AgentdServer.StartedServer = try {
-        AgentdServer.start(options.host, options.port, options.token, rateLimiter)
+        AgentdServer.start(options.host, options.port, options.token, rateLimiter, services)
     } catch (failure: Exception) {
         System.err.println("启动失败：${failure.message}")
         System.err.println("（端口被占用？换一个 --port 试试）")
@@ -44,6 +60,10 @@ fun main(args: Array<String>) {
         }
     )
     println("myfriend-agentd $VERSION 正在监听 http://${options.host}:${options.port}")
+    println(
+        "  数据目录：$dataDir" +
+            if (store.seeded) "（新目录，已播种 3 个人格 + 1 个示例会话）" else "（已存在，按已有数据启动）"
+    )
     printSecurityNotice(options)
     if (rateLimiter.enabled) {
         println(
@@ -54,6 +74,11 @@ fun main(args: Array<String>) {
         println("  限流：已关闭（--rate-limit 0）")
     }
     println("  GET  /health")
+    println("  GET  /v1/state?since=&personaId=")
+    println("  GET  /v1/sessions")
+    println("  GET  /v1/sessions/{id}/messages?beforeBlock=&afterBlock=")
+    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta → done）")
+    println("  GET  /v1/events?since=&timeoutSeconds=")
     println("  POST /v1/core/sleep-decision")
     println("  POST /v1/core/defer-plan")
     println("  POST /v1/core/proactive-cap")
@@ -67,6 +92,12 @@ private const val MIN_TOKEN_LENGTH = 16
 
 /** 共享 token 的环境变量入口（不写进 `ps`）。 */
 internal const val ENV_TOKEN = "MYFRIEND_AGENTD_TOKEN"
+
+/** 数据目录的环境变量入口（不想把路径写进 `ps` 时用）。 */
+internal const val ENV_DATA = "MYFRIEND_AGENTD_DATA"
+
+/** 数据目录默认值：相对**进程工作目录**的 `./agentd-data`。 */
+internal const val DEFAULT_DATA_DIR = "./agentd-data"
 
 /** 限流速率的环境变量入口（请求/分钟，0 = 关闭）。 */
 internal const val ENV_RATE_LIMIT = "MYFRIEND_AGENTD_RATE_LIMIT"
@@ -83,6 +114,7 @@ internal const val ENV_RATE_BURST = "MYFRIEND_AGENTD_RATE_BURST"
 internal data class Options(
     val host: String = "127.0.0.1",
     val port: Int = 8788,
+    val dataDir: String = DEFAULT_DATA_DIR,
     val token: String? = null,
     val rateLimitPerMinute: Int = RateLimiter.DEFAULT_PER_MINUTE,
     val rateBurst: Int = RateLimiter.DEFAULT_BURST,
@@ -101,6 +133,7 @@ internal fun parseOptions(
 ): Options {
     var host = "127.0.0.1"
     var port = 8788
+    var dataDir: String? = null
     var help = false
     var token: String? = null
     var rateLimit: Int? = null
@@ -133,6 +166,18 @@ internal fun parseOptions(
 
             arg.startsWith("--port=") -> {
                 port = intArgument("--port", arg.substringAfter("--port="))
+                index += 1
+            }
+
+            arg == "--data" -> {
+                dataDir = args.getOrNull(index + 1)?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalArgumentException("--data 后面要跟一个目录，例如 ./agentd-data")
+                index += 2
+            }
+
+            arg.startsWith("--data=") -> {
+                dataDir = arg.substringAfter("--data=").takeIf { it.isNotBlank() }
+                    ?: throw IllegalArgumentException("--data= 后面要跟一个目录")
                 index += 1
             }
 
@@ -177,6 +222,9 @@ internal fun parseOptions(
     if (token == null) {
         token = env[ENV_TOKEN]?.trim()?.takeIf { it.isNotEmpty() }
     }
+    if (dataDir == null) {
+        dataDir = env[ENV_DATA]?.trim()?.takeIf { it.isNotEmpty() }
+    }
     val envRateLimit = envInt(env, ENV_RATE_LIMIT)
     val envRateBurst = envInt(env, ENV_RATE_BURST)
     val perMinute = rateLimit ?: envRateLimit ?: RateLimiter.DEFAULT_PER_MINUTE
@@ -195,6 +243,7 @@ internal fun parseOptions(
     return Options(
         host = host,
         port = port,
+        dataDir = dataDir ?: DEFAULT_DATA_DIR,
         token = token,
         rateLimitPerMinute = perMinute,
         rateBurst = burst,
@@ -245,15 +294,18 @@ private fun printSecurityNotice(options: Options) {
 private fun printUsage() {
     println(
         """
-        myfriend-agentd $VERSION —— 两端共用的 agent 核心（HTTP 骨架）
+        myfriend-agentd $VERSION —— 两端共用的 agent 核心（HTTP 骨架 + 服务端权威状态）
 
         用法：
-          agentd [--host 127.0.0.1] [--port 8788] [--token <共享密钥>]
-                 [--rate-limit 60] [--rate-burst 30]
+          agentd [--host 127.0.0.1] [--port 8788] [--data ./agentd-data]
+                 [--token <共享密钥>] [--rate-limit 60] [--rate-burst 30]
 
         选项：
           --host <地址>            监听地址，默认 127.0.0.1（只给本机/同进程用）
           --port <端口>            监听端口，默认 8788
+          --data <目录>            服务端状态目录，默认 ./agentd-data（相对工作目录）；
+                                   不存在/为空时自动播种 3 个人格 + 1 个示例会话。
+                                   也可用环境变量 MYFRIEND_AGENTD_DATA。
           --token <密钥>           可选：所有请求要求 Authorization: Bearer <密钥>
                                    （也可用环境变量 MYFRIEND_AGENTD_TOKEN，避免密钥出现在进程参数里）
           --rate-limit <n>         每个来源每分钟允许的请求数，默认 60；0 = 关闭限流
@@ -264,6 +316,11 @@ private fun printUsage() {
 
         接口：
           GET  /health                      健康检查（返回服务名与版本；需要 token 时也要带）
+          GET  /v1/state?since=&personaId=  全量/增量状态快照（personas/sessions/messages/心情/在场）
+          GET  /v1/sessions                 会话列表（lastMessageAt / unread / lastBlockIndex）
+          GET  /v1/sessions/{id}/messages   一页一块的消息分页（beforeBlock 前翻 / afterBlock 后翻）
+          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta → done（clientMessageId 幂等）
+          GET  /v1/events?since=            增量事件长轮询（最多 25s）
           POST /v1/core/sleep-decision      睡眠/免打扰/唤醒阈值判定
           POST /v1/core/defer-plan          defer_reply 时间计划
           POST /v1/core/proactive-cap       主动程度 → 每日上限

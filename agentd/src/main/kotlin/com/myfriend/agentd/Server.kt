@@ -1,6 +1,7 @@
 package com.myfriend.agentd
 
 import com.myfriend.agentd.AgentdApi.Response
+import com.myfriend.app.core.json.JsonParseException
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
@@ -52,6 +53,15 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * 限流与鉴权都在**读完请求头、读 body 之前**判定：超限/未授权请求不会被读进 1 MiB 内存，
  * worker 立刻释放（未读的 body 由 [drainAndClose] 短时间排空后关闭）。
+ *
+ * 0.12.0 的服务端权威模式在这条链路上加了两种**非一次性响应**（见 [AuthorityRoutes]）：
+ * - `GET /v1/events` 长轮询：最多等 25 秒再回 JSON，等待期间占住一个 worker；
+ * - `POST /v1/sessions/{id}/messages`：SSE，边生成边写（`Content-Length` 缺失，靠关闭连接表示结束）。
+ * 两者都复用同一套 token/限流/请求体上限；SSE 的写失败**不会**中断生成（见 [HttpSseSink] 与
+ * `ChatService` 的 `SafeSink`），这是契约里「客户端断开后服务端继续生成并落库」的落点。
+ *
+ * 0.12.0 的联网搜索 / 网页抓取 / 主动 tick（`/v1/tools/…`、`/v1/proactive/tick`）是普通的一次性
+ * JSON 响应，走 [ToolsRoutes]：同样先过 token/限流/1 MiB 上限，不占用流式路径。
  */
 object AgentdServer {
 
@@ -135,7 +145,8 @@ object AgentdServer {
         host: String,
         port: Int,
         token: String? = null,
-        rateLimiter: RateLimiter = RateLimiter()
+        rateLimiter: RateLimiter = RateLimiter(),
+        services: AgentdServices = AgentdServices()
     ): StartedServer {
         require(host.isNotBlank()) { "host 不能为空" }
         require(token == null || token.isNotBlank()) { "token 不能是空串" }
@@ -161,7 +172,7 @@ object AgentdServer {
             daemonThreads("agentd-worker")
         )
         val acceptor = Thread(
-            { acceptLoop(serverSocket, workers, openSockets, token, rateLimiter) },
+            { acceptLoop(serverSocket, workers, openSockets, token, rateLimiter, services) },
             "agentd-accept"
         ).apply {
             // 非守护线程：`main` 打印完用法就返回了，靠它把 JVM 留在前台（`stop()` / Ctrl-C 退出）。
@@ -176,7 +187,8 @@ object AgentdServer {
         workers: ThreadPoolExecutor,
         openSockets: MutableSet<Socket>,
         token: String?,
-        rateLimiter: RateLimiter
+        rateLimiter: RateLimiter,
+        services: AgentdServices
     ) {
         while (!serverSocket.isClosed) {
             val socket = try {
@@ -186,7 +198,7 @@ object AgentdServer {
             }
             openSockets.add(socket)
             try {
-                workers.execute { handleConnection(socket, token, rateLimiter, openSockets) }
+                workers.execute { handleConnection(socket, token, rateLimiter, openSockets, services) }
             } catch (_: RejectedExecutionException) {
                 // 队列满了：直接关连接，别让攻击者把内存也堆满。
                 openSockets.remove(socket)
@@ -201,7 +213,8 @@ object AgentdServer {
         socket: Socket,
         token: String?,
         rateLimiter: RateLimiter,
-        openSockets: MutableSet<Socket>
+        openSockets: MutableSet<Socket>,
+        services: AgentdServices
     ) {
         try {
             socket.tcpNoDelay = true
@@ -210,7 +223,7 @@ object AgentdServer {
             val output = BufferedOutputStream(socket.getOutputStream())
             val deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(READ_TIMEOUT_MS)
             try {
-                handleRequest(socket, input, output, deadlineNanos, token, rateLimiter)
+                handleRequest(socket, input, output, deadlineNanos, token, rateLimiter, services)
             } finally {
                 // 响应已经 flush；先半关输出让客户端读到 EOF，再短时间排空输入（减少 RST 丢响应）。
                 drainAndClose(socket, input)
@@ -229,7 +242,8 @@ object AgentdServer {
         output: OutputStream,
         deadlineNanos: Long,
         token: String?,
-        rateLimiter: RateLimiter
+        rateLimiter: RateLimiter,
+        services: AgentdServices
     ) {
         // 先只读到请求头：超时/超限/畸形请求和下面两条「早退」都不需要把 body 读进内存。
         val head = try {
@@ -279,18 +293,73 @@ object AgentdServer {
             return // 客户端提前断开
         }
 
-        val response: Response = try {
-            AgentdApi.handle(
-                method = head.method,
-                rawPath = head.target,
-                body = String(body, StandardCharsets.UTF_8)
-            )
-        } catch (_: Exception) {
-            // AgentdApi 自己会兜住所有异常；这里只是防御，不让 handler 的 bug 打挂线程。
-            reply(socket, output, 500, ERROR_INTERNAL)
+        val bodyText = String(body, StandardCharsets.UTF_8)
+
+        // 流式响应要在同一根连接上边生成边写，所以先于「一次性 Response」分发。
+        if (AuthorityRoutes.isStreaming(head.method, head.target)) {
+            handleStreaming(socket, output, head, bodyText, services)
             return
         }
+
+        val response: Response = if (AuthorityRoutes.matches(head.method, head.target)) {
+            try {
+                AuthorityRoutes.handle(services, head.method, head.target, bodyText)
+            } catch (_: Exception) {
+                // AuthorityRoutes 自己会兜住所有异常；这里只是防御，不让 handler 的 bug 打挂线程。
+                reply(socket, output, 500, ERROR_INTERNAL)
+                return
+            }
+        } else if (ToolsRoutes.matches(head.method, head.target)) {
+            // 联网搜索 / 抓取 / 主动 tick：一次性 JSON 响应（搜索与抓取会阻塞到上游返回）。
+            // token/限流/1 MiB 上限已经在上面统一处理过，这里不重复。
+            try {
+                ToolsRoutes.handle(services, head.target, bodyText)
+            } catch (_: Exception) {
+                // ToolsRoutes 自己会兜住所有异常；这里只是防御，不让 handler 的 bug 打挂线程。
+                reply(socket, output, 500, ERROR_INTERNAL)
+                return
+            }
+        } else {
+            try {
+                AgentdApi.handle(
+                    method = head.method,
+                    rawPath = head.target,
+                    body = bodyText
+                )
+            } catch (_: Exception) {
+                // AgentdApi 自己会兜住所有异常；这里只是防御，不让 handler 的 bug 打挂线程。
+                reply(socket, output, 500, ERROR_INTERNAL)
+                return
+            }
+        }
         reply(socket, output, response.status, response.body)
+    }
+
+    /**
+     * SSE：校验阶段还来得及回普通 JSON 错误；一旦开始写，就只能用 `event: error` 收尾。
+     *
+     * 注意这里**没有**「客户端断开就 return」的分支：`HttpSseSink` 写失败只标记 broken，
+     * `ChatService` 继续生成并落库；本函数返回后 `handleConnection` 的 finally 会关掉连接。
+     */
+    private fun handleStreaming(
+        socket: Socket,
+        output: OutputStream,
+        head: RequestHead,
+        bodyText: String,
+        services: AgentdServices
+    ) {
+        val sink = HttpSseSink(socket, output)
+        try {
+            AuthorityRoutes.stream(services, head.method, head.target, bodyText, sink)
+        } catch (failure: AgentdApi.ApiFailure) {
+            sink.fail(failure.status, failure.code, failure.message ?: "请求不合法")
+        } catch (invalid: JsonParseException) {
+            sink.fail(400, "invalid_json", "请求体不是合法 JSON：${invalid.message.orEmpty()}")
+        } catch (unexpected: Exception) {
+            sink.fail(500, "internal_error", AgentdApi.internalErrorMessage(unexpected))
+        } finally {
+            sink.finish()
+        }
     }
 
     /**
@@ -445,6 +514,75 @@ object AgentdServer {
             actual.toByteArray(StandardCharsets.UTF_8)
         )
 
+    /**
+     * SSE 的 socket 出口：第一帧前写响应头，之后只追加 `event/data` 帧。
+     *
+     * 三个刻意的选择：
+     * - **不写 `Content-Length`**：响应体长度未知，用 `Connection: close` + 半关输出表示结束；
+     * - **写失败只标记 broken，不往外抛**：`ChatService` 的生成循环和落库不能被断开的客户端打断；
+     * - **失败后不再尝试写**：避免每个 delta 都触发一次异常（客户端已经走了，写也没意义）。
+     */
+    private class HttpSseSink(
+        private val socket: Socket,
+        private val output: OutputStream
+    ) : SseSink {
+
+        private var started = false
+        private var broken = false
+        private var done = false
+
+        override fun emit(event: SseEvent) {
+            if (broken || done) return
+            try {
+                if (!started) {
+                    writeHead()
+                    started = true
+                }
+                output.write(event.frame().toByteArray(StandardCharsets.UTF_8))
+                output.flush()
+            } catch (failure: IOException) {
+                broken = true
+                System.err.println(
+                    "[agentd] SSE 写入失败，客户端可能已断开（继续生成并落库）：${failure.message}"
+                )
+            }
+        }
+
+        /** 还没开始写 → 普通 JSON 错误（此时还能给正确的状态码）；已经开始 → `event: error`。 */
+        fun fail(status: Int, code: String, message: String) {
+            if (broken || done) return
+            if (!started) {
+                reply(socket, output, status, AgentdApi.errorResponse(status, code, message).body)
+                done = true
+            } else {
+                emit(SseEvent.Error(code, message))
+                finish()
+            }
+        }
+
+        /** 正常收尾：flush + 半关输出，让客户端读到 EOF（没有 Content-Length 时这就是结束信号）。 */
+        fun finish() {
+            if (done) return
+            done = true
+            if (!started || broken) return
+            runCatching { output.flush() }
+            runCatching { socket.shutdownOutput() }
+        }
+
+        private fun writeHead() {
+            val head = buildString {
+                append("HTTP/1.1 200 OK\r\n")
+                append("Content-Type: text/event-stream; charset=utf-8\r\n")
+                append("Cache-Control: no-store\r\n")
+                append("X-Accel-Buffering: no\r\n")
+                append("Connection: close\r\n")
+                append("\r\n")
+            }
+            output.write(head.toByteArray(StandardCharsets.ISO_8859_1))
+            output.flush()
+        }
+    }
+
     // ------------------------------------------------------------------ 写响应
 
     private fun reply(
@@ -502,6 +640,7 @@ object AgentdServer {
         413 -> "Payload Too Large"
         429 -> "Too Many Requests"
         500 -> "Internal Server Error"
+        503 -> "Service Unavailable"
         else -> "Unknown"
     }
 

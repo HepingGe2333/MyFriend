@@ -83,6 +83,7 @@ Options:
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Bind address. `0.0.0.0` means **anyone on the network can call it** — there is no TLS and (unless `--token` is set) no auth. Only use it on a trusted LAN or behind your own auth/proxy. |
 | `--port` | `8788` | Listen port. |
+| `--data <dir>` | `./agentd-data` | Server-authoritative state directory (see [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120)). A missing/empty directory is seeded with 3 personas + 1 session; an existing one is read back as-is. Also `MYFRIEND_AGENTD_DATA`. |
 | `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `MYFRIEND_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
 | `--rate-limit <n>` | `60` | Per-source requests per minute. `0` turns rate limiting **off**. Also `MYFRIEND_AGENTD_RATE_LIMIT`. |
 | `--rate-burst <n>` | `30` | Token-bucket capacity (how many idle requests may burst). Must be ≥ 1. Also `MYFRIEND_AGENTD_RATE_BURST`. |
@@ -444,6 +445,318 @@ Supported tools and clamps:
 All other keys in `args` are preserved untouched (including their original JSON number spelling).
 Unknown tools return 400 `unknown_tool`.
 
+## Server-authoritative mode (服务端权威模式, 0.12.0)
+
+This is the server side of `docs/design/server-authoritative.md` phase P1 (+ the server half of P2):
+state, block-paged history, streaming chat and the incremental event stream all live in `agentd`.
+Clients keep only UI and caches. The data format is plain JSON/JSONL under a data directory —
+**deliberately no SQLite/JDBC** (the module has zero third-party dependencies; see
+"Why this shape"). The trade-offs of that choice are listed under [Limits and risks](#limits-and-risks-of-this-phase).
+
+### Data directory
+
+```bash
+agentd --data /var/lib/myfriend            # or: MYFRIEND_AGENTD_DATA=/var/lib/myfriend agentd
+```
+
+Default is `./agentd-data` (relative to the process working directory). The flag wins over the
+environment variable, which wins over the default — same precedence as every other option.
+
+```
+<data>/
+  meta.json                      {"version":1,"cursor":<long>,"seeded":<bool>}   ← global event cursor
+  personas.json                  {"personas":[…]}                                ← the 3 seeds on first start
+  sessions.json                  {"sessions":[…]}                                ← lastMessageAt / unread / lastBlockIndex
+  moods.json  presence.json      {"moods":[…]} / {"presence":[…]}                ← mood.changed / presence.changed sources
+  usage.json                     {"usage":{personaId:{promptTokens,completionTokens,replies}}}
+  settings.json                  {"settings":{…}}
+  api_configs.json               {"configs":[…]}                                 ← metadata only, **no keys**
+  secrets.json                   {"keys":{…}}                                    ← 0600, server-side only, never in a response
+  events.jsonl                   one event per line, append-only                 ← GET /v1/events cursor
+  sessions/<sessionId>/block_index.json   {"sessionId":…,"blocks":[{index,firstMessageId,lastMessageId,firstAt,lastAt,count}]}
+  sessions/<sessionId>/blocks/<blockIndex>.jsonl   one message per line (append-only, UTF-8)
+  media/                         directory only — the upload endpoint is a later phase
+```
+
+**Seeding.** A missing/empty directory is seeded with three personas and one empty session, so the
+`curl` examples below work immediately. `:agentd` has no Android resources, so the ids are fixed
+strings the server defines itself; the names match the Android seeds in `app/src/main/res/values/seed.xml`
+(`values-en/seed.xml`) so the two sides can be compared:
+
+| persona id | `name` | `nameEn` | default | seed mood | seed presence |
+| --- | --- | --- | --- | --- | --- |
+| `seed-linshen` | 林深 | Elias | yes | 平静 (2) | `IDLE` |
+| `seed-alan` | 阿岚 | Finn | no | — | — |
+| `seed-mo` | 墨 | Mo | no | — | — |
+
+The seeded session is `seed-session-linshen` ("和林深的对话"). Seeding runs **once**: a directory
+with data is read back as-is (`seeded` stays in `meta.json`). A directory that has data files but no
+`meta.json` is refused instead of silently re-seeded, and a `meta.json` with an unknown `version`
+fails startup with a readable message.
+
+**Atomic writes.** Every whole-file JSON write goes to `<name>.json.tmp` first and is then moved over
+the target with `Files.move(ATOMIC_MOVE, REPLACE_EXISTING)` (falling back to a plain replace on file
+systems without atomic rename). Block files are append-only for new messages; delete/mark-read rewrites
+one block file atomically. All mutations share a single `ReentrantLock`, so readers never observe a
+half-written block index, and two requests cannot append the same block concurrently. There is **no
+fsync**: a killed process keeps the data (rename is atomic), a power cut may lose the last few writes.
+`*.tmp` files are never left behind by a completed write.
+
+**Block maintenance** (same contract as `spec/messages-blocks/README.md`, `BLOCK_SIZE = 200`):
+append fills the newest block; a full block starts `blockIndex + 1`; deleting a message recomputes
+`first*/last*/count` of its block; deleting the last message of a block deletes the block's `.jsonl`
+and removes the row from `block_index.json`, leaving a **numbering hole**. Blocks are never
+rebalanced and never renumbered. Paging always asks the block table for the neighbouring existing
+index, so holes are skipped. A missing `block_index.json` is rebuilt from the block files on first
+access (manual recovery for the crash window described below).
+
+### API
+
+All endpoints sit behind the same `--token` / rate-limit / 1 MiB body cap as `/v1/core/*`, and errors
+use the same `{"error":{"message":"…","code":"…"}}` shape.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/state?since=&personaId=` | Snapshot. `since` filters personas/sessions by `updatedAt > since` and messages by `createdAt > since`. `serverCursor` is the current global event cursor. |
+| `GET` | `/v1/sessions?personaId=` | Session list with `lastMessageAt`, `unread`, `lastBlockIndex` (plus `messageCount`/timestamps). |
+| `GET` | `/v1/sessions/{id}/messages?beforeBlock=&limitBlocks=1` | One block per page. No offset. `beforeBlock` = older page, `afterBlock` = newer page (additive extension for `hasMoreNewer` navigation). |
+| `POST` | `/v1/sessions/{id}/messages` | Send a message; responds with SSE (`accepted → delta* → tool* → done`). |
+| `GET` | `/v1/events?since=&timeoutSeconds=&limit=` | Incremental events (`message.created`, `mood.changed`, `presence.changed`). Long poll, 25 s max by default. |
+| `POST` | `/v1/tools/web-search` | Server-side search; the search key never leaves the server (see below). |
+| `POST` | `/v1/tools/web-fetch` | Server-side fetch of a public page, body text extracted. |
+| `POST` | `/v1/proactive/tick` | Run one proactive heartbeat now (debug/testing; production is timer-driven). |
+
+```bash
+# 1. full snapshot (first sync: newest block per session + cursor for /v1/events)
+curl -s "http://127.0.0.1:8788/v1/state"
+# 2. incremental sync: only what changed after the last cursor/timestamp
+curl -s "http://127.0.0.1:8788/v1/state?since=1700000000000&personaId=seed-linshen"
+# 3. sessions
+curl -s "http://127.0.0.1:8788/v1/sessions"
+# 4. one block page (older: beforeBlock; newer: afterBlock)
+curl -s "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messages?beforeBlock=1&limitBlocks=1"
+# 5. send a message and read the stream (curl -N disables buffering)
+curl -N -s -X POST "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messages" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"clientMessageId":"0b1c2d3e-0000-4000-8000-000000000001","content":"在吗"}'
+# 6. long poll for events (wakes up as soon as something happens, max 25 s)
+curl -s "http://127.0.0.1:8788/v1/events?since=0&timeoutSeconds=25"
+# 7. server-side search (provider/base/key come from the server environment, not from this body)
+curl -s -X POST "http://127.0.0.1:8788/v1/tools/web-search" \
+  -H 'Content-Type: application/json' -d '{"query":"杭州 天气","count":6}'
+# 8. fetch a public page; the answer is {"url","title","text"}
+curl -s -X POST "http://127.0.0.1:8788/v1/tools/web-fetch" \
+  -H 'Content-Type: application/json' -d '{"url":"https://example.com/"}'
+# 9. run one proactive heartbeat immediately (debug endpoint; same now only fires once)
+curl -s -X POST "http://127.0.0.1:8788/v1/proactive/tick" \
+  -H 'Content-Type: application/json' -d '{"now":1700000000000}'
+```
+
+### Server-side search, fetch and proactive tick (0.12.0)
+
+The mobile clients no longer hold search credentials or call providers themselves: these three
+routes run on the server. The request/response shapes are intentionally small:
+
+| Method | Path | Request | Response |
+| --- | --- | --- | --- |
+| `POST` | `/v1/tools/web-search` | `{"query":"…","count":6,"provider":"MESSAGEAPI\|TAVILY\|SEARXNG\|BING\|ZHIHU\|TOUTIAO\|QUORA"}` (`count`, `provider` optional) | `{"provider":"…","results":[{"title","url","snippet"}]}` |
+| `POST` | `/v1/tools/web-fetch` | `{"url":"https://…"}` | `{"url","title","text"}` (scripts/styles/tags removed, whitespace collapsed, ≤ 8000 chars) |
+| `POST` | `/v1/proactive/tick` | optional `{"now":<epoch millis>}` (defaults to the server clock) | `{"now","fired","decisions":[{"personaId","sessionId","messageId","reason"}]}` |
+
+Provider configuration is **server-side only**:
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `MYFRIEND_AGENTD_SEARCH_PROVIDER` | `MESSAGEAPI` | Default provider when the request body does not name one. Dirty values are normalised like every other provider setting. |
+| `MYFRIEND_AGENTD_SEARCH_BASE` | — | Provider base URL. `MESSAGEAPI` / `SEARXNG` / `GENERIC` have no fixed default and need it; Tavily/Brave/Serper/Bing fall back to their public endpoints. |
+| `MYFRIEND_AGENTD_SEARCH_KEY` | — | Provider API key. **The client never sends it and the server never accepts one from the request body.** |
+
+- **Only `SEARXNG` may override the base per request** (`{"provider":"SEARXNG","baseUrl":"http://…"}`):
+  a self-hosted instance address is not a secret, and one deployment may point at different instances.
+  For every other provider the request `baseUrl` is ignored — otherwise a client could aim the server's
+  key at an arbitrary host (SSRF + credential exfiltration).
+- A body-level `apiKey` is ignored for the same reason: the key always comes from
+  `MYFRIEND_AGENTD_SEARCH_KEY`. Neither the key nor the upstream error body (which may echo it) appears
+  in responses or logs; the HTTP client's log preview replaces the secret with `***`.
+- Results are normalised exactly like the clients' `WebSearchClient`: non-http(s) URLs dropped,
+  deduplicated by URL (first wins), snippets tag-stripped and capped at 500 chars, at most `count`
+  (1–12) items.
+- Error mapping: `400` for an empty query, missing key, missing/invalid base or a rejected URL;
+  `401` when the provider rejects the key; `429` when the provider rate limits; every other upstream
+  failure (`403`, `4xx`, `5xx`, timeouts, unparsable responses…) is `502`. Error bodies keep the usual
+  `{"error":{"message","code"}}` shape (`search_bad_request` / `search_unauthorized` /
+  `search_rate_limited` / `search_upstream_error`).
+- `web-fetch` always connects **directly** (`config = null`; it does not use `MESSAGEAPI`'s
+  `tools/fetch`) and goes through the same `WebUrlPolicy` as the clients: http(s) only, no loopback /
+  private hosts / userinfo.
+- `proactive/tick` reads personas, sessions, the latest `lastMessageAt` and mood from the data
+  directory, then runs the same `ProactiveEngine` as the timer. A fired decision persists one
+  `role=ASSISTANT, source=PROACTIVE` message into that persona's most recently active session and
+  emits the usual `message.created` event. The same `now` only fires once (in-process `lastTickAt`
+  dedupe); the route answers `503 store_disabled` when the server was started without `--data`.
+
+
+Trimmed responses (0.12.0, `EchoReplyGenerator`):
+
+```json
+{"serverTime":1700000000000,
+ "personas":[{"id":"seed-linshen","name":"林深","nameEn":"Elias","avatarUrl":null,"isDefault":true,"updatedAt":1000}],
+ "sessions":[{"id":"seed-session-linshen","personaId":"seed-linshen","title":"和林深的对话",
+              "lastMessageAt":null,"unread":0,"lastBlockIndex":-1}],
+ "messages":[],
+ "mood":{"personaId":"seed-linshen","label":"平静","intensity":2,"updatedAt":1000},
+ "presence":{"personaId":"seed-linshen","kind":"IDLE","detail":"在家，安静地待着","updatedAt":1000},
+ "serverCursor":0,
+ "hasMoreMessages":false}
+```
+
+`hasMoreMessages` is an additive field: the first snapshot returns **only the newest block per
+session** (the same rule as the clients' initial block load), so clients continue with the paging
+endpoint for older history. `since > 0` walks blocks from newest to oldest and stops at
+`MAX_STATE_MESSAGES = 500` (also flagged by `hasMoreMessages`).
+
+```json
+{"sessionId":"seed-session-linshen","blockIndex":0,"hasMoreOlder":false,"hasMoreNewer":false,
+ "messages":[{"id":"…","sessionId":"seed-session-linshen","blockIndex":0,"role":"USER",
+              "content":"在吗","createdAt":1001,"readAt":null,"attachments":[],
+              "source":"CHAT","clientMessageId":"0b1c…","replyTo":null}]}
+```
+
+`blockIndex` is `null` when the requested page does not exist (paging past either end, or an empty
+session); `hasMoreOlder`/`hasMoreNewer` then tell the client which direction still has content.
+`limitBlocks` only accepts `1` (otherwise `400 unsupported_limit_blocks`) — a page is one block by
+contract.
+
+SSE response (`curl -N`; `Content-Length` is intentionally absent, the stream ends when the server
+closes the connection):
+
+```
+event: accepted
+data: {"userMessageId":"…","createdAt":1001}
+
+event: delta
+data: {"text":"你说：「在吗」\n收到啦，我在。"}
+
+event: delta
+data: {"text":"（agentd 回显回复：还没接 LLM…）"}
+
+event: done
+data: {"assistantMessageId":"…","usage":{"promptTokens":2,"completionTokens":34}}
+```
+
+### SSE: idempotency and "keep generating after the client leaves"
+
+- `clientMessageId` is the idempotency key (required, ≤ 128 chars). The user message is persisted
+  **before** the first byte is written, and the `accepted` event carries its id.
+- The assistant message is persisted with `source: "CHAT"` and `replyTo: <userMessageId>`; a second
+  POST with the same `clientMessageId` finds both and replays `accepted` + `done` **without calling
+  the generator again**. Concurrent duplicates are serialised on a per-key lock and also generate
+  exactly once (the follower replays).
+- If the user message is there but its reply is not (the process died between the two writes), the
+  next request generates the missing reply once.
+- **Disconnect handling:** the generator keeps running when the socket is gone. `HttpSseSink` turns a
+  failed write into a `broken` flag (logged once) instead of an exception, and `ChatService`'s
+  `SafeSink` swallows write failures, so the delta loop always reaches the persist step. The assistant
+  message, its usage and its event land in the store even if nobody received the stream; the client
+  picks it up via `/v1/state` or `/v1/events` on the next sync.
+- `event: error` (`generation_failed`) ends the stream without `done`; whatever text was already
+  generated is still persisted and counted. A generator that produced *nothing* persists no empty
+  assistant message.
+- Token usage (`promptTokens`/`completionTokens`) is supplied by the generator and accumulated per
+  persona in `usage.json`; the same numbers are stored on the assistant message so a replayed `done`
+  stays truthful.
+
+### Events
+
+Each line of `events.jsonl` (and each `events[]` item) is:
+
+```json
+{"cursor":3,"type":"message.created","at":1002,"sessionId":"seed-session-linshen","personaId":"seed-linshen",
+ "payload":{"message":{…}}}
+```
+
+`mood.changed` / `presence.changed` carry `"payload":{"mood":{…}}` / `"payload":{"presence":{…}}` and
+have `sessionId: null`. Cursors come from `meta.cursor`, increase by one per event and never get
+reused; `GET /v1/events?since=<cursor>` returns events with a strictly larger cursor. When the long
+poll times out, it answers `200` with an empty `events` array and **the same cursor** — clients must
+not advance their cursor on an empty page. `AgentdServer` keeps a 20 000-event in-memory window and
+falls back to reading `events.jsonl` for older cursors.
+
+### Limits and risks of this phase
+
+Honest list; most of these are deliberate scope cuts, not oversights.
+
+- **One page = one block, no offset.** `limitBlocks` must be `1`; `beforeBlock`/`afterBlock` pick the
+  neighbouring *existing* block, so a hole (deleted block) is skipped. Blocks shrink but never merge.
+- **Long poll and SSE occupy HTTP worker threads** (`WORKER_THREADS = 4`, fixed). A 25 s long poll
+  holds one worker for its whole wait, and a generation holds one while streaming; five concurrent
+  `/v1/events` therefore starve `/health`/other requests until they time out. Fine for the intended
+  single-user deployment, but moving long poll/SSE onto their own threads is a P2/P3 follow-up.
+- **SSE has no write timeout.** Java sockets only expose a read timeout, so a client that opens the
+  stream and then stops reading can block one worker on a full send buffer for as long as the OS
+  keeps the connection. Combined with the point above this is a denial-of-service risk on a hostile
+  network; keep the service behind the token/reverse proxy until streaming moves to dedicated
+  threads with a write deadline.
+- **No SQL, no transactions.** All state is JSON/JSONL with one process-wide write lock. Queries are
+  bounded per block, but idempotency lookups build a per-session in-memory index by scanning blocks
+  once (then maintained incrementally). Running two `agentd` processes against one data directory is
+  **not** supported — the lock is in-process only.
+- **No fsync / crash window.** Rename gives atomic replacement, and a killed process keeps
+  consistent files, but a message line that was appended before `block_index.json`/`sessions.json`
+  were rewritten can leave the block count off by one. Recovery: delete that session's
+  `block_index.json` and let the server rebuild it from the block files (it is not automatic). A torn
+  trailing line in a block/event file is skipped with a warning instead of losing the file.
+- **No event compaction, no delete events.** `events.jsonl` grows forever (`message.created` for
+  user and assistant, `mood.changed`, `presence.changed` only). Deleting a message (`FileStore.deleteMessage`,
+  used by tests) does not emit an event, so an incremental client will not learn about deletions
+  until a full sync / a P3 delete-event contract.
+- **Unread only increases.** `unread` counts unread assistant messages, and `markSessionRead` exists
+  in the store and is tested, but there is no HTTP endpoint for it yet (P3), so clients cannot clear
+  the counter through the API in this phase.
+- **No media upload yet.** `media/` exists and attachments are persisted as opaque `mediaId`
+  strings; `/v1/media/{id}` is a later phase.
+- **No LLM and no prompts.** `EchoReplyGenerator` echoes the user text plus one fixed Chinese
+  sentence and estimates tokens by character count. The server neither accepts prompts from clients
+  nor stores them; prompt construction is the next phase's job. `secrets.json` (0600, best-effort on
+  non-POSIX file systems) is the only place an API key may live and it is never part of a response.
+- **Search credentials are environment config, not a settings API.** `MYFRIEND_AGENTD_SEARCH_*` is
+  read through `AgentdServices.env` (production: `System.getenv`) on every request, but a JVM cannot
+  change its own environment, so rotating the key or the default provider needs a restart. There is
+  also no per-persona search configuration yet: the whole server shares one provider/base/key. The
+  search/fetch paths are only verified against local fake HTTP servers in CI — no real provider or
+  web page is contacted by the tests.
+- **`proactive/tick` is a debug entry point, not the production scheduler.** A server timer is the
+  next phase; the HTTP route is what the tests and `curl` use. De-duplication of the same `now` and
+  the "just fired" overlay are **in-process** (`ProactiveTicker` → `ProactiveScheduler`), so they do
+  not survive a restart and are not shared between processes (running two processes on one data
+  directory is unsupported anyway). Today's proactive count is not persisted (the store has no
+  `proactiveCountToday` / `lastProactiveAt` columns yet): each tick derives `0` from the store, and
+  what keeps the route from spamming is the engine's 10-minute cooldown plus the in-process overlay.
+  Persisting the count is a P3 follow-up.
+- **Still plain HTTP.** The token/rate-limit docs above apply unchanged; TLS belongs to the reverse
+  proxy.
+
+### Tests for this phase
+
+`FileStoreTest` (19) covers seeding/read-back, block splitting at 200, delete boundary recomputation,
+emptied-block holes, missing-index rebuild, atomic writes (no `*.tmp`, parseable JSON), 8 threads ×
+125 concurrent appends with no loss, idempotency lookup, `secrets.json` permissions, usage,
+event cursors/long-poll timeout, torn-line tolerance and path-traversal guards.
+`StateApiTest` (18) covers full/incremental state, persona filtering, session list fields, both paging
+directions, hole skipping, invalid paging parameters, events long poll (immediate/timeout/wake-up)
+and the "no data directory → 503" path. `ChatSseTest` (9) covers event order, tool forwarding,
+sequential and concurrent idempotency, orphan-reply completion, a dead sink, attachment persistence
+and validation-before-stream. `AuthorityServerTest` (6) is the real-socket half: SSE over HTTP, a
+client that disconnects mid-stream still gets a persisted reply, token/rate limit on the new routes,
+long poll over HTTP and JSON errors before a stream starts. `MainOptionsTest` grew to 11 with the
+`--data` precedence/validation cases. `ToolsRoutesTest` (17) covers the three new routes: provider /
+base / key resolution (`MESSAGEAPI` default, `SEARXNG` base override, request `baseUrl` ignored for
+every other provider, client `apiKey` ignored), result normalisation, the 400/401/429/502 error
+mapping, "the key never appears in a response or a log", tag-stripped fetch + `URL_REJECTED`, and
+proactive tick (one `source=PROACTIVE` assistant message persisted + event emitted, same `now` fires
+once, `now` defaults to the server clock, `503` without a data directory), plus one real-socket case
+proving `AgentdServer` dispatches the new paths behind the same `--token`.
+
 ## Errors
 
 Every error is an object with a Chinese `message` and a stable `code`, plus a 4xx/5xx status:
@@ -517,9 +830,13 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   and 4 fixed worker threads; since 0.12.0 a per-source token bucket (`--rate-limit` /
   `--rate-burst`). A token over plain HTTP is still not a substitute for TLS, and `0.0.0.0`
   remains “trusted network / behind a proxy only”.
-- No persistence: it does not touch SQLite/Room, does not write `agent_intents`, does not store
-  memories. It only exposes deterministic pure functions.
-- No LLM calls, no prompting, no streaming.
+- **No SQL/Room.** Since 0.12.0 it *does* persist server-authoritative state (personas, sessions,
+  block-paged messages, mood/presence, usage, API config metadata) as JSON/JSONL under `--data`, but
+  it still does not touch the clients' Room database, does not import/export backups and does not
+  store memories, thoughts or media files. Earlier versions only exposed deterministic pure
+  functions; see [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
+- No LLM calls: `POST /v1/sessions/{id}/messages` streams, but the reply comes from the injectable
+  `EchoReplyGenerator` (no prompting, no model call, no tool loop yet).
 - Android does not start it as an embedded service; remote mode is a development build switch.
   iOS does not call this service by default either: its in-process decisions run the same Kotlin
   `:agentcore` code, and remote mode (also a build/launch switch) points at this service. The old
@@ -547,9 +864,32 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   requests, half-open body (health stays fast, then `408`), oversized declared body (`413`),
   chunked body (`411`), the optional token (`401`/`200`), and 0.12.0 rate limiting
   (`429` + `Retry-After`, `/health` in its own bucket, `--rate-limit 0` disabling it).
-- `MainOptionsTest` — 9 tests for flag/environment parsing and precedence (`--rate-limit`,
-  `--rate-burst`, `MYFRIEND_AGENTD_RATE_LIMIT`, invalid values rejected before the server starts).
+- `FileStoreTest` — 19 storage tests: seeding/read-back, block split at 200, delete boundary
+  recomputation, emptied-block holes (no renumbering), missing-`block_index.json` rebuild, atomic
+  writes (no `*.tmp`, parseable JSON), 8×125 concurrent appends with no loss/duplication,
+  `clientMessageId` lookup, `secrets.json` 0600 permissions, usage accumulation, event cursor +
+  long-poll timeout, torn-line tolerance, and path-traversal rejection.
+- `StateApiTest` — 18 handler-level tests for `/v1/state` (full/incremental/persona filter/bad
+  params/`hasMoreMessages`/no secrets), `/v1/sessions` (fields, filter), one-block paging in both
+  directions (hole skipping, `blockIndex: null` past the ends, invalid `limitBlocks`/offsets) and
+  `/v1/events` (immediate/timeout/wake-up/negative cursor), plus `503` without a data directory.
+- `ChatSseTest` — 9 tests for the SSE send path: event order (`accepted → delta → done`), tool
+  event forwarding, sequential **and concurrent** `clientMessageId` idempotency, orphaned
+  user-message completion, a dead sink that must not stop generation, attachment persistence, and
+  validation-before-stream.
+- `AuthorityServerTest` — 6 real-socket tests: state + SSE chat over HTTP (`text/event-stream`, no
+  `Content-Length`, frame order), a client disconnecting mid-stream still getting the reply
+  persisted, `--token`/rate limiting on the new routes, HTTP long poll waking up on a new message,
+  and JSON errors before a stream starts.
+- `MainOptionsTest` — 11 tests for flag/environment parsing and precedence (`--rate-limit`,
+  `--rate-burst`, `--data`/`MYFRIEND_AGENTD_DATA`, invalid values rejected before the server starts).
 - `RateLimiterTest` — 7 tests for the token bucket itself (burst, refill, capped refill, per-source
   isolation, disabling, bounded map / LRU eviction) with an injected clock, so none of them sleep.
+- `ToolsRoutesTest` — 17 tests for the three 0.12.0 routes (`/v1/tools/web-search`,
+  `/v1/tools/web-fetch`, `/v1/proactive/tick`): provider/base/key resolution and overrides, result
+  normalisation, 400/401/429/502 mapping, "the key never leaks", fetch text extraction and
+  `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
+  `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 53 tests in total.
+`:agentd:test` is 244 tests in total in 0.12.0 — the authoritative-mode suites above plus the
+`search/` (52) and `proactive/` (68) suites added in the same release.

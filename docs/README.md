@@ -15,6 +15,7 @@
 | [IOS-PARITY.md](IOS-PARITY.md) | 两端哪些必须一致、哪些受平台限制、iOS 还缺什么 |
 | [performance.md](performance.md) · [iOS 章节](performance-ios.md) | 大库基准（10 万条迁移、检索分页耗时、备份 500 图内存）与结论 |
 | [local-search.md](local-search.md) | 本地聊天检索用了什么框架、能搜什么、明确不支持什么、升级路线 |
+| [design/server-authoritative.md](design/server-authoritative.md) | 服务端权威架构：客户端只做 UI、服务端持状态与逻辑的契约与分期 |
 | [audits/](audits/README.md) | 独立审计记录（每个版本的发现、修复与已接受的取舍） |
 | [design/](design/roadmap-1.9.md) | 历史设计记录：`0.9.0` 之前各阶段的行为规格与验收表，保留供追溯，不是当前行为说明 |
 
