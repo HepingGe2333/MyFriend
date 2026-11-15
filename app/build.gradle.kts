@@ -27,6 +27,21 @@ val releaseStorePassword = signingValue("storePassword", "MYFRIEND_KEYSTORE_PASS
 val releaseKeyAlias = signingValue("keyAlias", "MYFRIEND_KEYSTORE_ALIAS")
 val releaseKeyPassword = signingValue("keyPassword", "MYFRIEND_KEYSTORE_KEY_PASSWORD")
 
+/**
+ * 服务端权威模式（P1a 传输层）的编译期默认地址 / 令牌。
+ *
+ * 只从 Gradle property 透传（`-PMYFRIEND_SERVER_URL=https://…`），默认空 = 关闭。
+ * 在 App 里还会被同名**系统属性**覆盖（`com.myfriend.app.data.remote.ServerConfig`），
+ * 方便 JVM 测试与真机调试；release 构建在 `buildTypes.release` 里强制覆盖成空，
+ * 免得 CI 误把地址 / 令牌打进发布包（与 AGENT_CORE_* 的处理一致）。
+ *
+ * 做一次 Java 字符串转义：URL / 令牌里万一有 `"` 或 `\`，别让生成的 BuildConfig 编译不过。
+ */
+fun serverBuildConfigValue(propertyName: String): String {
+    val raw = (findProperty(propertyName) as String?)?.trim().orEmpty()
+    return "\"" + raw.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
+}
+
 /** 四项齐了并且 keystore 文件真的在，才算「配好了 release 签名」。 */
 val hasReleaseSigning = releaseStoreFile?.exists() == true &&
     releaseStorePassword != null &&
@@ -71,6 +86,12 @@ android {
             "AGENT_CORE_BASE_URL",
             "\"" + ((findProperty("agentCoreBaseUrl") as String?) ?: "http://10.0.2.2:8788") + "\""
         )
+
+        // 服务端权威模式（P1a 传输层）的连接默认值：默认空 = 关闭（App 仍走本地 Room 路径）。
+        // 打开方式：`-PMYFRIEND_SERVER_URL=https://server.example:8788 -PMYFRIEND_SERVER_TOKEN=…`
+        // （也可以只配 token，然后在 App 里用系统属性同名覆盖地址）。见上面的 serverBuildConfigValue。
+        buildConfigField("String", "MYFRIEND_SERVER_URL", serverBuildConfigValue("MYFRIEND_SERVER_URL"))
+        buildConfigField("String", "MYFRIEND_SERVER_TOKEN", serverBuildConfigValue("MYFRIEND_SERVER_TOKEN"))
     }
 
     signingConfigs {
@@ -102,6 +123,11 @@ android {
             // defaultConfig 里那份值仍按 Gradle property 生成（debug 可用），release 这里覆盖成 false。
             buildConfigField("boolean", "AGENT_CORE_REMOTE", "false")
             buildConfigField("String", "AGENT_CORE_BASE_URL", "\"\"")
+
+            // 同上：服务端地址 / 令牌是联调用的，不许被打进发布包（release 只允许用户在
+            // App 内显式配置，且 P1a 阶段还没有设置界面）。debug 构建仍按 Gradle property 生成。
+            buildConfigField("String", "MYFRIEND_SERVER_URL", "\"\"")
+            buildConfigField("String", "MYFRIEND_SERVER_TOKEN", "\"\"")
         }
         debug {
             applicationIdSuffix = ".debug"

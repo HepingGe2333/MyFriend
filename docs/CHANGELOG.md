@@ -185,6 +185,24 @@
   能力矩阵与明确边界，以及升级路线。
 
 
+
+### 0.12 续 3（未升版本）：服务端权威 P1 —— 存储/状态/SSE/搜索/主动 + 两端传输层
+
+目标是把客户端变成「只做 UI 与交互」，状态与逻辑上移到 `agentd`，让 iOS/Android 不需要后台进程也能持续运行
+（设计契约：`docs/design/server-authoritative.md`）。
+
+- **服务端存储与 API**：`--data` 文件存储（原子写、单写锁、区块维护、事件游标、secrets 0600）、
+  `GET /v1/state`、`/v1/sessions`、区块双向分页、`POST /v1/sessions/{id}/messages`（SSE，
+  `clientMessageId` 幂等、客户端断开仍生成并落库）、`GET /v1/events`（长轮询）。
+- **服务端搜索**：`MESSAGEAPI` / `TAVILY` / `SEARXNG`（自建，无 key）/ `BING` 与
+  `ZHIHU` / `TOUTIAO` / `QUORA` 站点过滤源；`POST /v1/tools/web-search`、`/v1/tools/web-fetch`；
+  服务端配置 key（`MYFRIEND_AGENTD_SEARCH_*`），客户端不传密钥。
+- **服务端主动**：`ProactiveEngine`（睡眠/DND/冷却/每日上限/概率，沿用 `spec/agent-core`）、
+  定时器不依赖客户端连接、`POST /v1/proactive/tick`（调试/测试入口）。
+- **客户端传输层**：Android `data/remote/`、iOS `Net/Server/`，各自的 `ServerConfig`（https 必须、debug 才允许
+  本机明文）、`ServerApi`、增量 SSE 解析、取消即关连接、状态映射器；**尚未接 UI**（P1b）。
+- **测试**：全量批次 —— Android **1139 条 / 101 类 / 0 失败**（+54）、`:agentcore` 60、`:agentd` **244**（+17 路由用例）、iOS **1386 条 / 0 失败**（+71，2 条 benchmark 默认跳过）；两端 Debug/Release 与 lint 全过。
+
 ## 0.11.2
 
 小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。

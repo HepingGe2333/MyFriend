@@ -205,6 +205,25 @@ No version bump yet (not approved): both platforms stay at `0.12.0` / build **18
   FTS or third-party search engine), the capability matrix, the explicit non-goals and the upgrade path.
 
 
+
+### 0.12 follow-up 3 (no version bump): server-authoritative P1 — storage/state/SSE/search/proactive + client transports
+
+The goal is to turn the client into "UI and interaction only" and move state and logic to `agentd`, so iOS/Android can
+keep running without any background process (contract: `docs/design/server-authoritative.md`).
+
+- **Server storage and API**: `--data` file store (atomic writes, single write lock, block maintenance, event cursor,
+  0600 secrets), `GET /v1/state`, `/v1/sessions`, two-way block paging, `POST /v1/sessions/{id}/messages` (SSE, idempotent
+  `clientMessageId`, generation continues and persists after the client disconnects), `GET /v1/events` (long polling).
+- **Server-side search**: `MESSAGEAPI` / `TAVILY` / `SEARXNG` (self-hosted, no key) / `BING` plus
+  `ZHIHU` / `TOUTIAO` / `QUORA` site-scoped sources; `POST /v1/tools/web-search`, `/v1/tools/web-fetch`; keys live on the
+  server (`MYFRIEND_AGENTD_SEARCH_*`), never sent by clients.
+- **Server-side proactive**: `ProactiveEngine` (sleep/DND/cooldown/daily cap/probability, following `spec/agent-core`),
+  a timer independent of client connections, `POST /v1/proactive/tick` (debug/test entry point).
+- **Client transports**: Android `data/remote/` and iOS `Net/Server/` with `ServerConfig` (https required, cleartext only
+  for local hosts in debug), `ServerApi`, incremental SSE parsing, cancel-closes-connection and state mappers; **UI not
+  wired yet** (P1b).
+- **Tests**: full batch — Android **1139 / 101 classes / 0 failures** (+54), `:agentcore` 60, `:agentd` **244** (+17 route cases), iOS **1386 / 0 failures** (+71, 2 benchmark tests skipped by default); Debug/Release and lint all pass.
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans

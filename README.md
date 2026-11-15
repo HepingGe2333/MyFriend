@@ -16,7 +16,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | 数据库 schema | v12（消息按 200 条一块存储；搜索 provider 记在 `api_configs`；两端版本号对齐） |
 | 备份格式 | v4（`format = "myfriend.backup"`、`formatVersion = 4`，图片与头像随备份走、搜索 provider 随配置走；v1–v3 仍可读） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 1085 条（97 类）+ 47 条 instrumented、`:agentcore` 60 条、`:agentd` 53 条、iOS 1315 条（`swift test`） |
+| 单元测试 | Android 1139 条（101 类）+ 47 条 instrumented、`:agentcore` 60 条、`:agentd` 244 条、iOS 1386 条（`swift test`） |
 | 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
 
 ## 特性概览

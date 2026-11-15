@@ -1,0 +1,483 @@
+package com.myfriend.app.data.remote
+
+import com.myfriend.app.BuildConfig
+import kotlinx.coroutines.CancellableContinuation
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.util.concurrent.TimeUnit
+
+/**
+ * 服务端权威 API 的调用失败。
+ *
+ * 三个字段就是界面/日志需要的全部信息：
+ * - [code]：服务端错误体里的 `error.code`（如 `not_found`）或客户端自己的分类
+ *   （`timeout` / `io_error` / `invalid_response` / `response_too_large` / `server_unavailable`）；
+ * - [status]：HTTP 状态码（网络层失败为 null）；
+ * - `message`：服务端文案或一句技术描述。**不含 token**。
+ *
+ * 继承 [IOException] 而不是 `Exception`：P1b 的仓储层可以继续用「网络错误」这一档
+ * 统一做离线/重试分支，和现有 `ApiException` 的调用习惯不冲突。
+ */
+class ServerApiException(
+    message: String,
+    val code: String? = null,
+    val status: Int? = null,
+    cause: Throwable? = null
+) : IOException(message, cause)
+
+/**
+ * `agentd` 服务端权威 API 的客户端（P1a：只做传输，不接 UI）。
+ *
+ * 覆盖契约 §3.1–§3.4 的五个接口：
+ *
+ * | 方法 | 接口 |
+ * | --- | --- |
+ * | [state] | `GET /v1/state?since=&personaId=` |
+ * | [sessions] | `GET /v1/sessions?personaId=` |
+ * | [messages] | `GET /v1/sessions/{id}/messages?beforeBlock=&afterBlock=` |
+ * | [sendMessage] | `POST /v1/sessions/{id}/messages`（SSE） |
+ * | [events] | `GET /v1/events?since=&timeoutSeconds=&limit=` |
+ *
+ * ## 超时
+ *
+ * 连接 10s、读 30s（[connectTimeoutMillis] / [readTimeoutMillis]，可注入以便单测）。
+ * **SSE 例外**：`sendMessage` 用 `readTimeout(0)` 的派生客户端——一次回复可能几十秒不打一个字节
+ * （模型慢/服务端排队），读超时会把正常的长回复误判成失败；这条链路的结束条件只有
+ * 「服务端 `done`/`error`」或「调用方取消协程」，取消时 [OkHttp Call.cancel] 会关掉 socket。
+ *
+ * ## 响应体上限
+ *
+ * 非流式响应 2 MiB（[MAX_RESPONSE_BYTES]）：状态快照再大也不该整份打进堆里爆掉。
+ * 先看 `Content-Length` 挡「声明就超大」，读的时候再累计挡「不声明/撒谎」的。
+ *
+ * ## 线程模型 / 取消
+ *
+ * 所有请求用 `Call.enqueue` 发、在 OkHttp 的回调线程上解析；[sendMessage] 的 `onEvent`
+ * **不是在主线程调用的**（调用方负责切回自己的 dispatcher）。
+ * 协程被取消时 `invokeOnCancellation` 立即 `call.cancel()`，连接随之关闭——这是
+ * 「客户端断开 SSE 时服务端继续生成并落库」契约的客户端侧保证。
+ *
+ * ## 安全
+ *
+ * - 令牌只进 `Authorization: Bearer` 头，不进日志、不进异常文案、不进 [ServerConfig.toString]；
+ * - 关闭重定向：307/308 会**保留方法与请求体**跟到跨域地址，令牌与聊天正文就有被转发的风险，
+ *   服务端权威模式不需要重定向（与 `RemoteAgentCoreClient` 的处理一致）；
+ * - 地址合法性（https / 调试期局域网 http）由 [ServerConfig] 在构造时判定一次。
+ */
+class ServerApi(
+    private val config: ServerConfig,
+    private val debuggable: Boolean = BuildConfig.DEBUG,
+    httpClient: OkHttpClient = OkHttpClient(),
+    private val json: Json = DEFAULT_JSON,
+    connectTimeoutMillis: Long = DEFAULT_CONNECT_TIMEOUT_MILLIS,
+    readTimeoutMillis: Long = DEFAULT_READ_TIMEOUT_MILLIS
+) {
+
+    /** 服务端根地址（去掉尾部 `/v1`，避免拼出 `/v1/v1/state`）；配置不可用时为 null。 */
+    private val root: HttpUrl? =
+        if (config.rejection(debuggable) == null) rootOf(config.validatedUrl(debuggable)) else null
+
+    private val client: OkHttpClient = httpClient.newBuilder()
+        // 服务端权威模式没有「重定向到另一台机器」的用法；跟随重定向会把 Authorization 与正文
+        // 带去 Host 头之外的目标（OkHttp 会跨域保留请求头）。
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .connectTimeout(connectTimeoutMillis, TimeUnit.MILLISECONDS)
+        .readTimeout(readTimeoutMillis, TimeUnit.MILLISECONDS)
+        .writeTimeout(readTimeoutMillis, TimeUnit.MILLISECONDS)
+        .build()
+
+    /** SSE 专用：读超时 0（无限），靠 `done` 或取消结束。 */
+    private val sseClient: OkHttpClient = client.newBuilder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+
+    /** 配置齐不齐（地址合法且打开）；P1b 的 DI 用它决定要不要构造本对象。 */
+    val isUsable: Boolean get() = root != null
+
+    // 下面两个只给单测断言「SSE 用的是 0 读超时」用，不参与业务。
+    internal val requestReadTimeoutMillis: Long get() = client.readTimeoutMillis.toLong()
+    internal val sseReadTimeoutMillis: Long get() = sseClient.readTimeoutMillis.toLong()
+
+    // ------------------------------------------------------------------ 契约 §3.1 状态快照
+
+    /**
+     * 拉一次状态快照。
+     *
+     * @param since 增量游标（epoch 毫秒）；`0` = 首次全量（每个会话只给最新一块）
+     * @param personaId 只看某个人格；null = 全部
+     */
+    suspend fun state(since: Long = 0L, personaId: String? = null): StateSnapshot =
+        requestJson<StateSnapshot>(
+            requestBuilder(
+                url("v1", "state") { builder ->
+                    builder.addQueryParameter("since", since.toString())
+                    personaId?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("personaId", it) }
+                }
+            ).get().build()
+        )
+
+    // ------------------------------------------------------------------ 契约 §3.1 会话列表
+
+    /** 会话列表（服务端已按 `lastMessageAt` 倒序排好）。 */
+    suspend fun sessions(personaId: String? = null): List<ServerSession> =
+        requestJson<ServerSessionList>(
+            requestBuilder(
+                url("v1", "sessions") { builder ->
+                    personaId?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("personaId", it) }
+                }
+            ).get().build()
+        ).sessions
+
+    // ------------------------------------------------------------------ 契约 §3.2 消息分页
+
+    /**
+     * 取一页消息（一页一块）。
+     *
+     * [beforeBlock] 与 [afterBlock] 互斥（服务端也这么判）：前翻传前者，后翻传后者；
+     * 两个都不传 = 最新一块。签名里没有 `limitBlocks`：契约只接受 1，客户端不给，
+     * 让服务端默认值生效，少一个「客户端传了 7、服务端 400」的坑。
+     */
+    suspend fun messages(
+        sessionId: String,
+        beforeBlock: Int? = null,
+        afterBlock: Int? = null
+    ): ServerMessagePage {
+        if (beforeBlock != null && afterBlock != null) {
+            throw ServerApiException(
+                "beforeBlock and afterBlock are mutually exclusive",
+                code = "invalid_argument"
+            )
+        }
+        return requestJson(
+            requestBuilder(
+                url("v1", "sessions", sessionId, "messages") { builder ->
+                    beforeBlock?.let { builder.addQueryParameter("beforeBlock", it.toString()) }
+                    afterBlock?.let { builder.addQueryParameter("afterBlock", it.toString()) }
+                }
+            ).get().build()
+        )
+    }
+
+    // ------------------------------------------------------------------ 契约 §3.4 增量事件
+
+    /**
+     * 长轮询增量事件。
+     *
+     * @param since 上次拿到的游标
+     * @param timeoutSeconds 最多等多久（服务端上限 25s，这里先截断，免得服务端等待时间
+     *        超过 30s 读超时导致「等到一半自己超时」）
+     */
+    suspend fun events(since: Long = 0L, timeoutSeconds: Long? = null, limit: Int? = null): ServerEvents =
+        requestJson<ServerEvents>(
+            requestBuilder(
+                url("v1", "events") { builder ->
+                    builder.addQueryParameter("since", since.toString())
+                    timeoutSeconds?.let {
+                        builder.addQueryParameter(
+                            "timeoutSeconds",
+                            it.coerceIn(0L, MAX_EVENT_WAIT_SECONDS).toString()
+                        )
+                    }
+                    limit?.let { builder.addQueryParameter("limit", it.coerceAtLeast(1).toString()) }
+                }
+            ).get().build()
+        )
+
+    // ------------------------------------------------------------------ 契约 §3.3 发送（SSE）
+
+    /**
+     * 发一条消息并流式接收回复事件。
+     *
+     * 返回时机：收到 `done` / `error`，或服务端关闭流（异常时抛 [ServerApiException]）。
+     * 注意：**返回不等于失败**——即使用户取消，服务端仍会继续生成并落库（契约 §3.3），
+     * 下次同步就能拿到。
+     *
+     * @param clientMessageId 幂等键（由调用方生成并持久化在待发送队列里，重发不产生第二条消息）
+     * @param onEvent 事件回调；**在 OkHttp 的回调线程调用**，不要在里面直接改 UI 状态
+     */
+    suspend fun sendMessage(
+        sessionId: String,
+        clientMessageId: String,
+        content: String,
+        attachments: List<String> = emptyList(),
+        replyTo: String? = null,
+        onEvent: (ServerChatEvent) -> Unit
+    ) {
+        val payload = buildJsonObject {
+            put("clientMessageId", clientMessageId)
+            put("content", content)
+            if (attachments.isNotEmpty()) {
+                put("attachments", buildJsonArray { attachments.forEach { add(it) } })
+            }
+            replyTo?.takeIf { it.isNotBlank() }?.let { put("replyTo", it) }
+        }.toString()
+        val request = requestBuilder(url("v1", "sessions", sessionId, "messages"))
+            .header("Accept", "text/event-stream")
+            .post(payload.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        execute(sseClient.newCall(request)) { response ->
+            if (!response.isSuccessful) throw errorFrom(response.code, readBoundedText(response))
+            val body = response.body
+                ?: throw ServerApiException("server returned an empty event stream", code = "invalid_response")
+            var finished = false
+            ServerSseParser.readEvents(
+                source = body.source(),
+                onEvent = { event ->
+                    onEvent(event)
+                    if (event is ServerChatEvent.Done || event is ServerChatEvent.Error) finished = true
+                },
+                parser = ServerSseParser(json)
+            )
+            // 服务端正常会以 done / error 收尾；流被提前掐断（代理超时、进程被杀）时必须让调用方
+            // 知道「这一条回复不完整」，而不是当成成功——P1b 靠这个决定是否重试/重新同步。
+            if (!finished) {
+                throw ServerApiException(
+                    "server closed the event stream before done",
+                    code = "stream_incomplete"
+                )
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 内部：请求构造 / 执行 / 解析
+
+    private fun requestBuilder(url: HttpUrl): Request.Builder {
+        val builder = Request.Builder().url(url).header("Accept", "application/json")
+        config.authorizationHeader()?.let { builder.header("Authorization", it) }
+        return builder
+    }
+
+    /** 协议路径：`<root>/v1/...`；root 已去掉尾部 `/v1`。 */
+    private fun url(vararg segments: String, query: (HttpUrl.Builder) -> Unit = {}): HttpUrl {
+        val base = root ?: throw serverUnavailable()
+        val builder = base.newBuilder()
+        segments.forEach { builder.addPathSegment(it) }
+        builder.encodedQuery(null)
+        query(builder)
+        return builder.build()
+    }
+
+    private suspend inline fun <reified T> requestJson(request: Request): T {
+        var status = 0
+        val text = execute(client.newCall(request)) { response ->
+            val body = readBoundedText(response)
+            if (!response.isSuccessful) throw errorFrom(response.code, body)
+            status = response.code
+            body
+        }
+        return try {
+            json.decodeFromString<T>(text)
+        } catch (invalid: SerializationException) {
+            throw invalidResponse(status, invalid)
+        } catch (invalid: IllegalArgumentException) {
+            // kotlinx.serialization 对「类型不符」也可能抛 IAE（比如把字符串当数字）。
+            throw invalidResponse(status, invalid)
+        }
+    }
+
+    private fun invalidResponse(status: Int, cause: Exception): ServerApiException =
+        ServerApiException(
+            "server returned a response that does not match the contract",
+            code = "invalid_response",
+            status = status,
+            cause = cause
+        )
+
+    /**
+     * 把一次 OkHttp 调用桥接成 suspend：回调线程上解析，协程取消时立刻 `call.cancel()`。
+     *
+     * 为什么不用 `withContext(Dispatchers.IO) { call.execute() }`：那样取消协程不会打断
+     * 已经在阻塞读的线程（SSE 读超时又设为 0），只能等下一次读返回才发现「已经没人要了」。
+     * 用 `invokeOnCancellation` + `cancel()` 才能保证「取消 ⇒ 关连接」。
+     */
+    private suspend fun <T> execute(call: Call, parse: (Response) -> T): T =
+        suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation {
+                // 取消必然要关连接：SSE 的读阻塞只有 cancel 能打断。
+                runCatching { call.cancel() }
+            }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, failure: IOException) {
+                    continuation.resumeFailureSafely(mapFailure(failure))
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (!continuation.isActive) {
+                        // 协程已经取消：不解析，直接关掉响应体（= 关连接）。
+                        runCatching { response.close() }
+                        return
+                    }
+                    val result = try {
+                        response.use(parse)
+                    } catch (failure: Exception) {
+                        continuation.resumeFailureSafely(failure)
+                        return
+                    }
+                    continuation.resumeSafely(result)
+                }
+            })
+        }
+
+    /** 读响应体，超过 [MAX_RESPONSE_BYTES] 直接按失败处理（连接随后被 `response.use` 关掉）。 */
+    private fun readBoundedText(response: Response): String {
+        val body = response.body ?: return ""
+        val declared = body.contentLength()
+        if (declared > MAX_RESPONSE_BYTES) {
+            throw ServerApiException(
+                "server response exceeds the $MAX_RESPONSE_BYTES byte limit",
+                code = "response_too_large",
+                status = response.code
+            )
+        }
+        val output = ByteArrayOutputStream()
+        val chunk = ByteArray(8 * 1024)
+        var total = 0L
+        body.byteStream().use { input ->
+            while (true) {
+                val read = input.read(chunk)
+                if (read < 0) break
+                total += read
+                if (total > MAX_RESPONSE_BYTES) {
+                    throw ServerApiException(
+                        "server response exceeds the $MAX_RESPONSE_BYTES byte limit",
+                        code = "response_too_large",
+                        status = response.code
+                    )
+                }
+                output.write(chunk, 0, read)
+            }
+        }
+        return output.toString("UTF-8")
+    }
+
+    /**
+     * 非 2xx → 统一错误体 `{"error":{"message":"…","code":"…"}}`。
+     *
+     * 服务端文案原样带上（P1b 的 UI 由 `ui/` 决定要不要显示、怎么本地化），
+     * 解析不出来时退化成 `http_<status>`，不把整份响应体塞进异常（可能有几 MB）。
+     */
+    private fun errorFrom(status: Int, text: String): ServerApiException {
+        val error = runCatching {
+            json.parseToJsonElement(text).jsonObject["error"]?.jsonObject
+        }.getOrNull()
+        val code = error?.get("code")?.jsonPrimitive?.contentOrNull
+        val message = error?.get("message")?.jsonPrimitive?.contentOrNull
+        return ServerApiException(
+            message ?: "server returned HTTP $status",
+            code = code ?: "http_$status",
+            status = status
+        )
+    }
+
+    private fun mapFailure(failure: IOException): ServerApiException = when (failure) {
+        is ServerApiException -> failure
+        is SocketTimeoutException -> ServerApiException(
+            "server request timed out",
+            code = "timeout",
+            cause = failure
+        )
+        else -> ServerApiException(
+            failure.message ?: "network error",
+            code = "io_error",
+            cause = failure
+        )
+    }
+
+    /**
+     * 安全 resume：取消与 OkHttp 回调可能同时发生（用户退出聊天页 vs 服务端刚发完 `done`），
+     * 对已取消的 continuation 直接 `resume` 会抛 `IllegalStateException`——那是在 OkHttp 的
+     * 回调线程上，没人 catch，会直接崩进程。这里把「已经没人要这个结果」当成正常情况丢掉。
+     */
+    private fun <T> CancellableContinuation<T>.resumeSafely(value: T) {
+        if (!isActive) return
+        try {
+            resumeWith(Result.success(value))
+        } catch (alreadyResumed: IllegalStateException) {
+            // 结果没人要了：取消路径已经处理过，忽略。
+        }
+    }
+
+    private fun <T> CancellableContinuation<T>.resumeFailureSafely(failure: Throwable) {
+        if (!isActive) return
+        try {
+            resumeWith(Result.failure(failure))
+        } catch (alreadyResumed: IllegalStateException) {
+            // 同上：取消与回调竞争。
+        }
+    }
+
+    private fun serverUnavailable(): ServerApiException =
+        ServerApiException(
+            "server transport is not usable: ${config.rejection(debuggable)}",
+            code = "server_unavailable"
+        )
+
+    companion object {
+
+        /** 契约 §3.4：服务端长轮询上限 25 秒（客户端也按这个截断）。 */
+        const val MAX_EVENT_WAIT_SECONDS = 25L
+
+        /** 连接超时：局域网/本机通常 < 50ms，10s 已经是「服务没起」的量级。 */
+        const val DEFAULT_CONNECT_TIMEOUT_MILLIS = 10_000L
+
+        /** 普通请求的读超时。 */
+        const val DEFAULT_READ_TIMEOUT_MILLIS = 30_000L
+
+        /** 非流式响应体上限：2 MiB。 */
+        const val MAX_RESPONSE_BYTES = 2L * 1024 * 1024
+
+        /** 服务端可能新增字段：忽略未知键 + 宽松解析（数字字符串也能收）。 */
+        val DEFAULT_JSON: Json = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
+
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+
+        /**
+         * 服务端根地址：去掉尾部 `/v1`，保留反向代理前缀（`https://host/mf`）。
+         *
+         * 为什么允许前缀：`agentd/README.md` 建议对外用反向代理 + TLS，反代很可能挂在子路径上；
+         * 客户端不应该因为「用户填了 `/v1` 结尾」就拼出 `/v1/v1/state`。
+         */
+        private fun rootOf(base: HttpUrl): HttpUrl {
+            val segments = base.pathSegments.filter { it.isNotEmpty() }
+            val kept = if (segments.isNotEmpty() && segments.last() == "v1") segments.dropLast(1) else segments
+            val builder = base.newBuilder().encodedPath("/")
+            kept.forEach { builder.addPathSegment(it) }
+            return builder.encodedQuery(null).fragment(null).build()
+        }
+
+        /** 构造 [ServerApi] 的地址检查（不建连接）：方便 DI 在装配前先判一次。 */
+        fun isBaseUrlUsable(baseUrl: String, debuggable: Boolean = BuildConfig.DEBUG): Boolean =
+            ServerConfig(baseUrl = baseUrl, enabled = baseUrl.isNotBlank()).isUsable(debuggable)
+
+        /** 只做语法归一化，供测试检查「填的地址会不会拼成预期路径」。 */
+        internal fun normalizedBaseUrl(baseUrl: String): String? =
+            baseUrl.trim().toHttpUrlOrNull()?.let { rootOf(it).toString().trimEnd('/') }
+    }
+}
