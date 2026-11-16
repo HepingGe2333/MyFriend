@@ -3,13 +3,13 @@
   "version": "0.10.0",
   "title": "睡眠 / 免打扰 / 唤醒阈值判定",
   "authority": "android",
-  "authorityNote": "规格见 docs/ROADMAP-1.9.md §六；两端不一致时以 Android SleepPolicy 的实现为准（免打扰不留已读这一条以规格为准）。",
+  "authorityNote": "规格见 docs/design/roadmap-1.9.md §六；两端不一致时以 Android SleepPolicy 的实现为准（免打扰不留已读这一条以规格为准）。",
   "kotlin": {
-    "file": "agentcore/src/commonMain/kotlin/com/myfriend/app/domain/SleepPolicy.kt",
-    "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake，agentcore/src/commonMain/kotlin/com/myfriend/app/domain/Mood.kt）"
+    "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/SleepPolicy.kt",
+    "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake，agentcore/src/commonMain/kotlin/com/yap/app/domain/Mood.kt）"
   },
   "swift": {
-    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/SleepSchedule.swift",
+    "file": "ios/YapKit/Sources/YapKit/Domain/SleepSchedule.swift",
     "symbol": "SleepGate.evaluate（心情恢复：SleepGate.moodAfterWaking）"
   },
   "inputSpec": {

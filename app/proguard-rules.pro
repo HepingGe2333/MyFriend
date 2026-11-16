@@ -1,4 +1,4 @@
-# MyFriend release 混淆规则。
+# Yap release 混淆规则。
 #
 # 原则：只保留「运行期真的会被反射/按名字找」的东西，其余交给 R8 去瘦身。
 # 这个 App 没有管理员式的内部开关，所以混淆出错的表现往往不是崩溃日志里的一行栈，
@@ -10,9 +10,9 @@
 -dontnote kotlinx.serialization.**
 -keepclassmembers class kotlinx.serialization.json.** { *** Companion; }
 -keepclasseswithmembers class kotlinx.serialization.json.** { kotlinx.serialization.KSerializer serializer(...); }
--keep,includedescriptorclasses class com.myfriend.app.**$$serializer { *; }
--keepclassmembers class com.myfriend.app.** { *** Companion; }
--keepclasseswithmembers class com.myfriend.app.** { kotlinx.serialization.KSerializer serializer(...); }
+-keep,includedescriptorclasses class com.yap.app.**$$serializer { *; }
+-keepclassmembers class com.yap.app.** { *** Companion; }
+-keepclasseswithmembers class com.yap.app.** { kotlinx.serialization.KSerializer serializer(...); }
 -keepclassmembers @kotlinx.serialization.Serializable class ** {
     *** Companion;
 }

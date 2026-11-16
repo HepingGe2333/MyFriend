@@ -9,7 +9,7 @@ plugins {
     id("com.google.dagger.hilt.android")
 }
 
-// 签名信息：先读项目根的 keystore.properties（不进版本库），再读环境变量 MYFRIEND_KEYSTORE_*。
+// 签名信息：先读项目根的 keystore.properties（不进版本库），再读环境变量 YAP_KEYSTORE_*。
 // 两处都没配的时候，release 就老老实实产出一个未签名的 APK，而不是让 `assembleRelease` 直接失败：
 // 打包失败会挡住所有验证（比如想确认 R8 有没有把序列化器削掉），而这个失败跟「内容对不对」无关。
 val keystoreProperties = Properties().apply {
@@ -22,16 +22,16 @@ fun signingValue(propertyName: String, envName: String): String? =
         ?.trim()
         ?.takeIf { it.isNotEmpty() }
 
-val releaseStoreFile = signingValue("storeFile", "MYFRIEND_KEYSTORE_FILE")?.let { rootProject.file(it) }
-val releaseStorePassword = signingValue("storePassword", "MYFRIEND_KEYSTORE_PASSWORD")
-val releaseKeyAlias = signingValue("keyAlias", "MYFRIEND_KEYSTORE_ALIAS")
-val releaseKeyPassword = signingValue("keyPassword", "MYFRIEND_KEYSTORE_KEY_PASSWORD")
+val releaseStoreFile = signingValue("storeFile", "YAP_KEYSTORE_FILE")?.let { rootProject.file(it) }
+val releaseStorePassword = signingValue("storePassword", "YAP_KEYSTORE_PASSWORD")
+val releaseKeyAlias = signingValue("keyAlias", "YAP_KEYSTORE_ALIAS")
+val releaseKeyPassword = signingValue("keyPassword", "YAP_KEYSTORE_KEY_PASSWORD")
 
 /**
  * 服务端权威模式（P1a 传输层）的编译期默认地址 / 令牌。
  *
- * 只从 Gradle property 透传（`-PMYFRIEND_SERVER_URL=https://…`），默认空 = 关闭。
- * 在 App 里还会被同名**系统属性**覆盖（`com.myfriend.app.data.remote.ServerConfig`），
+ * 只从 Gradle property 透传（`-PYAP_SERVER_URL=https://…`），默认空 = 关闭。
+ * 在 App 里还会被同名**系统属性**覆盖（`com.yap.app.data.remote.ServerConfig`），
  * 方便 JVM 测试与真机调试；release 构建在 `buildTypes.release` 里强制覆盖成空，
  * 免得 CI 误把地址 / 令牌打进发布包（与 AGENT_CORE_* 的处理一致）。
  *
@@ -49,12 +49,12 @@ val hasReleaseSigning = releaseStoreFile?.exists() == true &&
     releaseKeyPassword != null
 
 android {
-    namespace = "com.myfriend.app"
+    namespace = "com.yap.app"
     compileSdk = 35
     buildToolsVersion = "35.0.0"
 
     defaultConfig {
-        applicationId = "com.myfriend.app"
+        applicationId = "com.yap.app"
         minSdk = 26
         targetSdk = 35
         // 内测版本号：0.9.0 → 0.10.0 → 0.10.2 → 0.11.0，本次 0.11.1（审计修复：备份引用完整性 /
@@ -66,7 +66,7 @@ android {
         // 0.12：仪器化 UI 测试要在真实 DI 图上跑（@HiltAndroidTest 只认 Hilt 的测试
         // Application），所以换成 Hilt 官方规定的 runner；它其余行为与
         // AndroidJUnitRunner 完全一致（迁移/块维护那 28 条照旧）。
-        testInstrumentationRunner = "com.myfriend.app.HiltTestRunner"
+        testInstrumentationRunner = "com.yap.app.HiltTestRunner"
 
         // agent 决策层走哪条路：默认进程内（InProcessAgentCoreClient），行为与 0.10.x 完全一致。
         //
@@ -88,10 +88,10 @@ android {
         )
 
         // 服务端权威模式（P1a 传输层）的连接默认值：默认空 = 关闭（App 仍走本地 Room 路径）。
-        // 打开方式：`-PMYFRIEND_SERVER_URL=https://server.example:8788 -PMYFRIEND_SERVER_TOKEN=…`
+        // 打开方式：`-PYAP_SERVER_URL=https://server.example:8788 -PYAP_SERVER_TOKEN=…`
         // （也可以只配 token，然后在 App 里用系统属性同名覆盖地址）。见上面的 serverBuildConfigValue。
-        buildConfigField("String", "MYFRIEND_SERVER_URL", serverBuildConfigValue("MYFRIEND_SERVER_URL"))
-        buildConfigField("String", "MYFRIEND_SERVER_TOKEN", serverBuildConfigValue("MYFRIEND_SERVER_TOKEN"))
+        buildConfigField("String", "YAP_SERVER_URL", serverBuildConfigValue("YAP_SERVER_URL"))
+        buildConfigField("String", "YAP_SERVER_TOKEN", serverBuildConfigValue("YAP_SERVER_TOKEN"))
     }
 
     signingConfigs {
@@ -126,8 +126,8 @@ android {
 
             // 同上：服务端地址 / 令牌是联调用的，不许被打进发布包（release 只允许用户在
             // App 内显式配置，且 P1a 阶段还没有设置界面）。debug 构建仍按 Gradle property 生成。
-            buildConfigField("String", "MYFRIEND_SERVER_URL", "\"\"")
-            buildConfigField("String", "MYFRIEND_SERVER_TOKEN", "\"\"")
+            buildConfigField("String", "YAP_SERVER_URL", "\"\"")
+            buildConfigField("String", "YAP_SERVER_TOKEN", "\"\"")
         }
         debug {
             applicationIdSuffix = ".debug"

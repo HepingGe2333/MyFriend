@@ -68,7 +68,7 @@ All providers produce the same shape used by the tool result pipeline:
 ## 4. `web_fetch`
 
 - `MESSAGEAPI`: unchanged (server-side fetch).
-- Other providers: the client fetches the URL itself (`GET`, 10 s timeout, max 2 MiB body, `User-Agent: MyFriend/1.0`),
+- Other providers: the client fetches the URL itself (`GET`, 10 s timeout, max 2 MiB body, `User-Agent: Yap/1.0`),
   strips HTML tags/scripts/styles, collapses whitespace and returns at most 8000 characters.
 - In every case the URL must pass the shared `WebUrlPolicy` (http/https, no private hosts, no userinfo) **before** any
   request is made.

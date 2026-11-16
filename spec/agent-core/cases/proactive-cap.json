@@ -3,13 +3,13 @@
   "version": "0.10.0",
   "title": "主动程度 1–5 → 每日上限 / 心跳权重 / 人话解释（心情可再挪一格）",
   "authority": "android",
-  "authorityNote": "规格见 docs/ROADMAP-1.9.md §一/§三；Android ProactiveLevel + MoodBehavior.effectiveDailyCap 是权威。",
+  "authorityNote": "规格见 docs/design/roadmap-1.9.md §一/§三；Android ProactiveLevel + MoodBehavior.effectiveDailyCap 是权威。",
   "kotlin": {
-    "file": "agentcore/src/commonMain/kotlin/com/myfriend/app/domain/ProactiveLevel.kt",
+    "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/ProactiveLevel.kt",
     "symbol": "ProactiveLevel.normalize / dailyCap / heartbeatWeight / description；心情修正：MoodBehavior.from + effectiveDailyCap"
   },
   "swift": {
-    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/ProactiveLevel.swift",
+    "file": "ios/YapKit/Sources/YapKit/Domain/ProactiveLevel.swift",
     "symbol": "ProactiveLevel.normalize / dailyCap / heartbeatWeight / description；心情修正：MoodBehavior.from + effectiveDailyCap"
   },
   "inputSpec": {

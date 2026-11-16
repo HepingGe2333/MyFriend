@@ -23,6 +23,17 @@ Version rules live in [CONTRIBUTING.en.md](../CONTRIBUTING.en.md): during the be
 
 ---
 
+## Project renamed to YetAnotherPal (Yap)
+
+The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
+<https://github.com/HepingGe2333/YetAnotherPal>; old links redirect there on GitHub.
+
+- Android application ID is now `com.yap.app`; the iOS bundle ID is `com.yap.app.ios`.
+- The iOS Swift module is now `YapKit`, and the Xcode project is `YetAnotherPal.xcodeproj`.
+- The backup format string **`myfriend.backup` is unchanged** so historical backups remain readable. The
+  format name is a protocol identifier and is not renamed with the product.
+- For searchability, historical entries below use the current product, package and path names. The only
+  retained legacy string is the compatibility format name `myfriend.backup`.
 
 ## 0.12.0
 
@@ -156,7 +167,7 @@ No version bump yet (not approved): both platforms stay at `0.12.0` / build **18
     newer, jump-to-message highlight, send failure keeps the draft, clear + wipe behaviour), plus `HiltTestRunner`,
     Compose test dependencies, and a debug-only manifest that no longer registers `BootReceiver` (the install broadcast
     used to crash the process before Hilt came up);
-  - iOS: six `MyFriendTests/ChatUiBehaviorTests` with the same scope, executed on the simulator (this sandbox uses
+  - iOS: six `YetAnotherPalTests/ChatUiBehaviorTests` with the same scope, executed on the simulator (this sandbox uses
     `simctl spawn xctest` because `xcodebuild test` needs a pty).
 - **Large-history benchmarks**: one per platform (100k-message migration, search pages 1/10/100, backup with 500 images
   peak memory); numbers and conclusions live in `docs/performance.md`.
@@ -216,7 +227,7 @@ keep running without any background process (contract: `docs/design/server-autho
   `clientMessageId`, generation continues and persists after the client disconnects), `GET /v1/events` (long polling).
 - **Server-side search**: `MESSAGEAPI` / `TAVILY` / `SEARXNG` (self-hosted, no key) / `BING` plus
   `ZHIHU` / `TOUTIAO` / `QUORA` site-scoped sources; `POST /v1/tools/web-search`, `/v1/tools/web-fetch`; keys live on the
-  server (`MYFRIEND_AGENTD_SEARCH_*`), never sent by clients.
+  server (`YAP_AGENTD_SEARCH_*`), never sent by clients.
 - **Server-side proactive**: `ProactiveEngine` (sleep/DND/cooldown/daily cap/probability, following `spec/agent-core`),
   a timer independent of client connections, `POST /v1/proactive/tick` (debug/test entry point).
 - **Client transports**: Android `data/remote/` and iOS `Net/Server/` with `ServerConfig` (https required, cleartext only
@@ -435,7 +446,7 @@ client/server boundary**, plus the remaining P2 items from the audits. Version `
   lifecycle, vectors, search, backup copy, erasure plan, error model, …). Package names are unchanged. Both `:app` and
   `:agentd` depend on it.
 - `:agentd` no longer uses the `kotlin.srcDir(app/domain)` + 14-`exclude` trick — **the exclusion list is gone**; the
-  JSON parser moved into `:agentcore` too (`com.myfriend.app.core.json`), so there is one copy in the repository.
+  JSON parser moved into `:agentcore` too (`com.yap.app.core.json`), so there is one copy in the repository.
 - Added the `AgentCore` interface (four kinds of decisions), `InProcessAgentCore` (shaping only, delegating to the
   existing pure functions), `AgentCoreProtocol` (path and field-name constants shared by the `agentd` route table and
   both clients) and `AgentCoreCodec` (HTTP encode/decode).
@@ -444,7 +455,7 @@ client/server boundary**, plus the remaining P2 items from the audits. Version `
   and with the flag off the remote client is never constructed (**zero requests**). Wired for sleep decisions,
   `defer_reply`, tool argument clamping and the daily proactive cap (three call sites).
 - **iOS client**: a Kit `AgentCoreClient` protocol with `Native` / `Remote` (URLSession) / `Fallback` implementations,
-  selected by `MYFRIEND_AGENT_CORE` (`native|remote|remote-strict`) or Info.plist, **native by default (zero requests)**;
+  selected by `YAP_AGENT_CORE` (`native|remote|remote-strict`) or Info.plist, **native by default (zero requests)**;
   the same four call sites are wired. On the simulator, `remote-strict` hit all four endpoints with HTTP 200.
 - **No new user-facing settings**; the decision layer still holds no state (sessions, memories and usage stay in the
   client database).
@@ -661,7 +672,7 @@ Version `0.10.0` (a large change: internationalisation plus a cross-platform age
 ### Internationalisation: English UI
 
 - Android: added `app/src/main/res/values-en/strings.xml` (same key set as `values/strings.xml`); `android:localeConfig` declares `zh` / `en`; the language follows the system and there is no in-app switch. Base resources in `values/` are Chinese, and unmatched locales fall back to Chinese.
-- iOS: added `ios/MyFriend/Resources/zh-Hans.lproj/Localizable.strings` and `en.lproj/Localizable.strings`; `CFBundleDevelopmentRegion = zh-Hans`, `CFBundleLocalizations = [zh-Hans, en]`, and both `InfoPlist.strings` localise the local-network permission copy, all selected automatically by `Bundle.main`. There is no in-app switch here either.
+- iOS: added `ios/YetAnotherPal/Resources/zh-Hans.lproj/Localizable.strings` and `en.lproj/Localizable.strings`; `CFBundleDevelopmentRegion = zh-Hans`, `CFBundleLocalizations = [zh-Hans, en]`, and both `InfoPlist.strings` localise the local-network permission copy, all selected automatically by `Bundle.main`. There is no in-app switch here either.
 - Model language: both platforms append a language-directive section to the end of the system prompt, instructing the model to answer in the same language the user writes in. Both provide Chinese and English templates following the UI language (Android: `prompt_language_directive` under `values{,-en}`; iOS: the same key in `Localizable.strings`). The wording is identical; only the placeholder syntax differs (`%1$s` / `%1$@`). Apart from this section, prompt scaffolding, logs and code comments are not translated.
 - Resource guards: Android `StringResourceParityTest` (key sets and placeholders), `ChineseLiteralGuardTest` (no hard-coded Chinese in the UI layer), `LanguageDirectiveTest` (language directive appended to the end of the prompt); iOS `LocalizationResourceTests`, `UIChineseLiteralGuardTests`.
 - String counts: Android `values` / `values-en` hold **876** entries each (856 `<string>` + 20 `<plurals>`), plus 12 `seed.xml` entries per language, a locale-specific `usage_tokens_compact_divisor`, and date/time patterns as resources. iOS holds **765** entries in each `Localizable.strings` (about 637 call sites in the app layer plus 233 kit keys) and one entry per `InfoPlist.strings`.
@@ -670,7 +681,7 @@ Version `0.10.0` (a large change: internationalisation plus a cross-platform age
 ### Agent core contract
 
 - Added `spec/agent-core/cases/*.json`: **94** language-neutral cases (sleep decision 16, `defer_reply` 9, proactive cap 14, heartbeat 17, memory decay 22, tool-argument clamping 16). Each case has `name` / `input` / `expect` and an optional `why`; floating-point assertions carry a `tolerance`.
-- Android test `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt` and iOS test `ios/MyFriendKit/Tests/MyFriendKitTests/Spec/AgentCoreSpecTests.swift` read the **same** JSON files and feed them into each platform's existing domain implementation. Changing behaviour on one side alone turns the other side red.
+- Android test `app/src/test/java/com/yap/app/spec/AgentCoreSpecTest.kt` and iOS test `ios/YapKit/Tests/YapKitTests/Spec/AgentCoreSpecTests.swift` read the **same** JSON files and feed them into each platform's existing domain implementation. Changing behaviour on one side alone turns the other side red.
 
 ### Embedded service skeleton: agentd
 
@@ -699,7 +710,7 @@ Writing the cases revealed ten places where the two implementations quietly disa
 | Target | Command | Result |
 | --- | --- | --- |
 | Android | `./gradlew :app:testDebugUnitTest` | **639 tests / 47 classes / 0 failures** |
-| iOS | `cd ios/MyFriendKit && swift test --disable-sandbox` | **827 tests / 0 failures** |
+| iOS | `cd ios/YapKit && swift test --disable-sandbox` | **827 tests / 0 failures** |
 | agentd | `./gradlew :agentd:test` | **19 tests / 0 failures** |
 | Builds | `:app:assembleDebug`, `xcodebuild … build`, `:agentd:build` | all succeed |
 

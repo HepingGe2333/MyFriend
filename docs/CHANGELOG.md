@@ -24,6 +24,16 @@
 
 ---
 
+## 项目更名为 YetAnotherPal（Yap）
+
+项目正式更名为 **YetAnotherPal**，缩写 **Yap**。仓库地址改为
+<https://github.com/HepingGe2333/YetAnotherPal>，旧链接会由 GitHub 重定向。
+
+- Android 应用 ID 改为 `com.yap.app`；iOS Bundle ID 改为 `com.yap.app.ios`。
+- iOS Swift 模块改为 `YapKit`，Xcode 工程改为 `YetAnotherPal.xcodeproj`。
+- 备份格式字符串 **`myfriend.backup` 保持不变**，保证历史备份仍可读取；格式名是协议标识，不随品牌更名。
+- 为便于检索，本文历史条目中的产品名、包名、路径与测试 target 已统一为当前命名；唯一保留的旧字符串是兼容格式名
+  `myfriend.backup`。
 
 ## 0.12.0
 
@@ -139,7 +149,7 @@
   - Android：`app/src/androidTest/.../ui/` 6 条 Compose 行为测试（首屏只读一块、向上/向下加载、跳转定位高亮、
     发送失败保留草稿、清空与整库删除后的行为），新增 `HiltTestRunner`、Compose UI 测试依赖，debug 变体不再注册
     `BootReceiver`（避免安装后广播在 Hilt 启动前崩溃）；
-  - iOS：`MyFriendTests/ChatUiBehaviorTests` 6 条（同口径），在模拟器上通过（本沙箱用 `simctl spawn xctest` 运行，
+  - iOS：`YetAnotherPalTests/ChatUiBehaviorTests` 6 条（同口径），在模拟器上通过（本沙箱用 `simctl spawn xctest` 运行，
     `xcodebuild test` 受 pty 限制）。
 - **大库基准**：Android/iOS 各一套 benchmark（10 万条消息迁移、检索第 1/10/100 页、备份 500 图峰值内存），
   数字与结论见 `docs/performance.md`。
@@ -196,7 +206,7 @@
   `clientMessageId` 幂等、客户端断开仍生成并落库）、`GET /v1/events`（长轮询）。
 - **服务端搜索**：`MESSAGEAPI` / `TAVILY` / `SEARXNG`（自建，无 key）/ `BING` 与
   `ZHIHU` / `TOUTIAO` / `QUORA` 站点过滤源；`POST /v1/tools/web-search`、`/v1/tools/web-fetch`；
-  服务端配置 key（`MYFRIEND_AGENTD_SEARCH_*`），客户端不传密钥。
+  服务端配置 key（`YAP_AGENTD_SEARCH_*`），客户端不传密钥。
 - **服务端主动**：`ProactiveEngine`（睡眠/DND/冷却/每日上限/概率，沿用 `spec/agent-core`）、
   定时器不依赖客户端连接、`POST /v1/proactive/tick`（调试/测试入口）。
 - **客户端传输层**：Android `data/remote/`、iOS `Net/Server/`，各自的 `ServerConfig`（https 必须、debug 才允许
@@ -378,14 +388,14 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
   **40 个纯决策文件**（睡眠判定、`defer_reply`、主动上限、心情、心跳、记忆生命周期、向量、检索、备份文案、
   擦除清单、错误模型…）移进来，**包名不变**。`:app` 与 `:agentd` 都依赖它。
 - `:agentd` 不再用「`kotlin.srcDir(app/domain)` + 14 条 exclude」的临时手段，**排除列表已删除**；
-  JSON 解析器也收进 `:agentcore`（`com.myfriend.app.core.json`），仓库里只有一份。
+  JSON 解析器也收进 `:agentcore`（`com.yap.app.core.json`），仓库里只有一份。
 - 新增 `AgentCore` 接口（4 类决策）与 `InProcessAgentCore`（只做整形、全部委托既有纯函数）、
   `AgentCoreProtocol`（路径与字段名常量，`agentd` 路由表与两端客户端共用）、`AgentCoreCodec`（HTTP 编解码）。
 - **Android 客户端**：`AgentCoreClient`（`InProcess` 默认 / `Remote` 走 OkHttp 调 `agentd`），
   由构建开关 `-PagentCoreRemote=true`（`BuildConfig.AGENT_CORE_REMOTE`）选择；远程失败**自动回退进程内**并记日志，
   开关关闭时**不构造远程客户端、零网络请求**。接线：睡眠判定、`defer_reply`、工具参数夹取、每日主动上限（3 处）。
 - **iOS 客户端**：Kit 里的 `AgentCoreClient` 协议 + `Native` / `Remote`（URLSession）/ `Fallback` 三种实现，
-  由 `MYFRIEND_AGENT_CORE`（`native|remote|remote-strict`）或 Info.plist 选择，**默认 native（零请求）**；
+  由 `YAP_AGENT_CORE`（`native|remote|remote-strict`）或 Info.plist 选择，**默认 native（零请求）**；
   接线同一组 4 处。模拟器实测 `remote-strict` 下 4 个端点全部 HTTP 200。
 - **没有新增任何用户可见设置项**；决策层仍不持有状态（会话/记忆/用量都在客户端数据库）。
 
@@ -576,7 +586,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 - Android：新增 `app/src/main/res/values-en/strings.xml`（与 `values/strings.xml` 键集合一致），
   通过 `android:localeConfig` 声明 `zh` / `en`，语言跟随系统，没有应用内切换；
   基资源 `values/` 为中文，未匹配语言时回落中文。
-- iOS：新增 `ios/MyFriend/Resources/zh-Hans.lproj/Localizable.strings` 与
+- iOS：新增 `ios/YetAnotherPal/Resources/zh-Hans.lproj/Localizable.strings` 与
   `en.lproj/Localizable.strings`，`CFBundleDevelopmentRegion = zh-Hans`、
   `CFBundleLocalizations = [zh-Hans, en]`，两份 `InfoPlist.strings` 本地化本地网络权限说明，
   由 `Bundle.main` 自动选择；同样没有应用内切换。
@@ -596,8 +606,8 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 
 - 新增 `spec/agent-core/cases/*.json`：**94 条**与语言无关的用例（睡眠判定 16、`defer_reply` 9、主动上限 14、
   心跳 17、记忆衰减 22、工具参数夹取 16），每条含 `name` / `input` / `expect` / 可选 `why`；浮点断言带 `tolerance`。
-- Android 测试 `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt` 与
-  iOS 测试 `ios/MyFriendKit/Tests/MyFriendKitTests/Spec/AgentCoreSpecTests.swift` 读取**同一批** JSON，
+- Android 测试 `app/src/test/java/com/yap/app/spec/AgentCoreSpecTest.kt` 与
+  iOS 测试 `ios/YapKit/Tests/YapKitTests/Spec/AgentCoreSpecTests.swift` 读取**同一批** JSON，
   分别喂给两端已有的领域实现；任何一端单独改行为，另一端立刻红。
 
 ### 内嵌服务骨架：agentd
@@ -630,7 +640,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 | 目标 | 命令 | 结果 |
 | --- | --- | --- |
 | Android | `./gradlew :app:testDebugUnitTest` | **639 条 / 47 个测试类 / 0 失败** |
-| iOS | `cd ios/MyFriendKit && swift test --disable-sandbox` | **827 条 / 0 失败** |
+| iOS | `cd ios/YapKit && swift test --disable-sandbox` | **827 条 / 0 失败** |
 | agentd | `./gradlew :agentd:test` | **19 条 / 0 失败** |
 | 构建 | `:app:assembleDebug`、`xcodebuild … build`、`:agentd:build` | 均成功 |
 ### 文档

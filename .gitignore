@@ -22,6 +22,8 @@ keystore.properties
 
 # ---- iOS / Xcode ----
 .build/
+ios/YapKit/.build/
+ios/YetAnotherPal.xcodeproj/xcuserdata/
 DerivedData/
 *.xcuserdatad/
 *.xcuserdata/

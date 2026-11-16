@@ -8,7 +8,7 @@
 > 备份 v3 的整份 JSON 在 192MB 堆的设备上最多只能带走约 27MB 图片，500 × 800KB 根本走不完（预算截断 + OOM）。**
 
 测量日期：2026-11-15（15:45–16:05 CST）。测量代码只新增在
-`app/src/androidTest/java/com/myfriend/app/benchmark/`，**没有改任何生产代码**。
+`app/src/androidTest/java/com/yap/app/benchmark/`，**没有改任何生产代码**。
 
 ---
 
@@ -24,10 +24,10 @@
 
 | 项 | 值 | 备注 |
 | --- | --- | --- |
-| 设备 | `sdk_gphone64_arm64`（Google / `ranchu`） | **headless 模拟器**（AVD `MyFriendTest`，无窗口），不是真机 |
+| 设备 | `sdk_gphone64_arm64`（Google / `ranchu`） | **headless 模拟器**（AVD `YapTest`，无窗口），不是真机 |
 | 系统 | Android 15 / API 35 | `arm64-v8a` 系统镜像（宿主 macOS，10 核） |
 | 内存 | 2.5 GB（`MemTotal` 2,531,992 kB） | 模拟器的 `dalvik.vm.heapgrowthlimit` = **192 MB**，`Runtime.maxMemory()` 也是 192 MB |
-| 包 | `com.myfriend.app.debug`，`0.12.0-debug (18)` | **debug 包**，未开 R8/混淆 |
+| 包 | `com.yap.app.debug`，`0.12.0-debug (18)` | **debug 包**，未开 R8/混淆 |
 | Room schema | **v12**（`MIGRATION_1_2` … `MIGRATION_11_12` 全链注册；本次实测 `10 → 11 → 12`） | `schema.versionAfterOpen = 12` |
 | 构建 | Gradle 8.9 / AGP + Kotlin（仓库自带 `.tooling`） | `:app:assembleDebug` + `:app:assembleDebugAndroidTest` |
 | 宿主 | macOS，10 核 | 测量期间宿主是**共享**的，load 在 4–33 之间波动；这一点直接影响墙钟数字，见 §5 |
@@ -98,7 +98,7 @@
 ### 2.5 可重复命令
 
 ```bash
-cd /Users/hpg2333/Desktop/Projects/MyFriend
+cd /Users/hpg2333/Desktop/Projects/YetAnotherPal
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Contents/Home \
   ANDROID_HOME=$PWD/.tooling/android-sdk ANDROID_USER_HOME=$PWD/.tooling/android-user \
   GRADLE_USER_HOME=$PWD/.tooling/build-home TMPDIR=$PWD/.tooling/tmp
@@ -111,11 +111,11 @@ export JAVA_HOME=/Library/Java/JavaVirtualMachines/amazon-corretto-17.jdk/Conten
 
 ```bash
 .tooling/gradle-8.9/bin/gradle -p . :app:connectedDebugAndroidTest --console=plain \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.myfriend.app.benchmark.LargeHistoryBenchmarkTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.yap.app.benchmark.LargeHistoryBenchmarkTest \
   -Pandroid.testInstrumentationRunnerArguments.bench=true
 
 .tooling/gradle-8.9/bin/gradle -p . :app:connectedDebugAndroidTest --console=plain \
-  -Pandroid.testInstrumentationRunnerArguments.class=com.myfriend.app.benchmark.BackupMediaBenchmarkTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=com.yap.app.benchmark.BackupMediaBenchmarkTest \
   -Pandroid.testInstrumentationRunnerArguments.bench=true
 ```
 
@@ -132,18 +132,18 @@ A=.tooling/android-sdk/platform-tools/adb
 $A install -r app/build/outputs/apk/debug/app-debug.apk
 $A install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 sleep 2
-$A shell pm disable com.myfriend.app.debug/com.myfriend.app.service.BootReceiver
+$A shell pm disable com.yap.app.debug/com.yap.app.service.BootReceiver
 $A shell am instrument -w -r \
-  -e class com.myfriend.app.benchmark.LargeHistoryBenchmarkTest -e bench true \
-  com.myfriend.app.debug.test/com.myfriend.app.HiltTestRunner
+  -e class com.yap.app.benchmark.LargeHistoryBenchmarkTest -e bench true \
+  com.yap.app.debug.test/com.yap.app.HiltTestRunner
 ```
 
 结果文件在 App 的外部私有目录里（pull 不需要 `run-as`）：
 
 ```bash
-$A pull /sdcard/Android/data/com.myfriend.app.debug/files/bench-large-history.json /tmp/
-$A pull /sdcard/Android/data/com.myfriend.app.debug/files/bench-backup-media.json /tmp/
-# 同时在 logcat 里逐行可见：adb logcat -s MyFriendBench
+$A pull /sdcard/Android/data/com.yap.app.debug/files/bench-large-history.json /tmp/
+$A pull /sdcard/Android/data/com.yap.app.debug/files/bench-backup-media.json /tmp/
+# 同时在 logcat 里逐行可见：adb logcat -s YapBench
 ```
 
 **v10 表结构生成**（`V10Schema.kt` 的内容由它生成，改 schema 历史时才需要重跑）：
@@ -151,7 +151,7 @@ $A pull /sdcard/Android/data/com.myfriend.app.debug/files/bench-backup-media.jso
 ```bash
 python3 - <<'PY'
 import json
-d = json.load(open('app/schemas/com.myfriend.app.data.local.MyFriendDatabase/10.json'))['database']
+d = json.load(open('app/schemas/com.yap.app.data.local.YapDatabase/10.json'))['database']
 for e in d['entities']:
     print(e['createSql'].replace('${TABLE_NAME}', e['tableName']))
     for i in e.get('indices', []):
@@ -339,14 +339,14 @@ base64（本来 1 字节/字符）也跟着变成 2 字节/字符。于是「19.
 
 | 位置 | 内容 |
 | --- | --- |
-| `app/src/androidTest/java/com/myfriend/app/benchmark/LargeHistoryBenchmarkTest.kt` | 100k 夹具、迁移、检索基准 |
-| `app/src/androidTest/java/com/myfriend/app/benchmark/BackupMediaBenchmarkTest.kt` | 500 张图的导出/导入基准 |
-| `app/src/androidTest/java/com/myfriend/app/benchmark/V10Schema.kt` | 由 `schemas/10.json` 机械生成的 v10 表结构（53 条 DDL） |
-| `app/src/androidTest/java/com/myfriend/app/benchmark/BenchmarkSupport.kt` | 计时、内存读数、峰值采样、结果落盘 |
+| `app/src/androidTest/java/com/yap/app/benchmark/LargeHistoryBenchmarkTest.kt` | 100k 夹具、迁移、检索基准 |
+| `app/src/androidTest/java/com/yap/app/benchmark/BackupMediaBenchmarkTest.kt` | 500 张图的导出/导入基准 |
+| `app/src/androidTest/java/com/yap/app/benchmark/V10Schema.kt` | 由 `schemas/10.json` 机械生成的 v10 表结构（53 条 DDL） |
+| `app/src/androidTest/java/com/yap/app/benchmark/BenchmarkSupport.kt` | 计时、内存读数、峰值采样、结果落盘 |
 | `spec/messages-blocks/README.md` | 区块存储与「逐块扫描 + 无候选上限」的契约（本文的被测对象） |
 | `spec/search/README.md` | 检索排序/过滤规则（relevance 与 totalMatches 的来源） |
-| `app/src/main/java/com/myfriend/app/domain/BlockSearch.kt` | 逐块扫描 + 键集游标的实现 |
-| `app/src/main/java/com/myfriend/app/domain/BackupMedia.kt` | v3 媒体的 base64 打包/落盘与上限 |
+| `app/src/main/java/com/yap/app/domain/BlockSearch.kt` | 逐块扫描 + 键集游标的实现 |
+| `app/src/main/java/com/yap/app/domain/BackupMedia.kt` | v3 媒体的 base64 打包/落盘与上限 |
 
 ---
 

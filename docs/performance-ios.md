@@ -38,7 +38,7 @@ Swift 代码在 Debug 下也明显更慢（SQL 部分不受影响）。真机结
 ## 2. 怎么跑
 
 ```bash
-cd ios/MyFriendKit
+cd ios/YapKit
 
 # 1) 10 万条消息：v10→v12 迁移 + 检索 1/10/100 页（约 4–6 分钟，独占机器时）
 TMPDIR=$PWD/../.build/tmp CLANG_MODULE_CACHE_PATH=$PWD/../.build/clang-cache \
@@ -58,7 +58,7 @@ TMPDIR=$PWD/../.build/tmp CLANG_MODULE_CACHE_PATH=$PWD/../.build/clang-cache \
 - 结果文件：`/tmp/ios-bench-<epoch-ms>-history.json`、
   `/tmp/ios-bench-<epoch-ms>-backup-media.json`（本次报告用的是
   `ios-bench-1794730171282-history.json` 与 `ios-bench-1794730309662-backup-media.json`）。
-- 新增文件：`Tests/MyFriendKitTests/Benchmarks/{BenchmarkSupport,LargeHistoryBenchmarkTests,BackupMediaBenchmarkTests}.swift`。
+- 新增文件：`Tests/YapKitTests/Benchmarks/{BenchmarkSupport,LargeHistoryBenchmarkTests,BackupMediaBenchmarkTests}.swift`。
   生产代码零改动。
 
 ---
@@ -226,7 +226,7 @@ message_block_assignment (messageId)` 后，同一条 `UPDATE` **0.0085 s**，�
 
 ## 6. 复现与原始数据
 
-- 两条用例在 `Tests/MyFriendKitTests/Benchmarks/`：
+- 两条用例在 `Tests/YapKitTests/Benchmarks/`：
   - `LargeHistoryBenchmarkTests.testV10ToV11MigrationAndSearchPagingOn100kMessages`
   - `BackupMediaBenchmarkTests.testBackupWith500ImagesExportImportMemoryAndSize`
 - 公共底座 `BenchmarkSupport.swift`：开关（`RUN_BENCHMARKS=1`）、单调时钟、`PeakMemorySampler`

@@ -67,7 +67,7 @@
   --tests "*BlockSearchTest*" --tests "*SearchSnippet*"
 
 # iOS：同一批 spec 用例（snippet/ranking）
-cd ios/MyFriendKit && swift test --disable-sandbox --filter "SearchSpec|Snippet"
+cd ios/YapKit && swift test --disable-sandbox --filter "SearchSpec|Snippet"
 ```
 
 > 端到端（真库、10 万条）的数字见 [performance.md](performance.md)；接口层的实测见

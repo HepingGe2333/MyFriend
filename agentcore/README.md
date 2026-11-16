@@ -11,24 +11,24 @@ agentcore/
 │                                         targets: jvm() · iosX64() · iosArm64() · iosSimulatorArm64()
 │                                         each iOS target exports a static AgentCoreKit.framework
 └── src/
-    ├── commonMain/kotlin/com/myfriend/app/
+    ├── commonMain/kotlin/com/yap/app/
     │   ├── domain/                       47 files — every decision both platforms must share
     │   └── core/json/Json.kt              1 file — recursive-descent JSON parser/encoder
-    ├── jvmMain/kotlin/com/myfriend/app/domain/
+    ├── jvmMain/kotlin/com/yap/app/domain/
     │   ├── AgentTickLock.kt               java.util.concurrent.atomic
     │   ├── SessionGenerationRegistry.kt   synchronized
     │   ├── MediaOwnership.kt              java.io.File canonical paths
     │   ├── BoundedTextRead.kt             java.io InputStream
     │   ├── LanguageDirective.kt           java.util.Locale display names + String.format
     │   └── PlatformTime.jvm.kt            actual: System.currentTimeMillis / TimeZone
-    ├── iosMain/kotlin/com/myfriend/app/domain/
+    ├── iosMain/kotlin/com/yap/app/domain/
     │   └── PlatformTime.ios.kt            actual: NSDate / NSTimeZone
     ├── commonTest/                        4 files / 42 tests (pure Kotlin; run on JVM)
     └── jvmTest/                           2 files / 18 tests (JDK APIs + spec/agent-core cases)
 ```
 
-Package names are deliberately unchanged from when these files lived in `app/.../domain/`, so
-neither `:app` nor its tests needed import changes.
+Package names now use the renamed `com.yap` namespace, matching `:app` and the iOS `YapKit` module.
+The package rename was applied together with the rest of the product rename.
 
 ## Source sets: what is shared and what is not
 
@@ -91,7 +91,7 @@ The rewrites below are behaviour-preserving; the original tests still pin them.
 | --- | --- |
 | `:app` (Android) | `implementation(project(":agentcore"))` resolves the **`jvm()` variant** (Kotlin's `androidJvm` consumer is compatible with the `jvm` producer). `AgentCoreClient` — `InProcessAgentCoreClient` (default) or `RemoteAgentCoreClient` (OkHttp → `agentd`). |
 | `:agentd` | Same project dependency, also the **`jvm()` variant**; its `installDist`/`fatJar` therefore ship `agentcore-jvm.jar` / the same classes. Wraps `InProcessAgentCore` in HTTP (`POST /v1/core/*`). |
-| iOS (`ios/MyFriendKit`) | Links `AgentCoreKit.framework` (Kotlin/Native, static) and calls the Kotlin objects directly — see below. |
+| iOS (`ios/YapKit`) | Links `AgentCoreKit.framework` (Kotlin/Native, static) and calls the Kotlin objects directly — see below. |
 
 `AgentCore` itself is unchanged:
 
@@ -220,27 +220,27 @@ The framework is **static** (`isStatic = true`, `MinimumOSVersion = 14.0`, modul
 there first (e.g. via a script or a symlink-free copy):
 
 ```bash
-AGENTCORE_FRAMEWORK_OUT="$PWD/ios/MyFriendKit/Vendor" ios/scripts/build-agentcore-framework.sh
-# -> ios/MyFriendKit/Vendor/AgentCoreKit.xcframework  (add Vendor/ to .gitignore)
+AGENTCORE_FRAMEWORK_OUT="$PWD/ios/YapKit/Vendor" ios/scripts/build-agentcore-framework.sh
+# -> ios/YapKit/Vendor/AgentCoreKit.xcframework  (add Vendor/ to .gitignore)
 ```
 
 ```swift
-// Package.swift — MyFriendKit currently also builds for macOS (its `swift test` logic suite),
+// Package.swift — YapKit currently also builds for macOS (its `swift test` logic suite),
 // so keep the iOS-only binary behind a platform condition and guard the import.
 let package = Package(
-    name: "MyFriendKit",
+    name: "YapKit",
     platforms: [.iOS(.v16), .macOS(.v13)],
-    products: [.library(name: "MyFriendKit", targets: ["MyFriendKit"])],
+    products: [.library(name: "YapKit", targets: ["YapKit"])],
     targets: [
         .binaryTarget(name: "AgentCoreKit", path: "Vendor/AgentCoreKit.xcframework"),
         .target(
-            name: "MyFriendKit",
+            name: "YapKit",
             dependencies: [
                 .target(name: "AgentCoreKit", condition: .when(platforms: [.iOS]))
             ],
-            path: "Sources/MyFriendKit"
+            path: "Sources/YapKit"
         ),
-        .testTarget(name: "MyFriendKitTests", dependencies: ["MyFriendKit"], path: "Tests/MyFriendKitTests")
+        .testTarget(name: "YapKitTests", dependencies: ["YapKit"], path: "Tests/YapKitTests")
     ]
 )
 ```
@@ -254,7 +254,7 @@ import AgentCoreKit
 - The import **must** be guarded (and the dependency platform-conditioned) as long as the package
   also supports macOS: `swift test` on macOS cannot link an iOS-only xcframework.
 - Kit tests that exercise the Kotlin layer should run on an iOS simulator destination:
-  `xcodebuild test -scheme MyFriendKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
+  `xcodebuild test -scheme YetAnotherPal -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`
   (a plain `swift test` runs on macOS). The current macOS logic tests can stay framework-free.
 - App target: adding the package product is enough; the static framework is linked, not embedded.
 

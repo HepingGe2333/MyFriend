@@ -2,7 +2,7 @@
 
 This directory is the **executable contract** for the agent logic that Android and iOS must agree
 on. It contains language-neutral JSON fixtures (`cases/`) and nothing else: two test suites — one in
-the Android app, one in `ios/MyFriendKit` — read the *same files* and feed them into their own
+the Android app, one in `ios/YapKit` — read the *same files* and feed them into their own
 implementations. If one side changes behavior without the other, one of the two suites goes red on
 the next test run.
 
@@ -32,9 +32,9 @@ Every file is plain JSON. A file looks like this:
   "title": "睡眠 / 免打扰 / 唤醒阈值判定",
   "authority": "android",
   "authorityNote": "规格见 docs/design/roadmap-1.9.md §六；…",
-  "kotlin": { "file": "app/src/main/java/com/myfriend/app/domain/SleepPolicy.kt",
+  "kotlin": { "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/SleepPolicy.kt",
               "symbol": "SleepPolicy.evaluate（心情恢复：MoodRecovery.afterWake）" },
-  "swift":  { "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/SleepSchedule.swift",
+  "swift":  { "file": "ios/YapKit/Sources/YapKit/Domain/SleepSchedule.swift",
               "symbol": "SleepGate.evaluate（心情恢复：SleepGate.moodAfterWaking）" },
   "inputSpec": { "sleepEnabled": "…", "nowMinutes": "…" },
   "tolerance": 0.000000001,
@@ -94,11 +94,11 @@ Top-level fields (all required except `tolerance`):
 
 ## How to run
 
-Android (JUnit 4, `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt`):
+Android (JUnit 4, `app/src/test/java/com/yap/app/spec/AgentCoreSpecTest.kt`):
 
 ```bash
 ./gradlew -p . :app:testDebugUnitTest \
-  --tests com.myfriend.app.spec.AgentCoreSpecTest --console=plain
+  --tests com.yap.app.spec.AgentCoreSpecTest --console=plain
 ```
 
 The Android test resolves the repository root by walking up from `System.getProperty("user.dir")`
@@ -106,10 +106,10 @@ until it finds `settings.gradle.kts` + `spec/agent-core/cases` (Gradle's working
 tests is usually `app/`, but it can be the repo root in an IDE). If it cannot find the root it fails
 loudly with the starting directory; it never hard-codes an absolute path.
 
-iOS (XCTest, `ios/MyFriendKit/Tests/MyFriendKitTests/Spec/AgentCoreSpecTests.swift`):
+iOS (XCTest, `ios/YapKit/Tests/YapKitTests/Spec/AgentCoreSpecTests.swift`):
 
 ```bash
-cd ios/MyFriendKit
+cd ios/YapKit
 TMPDIR=$PWD/../.build/tmp CLANG_MODULE_CACHE_PATH=$PWD/../.build/clang-cache \
 SWIFT_MODULE_CACHE_PATH=$PWD/../.build/swift-cache \
 swift test --disable-sandbox --filter AgentCoreSpecTests

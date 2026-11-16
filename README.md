@@ -1,12 +1,14 @@
-# MyFriend
+# YetAnotherPal（Yap）
 
 [English](README.en.md) · **简体中文**
 
-MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成长期存在的联系人，而不是一组可调的聊天参数。两端共享同一套数据模型、同一套行为约定和同一份备份文件。
+YetAnotherPal（Yap）是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成长期存在的联系人，而不是一组可调的聊天参数。两端共享同一套数据模型、同一套行为约定和同一份备份文件；应用显示名为 **Yap**。
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#构建与测试)
+[![GitHub](https://img.shields.io/badge/GitHub-HepingGe2333%2FYetAnotherPal-181717.svg?logo=github)](https://github.com/HepingGe2333/YetAnotherPal)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/HepingGe2333/YetAnotherPal/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](https://github.com/HepingGe2333/YetAnotherPal#架构与技术栈)
+[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](https://github.com/HepingGe2333/YetAnotherPal#构建与测试)
+[![CI](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml/badge.svg)](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml)
 
 ## 项目状态
 
@@ -14,7 +16,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | --- | --- |
 | 版本 | `0.13.0`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
 | 数据库 schema | v13（消息按 200 条一块；人格带世界预设/话风/当前活动；两端版本号对齐） |
-| 备份格式 | v5（`format = "myfriend.backup"`、`formatVersion = 5`，图片/头像、搜索 provider、世界预设与话风随备份走；v1–v4 仍可读） |
+| 备份格式 | v5（`format = "myfriend.backup"`、`formatVersion = 5`，图片/头像、搜索 provider、世界预设与话风随备份走；v1–v4 仍可读）。格式名为历史兼容保留，产品名已改为 YetAnotherPal（Yap） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
 | 单元测试 | Android 1412 条（132 类）+ 56 条 instrumented、`:agentcore` 90 条、`:agentd` 358 条、iOS 1625 条（`swift test`）+ 16 条 App-hosted |
 | 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
@@ -61,13 +63,13 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | 层 | Android | iOS |
 | --- | --- | --- |
 | 语言与 UI | Kotlin 2.0.21、Jetpack Compose（BOM 2024.12.01）、Material 3 | Swift 5.9、SwiftUI（iOS 16.0+） |
-| 依赖注入 / 装配 | Hilt 2.52 | 手写依赖装配（`ios/MyFriend/App`） |
+| 依赖注入 / 装配 | Hilt 2.52 | 手写依赖装配（`ios/YetAnotherPal/App`） |
 | 持久化 | Room 2.6.1（schema v10，导出 `app/schemas/`）、DataStore | 系统 `SQLite3`（表结构对齐 v10）、`UserDefaults` |
 | 后台任务 | WorkManager 2.10、前台服务（`specialUse`）、开机恢复 | `BGAppRefreshTask` / `BGProcessingTask`（系统择机调度） |
 | 网络 | OkHttp 4.12（SSE）、kotlinx.serialization 1.7.3 | `URLSession`（SSE）、`Codable` |
 | 密钥 | Keystore 加密后写入 DataStore | Keychain（模拟器无 entitlement 时回退到调试兜底） |
 | 最低版本 | Android 8.0（`minSdk 26`）、`targetSdk 35`、JDK 17 | iOS 16.0、Xcode 16+ |
-| 测试 | JUnit4 + kotlinx-coroutines-test；迁移测试在 `androidTest` | XCTest（`ios/MyFriendKit` 本地 SPM 包，macOS 上直接跑） |
+| 测试 | JUnit4 + kotlinx-coroutines-test；迁移测试在 `androidTest` | XCTest（`ios/YapKit` 本地 SPM 包，macOS 上直接跑） |
 | Agent 决策 | 共享 `:agentcore`（Kotlin/JVM，唯一实现） | 契约对齐的 Swift 实现；可切换远程 `agentd` |
 
 跨端契约（三处必须一致）：
@@ -84,7 +86,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 .
 ├── app/                    Android 应用（Kotlin · Compose · Hilt · Room · WorkManager）
 │   ├── schemas/            Room 导出的历史 schema（迁移测试的依据）
-│   └── src/main/java/com/myfriend/app/
+│   └── src/main/java/com/yap/app/
 │       ├── data/           Room 实体 / DAO / 迁移 / 仓库 / DataStore / Keystore
 │       ├── domain/         纯算法：记忆生命周期、心情、心跳、链接识别、向量、备份编解码…
 │       ├── network/        OpenAI 兼容 SSE（多模态）+ 并发闸 + 用量
@@ -92,9 +94,9 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 │       ├── ui/             components / screens / theme
 │       └── util/           时间、LaTeX、媒体压缩与持久化、通知
 ├── ios/                    iOS 16+ 应用
-│   ├── MyFriendKit/        与 UI 无关的 SPM 包（Domain / Data / Net / Backup / Chat / Services），可 swift test
-│   ├── MyFriend/           SwiftUI 层（App / Views / Resources 本地化资源）
-│   └── MyFriend.xcodeproj  部署目标 16.0，无第三方依赖
+│   ├── YapKit/             与 UI 无关的 SPM 包（Domain / Data / Net / Backup / Chat / Services），可 swift test
+│   ├── YetAnotherPal/      SwiftUI 层（App / Views / Resources 本地化资源）
+│   └── YetAnotherPal.xcodeproj  部署目标 16.0，无第三方依赖
 ├── agentcore/              共享 agent 决策层（纯 Kotlin/JVM，零依赖；:app 与 :agentd 都依赖它）
 ├── agentd/                 独立 agent 核心服务（Kotlin/JVM，HTTP，基于 :agentcore）
 ├── spec/agent-core/cases/  跨端 agent 契约用例（JSON，两端测试共读）
@@ -103,6 +105,15 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 ├── docs/                   架构、对齐、更新记录、版本规则、i18n 说明
 └── gradle/                 Gradle Wrapper
 ```
+
+## 获取源码
+
+```bash
+git clone https://github.com/HepingGe2333/YetAnotherPal.git
+cd YetAnotherPal
+```
+
+仓库：<https://github.com/HepingGe2333/YetAnotherPal>。旧仓库地址会由 GitHub 重定向到新地址。
 
 ## 构建与测试
 
@@ -123,18 +134,20 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 **iOS**（Xcode 16+，部署目标 iOS 16.0，零第三方依赖）：
 
 ```bash
-cd ios/MyFriendKit && swift test --disable-sandbox      # 纯逻辑，macOS 上秒级
-cd ios && xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+cd ios/YapKit && swift test --disable-sandbox      # 纯逻辑，macOS 上秒级
+cd ios && xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
+
+构建产物：Android 在 `app/build/outputs/apk/debug/app-debug.apk`；iOS 在 `ios/.build/DerivedData/Build/Products/Debug-iphonesimulator/YetAnotherPal.app`。`dist/` 里的历史 APK 与 `docs/screenshots/` 下的截图是本地资料，文件名不随品牌改名重写；`dist/` 不进仓库。
 
 **本地联调参考服务**（无需真实 API Key 即可走通全链路）：
 
 ```bash
-node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfriend-reference
+node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 yap-reference
 ```
 
-参考服务认得 `remember` / `recall` / `set_mood` / `web_search` / `myfriend-wake` / `defer_reply` / 记忆抽取 / 记忆整理 / 历史压缩等分支；`[chat]` 日志会打印 `systemChars` 与本轮使用的工具，便于核对人格与记忆是否真的随 `system` 注入。
+参考服务认得 `remember` / `recall` / `set_mood` / `web_search` / `yap-wake` / `defer_reply` / 记忆抽取 / 记忆整理 / 历史压缩等分支；`[chat]` 日志会打印 `systemChars` 与本轮使用的工具，便于核对人格与记忆是否真的随 `system` 注入。
 
 ## 文档
 
@@ -167,4 +180,6 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 
 提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)（[English](CONTRIBUTING.en.md)）。最低要求：两端单测通过；涉及数据结构时 schema、迁移、迁移测试与 fixtures 同步改；不提交密钥、`local.properties`、`dist/` 或截图。
 
-License：[Apache-2.0](LICENSE) © 2026 Heping Ge。提交贡献即表示同意以同一协议授权。
+License：[Apache-2.0](LICENSE) © 2026 Heping_Ge2333 (hpg2333)。提交贡献即表示同意以同一协议授权。
+
+仓库：[HepingGe2333/YetAnotherPal](https://github.com/HepingGe2333/YetAnotherPal) · 问题：[Issues](https://github.com/HepingGe2333/YetAnotherPal/issues) · 合并请求：[Pull requests](https://github.com/HepingGe2333/YetAnotherPal/pulls)

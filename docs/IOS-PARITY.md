@@ -1,5 +1,7 @@
 # iOS 端（iOS 16+）与 Android 端的功能对齐与备份互通
 
+> 项目：YetAnotherPal（Yap） · 仓库：<https://github.com/HepingGe2333/YetAnotherPal>
+
 > **编号说明（开源发布）**：本文档写作时这一版的编号是 `1.9.0`；开源时把当时的最新版改成了内测编号
 > `0.9.0`（内容完全一致），之后的小版本为 `0.9.1`、`0.9.2`……规则见 [CONTRIBUTING.md](../CONTRIBUTING.md)。
 
@@ -11,9 +13,9 @@ iOS 版不是「一个能聊天的客户端」，而是同一套东西换一个�
 
 ```
 ios/
-├── MyFriendKit/
+├── YapKit/
 │   ├── Package.swift                 本地 SPM 包（iOS 16 / macOS 13），用来 swift test
-│   ├── Sources/MyFriendKit/          与 UI 无关的一切（同时被 app target 直接编译进 App）
+│   ├── Sources/YapKit/          与 UI 无关的一切（同时被 app target 直接编译进 App）
 │   │   ├── Domain/                   纯算法：ChineseTerms / LocalEmbedding / VectorMath / Mood /
 │   │   │                             Presence / Heartbeat / HistoryCompression / LinkDetector /
 │   │   │                             MarkdownParser / ImportanceScoring / Recall / ToolProtocol /
@@ -23,12 +25,12 @@ ios/
 │   │   │                             LlmConcurrencyGate（全局 3 / 后台 2 / 聊天保底 1）
 │   │   ├── Backup/                   BackupCodec（与 Android 逐字段一致）+ 导入导出
 │   │   └── Support/                  JSON、日期、Keychain、日志
-│   └── Tests/MyFriendKitTests/       swift test（macOS 上跑，不起模拟器）
-├── MyFriend/                         SwiftUI 应用层（iOS 16 起可用的 API）
-│   ├── App/                          MyFriendApp、依赖装配
+│   └── Tests/YapKitTests/       swift test（macOS 上跑，不起模拟器）
+├── YetAnotherPal/               SwiftUI 应用层（iOS 16 起可用的 API）
+│   ├── App/                          YetAnotherPalApp、依赖装配
 │   ├── Views/                        首页 / 聊天 / 内置浏览器 / 人格 / 记忆 / 设置 / 备份
 │   └── Resources/
-└── MyFriend.xcodeproj                部署目标 16.0，无第三方依赖
+└── YetAnotherPal.xcodeproj    部署目标 16.0，无第三方依赖
 ```
 
 **不引第三方依赖**（不装 GRDB/SQLDelight/Ktor）：SQLite 直接用系统 `SQLite3`，网络直接用
@@ -71,12 +73,12 @@ ios/
 | 后台常驻思考 | 前台服务，每 30 秒一拍，系统允许常驻 | 不允许常驻；`BGAppRefreshTask` 由系统择机调度（通常几十分钟到数小时一次） | 前台时每 30 秒一拍；进后台后登记一次刷新任务，能跑就跑；App 重新打开时按「错过的时间」补算一次冲动。**不承诺后台实时性**，这一点在设置页用一句人话说明 |
 | 每日整理 | 4:00 定时 | `BGProcessingTask`（可要求充电/联网） | 同上，另外「现在整理一次」必须随时能用 |
 | 通知 | 渠道 + 分组 + 摘要 | `UNNotificationCenter` 单渠道 + 线程分组 | 锁屏不露正文，交互式通知可回复（Android 端没有，属于 iOS 增益） |
-| 文件导出 | SAF | `UIDocumentPickerViewController` / `fileExporter` | 都用系统文件选择器，默认名 `myfriend-backup-yyyyMMdd-HHmm.json` |
+| 文件导出 | SAF | `UIDocumentPickerViewController` / `fileExporter` | 都用系统文件选择器，默认名 `yap-backup-yyyyMMdd-HHmm.json` |
 
 ## 四、备份互通（硬要求）
 
-格式见 [`app/src/main/java/com/myfriend/app/domain/BackupCodec.kt`](../app/src/main/java/com/myfriend/app/domain/BackupCodec.kt)：
-顶层 `format = "myfriend.backup"`、`formatVersion = 2`（1.9 起；v1 仍读得进）、`apiKeysOmitted = true`，下面
+格式见 [`app/src/main/java/com/yap/app/domain/BackupCodec.kt`](../app/src/main/java/com/yap/app/domain/BackupCodec.kt)：
+顶层 `format = "myfriend.backup"`（历史兼容格式名，产品已更名为 YetAnotherPal / Yap）、`formatVersion = 2`（1.9 起；v1 仍读得进）、`apiKeysOmitted = true`，下面
 `personas / memories / sessions / messages / presets / proactiveRules / agentIntents /
 memoryConsolidations / apiConfigs / settings`。iOS 端的 `BackupCodec.swift` 必须：
 
@@ -94,7 +96,7 @@ memoryConsolidations / apiConfigs / settings`。iOS 端的 `BackupCodec.swift` �
 
 | 方向 | 怎么做 | 判据 |
 | --- | --- | --- |
-| Android → iOS | Android 生成 `fixtures/backup/android-export-v2.json`（[`BackupFixtureTest`](../app/src/test/java/com/myfriend/app/domain/BackupFixtureTest.kt)），iOS 的 `BackupInteropTests` 读它 | 人格 / 记忆 / 会话 / 消息 / 规则 / 念头 / 整理记录 / 配置 / 设置逐项数量与关键字段一致；1.9 的细分字段、`readAt`、两个 override 都在；无密钥字段 |
+| Android → iOS | Android 生成 `fixtures/backup/android-export-v2.json`（[`BackupFixtureTest`](../app/src/test/java/com/yap/app/domain/BackupFixtureTest.kt)），iOS 的 `BackupInteropTests` 读它 | 人格 / 记忆 / 会话 / 消息 / 规则 / 念头 / 整理记录 / 配置 / 设置逐项数量与关键字段一致；1.9 的细分字段、`readAt`、两个 override 都在；无密钥字段 |
 | iOS → Android | iOS 生成 `fixtures/backup/ios-export-v2.json`（`BackupInteropTests` 里写盘），Android 的 `BackupFixtureTest` 读它 | 解码成功、`format`/`formatVersion=2` 正确、各段非空、无密钥字段 |
 | 往返 | iOS 解码 Android 样本、重新编码、再解码 | 两次结果相等（说明 encode/decode 是同一套语义） |
 | v1 兼容 | 两端的 v1 样本（`*-export-v1.json`）现在只作**输入** | 能读、旧开关与额度字段被忽略、人格缺的字段走默认、多段会话只留最新 |
@@ -112,19 +114,19 @@ memoryConsolidations / apiConfigs / settings`。iOS 端的 `BackupCodec.swift` �
 
 ```bash
 # 纯逻辑（macOS 上，秒级）
-cd ios/MyFriendKit && swift test --disable-sandbox
+cd ios/YapKit && swift test --disable-sandbox
 
 # 应用（模拟器；DerivedData 与各种缓存都放在仓库内，避开沙箱）
 cd ios && CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-cache \
   SWIFT_MODULE_CACHE_PATH=$PWD/.build/swift-cache \
-  xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+  xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   -derivedDataPath .build/DerivedData build
 
 # 装到模拟器并截图
 xcrun simctl boot "iPhone 17 Pro" || true
-xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/MyFriend.app
-xcrun simctl launch booted com.myfriend.app.ios
+xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/YetAnotherPal.app
+xcrun simctl launch booted com.yap.app.ios
 xcrun simctl io booted screenshot /tmp/ios.png
 ```
 

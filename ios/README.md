@@ -1,4 +1,4 @@
-# MyFriend iOS（iOS 16+）
+# YetAnotherPal（Yap） iOS（iOS 16+）
 
 Android 版的同源移植：同一份人格、同一套记忆、同一条心跳曲线、**同一份备份 JSON**。
 设计、对齐表、平台差异见 [../docs/IOS-PARITY.md](../docs/IOS-PARITY.md)。
@@ -7,21 +7,21 @@ Android 版的同源移植：同一份人格、同一套记忆、同一条心跳
 
 ```
 ios/
-├── MyFriendKit/            与 UI 无关的一切（本地 SPM 包，可在 macOS 上 swift test）
-│   └── Sources/MyFriendKit/{Domain,Data,Backup,Net,Chat,Services}
-├── MyFriend/               SwiftUI 应用层（App 装配 + 各页面）
+├── YapKit/                 与 UI 无关的一切（本地 SPM 包，可在 macOS 上 swift test）
+│   └── Sources/YapKit/{Domain,Data,Backup,Net,Chat,Services}
+├── YetAnotherPal/          SwiftUI 应用层（App 装配 + 各页面）
 ├── Config/Info.plist       部署配置（ATS、后台模式、本地网络说明）
-├── MyFriend.xcodeproj      部署目标 iOS 16.0，无第三方依赖
+├── YetAnotherPal.xcodeproj 部署目标 iOS 16.0，无第三方依赖
 └── scripts/                构建与真机安装脚本
 ```
 
 ## 在 Xcode 里第一次跑（推荐给真机测试）
 
-1. 打开 `ios/MyFriend.xcodeproj`，左上角 scheme 选 **MyFriend**；
-2. 选中工程 → **TARGETS: MyFriend** → *Signing & Capabilities*：
+1. 打开 `ios/YetAnotherPal.xcodeproj`，左上角 scheme 选 **YetAnotherPal**；
+2. 选中工程 → **TARGETS: YetAnotherPal** → *Signing & Capabilities*：
    - 勾上 **Automatically manage signing**；
    - **Team** 选你的 Apple ID（免费个人账号也行，7 天有效期）；
-   - 如果 `com.myfriend.app.ios` 被占用，把 **Bundle Identifier** 改成 `com.<你的名字>.myfriend`；
+   - 如果 `com.yap.app.ios` 被占用，把 **Bundle Identifier** 改成 `com.<你的名字>.yap`；
 3. 顶部设备选你的 iPhone（首次需要在 iPhone 上开「设置 → 隐私与安全性 → 开发者模式」并重启手机）；
 4. 按 **⌘R**。首次安装后如果提示「不受信任的开发者」，去 iPhone 的
    「设置 → 通用 → VPN与设备管理」里信任你的证书，再运行一次；
@@ -37,14 +37,14 @@ cd ios
 TMPDIR=$PWD/.build/tmp \
 CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-cache \
 SWIFT_MODULE_CACHE_PATH=$PWD/.build/swift-cache \
-xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   -derivedDataPath .build/DerivedData \
   OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox' build
 
 xcrun simctl boot "iPhone 17 Pro" 2>/dev/null || true
-xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/MyFriend.app
-xcrun simctl launch booted com.myfriend.app.ios
+xcrun simctl install booted .build/DerivedData/Build/Products/Debug-iphonesimulator/YetAnotherPal.app
+xcrun simctl launch booted com.yap.app.ios
 xcrun simctl io booted screenshot /tmp/ios.png
 ```
 
@@ -86,7 +86,7 @@ cd ios
 
 ### 2. 打开工程 / 命令行构建
 
-**MyFriend** target 的 Debug 与 Release 都已经配好：
+**YetAnotherPal** target 的 Debug 与 Release 都已经配好：
 
 | 设置 | 值 |
 | --- | --- |
@@ -95,7 +95,7 @@ cd ios
 | Embed Frameworks | **没有**（静态 framework，Do Not Embed） |
 | `LD_RUNPATH_SEARCH_PATHS` | 没为它加任何东西（静态链接不需要 rpath） |
 
-`$(SRCROOT)` 是 `ios/`（工程文件在 `ios/MyFriend.xcodeproj`），所以路径是 `ios/.build/...`，
+`$(SRCROOT)` 是 `ios/`（工程文件在 `ios/YetAnotherPal.xcodeproj`），所以路径是 `ios/.build/...`，
 **不要**写成 `$(SRCROOT)/../.build`（那是仓库根的 `.build`，那里没有 framework）。
 
 `ios/.build/agentcore/AgentCoreKit.xcframework` 不存在时，构建里有一个 Run Script
@@ -108,12 +108,12 @@ cd ios
 启动日志（`Documents/debug.log`，Debug 构建）里有一行：
 
 ```bash
-CONTAINER=$(xcrun simctl get_app_container booted com.myfriend.app.ios data)
+CONTAINER=$(xcrun simctl get_app_container booted com.yap.app.ios data)
 grep "agent core:" "$CONTAINER/Documents/debug.log"
 # agent core: kotlin（AgentCoreKit.InProcessAgentCore，与 Android / agentd 同一份 :agentcore）
 ```
 
-`MYFRIEND_AGENT_CORE=remote` / `remote-strict` 仍然覆盖默认：远程客户端保留，回退时用的
+`YAP_AGENT_CORE=remote` / `remote-strict` 仍然覆盖默认：远程客户端保留，回退时用的
 「本机」也是 Kotlin。
 
 iOS 构建对 framework 是**硬依赖**（`#if os(iOS)` + `import AgentCoreKit`）：缺了就是编译错误，
@@ -139,22 +139,22 @@ iOS 构建对 framework 是**硬依赖**（`#if os(iOS)` + `import AgentCoreKit`
 模拟器上没法「点一下再打字」，所以留了三个环境变量做验收（`DebugSeeding.swift`，Release 里不存在）：
 
 ```bash
-SIMCTL_CHILD_MYFRIEND_DEBUG_API_BASE=http://127.0.0.1:8787/v1 \
-SIMCTL_CHILD_MYFRIEND_DEBUG_SEND=你好 \
-SIMCTL_CHILD_MYFRIEND_DEBUG_OPEN=chat \
-xcrun simctl launch --terminate-running-process booted com.myfriend.app.ios
+SIMCTL_CHILD_YAP_DEBUG_API_BASE=http://127.0.0.1:8787/v1 \
+SIMCTL_CHILD_YAP_DEBUG_SEND=你好 \
+SIMCTL_CHILD_YAP_DEBUG_OPEN=chat \
+xcrun simctl launch --terminate-running-process booted com.yap.app.ios
 ```
 
-- `MYFRIEND_DEBUG_API_BASE`：自动建一条指向本地参考服务的 API 配置（Key 填 `sk-test`）；
-- `MYFRIEND_DEBUG_SEND`：启动后在这段会话里真发一句，把流式回复写进 `Documents/debug.log`；
-- `MYFRIEND_DEBUG_OPEN`：`chat` / `settings` / `memory` / `backup` / `personas` / `browser`。
+- `YAP_DEBUG_API_BASE`：自动建一条指向本地参考服务的 API 配置（Key 填 `sk-test`）；
+- `YAP_DEBUG_SEND`：启动后在这段会话里真发一句，把流式回复写进 `Documents/debug.log`；
+- `YAP_DEBUG_OPEN`：`chat` / `settings` / `memory` / `backup` / `personas` / `browser`。
 
 读日志与库：
 
 ```bash
-CONTAINER=$(xcrun simctl get_app_container booted com.myfriend.app.ios data)
+CONTAINER=$(xcrun simctl get_app_container booted com.yap.app.ios data)
 tail -20 "$CONTAINER/Documents/debug.log"
-sqlite3 "$CONTAINER/Library/Application Support/myfriend.db" 'select count(*) from messages;'
+sqlite3 "$CONTAINER/Library/Application Support/yap.db" 'select count(*) from messages;'
 ```
 
 > **Keychain 提醒**：模拟器上的构建没有签名（`CODE_SIGNING_ALLOWED=NO`），
@@ -167,7 +167,7 @@ macOS（SwiftPM，逻辑层；此时 agent 决策走 Swift `NativeAgentCoreClien
 iOS 的 Kotlin framework）：
 
 ```bash
-cd ios/MyFriendKit && swift test --disable-sandbox
+cd ios/YapKit && swift test --disable-sandbox
 ```
 
 > macOS 上的 SwiftPM 会用 `sandbox-exec` 编译 manifest，在受限环境里会被拒；
@@ -179,13 +179,13 @@ iOS 模拟器（Kotlin ⇄ Swift 决策等价性；**必须在模拟器上跑**�
 cd ios
 TMPDIR=$PWD/.build/tmp CLANG_MODULE_CACHE_PATH=$PWD/.build/clang-cache \
 SWIFT_MODULE_CACHE_PATH=$PWD/.build/swift-cache \
-xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
   -derivedDataPath .build/DerivedData \
   OTHER_SWIFT_FLAGS='$(inherited) -disable-sandbox' test
 ```
 
-`MyFriendTests` 是 App 承载的单元测试 bundle（`TEST_HOST = MyFriend.app`），用的就是 App 里
+`YetAnotherPalTests` 是 App 承载的单元测试 bundle（`TEST_HOST = YetAnotherPal.app`），用的就是 App 里
 那份代码；`spec/agent-core/cases` 以文件夹引用进 bundle，比对时读的还是仓库里那批契约用例。
 它只在 **TestAction** 里，不参与 Debug/Release 的 `build`（`xcodebuild build` 不会编译它）。
 
@@ -195,10 +195,10 @@ xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
 
 ### 方式 A：Xcode（最省事）
 
-1. 打开 `ios/MyFriend.xcodeproj`；
-2. 选中 **MyFriend** target → *Signing & Capabilities* → 勾选 *Automatically manage signing*，
+1. 打开 `ios/YetAnotherPal.xcodeproj`；
+2. 选中 **YetAnotherPal** target → *Signing & Capabilities* → 勾选 *Automatically manage signing*，
    Team 选你的账号（个人免费账号也可以，7 天有效期）；
-3. 如果 Bundle Identifier 已被占用，改成 `com.<你的名字>.myfriend`（`PRODUCT_BUNDLE_IDENTIFIER`）；
+3. 如果 Bundle Identifier 已被占用，改成 `com.<你的名字>.yap`（`PRODUCT_BUNDLE_IDENTIFIER`）；
 4. 设备连上电脑 → 选你的 iPhone → Run；
 5. 首次运行后在 iPhone 的「设置 → 通用 → VPN与设备管理」里信任你的开发者证书。
 
@@ -207,8 +207,8 @@ xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
 ```bash
 cd ios
 export DEVELOPMENT_TEAM=你的TeamID          # Xcode 里 Account 详情可查
-export BUNDLE_ID=com.yourname.myfriend      # 可省略，默认 com.myfriend.app.ios
-./scripts/build-device.sh                  # 产出 .build/DerivedData/Build/Products/Debug-iphoneos/MyFriend.app
+export BUNDLE_ID=com.yourname.yap         # 可省略，默认 com.yap.app.ios
+./scripts/build-device.sh                  # 产出 .build/DerivedData/Build/Products/Debug-iphoneos/YetAnotherPal.app
 ./scripts/install-device.sh                # 用 devicectl 装到已连接的 iPhone 并启动
 ```
 
@@ -221,7 +221,7 @@ export BUNDLE_ID=com.yourname.myfriend      # 可省略，默认 com.myfriend.ap
 2. iPhone 与电脑连同一个 Wi-Fi，记下电脑局域网 IP（`ipconfig getifaddr en0`）；
 3. App 里「设置 → API 配置 → 新增」：
    - Base URL：`http://<电脑IP>:8787/v1`
-   - 模型：`myfriend-reference`
+   - 模型：`yap-reference`
    - API Key：随便填（`sk-test`）
    - 打开「允许不安全 HTTP」
 4. 回到会话发一句，应该能看到流式回复。

@@ -1,12 +1,14 @@
-# MyFriend
+# YetAnotherPal (Yap)
 
 **English** · [简体中文](README.md)
 
-MyFriend is a companion app for Android and iOS that models a "persona" as a long-lived contact rather than a set of tunable chat parameters. Both platforms share the same data model, the same behavioural rules, and the same backup file.
+YetAnotherPal (Yap) is a companion app for Android and iOS that models a "persona" as a long-lived contact rather than a set of tunable chat parameters. Both platforms share the same data model, the same behavioural rules, and the same backup file; the app display name is **Yap**.
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#build-and-test)
+[![GitHub](https://img.shields.io/badge/GitHub-HepingGe2333%2FYetAnotherPal-181717.svg?logo=github)](https://github.com/HepingGe2333/YetAnotherPal)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/HepingGe2333/YetAnotherPal/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](https://github.com/HepingGe2333/YetAnotherPal#architecture--stack)
+[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](https://github.com/HepingGe2333/YetAnotherPal#build-and-test)
+[![CI](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml/badge.svg)](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml)
 
 ## Project status
 
@@ -14,7 +16,7 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 | --- | --- |
 | Version | `0.13.0` (beta series `0.x`; policy and release process in [CONTRIBUTING.en.md](CONTRIBUTING.en.md#versioning-and-releases)) |
 | Database schema | v13 (messages in blocks of 200; personas carry a world preset, speech style and current activity; both platforms aligned) |
-| Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable) |
+| Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable). The format name is kept for backward compatibility; the product is now YetAnotherPal (Yap) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
 | Unit tests | 1412 on Android (132 classes) + 56 instrumented, 90 in `:agentcore`, 358 in `:agentd`, 1625 on iOS (`swift test`) + 16 App-hosted |
 | CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
@@ -54,13 +56,13 @@ Most decisions in this project follow one constraint: **the interface faces a co
 | Layer | Android | iOS |
 | --- | --- | --- |
 | Language and UI | Kotlin 2.0.21, Jetpack Compose (BOM 2024.12.01), Material 3 | Swift 5.9, SwiftUI (iOS 16.0+) |
-| Dependency injection / wiring | Hilt 2.52 | Manual wiring (`ios/MyFriend/App`) |
+| Dependency injection / wiring | Hilt 2.52 | Manual wiring (`ios/YetAnotherPal/App`) |
 | Persistence | Room 2.6.1 (schema v10, exported to `app/schemas/`), DataStore | System `SQLite3` (schema aligned with v10), `UserDefaults` |
 | Background work | WorkManager 2.10, foreground service (`specialUse`), boot restore | `BGAppRefreshTask` / `BGProcessingTask` (scheduled opportunistically) |
 | Networking | OkHttp 4.12 (SSE), kotlinx.serialization 1.7.3 | `URLSession` (SSE), `Codable` |
 | Secrets | Keystore-encrypted value in DataStore | Keychain (debug fallback on simulators without entitlements) |
 | Minimum versions | Android 8.0 (`minSdk 26`), `targetSdk 35`, JDK 17 | iOS 16.0, Xcode 16+ |
-| Tests | JUnit4 + kotlinx-coroutines-test; migration tests under `androidTest` | XCTest (local SPM package `ios/MyFriendKit`, runs on macOS) |
+| Tests | JUnit4 + kotlinx-coroutines-test; migration tests under `androidTest` | XCTest (local SPM package `ios/YapKit`, runs on macOS) |
 | Agent decisions | Shared `:agentcore` (Kotlin/JVM, the single implementation) | Contract-aligned Swift implementation; can switch to remote `agentd` |
 
 Cross-platform contracts (three things that must stay identical):
@@ -77,7 +79,7 @@ Decision logic has a single implementation: `agentcore/` (`:agentcore`, zero thi
 .
 ├── app/                    Android app (Kotlin · Compose · Hilt · Room · WorkManager)
 │   ├── schemas/            Room-exported historical schemas (basis for migration tests)
-│   └── src/main/java/com/myfriend/app/
+│   └── src/main/java/com/yap/app/
 │       ├── data/           Room entities / DAOs / migrations / repositories / DataStore / Keystore
 │       ├── domain/         Pure algorithms: memory lifecycle, mood, heartbeat, link detection, vectors, backup codec…
 │       ├── network/        OpenAI-compatible SSE (multimodal) + concurrency gate + usage
@@ -85,9 +87,9 @@ Decision logic has a single implementation: `agentcore/` (`:agentcore`, zero thi
 │       ├── ui/             components / screens / theme
 │       └── util/           Time, LaTeX, media compression and persistence, notifications
 ├── ios/                    iOS 16+ app
-│   ├── MyFriendKit/        UI-free SPM package (Domain / Data / Net / Backup / Chat / Services), testable with swift test
-│   ├── MyFriend/           SwiftUI layer (App / Views / Resources for localised strings)
-│   └── MyFriend.xcodeproj  Deployment target 16.0, no third-party dependencies
+│   ├── YapKit/             UI-free SPM package (Domain / Data / Net / Backup / Chat / Services), testable with swift test
+│   ├── YetAnotherPal/      SwiftUI layer (App / Views / Resources for localised strings)
+│   └── YetAnotherPal.xcodeproj  Deployment target 16.0, no third-party dependencies
 ├── agentcore/              Shared agent decision layer (pure Kotlin/JVM, zero deps; used by :app and :agentd)
 ├── agentd/                 Standalone agent core service (Kotlin/JVM, HTTP, built on :agentcore)
 ├── spec/agent-core/cases/  Cross-platform agent contract cases (JSON, read by both test suites)
@@ -96,6 +98,15 @@ Decision logic has a single implementation: `agentcore/` (`:agentcore`, zero thi
 ├── docs/                   Architecture, parity, changelog, versioning, i18n
 └── gradle/                 Gradle Wrapper
 ```
+
+## Get the source
+
+```bash
+git clone https://github.com/HepingGe2333/YetAnotherPal.git
+cd YetAnotherPal
+```
+
+Repository: <https://github.com/HepingGe2333/YetAnotherPal>. Old repository links redirect to the new location on GitHub.
 
 ## Build & test
 
@@ -116,18 +127,20 @@ Migration tests (`app/src/androidTest`) need an emulator or a device:
 **iOS** (Xcode 16+, deployment target iOS 16.0, zero third-party dependencies):
 
 ```bash
-cd ios/MyFriendKit && swift test --disable-sandbox      # pure logic, runs on macOS in seconds
-cd ios && xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+cd ios/YapKit && swift test --disable-sandbox      # pure logic, runs on macOS in seconds
+cd ios && xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
+
+Build outputs: Android at `app/build/outputs/apk/debug/app-debug.apk`; iOS at `ios/.build/DerivedData/Build/Products/Debug-iphonesimulator/YetAnotherPal.app`. Historical APKs under `dist/` and screenshots under `docs/screenshots/` are local material; their file names are not rewritten for the rename, and `dist/` is never committed.
 
 **Local reference server** (exercises the whole pipeline without a real API key):
 
 ```bash
-node harness/server.mjs        # http://127.0.0.1:8787/v1 , use model ID myfriend-reference
+node harness/server.mjs        # http://127.0.0.1:8787/v1 , use model ID yap-reference
 ```
 
-The server understands `remember` / `recall` / `set_mood` / `web_search` / `myfriend-wake` / `defer_reply` / memory extraction / memory consolidation / history compression; its `[chat]` log prints `systemChars` and the tools used this turn, which makes it easy to verify that persona and memory really arrive inside `system`.
+The server understands `remember` / `recall` / `set_mood` / `web_search` / `yap-wake` / `defer_reply` / memory extraction / memory consolidation / history compression; its `[chat]` log prints `systemChars` and the tools used this turn, which makes it easy to verify that persona and memory really arrive inside `system`.
 
 ## Documentation
 
@@ -163,4 +176,6 @@ The full index is [docs/README.md](docs/README.md) (in Chinese); the documents m
 
 Read [CONTRIBUTING.en.md](CONTRIBUTING.en.md) ([中文](CONTRIBUTING.md)) before sending changes. Minimum requirements: both unit-test suites pass; database changes update schema, migration, migration test and fixtures together; secrets, `local.properties`, `dist/` and screenshots are never committed.
 
-License: [Apache-2.0](LICENSE) © 2026 Heping Ge. Contributions are accepted under the same license.
+License: [Apache-2.0](LICENSE) © 2026 Heping_Ge2333 (hpg2333). Contributions are accepted under the same license.
+
+Repository: [HepingGe2333/YetAnotherPal](https://github.com/HepingGe2333/YetAnotherPal) · Issues: [GitHub Issues](https://github.com/HepingGe2333/YetAnotherPal/issues) · Pull requests: [GitHub PRs](https://github.com/HepingGe2333/YetAnotherPal/pulls)

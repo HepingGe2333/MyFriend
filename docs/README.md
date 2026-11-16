@@ -1,6 +1,6 @@
-# 文档索引
+# YetAnotherPal（Yap）文档索引
 
-这个目录里的文件都是**写给项目使用者与贡献者**的。项目的入口在根目录：
+这个目录里的文件都是**写给 YetAnotherPal（Yap）使用者与贡献者**的。项目仓库：<https://github.com/HepingGe2333/YetAnotherPal>，所有者 Heping_Ge2333（`hpg2333`）。项目的入口在根目录：
 
 - [README.md](../README.md) · [English](../README.en.md) — 项目是什么、特性、架构、构建与测试
 - [CONTRIBUTING.md](../CONTRIBUTING.md) · [English](../CONTRIBUTING.en.md) — 环境、代码风格、提交规范、发版流程

@@ -4,14 +4,14 @@ plugins {
 
 // `agentcore` 是「两端必须一致的 agent 决策」的唯一一份实现：
 // - Android（`:app`）与 JVM 服务（`:agentd`）消费 `jvm()` 变体；
-// - iOS（`ios/MyFriendKit`）消费 `AgentCoreKit.framework`（Kotlin/Native 静态 framework）。
+// - iOS 侧（`ios/`）消费 `AgentCoreKit.framework`（Kotlin/Native 静态 framework）。
 //
 // 硬约束（0.11.0 的架构前提，动它会同时影响两端）：
 // - **零第三方 runtime 依赖**：commonMain 只用 Kotlin 标准库；jvmMain 只用 JDK。
 //   这样 `:agentd` 的「零依赖可执行 jar」仍然成立，Android 侧也不会被动多出传递依赖。
 // - **不依赖 Android / Room / Hilt / kotlinx-serialization / kotlinx-coroutines**：
 //   纯函数 + 纯数据类，JVM 单测就能覆盖。
-// - 包名保持 `com.myfriend.app.domain`：Android 侧与既有测试的 import 一行都不用改。
+// - 包名保持 `com.yap.app.domain`：Android 侧与既有测试的 import 一行都不用改。
 kotlin {
     jvm {
         compilerOptions {

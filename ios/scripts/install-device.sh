@@ -4,8 +4,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-APP=".build/DerivedData/Build/Products/Debug-iphoneos/MyFriend.app"
-BUNDLE_ID="${BUNDLE_ID:-com.myfriend.app.ios}"
+APP=".build/DerivedData/Build/Products/Debug-iphoneos/YetAnotherPal.app"
+BUNDLE_ID="${BUNDLE_ID:-com.yap.app.ios}"
 
 if [ ! -d "$APP" ]; then
   echo "找不到 $APP；先跑 ./scripts/build-device.sh" >&2

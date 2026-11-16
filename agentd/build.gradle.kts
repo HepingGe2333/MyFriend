@@ -21,7 +21,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 application {
-    mainClass.set("com.myfriend.agentd.MainKt")
+    mainClass.set("com.yap.agentd.MainKt")
 }
 
 dependencies {
@@ -50,7 +50,7 @@ tasks.register<Jar>("fatJar") {
     archiveClassifier.set("all")
     duplicatesStrategy = DuplicatesStrategy.EXCLUDE
     manifest {
-        attributes["Main-Class"] = "com.myfriend.agentd.MainKt"
+        attributes["Main-Class"] = "com.yap.agentd.MainKt"
     }
     from(sourceSets.main.get().output)
     from({

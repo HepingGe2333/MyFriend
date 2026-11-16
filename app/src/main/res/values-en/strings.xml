@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MyFriend</string>
+    <string name="app_name">Yap</string>
     <string name="proactive_channel_name">Waking up on his own</string>
     <string name="proactive_channel_description">Messages he starts at the times you set</string>
     <string name="chat_reply_channel_name">His messages</string>
@@ -1107,7 +1107,7 @@
     <!-- ===== 设置 / 关于 ===== -->
 <!-- Settings header -->
     <string name="settings_title">Settings</string>
-    <string name="settings_subtitle">Where MyFriend becomes more like yours</string>
+    <string name="settings_subtitle">Where Yap becomes more like yours</string>
     <string name="settings_summary">%1$s · %2$s</string>
     <plurals name="settings_persona_count">
         <item quantity="one">%1$d persona</item>
@@ -1186,7 +1186,7 @@
     <string name="settings_wipe_title">Delete all local data</string>
     <string name="settings_wipe_desc">Every persona, conversation, memory, preset, wake-up rule, API setup, and setting is removed</string>
     <string name="settings_security_note">Your API key is encrypted by Android Keystore and never written to logs or crash reports. Only HTTPS is allowed by default; conversations stay on this phone.</string>
-    <string name="settings_about_entry">About MyFriend</string>
+    <string name="settings_about_entry">About Yap</string>
     <string name="settings_selected_cd">Selected</string>
 
     <!-- Settings toasts and failures -->
@@ -1325,7 +1325,7 @@
     <string name="error_import_file_too_large">That file is too large</string>
     <string name="error_backup_empty">There is nothing to take with you yet</string>
     <string name="error_import_invalid_json">That file isn\'t valid JSON</string>
-    <string name="error_import_not_preset_file">That isn\'t a MyFriend preset file</string>
+    <string name="error_import_not_preset_file">That isn\'t a Yap preset file</string>
     <string name="error_import_no_persona_data">No importable persona data was found</string>
     <string name="error_import_no_valid_persona">None of the personas could be imported</string>
     <string name="error_import_too_many_personas">At most 200 personas per import</string>
@@ -1532,11 +1532,11 @@
     <string name="backup_section_api_config">API setups</string>
     <string name="backup_fail_empty">This file is empty; he isn\'t in it.</string>
     <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
-    <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
-    <string name="backup_fail_too_large">That file is too large (over %1$d MB) to be a MyFriend backup. Backups with pictures are bigger, but should still stay well below this.</string>
+    <string name="backup_fail_wrong_format">This isn\'t a Yap backup (format: %1$s).</string>
+    <string name="backup_fail_too_large">That file is too large (over %1$d MB) to be a Yap backup. Backups with pictures are bigger, but should still stay well below this.</string>
     <string name="backup_fail_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to. The import was cancelled so it doesn\'t overwrite him on this phone.</string>
     <string name="backup_warn_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to, so importing it will be refused</string>
-    <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
+    <string name="backup_fail_newer_format">This backup comes from a newer Yap (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
 
     <!-- Import results: personas / presets -->
     <plurals name="persona_import_result_ok">

@@ -10,7 +10,7 @@ and both JVM clients compile against it:
 ```
                  ┌─────────────────────────────┐
                  │  :agentcore  (KMP)          │
-                 │  com.myfriend.app.domain    │
+                 │  com.yap.app.domain         │
                  │  SleepPolicy / DeferReply   │
                  │  ProactiveLevel / Clamp …   │
                  │  AgentCore + InProcess impl │
@@ -44,7 +44,7 @@ connection, `Connection: close`; no keep-alive, no chunked, no TLS). It replaced
 `InputStream.available()` is unreliable, and closing a response drains the unread request body in a
 blocking read that `exchange.close()` cannot interrupt — which made the audit's P1-1 half-open
 denial of service impossible to fix reliably. JSON is parsed/serialized by the recursive-descent
-parser in `:agentcore` (`com/myfriend/app/core/json/Json.kt`). There is no web framework, no JSON
+parser in `:agentcore` (`com/yap/app/core/json/Json.kt`). There is no web framework, no JSON
 library, no DI container, no logging framework, no coroutines.
 
 Runtime classpath of the distribution is exactly `agentd.jar` + `agentcore.jar` + Kotlin stdlib
@@ -83,10 +83,10 @@ Options:
 | --- | --- | --- |
 | `--host` | `127.0.0.1` | Bind address. `0.0.0.0` means **anyone on the network can call it** — there is no TLS and (unless `--token` is set) no auth. Only use it on a trusted LAN or behind your own auth/proxy. |
 | `--port` | `8788` | Listen port. |
-| `--data <dir>` | `./agentd-data` | Server-authoritative state directory (see [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120)). A missing/empty directory is seeded with 3 personas + 1 session; an existing one is read back as-is. Also `MYFRIEND_AGENTD_DATA`. |
-| `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `MYFRIEND_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
-| `--rate-limit <n>` | `60` | Per-source requests per minute. `0` turns rate limiting **off**. Also `MYFRIEND_AGENTD_RATE_LIMIT`. |
-| `--rate-burst <n>` | `30` | Token-bucket capacity (how many idle requests may burst). Must be ≥ 1. Also `MYFRIEND_AGENTD_RATE_BURST`. |
+| `--data <dir>` | `./agentd-data` | Server-authoritative state directory (see [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120)). A missing/empty directory is seeded with 3 personas + 1 session; an existing one is read back as-is. Also `YAP_AGENTD_DATA`. |
+| `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `YAP_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
+| `--rate-limit <n>` | `60` | Per-source requests per minute. `0` turns rate limiting **off**. Also `YAP_AGENTD_RATE_LIMIT`. |
+| `--rate-burst <n>` | `30` | Token-bucket capacity (how many idle requests may burst). Must be ≥ 1. Also `YAP_AGENTD_RATE_BURST`. |
 | `--help` / `-h` | — | Usage. |
 
 Flags win over environment variables, which win over the defaults (so a container can pin the
@@ -96,10 +96,10 @@ Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8788/health
-# {"ok":true,"service":"myfriend-agentd","version":"0.11.1"}
+# {"ok":true,"service":"yap-agentd","version":"0.11.1"}
 
 # only when --token is set:
-curl -s -H "Authorization: Bearer $MYFRIEND_AGENTD_TOKEN" http://127.0.0.1:8788/health
+curl -s -H "Authorization: Bearer $YAP_AGENTD_TOKEN" http://127.0.0.1:8788/health
 ```
 
 ## Limits, timeouts and auth (0.11.1)
@@ -147,7 +147,7 @@ Every source (the request's TCP peer address, as a string) gets its own **token 
   request body, so an over-quota client cannot make the service read 1 MiB or parse JSON;
 - the limiter runs **before authentication**: an over-quota client gets `429` even with a wrong
   token (it saves the constant-time compare, and leaves no `401` vs `200` difference to probe);
-- `--rate-limit 0` / `MYFRIEND_AGENTD_RATE_LIMIT=0` disables it completely (no buckets are kept).
+- `--rate-limit 0` / `YAP_AGENTD_RATE_LIMIT=0` disables it completely (no buckets are kept).
 
 `GET /health` is rate limited **in its own bucket**. The trade-off:
 
@@ -157,7 +157,7 @@ Every source (the request's TCP peer address, as a string) gets its own **token 
 - a separate bucket keeps probes meaningful while still bounding `/health` (it is not a free
   bypass), at the cost of one extra counter per source.
 
-Implementation notes (`agentd/src/main/kotlin/com/myfriend/agentd/RateLimiter.kt`):
+Implementation notes (`agentd/src/main/kotlin/com/yap/agentd/RateLimiter.kt`):
 
 - state per source is `(tokens, lastRefillNanos)` in a `LinkedHashMap(accessOrder = true)`; nothing
   runs in the background — a bucket refills lazily when that source next appears;
@@ -199,7 +199,7 @@ Rules that matter:
    and even then put auth in front.
 2. **Terminate TLS in the proxy**, not in `agentd`. Get certificates from your proxy's ACME
    support (Caddy automatic HTTPS, certbot for Nginx, Traefik's resolver).
-3. **Keep the token.** With a proxy in front, `--token` (or `MYFRIEND_AGENTD_TOKEN`) is still
+3. **Keep the token.** With a proxy in front, `--token` (or `YAP_AGENTD_TOKEN`) is still
    useful as a second factor, and you can keep it out of the client entirely: let the proxy add
    `Authorization: Bearer …` on the upstream request. Do not put the token in a URL or in the
    repository.
@@ -277,9 +277,9 @@ release builds only allow **HTTPS** (cleartext is limited to debug builds / loca
 - **iOS** (same `AgentCoreClient` layer, configured at launch):
 
   ```bash
-  SIMCTL_CHILD_MYFRIEND_AGENT_CORE=remote \
-  SIMCTL_CHILD_MYFRIEND_AGENT_CORE_URL=https://agent.example.com \
-  xcrun simctl launch booted com.myfriend.app.ios
+  SIMCTL_CHILD_YAP_AGENT_CORE=remote \
+  SIMCTL_CHILD_YAP_AGENT_CORE_URL=https://agent.example.com \
+  xcrun simctl launch booted com.yap.app.ios
   ```
 
   The release Info.plist only keeps `NSAllowsLocalNetworking`; arbitrary cleartext is a
@@ -315,7 +315,7 @@ It is a **build switch**, not a user-visible setting (release builds stay in-pro
 - The switch becomes `BuildConfig.AGENT_CORE_REMOTE`; the URL becomes
   `BuildConfig.AGENT_CORE_BASE_URL` (`RemoteAgentCoreClient`).
 - Every remote call has a short timeout (1.5 s by default). **Any** failure — connection refused,
-  timeout, 4xx/5xx, malformed JSON, missing field — is logged under the `MyFriendAgentCore`
+  timeout, 4xx/5xx, malformed JSON, missing field — is logged under the `YapAgentCore`
   logcat tag and answered by the in-process implementation instead, so chat never hangs or breaks
   because the service is down.
 - When the switch is off, `AgentCoreClients.create` returns the in-process client and no HTTP
@@ -326,7 +326,7 @@ Optional end-to-end check against this service (runs the real `RemoteAgentCoreCl
 
 ```bash
 ./gradlew :app:testDebugUnitTest \
-  --tests "com.myfriend.app.core.AgentCoreRemoteE2ETest" \
+  --tests "com.yap.app.core.AgentCoreRemoteE2ETest" \
   -PagentCoreE2eUrl=http://127.0.0.1:8788 --rerun
 ```
 
@@ -342,7 +342,7 @@ Path and field names are not duplicated in the service: both sides read them fro
 ### `GET /health`
 
 ```json
-{"ok":true,"service":"myfriend-agentd","version":"0.11.1"}
+{"ok":true,"service":"yap-agentd","version":"0.11.1"}
 ```
 
 The version is exposed on purpose (clients and humans use it to verify which build is answering);
@@ -456,7 +456,7 @@ Clients keep only UI and caches. The data format is plain JSON/JSONL under a dat
 ### Data directory
 
 ```bash
-agentd --data /var/lib/myfriend            # or: MYFRIEND_AGENTD_DATA=/var/lib/myfriend agentd
+agentd --data /var/lib/yap            # or: YAP_AGENTD_DATA=/var/lib/yap agentd
 ```
 
 Default is `./agentd-data` (relative to the process working directory). The flag wins over the
@@ -605,7 +605,7 @@ curl -s -X POST "http://127.0.0.1:8788/v1/backup" \
   -d "{\"mode\":\"merge\",\"data\":$(cat backup.json)}"
 # 14. push token registration (APNs/FCM delivery is deployment-side)
 curl -s -X POST "http://127.0.0.1:8788/v1/push/register" \
-  -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token","bundleId":"com.example.myfriend"}'
+  -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token","bundleId":"com.example.yap"}'
 curl -s -X DELETE "http://127.0.0.1:8788/v1/push/register" \
   -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token"}'
 # 15. media: raw image bytes in, raw bytes out (client already compresses to ≤800 KB)
@@ -770,16 +770,16 @@ Provider configuration is **server-side only**:
 
 | Environment variable | Default | Meaning |
 | --- | --- | --- |
-| `MYFRIEND_AGENTD_SEARCH_PROVIDER` | `MESSAGEAPI` | Default provider when the request body does not name one. Dirty values are normalised like every other provider setting. |
-| `MYFRIEND_AGENTD_SEARCH_BASE` | — | Provider base URL. `MESSAGEAPI` / `SEARXNG` / `GENERIC` have no fixed default and need it; Tavily/Brave/Serper/Bing fall back to their public endpoints. |
-| `MYFRIEND_AGENTD_SEARCH_KEY` | — | Provider API key. **The client never sends it and the server never accepts one from the request body.** |
+| `YAP_AGENTD_SEARCH_PROVIDER` | `MESSAGEAPI` | Default provider when the request body does not name one. Dirty values are normalised like every other provider setting. |
+| `YAP_AGENTD_SEARCH_BASE` | — | Provider base URL. `MESSAGEAPI` / `SEARXNG` / `GENERIC` have no fixed default and need it; Tavily/Brave/Serper/Bing fall back to their public endpoints. |
+| `YAP_AGENTD_SEARCH_KEY` | — | Provider API key. **The client never sends it and the server never accepts one from the request body.** |
 
 - **Only `SEARXNG` may override the base per request** (`{"provider":"SEARXNG","baseUrl":"http://…"}`):
   a self-hosted instance address is not a secret, and one deployment may point at different instances.
   For every other provider the request `baseUrl` is ignored — otherwise a client could aim the server's
   key at an arbitrary host (SSRF + credential exfiltration).
 - A body-level `apiKey` is ignored for the same reason: the key always comes from
-  `MYFRIEND_AGENTD_SEARCH_KEY`. Neither the key nor the upstream error body (which may echo it) appears
+  `YAP_AGENTD_SEARCH_KEY`. Neither the key nor the upstream error body (which may echo it) appears
   in responses or logs; the HTTP client's log preview replaces the secret with `***`.
 - Results are normalised exactly like the clients' `WebSearchClient`: non-http(s) URLs dropped,
   deduplicated by URL (first wins), snippets tag-stripped and capped at 500 chars, at most `count`
@@ -939,7 +939,7 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   sentence and estimates tokens by character count. The server neither accepts prompts from clients
   nor stores them; prompt construction is the next phase's job. `secrets.json` (0600, best-effort on
   non-POSIX file systems) is the only place an API key may live and it is never part of a response.
-- **Search credentials are environment config, not a settings API.** `MYFRIEND_AGENTD_SEARCH_*` is
+- **Search credentials are environment config, not a settings API.** `YAP_AGENTD_SEARCH_*` is
   read through `AgentdServices.env` (production: `System.getenv`) on every request, but a JVM cannot
   change its own environment, so rotating the key or the default provider needs a restart. There is
   also no per-persona search configuration yet: the whole server shares one provider/base/key. The
@@ -1023,7 +1023,7 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 - **Zero dependencies** keeps the deployment story simple: a JDK 17 `java -jar` is enough, no
   framework, no transitive CVE surface, no version skew with the Android build.
 - **One implementation, not two copies.** Before 0.11.0 the service compiled the Android source
-  tree via `kotlin.srcDir("../app/src/main/java/com/myfriend/app/domain")` plus an exclude list of
+  tree via `kotlin.srcDir("../app/src/main/java/com/yap/app/domain")` plus an exclude list of
   14 files. That worked but had two failure modes: the exclude list could drift, and `:app` /
   `:agentd` produced two separate copies of the same classes. Now the 36 portable files live in
   `:agentcore` and both modules compile the *same* classes.
@@ -1034,7 +1034,7 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 
 ### What stayed in `:app`
 
-These domain files cannot leave Android and remain in `app/src/main/java/com/myfriend/app/domain/`:
+These domain files cannot leave Android and remain in `app/src/main/java/com/yap/app/domain/`:
 
 | File | Why it can't be shared |
 | --- | --- |
@@ -1056,7 +1056,7 @@ These domain files cannot leave Android and remain in `app/src/main/java/com/myf
 Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heartbeat`, `Mood`,
 `MoodBehavior`, `MemoryLifecycle`, `MemoryDrawer`, `ToolArgClamp`, `ChineseTerms`,
 `HistoryCompression`, `LocalEmbedding`, ...) is in `:agentcore` under the same package
-`com.myfriend.app.domain`, so Android imports and tests did not change at all.
+`com.yap.app.domain`, so Android imports and tests did not change at all.
 
 ## What this service does **not** do yet
 
@@ -1129,7 +1129,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   persisted, `--token`/rate limiting on the new routes, HTTP long poll waking up on a new message,
   and JSON errors before a stream starts.
 - `MainOptionsTest` — 11 tests for flag/environment parsing and precedence (`--rate-limit`,
-  `--rate-burst`, `--data`/`MYFRIEND_AGENTD_DATA`, invalid values rejected before the server starts).
+  `--rate-burst`, `--data`/`YAP_AGENTD_DATA`, invalid values rejected before the server starts).
 - `RateLimiterTest` — 7 tests for the token bucket itself (burst, refill, capped refill, per-source
   isolation, disabling, bounded map / LRU eviction) with an injected clock, so none of them sleep.
 - `ToolsRoutesTest` — 17 tests for the three 0.12.0 routes (`/v1/tools/web-search`,

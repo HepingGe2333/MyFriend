@@ -1,6 +1,6 @@
 # Architecture
 
-> [简体中文](ARCHITECTURE.md) · English
+> [简体中文](ARCHITECTURE.md) · English · Project: YetAnotherPal (Yap)
 >
 > Applies to `0.10.0` (internal beta) · database schema **v10** · backup format **v2**
 >
@@ -32,11 +32,11 @@ flowchart TB
     A_SVC[service/ · foreground service / workers] --> A_REPO
   end
   subgraph iOS
-    I_UI[MyFriend/Views · SwiftUI] --> I_APP[MyFriend/App · composition root]
-    I_APP --> I_SVC[MyFriendKit/Services]
-    I_SVC --> I_STORE[(MyFriendKit/Data · SQLite v10)]
-    I_SVC --> I_NET[MyFriendKit/Net · URLSession SSE]
-    I_SVC --> I_DOMAIN[MyFriendKit/Domain · pure logic]
+    I_UI[YetAnotherPal/Views · SwiftUI] --> I_APP[YetAnotherPal/App · composition root]
+    I_APP --> I_SVC[YapKit/Services]
+    I_SVC --> I_STORE[(YapKit/Data · SQLite v10)]
+    I_SVC --> I_NET[YapKit/Net · URLSession SSE]
+    I_SVC --> I_DOMAIN[YapKit/Domain · pure logic]
   end
   A_DOMAIN -.-|same contract| I_DOMAIN
   A_LOCAL -.-|same tables + same backup| I_STORE
@@ -44,8 +44,8 @@ flowchart TB
 
 | Layer | Android | iOS | Notes |
 | --- | --- | --- | --- |
-| Pure logic | `app/src/main/java/com/myfriend/app/domain/` (32 files, ~9.4k LoC) | `ios/MyFriendKit/Sources/MyFriendKit/Domain/` (18 files, ~6.3k LoC) | heartbeat, mood, memory lifecycle, vector search, `defer_reply`, sleep policy, link detection, backup codec — **no platform APIs** |
-| Persistence | Room (`MyFriendDatabase` v10, schema JSON exported and verified in tests) | hand-written `SQLiteStore`, table/column names identical to Room's `10.json` | the schema is the prerequisite for backup interop |
+| Pure logic | `app/src/main/java/com/yap/app/domain/` (32 files, ~9.4k LoC) | `ios/YapKit/Sources/YapKit/Domain/` (18 files, ~6.3k LoC) | heartbeat, mood, memory lifecycle, vector search, `defer_reply`, sleep policy, link detection, backup codec — **no platform APIs** |
+| Persistence | Room (`YapDatabase` v10, schema JSON exported and verified in tests) | hand-written `SQLiteStore`, table/column names identical to Room's `10.json` | the schema is the prerequisite for backup interop |
 | Network | OkHttp + hand-written SSE parser + concurrency gate | `URLSession` + hand-written SSE parser + the same gate semantics | OpenAI-compatible `/chat/completions` only; native Gemini/Claude adapters are reserved |
 | Orchestration | `data/repo/` (Chat/Agent/Heartbeat/Memory/…) | `Services/` (ChatService/AgentLoop/Heartbeat/…) | decides "does he speak this turn" and "when does he reach out" |
 | Presentation | Compose + ViewModel | SwiftUI + `AppEnvironment` | deliberately restrained, per the product stance |
@@ -75,7 +75,7 @@ sequenceDiagram
     G->>M: POST /chat/completions (stream)
     M-->>S: SSE deltas
     S-->>UI: streamed rendering
-    S->>S: parse tool calls (```myfriend-tool)
+    S->>S: parse tool calls (```yap-tool)
     alt tool call
       S->>DB: run tool (remember / recall / mood / web search)
       S->>G: call the model again with the tool result
@@ -169,7 +169,7 @@ flowchart TB
   runs via `java -jar` or `installDist`, listening on loopback by default.
 - **Clients**: Android's `AgentCoreClient` is an interface in `:app` (in-process / remote, chosen by
   `BuildConfig.AGENT_CORE_REMOTE`, remote failures fall back); iOS's is a Kit protocol (native / remote / fallback,
-  chosen by the `MYFRIEND_AGENT_CORE` environment variable or Info.plist, native by default). **There is no user-facing
+  chosen by the `YAP_AGENT_CORE` environment variable or Info.plist, native by default). **There is no user-facing
   setting.**
 - **Why not KMP**: KMP would let iOS run the same Kotlin, but requires the Kotlin/Native toolchain and framework
   packaging. Establishing the contract, module boundary and client abstraction first is the higher-confidence step;
@@ -216,7 +216,7 @@ Signal for continuing: when the case suite grows to "every behaviour change touc
 ## 7. Data model and versioning
 
 - **Schema v10** — both platforms keep `user_version` in sync; `chat_sessions.personaId` is unique (one session per persona). Migrations are additive; Android verifies the exported Room schema in tests, iOS has matching migration tests.
-- **Backup v2** — `format="myfriend.backup"`, `formatVersion=2`, `apiKeysOmitted=true`; v1 backups remain readable. Image binaries, avatar files and API keys are never included.
+- **Backup v2** — `format="myfriend.backup"`, `formatVersion=2`, `apiKeysOmitted=true`; v1 backups remain readable. Image binaries, avatar files and API keys are never included. The `myfriend.backup` format name is kept for backward compatibility and is deliberately not renamed with the product (now YetAnotherPal / Yap).
 - Versioning rules: [`CONTRIBUTING.md`](../CONTRIBUTING.md). `versionCode` and iOS `CURRENT_PROJECT_VERSION` stay equal and are decoupled from the schema version (schema increments only on table changes).
 
 ## 8. Internationalization
@@ -233,7 +233,7 @@ UI copy follows the system language (Simplified Chinese is the base, English is 
 | i18n resource guard | new in 0.10.0, strengthened in 0.10.2 | key drift, untranslated English (CJK), placeholder reordering, unused keys |
 | Search contract | `spec/search/cases/` | snippet/highlight rules and ranking/filter semantics drifting |
 | Independent audits | `docs/audits/` | concurrency, data integrity, security, contract drift; one per version, every P0/P1 fixed with a test |
-| Migration tests | `MyFriendDatabaseMigrationTest`, `SchemaMigrationTests` | data loss on upgrade |
+| Migration tests | `YapDatabaseMigrationTest`, `SchemaMigrationTests` | data loss on upgrade |
 
 ## 10. Known limitations
 

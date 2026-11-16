@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * MyFriend local reference server.
+ * Yap local reference server.
  *
  * Serves an OpenAI-compatible mock API at /v1 (models, chat completions, SSE stream,
  * plus DeepSeek web-tool endpoints). Persona and memories arrive inside the `system`
@@ -248,7 +248,7 @@ function mockReply(messages, systemText) {
   // 1.9 回复节奏：模型这一轮选择不回。只有协议块、没有半句正文 —— 用来验证「已读但不回」。
   if (/先别回|别回了|不想说话|让我静静|defer/i.test(text) && !hasToolEcho) {
     return (
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({
         name: 'defer_reply',
         arguments: { minutes: 90, reason: '现在不太想说话，想先自己待一会儿' }
@@ -259,7 +259,7 @@ function mockReply(messages, systemText) {
   if (/记住|记一下|帮我记|remember/i.test(text) && !hasToolEcho) {
     return (
       '嗯，这个我想记下来。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({
         name: 'remember',
         arguments: {
@@ -274,7 +274,7 @@ function mockReply(messages, systemText) {
   if (/深思|认真想想|好好想想|think/i.test(text) && !hasToolEcho) {
     return (
       '让我先理一理。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({ name: 'think', arguments: { question: '他现在到底需要建议还是陪伴' } }) +
       '\n```\n'
     )
@@ -282,7 +282,7 @@ function mockReply(messages, systemText) {
   if (/改一下你自己|改改自己|换个说法|change yourself|update persona/i.test(text) && !hasToolEcho) {
     return (
       '我最近确实有点不一样了。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({
         name: 'update_persona',
         arguments: {
@@ -299,7 +299,7 @@ function mockReply(messages, systemText) {
   if (/心情|有点累|不开心|我累了|心里有点|心情好|mood/i.test(text) && !hasToolEcho) {
     return (
       '嗯……我好像也被你带得沉下来了一点。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({
         name: 'set_mood',
         arguments: {
@@ -320,7 +320,7 @@ function mockReply(messages, systemText) {
   if (/回忆|还记得|想不起来|recall|remember when/i.test(text) && !hasToolEcho) {
     return (
       '让我翻翻看。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({ name: 'recall', arguments: { query: '项目', depth: 3 } }) +
       '\n```\n'
     )
@@ -328,7 +328,7 @@ function mockReply(messages, systemText) {
   if (/搜索|查一下|查查|最新|search/i.test(text) && !hasToolEcho) {
     return (
       '我去看看。\n\n' +
-      '```myfriend-tool\n' +
+      '```yap-tool\n' +
       JSON.stringify({ name: 'web_search', arguments: { query: '今天的重要新闻', count: 3 } }) +
       '\n```\n'
     )
@@ -336,7 +336,7 @@ function mockReply(messages, systemText) {
   if (/主动联系|每天.*(找我|叫我|问候)|每天.*十点半|提醒我|叫我起床|remind me|wake me up/i.test(text)) {
     return (
       '好呀，那我们就这样约定。\n\n每天到了那个时间，我会先来找你，不用你开口。\n\n' +
-      '```myfriend-wake\n' +
+      '```yap-wake\n' +
       JSON.stringify({
         kind: 'daily',
         time: '22:30',
@@ -346,7 +346,7 @@ function mockReply(messages, systemText) {
       '\n```'
     )
   }
-  return `我在。\n\n你刚才说：「${text.slice(0, 80)}」。\n\n这是本地参考服务生成的流式回复，用来验证 MyFriend 的 SSE、Markdown 与上下文链路。试着发一段带代码或公式的内容，例如 \`const answer = 42\`，或 $E = mc^2$。`
+  return `我在。\n\n你刚才说：「${text.slice(0, 80)}」。\n\n这是本地参考服务生成的流式回复，用来验证 Yap 的 SSE、Markdown 与上下文链路。试着发一段带代码或公式的内容，例如 \`const answer = 42\`，或 $E = mc^2$。`
 }
 
 function sendSseStart(res) {
@@ -431,15 +431,15 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/health') {
       return json(res, 200, {
         ok: true,
-        service: 'MyFriend reference server'
+        service: 'Yap reference server'
       })
     }
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       return json(res, 200, {
         object: 'list',
         data: [
-          { id: 'myfriend-reference', object: 'model' },
-          { id: 'myfriend-demo-4o', object: 'model' }
+          { id: 'yap-reference', object: 'model' },
+          { id: 'yap-demo-4o', object: 'model' }
         ]
       })
     }
@@ -588,7 +588,7 @@ const server = http.createServer(async (req, res) => {
 })
 
 server.listen(PORT, HOST, () => {
-  console.log(`MyFriend reference server listening on http://${HOST}:${PORT}`)
+  console.log(`Yap reference server listening on http://${HOST}:${PORT}`)
   console.log(`  OpenAI base URL: http://<LAN-IP>:${PORT}/v1`)
   console.log('  For local HTTP, enable "允许不安全 HTTP" in the app API config.')
 })

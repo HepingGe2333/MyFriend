@@ -41,5 +41,5 @@ Append to the JSON array, keep the existing keys (`name`, `input`, `expect`, opt
 
 ```bash
 ./gradlew :app:testDebugUnitTest --tests '*SearchSpecTest*'
-cd ios/MyFriendKit && swift test --disable-sandbox --filter SearchSpecTests
+cd ios/YapKit && swift test --disable-sandbox --filter SearchSpecTests
 ```

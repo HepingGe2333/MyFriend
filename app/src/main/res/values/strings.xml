@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">MyFriend</string>
+    <string name="app_name">Yap</string>
     <string name="proactive_channel_name">主动唤醒</string>
     <string name="proactive_channel_description">人格按你设定的时间主动发来消息</string>
     <string name="chat_reply_channel_name">他的消息</string>
@@ -1089,7 +1089,7 @@
     <!-- ===== 设置 / 关于 ===== -->
 <!-- 设置页标题 -->
     <string name="settings_title">设置</string>
-    <string name="settings_subtitle">让 MyFriend 更像你的地方</string>
+    <string name="settings_subtitle">让 Yap 更像你的地方</string>
     <string name="settings_summary">%1$s · %2$s</string>
     <plurals name="settings_persona_count">
         <item quantity="other">%1$d 个人格</item>
@@ -1166,7 +1166,7 @@
     <string name="settings_wipe_title">删除全部本地数据</string>
     <string name="settings_wipe_desc">人格、会话、记忆、预设、主动唤醒规则、API 配置与设置全部移除</string>
     <string name="settings_security_note">API Key 由 Android Keystore 加密保存，不写入日志或崩溃报告。默认只允许 HTTPS；对话记录仅保存在本机。</string>
-    <string name="settings_about_entry">关于 MyFriend</string>
+    <string name="settings_about_entry">关于 Yap</string>
     <string name="settings_selected_cd">已选择</string>
 
     <!-- 设置页的提示与失败 -->
@@ -1300,7 +1300,7 @@
     <string name="error_import_file_too_large">导入文件过大</string>
     <string name="error_backup_empty">这里还没有可以带走的内容</string>
     <string name="error_import_invalid_json">文件不是有效的 JSON</string>
-    <string name="error_import_not_preset_file">这不是 MyFriend 的预设文件</string>
+    <string name="error_import_not_preset_file">这不是 Yap 的预设文件</string>
     <string name="error_import_no_persona_data">未找到可导入的人格数据</string>
     <string name="error_import_no_valid_persona">没有可导入的有效人格</string>
     <string name="error_import_too_many_personas">一次最多导入 200 个人格</string>
@@ -1491,9 +1491,9 @@
     <string name="backup_section_api_config">API 配置</string>
     <string name="backup_fail_empty">这个文件是空的，里面没有他。</string>
     <string name="backup_fail_invalid_json">这个文件读不出来：不是一份有效的备份 JSON。</string>
-    <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
-    <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
-    <string name="backup_fail_too_large">这个文件太大了（超过 %1$d MB），不像是一份 MyFriend 备份。带图片的备份会更大，但正常也不该到这个量级。</string>
+    <string name="backup_fail_wrong_format">这不是 Yap 的备份文件（format：%1$s）。</string>
+    <string name="backup_fail_newer_format">这份备份来自更新版本的 Yap（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
+    <string name="backup_fail_too_large">这个文件太大了（超过 %1$d MB），不像是一份 Yap 备份。带图片的备份会更大，但正常也不该到这个量级。</string>
     <!-- 0.11.1 审计 P1-2：结构不完整（消息找不到会话 / 会话找不到人格……）的备份整份拒绝。 -->
     <string name="backup_fail_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，写不回来。为了不覆盖你手机上的他，这次导入已取消。</string>
     <string name="backup_warn_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，导入会被拒绝</string>

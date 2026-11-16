@@ -3,18 +3,18 @@
 #
 # 用法：
 #   export DEVELOPMENT_TEAM=ABCDE12345        # 必需：Xcode → Settings → Accounts 里能看到 Team ID
-#   export BUNDLE_ID=com.yourname.myfriend    # 可选，默认 com.myfriend.app.ios
+#   export BUNDLE_ID=com.yourname.yap    # 可选，默认 com.yap.app.ios
 #   ./scripts/build-device.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${DEVELOPMENT_TEAM:?请先 export DEVELOPMENT_TEAM=<你的 Team ID>}"
-BUNDLE_ID="${BUNDLE_ID:-com.myfriend.app.ios}"
+BUNDLE_ID="${BUNDLE_ID:-com.yap.app.ios}"
 
 TMPDIR="$PWD/.build/tmp" \
 CLANG_MODULE_CACHE_PATH="$PWD/.build/clang-cache" \
 SWIFT_MODULE_CACHE_PATH="$PWD/.build/swift-cache" \
-xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -configuration Debug \
   -destination 'generic/platform=iOS' \
   -derivedDataPath .build/DerivedData \
@@ -25,5 +25,5 @@ xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
   build
 
 echo
-echo "构建完成：.build/DerivedData/Build/Products/Debug-iphoneos/MyFriend.app"
+echo "构建完成：.build/DerivedData/Build/Products/Debug-iphoneos/YetAnotherPal.app"
 echo "下一步：./scripts/install-device.sh（或直接用 Xcode 的 Run）"

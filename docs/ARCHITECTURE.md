@@ -1,6 +1,6 @@
 # 架构
 
-> 简体中文 · [English](ARCHITECTURE.en.md)
+> 简体中文 · [English](ARCHITECTURE.en.md) · 项目：YetAnotherPal（Yap）
 >
 > 适用版本：`0.10.0`（内测） · 数据库 schema **v10** · 备份格式 **v2**
 >
@@ -31,11 +31,11 @@ flowchart TB
     A_SVC[service/ · 前台服务 / Worker] --> A_REPO
   end
   subgraph iOS
-    I_UI[MyFriend/Views · SwiftUI] --> I_APP[MyFriend/App · 环境装配]
-    I_APP --> I_SVC[MyFriendKit/Services]
-    I_SVC --> I_STORE[(MyFriendKit/Data · SQLite v10)]
-    I_SVC --> I_NET[MyFriendKit/Net · URLSession SSE]
-    I_SVC --> I_DOMAIN[MyFriendKit/Domain · 纯逻辑]
+    I_UI[YetAnotherPal/Views · SwiftUI] --> I_APP[YetAnotherPal/App · 环境装配]
+    I_APP --> I_SVC[YapKit/Services]
+    I_SVC --> I_STORE[(YapKit/Data · SQLite v10)]
+    I_SVC --> I_NET[YapKit/Net · URLSession SSE]
+    I_SVC --> I_DOMAIN[YapKit/Domain · 纯逻辑]
   end
   A_DOMAIN -.-|同一份契约| I_DOMAIN
   A_LOCAL -.-|同一份表结构 + 同一份备份| I_STORE
@@ -43,8 +43,8 @@ flowchart TB
 
 | 层 | Android | iOS | 说明 |
 | --- | --- | --- | --- |
-| 纯逻辑 | `app/src/main/java/com/myfriend/app/domain/`（32 个文件 ≈ 9.4k 行） | `ios/MyFriendKit/Sources/MyFriendKit/Domain/`（18 个文件 ≈ 6.3k 行） | 心跳、心情、记忆生命周期、向量检索、`defer_reply`、睡眠判定、链接识别、备份编解码……**不依赖平台 API** |
-| 持久化 | Room（`MyFriendDatabase` v10，导出 schema json 并在测试里校验） | 手写 `SQLiteStore`（表名/列名与 Room 导出的 `10.json` 逐字一致） | 表结构是备份互通的前提 |
+| 纯逻辑 | `app/src/main/java/com/yap/app/domain/`（32 个文件 ≈ 9.4k 行） | `ios/YapKit/Sources/YapKit/Domain/`（18 个文件 ≈ 6.3k 行） | 心跳、心情、记忆生命周期、向量检索、`defer_reply`、睡眠判定、链接识别、备份编解码……**不依赖平台 API** |
+| 持久化 | Room（`YapDatabase` v10，导出 schema json 并在测试里校验） | 手写 `SQLiteStore`（表名/列名与 Room 导出的 `10.json` 逐字一致） | 表结构是备份互通的前提 |
 | 网络 | OkHttp + 手写 SSE 解析 + 并发闸 | `URLSession` + 手写 SSE 解析 + 同一个并发闸语义 | 都只支持 OpenAI 兼容 `/chat/completions`，Gemini/Claude 原生适配预留 |
 | 编排 | `data/repo/`（Chat/Agent/Heartbeat/Memory/…） | `Services/`（ChatService/AgentLoop/Heartbeat/…） | 决定「这一轮他说不说话」「什么时候主动」 |
 | 呈现 | Compose + ViewModel | SwiftUI + `AppEnvironment` | 界面按产品立场刻意克制 |
@@ -74,7 +74,7 @@ sequenceDiagram
     G->>M: POST /chat/completions (stream)
     M-->>S: SSE 增量
     S-->>UI: 流式渲染
-    S->>S: 解析工具调用（```myfriend-tool）
+    S->>S: 解析工具调用（```yap-tool）
     alt 工具调用
       S->>DB: 执行工具（写记忆 / 检索 / 改心情 / 联网）
       S->>G: 再次请求模型（结果回灌）
@@ -168,7 +168,7 @@ flowchart TB
   可 `java -jar` 或 `installDist` 运行，默认只监听回环地址。
 - **客户端**：Android 的 `AgentCoreClient` 是 `:app` 内的接口（进程内 / 远程两实现，`BuildConfig.AGENT_CORE_REMOTE`
   选择、远程失败回退进程内）；iOS 的 `AgentCoreClient` 是 Kit 协议（`Native` / `Remote` / `Fallback` 三实现，
-  `MYFRIEND_AGENT_CORE` 环境变量或 Info.plist 选择、默认 native）。**没有用户可见的设置项**。
+  `YAP_AGENT_CORE` 环境变量或 Info.plist 选择、默认 native）。**没有用户可见的设置项**。
 - **为什么不是 KMP**：KMP 能让 iOS 也跑同一份 Kotlin，但需要 Kotlin/Native 工具链与 framework 打包；
   在引入它之前，先把契约、模块边界与客户端抽象建立起来，收益更确定、风险更小。KMP 仍是 Stage 2 的可选项。
 
@@ -211,7 +211,8 @@ flowchart TB
 - **schema v10**：两端 `user_version` 一致；`chat_sessions.personaId` 上有唯一索引（一人一段会话）。
   迁移只增不减，Android 的 Room 导出 schema 在测试里校验，iOS 侧有对应的迁移测试。
 - **备份 v2**：`format="myfriend.backup"`、`formatVersion=2`、`apiKeysOmitted=true`；v1 备份仍可读。
-  图片二进制、头像文件、API Key **不进备份**。
+  图片二进制、头像文件、API Key **不进备份**。格式名 `myfriend.backup` 为历史兼容保留，产品已更名为
+  YetAnotherPal（Yap），不随品牌改名。
 - 版本规则见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)；`versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等，
   与 schema 版本解耦（schema 只在表结构变化时 +1）。
 
@@ -232,7 +233,7 @@ Android 侧 `values/` + `values-en/`，iOS 侧 `zh-Hans.lproj` + `en.lproj`，�
 | i18n 资源守卫 | 两端资源一致性测试（0.10.0，0.10.2 加强） | key 漂移、英文未翻译（含 CJK）、格式符错位、死键 |
 | 检索契约 | `spec/search/cases/` | 摘要/高亮规则与排序过滤语义漂移 |
 | 独立审计 | `docs/audits/` | 并发、数据完整性、安全、契约漂移；每版一次，P0/P1 必须带测试修复 |
-| 迁移测试 | Android `MyFriendDatabaseMigrationTest`、iOS `SchemaMigrationTests` | 老库升级丢数据 |
+| 迁移测试 | Android `YapDatabaseMigrationTest`、iOS `SchemaMigrationTests` | 老库升级丢数据 |
 
 ## 10. 已知限制
 

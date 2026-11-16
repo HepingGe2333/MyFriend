@@ -6,6 +6,8 @@ labels: enhancement
 assignees: ''
 ---
 
+<!-- YetAnotherPal (Yap) · https://github.com/HepingGe2333/YetAnotherPal -->
+
 **What problem are you trying to solve**
 
 **What you would like to happen**

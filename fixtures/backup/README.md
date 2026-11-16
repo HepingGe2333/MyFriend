@@ -20,13 +20,13 @@
 
 | 文件 | 谁生成 | 谁消费 | 判据 |
 | --- | --- | --- | --- |
-| `android-export-v4.json` | Android：`app/src/test/java/com/myfriend/app/domain/BackupFixtureTest.kt` | iOS：`ios/MyFriendKit/Tests/MyFriendKitTests/Backup/BackupInteropTests` | iOS 必须解出全部段 + 设置 + `media[]` + `apiConfigs[].webToolsProvider`；图片可 base64 解码、字节数与 `bytes` 一致；无密钥字段 |
+| `android-export-v4.json` | Android：`app/src/test/java/com/yap/app/domain/BackupFixtureTest.kt` | iOS：`ios/YapKit/Tests/YapKitTests/Backup/BackupInteropTests` | iOS 必须解出全部段 + 设置 + `media[]` + `apiConfigs[].webToolsProvider`；图片可 base64 解码、字节数与 `bytes` 一致；无密钥字段 |
 | `ios-export-v4.json` | iOS：同一组测试 | Android：同一个 `BackupFixtureTest` | 同上（方向相反）：`formatVersion=4`、`media` 字段齐全、`webToolsProvider` 合法、base64 无空白、不出现设备绝对路径 |
 | `android-export-v2.json` / `ios-export-v2.json` | 0.9.0 起的历史 v2 样本，**不再重写** | 两端的 v2 兼容用例 | 仍必须能读：`media` 缺省为空、图片只留元数据（按旧行为告警） |
 | `android-export-v1.json` / `ios-export-v1.json` | 1.8 时代留下的历史样本，**不再重写** | 两端的 v1 兼容用例 | 必须仍能读进来：旧开关与额度字段被忽略、人格缺的字段走默认、多段会话只留最新 |
 
 共同要求：
-- `format = "myfriend.backup"`、`formatVersion = 5`（0.12 起；v4/v3/v2/v1 只作为输入）、`apiKeysOmitted = true`；
+- `format = "myfriend.backup"`（兼容保留的格式名，产品已更名为 YetAnotherPal / Yap，不要随品牌改名）、`formatVersion = 5`（0.12 起；v4/v3/v2/v1 只作为输入）、`apiKeysOmitted = true`；
 - `media[]` 的键固定为 `id` / `kind`（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）/ `personaId`（可空）/ `fileName` / `mime` / `bytes` / `data`（标准 base64，无换行）；总量 128 MiB、单张 8 MiB；
 - **任何密钥字段都不允许出现**（`apiKey` / `*Cipher` / `Authorization` / `customHeadersJson`），两端导出前后都会自检；
 - 缺字段用默认值、未知字段忽略：这样老备份能被新版本读，新备份也不会把旧版本读崩；

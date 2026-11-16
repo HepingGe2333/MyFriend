@@ -1,0 +1,4 @@
+// 目录占位：各层从这里开始填充。见 docs/IOS-PARITY.md。
+public enum YapKitInfo {
+    public static let version = "0.10.0"
+}

@@ -1,6 +1,6 @@
 # 服务端权威架构（server-authoritative）
 
-> 状态：0.12 分支实验（未升版本）。目标是把 MyFriend 从「两端各存一份、agentd 只是可选的决策服务」
+> 状态：0.12 分支实验（未升版本）。目标是把 YetAnotherPal（Yap）从「两端各存一份、agentd 只是可选的决策服务」
 > 改成「**服务端持有状态与逻辑，客户端只做 UI 与交互**」，从而让 iOS / Android 可以在**没有任何后台进程**的
 > 情况下持续运行（主动消息、睡眠、心情、联网搜索都由服务端推进）。
 
@@ -148,7 +148,7 @@ event: error      data: {"code":"...","message":"..."}
 
 ## 4. 服务端存储
 
-- 单文件 SQLite（`agentd --data <path>`，默认 `~/.myfriend/agentd.db`），用 JDBC（`org.xerial:sqlite-jdbc`）
+- 单文件 SQLite（`agentd --data <path>`，默认 `~/.yap/agentd.db`），用 JDBC（`org.xerial:sqlite-jdbc`）
   或纯文件 JSONL；**先用 SQLite**：块分页、增量查询、并发读写都更省事。
 - 表：`personas`、`sessions`、`messages`（含 `blockIndex`、`source`）、`message_blocks`、`memories`、
   `moods`、`presence`、`usage`、`api_configs`、`settings`、`events`（增量游标）、`media`（文件路径+元数据）。

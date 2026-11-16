@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   android:
-    name: Android (JDK 17)
+    name: Android (Yap / JDK 17)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -53,7 +53,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: android-reports
+          name: yap-android-reports
           path: |
             app/build/reports/tests/testDebugUnitTest/
             app/build/test-results/testDebugUnitTest/
@@ -65,7 +65,7 @@ jobs:
           retention-days: 7
 
   ios:
-    name: iOS (macOS + Xcode)
+    name: iOS (YapKit / Xcode)
     runs-on: macos-latest
     timeout-minutes: 45
     steps:
@@ -105,8 +105,8 @@ jobs:
       - name: Restore SwiftPM build cache
         uses: actions/cache@v4
         with:
-          path: ios/MyFriendKit/.build
-          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('ios/MyFriendKit/Package.swift', 'ios/MyFriendKit/Package.resolved') }}
+          path: ios/YapKit/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('ios/YapKit/Package.swift', 'ios/YapKit/Package.resolved') }}
           restore-keys: |
             ${{ runner.os }}-${{ runner.arch }}-swiftpm-
 
@@ -123,10 +123,10 @@ jobs:
           bash ios/scripts/build-agentcore-framework.sh 2>&1 | tee ios/.build/agentcore-framework.log
           test -d ios/.build/agentcore/AgentCoreKit.xcframework
 
-      - name: Swift tests (MyFriendKit)
+      - name: Swift tests (YapKit)
         run: |
           set -euo pipefail
-          cd ios/MyFriendKit
+          cd ios/YapKit
           swift test --disable-sandbox 2>&1 | tee ../.build/swift-test.log
 
       # build-for-testing 只编译 App 和测试 target，不启动模拟器；这里显式选 iPhone 17 Pro。
@@ -135,12 +135,12 @@ jobs:
         run: |
           set -euo pipefail
           xcodebuild \
-            -project ios/MyFriend.xcodeproj \
-            -scheme MyFriend \
+            -project ios/YetAnotherPal.xcodeproj \
+            -scheme YetAnotherPal \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             -derivedDataPath ios/.build/DerivedData \
-            -resultBundlePath ios/.build/MyFriend.xcresult \
+            -resultBundlePath ios/.build/YetAnotherPal.xcresult \
             CODE_SIGNING_ALLOWED=NO \
             build-for-testing 2>&1 | tee ios/.build/xcodebuild.log
 
@@ -148,16 +148,16 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-results
+          name: yap-ios-results
           path: |
-            ios/.build/MyFriend.xcresult
+            ios/.build/YetAnotherPal.xcresult
             ios/.build/*.log
           if-no-files-found: ignore
           retention-days: 7
 
   # 汇总门禁：两个 platform job 都成功才算通过，方便以后把它设为 required check。
   ci-ok:
-    name: ci-ok
+    name: Yap CI gate
     if: always()
     needs:
       - android
