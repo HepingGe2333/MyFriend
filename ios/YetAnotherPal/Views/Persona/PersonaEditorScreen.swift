@@ -62,7 +62,9 @@ struct PersonaEditorScreen: View {
     @State private var proactiveLevel = PersonaFieldLimits.proactiveLevelDefault
     @State private var memoryRetention = PersonaFieldLimits.memoryRetentionDefault
     @State private var extractionEvery = PersonaFieldLimits.extractionEveryDefault
-    @State private var sleepEnabled = true
+    /// 新建人格默认不睡（0.12 续 7）：睡眠是可选功能，用户在这里打开才算数。
+    /// 已有的人格在 `loadIfNeeded()` 里用实体值覆盖（用户自己设过的一律照旧）。
+    @State private var sleepEnabled = false
     @State private var dndOnSleep = false
     @State private var wakeThreshold = PersonaFieldLimits.wakeThresholdDefault
     @State private var sleepTime = PersonaEditorScreen.time(hour: 23, minute: 30)

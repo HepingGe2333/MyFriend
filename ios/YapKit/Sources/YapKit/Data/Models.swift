@@ -137,7 +137,12 @@ public enum PersonaFieldLimits {
     public static let memoryRetentionDefault = 3
     public static let extractionEveryDefault = 6
     public static let extractionEveryRange = 3...12
-    public static let wakeThresholdDefault = 6
+    /// 睡眠中被叫醒需要的连续消息数默认值（1–20）。
+    ///
+    /// 0.12 续 7 从 6 降到 3：原来「睡着」意味着夜里发 1–5 条都只是已读，
+    /// 看起来像「发什么都没反应」。新建与种子人格用 3，夜里发几条就能把他叫起来；
+    /// 已经在库里的人格不受影响（读列里的值，只有 NULL 才落到这个默认）。
+    public static let wakeThresholdDefault = 3
     public static let wakeThresholdRange = 1...20
 
     /// 1–5 的档位：滑杆、备份、老数据都走这一个夹取。

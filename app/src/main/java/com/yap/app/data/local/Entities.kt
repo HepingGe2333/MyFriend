@@ -73,12 +73,24 @@ data class PersonaEntity(
     /** 每多少条消息抽一次记忆（3–12）。 */
     @ColumnInfo(defaultValue = "6")
     val extractionEvery: Int = 6,
-    /** 他会不会主动睡觉（关掉 = 任何时间都会回）。 */
+    /**
+     * 他会不会主动睡觉（关掉 = 任何时间都会回）。
+     *
+     * 数据类默认值保留 `true`（既有解码 / 迁移路径都按它走，改默认会让老库语义变味）；
+     * 「新建人格」与「种子人格」在各自的入口显式给 `false` —— 睡眠是可选功能，
+     * 用户在人格编辑里打开才算数（0.12 续 7）。
+     */
     @ColumnInfo(defaultValue = "1")
     val sleepEnabled: Boolean = true,
-    /** 睡眠中被唤醒需要的连续消息数（1–20）。 */
+    /**
+     * 睡眠中被唤醒需要的连续消息数（1–20）。
+     *
+     * 默认 6 会让夜里发 1–5 条都只是「已读」，看起来像「发什么都没反应」；0.12 续 7 起新建/种子
+     * 人格用 3。`@ColumnInfo(defaultValue)` 保持 6：那是已发布 schema 的列默认值，
+     * 改它等于要求一次数据库迁移，而这里只是新建行的代码默认值。
+     */
     @ColumnInfo(defaultValue = "6")
-    val wakeThreshold: Int = 6,
+    val wakeThreshold: Int = 3,
     /** 睡前是否开启免打扰。由模型在动作里改，用户不直接改。 */
     @ColumnInfo(defaultValue = "0")
     val dndOnSleep: Boolean = false,

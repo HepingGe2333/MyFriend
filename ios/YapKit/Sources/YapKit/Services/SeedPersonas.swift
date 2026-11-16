@@ -49,7 +49,11 @@ public enum SeedPersonas {
                 version: 1,
                 isDefault: preset.id == presets[0].id,
                 createdAt: now,
-                updatedAt: now
+                updatedAt: now,
+                // 0.12 续 7：新装的人不睡。睡眠是可选功能——用户在人格编辑里打开、
+                // 设好时段与唤醒阈值才算「他会睡」。种子默认打开等于「半夜发什么都没反应」，
+                // 那是最糟的第一次见面（默认窗口 23:30–08:00）。
+                sleepEnabled: false
             )
         }
     }

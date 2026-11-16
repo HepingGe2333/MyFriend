@@ -60,6 +60,7 @@ import com.yap.app.domain.UserErrorTokens
 import com.yap.app.domain.SleepDecision
 import com.yap.app.domain.SleepInput
 import com.yap.app.domain.SleepPolicy
+import com.yap.app.domain.SilentReason
 import com.yap.app.domain.SpeechStyleCodec
 import com.yap.app.domain.ToolCatalog
 import com.yap.app.domain.ToolProtocol
@@ -572,7 +573,13 @@ class ChatRepository @Inject constructor(
             if (sleepDecision.marksRead) {
                 runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
             }
-            emit(GenerationEvent.Silent)
+            // 0.12 续 7：告诉界面「这一轮是被睡眠吞掉的」。聊天页据此在输入框上方显示一行
+            // 「他睡着了（08:00 醒）；连着发几条可以叫醒他」——免打扰不显示（叫多少条都不会醒）。
+            emit(
+                GenerationEvent.Silent(
+                    if (sleepDecision.dnd) SilentReason.DND else SilentReason.ASLEEP
+                )
+            )
             return@flow
         }
         if (sleepDecision.moodRelaxed) {
@@ -689,7 +696,8 @@ class ChatRepository @Inject constructor(
                 // 这里不能再落一条空助手消息——「没有消息」本身就是他的回答。
                 runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
                 completed = true
-                emit(GenerationEvent.Silent)
+                // 与睡眠无关（他醒着，只是决定晚点再说）：界面不显示睡眠提示行。
+                emit(GenerationEvent.Silent(SilentReason.DEFERRED))
                 return@flow
             }
             val rawFinalText = finalBody.trim()

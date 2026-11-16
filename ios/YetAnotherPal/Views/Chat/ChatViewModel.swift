@@ -69,6 +69,20 @@ final class ChatViewModel: ObservableObject {
     /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
     @Published private(set) var lastNoReply: ChatNoReplyReason?
 
+    /// 输入框上方那行「他睡着了（08:00 醒）；连着发几条可以叫醒他」；nil = 不显示（0.12 续 7）。
+    ///
+    /// 出现条件全在 `ChatNoReplyReason.sleepHintWakeText`：只有「睡着、还没到阈值」被静默，
+    /// 且**此刻**他还在睡时才有值。所以他睡醒之后（`presence` 每 30 秒重算一次，SwiftUI 跟着重画）
+    /// 这一行自己就没了；回了话则由 `.done` 清空 `lastNoReply`。
+    ///
+    /// 它不是消息、不写库、也不是弹窗：只是界面对「已读但没回」的一句解释，
+    /// 和顶栏那行 presence（「睡着了 · 08:00 醒」）说的不是同一件事——那是他的状态，
+    /// 这是**这一轮为什么没有回复**。
+    var sleepHint: String? {
+        guard let wakeAt = lastNoReply?.sleepHintWakeText(persona: persona) else { return nil }
+        return Lf("他睡着了（%@ 醒）；连着发几条可以叫醒他", wakeAt)
+    }
+
     // MARK: - 分页（v11：一页 = 一块，规范 `spec/messages-blocks/README.md` §3）
 
     // MARK: - 内部
@@ -746,7 +760,8 @@ final class ChatViewModel: ObservableObject {
             }
         case .done:
             // 落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
-            break
+            // 0.12 续 7：他这一轮说了话 → 上一轮的「他睡着了」提示立刻作废。
+            lastNoReply = nil
         case .noReply(let reason):
             // 他这一轮没说话：没有助手消息要落库，界面只重读一次消息（用户气泡会显示「已读」）。
             lastNoReply = reason

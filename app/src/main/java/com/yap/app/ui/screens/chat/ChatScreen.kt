@@ -1799,6 +1799,16 @@ private fun Composer(
                 .imePadding()
                 .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 10.dp)
         ) {
+            // 0.12 续 7：这一轮他被睡眠静默了，就在输入框正上方说清楚为什么没有回复。
+            // 不是消息气泡、不写库；他醒了或回了话，[ChatUiState.sleepHint] 自己变空。
+            state.sleepHint?.let { hint ->
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 6.dp, end = 6.dp, bottom = 8.dp)
+                )
+            }
             if (state.images.isNotEmpty()) {
                 Row(
                     modifier = Modifier

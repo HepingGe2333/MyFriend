@@ -68,6 +68,16 @@ interface PersonaDao {
     @Query("UPDATE personas SET moodNudgedAt = :now WHERE id = :id")
     suspend fun markMoodNudged(id: String, now: Long)
 
+    /**
+     * 一次性迁移用：把这些人的 `sleepEnabled` 关掉（0.12 续 7）。
+     *
+     * 为什么按 id 批量而不是写一条大 `WHERE`：筛选条件（`SleepDefaultsMigration`）是纯函数、
+     * 有单测；这里只负责把「确定要改的那几条」写下去，条件不会在 SQL 与 Kotlin 里各写一遍。
+     * 不碰 `updatedAt`：迁移不是用户改人格，不该打乱首页排序。
+     */
+    @Query("UPDATE personas SET sleepEnabled = 0 WHERE id IN (:ids)")
+    suspend fun disableSleepFor(ids: List<String>): Int
+
     /** 心情随时间淡下去，只改词和强度。 */
     @Query("UPDATE personas SET mood = :mood, moodIntensity = :intensity WHERE id = :id")
     suspend fun fadeMood(id: String, mood: String?, intensity: Int?)

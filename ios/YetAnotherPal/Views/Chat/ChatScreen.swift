@@ -636,6 +636,8 @@ struct ChatScreen: View {
 
             sendFailureBar
 
+            sleepHintBar
+
             attachmentPreview
 
             HStack(alignment: .bottom, spacing: 10) {
@@ -707,6 +709,31 @@ struct ChatScreen: View {
             .padding(.horizontal, 14)
             .padding(.vertical, 8)
             .background(Color.orange.opacity(0.10))
+        }
+    }
+
+    /// 输入框上方那一行「他睡着了（08:00 醒）；连着发几条可以叫醒他」（0.12 续 7）。
+    ///
+    /// 只在「这一轮因为他睡着而被静默、且他此刻还在睡」时出现（判定在 `ChatViewModel.sleepHint`）；
+    /// 他回了话或睡醒之后自己消失。它不是消息气泡、不写库、也不弹窗 ——
+    /// 顶栏那行 presence（「睡着了 · 08:00 醒」）仍然照旧，这两处说的是不同的事：
+    /// 那是他的状态，这是**这一轮为什么没有回复**。
+    @ViewBuilder
+    private var sleepHintBar: some View {
+        if let hint = model.sleepHint {
+            HStack(spacing: 8) {
+                Image(systemName: "moon.zzz")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                Text(hint)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.primary.opacity(0.04))
         }
     }
 

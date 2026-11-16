@@ -43,6 +43,13 @@ class SettingsRepository @Inject constructor(
         val activePersonaId = stringPreferencesKey("active_persona_id")
         val haptics = booleanPreferencesKey("haptics")
         val seeded = booleanPreferencesKey("initial_personas_seeded")
+        /**
+         * 一次性迁移标记（0.12 续 7）：把「从没配置过睡眠」的旧默认关掉，只跑一次。
+         *
+         * 它和 [seeded] 一样是**内部状态**，设置页里没有它；「删除全部数据」会把它一起清掉，
+         * 下次启动再跑一遍也无害 —— 那时库里只有刚种下的新人格（本来就不睡）。
+         */
+        val sleepDefaultsMigratedV1 = booleanPreferencesKey("sleep_defaults_migrated_v1")
         val agentLoop = booleanPreferencesKey("agent_loop")
         val autoTranslatePersona = booleanPreferencesKey("auto_translate_persona")
         val backgroundTipDismissed = booleanPreferencesKey("background_tip_dismissed")
@@ -120,6 +127,14 @@ class SettingsRepository @Inject constructor(
 
     suspend fun markInitialPersonasSeeded() {
         context.settingsDataStore.edit { it[Keys.seeded] = true }
+    }
+
+    /** 0.12 续 7 的一次性迁移标记：跑过一次之后不再动任何人的睡眠设置。 */
+    suspend fun hasMigratedSleepDefaults(): Boolean =
+        context.settingsDataStore.data.first()[Keys.sleepDefaultsMigratedV1] ?: false
+
+    suspend fun markSleepDefaultsMigrated() {
+        context.settingsDataStore.edit { it[Keys.sleepDefaultsMigratedV1] = true }
     }
 
     private suspend fun edit(block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {

@@ -102,7 +102,9 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(persona.memoryRetention, 3)
         XCTAssertEqual(persona.extractionEvery, 6)
         XCTAssertTrue(persona.sleepEnabled)
-        XCTAssertEqual(persona.wakeThreshold, 6)
+        // 0.12 续 7：默认唤醒阈值从 6 降到 3（备份里没有这一项时落到代码默认值）。
+        XCTAssertEqual(persona.wakeThreshold, PersonaFieldLimits.wakeThresholdDefault)
+        XCTAssertEqual(persona.wakeThreshold, 3)
         XCTAssertFalse(persona.dndOnSleep)
     }
 

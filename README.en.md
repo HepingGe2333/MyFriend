@@ -18,7 +18,7 @@ YetAnotherPal (Yap) is a companion app for Android and iOS that models a "person
 | Database schema | v13 (messages in blocks of 200; personas carry a world preset, speech style and current activity; both platforms aligned) |
 | Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable). The format name is kept for backward compatibility; the product is now YetAnotherPal (Yap) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 1414 on Android (132 classes) + 56 instrumented, 90 in `:agentcore`, 358 in `:agentd`, 1625 on iOS (`swift test`) + 16 App-hosted |
+| Unit tests | 1444 on Android (140 classes) + 56 instrumented, 90 in `:agentcore`, 358 in `:agentd`, 1647 on iOS (`swift test`) + 16 App-hosted |
 | CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
 
 ## Feature overview
@@ -28,8 +28,8 @@ YetAnotherPal (Yap) is a companion app for Android and iOS that models a "person
 | Home | Contact list with avatar, name, last message, timestamp and unread count; one conversation per contact |
 | Search | Full-text chat-history search: highlighted snippets, persona and time filters, **block-by-block scanning with no candidate cap**, tap a hit to jump back to that message with a highlight (same semantics on both platforms, contract in `spec/search/`) |
 | Chat | SSE streaming, stop generation, Markdown / code blocks / LaTeX, image messages (up to 4 per message), long-press actions (copy / edit & resend / regenerate / delete), link detection with an in-app browser |
-| Read state and silence | `messages.readAt` read receipts; `defer_reply` lets the model skip a turn while the UI only shows "read" |
-| Sleep | Persona-initiated sleep, do-not-disturb decided by the model, wake threshold inside a 30-minute window |
+| Read state and silence | `messages.readAt` read receipts; `defer_reply` lets the model skip a turn while the UI only shows "read"; when a turn is silenced by sleep, the chat screen explains it in a line above the composer |
+| Sleep | **Off by default** (sleep is opt-in, switched on in the persona editor); once on, persona-initiated sleep, do-not-disturb decided by the model, wake threshold inside a 30-minute window (new and seed personas default to 3 messages) |
 | Persona | Structured fields (traits / likes / behaviours / backstory / quirks) plus behavioural parameters (proactiveness, memory retention, extraction interval, sleep), full prompt editing, version snapshots, evolution proposals, persona card |
 | Avatars | Persona avatar and user avatar; sampled, compressed and stored locally, rendered consistently, never included in backups |
 | Long-term memory | Automatic extraction, lifecycle (ACTIVE / DORMANT / ARCHIVED), strength decay, daily consolidation, three-depth `recall`, recall-driven rewriting |

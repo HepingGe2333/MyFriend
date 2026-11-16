@@ -316,6 +316,8 @@
     <string name="chat_status_read">" · Read"</string>
     <string name="chat_image_message">Photo</string>
     <string name="chat_image">Photo</string>
+    <!-- 0.12 follow-up 7: shown above the composer when this turn was silenced by sleep (%1$s = wake time, e.g. 08:00) -->
+    <string name="chat_sleep_hint">He\'s asleep (up around %1$s). A few messages in a row will wake him.</string>
 
     <!-- Chat: what he did -->
     <string name="chat_trace_busy">Busy with something</string>

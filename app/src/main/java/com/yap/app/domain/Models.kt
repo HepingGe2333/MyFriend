@@ -22,8 +22,14 @@ data class PersonaDraft(
     val proactiveLevel: Int = 3,
     val memoryRetention: Int = 3,
     val extractionEvery: Int = 6,
-    val sleepEnabled: Boolean = true,
-    val wakeThreshold: Int = 6,
+    /**
+     * 「新建一个人」时的默认：不睡（0.12 续 7）。
+     *
+     * 这份草稿的默认值是**新建路径**的默认值（从预设复制等人格入口不经过编辑页表单）；
+     * 已有数据永远显式带上库里的值（编辑页、换头像、回滚版本都会传），所以改这里不会动到老用户。
+     */
+    val sleepEnabled: Boolean = false,
+    val wakeThreshold: Int = 3,
     val quietSleepMinutes: Int? = null,
     val quietWakeMinutes: Int? = null,
     // ---- 0.12 人设引导（schema v13） ----------------------------------------
@@ -94,10 +100,26 @@ sealed class GenerationEvent {
     /**
      * 这一轮他选择不开口：睡着 / 免打扰 / 被 defer_reply 主动推迟。
      *
-     * 界面收到它要做的只有一件事：把「正在输入」收掉。不弹解释、不显示「他可能不想回」，
+     * 界面收到它要把「正在输入」收掉。不弹解释、不显示「他可能不想回」，
      * 用户消息自己会因为 readAt 非空而显示「已读」——已读不等于会回，这是规格里的核心语义。
+     *
+     * [reason] 只多给界面一件信息：这一轮是不是「睡着被静默」。只有那种情况聊天页才会
+     * 在输入框上方显示一行「他睡着了（08:00 醒）；连着发几条可以叫醒他」——
+     * 不是气泡、不写库，他醒了或回了话就消失。
      */
-    data object Silent : GenerationEvent()
+    data class Silent(val reason: SilentReason = SilentReason.DEFERRED) : GenerationEvent()
+}
+
+/** [GenerationEvent.Silent] 的原因。界面据此决定要不要显示睡眠提示行。 */
+enum class SilentReason {
+    /** 睡在自己的作息里、还没被叫醒：已读，但这一轮不回。 */
+    ASLEEP,
+
+    /** 睡着且开着免打扰：连已读都不留，也不该提示「发几条能叫醒」（免打扰叫不醒）。 */
+    DND,
+
+    /** 他自己决定过会儿再说（`defer_reply`）：与睡眠无关，不显示任何提示。 */
+    DEFERRED
 }
 
 data class EvolutionProposal(

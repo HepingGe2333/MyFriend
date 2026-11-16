@@ -686,6 +686,7 @@
 "睡前会开免打扰：睡着时不会被消息叫醒。" = "Do Not Disturb goes on before sleep: messages won't wake him.";
 "睡着了" = "Asleep";
 "睡着了 · %@ 醒" = "Asleep · up at %@";
+"他睡着了（%@ 醒）；连着发几条可以叫醒他" = "He's asleep (up around %@). A few messages in a row will wake him.";
 "睡觉时间要写成 HH:mm" = "Sleep time has to be written as HH:mm";
 "称呼" = "How he addresses you";
 "第一次听到，先放在心里；再提到一次就会真正记住。" = "Heard it once, so he's keeping it in mind; a second mention will make it stick.";

@@ -36,6 +36,9 @@ import com.yap.app.domain.MoodState
 import com.yap.app.domain.Presence
 import com.yap.app.domain.ExportFile
 import com.yap.app.domain.GenerationEvent
+import com.yap.app.domain.SilentReason
+import com.yap.app.domain.ChatSleepHint
+import com.yap.app.domain.SleepPolicy
 import com.yap.app.domain.ToolTraceItem
 import com.yap.app.domain.ProactiveProposal
 import com.yap.app.util.ChatNotifier
@@ -117,7 +120,14 @@ data class ChatUiState(
      * 已读判定（`ReadReceipt`）每条气泡只跟它比一次：以前每个气泡都扫一遍整个已加载窗口，
      * 把历史翻完之后是 O(n²)（审计 P2-10）。
      */
-    val lastAssistantAt: Long? = null
+    val lastAssistantAt: Long? = null,
+    /**
+     * 输入框上方那一行「他睡着了（08:00 醒）；连着发几条可以叫醒他」；null = 不显示。
+     *
+     * 0.12 续 7：只在「这一轮因为睡着被静默」且他此刻仍在睡的时候出现。它不是消息气泡、
+     * 不写库，收到回复或他睡醒之后自己消失（判定见 `ChatSleepHint`）。
+     */
+    val sleepHint: String? = null
 ) {
     val canSend: Boolean
         get() = session != null && config != null && persona != null && !isGenerating && !switchingPersona
@@ -136,7 +146,14 @@ data class ChatEphemeral(
     val isExporting: Boolean = false,
     val snackbar: String? = null,
     val showConfigPicker: Boolean = false,
-    val showPersonaPicker: Boolean = false
+    val showPersonaPicker: Boolean = false,
+    /**
+     * 上一轮为什么没说话（`GenerationEvent.Silent` 带来的原因）；开始/正常结束一轮时清空。
+     *
+     * 只有 [SilentReason.ASLEEP] 会让聊天页显示那行睡眠提示，其余原因（免打扰、晚点回）
+     * 只是「已读不回」，界面不解释。
+     */
+    val silentReason: SilentReason? = null
 )
 
 /** 本地分页状态：只影响聊天页，不进 Session。 */
@@ -255,12 +272,13 @@ class ChatViewModel @Inject constructor(
                 .filter { it.role == MessageRole.ASSISTANT && it.status != MessageStatus.ERROR }
                 .map { it.createdAt }
         )
+        val presence = ambient.second ?: Presence()
         ChatUiState(
             session = details.session,
             messages = details.messages,
             persona = details.persona,
             mood = ambient.first ?: MoodState(),
-            presence = ambient.second ?: Presence(),
+            presence = presence,
             config = details.config,
             personas = bundle.personas,
             apiConfigs = bundle.apiConfigs,
@@ -281,8 +299,28 @@ class ChatViewModel @Inject constructor(
             loadingOlder = paging.loadingOlder,
             hasMoreNewer = paging.hasMoreNewer,
             loadingNewer = paging.loadingNewer,
-            lastAssistantAt = lastAssistantAt
+            lastAssistantAt = lastAssistantAt,
+            sleepHint = sleepHintText(local.silentReason, details.persona, presence)
         )
+    }
+
+    /**
+     * 输入框上方那行睡眠提示的文案（0.12 续 7）。
+     *
+     * 出现条件全在 [ChatSleepHint]：这一轮因为睡着被静默，且他此刻仍在睡。
+     * 醒来的钟点取自人格的作息（`SleepPolicy.wakeClockText`），没有作息的人不显示。
+     * 不写库、不是气泡 —— 它只是界面对「已读但没回」的一句解释。
+     */
+    private fun sleepHintText(
+        reason: SilentReason?,
+        persona: PersonaEntity?,
+        presence: Presence
+    ): String? {
+        if (!ChatSleepHint.visible(reason, presence)) return null
+        val wakeClock = persona?.let {
+            SleepPolicy.wakeClockText(it.sleepEnabled, it.quietSleepMinutes, it.quietWakeMinutes)
+        } ?: return null
+        return context.getString(R.string.chat_sleep_hint, wakeClock)
     }
 
     val uiState: StateFlow<ChatUiState> = uiFlow.stateIn(
@@ -742,8 +780,13 @@ class ChatViewModel @Inject constructor(
                 if (readDelay > 0) kotlinx.coroutines.delay(readDelay)
                 chatRepository.generateAssistant(sessionId).collect { event ->
                     when (event) {
-                        GenerationEvent.Started -> ephemeral.update { it.copy(hasStarted = true) }
-                        is GenerationEvent.Delta -> ephemeral.update { it.copy(streamingText = event.fullText) }
+                        // 新一轮真的开始出字了：上一轮的「他睡着了」提示立刻作废。
+                        GenerationEvent.Started -> ephemeral.update {
+                            it.copy(hasStarted = true, silentReason = null)
+                        }
+                        is GenerationEvent.Delta -> ephemeral.update {
+                            it.copy(streamingText = event.fullText, silentReason = null)
+                        }
                         is GenerationEvent.ToolCall -> ephemeral.update { it.copy(streamingTraces = event.traces) }
                         is GenerationEvent.Completed -> {
                             ephemeral.update {
@@ -751,7 +794,9 @@ class ChatViewModel @Inject constructor(
                                     isGenerating = false,
                                     hasStarted = false,
                                     streamingText = "",
-                                    streamingTraces = emptyList()
+                                    streamingTraces = emptyList(),
+                                    // 收到回复 = 他醒了 / 说话了：睡眠提示行随之消失。
+                                    silentReason = null
                                 )
                             }
                             event.proposal?.let { proposal -> saveProposal(proposal) }
@@ -765,15 +810,26 @@ class ChatViewModel @Inject constructor(
                                     isGenerating = false,
                                     hasStarted = false,
                                     streamingText = "",
+                                    silentReason = null,
                                     snackbar = ErrorText.of(context, event.error)
                                 )
                             }
                         }
-                        GenerationEvent.Stopped -> ephemeral.update { it.copy(isGenerating = false, hasStarted = false, streamingText = "") }
-                        // 睡着 / 免打扰 / 他选择先不回：只把「正在输入」收掉。
+                        GenerationEvent.Stopped -> ephemeral.update {
+                            it.copy(isGenerating = false, hasStarted = false, streamingText = "", silentReason = null)
+                        }
+                        // 睡着 / 免打扰 / 他选择先不回：把「正在输入」收掉。
                         // 用户消息会因 readAt 非空显示「已读」——已读不代表会回。
-                        GenerationEvent.Silent -> ephemeral.update {
-                            it.copy(isGenerating = false, hasStarted = false, streamingText = "", streamingTraces = emptyList())
+                        // 原因记在 [ChatEphemeral.silentReason] 里：只有「睡着被静默」会让聊天页
+                        // 在输入框上方显示一行提示，免打扰与 defer_reply 都不解释。
+                        is GenerationEvent.Silent -> ephemeral.update {
+                            it.copy(
+                                isGenerating = false,
+                                hasStarted = false,
+                                streamingText = "",
+                                streamingTraces = emptyList(),
+                                silentReason = event.reason
+                            )
                         }
                     }
                 }

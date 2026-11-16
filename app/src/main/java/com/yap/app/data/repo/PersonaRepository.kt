@@ -571,7 +571,10 @@ class PersonaRepository @Inject constructor(
                     modelOverride = null,
                     isDefault = first,
                     createdAt = now + imported,
-                    updatedAt = now + imported
+                    updatedAt = now + imported,
+                    // 老格式的人格导出里没有睡眠这一栏：导入进来的人按当前默认「不睡」，
+                    // 否则新加的人格一到夜里就只标已读（0.12 续 7）。
+                    sleepEnabled = false
                 )
                 personaDao.insert(persona)
                 insertRevision(persona, PersonaRevisionReason.IMPORTED, now + imported)

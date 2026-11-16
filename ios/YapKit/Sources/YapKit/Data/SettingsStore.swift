@@ -225,6 +225,26 @@ public final class SettingsStore {
         for key in Key.allCases {
             defaults.removeObject(forKey: key.rawValue)
         }
+        // 一次性迁移标记不是设置项（`Key` 里没有它），但「恢复默认」之后也该重来一次：
+        // 重跑对已经改过的人不再成立，是无害的。
+        defaults.removeObject(forKey: Self.sleepDefaultsMigratedV1Key)
+    }
+
+    // MARK: - 一次性迁移标记（0.12 续 7）
+
+    /// 键名与 Android DataStore 上的同名，排查时一眼能认出。
+    ///
+    /// 为什么不放进 [Key] 枚举：那是「用户可见的设置项」，会跟着 `load()` / `save()` /
+    /// 备份与设置页走；迁移标记是**内部状态**，没有界面、也不该进备份。
+    static let sleepDefaultsMigratedV1Key = "sleep_defaults_migrated_v1"
+
+    /// 「把没配置过的默认睡眠关掉」跑过没有。
+    public var hasMigratedSleepDefaultsV1: Bool {
+        defaults.bool(forKey: Self.sleepDefaultsMigratedV1Key)
+    }
+
+    public func markSleepDefaultsMigratedV1() {
+        defaults.set(true, forKey: Self.sleepDefaultsMigratedV1Key)
     }
 
     // MARK: 底层

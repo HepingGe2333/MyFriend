@@ -387,6 +387,15 @@ final class AppEnvironment: ObservableObject {
         self.serverLiveState = ServerLiveState()
 
         if bootError == nil {
+            // 0.12 续 7：先把老库里「从没配置过的默认睡眠」关掉，再谈播种。
+            // 与是否服务端模式无关 —— 看的是**本地**库里已有的人格；只跑一次，
+            // 失败只写一行日志，不挡启动。种子人格本来就是 sleepEnabled = false。
+            SleepDefaultsMigration.runIfNeeded(
+                stores: fallbackStores,
+                isMigrated: { settings.hasMigratedSleepDefaultsV1 },
+                markMigrated: { settings.markSleepDefaultsMigratedV1() },
+                log: { DebugSeeding.log($0) }
+            )
             // 服务端模式下**不再种本地人格**：人和会话都是服务端下发的，
             // 本机再种一份会变成「同一个人出现两次」（本地一个、服务端一个不同 id 的）。
             // 已有本地人格的情况属于 M5（人格/记忆 CRUD 上移）的迁移范围，这里不做合并：

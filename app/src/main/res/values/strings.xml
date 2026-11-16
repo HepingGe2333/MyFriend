@@ -313,6 +313,8 @@
     <string name="chat_status_read">" · 已读"</string>
     <string name="chat_image_message">图片消息</string>
     <string name="chat_image">图片</string>
+    <!-- 0.12 续 7：这一轮因为睡着被静默时，输入框上方那一行解释（%1$s = 几点醒，如 08:00） -->
+    <string name="chat_sleep_hint">他睡着了（%1$s 醒）；连着发几条可以叫醒他</string>
 
     <!-- 聊天页：动作痕迹 -->
     <string name="chat_trace_busy">正在忙</string>

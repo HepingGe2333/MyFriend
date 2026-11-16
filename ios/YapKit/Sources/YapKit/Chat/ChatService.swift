@@ -38,6 +38,26 @@ public enum ChatNoReplyReason: Equatable, Sendable {
 
     /// 界面**不显示**任何解释性文案（§四）：沉默就是沉默。
     public func describe() -> String { "" }
+
+    /// 输入框上方那行提示要用的「几点醒」（0.12 续 7）；不该显示时返回 `nil`。
+    ///
+    /// 只有一种情况该显示：这一轮因为「睡着、还没到唤醒阈值」被静默（`.sleepingWaiting`），
+    /// 且**此刻**他确实还在睡。所以：
+    /// - 免打扰（`.sleepingDoNotDisturb`）不显示 —— 那时候叫多少条都不会醒，
+    ///   说「发几条就能叫醒」是错的；
+    /// - `defer_reply` 不显示 —— 他醒着，只是决定晚点再说；
+    /// - 他已经醒了（时间走过起床点）不显示 —— 界面每 30 秒重算一次 presence，会自动消失。
+    ///
+    /// 返回的是「08:00」这样的钟点，不是整句：整句要按界面语言拼（`ChatViewModel`）。
+    public func sleepHintWakeText(
+        persona: PersonaEntity?,
+        now: Int64 = DomainClock.nowMillis
+    ) -> String? {
+        guard case .sleepingWaiting(let wakeAt) = self, let persona else { return nil }
+        let minute = ServiceTime.minuteOfDay(now)
+        guard SleepSchedule.isAsleep(persona, minuteOfDay: minute) else { return nil }
+        return wakeAt
+    }
 }
 
 /// 生成过程的对外事件。

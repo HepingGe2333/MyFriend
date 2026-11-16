@@ -56,6 +56,9 @@ public enum PersonaPresetApplier {
             isDefault: false,
             createdAt: now,
             updatedAt: now,
+            // 「复制到人格」是新建一个人：沿用当前默认（不睡）。模板里没有睡眠这一栏，
+            // 让它继承实体的 `true` 会让新建的人在夜里只标已读（0.12 续 7）。
+            sleepEnabled: false,
             worldJson: PromptGuidanceJSON.clean(preset.worldJson),
             speechStyleJson: PromptGuidanceJSON.clean(preset.speechStyleJson)
         )

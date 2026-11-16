@@ -71,11 +71,19 @@ data class PersonaForm(
     val proactiveLevel: Int = ProactiveLevel.DEFAULT,
     val memoryRetention: Int = 3,
     val extractionEvery: Int = 6,
-    val sleepEnabled: Boolean = true,
-    /** 睡觉 / 醒来的 HH:mm；留空用默认 23:30–08:00。 */
+    /**
+     * 新建人格默认不睡（0.12 续 7）。
+     *
+     * 打开它他才会有作息：没设时段就按 23:30–08:00 睡，睡眠中只标已读、连着发满
+     * [wakeThreshold] 条才醒。默认打开会让「刚装好 App 的第一晚」变成「发什么都没反应」，
+     * 所以睡眠改成用户主动打开的功能。已有的人格仍然按库里存的值回显。
+     */
+    val sleepEnabled: Boolean = false,
+    /** 睡觉 / 醒来的 HH:mm；留空用默认 23:30–08:00（只在 [sleepEnabled] 打开时有意义）。 */
     val sleepAt: String = "",
     val wakeAt: String = "",
-    val wakeThreshold: Int = 6,
+    /** 睡眠中被叫醒需要的连续消息数（1–20）；默认 3，夜里发几条就能把他叫起来。 */
+    val wakeThreshold: Int = 3,
     // ---- 0.12 人设引导：世界 / 话风 / 当前活动（v13；世界是可视化编辑器状态） ----
     val world: WorldEditorState = WorldEditorState(),
     val speechTone: String = "",

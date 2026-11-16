@@ -18,7 +18,7 @@ YetAnotherPal（Yap）是一个 Android + iOS 的 AI 陪伴应用：把「人格
 | 数据库 schema | v13（消息按 200 条一块；人格带世界预设/话风/当前活动；两端版本号对齐） |
 | 备份格式 | v5（`format = "myfriend.backup"`、`formatVersion = 5`，图片/头像、搜索 provider、世界预设与话风随备份走；v1–v4 仍可读）。格式名为历史兼容保留，产品名已改为 YetAnotherPal（Yap） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 1414 条（132 类）+ 56 条 instrumented、`:agentcore` 90 条、`:agentd` 358 条、iOS 1625 条（`swift test`）+ 16 条 App-hosted |
+| 单元测试 | Android 1444 条（140 类）+ 56 条 instrumented、`:agentcore` 90 条、`:agentd` 358 条、iOS 1647 条（`swift test`）+ 16 条 App-hosted |
 | 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
 
 ## 特性概览
@@ -28,8 +28,8 @@ YetAnotherPal（Yap）是一个 Android + iOS 的 AI 陪伴应用：把「人格
 | 首页 | 联系人列表：头像、名字、最后一条消息、时间、未读数；一人一段会话 |
 | 检索 | 聊天记录全文检索：摘要高亮、按人格与时间过滤、**逐区块扫描且没有候选上限**、点结果跳回该消息并高亮（两端语义一致，契约在 `spec/search/`） |
 | 聊天 | SSE 流式、停止生成、Markdown / 代码块 / LaTeX、图片消息（每条最多 4 张）、长按菜单（复制 / 编辑重发 / 重新生成 / 删除）、链接识别与内置浏览器 |
-| 已读与沉默 | `messages.readAt` 已读回执；`defer_reply` 允许模型本轮不回，界面只显示「已读」 |
-| 睡眠 | 人格自主睡觉、睡前免打扰（由模型决定）、30 分钟窗口内的唤醒阈值 |
+| 已读与沉默 | `messages.readAt` 已读回执；`defer_reply` 允许模型本轮不回，界面只显示「已读」；被睡眠静默时，聊天页在输入框上方说清楚原因 |
+| 睡眠 | **默认不睡**（睡眠是可选功能，在人格编辑里打开）；打开后人格自主睡觉、睡前免打扰（由模型决定）、30 分钟窗口内的唤醒阈值（新建/种子人格默认 3 条） |
 | 人格 | 结构化字段（性格 / 喜欢的事 / 行为方式 / 成长经历 / 个人设定）+ 行为参数（主动程度、记性、抽取频率、睡眠）、提示词全文编辑、版本快照、人格演化提案、人设卡 |
 | 头像 | 人格头像与用户头像；采样压缩后存本地，统一渲染，不进备份 |
 | 长期记忆 | 自动抽取、生命周期（ACTIVE / DORMANT / ARCHIVED）、分量衰减、每日整理、`recall` 三档检索、回忆重构 |

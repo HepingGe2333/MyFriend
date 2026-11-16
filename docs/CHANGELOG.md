@@ -267,6 +267,38 @@
 - **测试**：Android 1412 / 132 类 / 0 失败 + 56 instrumented、`:agentcore` 90、`:agentd` 358、iOS 1625（2 skip）+ 16 App-hosted；
   两端 Debug/Release 与 lint 全过。
 
+### 0.12 续 7（未升版本）：新装 / 重装后夜里「只标已读、不回」的修复
+
+- **根因**：种子人格（Android `SeedPersonas.build`、iOS `SeedPersonas.build`）没有显式写睡眠字段，
+  于是取了实体的默认 `sleepEnabled = true`；配合 `SleepPolicy` 的默认窗口 **23:30–08:00** 与唤醒阈值 **6**，
+  用户夜里发 1–5 条只会被标成「已读」、一句都不回（`GenerationEvent.Silent`）。
+  项目改名为 Yap（applicationId / bundleId 变更）等于全新安装，旧的自定义设置全部丢失，这个问题才暴露成
+  「发消息没反应」。模拟器实测该行是 `Elias|1|||6`（`sleepEnabled=1`、两个时段 NULL、阈值 6）。
+- **默认不睡**：种子人格（两端）显式 `sleepEnabled = false`；新建人格的表单默认也改成 `false`
+  （Android `PersonaForm`、iOS `PersonaEditorScreen`）。实体 / 备份模型的数据类默认值**保持 `true`**，
+  不动既有解码与迁移路径 —— 睡眠是可选功能，用户在人格编辑里打开才算数。
+- **一次性迁移**：对「从没配置过睡眠」的既有数据自动关掉睡眠。条件是
+  `sleepEnabled = 1`（iOS 老库该列为 NULL 时按 1 处理）`AND quietSleepMinutes IS NULL AND quietWakeMinutes IS NULL AND version = 1`；
+  用户自己填过时段、或改过人格（`version > 1`）的人一律不动，也不改 `updatedAt`（不打乱首页排序）。
+  Android 在 `PersonaRepositoryInitializer.seedIfNeeded()` 启动时执行（`PersonaDao.disableSleepFor`），
+  iOS 在 `AppEnvironment` 启动时执行（`SleepDefaultsMigration.runIfNeeded`）；两端都用一次性标记
+  `sleep_defaults_migrated_v1`（DataStore / UserDefaults）保证只跑一次，并写一条 debug 日志（只有人数，不含用户内容）。
+- **唤醒阈值默认 6 → 3**：Android `PersonaEntity.wakeThreshold` 与 iOS `PersonaFieldLimits.wakeThresholdDefault`。
+  只影响新建/种子人格；迁移不强行改既有值，列上的 `DEFAULT 6` 保持不变（改它要一次数据库迁移）。
+- **可读性**：当一轮因睡眠被静默时，聊天页在**输入框上方**显示一行提示
+  「他睡着了（08:00 醒）；连着发几条可以叫醒他」/「He's asleep (up around 08:00). A few messages in a row will wake him.」。
+  它不是消息气泡、不写库，他醒着（`defer_reply`）、开着免打扰（叫不醒）时不显示；收到回复或睡醒后自动消失。
+  顶栏原有的 presence 状态行（「睡着了 · 08:00 醒」）保留，两处说的是不同的事。
+- **测试**：Android 新增 `SeedPersonasTest`、`PersonaEntityDefaultsTest`、`PersonaFormDefaultsTest`、
+  `SleepDefaultsMigrationTest`（一次性 / 条件 / 用户自设时段 / `version > 1`）、`ChatSleepHintTest` 与接线契约测试；
+  iOS 新增 `SeedPersonasTests`、`SleepDefaultsMigrationTests`（真库：条件、只跑一次、NULL 老行、`updatedAt` 不变）与
+  `SleepHintTests`。全量 Android `:app:testDebugUnitTest` **1444 条 / 140 类 / 0 失败** 与 iOS `swift test` **1647 条（2 skip）/ 0 失败** 均通过；`:app:assembleDebug` 与 `:app:lintDebug`（0 error / 67 warning，均不在本次改动文件里）通过。
+- **同一类「新建」入口也一起改了**：从预设「复制到人格」（Android `PersonaDraft` 的默认值、iOS
+  `PersonaPresetApplier.newPersona`）与老格式人格 JSON 导入（`PersonaRepository.importPersonas`）
+  都不经过编辑页表单，过去会继承实体默认的 `true` —— 复制/导入出来的新人格同样会夜里只标已读，现在都按「不睡」处理。
+- **已知限制**：从**备份**恢复的人格走备份模型的默认值（`true`），没有跟着改 —— 那是历史语义（备份要能还原当时的他），
+  用户需要自己看一次睡眠开关。
+
 ## 0.11.2
 
 小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。

@@ -680,6 +680,27 @@ public final class PersonaStore: SQLiteStore<PersonaEntity> {
         try first(where: "isDefault = 1", orderBy: "updatedAt DESC")
     }
 
+    /// 一次性迁移用：把这些人的 `sleepEnabled` 关掉（0.12 续 7）。
+    ///
+    /// 为什么按 id 逐条写而不是一条大 `WHERE`：筛条件（`SleepDefaultsMigration`）是纯函数、
+    /// 有单测；这里只负责把「确定要改的那几条」写下去，条件不会在 SQL 与 Swift 里各写一遍。
+    /// 一个事务里写完；不碰 `updatedAt` —— 迁移不是用户改人格，不该打乱首页排序。
+    ///
+    /// - Returns: 实际被改的行数。
+    @discardableResult
+    public func disableSleepFor(ids: [String]) throws -> Int {
+        guard !ids.isEmpty else { return 0 }
+        var changed = 0
+        try database.inTransaction {
+            for id in ids {
+                changed += try database.executeUpdate(
+                    "UPDATE personas SET sleepEnabled = 0 WHERE id = ?", [.text(id)]
+                )
+            }
+        }
+        return changed
+    }
+
     public func allOrderedByUpdatedAt() throws -> [PersonaEntity] {
         try all(orderBy: "updatedAt DESC")
     }

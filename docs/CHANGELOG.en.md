@@ -305,6 +305,46 @@ API from this machine (contract and live notes: `spec/persona-guidance/README.md
 - **Tests**: Android 1412 / 132 classes / 0 failures + 56 instrumented, `:agentcore` 90, `:agentd` 358, iOS 1625
   (2 skipped) + 16 App-hosted; Debug/Release and lint all pass.
 
+### 0.12 follow-up 7 (no version bump): fix for "read but never answered" at night after a fresh install
+
+- **Root cause**: seed personas (Android `SeedPersonas.build`, iOS `SeedPersonas.build`) never wrote the sleep fields,
+  so they picked up the entity default `sleepEnabled = true`. Combined with `SleepPolicy`'s default window
+  **23:30–08:00** and a wake threshold of **6**, the first one to five messages after 23:30 were marked read and left
+  unanswered (`GenerationEvent.Silent`). Renaming the project to Yap (new applicationId / bundleId) meant a fresh
+  install, so every previously customised setting was gone — which is what turned this into "he never reacts".
+  A simulator check showed the row was `Elias|1|||6` (`sleepEnabled=1`, both schedule columns NULL, threshold 6).
+- **Asleep is off by default**: seed personas (both platforms) set `sleepEnabled = false` explicitly, and the new-persona
+  form defaults to `false` too (Android `PersonaForm`, iOS `PersonaEditorScreen`). The data-class defaults in the entity
+  and backup models stay `true` so existing decoding and migration paths are untouched — sleep is opt-in, switched on in
+  the persona editor.
+- **One-time migration**: existing personas that never had sleep configured are turned off. Condition:
+  `sleepEnabled = 1` (a NULL column in old iOS databases counts as 1)
+  `AND quietSleepMinutes IS NULL AND quietWakeMinutes IS NULL AND version = 1`. User-set schedules and edited personas
+  (`version > 1`) are left alone, and `updatedAt` is not touched so home-screen ordering does not churn. Android runs it
+  from `PersonaRepositoryInitializer.seedIfNeeded()` (`PersonaDao.disableSleepFor`), iOS from `AppEnvironment` at launch
+  (`SleepDefaultsMigration.runIfNeeded`). Both use the one-shot marker `sleep_defaults_migrated_v1`
+  (DataStore / UserDefaults) and write one debug log line (counts only, no user content).
+- **Wake threshold 6 → 3 by default**: Android `PersonaEntity.wakeThreshold` and iOS
+  `PersonaFieldLimits.wakeThresholdDefault`. New and seed personas only; the migration never rewrites existing values,
+  and the column's `DEFAULT 6` stays (changing it would need a database migration).
+- **Readability**: when a turn was silenced by sleep, the chat screen shows one line **above the composer**:
+  "He's asleep (up around 08:00). A few messages in a row will wake him." It is not a message bubble, it is not written
+  to the database, it stays hidden for `defer_reply` and for do-not-disturb (which never wakes him), and it disappears
+  once he replies or wakes up. The existing presence subtitle ("Asleep · up at 08:00") stays — the two say different
+  things.
+- **Tests**: Android adds `SeedPersonasTest`, `PersonaEntityDefaultsTest`, `PersonaFormDefaultsTest`,
+  `SleepDefaultsMigrationTest` (one-shot / conditions / user schedules / `version > 1`), `ChatSleepHintTest` and a wiring
+  contract test; iOS adds `SeedPersonasTests`, `SleepDefaultsMigrationTests` (real database: conditions, runs once,
+  legacy NULL rows, `updatedAt` unchanged) and `SleepHintTests`. Full `:app:testDebugUnitTest` (**1444 tests / 140 classes / 0 failures**) and `swift test`
+  (**1647 tests, 2 skipped / 0 failures**) pass; `:app:assembleDebug` and `:app:lintDebug` (0 errors, 67 warnings, none in
+the files touched here) also pass.
+- **The other "new persona" entry points were fixed too**: "copy to persona" from a preset (Android `PersonaDraft`
+  defaults, iOS `PersonaPresetApplier.newPersona`) and old-format JSON persona import
+  (`PersonaRepository.importPersonas`) never go through the editor form and used to inherit the entity default `true` —
+  a copied/imported persona would also be read-only-after-23:30. They now create an awake persona.
+- **Known limitation**: personas restored from a **backup** keep the backup model's default (`true`), because a backup has
+  to restore who he was at that time; the sleep toggle has to be checked by the user.
+
 
 ## 0.11.2
 

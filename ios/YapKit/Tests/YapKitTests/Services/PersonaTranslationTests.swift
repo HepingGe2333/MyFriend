@@ -494,6 +494,8 @@ final class PersonaTranslationTests: XCTestCase {
         XCTAssertEqual(copied.name, "临港建筑师")
         XCTAssertFalse(copied.isDefault)
         XCTAssertEqual(copied.createdAt, 11)
+        // 0.12 续 7：预设里没有睡眠这一栏，新建出来的人按当前默认「不睡」。
+        XCTAssertFalse(copied.sleepEnabled, "从预设新建的人格不该默认开着睡眠")
     }
 }
 

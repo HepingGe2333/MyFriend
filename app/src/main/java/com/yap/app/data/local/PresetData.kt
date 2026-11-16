@@ -22,21 +22,33 @@ object SeedPersonas {
         SeedSpec(index = 3, avatarSeed = 8, isDefault = false)
     )
 
-    fun build(context: Context, now: Long): List<PersonaEntity> = SEEDS.map { spec ->
+    fun build(context: Context, now: Long): List<PersonaEntity> =
+        build(now) { resId -> context.getString(resId) }
+
+    /**
+     * 资源解耦的那一层：`stringOf` 只负责把资源 id 变成一句话。
+     *
+     * 单测（纯 JVM，没有 `Context`）用一张假的名字表跑同一段构造逻辑，
+     * 这样「种子人格默认不睡 / 唤醒阈值 3」这类默认值是**真的被测到**，而不是靠读源码。
+     */
+    internal fun build(now: Long, stringOf: (Int) -> String): List<PersonaEntity> = SEEDS.map { spec ->
         PersonaEntity(
             id = UUID.randomUUID().toString(),
-            name = context.getString(nameRes(spec.index)),
-            description = context.getString(descriptionRes(spec.index)),
+            name = stringOf(nameRes(spec.index)),
+            description = stringOf(descriptionRes(spec.index)),
             avatarUri = null,
             avatarSeed = spec.avatarSeed,
-            prompt = context.getString(promptRes(spec.index)),
-            category = context.getString(categoryRes(spec.index)),
+            prompt = stringOf(promptRes(spec.index)),
+            category = stringOf(categoryRes(spec.index)),
             version = 1,
             defaultApiConfigId = null,
             modelOverride = null,
             isDefault = spec.isDefault,
             createdAt = now,
-            updatedAt = now
+            updatedAt = now,
+            // 0.12 续 7：新装的人不睡。睡眠是可选功能——打开它（并在人格编辑里设时段/阈值）
+            // 才算「他会睡」；种子人格默认打开等于「半夜发什么都没反应」，那是最糟的第一次见面。
+            sleepEnabled = false
         )
     }
 
