@@ -7,7 +7,7 @@ YetAnotherPal (Yap) is a companion app for Android and iOS that models a "person
 [![GitHub](https://img.shields.io/badge/GitHub-HepingGe2333%2FYetAnotherPal-181717.svg?logo=github)](https://github.com/HepingGe2333/YetAnotherPal)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/HepingGe2333/YetAnotherPal/blob/main/LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](https://github.com/HepingGe2333/YetAnotherPal#architecture--stack)
-[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](https://github.com/HepingGe2333/YetAnotherPal#build-and-test)
+[![Tests](https://img.shields.io/badge/tests-1414%20Android%20%7C%201625%20iOS%20%7C%2090%20agentcore%20%7C%20358%20agentd-brightgreen.svg)](https://github.com/HepingGe2333/YetAnotherPal#build-and-test)
 [![CI](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml/badge.svg)](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml)
 
 ## Project status
@@ -18,7 +18,7 @@ YetAnotherPal (Yap) is a companion app for Android and iOS that models a "person
 | Database schema | v13 (messages in blocks of 200; personas carry a world preset, speech style and current activity; both platforms aligned) |
 | Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable). The format name is kept for backward compatibility; the product is now YetAnotherPal (Yap) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 1412 on Android (132 classes) + 56 instrumented, 90 in `:agentcore`, 358 in `:agentd`, 1625 on iOS (`swift test`) + 16 App-hosted |
+| Unit tests | 1414 on Android (132 classes) + 56 instrumented, 90 in `:agentcore`, 358 in `:agentd`, 1625 on iOS (`swift test`) + 16 App-hosted |
 | CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
 
 ## Feature overview
