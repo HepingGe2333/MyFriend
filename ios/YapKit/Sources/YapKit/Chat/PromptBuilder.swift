@@ -120,7 +120,23 @@ public enum ProactiveCapabilityPrompt {
 public enum PromptBuilder {
 
     /// 一次回复最多带多少字的对话正文。与 Android 的 `CONTEXT_CHAR_BUDGET` 一致。
+    ///
+    /// 它是**产品上限**（历史再长也只逐字带这么多，其余靠摘要），不是模型窗口：
+    /// 窗口上限见 `contextTokenBudget(configured:)`（0.13 起默认 1M，`spec/api-defaults`）。
     public static let contextCharBudget = 28_000
+
+    /// 上下文预算（tokens）：默认 1M 上限，配置里显式给的值优先且不超过 1M。
+    public static func contextTokenBudget(configured: Int? = nil) -> Int {
+        ApiDefaults.contextTokenLimit(configured: configured)
+    }
+
+    /// 「这个窗口还能带多少字历史」：窗口换算结果与产品上限取小。
+    ///
+    /// 默认窗口（1M）下结果就是 `contextCharBudget`（28 000）——1M 不会让请求体真的胀到 1M；
+    /// 只有在有人把窗口配得很小时（比如 20K）才会真的收紧历史。
+    public static func historyCharBudget(contextTokens: Int = ApiDefaults.contextWindowTokens) -> Int {
+        min(contextCharBudget, ApiDefaults.historyCharBudget(contextTokens: contextTokens))
+    }
 
     /// 装配上下文时最多从库里读多少条消息（Android: `CONTEXT_RECENT_LIMIT`）。
     public static let contextRecentLimit = 200
@@ -258,6 +274,11 @@ public enum PromptBuilder {
     /// 规范 §6.3 的形状：
     /// `现在是{weekday HH:mm}。{activity 或「没在忙什么」}{；心情：…}{；已经睡了…}`
     /// 这里只负责「时间 + 活动 + 在场」；心情由 `MoodPrompt` 那两段跟在后面。
+    ///
+    /// 时间（`spec/context-time/README.md`）：**每次拼提示词都重新取**，第一行就是
+    /// `现在是 2026-11-17 周二 02:42（UTC+08:00）。`。`now` 由调用方在**发请求那一刻**
+    /// 传进来（`ChatService` 每轮取一次），所以跨天 / 换时区之后这里自然是对的。
+    /// 工具回路不会重建 system，因此这一行在一次回复里只出现一次。
     public static func stateSection(
         now: Int64,
         activity: PersonaActivity?,
@@ -265,10 +286,11 @@ public enum PromptBuilder {
         calendar: Calendar = ServiceTime.calendar()
     ) -> String {
         guard now > 0 else { return "" }
-        // 「现在是周三 19:40。」逐字来自脚手架 `state_line`；`state_idle` 同理。
+        // 第一行逐字来自脚手架 `state_line`（`现在是{weekday} {time}。`）：
+        // 0.13 把日期并进 `{weekday}`、把 UTC 偏移并进 `{time}`，模板本身没动。
         var line = PersonaPromptScaffold.fill(PersonaPromptScaffold.stateLine, [
-            "weekday": PromptClock.weekdayText(now, calendar: calendar),
-            "time": PromptClock.clockText(now, calendar: calendar)
+            "weekday": PromptClock.dateWeekdayText(now, calendar: calendar),
+            "time": PromptClock.clockWithOffsetText(now, calendar: calendar)
         ])
         if let activity, activity.isActive(now: now) {
             line += activity.renderStateLine(now: now, calendar: calendar)
@@ -436,5 +458,20 @@ public enum PromptBuilder {
     public static func wireMessages(system: String, history: [WireMessage],
                                     budget: Int = PromptBuilder.contextCharBudget) -> [WireMessage] {
         [WireMessage(role: "system", content: system)] + trimHistory(history, budget: budget)
+    }
+
+    /// 按**模型窗口**装配（`spec/api-defaults/README.md` 的「上下文预算计算使用 1M 上限」）。
+    ///
+    /// 聊天走这一条：窗口 → 字数预算 → 裁剪，默认 1M 下结果与旧的 28 000 字上限相同，
+    /// 窗口被配小时才会真的少带历史。
+    public static func wireMessages(
+        system: String,
+        history: [WireMessage],
+        contextTokens: Int
+    ) -> [WireMessage] {
+        wireMessages(
+            system: system, history: history,
+            budget: historyCharBudget(contextTokens: contextTokens)
+        )
     }
 }

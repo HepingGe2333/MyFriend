@@ -45,6 +45,10 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     SET_MOOD(R.string.tool_trace_set_mood),
     RECALL(R.string.tool_trace_recall),
     DEFER_REPLY(R.string.tool_trace_defer_reply),
+    DIARY(R.string.tool_trace_diary),
+    DIARY_ADD(R.string.tool_trace_diary_add),
+    DIARY_LIST(R.string.tool_trace_diary_list),
+    DIARY_REMOVE(R.string.tool_trace_diary_remove),
     UNKNOWN(R.string.tool_trace_unknown);
 
     companion object {
@@ -60,6 +64,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.SET_MOOD -> SET_MOOD
             ToolCatalog.RECALL -> RECALL
             ToolCatalog.DEFER_REPLY -> DEFER_REPLY
+            ToolCatalog.DIARY -> DIARY
             else -> UNKNOWN
         }
     }
@@ -82,6 +87,38 @@ object ToolTraceText {
     } else {
         context.resources.getQuantityString(R.plurals.tool_trace_recall_hits, hits, hits)
     }
+
+    // ------------------------------------------------------------ 日记（spec/diary）
+
+    /** `add` 的副标题：「周五问面试 · 到 11-21 周五 09:00 提醒」（不提醒就只有内容）。 */
+    fun diaryAddSubtitle(context: Context, content: String, remindText: String?): String {
+        val text = content.replace('\n', ' ').take(40)
+        return if (remindText.isNullOrBlank()) {
+            text
+        } else {
+            context.getString(R.string.tool_trace_diary_remind, text, remindText)
+        }
+    }
+
+    /** `list` 的副标题：「3 条备忘」。 */
+    fun diaryListSubtitle(context: Context, count: Int): String =
+        context.resources.getQuantityString(R.plurals.tool_trace_diary_count, count, count)
+
+    /** `list` 的展开正文：一条一行；空本子给一句人话，而不是一片空白。 */
+    fun diaryListDetail(context: Context, lines: List<String>): String =
+        if (lines.isEmpty()) {
+            context.getString(R.string.tool_trace_diary_empty_detail)
+        } else {
+            lines.joinToString("\n")
+        }
+
+    /** `remove` 的展开正文：真删掉了。 */
+    fun diaryRemovedDetail(context: Context): String =
+        context.getString(R.string.tool_trace_diary_removed_detail)
+
+    /** `remove` 找不到那条：不是错误（可能已经撕掉了），但要让用户看明白。 */
+    fun diaryNotFoundDetail(context: Context): String =
+        context.getString(R.string.tool_trace_diary_not_found_detail)
 
     /**
      * 活动副标题：「在事务所赶图 · 到 21:30」。

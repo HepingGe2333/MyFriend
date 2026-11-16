@@ -37,6 +37,58 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+/**
+ * chat.completions 请求体的唯一构造处。
+ *
+ * 抽成 `internal` 顶层函数只为一件事：**请求体里的参数可以被单测直接断言**。
+ * 以前温度/最大输出是在这里 `?.let { put(...) }` 拼的，null 就整段不出现，
+ * 于是「应用默认到底发的是什么」只能靠读代码猜；现在默认值来自 `ApiDefaults`，
+ * 这里只负责如实写进 JSON（`spec/api-defaults/README.md` 的验收项）。
+ */
+internal fun buildChatCompletionPayload(
+    model: String,
+    messages: List<WireMessage>,
+    params: InferenceParams,
+    stream: Boolean
+): JsonObject = buildJsonObject {
+    put("model", model)
+    put("messages", buildJsonArray {
+        messages.forEach { message ->
+            add(buildJsonObject {
+                put("role", message.role)
+                if (message.images.isEmpty()) {
+                    put("content", message.content)
+                } else {
+                    put("content", buildJsonArray {
+                        if (message.content.isNotBlank()) {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", message.content)
+                            })
+                        }
+                        message.images.forEach { dataUrl ->
+                            add(buildJsonObject {
+                                put("type", "image_url")
+                                put("image_url", buildJsonObject { put("url", dataUrl) })
+                            })
+                        }
+                    })
+                }
+            })
+        }
+    })
+    put("stream", stream)
+    if (stream) {
+        // 让服务端在最后一个分片里带上 usage；不支持的网关会忽略这个字段。
+        put("stream_options", buildJsonObject { put("include_usage", true) })
+    }
+    params.temperature?.let { put("temperature", it) }
+    params.topP?.let { put("top_p", it) }
+    params.maxOutputTokens?.let { put("max_tokens", it) }
+    params.frequencyPenalty?.let { put("frequency_penalty", it) }
+    params.presencePenalty?.let { put("presence_penalty", it) }
+}
+
 class OpenAiAdapter(
     private val client: OkHttpClient,
     private val json: Json,
@@ -291,45 +343,9 @@ class OpenAiAdapter(
             NetworkGuard.endpoint(config.baseUrl, "chat/completions").toString(),
             config.allowInsecureHttp
         )
-        val payload = buildJsonObject {
-            put("model", model)
-            put("messages", buildJsonArray {
-                messages.forEach { message ->
-                    add(buildJsonObject {
-                        put("role", message.role)
-                        if (message.images.isEmpty()) {
-                            put("content", message.content)
-                        } else {
-                            put("content", buildJsonArray {
-                                if (message.content.isNotBlank()) {
-                                    add(buildJsonObject {
-                                        put("type", "text")
-                                        put("text", message.content)
-                                    })
-                                }
-                                message.images.forEach { dataUrl ->
-                                    add(buildJsonObject {
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject { put("url", dataUrl) })
-                                    })
-                                }
-                            })
-                        }
-                    })
-                }
-            })
-            put("stream", stream)
-            if (stream) {
-                // 让服务端在最后一个分片里带上 usage；不支持的网关会忽略这个字段。
-                put("stream_options", buildJsonObject { put("include_usage", true) })
-            }
-            params.temperature?.let { put("temperature", it) }
-            params.topP?.let { put("top_p", it) }
-            params.maxOutputTokens?.let { put("max_tokens", it) }
-            params.frequencyPenalty?.let { put("frequency_penalty", it) }
-            params.presencePenalty?.let { put("presence_penalty", it) }
-        }
-        val requestBody = payload.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val requestBody = buildChatCompletionPayload(model, messages, params, stream)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
         return Request.Builder()
             .url(url)
             .post(requestBody)

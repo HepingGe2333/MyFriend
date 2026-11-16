@@ -138,6 +138,14 @@ public protocol ChatBackgroundTasks: AnyObject {
     func memoryExtractionNeeded(sessionId: String, personaId: String)
     /// 这一轮聊完了：考虑把已经聊过去的一段压成滚动摘要。
     func historyCompressionNeeded(sessionId: String)
+    /// 这一轮聊完了：考虑跑一次人格进化评估（每 20 条用户消息或 24 小时，
+    /// 见 `docs/design/persona-evolution.md`）。默认什么都不做，老调用点不用改。
+    func personaEvolutionNeeded(sessionId: String, personaId: String)
+}
+
+public extension ChatBackgroundTasks {
+    /// 默认实现：没接进化评估时，回复绝不会因此变慢或失败。
+    func personaEvolutionNeeded(sessionId: String, personaId: String) {}
 }
 
 /// 默认空实现：功能没接上时，回复绝不会因此变慢或失败。
@@ -614,7 +622,12 @@ public final class ChatService {
                 languageDirective: languageDirective?() ?? ""
             ))
 
-            var conversation = PromptBuilder.wireMessages(system: system, history: history)
+            // 上下文预算按模型窗口算（`spec/api-defaults`：1M 上限，配置显式值优先）：
+            // 默认 1M 时等价于产品上限 28 000 字；配了更小的窗口才会真的少带历史。
+            var conversation = PromptBuilder.wireMessages(
+                system: system, history: history,
+                contextTokens: PromptBuilder.contextTokenBudget(configured: nil)
+            )
             var round = 0
             var executed = Set<String>()
             var finalBody = ""
@@ -773,6 +786,9 @@ public final class ChatService {
             if pendingMemory {
                 background.memoryExtractionNeeded(sessionId: sessionId, personaId: persona.id)
             }
+            // 人格进化（0.13）：节奏判定在服务里（每 20 条用户消息 / 24 小时），
+            // 这里只负责「聊完这一轮，看看要不要评估」——不挡回复、失败只写日志。
+            background.personaEvolutionNeeded(sessionId: sessionId, personaId: persona.id)
 
             continuation.yield(.done(ChatCompletion(
                 message: saved,

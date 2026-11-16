@@ -1629,6 +1629,10 @@ public struct DatabaseStores {
     public let proactiveRules: ProactiveRuleStore
     public let agentIntents: AgentIntentStore
     public let apiUsage: ApiUsageStore
+    /// 0.13 日记板（`spec/diary/README.md`）。
+    public let diaryNotes: DiaryNoteStore
+    /// 0.13 人格进化的待确认变化（`docs/design/persona-evolution.md`）。
+    public let personaPendingPatches: PersonaPendingPatchStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -1646,6 +1650,8 @@ public struct DatabaseStores {
         self.proactiveRules = ProactiveRuleStore(database: database)
         self.agentIntents = AgentIntentStore(database: database)
         self.apiUsage = ApiUsageStore(database: database)
+        self.diaryNotes = DiaryNoteStore(database: database)
+        self.personaPendingPatches = PersonaPendingPatchStore(database: database)
     }
 
     /// 建库 + 装好所有仓储（App 启动走这一条）。

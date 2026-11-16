@@ -1300,6 +1300,78 @@ class YapDatabaseMigrationTest {
             }
         }
 
+    // ---------- v14 → v15：日记板 ----------
+
+    /**
+     * v15 只新建一张表，不动任何既有表。这条用例证明三件事：
+     * 旧数据一个字都没少、`diary_notes` 真的建出来了（含两条索引）、新表初始是空的。
+     */
+    @Test
+    fun migrate14To15_建出日记表且旧数据不丢() {
+        val db = createLegacyDatabase(version = 14, ddl = MINIMAL_V14_SCHEMA)
+        db.execSQL("INSERT INTO `personas` (`id`, `name`) VALUES ('persona-1', '小满')")
+        db.execSQL("INSERT INTO `memories` (`id`, `content`) VALUES ('memory-1', '她妹妹在南方读大学')")
+
+        YapDatabase.MIGRATION_14_15.migrate(db)
+
+        // 1. 旧数据都在，且内容没被改写。
+        assertEquals("迁移不许丢人格", 1, db.count("personas"))
+        db.query("SELECT name FROM personas WHERE id = ?", arrayOf("persona-1")).use { cursor ->
+            assertTrue("迁移把人格弄丢了", cursor.moveToFirst())
+            assertEquals("小满", cursor.getString(0))
+        }
+        assertEquals("迁移不许丢记忆", 1, db.count("memories"))
+
+        // 2. 新表 + 两条索引都在，列名与类型符合实体。
+        assertTrue("v15 应该建出 diary_notes 表", db.hasTable("diary_notes"))
+        assertEquals(
+            setOf("id", "personaId", "content", "createdAt", "remindAt", "remindedAt", "updatedAt"),
+            db.columnNames("diary_notes")
+        )
+        assertTrue("personaId 索引", db.hasIndex("index_diary_notes_personaId"))
+        assertTrue("remindAt 索引（到点提醒要按它扫）", db.hasIndex("index_diary_notes_remindAt"))
+
+        // 3. 新表是空的：老用户升级后 = 「他还没写过备忘」，不是一堆看不懂的历史。
+        assertEquals(0, db.count("diary_notes"))
+
+        // 4. 时间字段可以被写成 NULL（不提醒）——迁移后的表必须允许。
+        db.execSQL(
+            """
+            INSERT INTO `diary_notes` (`id`, `personaId`, `content`, `createdAt`, `remindAt`, `remindedAt`, `updatedAt`)
+            VALUES ('n1', 'persona-1', '周五问她面试怎么样', 1700000000000, NULL, NULL, 1700000000000)
+            """.trimIndent()
+        )
+        assertEquals(1, db.count("diary_notes"))
+    }
+
+    /** 空库（刚装好就升级到 14 的极端情况）也必须能升到 15，不能因为「没有旧数据」而失败。 */
+    @Test
+    fun migrate14To15_空库也能升级() {
+        val db = createLegacyDatabase(version = 14, ddl = emptyList())
+        YapDatabase.MIGRATION_14_15.migrate(db)
+        assertTrue(db.hasTable("diary_notes"))
+        assertEquals(0, db.count("diary_notes"))
+    }
+
+    /** 幂等：迁移脚本会被修复脚本/测试重复调用，第二次不能报错，也不能把已有笔记清掉。 */
+    @Test
+    fun migrate14To15_重复执行安全() {
+        val db = createLegacyDatabase(version = 14, ddl = MINIMAL_V14_SCHEMA)
+        YapDatabase.MIGRATION_14_15.migrate(db)
+        db.execSQL(
+            """
+            INSERT INTO `diary_notes` (`id`, `personaId`, `content`, `createdAt`, `updatedAt`)
+            VALUES ('n1', 'persona-1', '买牛奶', 1700000000000, 1700000000000)
+            """.trimIndent()
+        )
+
+        YapDatabase.MIGRATION_14_15.migrate(db)
+
+        assertEquals("重复执行不能清数据", 1, db.count("diary_notes"))
+        assertTrue(db.hasTable("diary_notes"))
+        assertTrue(db.hasIndex("index_diary_notes_remindAt"))
+    }
+
     // ---------- 造旧库 ----------
 
     /**
@@ -1415,6 +1487,18 @@ class YapDatabaseMigrationTest {
 
         /** v11 区块测试用的固定时间基准：消息 createdAt = BASE_TIME + 下标。 */
         const val BASE_TIME = 1_700_000_000_000L
+
+        /**
+         * 造 v14 旧库用的最小表结构。
+         *
+         * 只建两张表：`MIGRATION_14_15` 只新建 `diary_notes`、不碰任何既有列，
+         * 所以证明「旧数据不丢」只需要一张「有用户内容」的表 + 一张「容易被误删」的表。
+         * 用最小 DDL 而不是抄一整份 v14 schema：抄错了反而会让用例自己先崩。
+         */
+        val MINIMAL_V14_SCHEMA = listOf(
+            "CREATE TABLE IF NOT EXISTS `personas` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `content` TEXT NOT NULL, PRIMARY KEY(`id`))"
+        )
 
         const val LEGACY_MEMORY_ID = "memory-legacy-1"
         const val LEGACY_MEMORY_CONTENT = "她说过她妹妹在南方读大学"

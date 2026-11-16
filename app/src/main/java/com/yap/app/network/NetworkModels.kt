@@ -1,6 +1,7 @@
 package com.yap.app.network
 
 import com.yap.app.data.local.ApiConfigEntity
+import com.yap.app.domain.ApiDefaults
 import com.yap.app.domain.NetworkErrorKind
 import com.yap.app.domain.UserError
 import com.yap.app.domain.debugText
@@ -21,12 +22,20 @@ data class InferenceParams(
     val presencePenalty: Double? = null
 )
 
+/**
+ * 这个配置实际要发出去的推理参数。
+ *
+ * 配置里**显式填了**就用配置（用户能覆盖），没填就用应用默认值：
+ * `temperature=0.75`、`max_tokens=16384`、`top_p=1.0`、频率/存在惩罚 0
+ * （`spec/api-defaults/README.md`）。默认值写在 [ApiDefaults] 一处，聊天、主动消息、
+ * 工具回路每一轮都走这里，不会出现「第一轮是 0.75、第二轮忘了带」。
+ */
 fun ApiConfigEntity.inferenceParams(): InferenceParams = InferenceParams(
-    temperature = temperature,
-    topP = topP,
-    maxOutputTokens = maxOutputTokens,
-    frequencyPenalty = frequencyPenalty,
-    presencePenalty = presencePenalty
+    temperature = temperature ?: ApiDefaults.TEMPERATURE,
+    topP = topP ?: ApiDefaults.TOP_P,
+    maxOutputTokens = maxOutputTokens ?: ApiDefaults.MAX_OUTPUT_TOKENS,
+    frequencyPenalty = frequencyPenalty ?: ApiDefaults.FREQUENCY_PENALTY,
+    presencePenalty = presencePenalty ?: ApiDefaults.PRESENCE_PENALTY
 )
 
 data class ProviderCapabilities(

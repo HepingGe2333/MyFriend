@@ -100,7 +100,8 @@ final class PromptBuilderTests: XCTestCase {
     func testDefaultInputIncludesCapabilityBlocks() {
         let text = PromptBuilder.systemPrompt(SystemPromptInput(personaText: "人格"))
         XCTAssertTrue(text.contains("## 你可以主动联系对方"))
-        XCTAssertTrue(text.contains("## 你可以调用这些工具"))
+        // 0.13：工具那一段的标题改成「# 你能做什么」，内容由 `ToolCatalog` 生成。
+        XCTAssertTrue(text.contains(ToolCatalog.capabilitySection))
         XCTAssertTrue(text.contains("```yap-tool"))
         XCTAssertTrue(text.contains("```yap-wake"))
     }
@@ -239,7 +240,8 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertLessThan(base.count, 4_000)
         // 两段能力说明各自都有量级在 600~900 字。
         XCTAssertGreaterThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 300)
-        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 1_500)
+        // 0.13 加了 diary 和每个工具的副作用句，上限相应放宽（仍然要短，不能占满上下文）。
+        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 2_600)
         XCTAssertGreaterThan(ProactiveCapabilityPrompt.text.count, 300)
         XCTAssertLessThan(ProactiveCapabilityPrompt.text.count, 1_500)
     }

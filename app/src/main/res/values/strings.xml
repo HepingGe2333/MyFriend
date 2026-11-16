@@ -1552,6 +1552,19 @@
     <string name="tool_trace_set_mood">心情变了</string>
     <string name="tool_trace_recall">回想了一下</string>
     <string name="tool_trace_defer_reply">决定先不回</string>
+    <string name="tool_trace_diary">日记</string>
+    <string name="tool_trace_diary_add">写日记</string>
+    <string name="tool_trace_diary_list">翻日记</string>
+    <string name="tool_trace_diary_remove">撕掉一页</string>
+    <string name="tool_trace_diary_remind">%1$s · 到 %2$s 提醒</string>
+    <plurals name="tool_trace_diary_count">
+        <item quantity="other">%1$d 条备忘</item>
+    </plurals>
+    <string name="tool_trace_diary_saved_detail">记在自己的本子上了。</string>
+    <string name="tool_trace_diary_remind_detail">到 %1$s 会想起来。</string>
+    <string name="tool_trace_diary_removed_detail">这一页撕掉了。</string>
+    <string name="tool_trace_diary_not_found_detail">本子上没有这一条，可能已经撕掉了。</string>
+    <string name="tool_trace_diary_empty_detail">日记本上还没有东西。</string>
     <string name="tool_trace_unknown">动作</string>
 
     <string name="tool_trace_think_detail_placeholder">（没有写具体问题，就是想清楚再答）</string>
@@ -1641,4 +1654,16 @@
     <string name="error_server_media_too_large">图片太大，压不进服务端的 2MB 上限</string>
     <string name="error_server_media_failed">图片没能传上去，这次没有发送</string>
     <string name="persona_editor_sleep_time_invalid">作息时间要写成 HH:mm（24:00 表示午夜，例如 24:00–08:00）</string>
+    <!-- 0.13 人格进化：人设页「他最近的变化」 -->
+    <string name="persona_evolution_section_title">他最近的变化</string>
+    <string name="persona_evolution_section_note">这些是他这几轮聊下来觉得自己的变化。你点头才会写进人设，不点头一周后自动丢掉。</string>
+    <string name="persona_evolution_field_traits">性格</string>
+    <string name="persona_evolution_field_likes">喜欢的事</string>
+    <string name="persona_evolution_field_behaviors">习惯</string>
+    <string name="persona_evolution_field_quirks">设定</string>
+    <string name="persona_evolution_accept">接受</string>
+    <string name="persona_evolution_reject">不用了</string>
+    <string name="persona_evolution_accepted">记下了，这条已经写进他的人设。</string>
+    <string name="persona_evolution_rejected">这条不用了。</string>
+    <string name="persona_evolution_accept_failed">没写进去，稍后再试一次。</string>
 </resources>

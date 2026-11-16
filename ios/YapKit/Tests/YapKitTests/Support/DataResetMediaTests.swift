@@ -146,6 +146,27 @@ final class DataResetMediaTests: XCTestCase {
         XCTAssertTrue(try temp.stores.messageBlocks.inconsistencies().isEmpty)
     }
 
+    /// 0.13：日记板与待确认的人格变化也要跟着「删除全部数据」一起清。
+    func testClearAllAlsoClearsDiaryNotesAndPendingPatches() throws {
+        try temp.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-1", personaId: "persona-1", content: "他会忘掉这条便条",
+            createdAt: 1, updatedAt: 1
+        ))
+        try temp.stores.personaPendingPatches.upsert(PersonaPendingPatchEntity(
+            id: "p-1", personaId: "persona-1", patchJson: "[]",
+            summary: "待确认的变化", reason: "", createdAt: 1
+        ))
+        _ = makeReset().clearAll()
+        XCTAssertEqual(try temp.stores.diaryNotes.count(), 0)
+        XCTAssertEqual(try temp.stores.personaPendingPatches.count(), 0)
+        // 只清聊天（保留人格）时，日记板属于「他写给自己的东西」，不跟着聊天一起删。
+        try temp.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-2", personaId: "persona-1", content: "留着", createdAt: 1, updatedAt: 1
+        ))
+        _ = try makeReset().clearChats()
+        XCTAssertEqual(try temp.stores.diaryNotes.count(), 1)
+    }
+
     func testClearAllReportsTablesThatFailedToClear() throws {
         try temp.stores.personas.upsert(TestData.persona())
         try temp.stores.presets.upsert(PersonaPresetEntity(

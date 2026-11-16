@@ -24,6 +24,7 @@ import com.yap.app.core.AgentCoreClient
 import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.domain.NotificationDeepLink
 import com.yap.app.domain.AttachmentsCodec
+import com.yap.app.domain.ApiDefaults
 import com.yap.app.domain.ChatNotificationPolicy
 import com.yap.app.domain.DataEraser
 import com.yap.app.domain.ExportJsonStream
@@ -231,6 +232,8 @@ class ChatRepository @Inject constructor(
     private val moodRepository: MoodRepository,
     private val presenceRepository: PresenceRepository,
     private val historyCompressor: HistoryCompressor,
+    /** 人格进化评估（每 20 条用户消息或 24 小时一次，结果只进待审表）。 */
+    private val personaEvolution: PersonaEvolutionRepository,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
@@ -525,6 +528,9 @@ class ChatRepository @Inject constructor(
                 )
             )
         }
+        // 人格进化：条件到了（20 条用户消息 / 隔了 24 小时）就在后台回顾一次，
+        // 结果只写进「待审的变化」，不会直接改他的人设，也不会拖慢这条消息的发送。
+        runCatching { personaEvolution.ensureAsync(session.personaId, now) }
     }
 
     fun generateAssistant(sessionId: String): Flow<GenerationEvent> = flow {
@@ -1525,11 +1531,12 @@ class ChatRepository @Inject constructor(
                 asleep = asleep,
                 extraStatus = listOf(moodPace, presenceLine(persona.id)).filter { it.isNotBlank() }
                     .joinToString("\n"),
+                // 「# 你能做什么」：从 ToolProtocol 的工具注册表生成，放在关系段之后。
+                capabilitiesSection = ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled),
                 variableBlocks = listOfNotNull(
                     memoryRepository.formatForPrompt(memories).takeIf { memories.isNotEmpty() },
                     memoryOfEarlier.takeIf { it.isNotBlank() },
                     "---\n" + ProactiveProtocol.CAPABILITY_PROMPT,
-                    ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled),
                     moodNudge.takeIf { it.isNotBlank() }
                 ),
                 // 语言指令跟着 App 语言走，脚手架保持中文。
@@ -1616,7 +1623,17 @@ class ChatRepository @Inject constructor(
          */
         const val IMAGE_ONLY_CONTENT = "\u2063"
 
-        const val CONTEXT_CHAR_BUDGET = 28_000
+        /**
+         * 一次聊天实际拼进消息的字符预算。
+         *
+         * 上限来自 1M 上下文窗口（`ApiDefaults.requestCharBudget`）：窗口减掉单次最大输出再折成字符，
+         * 同时叠加产品侧更保守的收紧值——真正决定体积的仍是「最近 N 条 + 摘要」，
+         * 1M 只是「不许越过」的那条线（`spec/api-defaults/README.md`）。
+         */
+        val CONTEXT_CHAR_BUDGET = ApiDefaults.requestCharBudget(PRACTICAL_CONTEXT_CHARS)
+
+        /** 产品侧收紧值：约 2.8 万字，够覆盖最近两百来条短消息，又不会把首字时间拖长。 */
+        private const val PRACTICAL_CONTEXT_CHARS = 28_000
 
         /**
          * 装配上下文时最多从库里读多少条消息。

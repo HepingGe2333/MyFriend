@@ -756,6 +756,85 @@ final class SchemaMigrationTests: XCTestCase {
         XCTAssertEqual(try reopened.personas.count(), 0)
     }
 
+    // MARK: - v14 → v15：日记板与人格进化的待确认变化
+
+    /// v14 的库（没有两张新表）打开一次 → 两张表连同索引一起建出来，已有数据不丢。
+    ///
+    /// 14→15 只有「建表 + 建索引」，没有回填；这条测试守两件事：
+    /// 1. 老库升级后表结构完整（迁移与 `createStatements` 用的是同一份 DDL）；
+    /// 2. 升级不会碰已有行（人格/消息一条不少）。
+    func testV14ToV15CreatesDiaryAndPendingPatchTables() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores).database
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt)
+            VALUES ('\(personaId)', '林深', 'v14 的数据', 7, '你叫林深。', '朋友', 3, 1, 1, \(now))
+            """)
+        // 退回 v14：把 v15 加的两张表删掉、版本号改回 14（老库就是这个样子）。
+        try database.execute("DROP TABLE \(Schema.diaryNotesTable)")
+        try database.execute("DROP TABLE \(Schema.personaPendingPatchesTable)")
+        try database.setUserVersion(14)
+        XCTAssertFalse(database.hasTable(Schema.diaryNotesTable))
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertEqual(Schema.version, 15)
+        XCTAssertTrue(try reopened.database.hasTable(Schema.diaryNotesTable), "v15 要建 diary_notes")
+        XCTAssertTrue(try reopened.database.hasTable(Schema.personaPendingPatchesTable),
+                      "v15 要建 persona_pending_patches")
+        let indexes = try indexNames(reopened.database)
+        for name in [
+            "index_diary_notes_personaId", "index_diary_notes_remindAt",
+            "index_persona_pending_patches_personaId", "index_persona_pending_patches_createdAt"
+        ] {
+            XCTAssertTrue(indexes.contains(name), "缺索引：\(name)")
+        }
+
+        // 老数据还在，且新表真的能写（列齐全、可空列是 NULL）。
+        XCTAssertEqual(try reopened.personas.count(), 1)
+        XCTAssertEqual(try reopened.personas.byId(personaId)?.version, 3)
+        try reopened.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-1", personaId: personaId, content: "升级之后写的第一条",
+            createdAt: now, remindAt: nil, updatedAt: now
+        ))
+        XCTAssertEqual(try reopened.diaryNotes.count(personaId: personaId), 1)
+        try reopened.personaPendingPatches.upsert(PersonaPendingPatchEntity(
+            id: "p-1", personaId: personaId, patchJson: "[]",
+            summary: "升级之后的一条", reason: "", createdAt: now
+        ))
+        XCTAssertEqual(try reopened.personaPendingPatches.count(personaId: personaId), 1)
+        reopened.database.close()
+
+        // 幂等：再打开一次不会重复建表/重复加索引。
+        let again = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try again.database.userVersion(), 15)
+        XCTAssertEqual(try again.diaryNotes.count(personaId: personaId), 1)
+        XCTAssertEqual(try again.database.scalarInt64(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'diary_notes'", []
+        ), 1)
+    }
+
+    /// 空库 v14 也能升上来（新表建出来、没有数据）。
+    func testV14EmptyDatabaseMigratesToV15() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        try database.execute("DROP TABLE \(Schema.diaryNotesTable)")
+        try database.execute("DROP TABLE \(Schema.personaPendingPatchesTable)")
+        try database.setUserVersion(14)
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), 15)
+        XCTAssertTrue(try reopened.database.hasTable(Schema.diaryNotesTable))
+        XCTAssertTrue(try reopened.database.hasTable(Schema.personaPendingPatchesTable))
+        XCTAssertEqual(try reopened.diaryNotes.count(), 0)
+        XCTAssertEqual(try reopened.personaPendingPatches.count(), 0)
+    }
+
     // MARK: - 小工具
 
     private func indexNames(_ database: SQLiteDatabase) throws -> Set<String> {

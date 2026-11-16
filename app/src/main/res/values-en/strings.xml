@@ -1596,6 +1596,20 @@
     <string name="tool_trace_set_mood">Mood changed</string>
     <string name="tool_trace_recall">Recalled</string>
     <string name="tool_trace_defer_reply">Decided not to reply yet</string>
+    <string name="tool_trace_diary">Diary</string>
+    <string name="tool_trace_diary_add">Wrote a note</string>
+    <string name="tool_trace_diary_list">Flipped through the diary</string>
+    <string name="tool_trace_diary_remove">Tore out a page</string>
+    <string name="tool_trace_diary_remind">%1$s · reminds at %2$s</string>
+    <plurals name="tool_trace_diary_count">
+        <item quantity="one">%1$d note</item>
+        <item quantity="other">%1$d notes</item>
+    </plurals>
+    <string name="tool_trace_diary_saved_detail">Written down in his own notebook.</string>
+    <string name="tool_trace_diary_remind_detail">He will remember it at %1$s.</string>
+    <string name="tool_trace_diary_removed_detail">Torn out.</string>
+    <string name="tool_trace_diary_not_found_detail">That note is not in the diary — it may have been torn out already.</string>
+    <string name="tool_trace_diary_empty_detail">There is nothing in the diary yet.</string>
     <string name="tool_trace_unknown">Action</string>
 
     <string name="tool_trace_think_detail_placeholder">(No specific question — thinking it through first)</string>
@@ -1691,4 +1705,16 @@
     <string name="error_server_media_too_large">That image is too large for the server\'s 2MB limit</string>
     <string name="error_server_media_failed">The image couldn\'t be uploaded, so nothing was sent</string>
     <string name="persona_editor_sleep_time_invalid">Sleep times must look like HH:mm (24:00 means midnight, e.g. 24:00–08:00)</string>
+    <!-- 0.13 persona evolution: "His recent changes" on the persona editor -->
+    <string name="persona_evolution_section_title">His recent changes</string>
+    <string name="persona_evolution_section_note">These are the changes he has noticed in himself over your recent conversations. Nothing goes into his profile unless you say yes — anything you leave alone is dropped after a week.</string>
+    <string name="persona_evolution_field_traits">Personality</string>
+    <string name="persona_evolution_field_likes">Likes</string>
+    <string name="persona_evolution_field_behaviors">Habits</string>
+    <string name="persona_evolution_field_quirks">Quirks</string>
+    <string name="persona_evolution_accept">Accept</string>
+    <string name="persona_evolution_reject">Not this</string>
+    <string name="persona_evolution_accepted">Noted — this is part of his profile now.</string>
+    <string name="persona_evolution_rejected">Dropped that one.</string>
+    <string name="persona_evolution_accept_failed">Could not apply it — try again in a moment.</string>
 </resources>

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -58,6 +59,11 @@ class SettingsRepository @Inject constructor(
         // 心跳的内部状态：只用来让冲动曲线跨重启接着走，不对外暴露（设置页里没有它）。
         val heartbeatLastResetAt = longPreferencesKey("heartbeat_last_reset_at")
         val heartbeatLastFiredAt = longPreferencesKey("heartbeat_last_fired_at")
+
+        // 人格进化评估的游标（内部状态，界面里看不到）。
+        val evolutionPersonaId = stringPreferencesKey("evolution_persona_id")
+        val evolutionUserMessageCount = intPreferencesKey("evolution_user_message_count")
+        val evolutionLastRunAt = longPreferencesKey("evolution_last_run_at")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
@@ -77,7 +83,10 @@ class SettingsRepository @Inject constructor(
             autoTranslatePersona = prefs[Keys.autoTranslatePersona] ?: true,
             backgroundTipDismissed = prefs[Keys.backgroundTipDismissed] ?: false,
             heartbeatLastResetAt = prefs[Keys.heartbeatLastResetAt]?.takeIf { it > 0L } ?: 0L,
-            heartbeatLastFiredAt = prefs[Keys.heartbeatLastFiredAt]?.takeIf { it > 0L }
+            heartbeatLastFiredAt = prefs[Keys.heartbeatLastFiredAt]?.takeIf { it > 0L },
+            evolutionPersonaId = prefs[Keys.evolutionPersonaId],
+            evolutionUserMessageCount = prefs[Keys.evolutionUserMessageCount] ?: 0,
+            evolutionLastRunAt = prefs[Keys.evolutionLastRunAt] ?: 0L
         )
     }
 
@@ -243,5 +252,17 @@ class SettingsRepository @Inject constructor(
         } else {
             it.remove(Keys.heartbeatLastFiredAt)
         }
+    }
+
+    /**
+     * 推进人格进化评估的游标（内部状态，没有对应的界面）。
+     *
+     * 存「哪个会话已经是第几条用户消息、上次评估是什么时候」，重启后接着算，
+     * 避免每次冷启动都以为「已经过了 24 小时」而立刻打一次模型。
+     */
+    suspend fun setEvolutionCursor(personaId: String, userMessageCount: Int, at: Long) = edit {
+        it[Keys.evolutionPersonaId] = personaId
+        it[Keys.evolutionUserMessageCount] = userMessageCount.coerceAtLeast(0)
+        it[Keys.evolutionLastRunAt] = at.coerceAtLeast(0L)
     }
 }

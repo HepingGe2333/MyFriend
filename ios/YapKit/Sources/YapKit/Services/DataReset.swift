@@ -271,6 +271,10 @@ public final class DataReset {
             //（留着游标会让「删除全部数据」之后再同步只拿增量，用户的对话就永远补不回来）。
             attempt("server_sync_state") { try ServerSyncStateStore(database: stores.database).deleteAll() }
             attempt("server_outbox") { try ServerOutboxStore(database: stores.database).deleteAll() }
+            // 2.6) 0.13 的两张新表：日记板（他自己的便条）与待确认的人格变化。
+            // 它们跟着「全部数据」一起清：留着只会是没人能再看到的孤儿行。
+            attempt("diary_notes") { try stores.diaryNotes.deleteAll() }
+            attempt("persona_pending_patches") { try stores.personaPendingPatches.deleteAll() }
             // 3) 人格与配置
             attempt("personas") { try stores.personas.deleteAll() }
             attempt("api_configs") { try stores.apiConfigs.deleteAll() }

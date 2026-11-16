@@ -61,6 +61,8 @@ class HeartbeatController @Inject constructor(
     private val tickDao: AgentTickDao,
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
+    /** 他的日记板：到点的提醒在这里变成念头（`spec/diary/README.md`）。 */
+    private val diaryRepository: DiaryRepository,
     /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
     private val agentCore: AgentCoreClient
 ) {
@@ -90,6 +92,12 @@ class HeartbeatController @Inject constructor(
         if (!settings.agentLoopEnabled) return Beat(why = "常驻循环已关闭")
 
         val persona = pickPersona(settings.activePersonaId) ?: return Beat(why = "还没有可以对话的人格")
+
+        // 日记里到点的提醒先变成「念头」，再走下面那套「想不想开口」的判定。
+        // 放在睡觉/在忙的判断**之前**：提醒到点是他心里的一件事，不该因为他睡了就被丢掉；
+        // 要不要因此说话，仍然由循环自己决定（睡着时它不会开口，念头留在窗口里）。
+        // 只会触发一次：DiaryRepository 用带条件的 UPDATE 原子占位，错过 >24h 只清标记不补。
+        runCatching { diaryRepository.remindDue(now) }
 
         // 他睡觉的时候不掷：既省电，也更像人。
         val minute = minuteOfDay(now)

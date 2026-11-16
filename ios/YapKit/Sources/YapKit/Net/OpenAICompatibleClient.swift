@@ -59,14 +59,12 @@ public struct InferenceParams: Equatable, Sendable {
 
 public extension ApiConfigEntity {
     /// 配置里的推理参数（Android 是 `ApiConfigEntity.inferenceParams()`）。
+    ///
+    /// 0.13 起它把 `spec/api-defaults/README.md` 的默认参数补进来：
+    /// temperature 0.75 / top_p 1.0 / max_tokens 16384 / 惩罚 0；配置里显式填了的以配置为准。
+    /// 聊天与工具回路都调它，所以两端看到的默认值只在这里定义一次。
     func inferenceParams() -> InferenceParams {
-        InferenceParams(
-            temperature: temperature,
-            topP: topP,
-            maxOutputTokens: maxOutputTokens,
-            frequencyPenalty: frequencyPenalty,
-            presencePenalty: presencePenalty
-        )
+        effectiveInferenceParams()
     }
 }
 

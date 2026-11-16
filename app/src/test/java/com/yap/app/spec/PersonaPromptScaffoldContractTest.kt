@@ -221,7 +221,10 @@ class PersonaPromptScaffoldContractTest {
             scaffold.WORLD_HINT,
             scaffold.SECTION_STATE,
             // 2026-11-18 是周三；now 就是 19:40。
-            scaffold.STATE_LINE.replace("{weekday}", "周三").replace("{time}", "19:40"),
+            // `spec/context-time/README.md` 要求首行同时带日期与时区偏移；脚手架模板不变，
+            // 只是两个占位符的填充内容加宽（见 PromptBuilder.clockLine 的注释）。
+            scaffold.STATE_LINE.replace("{weekday}", "2026-11-18 周三")
+                .replace("{time}", "19:40（UTC+08:00）"),
             scaffold.STATE_BUSY
                 .replace("{activity}", ACTIVITY_WORD)
                 .replace("{until}", "21:10"),
@@ -264,7 +267,10 @@ class PersonaPromptScaffoldContractTest {
             scaffold.SECTION_WORLD,
             scaffold.WORLD_EMPTY,
             scaffold.SECTION_STATE,
-            scaffold.STATE_LINE.replace("{weekday}", "周三").replace("{time}", "19:40"),
+            // `spec/context-time/README.md` 要求首行同时带日期与时区偏移；脚手架模板不变，
+            // 只是两个占位符的填充内容加宽（见 PromptBuilder.clockLine 的注释）。
+            scaffold.STATE_LINE.replace("{weekday}", "2026-11-18 周三")
+                .replace("{time}", "19:40（UTC+08:00）"),
             scaffold.STATE_IDLE,
             scaffold.SECTION_VOICE,
             scaffold.VOICE_NO_NARRATION,

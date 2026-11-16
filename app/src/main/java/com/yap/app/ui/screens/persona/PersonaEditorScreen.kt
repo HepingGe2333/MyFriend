@@ -93,6 +93,7 @@ import com.yap.app.R
 import com.yap.app.data.local.ApiConfigEntity
 import com.yap.app.domain.PersonaActivity
 import com.yap.app.domain.PersonaCard
+import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaTrait
 import com.yap.app.domain.ProactiveLevel
 import com.yap.app.ui.components.AppHeader
@@ -326,6 +327,15 @@ fun PersonaEditorScreen(
                         onAddTrait = viewModel::addTrait,
                         onTrait = viewModel::updateTrait,
                         onRemoveTrait = viewModel::removeTrait
+                    )
+
+                    // 0.13 人格进化：这几轮聊下来他自己觉得的变化，用户点头才写进人设。
+                    // 空列表时这个 Composable 整块不出现（连标题都不留）。
+                    PersonaEvolutionSection(
+                        changes = state.pendingChanges,
+                        busy = state.pendingBusy,
+                        onAccept = viewModel::acceptPendingChange,
+                        onReject = viewModel::rejectPendingChange
                     )
 
                     PersonaGuidanceSection(
@@ -1565,4 +1575,139 @@ private fun TranslationSection(
         enabled = !translating,
         loading = translating
     )
+}
+
+// ---------------------------------------------------------------------------
+// 0.13 人格进化：「他最近的变化」
+// ---------------------------------------------------------------------------
+
+/** add / remove 的前缀符号。用文本而不是图标：两个符号在中文与英文字体里都能对齐。 */
+private const val EVOLUTION_ADD_SYMBOL = "+"
+private const val EVOLUTION_REMOVE_SYMBOL = "\u2212"
+
+/**
+ * 「他最近的变化」：后台评估产出的待审变化，用户点头才写进人设。
+ *
+ * 没有待审变化时整块不出现——空标题比没有这块更让人困惑。
+ * 每条变化右边两个入口就够，不加确认弹窗（一句话 + 一个入口）。
+ */
+@Composable
+private fun PersonaEvolutionSection(
+    changes: List<PendingChangeUi>,
+    busy: Boolean,
+    onAccept: (String) -> Unit,
+    onReject: (String) -> Unit
+) {
+    if (changes.isEmpty()) return
+    SectionLabel(stringResource(R.string.persona_evolution_section_title))
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+        ),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            changes.forEachIndexed { index, change ->
+                if (index > 0) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                    )
+                }
+                PersonaEvolutionRow(
+                    change = change,
+                    busy = busy,
+                    onAccept = onAccept,
+                    onReject = onReject
+                )
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                stringResource(R.string.persona_evolution_section_note),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** 一条变化：`+ 性格 嘴硬心软`，下面一行小字是模型给的原因（没有就不占行）。 */
+@Composable
+private fun PersonaEvolutionRow(
+    change: PendingChangeUi,
+    busy: Boolean,
+    onAccept: (String) -> Unit,
+    onReject: (String) -> Unit
+) {
+    val adding = change.op == PersonaEvolution.Op.ADD
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Text(
+            text = if (adding) EVOLUTION_ADD_SYMBOL else EVOLUTION_REMOVE_SYMBOL,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (adding) MaterialTheme.colorScheme.tertiary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(18.dp)
+        )
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    evolutionFieldLabel(change.field),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    change.value,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+            if (change.reason.isNotBlank()) {
+                Text(
+                    change.reason,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+                    modifier = Modifier.padding(top = 2.dp)
+                )
+            }
+        }
+        Row {
+            TextButton(
+                onClick = { onAccept(change.patchId) },
+                enabled = !busy,
+                contentPadding = PaddingValues(horizontal = 6.dp)
+            ) {
+                Text(stringResource(R.string.persona_evolution_accept))
+            }
+            TextButton(
+                onClick = { onReject(change.patchId) },
+                enabled = !busy,
+                contentPadding = PaddingValues(horizontal = 6.dp)
+            ) {
+                Text(
+                    stringResource(R.string.persona_evolution_reject),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+/** 字段名走资源，别把人设页的四个分组名在 Kotlin 里再抄一遍中文。 */
+@Composable
+private fun evolutionFieldLabel(field: PersonaEvolution.Field): String = when (field) {
+    PersonaEvolution.Field.TRAITS -> stringResource(R.string.persona_evolution_field_traits)
+    PersonaEvolution.Field.LIKES -> stringResource(R.string.persona_evolution_field_likes)
+    PersonaEvolution.Field.BEHAVIORS -> stringResource(R.string.persona_evolution_field_behaviors)
+    PersonaEvolution.Field.QUIRKS -> stringResource(R.string.persona_evolution_field_quirks)
 }

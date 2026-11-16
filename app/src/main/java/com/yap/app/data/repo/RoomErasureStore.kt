@@ -7,6 +7,7 @@ import com.yap.app.data.local.AgentTickDao
 import com.yap.app.data.local.ApiConfigDao
 import com.yap.app.data.local.ApiUsageDao
 import com.yap.app.data.local.ChatSessionDao
+import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryDao
 import com.yap.app.data.local.MemoryEchoDao
@@ -62,7 +63,9 @@ class RoomErasureStore @Inject constructor(
     private val personaDao: PersonaDao,
     private val apiConfigDao: ApiConfigDao,
     private val apiUsageDao: ApiUsageDao,
-    private val memoryReconsolidator: MemoryReconsolidator
+    private val memoryReconsolidator: MemoryReconsolidator,
+    /** 日记板同样挂在人格下面：人没了，他写过的备忘也该跟着走。 */
+    private val diaryNoteDao: DiaryNoteDao
 ) : ErasureStore {
 
     override suspend fun <T> inTransaction(block: suspend () -> T): T =
@@ -132,8 +135,13 @@ class RoomErasureStore @Inject constructor(
                 // 预设库不是「某个人」的派生数据：只在整库清空/替换时清。
                 presetDao.deleteAll()
 
-            ErasableTable.PERSONAS ->
+            ErasableTable.PERSONAS -> {
+                // 0.13（schema v15）：`diary_notes` 是「他的备忘」，挂人格不挂记忆，
+                // 所以不进 `ErasableTable`（那份清单在 :agentcore，本轮不改），
+                // 而是跟着父表 personas 在同一个分支里删——整库清空/删一个人/备份替换都会走到这里。
+                if (personaId == null) diaryNoteDao.deleteAll() else diaryNoteDao.deleteByPersona(personaId)
                 if (personaId == null) personaDao.deleteAll() else personaDao.deleteById(personaId)
+            }
 
             ErasableTable.API_CONFIGS ->
                 // 配置从不按人删：Key 是本机的，删人格不该连带删掉服务商配置。

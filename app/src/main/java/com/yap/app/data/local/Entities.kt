@@ -571,3 +571,30 @@ data class MemoryVectorEntity(
         return result
     }
 }
+
+/**
+ * 日记板上的一条笔记：**他自己的备忘录**（`spec/diary/README.md`，schema v15）。
+ *
+ * 和记忆不是一回事：记忆是「他记得关于你的事」，由抽取器与整理器维护、会衰减、会归档；
+ * 日记是他主动写下的备忘（「周五提醒我问她面试怎么样」「那家店在巷子口第二家」），
+ * 只有他自己会写、会翻、会删，别人看不到。
+ *
+ * 字段语义：
+ * - [remindAt]：要不要到点提醒（毫秒时间戳，可空 = 不提醒）；
+ * - [remindedAt]：这条提醒**已经变成念头**的时刻，非空即「提醒过」——
+ *   它是「只触发一次」的唯一凭据（心跳/主动 tick 用带条件的 UPDATE 原子占位）；
+ * - 删除是硬删除（规范要求），不保留墓碑。
+ */
+@Entity(
+    tableName = "diary_notes",
+    indices = [Index(value = ["personaId"]), Index(value = ["remindAt"])]
+)
+data class DiaryNoteEntity(
+    @PrimaryKey val id: String,
+    val personaId: String,
+    val content: String,
+    val createdAt: Long,
+    val remindAt: Long? = null,
+    val remindedAt: Long? = null,
+    val updatedAt: Long
+)

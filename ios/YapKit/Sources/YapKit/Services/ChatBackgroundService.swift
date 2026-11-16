@@ -19,20 +19,25 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     private let compression: HistoryCompressionService
     private let resolveConfig: (ChatSessionEntity) -> CompressionConfig?
     private let log: (String) -> Void
+    /// 人格进化（0.13）。可选：没装进化服务时这条链路安静跳过。
+    private let evolution: PersonaEvolutionService?
     private let lock = NSLock()
     private var extracting: Set<String> = []
+    private var evolving: Set<String> = []
 
     public init(
         stores: DatabaseStores,
         extraction: MemoryExtraction,
         compression: HistoryCompressionService,
         resolveConfig: @escaping (ChatSessionEntity) -> CompressionConfig?,
+        evolution: PersonaEvolutionService? = nil,
         log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
         self.extraction = extraction
         self.compression = compression
         self.resolveConfig = resolveConfig
+        self.evolution = evolution
         self.log = log
     }
 
@@ -67,6 +72,55 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
 
     public func historyCompressionNeeded(sessionId: String) {
         compression.ensureAsync(sessionId: sessionId)
+    }
+
+    /// 人格进化评估（`docs/design/persona-evolution.md` §2）。
+    ///
+    /// 先问服务「到节奏了吗」（每 20 条用户消息 / 24 小时），没到就什么都不做——
+    /// 这条路径每次回复都会走一遍，所以判定必须在开 Task 之前做。
+    public func personaEvolutionNeeded(sessionId: String, personaId: String) {
+        guard let evolution else { return }
+        let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSession.isEmpty else { return }
+        guard evolution.shouldEvaluate(personaId: personaId) else { return }
+        guard enterEvolution(personaId) else { return }
+        let stores = self.stores
+        let resolve = self.resolveConfig
+        let log = self.log
+        Task { [weak self] in
+            defer { self?.leaveEvolution(personaId) }
+            guard let session = (try? stores.sessions.byId(trimmedSession)) ?? nil else { return }
+            guard let resolved = resolve(session) else {
+                log("[evolution] 还没有可用的 API 配置，这次不评估")
+                return
+            }
+            let result = await evolution.evaluate(
+                personaId: personaId,
+                sessionId: trimmedSession,
+                config: resolved.config,
+                model: resolved.model
+            )
+            switch result {
+            case .success(let outcome):
+                log("[evolution] \(outcome.message)（人格 \(personaId)）")
+            case .failure(let error):
+                log("[evolution] 评估失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func enterEvolution(_ personaId: String) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if evolving.contains(personaId) { return false }
+        evolving.insert(personaId)
+        return true
+    }
+
+    private func leaveEvolution(_ personaId: String) {
+        lock.lock()
+        evolving.remove(personaId)
+        lock.unlock()
     }
 
     private func enter(_ sessionId: String) -> Bool {

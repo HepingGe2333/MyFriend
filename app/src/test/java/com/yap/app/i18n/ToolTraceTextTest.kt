@@ -39,6 +39,10 @@ class ToolTraceTextTest {
         ToolTraceTitle.SET_MOOD to ("心情变了" to "Mood changed"),
         ToolTraceTitle.RECALL to ("回想了一下" to "Recalled"),
         ToolTraceTitle.DEFER_REPLY to ("决定先不回" to "Decided not to reply yet"),
+        ToolTraceTitle.DIARY to ("日记" to "Diary"),
+        ToolTraceTitle.DIARY_ADD to ("写日记" to "Wrote a note"),
+        ToolTraceTitle.DIARY_LIST to ("翻日记" to "Flipped through the diary"),
+        ToolTraceTitle.DIARY_REMOVE to ("撕掉一页" to "Tore out a page"),
         ToolTraceTitle.UNKNOWN to ("动作" to "Action")
     )
 

@@ -404,7 +404,9 @@ public final class AgentLoop {
             to: persona, lang: translationLanguage()
         )
         let memories = memoryRepository.getRelevant(personaId: persona.id)
-        var instruction = "现在是 \(ServiceTime.formatted(now))，按之前和对方的约定，到了你主动开口的时间。\n"
+        // 时间注入（`spec/context-time/README.md`）：主动消息也是「一轮请求」，
+        // 同样在拼提示词这一刻重新取时间，形状与服务端/聊天一致（含 UTC 偏移）。
+        var instruction = "现在是 \(PromptClock.momentText(now))，按之前和对方的约定，到了你主动开口的时间。\n"
         instruction += "这件事的背景：\(rule.note.isEmpty ? "你希望主动关心对方" : rule.note)\n"
         instruction += "开口时的指引：\(rule.hint.isEmpty ? "用你的方式自然地关心对方此刻的状态" : rule.hint)\n"
         instruction += "要求：只写这一条消息本身，像平时发消息一样，1-3 句，不要解释你在执行规则，不要使用列表，不要提及「主动唤醒」这个功能。"

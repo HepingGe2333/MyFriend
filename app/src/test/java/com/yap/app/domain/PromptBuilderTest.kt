@@ -139,13 +139,86 @@ class PromptBuilderTest {
     @Test
     fun `状态段带本地时间 当前活动 心情 与安静时段`() {
         val text = PromptBuilder.system(inputs())
-        assertTrue("要有周三与 19:40", text.contains("现在是周三 19:40。"))
+        assertTrue(
+            "首行要有日期、星期、时刻与时区偏移（spec/context-time）",
+            text.contains("现在是2026-11-18 周三 19:40（UTC+08:00）。")
+        )
         assertTrue(text.contains("你在事务所赶第三版方案，大概 21:10 结束。"))
         assertTrue("心情按脚手架拆成「心情 + 强度」", text.contains("心情：有点累（强度 3/5）。"))
         assertFalse(text.contains("这个点你已经睡了"))
 
         val asleep = PromptBuilder.system(inputs().copy(asleep = true))
         assertTrue("睡觉时间要明确写出来", asleep.contains("这个点你已经睡了"))
+    }
+
+    // ------------------------------------------------------------ 时间（spec/context-time）
+
+    /**
+     * 时间必须「每次请求现取」：同一个会话隔一天再发消息，注入的日期要变。
+     *
+     * PromptBuilder 是纯函数，时间只来自 `Inputs.now/zone`，类里没有任何缓存字段——
+     * 所以这条既证明跨天会变，也顺带证明「不缓存」这件事没有实现漏洞。
+     */
+    @Test
+    fun `跨天后再拼提示词日期跟着变`() {
+        val day1 = ZonedDateTime.of(2026, 11, 18, 23, 58, 0, 0, zone).toInstant().toEpochMilli()
+        val day2 = ZonedDateTime.of(2026, 11, 19, 0, 3, 0, 0, zone).toInstant().toEpochMilli()
+
+        val first = PromptBuilder.system(inputs().copy(now = day1))
+        val second = PromptBuilder.system(inputs().copy(now = day2))
+
+        assertTrue(first, first.contains("现在是2026-11-18 周三 23:58（UTC+08:00）。"))
+        assertTrue(second, second.contains("现在是2026-11-19 周四 00:03（UTC+08:00）。"))
+        assertFalse("隔天不能还是昨天", second.contains("2026-11-18"))
+        assertTrue("改天之后星期也要变", second.contains("周四"))
+    }
+
+    /** 设备时区变了，偏移与本地时刻都要跟着变（同一毫秒）。 */
+    @Test
+    fun `换时区后偏移与本地时刻一起变`() {
+        val tokyo = ZoneId.of("Asia/Tokyo")      // UTC+09:00
+        val newYork = ZoneId.of("America/New_York") // 2026-11 是 EST，UTC-05:00
+        val instant = ZonedDateTime.of(2026, 11, 18, 19, 40, 0, 0, zone).toInstant().toEpochMilli()
+
+        val shanghaiText = PromptBuilder.system(inputs().copy(now = instant, zone = zone))
+        val tokyoText = PromptBuilder.system(inputs().copy(now = instant, zone = tokyo))
+        val newYorkText = PromptBuilder.system(inputs().copy(now = instant, zone = newYork))
+
+        assertTrue(shanghaiText, shanghaiText.contains("（UTC+08:00）"))
+        assertTrue("东京要 +09:00 且晚一小时", tokyoText.contains("现在是2026-11-18 周三 20:40（UTC+09:00）。"))
+        assertTrue("纽约要 -05:00 且早十三小时", newYorkText.contains("现在是2026-11-18 周三 06:40（UTC-05:00）。"))
+    }
+
+    /** UTC 本身写成 `UTC`，不写 `UTC+00:00`。 */
+    @Test
+    fun `零时区写成 UTC`() {
+        val utc = ZoneId.of("UTC")
+        val instant = ZonedDateTime.of(2026, 11, 18, 19, 40, 0, 0, zone).toInstant().toEpochMilli()
+        val text = PromptBuilder.system(inputs().copy(now = instant, zone = utc))
+        assertTrue(text, text.contains("现在是2026-11-18 周三 11:40（UTC）。"))
+    }
+
+    /**
+     * 时间句只出现一次：工具回路会把 system 原样带上、再追加 tool 结果，
+     * 所以这里模拟「system + 多轮工具结果」的最终上下文，断言注入行仍然只有一处。
+     */
+    @Test
+    fun `时间注入行在一次请求里只出现一次`() {
+        val system = PromptBuilder.system(
+            inputs().copy(
+                variableBlocks = listOf(
+                    "【工具结果】web_search\n摘要：查了 3 个网页",
+                    "【工具结果】recall\n摘要：翻了翻记忆 · 2 条"
+                )
+            )
+        )
+        // 真实请求体：system 固定不变，工具结果作为后续消息追加，不会重新拼 system。
+        val body = listOf(system, "<tool result 1>", "<tool result 2>").joinToString("\n")
+        assertEquals(
+            "时间行只该出现在 system 里一次",
+            1,
+            Regex(Regex.escape("现在是2026-11-18 周三 19:40（UTC+08:00）。")).findAll(body).count()
+        )
     }
 
     @Test

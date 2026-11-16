@@ -63,6 +63,9 @@ final class AppEnvironment: ObservableObject {
     let proactiveRules: ProactiveRuleService
     /// 历史压缩（滚动摘要）的落库编排。
     let historyCompression: HistoryCompressionService
+    /// 人格进化（0.13）：人格页「他最近的变化」读它、接受/拒绝也调它
+    ///（`docs/design/persona-evolution.md` §2）。
+    let personaEvolution: PersonaEvolutionService
     /// 回复落库之后那两件后台事（抽记忆 / 压摘要）。
     let chatBackground: ChatBackgroundService
 
@@ -335,11 +338,18 @@ final class AppEnvironment: ObservableObject {
             },
             log: { DebugSeeding.log($0) }
         )
+        // 人格进化（0.13）：与抽记忆/压摘要共用同一个 completion 与并发闸。
+        let personaEvolution = PersonaEvolutionService(
+            stores: fallbackStores,
+            completion: completion,
+            log: { DebugSeeding.log($0) }
+        )
         let chatBackground = ChatBackgroundService(
             stores: fallbackStores,
             extraction: extraction,
             compression: historyCompression,
             resolveConfig: resolveCompressionConfig,
+            evolution: personaEvolution,
             log: { DebugSeeding.log($0) }
         )
         self.webTools = webTools
@@ -347,6 +357,7 @@ final class AppEnvironment: ObservableObject {
         self.proactiveRules = proactiveRules
         self.toolExecutor = toolExecutor
         self.historyCompression = historyCompression
+        self.personaEvolution = personaEvolution
         self.chatBackground = chatBackground
 
         let backup = BackupService(

@@ -25,9 +25,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ApiUsageEntity::class,
         MemoryTermEntity::class,
         MemoryVersionEntity::class,
-        MemoryVectorEntity::class
+        MemoryVectorEntity::class,
+        DiaryNoteEntity::class
     ],
-    version = 14,
+    version = 15,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -52,12 +53,48 @@ abstract class YapDatabase : RoomDatabase() {
     abstract fun memoryTermDao(): MemoryTermDao
     abstract fun memoryVersionDao(): MemoryVersionDao
     abstract fun memoryVectorDao(): MemoryVectorDao
+    abstract fun diaryNoteDao(): DiaryNoteDao
 
     /** 媒体文件引用计数（0.12 去重收尾）：纯查询，不新增表，也不动 schema。 */
     abstract fun mediaReferenceDao(): MediaReferenceDao
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v15：日记板（`spec/diary/README.md`）。
+         *
+         * 只新建一张表，不动任何既有表：老库升级后 `diary_notes` 是空的 = 「他还没写过备忘」，
+         * 聊天、记忆、人格一条都不受影响。这是最安全的一类迁移——没有回填、没有重命名、
+         * 没有列改写，所以不存在「升级之后他忘了我」的风险。
+         *
+         * 幂等：`CREATE TABLE IF NOT EXISTS` + 索引同样 `IF NOT EXISTS`，
+         * 迁移测试与将来的修复脚本可以重复调用（重复执行不会报错，也不会清数据）。
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `diary_notes` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `remindAt` INTEGER,
+                        `remindedAt` INTEGER,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_diary_notes_personaId` ON `diary_notes` (`personaId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_diary_notes_remindAt` ON `diary_notes` (`remindAt`)"
+                )
+            }
+        }
 
         /**
          * v14：人格提示词的翻译缓存（`spec/persona-translation/README.md` §4）。

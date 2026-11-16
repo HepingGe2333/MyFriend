@@ -77,6 +77,11 @@ struct PersonaEditorScreen: View {
     @State private var cardExpanded = false
     @State private var loaded = false
     @State private var banner: MFAlert?
+    /// 他最近的变化（0.13 人格进化）：待确认的 `persona_pending_patches`。
+    /// 空 = 不显示这一张卡（没有变化时不占地方）。
+    @State private var pendingChanges: [PersonaPendingPatchEntity] = []
+    /// 接受/拒绝请求还在路上：按钮先禁用，避免连点两条。
+    @State private var pendingBusy = false
 
     private var isNew: Bool { personaId == nil }
     private var accent: Color { Color(argb: env.currentSettings.accentColor) }
@@ -91,6 +96,7 @@ struct PersonaEditorScreen: View {
                 speechCard
                 translationCard
                 characterCard
+                recentChangesCard
                 storyCard
                 personaCardCard
                 behaviorCard
@@ -488,6 +494,102 @@ struct PersonaEditorScreen: View {
                 values: $behaviors,
                 accent: accent
             )
+        }
+    }
+
+    // MARK: - 他最近的变化（0.13 人格进化）
+
+    /// 「他最近的变化」：模型在对话里对自己提出的、**等他点头**的小改动。
+    ///
+    /// 三个约束直接写在界面上：
+    /// - 只有四个字段（性格 / 喜欢 / 习惯 / 个人设定），名字、简介、手写提示词、世界设定
+    ///   永远不会被它改（白名单在 `PersonaEvolution.sanitize`，这一层只是展示）；
+    /// - 接受才写回人格并 `version+1`；拒绝只丢掉这条提议；
+    /// - 7 天没人管会自动过期（读取时清理），不会堆成永远没人点的死按钮。
+    ///
+    /// 服务端模式下不显示：人格的权威副本在服务端，本地直接改会被下一次同步覆盖。
+    @ViewBuilder
+    private var recentChangesCard: some View {
+        if !pendingChanges.isEmpty && !env.serverModeActive {
+            MFCard {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(L("他最近的变化"))
+                        .font(.system(.body, design: .serif))
+                    Spacer()
+                    if pendingBusy {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text(Lf("%d 条待确认", pendingChanges.count))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                MFNote(text: L("这些是他自己在对话里提出的小变化。接受才会写进他的人格，拒绝就丢掉；7 天不管会自动过期。"))
+                ForEach(pendingChanges, id: \.id) { patch in
+                    MFRowDivider(leadingInset: 0)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(patch.summary)
+                            .font(.callout)
+                        if !patch.reason.isEmpty {
+                            Text(patch.reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 12) {
+                            Button(L("接受")) { decide(patch, accept: true) }
+                                .font(.footnote)
+                                .tint(accent)
+                                .disabled(pendingBusy)
+                            Button(L("不用了")) { decide(patch, accept: false) }
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .disabled(pendingBusy)
+                            Spacer()
+                        }
+                        .padding(.top, 2)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    /// 接受 / 拒绝一条待确认的变化。
+    ///
+    /// 接受之后要**同步本地表单状态**：这个页面的 `traits/likes/behaviors/quirks` 是打开时
+    /// 读的一份快照，不同步的话，用户接着点「保存」会拿旧值把刚接受的变化盖回去。
+    private func decide(_ patch: PersonaPendingPatchEntity, accept: Bool) {
+        pendingBusy = true
+        defer { pendingBusy = false }
+        do {
+            if accept {
+                let result = try env.personaEvolution.approve(patchId: patch.id)
+                if result.applied > 0 {
+                    traits = result.persona.traits
+                    likes = result.persona.likes
+                    behaviors = result.persona.behaviors
+                    quirks = result.persona.quirks ?? ""
+                    banner = MFAlert(
+                        title: L("已经写进他的人格"),
+                        message: Lf("现在是他第 %d 版。", result.persona.version)
+                    )
+                } else {
+                    banner = MFAlert(
+                        title: L("这条已经不成立了"),
+                        message: L("他的人格里本来就是这样，已经把这条提议丢掉了。")
+                    )
+                }
+            } else {
+                try env.personaEvolution.reject(patchId: patch.id)
+            }
+        } catch {
+            banner = MFAlert(
+                title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                message: error.localizedDescription
+            )
+        }
+        if let personaId {
+            pendingChanges = env.personaEvolution.pending(personaId: personaId)
         }
     }
 
@@ -1227,6 +1329,8 @@ struct PersonaEditorScreen: View {
         cardExpanded = !loadedCard.isEmpty
         // 提示词只有真写过才展开：默认收起，别让一屏全是字号很小的正文。
         promptExpanded = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isNew == false
+        // 人格进化：读取待确认的变化（7 天过期的顺手清掉）。
+        pendingChanges = env.personaEvolution.pending(personaId: persona.id)
     }
 
     /// 只要求名字：其余字段都可以空着（§三「老数据不填也能用」）。

@@ -478,7 +478,11 @@ class DataErasureContractTest {
         val known = ErasableTable.entries.map { it.tableName }.toSet()
         // 派生表可以不走枚举：但它必须在 RoomErasureStore 里跟着父表一起删。
         val derived = mapOf(
-            "message_blocks" to "messages 的派生元数据（没有独立原文），在 RoomErasureStore 的 MESSAGES 分支连带删除"
+            "message_blocks" to "messages 的派生元数据（没有独立原文），在 RoomErasureStore 的 MESSAGES 分支连带删除",
+            // 0.13（schema v15）：日记板挂在人格下面。`ErasableTable` 在 :agentcore（跨端共享），
+            // 本轮 Android 端不允许改那个模块，所以它走「跟着父表 personas 一起删」的同一条路：
+            // 整库清空 / 删一个人 / 备份替换都会经过 PERSONAS 分支，下面单独断言了这行代码存在。
+            "diary_notes" to "他写的备忘：在 RoomErasureStore 的 PERSONAS 分支跟着人格一起删除"
         )
         val missing = entities.filter { it !in known && it !in derived }
         assertEquals(
@@ -492,6 +496,14 @@ class DataErasureContractTest {
             assertTrue(
                 "派生表 $table 必须跟着父表在 RoomErasureStore 里删掉",
                 store.contains("blockWriter.deleteAll()") && store.contains("blockWriter.deletePersona(personaId)")
+            )
+        }
+        // 日记板：必须真的跟着人格删，而不是只登记进允许列表。
+        run {
+            val store = source("src/main/java/com/yap/app/data/repo/RoomErasureStore.kt")
+            assertTrue(
+                "diary_notes 必须在 RoomErasureStore 里跟着 personas 一起删（整库 + 按人两种口径）",
+                store.contains("diaryNoteDao.deleteAll()") && store.contains("diaryNoteDao.deleteByPersona(personaId)")
             )
         }
     }

@@ -16,6 +16,7 @@ import com.yap.app.data.local.MemoryVersionDao
 import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryEchoDao
 import com.yap.app.data.local.MediaReferenceDao
+import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.MessageBlockDao
 import com.yap.app.data.local.MessageDao
 import com.yap.app.data.local.AgentIntentDao
@@ -114,7 +115,8 @@ object AppModule {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -138,6 +140,7 @@ object AppModule {
     @Provides fun memoryVersionDao(db: YapDatabase): MemoryVersionDao = db.memoryVersionDao()
     @Provides fun memoryVectorDao(db: YapDatabase): MemoryVectorDao = db.memoryVectorDao()
     @Provides fun personaPendingPatchDao(db: YapDatabase): PersonaPendingPatchDao = db.personaPendingPatchDao()
+    @Provides fun diaryNoteDao(db: YapDatabase): DiaryNoteDao = db.diaryNoteDao()
 
     @Provides fun mediaReferenceDao(db: YapDatabase): MediaReferenceDao = db.mediaReferenceDao()
 

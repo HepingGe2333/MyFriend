@@ -991,3 +991,54 @@ interface MemoryVectorDao {
     @Query("DELETE FROM memory_vectors")
     suspend fun deleteAll()
 }
+
+/**
+ * 日记板（`spec/diary/README.md`）。
+ *
+ * 只做四件事：写、按时间倒序翻、按 id 删、把到点的提醒**原子地**领走。
+ * 领提醒用 `UPDATE ... WHERE remindedAt IS NULL` 并对返回行数判定：
+ * 心跳与主动 tick 可能同时跑，靠这条带条件的更新保证「只触发一次」，
+ * 而不是先查后写在两个协程之间留一个窗口。
+ */
+@Dao
+interface DiaryNoteDao {
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun recent(personaId: String, limit: Int): List<DiaryNoteEntity>
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    fun observeRecent(personaId: String, limit: Int): kotlinx.coroutines.flow.Flow<List<DiaryNoteEntity>>
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId")
+    suspend fun allForPersona(personaId: String): List<DiaryNoteEntity>
+
+    @Query("SELECT * FROM diary_notes WHERE id = :id")
+    suspend fun getById(id: String): DiaryNoteEntity?
+
+    @Query("SELECT COUNT(*) FROM diary_notes WHERE personaId = :personaId")
+    suspend fun count(personaId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(note: DiaryNoteEntity)
+
+    /** 按 id + 人格删（跨人格隔离：别人的笔记 id 删不掉）。返回真删掉的行数。 */
+    @Query("DELETE FROM diary_notes WHERE id = :id AND personaId = :personaId")
+    suspend fun delete(id: String, personaId: String): Int
+
+    /** 到点且还没提醒过的笔记（整库口径：他的提醒不因为当前打开的是哪个人格而消失）。 */
+    @Query(
+        "SELECT * FROM diary_notes WHERE remindAt IS NOT NULL AND remindedAt IS NULL " +
+            "AND remindAt <= :now ORDER BY remindAt ASC LIMIT :limit"
+    )
+    suspend fun dueReminders(now: Long, limit: Int): List<DiaryNoteEntity>
+
+    /** 原子占位：只有 `remindedAt IS NULL` 时才写，返回 1 表示这一拍抢到了这条提醒。 */
+    @Query("UPDATE diary_notes SET remindedAt = :at, updatedAt = :at WHERE id = :id AND remindedAt IS NULL")
+    suspend fun markReminded(id: String, at: Long): Int
+
+    @Query("DELETE FROM diary_notes WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM diary_notes")
+    suspend fun deleteAll()
+}

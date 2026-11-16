@@ -228,6 +228,9 @@ public final class SettingsStore {
         // 一次性迁移标记不是设置项（`Key` 里没有它），但「恢复默认」之后也该重来一次：
         // 重跑对已经改过的人不再成立，是无害的。
         defaults.removeObject(forKey: Self.sleepDefaultsMigratedV1Key)
+        // 0.13：人格进化的评估游标（每 20 条 / 24 小时的调度状态）也不是设置项，
+        // 但「恢复默认 / 删除全部数据」之后不该留着上一位人格的进度。
+        defaults.removeObject(forKey: UserDefaultsEvolutionCursorStore.key)
     }
 
     // MARK: - 一次性迁移标记（0.12 续 7）

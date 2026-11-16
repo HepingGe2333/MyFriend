@@ -133,6 +133,32 @@ final class SchemaParityTests: XCTestCase {
         }
     }
 
+    /// v15 的两张新表：`diary_notes`（`spec/diary/README.md`）与
+    /// `persona_pending_patches`（`docs/design/persona-evolution.md`）。
+    ///
+    /// 逐字对照（列名/顺序/可空/主键/索引名与列序）：这两张表是 0.13 两端**同时**加的，
+    /// 没有「iOS 先跑了一段时间」的历史包袱，所以比 `personas` 那几张老表更严格。
+    func testDiaryAndPendingPatchTablesMatchAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        for table in [Schema.diaryNotesTable, Schema.personaPendingPatchesTable] {
+            let entity = try XCTUnwrap(entities[table], "Android v\(Schema.version) 里没有这张表：\(table)")
+            try assertColumns(table: table, match: entity)
+            try assertPrimaryKey(table: table, match: entity)
+            try assertIndices(table: table, match: entity)
+        }
+        // 日记板的两列可空性必须在两端一致：null = 不提醒 / 还没提醒。
+        let diary = try XCTUnwrap(entities[Schema.diaryNotesTable])
+        let fields = try XCTUnwrap(diary["fields"] as? [[String: Any]])
+        let byName = Dictionary(uniqueKeysWithValues: fields.compactMap { field -> (String, [String: Any])? in
+            guard let name = field["columnName"] as? String else { return nil }
+            return (name, field)
+        })
+        for column in ["remindAt", "remindedAt"] {
+            XCTAssertEqual(byName[column]?["notNull"] as? Bool ?? true, false,
+                           "diary_notes.\(column) 必须可空")
+        }
+    }
+
     private func columnNames(table: String) throws -> [String] {
         let statement = try temp.stores.database.prepare("PRAGMA table_info(\(table))")
         var names: [String] = []

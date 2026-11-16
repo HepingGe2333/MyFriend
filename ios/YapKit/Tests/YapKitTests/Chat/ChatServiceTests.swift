@@ -337,7 +337,9 @@ final class ChatServiceTests: XCTestCase {
         let system = try systemPrompt()
         XCTAssertTrue(system.contains("你是小满，说话很轻。"))
         XCTAssertTrue(system.contains("## 你可以主动联系对方"))
-        XCTAssertTrue(system.contains("## 你可以调用这些工具"))
+        // 0.13：工具那一段的标题改成「# 你能做什么」（内容由 ToolCatalog 生成）。
+        XCTAssertTrue(system.contains(ToolCatalog.capabilitySection))
+        XCTAssertTrue(system.contains("- think(question)："))
         let personaIndex = try XCTUnwrap(system.range(of: "你是小满"))
         let capabilityIndex = try XCTUnwrap(system.range(of: "## 你可以主动联系对方"))
         XCTAssertTrue(personaIndex.lowerBound < capabilityIndex.lowerBound, "人格必须在能力说明之前")
@@ -401,6 +403,55 @@ final class ChatServiceTests: XCTestCase {
         let system = try systemPrompt()
         XCTAssertTrue(system.contains(HistoryCompression.SUMMARY_HEADER))
         XCTAssertTrue(system.contains("上次聊到他搬家。"))
+    }
+
+    // MARK: - 每轮注入当前时间（0.13，`spec/context-time/README.md`）
+
+    /// 一次回复里 system 只拼一次：工具回路的第二、三轮请求带的是同一段 system，
+    /// 时间行进**只出现一次**，不会因为多轮工具而重复追加。
+    func testTimeInjectedOncePerReplyAcrossToolRounds() async throws {
+        try seedReadySession()
+        let first = """
+        data: {"choices":[{"delta":{"content":"我查一下。\n```yap-tool\n{\"name\":\"think\",\"arguments\":{\"question\":\"今天几号\"}}\n```"}}]}
+
+        data: [DONE]
+
+        """
+        let second = """
+        data: {"choices":[{"delta":{"content":"想好了。"}}]}
+
+        data: [DONE]
+
+        """
+        StubURLProtocol.enqueue(.sse(first, splitEvery: 11), .sse(second, splitEvery: 11))
+        tools.resultFor = { invocation in
+            ToolResult(invocation: invocation, ok: true, summary: "想了想", contentForModel: "今天周四")
+        }
+        _ = try await collect(service.send(sessionId: sessionId, text: "今天几号"))
+
+        // 两次请求各只有一条 system（时间没有被当成一条新消息追加）。
+        for index in 0..<2 {
+            let body = try requestBody(at: index)
+            let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
+            XCTAssertEqual(messages.filter { ($0["role"] as? String) == "system" }.count, 1)
+        }
+        let firstSystem = try systemPrompt(at: 0)
+        let secondSystem = try systemPrompt(at: 1)
+        XCTAssertEqual(firstSystem, secondSystem, "同一轮回复里 system 只应拼一次（工具回路不重建）")
+
+        // 时间行的形状：日期 + 周几 + 时刻 + UTC 偏移；整段 system 里只出现一次。
+        let pattern = #"现在是\d{4}-\d{2}-\d{2} 周[日一二三四五六] \d{2}:\d{2}（UTC[+-]\d{2}:\d{2}）。"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(firstSystem.startIndex..<firstSystem.endIndex, in: firstSystem)
+        XCTAssertEqual(regex.numberOfMatches(in: firstSystem, range: range), 1,
+                       "时间行必须只出现一次：\(firstSystem)")
+        let secondBody = try requestBody(at: 1)
+        let secondContents = (secondBody["messages"] as? [[String: Any]] ?? [])
+            .compactMap { $0["content"] as? String }
+            .joined(separator: "\n")
+        XCTAssertEqual(regex.numberOfMatches(
+            in: secondContents, range: NSRange(secondContents.startIndex..<secondContents.endIndex, in: secondContents)
+        ), 1, "回灌工具结果之后，时间行仍然只出现一次")
     }
 
     // MARK: - 工具轮

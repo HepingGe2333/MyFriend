@@ -18,6 +18,7 @@ import com.yap.app.core.AgentCoreClient
 import com.yap.app.domain.AgentCore
 import com.yap.app.domain.AgentWindow
 import com.yap.app.domain.DeferReply
+import com.yap.app.domain.Diary
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.ToolArgClamp
 import com.yap.app.domain.MemoryCandidate
@@ -44,6 +45,7 @@ import com.yap.app.network.WebSearchClient
 import com.yap.app.network.WebSearchHit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -77,6 +79,8 @@ class ToolExecutor @Inject constructor(
     private val moodRepository: MoodRepository,
     private val agentIntentRepository: AgentIntentRepository,
     private val messageDao: MessageDao,
+    /** 他自己的备忘本（`spec/diary`）：写/翻/撕，以及到点提醒变成念头。 */
+    private val diaryRepository: DiaryRepository,
     private val secretCipher: SecretCipher,
     private val database: com.yap.app.data.local.YapDatabase,
     /** 服务端模式的写路径：活动上报失败只记日志，本地照常（M3）。 */
@@ -100,6 +104,7 @@ class ToolExecutor @Inject constructor(
             "set_activity" -> setActivity(invocation, persona, now)
             "set_mood" -> setMood(invocation, persona, now)
             "recall" -> recall(invocation, persona, now)
+            "diary" -> diary(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
             "think" -> think(invocation)
             else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_UNKNOWN, arg = name))
@@ -521,6 +526,131 @@ class ToolExecutor @Inject constructor(
             },
             modelText = outcome.rendered
         )
+    }
+
+    // ---------------------------------------------------------------- 日记板
+
+    /**
+     * diary：他自己的备忘录（`spec/diary/README.md`）。
+     *
+     * 三个动作都要能**回灌一句人话**：
+     * - `add`：记下了（带提醒就到点会想起）；
+     * - `list`：翻最近的（空本子也要说「还没有东西」，不能给空字符串让模型以为工具坏了）；
+     * - `remove`：撕掉一页；找不到不是错误（可能已经撕掉了），别再重复删。
+     */
+    private suspend fun diary(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val action = invocation.argument("action")?.trim()?.lowercase().orEmpty()
+        return when (action) {
+            "", "add" -> diaryAdd(invocation, persona, now)
+            "list" -> diaryList(invocation, persona, now)
+            "remove", "delete" -> diaryRemove(invocation, persona, now)
+            else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_QUERY_MISSING))
+        }
+    }
+
+    private suspend fun diaryAdd(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val content = Diary.cleanContent(invocation.argument("content"))
+        if (content == null) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_CONTENT_MISSING))
+        val remindAt = Diary.resolveRemindAt(
+            remindAtMillis = invocation.optionalLongArgument("remindAt"),
+            remindInMinutes = invocation.optionalIntArgument("remindInMinutes"),
+            now = now
+        )
+        val note = diaryRepository.add(
+            personaId = persona.id,
+            content = content,
+            remindAtMillis = remindAt,
+            remindInMinutes = null,
+            now = now
+        ).getOrElse { error -> return failure(invocation, error.toUserError()) }
+
+        val entry = Diary.Entry(
+            id = note.id,
+            content = note.content,
+            createdAt = note.createdAt,
+            remindAt = note.remindAt,
+            remindedAt = note.remindedAt
+        )
+        val zone = ZoneId.systemDefault()
+        val remindText = entry.remindAt?.let { Diary.absolute(it, zone, now) }
+        val detail = buildString {
+            append(ToolTraceText.diaryAddSubtitle(appContext, entry.content, remindText))
+            if (entry.remindAt != null) {
+                append("\n").append(appContext.getString(R.string.tool_trace_diary_remind_detail, remindText.orEmpty()))
+            } else {
+                append("\n").append(appContext.getString(R.string.tool_trace_diary_saved_detail))
+            }
+        }
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.DIARY_ADD,
+            subtitle = ToolTraceText.diaryAddSubtitle(appContext, entry.content, remindText),
+            detail = detail.take(600),
+            modelSummary = if (remindText == null) "记在日记里了" else "记下了，到点会想起",
+            modelText = Diary.renderOne(entry, now, zone) + "\nid：${entry.id}"
+        )
+    }
+
+    private suspend fun diaryList(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val entries = diaryRepository.recent(persona.id, invocation.optionalIntArgument("limit"))
+        val zone = ZoneId.systemDefault()
+        // 给用户看的行：内容 + 提醒时间（不展示 id，界面不是数据库）。
+        val lines = entries.map { entry ->
+            val text = entry.content.replace('\n', ' ').take(60)
+            entry.remindAt?.let {
+                appContext.getString(R.string.tool_trace_diary_remind, text, Diary.absolute(it, zone, now))
+            } ?: text
+        }
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.DIARY_LIST,
+            subtitle = ToolTraceText.diaryListSubtitle(appContext, entries.size),
+            detail = ToolTraceText.diaryListDetail(appContext, lines).take(600),
+            modelSummary = if (entries.isEmpty()) "日记本上还没有东西" else "翻了翻日记 · ${entries.size} 条",
+            modelText = Diary.renderForModel(entries, now, zone)
+        )
+    }
+
+    private suspend fun diaryRemove(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val noteId = invocation.argument("noteId")?.trim().orEmpty()
+        if (noteId.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_QUERY_MISSING))
+        val removed = diaryRepository.remove(persona.id, noteId)
+        return if (removed) {
+            success(
+                invocation = invocation,
+                title = ToolTraceTitle.DIARY_REMOVE,
+                subtitle = null,
+                detail = ToolTraceText.diaryRemovedDetail(appContext),
+                modelSummary = "撕掉了一页",
+                modelText = "这一页已经撕掉了，不要再删一次。"
+            )
+        } else {
+            // 找不到不是错误：可能他之前就删过 / id 记错了。给一句人话，别让模型反复重试。
+            success(
+                invocation = invocation,
+                title = ToolTraceTitle.DIARY_REMOVE,
+                subtitle = null,
+                detail = ToolTraceText.diaryNotFoundDetail(appContext),
+                modelSummary = "本子上没有这一条",
+                modelText = "日记本上没有这条备忘，可能已经撕掉了；别再重复删。"
+            )
+        }
     }
 
     // ---------------------------------------------------------------- 人设

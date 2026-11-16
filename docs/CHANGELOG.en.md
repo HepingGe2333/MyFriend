@@ -35,6 +35,22 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
 - For searchability, historical entries below use the current product, package and path names. The only
   retained legacy string is the compatibility format name `myfriend.backup`.
 
+
+### 0.13 in progress (dev/0.13.0, unreleased)
+
+- **Current time injected every turn**: chat/proactive/tool loops read the local time (date + weekday + HH:mm + UTC
+  offset) per request; never cached, never appended twice.
+- **Model API defaults**: temperature 0.75, context limit 1,000,000, max output 16,384; explicit config wins.
+- **Diary board `diary` tool** (schema v15): add/list/remove the persona's own notes with `remindAt`/`remindInMinutes`;
+  reminders become thoughts via the heartbeat, fire once, and are not back-filled after 24h. Both platforms share the schema.
+- **Prompt framework completed**: a new "what you can do" section generated from the tool registry (purpose, side
+  effects, contrast), with contract tests keeping it identical to the registry.
+- **Persona evolution**: every 20 user messages or 24h the model may propose ≤3 changes (only
+  traits/likes/behaviors/quirks, confidence ≥0.6, de-duplicated) into a "recent changes" review list; accepted changes
+  are applied with version+1, proposals expire after 7 days.
+- **Not implemented yet**: stickers (contract/design only) and audio/video modality (reference design only).
+- Tests: Android 1568 / 153 classes, iOS 1753 (2 skipped), agentd 392, agentcore 90; both platforms build.
+
 ## 0.12.1
 
 Patch release: **automatic two-way synchronisation when switching to a remote server**, **new clients pull their history

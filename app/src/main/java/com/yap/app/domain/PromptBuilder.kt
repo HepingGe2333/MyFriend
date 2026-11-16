@@ -155,7 +155,14 @@ object PromptBuilder {
         val asleep: Boolean = false,
         /** 额外状态（presence / 今天话多话少），一行一句，并进状态段。 */
         val extraStatus: String = "",
-        /** 记忆、念头、工具说明……放在边界之前。 */
+        /**
+         * 「# 你能做什么」段（工具用途）。
+         *
+         * 内容由 [ToolCatalog.capabilityPrompt] 从工具注册表生成，这里只负责放在「关系」之后、
+         * 记忆/念头之前：模型先知道自己是谁、在哪、能做什么，再看这一轮想起了什么。
+         */
+        val capabilitiesSection: String = "",
+        /** 记忆、念头……放在边界之前。 */
         val variableBlocks: List<String> = emptyList(),
         /** 语言指令（`LanguageDirective.section`），放在边界之前。 */
         val languageSection: String = ""
@@ -189,6 +196,9 @@ object PromptBuilder {
 
     private val HH_MM = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
 
+    /** 日期只要 `yyyy-MM-dd`：星期与时区偏移各自单独拼，避免受 Locale 影响。 */
+    private val YYYY_MM_DD = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT)
+
     private val WEEKDAYS = mapOf(
         DayOfWeek.MONDAY to "周一",
         DayOfWeek.TUESDAY to "周二",
@@ -213,13 +223,15 @@ object PromptBuilder {
 
     /** 只有五段人设（不含记忆/工具/边界）；给主动思考这类需要自己接尾巴的调用方用。 */
     fun base(input: Inputs): String {
-        val sections = listOf(
-            identitySection(input),
-            worldSection(input.world),
-            statusSection(input),
-            speechSection(input),
-            relationshipSection(input)
-        )
+        val sections = buildList {
+            add(identitySection(input))
+            add(worldSection(input.world))
+            add(statusSection(input))
+            add(speechSection(input))
+            add(relationshipSection(input))
+            // 五段之后是「我能用什么」：没有这一段，模型不知道自己有手，只会空口答应。
+            input.capabilitiesSection.trim().takeIf { it.isNotBlank() }?.let { add(it) }
+        }
         return sections.joinToString("\n\n").trim()
     }
 
@@ -353,13 +365,53 @@ object PromptBuilder {
     // ------------------------------------------------------------------ 工具
 
     /**
-     * 时间句；拿不到时间（`now <= 0` 或时区换算失败）时返回 `null`，由调用方整行省略。
+     * 时间句；拿不到时间（`now <= 0`）或时区换算失败时返回 `null`，由调用方整行省略。
+     *
+     * 规范依据是 `spec/context-time/README.md`：**每一轮请求**都注入请求发出瞬间的本地时间
+     * （`YYYY-MM-DD 周X HH:mm` + 时区偏移 `UTC±HH:mm`），不缓存、不按会话保存。
+     * 所以这里全部由调用方传进来的 `now` / `zone` 现算，类里没有任何时间缓存字段——
+     * 跨天或改时区后同一会话的下一条消息就会拿到新的日期与偏移。
+     *
+     * 为什么不新增一个脚手架键：`spec/persona-guidance/scaffold.json` 的 `state_line` 只有
+     * `{weekday}` / `{time}` 两个占位符，而本轮不改 `spec/`，契约测试要求常量与 spec 逐字一致。
+     * 于是把两个占位符的**填充内容**加宽：`{weekday}` 填「日期 + 星期」，`{time}` 填「时刻（UTC±HH:mm）」，
+     * 渲染出来是 `现在是2026-11-18 周三 19:40（UTC+08:00）。`——模板仍然只有一个，中文固定文案没有第二份。
      */
     private fun clockLine(now: Long, zone: ZoneId): String? {
+        val parts = clockParts(now, zone) ?: return null
+        return fill(Scaffold.STATE_LINE, "weekday" to parts.first, "time" to parts.second)
+    }
+
+    /**
+     * 聊天之外的地方（主动消息的处境描述）共用同一份时间格式：`YYYY-MM-DD 周X HH:mm（UTC±HH:mm）`。
+     *
+     * 只给一行文本、不带「现在是…。」的脚手架句式——那边自己有一句「现在：」；
+     * 但**日期/星期/时刻/偏移的写法只有这一处**，两端不会各写一套。
+     *
+     * @return 拿不到时间（`now <= 0` / 时区换算失败）时返回 `null`
+     */
+    fun clockText(now: Long, zone: ZoneId = ZoneId.systemDefault()): String? {
+        val parts = clockParts(now, zone) ?: return null
+        return "${parts.first} ${parts.second}"
+    }
+
+    /** `(日期 + 星期, 时刻 + 时区偏移)`：两个时钟渲染入口的唯一真源。 */
+    private fun clockParts(now: Long, zone: ZoneId): Pair<String, String>? {
         if (now <= 0L) return null
         val zoned = runCatching { Instant.ofEpochMilli(now).atZone(zone) }.getOrNull() ?: return null
         val weekday = WEEKDAYS[zoned.dayOfWeek] ?: zoned.dayOfWeek.name
-        return fill(Scaffold.STATE_LINE, "weekday" to weekday, "time" to zoned.format(HH_MM))
+        val day = zoned.format(YYYY_MM_DD)
+        val offset = zoneOffsetLabel(zoned.offset)
+        return "$day $weekday" to "${zoned.format(HH_MM)}（$offset）"
+    }
+
+    /** `UTC+08:00` / `UTC-05:30` / `UTC`：偏移按规范写成 `UTC±HH:mm`，不依赖 Locale。 */
+    private fun zoneOffsetLabel(offset: java.time.ZoneOffset): String {
+        val totalMinutes = offset.totalSeconds / 60
+        if (totalMinutes == 0) return "UTC"
+        val sign = if (totalMinutes < 0) "-" else "+"
+        val abs = kotlin.math.abs(totalMinutes)
+        return "UTC%s%02d:%02d".format(Locale.ROOT, sign, abs / 60, abs % 60)
     }
 
     /**

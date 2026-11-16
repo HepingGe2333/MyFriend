@@ -1061,13 +1061,9 @@ public enum AgentPromptBuilder {
     }
 
     public static func user(now: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
-        let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        let clock = formatter.string(from: Date(timeIntervalSince1970: Double(now) / 1000.0))
-        let whenText = clock.isEmpty ? "现在" : "现在是 \(clock)"
+        // 自主循环的「每轮请求」同样注入请求发出瞬间的本地时间 + UTC 偏移
+        //（`spec/context-time/README.md`：聊天/主动/工具回路都要生效）。
+        let whenText = now > 0 ? "现在是 \(PromptClock.momentText(now, calendar: calendar))" : "现在"
         return "\(whenText)。现在想一想，要不要做点什么；什么都不做也是正常选择。先在心里想一句，再决定动作。"
     }
 

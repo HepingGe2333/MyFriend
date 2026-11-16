@@ -58,5 +58,18 @@ data class AppSettings(
      */
     val heartbeatLastResetAt: Long = 0L,
     /** 上一次他真的因为这股冲动想了一回的时刻；null = 还没发生过。同样是内部状态。 */
-    val heartbeatLastFiredAt: Long? = null
+    val heartbeatLastFiredAt: Long? = null,
+
+    /**
+     * 人格进化评估的游标（`docs/design/persona-evolution.md` §2）。
+     *
+     * 三件都是**内部状态**，界面上没有它们：只为了让「每 20 条用户消息或 24 小时评估一次」
+     * 在 App 重启之后接着算，而不是每次冷启动都算作「已经过了 24 小时」。
+     * 换人格时游标重置（[evolutionPersonaId] 对不上就当 0）。
+     */
+    val evolutionPersonaId: String? = null,
+    /** 上次评估时这个会话已经有几条用户消息。 */
+    val evolutionUserMessageCount: Int = 0,
+    /** 上次评估的时刻；0 = 还没评估过。 */
+    val evolutionLastRunAt: Long = 0L
 )

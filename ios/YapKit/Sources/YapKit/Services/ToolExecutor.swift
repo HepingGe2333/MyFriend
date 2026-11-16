@@ -122,6 +122,8 @@ public final class ToolExecutor: ToolRunning {
             return recall(invocation, persona: persona, now: at)
         case "defer_reply":
             return await deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
+        case "diary":
+            return diary(invocation, persona: persona, now: at)
         case "think":
             return think(invocation)
         default:
@@ -743,6 +745,164 @@ public final class ToolExecutor: ToolRunning {
                 + promptTail
                 + "对方不需要知道你在用一个工具，也不用主动汇报日程；聊到相关的事自然带一句就好。"
         )
+    }
+
+    // MARK: - 日记板（`spec/diary/README.md`）
+
+    /// 他自己的备忘录：写一条 / 翻一翻 / 删一条。
+    ///
+    /// 三件事都只碰 `diary_notes` 里**属于这个人格**的行：
+    /// - `add`：内容必填、≤2000 字；`remindAt` 与 `remindInMinutes` 二选一（都不填 = 不提醒）；
+    /// - `list`：按 `createdAt` 倒序，默认 20 条、最多 50（多了模型也读不完）；
+    /// - `remove`：按 id 硬删除（删了就是删了，不留墓碑）。
+    ///
+    /// 回灌给模型的文本里带 **id** 与提醒时间：没有 id，模型就永远删不掉自己写的东西。
+    /// 失败一律给一句人话（内容太长、id 不对、动作不认识），不静默。
+    private func diary(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
+        let rawAction = (invocation.argument("action") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // 缺省按 add 处理（模型常常只给 content）：这是最常见的用法，也是最不容易误删的。
+        let action = rawAction.isEmpty ? "add" : rawAction
+        switch action {
+        case "add":
+            return diaryAdd(invocation, persona: persona, now: now)
+        case "list":
+            return diaryList(invocation, persona: persona)
+        case "remove", "delete":
+            return diaryRemove(invocation, persona: persona)
+        default:
+            return failure(invocation, String(localized: "日记只支持 add / list / remove 三个动作"))
+        }
+    }
+
+    private func diaryAdd(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
+        guard let content = DiaryLimits.clean(invocation.argument("content")) else {
+            return failure(invocation, String(localized: "没有写要记下的内容"))
+        }
+        guard DiaryLimits.isWithinLimit(content) else {
+            return failure(
+                invocation,
+                String(format: String(localized: "日记太长了（最多 %d 字），这次没写进去"),
+                       DiaryLimits.contentMax)
+            )
+        }
+        var remindAt: Int64?
+        let explicitRemindAt = Self.int64Argument(invocation, "remindAt")
+        let remindInMinutes = Self.int64Argument(invocation, "remindInMinutes")
+        if let explicitRemindAt, explicitRemindAt > 0 {
+            // 规范 §工具协议：`remindAt` 与 `remindInMinutes` 二选一；两个都给时以绝对时间为准
+            //（模型说「明天 9 点」比「还有 600 分钟」更不容易算错）。
+            guard explicitRemindAt > now else {
+                return failure(invocation, String(localized: "提醒时间已经过去了，这次没写进去"))
+            }
+            remindAt = explicitRemindAt
+        } else if let remindInMinutes, remindInMinutes > 0 {
+            let minutes = min(remindInMinutes, Int64(DiaryLimits.remindInMinutesMax))
+            remindAt = now + minutes * 60_000
+        }
+        let note = DiaryNoteEntity(
+            id: UUID().uuidString,
+            personaId: persona.id,
+            content: content,
+            createdAt: now,
+            remindAt: remindAt,
+            updatedAt: now
+        )
+        do {
+            try stores.diaryNotes.upsert(note)
+        } catch {
+            log("[tool] diary add 落库失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没写进去"))
+        }
+        var modelText = "已经写进你的日记板：「\(String(content.prefix(120)))」（id：\(note.id)）。"
+        var detail = content
+        if let remindAt {
+            let clock = DiaryNoteEntity.displayClock(remindAt)
+            modelText += "到 \(clock) 你会自己想起这条，再决定要不要开口；不想说也可以只是想起来。"
+            detail += "\n" + String(format: String(localized: "提醒：%@"), clock)
+        }
+        modelText += "对方看不到日记内容，也不用跟他说你写了日记。"
+        return success(
+            invocation,
+            title: String(localized: "写日记"),
+            subtitle: String(content.prefix(40)),
+            detail: detail,
+            modelText: modelText
+        )
+    }
+
+    private func diaryList(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        let requested = invocation.intArgument("limit", default: DiaryLimits.listDefault)
+        let limit = DiaryLimits.clampListLimit(requested)
+        let notes: [DiaryNoteEntity]
+        do {
+            notes = try stores.diaryNotes.byPersona(persona.id, limit: limit)
+        } catch {
+            log("[tool] diary list 读取失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没翻成"))
+        }
+        guard !notes.isEmpty else {
+            return ToolResult(
+                invocation: invocation,
+                ok: true,
+                summary: String(localized: "日记板还是空的"),
+                contentForModel: "你的日记板还是空的（没有写过，或者都删掉了）。"
+                    + "想记点什么就 add 一条，不用为了翻而翻。",
+                traceTitle: String(localized: "翻日记"),
+                traceDetail: String(localized: "还没有写过")
+            )
+        }
+        var rendered = "你的日记板（最近 \(notes.count) 条，按时间倒序）：\n"
+        for (index, note) in notes.enumerated() {
+            rendered += "\(index + 1). \(DiaryNoteEntity.displayClock(note.createdAt))"
+            if let remindAt = note.remindAt {
+                rendered += " · 提醒 \(DiaryNoteEntity.displayClock(remindAt))"
+                if note.remindedAt != nil { rendered += "（已经提醒过）" }
+            }
+            rendered += " · id=\(note.id)\n   \(String(note.content.prefix(300)))\n"
+        }
+        rendered += "\n要删哪条就用它后面的 id 调 remove。"
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: PluralText.format("日记 %d 条", notes.count),
+            contentForModel: rendered,
+            traceTitle: String(localized: "翻日记"),
+            traceDetail: notes.prefix(5).map { note in
+                DiaryNoteEntity.displayClock(note.createdAt) + " " + String(note.content.prefix(60))
+            }.joined(separator: "\n")
+        )
+    }
+
+    private func diaryRemove(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        guard let noteId = DiaryLimits.clean(invocation.argument("noteId")) else {
+            return failure(invocation, String(localized: "没有说要删哪一条（需要 noteId）"))
+        }
+        do {
+            guard try stores.diaryNotes.remove(id: noteId, personaId: persona.id) else {
+                return failure(invocation, String(localized: "日记板里没有这一条（id 可能不对，先 list 看看）"))
+            }
+        } catch {
+            log("[tool] diary remove 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没删成"))
+        }
+        return success(
+            invocation,
+            title: String(localized: "删了日记"),
+            subtitle: String(noteId.prefix(20)),
+            detail: String(localized: "这一条已经从日记板删掉了。"),
+            modelText: "已经从日记板上删掉那一条了。对方本来也看不到，不用解释。"
+        )
+    }
+
+    /// 读一个可能写成数字、字符串或浮点的整型参数（模型经常把 1794500000000 写成字符串）。
+    static func int64Argument(_ invocation: ToolInvocation, _ name: String) -> Int64? {
+        guard let object = argumentsObject(invocation.argumentsJson) else { return nil }
+        if let number = object[name] as? NSNumber { return number.int64Value }
+        if let text = object[name] as? String {
+            return Int64(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
     }
 
     // MARK: - 先不回

@@ -139,6 +139,11 @@ public final class HeartbeatController {
             return Beat(why: "还没有可以对话的人格")
         }
 
+        // 日记板的到点提醒（`spec/diary/README.md` §提醒）：**每拍都查**，而且必须在
+        // 掷骰子之前 —— 提醒是「我自己写下的时间到了」，不该靠概率才被想起。
+        // 睡着/在忙也照样记标记与念头（念头会不会变成消息，由自主循环的睡眠判定决定）。
+        _ = checkDiaryReminders(persona: persona, now: at)
+
         // 他睡觉的时候不掷：既省电，也更像人。
         let minute = ServiceTime.minuteOfDay(at)
         if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
@@ -233,6 +238,60 @@ public final class HeartbeatController {
             summary: outcome?.summary ?? "",
             why: outcome == nil ? "这一轮没想成" : ""
         )
+    }
+
+    // MARK: - 日记板提醒
+
+    /// 把到点的日记提醒变成**他自己的念头**，并写 `remindedAt` 防重复。
+    ///
+    /// 规则（`spec/diary/README.md` §提醒）：
+    /// - 同一条提醒只触发一次：先 `markReminded`（条件更新 `remindedAt IS NULL`），
+    ///   只有真的改到行的那一拍才继续生成念头 —— 两拍并发时也只会有一条；
+    /// - 错过超过 24 小时不补发：只清标记（否则「明天记得问他到家没」会在三天后诈尸）；
+    /// - 念头的窗口给 1 小时：到点这一刻他在忙/在睡，也可以晚一点再想起来。
+    ///
+    /// - Returns: 这一拍真的生成了几条念头（测试与日志用）。
+    @discardableResult
+    public func checkDiaryReminders(now: Int64? = nil) -> Int {
+        let at = now ?? self.now()
+        guard let persona = pickPersona(settings.load().activePersonaId) else { return 0 }
+        return checkDiaryReminders(persona: persona, now: at)
+    }
+
+    /// 指定人格的版本（`beat()` 里已经选好人格，不必再读一次设置）。
+    @discardableResult
+    func checkDiaryReminders(persona: PersonaEntity, now: Int64) -> Int {
+        let due: [DiaryNoteEntity]
+        do {
+            due = try stores.diaryNotes.due(personaId: persona.id, now: now)
+        } catch {
+            return 0
+        }
+        guard !due.isEmpty else { return 0 }
+        var planned = 0
+        for note in due {
+            // 条件更新：只有「还没提醒过」的那一拍能拿到 true。
+            guard (try? stores.diaryNotes.markReminded(id: note.id, at: now)) == true else { continue }
+            // 错过太久：标记已经清了，不补念头。
+            guard !note.isStale(now: now) else { continue }
+            let window = AgentWindow(
+                earliestAt: now,
+                latestAt: now + 60 * 60_000,
+                note: "日记提醒：\(String(note.content.prefix(120)))",
+                hint: "这条是你自己之前写在日记板上的提醒。现在到点了：想说什么、要不要主动开口，你自己决定；"
+                    + "不想说也可以只是想一下。"
+            )
+            intents.plan(
+                personaId: persona.id,
+                window: window,
+                kind: .followUp,
+                note: window.note,
+                hint: window.hint,
+                now: now
+            )
+            planned += 1
+        }
+        return planned
     }
 
     // MARK: - 单拍互斥

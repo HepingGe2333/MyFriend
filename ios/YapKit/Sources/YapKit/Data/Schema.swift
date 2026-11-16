@@ -28,11 +28,15 @@ public enum Schema {
     /// `persona_presets.worldJson` / `speechStyleJson`（见 `spec/persona-guidance/README.md` §5）。
     /// 0.12（提示词翻译）= v14：`personas.translationJson` / `translationLang`
     ///（见 `spec/persona-translation/README.md` §8：缓存列名两端固定）。
-    public static let version: Int32 = 14
+    /// 0.13 = v15：`diary_notes`（日记板，`spec/diary/README.md`）与
+    /// `persona_pending_patches`（人格进化的待确认变化，`docs/design/persona-evolution.md`）。
+    /// 两张都是**新表**（不改已有列），所以 14→15 是「建表 + 建索引」，没有数据回填。
+    public static let version: Int32 = 15
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
-    /// 这 13 张是 iOS 第一版就有的；`supplementaryTables` 里那两张是 1.8 遗留的缺表，
+    /// 前 13 张是 iOS 第一版就有的，0.13 补了两张（日记板 / 待确认人格变化）；
+    /// `supplementaryTables` 里那两张是 1.8 遗留的缺表，
     /// 0.9.1 补进了建表语句（见下面的常量说明），`derivedTables` 是 v11 的派生表 ——
     /// **完整表清单**是 `allTables`。
     public static let tables: [String] = [
@@ -48,7 +52,10 @@ public enum Schema {
         "proactive_rules",
         "agent_intents",
         "api_configs",
-        "api_usage"
+        "api_usage",
+        // 0.13 的两张新表（记录型：都有实体 + 仓储 + 备份/界面读写）。
+        "diary_notes",
+        "persona_pending_patches"
     ]
 
     /// 一人一段会话的唯一索引名（迁移与测试都按这个名字找它）。
@@ -103,7 +110,9 @@ public enum Schema {
     /// 各自可断言 —— 两者混在一起会让「一张表一个实体」这条约定失效。
     public static let derivedTables: [String] = [messageBlocksTable]
 
-    /// 完整表清单（13 张记录型 + 2 张服务层用表 + 1 张派生表）。
+    /// 完整表清单（15 张记录型 + 4 张服务层用表 + 1 张派生表 = 20）。
+    ///
+    /// 0.13 起记录型从 13 张变成 15 张（`diary_notes` / `persona_pending_patches`）。
     public static let allTables: [String] = tables + supplementaryTables + derivedTables
 
     /// `message_blocks` 的建表语句。
@@ -576,6 +585,68 @@ public enum Schema {
         "CREATE INDEX IF NOT EXISTS index_server_outbox_sessionId ON server_outbox (sessionId)",
         "CREATE INDEX IF NOT EXISTS index_server_outbox_createdAt ON server_outbox (createdAt)"
     ]
+    // v15：日记板（`spec/diary/README.md`）与人格进化的待确认变化
+    //（`docs/design/persona-evolution.md`）。DDL 与迁移共用同一份常量。
+    + [diaryNotesDDL]
+    + diaryNotesIndexStatements
+    + [personaPendingPatchesDDL]
+    + personaPendingPatchesIndexStatements
+
+    // MARK: - v15 的两张新表
+
+    /// 日记板：他自己的备忘录（`spec/diary/README.md` §数据）。
+    ///
+    /// 列与 Android 的 `diary_notes` 逐字对齐：`remindAt` / `remindedAt` 可空
+    /// （null = 不提醒 / 还没提醒）；`remindedAt` 由心跳写，写了就不会再触发。
+    public static let diaryNotesTable = "diary_notes"
+
+    /// 待确认的人格变化（`docs/design/persona-evolution.md` §2）。
+    ///
+    /// Android 从 v14 起就有这张表（1.3 之前用来放「等用户点头」的人设补丁）；
+    /// iOS 0.13 才建它，用途是人格进化评估产出的 `changes`：用户接受才写回人格卡。
+    /// 列的形状与 Android `PersonaPendingPatchEntity` 逐字一致（备份/迁移要能互通）。
+    public static let personaPendingPatchesTable = "persona_pending_patches"
+
+    /// `diary_notes` 的建表语句（迁移与 `createStatements` 用的是同一份 DDL）。
+    public static let diaryNotesDDL = """
+        CREATE TABLE IF NOT EXISTS diary_notes (
+            id TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            content TEXT NOT NULL,
+            createdAt INTEGER NOT NULL,
+            remindAt INTEGER,
+            remindedAt INTEGER,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY (id)
+        )
+        """
+
+    /// 日记板的索引（名字与列序与 Android Room 导出的 v15 逐字一致）：
+    /// - `personaId` 覆盖「按人格翻」（再按 createdAt 排序，SQLite 会用同一个索引）；
+    /// - `remindAt` 覆盖心跳的「到点了没」（全库扫的那条）。
+    public static let diaryNotesIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_diary_notes_personaId ON diary_notes (personaId)",
+        "CREATE INDEX IF NOT EXISTS index_diary_notes_remindAt ON diary_notes (remindAt)"
+    ]
+
+    /// `persona_pending_patches` 的建表语句（与 Android v14 的 Room 导出逐列一致）。
+    public static let personaPendingPatchesDDL = """
+        CREATE TABLE IF NOT EXISTS persona_pending_patches (
+            id TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            sessionId TEXT,
+            patchJson TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            createdAt INTEGER NOT NULL,
+            PRIMARY KEY (id)
+        )
+        """
+
+    public static let personaPendingPatchesIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_persona_pending_patches_personaId ON persona_pending_patches (personaId)",
+        "CREATE INDEX IF NOT EXISTS index_persona_pending_patches_createdAt ON persona_pending_patches (createdAt)"
+    ]
 
     /// 建库入口：App 首次启动、以及测试里建临时库都走这里。
     ///
@@ -603,10 +674,10 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10/v11/v12 → v14
+    // MARK: - v8/v9/v10/v11/v12 → v15
 
-    /// 老库升到 v14：补列（含 v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、清 Harness 列、
-    /// 一人一段、补默认配置、建块表并回填块号。
+    /// 老库升到 v15：补列（v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、
+    /// 清 Harness 列、一人一段、补默认配置、建块表并回填块号、建 v15 的两张新表。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
     /// 迁移必须和建表在同一个事务里，否则「库是半新半旧」的状态比升级失败更糟。
@@ -661,6 +732,23 @@ public enum Schema {
 
         try database.execute(messageBlocksDDL)
         try backfillMessageBlocks(database)
+
+        // v15：日记板 + 待确认的人格变化。14→15 只有「建表 + 建索引」，没有数据回填；
+        // 放在这里是为了让升级路径在迁移阶段就与目标 schema 一致（`createStatements`
+        // 之后还会幂等地再跑一遍）。
+        try ensureV15Tables(database)
+    }
+
+    /// v15 的两张新表（幂等）。`createStatements` 里也包含它们，两处用的是同一份常量。
+    static func ensureV15Tables(_ database: SQLiteDatabase) throws {
+        try database.execute(diaryNotesDDL)
+        for statement in diaryNotesIndexStatements {
+            try database.execute(statement)
+        }
+        try database.execute(personaPendingPatchesDDL)
+        for statement in personaPendingPatchesIndexStatements {
+            try database.execute(statement)
+        }
     }
 
     /// v10 → v11 的回填：给每条消息算块号，并由块号生成块行。
