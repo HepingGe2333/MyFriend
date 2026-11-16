@@ -236,9 +236,9 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         self.moodReason = moodReason
         self.moodUpdatedAt = moodUpdatedAt
         self.moodNudgedAt = moodNudgedAt
-        self.traits = PersonaTags.normalize(traits, limit: PersonaFieldLimits.maxTraits)
-        self.likes = PersonaTags.normalize(likes, limit: PersonaFieldLimits.maxLikes)
-        self.behaviors = PersonaTags.normalize(behaviors, limit: PersonaFieldLimits.maxBehaviors)
+        self.traits = PersonaTags.normalize(traits)
+        self.likes = PersonaTags.normalize(likes)
+        self.behaviors = PersonaTags.normalize(behaviors)
         self.backstory = PersonaEntity.clean(backstory, limit: PersonaFieldLimits.backstoryMax)
         self.quirks = PersonaEntity.clean(quirks, limit: PersonaFieldLimits.quirksMax)
         self.proactiveLevel = PersonaFieldLimits.clampLevel(proactiveLevel)
@@ -884,9 +884,9 @@ extension BackupPersona {
             moodUpdatedAt: try json.optionalInt64("moodUpdatedAt"),
             moodNudgedAt: try json.optionalInt64("moodNudgedAt"),
             // 列表字段用永不抛错的宽容解码：为了一个标签丢掉整个人格是错的取舍。
-            traits: json.stringList("traits", limit: PersonaFieldLimits.maxTraits),
-            likes: json.stringList("likes", limit: PersonaFieldLimits.maxLikes),
-            behaviors: json.stringList("behaviors", limit: PersonaFieldLimits.maxBehaviors),
+            traits: json.stringList("traits"),
+            likes: json.stringList("likes"),
+            behaviors: json.stringList("behaviors"),
             backstory: try json.optionalText("backstory"),
             quirks: try json.optionalText("quirks"),
             proactiveLevel: try json.optionalInt("proactiveLevel")

@@ -143,12 +143,29 @@ class ChatSseTest {
     }
 
     @Test
-    fun `attachments are persisted on the user message`() {
+    fun `attachments are persisted on the user message as media urls`() {
+        // 0.12.0 起附件必须是已存在的媒体：客户端可传裸 id 或 /v1/media/<id>，落库统一成后者。
+        val first = store.saveMedia("CHAT_IMAGE", null, "image/jpeg", byteArrayOf(1, 2, 3)).item
+        val second = store.saveMedia("CHAT_IMAGE", null, "image/jpeg", byteArrayOf(4, 5, 6)).item
         send(
             services(),
-            """{"clientMessageId":"c-attach","content":"看图","attachments":["media-1","media-2"]}"""
+            """{"clientMessageId":"c-attach","content":"看图","attachments":["${first.id}","/v1/media/${second.id}"]}"""
         )
-        assertEquals(listOf("media-1", "media-2"), userMessage().attachments)
+        assertEquals(listOf(first.url, second.url), userMessage().attachments)
+    }
+
+    @Test
+    fun `unknown media attachment is rejected before the stream starts`() {
+        val failure = try {
+            send(services(), """{"clientMessageId":"c-bad-media","content":"看图","attachments":["no-such-media"]}""")
+            null
+        } catch (failure: AgentdApi.ApiFailure) {
+            failure
+        }
+        assertTrue("必须拒绝不存在的媒体", failure != null)
+        assertEquals(400, failure!!.status)
+        assertEquals("unknown_media", failure.code)
+        assertTrue("不能落库半条消息", store.blockMessages(sessionId, 0).isEmpty())
     }
 
     // ------------------------------------------------------------------ 幂等

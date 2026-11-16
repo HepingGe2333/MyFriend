@@ -144,9 +144,9 @@ public enum ServerSyncMapping {
     ///   塞服务端的块号会让 `messages.blockIndex` 与 `message_blocks` 不自洽
     ///   （`inconsistencies()` 会立刻报出来）。服务端的块号只在**翻页请求**里用
     ///   （`ServerChatGateway.loadBlock`），不落库。
-    /// - 附件：服务端只有 id（`attachments: ["media-1"]`），本地 `attachmentsJson`
-    ///   是 `{uri,mime,width,height}`。这里写成 `server:<id>` 且 `mime` 非图片，
-    ///   界面上显示为「一条带附件但本地没有文件」的消息，而不是去 decode 一个不存在的文件。
+    /// - 附件：服务端下发 `["/v1/media/<id>"]`，本地 `attachmentsJson` 的 `uri` 存同一个
+    ///   相对路径；渲染走 `ServerMediaCache`（带 Authorization、按显示尺寸解码），
+    ///   不再写 M4 的 `server:<id>` + 非图片 mime 占位。
     public static func message(
         from server: ServerMessage,
         existing: MessageEntity?,
@@ -173,11 +173,23 @@ public enum ServerSyncMapping {
         return record
     }
 
-    /// 服务端附件 id 列表 → 本地 `attachmentsJson`。空列表返回 nil（= 没有附件）。
-    public static func attachmentsJson(from ids: [String]) -> String? {
-        let items = ids
-            .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            .map { MessageAttachment(uri: "server:" + $0, mime: "application/octet-stream") }
+    /// 服务端附件 → 本地 `attachmentsJson`。空列表返回 nil（= 没有附件）。
+    ///
+    /// 服务端下发的形状是 `["/v1/media/<id>"]`（契约 §3.6）；本地 `attachmentsJson`
+    /// 的 `uri` 就存这个相对路径，渲染时由 `ServerMediaCache` 带 Authorization 取。
+    /// `server:<id>` 是 M4 的旧形状，读到也认（`ServerMediaReference` 统一解析）。
+    public static func attachmentsJson(from attachments: [String]) -> String? {
+        let items = attachments.compactMap { raw -> MessageAttachment? in
+            // 服务端下发/我们入队时可能给裸 mediaId，也可能给 `/v1/media/<id>`（契约两种都收）；
+            // 本地一律存标准相对路径，界面只认这一种。
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            if let id = ServerMediaReference.mediaId(from: trimmed) {
+                return MessageAttachment(uri: ServerMediaReference.uri(id: id))
+            }
+            guard !trimmed.contains("/"), !trimmed.contains("\\") else { return nil }
+            return MessageAttachment(uri: ServerMediaReference.uri(id: trimmed))
+        }
         return AttachmentsCodec.encode(items)
     }
 

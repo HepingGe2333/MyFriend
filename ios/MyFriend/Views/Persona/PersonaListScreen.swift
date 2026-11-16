@@ -203,23 +203,25 @@ struct PersonaListScreen: View {
     }
 
     private func makeDefault(_ persona: PersonaEntity) {
-        let now = DomainClock.nowMillis
-        for other in personas where other.id != persona.id && other.isDefault {
-            var cleared = other
-            cleared.isDefault = false
-            cleared.updatedAt = now
-            try? env.stores.personas.upsert(cleared)
-        }
-        var updated = persona
-        updated.isDefault = true
-        updated.updatedAt = now
-        do {
-            try env.stores.personas.upsert(updated)
-            env.updateSettings { $0.activePersonaId = persona.id }
-            reload()
-            banner = MFAlert(title: L("换过来了"), message: Lf("接下来先跟你说话的是「%@」。", persona.name))
-        } catch {
-            banner = MFAlert(title: L("没能切换"), message: error.localizedDescription)
+        Task { @MainActor in
+            let now = DomainClock.nowMillis
+            do {
+                for other in personas where other.id != persona.id && other.isDefault {
+                    var cleared = other
+                    cleared.isDefault = false
+                    cleared.updatedAt = now
+                    _ = try await env.savePersona(cleared, isNew: false)
+                }
+                var updated = persona
+                updated.isDefault = true
+                updated.updatedAt = now
+                _ = try await env.savePersona(updated, isNew: false)
+                env.updateSettings { $0.activePersonaId = persona.id }
+                reload()
+                banner = MFAlert(title: L("换过来了"), message: Lf("接下来先跟你说话的是「%@」。", persona.name))
+            } catch {
+                banner = MFAlert(title: L("没能切换"), message: error.localizedDescription)
+            }
         }
     }
 
@@ -237,17 +239,20 @@ struct PersonaListScreen: View {
     private func deletePending() {
         guard let persona = pendingDelete else { return }
         pendingDelete = nil
-        do {
-            // 删人的一串动作（含记忆索引）统一在装配层，首页与这里共用同一份。
-            try env.deletePersona(persona)
-            if env.currentSettings.activePersonaId == persona.id {
-                let next = (try? env.stores.personas.allOrderedByUpdatedAt())?.first?.id
-                env.updateSettings { $0.activePersonaId = next }
+        Task { @MainActor in
+            do {
+                // 删人的一串动作（含记忆索引）统一在装配层，首页与这里共用同一份。
+                // 服务端模式先 DELETE，成功后才动本地缓存。
+                try await env.deletePersonaAsync(persona)
+                if env.currentSettings.activePersonaId == persona.id {
+                    let next = (try? env.stores.personas.allOrderedByUpdatedAt())?.first?.id
+                    env.updateSettings { $0.activePersonaId = next }
+                }
+                reload()
+                banner = MFAlert(title: L("删掉了"), message: Lf("「%@」和他的聊天、记忆都删掉了。", persona.name))
+            } catch {
+                banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
             }
-            reload()
-            banner = MFAlert(title: L("删掉了"), message: Lf("「%@」和他的聊天、记忆都删掉了。", persona.name))
-        } catch {
-            banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
         }
     }
 }

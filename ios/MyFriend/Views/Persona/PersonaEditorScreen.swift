@@ -1231,6 +1231,11 @@ struct PersonaEditorScreen: View {
     private var canSave: Bool { !trimmedName.isEmpty }
 
     private func save() {
+        Task { @MainActor in await saveAsync() }
+    }
+
+    @MainActor
+    private func saveAsync() async {
         let now = DomainClock.nowMillis
         let existing: PersonaEntity? = personaId.flatMap { try? env.stores.personas.byId($0) } ?? nil
         var entity = existing ?? PersonaEntity(
@@ -1247,11 +1252,12 @@ struct PersonaEditorScreen: View {
         entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-        entity.traits = PersonaTags.normalize(traits, limit: PersonaFieldLimits.maxTraits)
-        entity.likes = PersonaTags.normalize(likes, limit: PersonaFieldLimits.maxLikes)
-        entity.behaviors = PersonaTags.normalize(behaviors, limit: PersonaFieldLimits.maxBehaviors)
-        entity.backstory = PersonaEntity.clean(backstory, limit: PersonaFieldLimits.backstoryMax)
-        entity.quirks = PersonaEntity.clean(quirks, limit: PersonaFieldLimits.quirksMax)
+        // 0.12：存储与哈希保留原文（上限只作为编辑器提示，不再截断）。
+        entity.traits = PersonaTags.normalize(traits)
+        entity.likes = PersonaTags.normalize(likes)
+        entity.behaviors = PersonaTags.normalize(behaviors)
+        entity.backstory = PersonaEntity.clean(backstory)
+        entity.quirks = PersonaEntity.clean(quirks)
         entity.proactiveLevel = PersonaFieldLimits.clampLevel(proactiveLevel)
         entity.memoryRetention = PersonaFieldLimits.clampLevel(memoryRetention)
         entity.extractionEvery = PersonaFieldLimits.clampExtractionEvery(extractionEvery)
@@ -1283,7 +1289,9 @@ struct PersonaEditorScreen: View {
         }
 
         do {
-            try env.stores.personas.upsert(entity)
+            // 服务端模式：先 POST（新建由服务端生成 id），成功后本地缓存才更新；
+            // 本地模式这个方法内部就是原来的 upsert，行为不变。
+            let saved = try await env.savePersona(entity, isNew: existing == nil)
             // 结构化人设卡：只有「用户真的动过、且卡非空」才写库。
             // 空卡代表「我还是想用上面手写的那段提示词」，不能拿空镜像把它抹掉（Android 同一条规则）。
             if card != initialCard && !card.isEmpty {
@@ -1295,7 +1303,7 @@ struct PersonaEditorScreen: View {
                 // 走 saveCardFields：它会在落库前按卡片上限收敛（去空项、夹强度、截长度），
                 // 并把 prompt 重写成卡的镜像。卡没变化时它什么也不写。
                 if case .failure(let error) = env.personaCards.saveCardFields(
-                    personaId: entity.id,
+                    personaId: saved.id,
                     identity: finalCard.identity,
                     voice: finalCard.voice,
                     traits: finalCard.traits,
@@ -1323,9 +1331,9 @@ struct PersonaEditorScreen: View {
             }
             // 一人一段（§二）：创建人格的同时就把他那一段会话建好，
             // 否则首页点进去还要再补一次，补失败就成了「点了没反应」。
-            _ = env.session(forPersona: entity.id)
+            _ = env.session(forPersona: saved.id)
             if env.currentSettings.activePersonaId == nil {
-                env.updateSettings { $0.activePersonaId = entity.id }
+                env.updateSettings { $0.activePersonaId = saved.id }
             }
             dismiss()
         } catch {

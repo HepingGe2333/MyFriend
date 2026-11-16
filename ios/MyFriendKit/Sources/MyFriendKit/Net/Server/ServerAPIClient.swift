@@ -34,10 +34,10 @@ public final class ServerAPIClient {
     /// 连接配置。Token 只存在这里与请求头里，**不打印**。
     public let config: ServerConfig
     /// 普通 JSON 请求：10s 请求超时 / 30s 资源超时。
-    private let session: URLSession
+    let session: URLSession
     /// SSE 请求：请求级超时 0，资源超时给一周；与普通请求分开
     /// （URLSession 的资源超时是 session 级配置，不能按请求改，共用会把长回复在 30s 掐断）。
-    private let sseSession: URLSession
+    let sseSession: URLSession
 
     /// - Parameters:
     ///   - config: 已校验/已加载的连接配置。
@@ -359,7 +359,7 @@ public final class ServerAPIClient {
         }
     }
 
-    private func get<T: Decodable>(
+    func get<T: Decodable>(
         path: String,
         query: [URLQueryItem],
         as type: T.Type,
@@ -527,7 +527,7 @@ public final class ServerAPIClient {
 
     // MARK: - 请求构造
 
-    private func makeRequest(
+    func makeRequest(
         path: String,
         query: [URLQueryItem],
         method: String,
@@ -545,7 +545,7 @@ public final class ServerAPIClient {
         return request
     }
 
-    private func makeURL(path: String, query: [URLQueryItem]) throws -> URL {
+    func makeURL(path: String, query: [URLQueryItem]) throws -> URL {
         guard config.enabled else {
             throw ServerAPIError(code: ServerAPIError.Code.disabled, message: "服务端模式已关闭")
         }

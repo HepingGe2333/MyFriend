@@ -1,7 +1,7 @@
 import CoreGraphics
 import SwiftUI
 
-/// 按**显示尺寸**解码一张沙盒里的图片，异步加载 + 共享的缩略图缓存。
+/// 按**显示尺寸**解码一张图片（本地沙盒或服务端 `/v1/media/<id>`），异步加载 + 共享缩略图缓存。
 ///
 /// 为什么不 `UIImage(contentsOfFile:)`：那等于把整张原图（可能 1200 万像素）解进内存，
 /// 聊天页滚一遍十几张就把内存顶上去。这里走 `MediaStorage.thumbnail(maxPixelSize:)`，
@@ -9,6 +9,9 @@ import SwiftUI
 ///
 /// 离屏（`onDisappear`）时把 SwiftUI 这一层持有的 `CGImage` 放掉：缓存里还有一份，
 /// 但那是按预算回收的；视图自己不该把整段历史的图都钉在内存里。
+///
+/// 服务端模式（M5）：`uri` 是 `/v1/media/<id>` 时走 `ServerMediaCache` ——
+/// 它带 `Authorization` 头取图、按文件缓存、按显示尺寸解码；失败与「文件不在了」同样处理。
 struct AttachmentThumbnail<Placeholder: View>: View {
 
     let uri: String
@@ -67,12 +70,18 @@ struct AttachmentThumbnail<Placeholder: View>: View {
 
     private func load() async {
         guard image == nil, !missing else { return }
-        let attachment = MessageAttachment(uri: uri)
-        let storage = MediaStorage.shared
         let target = pixelSize
-        let decoded = await Task.detached(priority: .userInitiated) { () -> CGImage? in
-            storage.thumbnail(for: attachment, maxPixelSize: target)
-        }.value
+        let decoded: CGImage?
+        if ServerMediaReference.mediaId(from: uri) != nil {
+            // 服务端媒体：带 Authorization 取图 + 磁盘缓存，再按显示尺寸解码。
+            decoded = await ServerMediaCache.shared.thumbnail(for: uri, maxPixelSize: target)
+        } else {
+            let attachment = MessageAttachment(uri: uri)
+            let storage = MediaStorage.shared
+            decoded = await Task.detached(priority: .userInitiated) { () -> CGImage? in
+                storage.thumbnail(for: attachment, maxPixelSize: target)
+            }.value
+        }
         guard !Task.isCancelled else { return }
         if let decoded {
             image = decoded

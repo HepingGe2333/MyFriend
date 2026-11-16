@@ -167,11 +167,11 @@ public struct PersonaActivity: Equatable, Sendable {
         let startedAt = PromptGuidanceJSON.int(object, "startedAt").map(Int64.init) ?? now
         let until = PromptGuidanceJSON.int(object, "until").map(Int64.init) ?? 0
         return PersonaActivity(
-            kind: ActivityKind(stored: PromptGuidanceJSON.string(object, "kind", limit: 20)),
-            activity: PromptGuidanceJSON.string(object, "activity", limit: 200) ?? "",
+            kind: ActivityKind(stored: PromptGuidanceJSON.string(object, "kind")),
+            activity: PromptGuidanceJSON.string(object, "activity") ?? "",
             minutes: minutes,
             availability: ActivityAvailability(
-                stored: PromptGuidanceJSON.string(object, "availability", limit: 20)
+                stored: PromptGuidanceJSON.string(object, "availability")
             ),
             startedAt: startedAt,
             until: until

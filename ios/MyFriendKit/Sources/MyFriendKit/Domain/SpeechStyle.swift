@@ -34,14 +34,20 @@ public enum SpeechStyleSource: String, CaseIterable, Sendable {
 
 public struct SpeechStyle: Equatable, Sendable {
 
-    // MARK: 上限
+    // MARK: 编辑器/生成/渲染的**建议**上限（0.12：存储与解析不再截断）
+    //
+    // 与 `WorldPreset` 同一原则：这些数字只用于「界面计数/超限提示」「本地兜底生成时
+    // 别产出太多条」「提示词里最多引用几条」。用户手写的内容原样保存，不再被切掉——
+    // 否则两端按各自的常数截断，`sourceHash` 就会对同一份人格算出不同的值。
 
-    /// 落库时最多留几条常用语（总结会多给，存太多会变成「模板库」）。
+    /// 本地兜底总结最多生成几条常用语（总结会多给，存太多会变成「模板库」）。
     public static let maxPhrases = 12
     /// **提示词里最多引用几条**（§1.1 第 4 条：常用语是参考不是模板；§6.3 用的是前 6 条）。
     public static let promptPhraseLimit = 6
+    /// 编辑器里习惯/禁忌的建议条数（只用于提示，不参与存储）。
     public static let maxHabits = 6
     public static let maxAvoid = 5
+    /// 编辑器里 tone 的建议字数（只用于提示；渲染提示词时另按 120 字截断，与 Android 一致）。
     public static let toneMax = 80
 
     public var tone: String
@@ -58,12 +64,13 @@ public struct SpeechStyle: Equatable, Sendable {
         avoid: [String] = [],
         source: SpeechStyleSource = .model
     ) {
-        let trimmedTone = tone.trimmingCharacters(in: .whitespacesAndNewlines)
-        self.tone = trimmedTone.count > Self.toneMax ? String(trimmedTone.prefix(Self.toneMax)) : trimmedTone
-        self.phrases = PersonaTags.normalize(phrases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) },
-                                             limit: Self.maxPhrases)
-        self.habits = PersonaTags.normalize(habits, limit: Self.maxHabits)
-        self.avoid = PersonaTags.normalize(avoid, limit: Self.maxAvoid)
+        // 存储/解析/哈希保留原文：只做去空白与去重，不按字数/条数截断。
+        self.tone = tone.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.phrases = PersonaTags.normalize(
+            phrases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        )
+        self.habits = PersonaTags.normalize(habits)
+        self.avoid = PersonaTags.normalize(avoid)
         self.source = source
     }
 
@@ -87,11 +94,11 @@ public struct SpeechStyle: Equatable, Sendable {
 
     public static func from(object: [String: Any]) -> SpeechStyle {
         SpeechStyle(
-            tone: PromptGuidanceJSON.string(object, "tone", limit: toneMax) ?? "",
-            phrases: PromptGuidanceJSON.stringList(object, "phrases", limit: maxPhrases, itemLimit: 40),
-            habits: PromptGuidanceJSON.stringList(object, "habits", limit: maxHabits, itemLimit: 80),
-            avoid: PromptGuidanceJSON.stringList(object, "avoid", limit: maxAvoid, itemLimit: 80),
-            source: SpeechStyleSource(stored: PromptGuidanceJSON.string(object, "source", limit: 20))
+            tone: PromptGuidanceJSON.string(object, "tone") ?? "",
+            phrases: PromptGuidanceJSON.stringList(object, "phrases"),
+            habits: PromptGuidanceJSON.stringList(object, "habits"),
+            avoid: PromptGuidanceJSON.stringList(object, "avoid"),
+            source: SpeechStyleSource(stored: PromptGuidanceJSON.string(object, "source"))
         )
     }
 

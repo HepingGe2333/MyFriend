@@ -48,7 +48,7 @@ data class ServerConnectionState(
 @Singleton
 class ServerModeRepository @Inject constructor(
     private val credentialStore: ServerCredentialStore
-) {
+) : ServerApiProvider {
     /** 构建是否 debuggable：release 不允许明文 http，单测直接测 [ServerConfig.rejection]。 */
     private val debuggable: Boolean get() = BuildConfig.DEBUG
 
@@ -63,7 +63,7 @@ class ServerModeRepository @Inject constructor(
     private var cachedKey: String = ""
 
     /** 现在能不能走服务端。**同步**方法：数据层很多地方不是 suspend。 */
-    fun isEnabled(): Boolean = _state.value.usable
+    override fun isEnabled(): Boolean = _state.value.usable
 
     /** 这次运行实际使用的配置（不可用时是 [ServerConfig.DISABLED]）。 */
     fun currentConfig(): ServerConfig = _state.value.config
@@ -77,7 +77,7 @@ class ServerModeRepository @Inject constructor(
      * 调用方**不要**把它存进字段：设置页一改地址，这里就会换一个新的。
      */
     @Synchronized
-    fun api(): ServerApi? {
+    override fun api(): ServerApi? {
         val config = currentConfig()
         if (!config.isUsable(debuggable)) return null
         val key = listOf(config.baseUrl, config.token.orEmpty(), config.enabled).joinToString("\u0000")

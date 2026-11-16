@@ -36,7 +36,7 @@ final class SpeechStyleTests: XCTestCase {
         XCTAssertFalse(style.phrases.isEmpty)
         XCTAssertFalse(style.habits.isEmpty)
         XCTAssertFalse(style.avoid.isEmpty)
-        // 推荐样本的 phrases 不超过落库上限。
+        // 推荐样本的 phrases 本来就不多（存储不设上限，这里只是样本自身的性质）。
         XCTAssertLessThanOrEqual(style.phrases.count, SpeechStyle.maxPhrases)
     }
 
@@ -63,13 +63,33 @@ final class SpeechStyleTests: XCTestCase {
         XCTAssertEqual(style?.habits, [])
     }
 
-    /// 上限收敛：落库最多 12 条、去重保序。
-    func testPhraseLimitAndDeduplication() {
+    /// 0.12：存储不按建议上限截断 —— 去重保序，但一条都不丢。
+    func testPhrasesAreDeduplicatedButNotTruncated() {
         let style = SpeechStyle(phrases: ["嗯", "嗯", "行"] + (0..<20).map { "第\($0)句" })
         XCTAssertEqual(style.phrases.first, "嗯")
         XCTAssertEqual(style.phrases[1], "行")
-        XCTAssertLessThanOrEqual(style.phrases.count, SpeechStyle.maxPhrases)
+        XCTAssertEqual(style.phrases.count, 22, "22 条（去重后）全部保留")
         XCTAssertEqual(Set(style.phrases).count, style.phrases.count)
+        // 落库 JSON 也带着全部 22 条（以前这里只剩 12 条）。
+        let decoded = SpeechStyle.decode(style.jsonString())
+        XCTAssertEqual(decoded?.phrases, style.phrases)
+    }
+
+    /// 0.12：tone / habits / avoid 也不再按 80 / 6 / 5 截断（否则两端的 sourceHash 会漂）。
+    func testLongToneAndListsAreNotTruncated() {
+        let tone = String(repeating: "冷", count: SpeechStyle.toneMax + 40)
+        let habits = (0..<(SpeechStyle.maxHabits + 4)).map { "习惯\($0)" }
+        let avoid = (0..<(SpeechStyle.maxAvoid + 4)).map { "禁忌\($0)" }
+        let style = SpeechStyle(tone: tone, habits: habits, avoid: avoid)
+        XCTAssertEqual(style.tone, tone)
+        XCTAssertEqual(style.habits, habits)
+        XCTAssertEqual(style.avoid, avoid)
+        let decoded = SpeechStyle.decode(style.jsonString())
+        XCTAssertEqual(decoded?.tone, tone)
+        XCTAssertEqual(decoded?.habits, habits)
+        XCTAssertEqual(decoded?.avoid, avoid)
+        // 渲染提示词仍然按 tone 的建议长度截断前 120 字（与 Android render 一致）。
+        XCTAssertTrue(style.renderForPrompt().contains(String(repeating: "冷", count: 120)))
     }
 
     // MARK: - 渲染

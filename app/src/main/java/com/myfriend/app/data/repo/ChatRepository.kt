@@ -244,6 +244,8 @@ class ChatRepository @Inject constructor(
     private val serverMode: com.myfriend.app.data.remote.ServerModeRepository,
     /** 服务端发送/分页编排（M3）；不可用时所有方法都返回 failure，不会碰网络。 */
     private val serverChat: com.myfriend.app.data.remote.ServerChatGateway,
+    /** 服务端模式的图片上传（M5）：先压缩再上传，附件里落 `/v1/media/<id>`。 */
+    private val serverMediaSender: com.myfriend.app.data.remote.ServerChatMediaSender,
     private val json: Json
 ) {
     /**
@@ -352,8 +354,11 @@ class ChatRepository @Inject constructor(
     /**
      * 服务端模式发送（SSE）。UI 只消费 [onEvent]，消息落库由 gateway/sink 完成。
      *
-     * 图片附件暂不上传（M3 只做文本）：传本地 `file://` 路径给服务端没有意义，
-     * 所以只把非空 uri 作为 opaque id 带上；真正的媒体同步在 M5。
+     * M5 起图片**先压缩、再上传**，然后把 `/v1/media/<id>` 放进 `attachments`：
+     * 本地 `file://` 路径绝不发给服务端（服务端拿不到这台机器的文件，也不该拿到系统路径）。
+     *
+     * 只有图片、没有文字时发一个不可见字符：服务端要求 `content` 非空，而界面上这条消息
+     * 本来就只显示图——不能让用户看到「图片」两个字，也不能因为空正文把图片消息挡住。
      */
     suspend fun sendServerMessage(
         sessionId: String,
@@ -362,9 +367,8 @@ class ChatRepository @Inject constructor(
         onEvent: (com.myfriend.app.data.remote.ServerSendEvent) -> Unit = {}
     ): com.myfriend.app.data.remote.ServerSendResult {
         val content = text.trim()
-        // 媒体同步不在 M3 范围：本地 file:// 路径不能当媒体 id 发给服务端，也不该离开设备。
-        // 因此服务端模式只发文本；只有图片没有文字时明确失败，而不是发一条空消息。
-        if (content.isEmpty()) {
+        val images = attachments.filter { it.isImage }.take(MAX_IMAGES_PER_MESSAGE)
+        if (content.isEmpty() && images.isEmpty()) {
             return com.myfriend.app.data.remote.ServerSendResult(
                 accepted = false,
                 done = false,
@@ -378,10 +382,18 @@ class ChatRepository @Inject constructor(
                 error = userError(DomainErrorCode.MESSAGE_TOO_LONG)
             )
         }
+        val personaId = runCatching { sessionDao.getById(sessionId)?.personaId }.getOrNull()
+        val mediaRefs = serverMediaSender.uploadChatImages(images, personaId).getOrElse { error ->
+            return com.myfriend.app.data.remote.ServerSendResult(
+                accepted = false,
+                done = false,
+                error = error
+            )
+        }
         return serverChat.send(
             sessionId = sessionId,
-            content = content,
-            attachments = emptyList(),
+            content = content.ifEmpty { IMAGE_ONLY_CONTENT },
+            attachments = mediaRefs,
             onEvent = onEvent
         )
     }
@@ -1587,6 +1599,14 @@ class ChatRepository @Inject constructor(
 
         /** 一条消息最多带几张图（与 `ImageContextBudget` 的预算一致）。 */
         const val MAX_IMAGES_PER_MESSAGE = ImageContextBudget.MAX_IMAGES_PER_MESSAGE
+
+        /**
+         * 服务端消息正文不能为空；只有图片时发这个不可见分隔符（U+2063）。
+         *
+         * 用不可见字符而不是「图片」两个字：界面上这条消息本来只该显示图，
+         * 多一行「图片」会像系统占位符，破坏「他收到的是你拍的东西」这件事。
+         */
+        const val IMAGE_ONLY_CONTENT = "\u2063"
 
         const val CONTEXT_CHAR_BUDGET = 28_000
 

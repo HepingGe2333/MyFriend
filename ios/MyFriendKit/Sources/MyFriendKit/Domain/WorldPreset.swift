@@ -148,15 +148,23 @@ public struct WorldRelationship: Equatable, Sendable {
 /// 世界预设。字段与规范 §2.1 一一对应。
 public struct WorldPreset: Equatable, Sendable {
 
-    // MARK: 上限（提示词与编辑器共用同一组数字）
+    // MARK: 编辑器/渲染的**建议**上限（0.12：只用于提示与渲染，不再截断存储）
+    //
+    // 这些数字以前同时出现在三处：init（截断）、解析（截断）、编辑器（截断输入）。
+    // 结果是「用户写下的东西悄悄少一截」，而且两端截到不同的长度，`sourceHash` 跟着漂。
+    // 现在它们只表示两件事：
+    // 1. 界面上的计数与超限提示（写超了照样保存）；
+    // 2. 渲染提示词时 `notes` 只取前 1200 字（与 Android `WORLD_NOTES_CHARS` 一致）。
 
-    /// 描述的字数上限：再长就不像「处境」，像小说大纲了。
+    /// 描述的建议字数（只说给界面听；存储与哈希保留原文）。
     public static let descriptionMax = 600
-    /// 「其他背景（notes）」的字数上限（规范 §2.1）：渲染时截断并提示，不静默丢。
+    /// 「其他背景（notes）」**渲染**时的字数上限（规范 §2.1）：只影响提示词，不影响存储。
     public static let maxNotesChars = 1200
-    /// 日程最多几条（多到十几条时模型只会挑一条念，不如少给几条真的）。
+    /// 日程建议条数（编辑器提示用；存储不截断）。
     public static let maxScheduleItems = 12
+    /// 关系建议条数（编辑器提示用；存储不截断）。
     public static let maxRelationships = 8
+    /// 义务建议条数（编辑器提示用；存储不截断）。
     public static let maxObligations = 6
 
     public var worldName: String
@@ -179,19 +187,15 @@ public struct WorldPreset: Equatable, Sendable {
         obligations: [String] = [],
         notes: String = ""
     ) {
+        // 0.12：存储/解析/哈希一律保留原文，这里只做「去首尾空白 / 过滤空条目」这类
+        // 语义清洗，不再按字数或条数截断（截断只发生在渲染提示词那一步）。
         self.worldName = Self.trim(worldName)
         self.era = Self.trim(era)
-        let desc = Self.trim(description)
-        self.description = desc.count > Self.descriptionMax
-            ? String(desc.prefix(Self.descriptionMax)) : desc
-        self.schedule = Array(schedule.filter { !$0.isEmpty }.prefix(Self.maxScheduleItems))
-        self.relationships = Array(relationships.filter { !$0.isEmpty }.prefix(Self.maxRelationships))
-        self.obligations = Array(
-            PersonaTags.normalize(obligations, limit: Self.maxObligations)
-        )
-        let text = Self.trim(notes)
-        self.notes = text.count > Self.maxNotesChars
-            ? String(text.prefix(Self.maxNotesChars)) : text
+        self.description = Self.trim(description)
+        self.schedule = schedule.filter { !$0.isEmpty }
+        self.relationships = relationships.filter { !$0.isEmpty }
+        self.obligations = PersonaTags.normalize(obligations)
+        self.notes = Self.trim(notes)
     }
 
     /// 空 = 没有世界预设（退回纯人设；提示词里用 `worldEmpty` 那一句说明"没有设定"）。
@@ -217,34 +221,35 @@ public struct WorldPreset: Equatable, Sendable {
 
     /// 从一个 JSON 对象组装（缺字段就空，类型错就当没写）。
     public static func from(object: [String: Any]) -> WorldPreset {
-        let schedule = PromptGuidanceJSON.objectList(object, "schedule", limit: maxScheduleItems)
+        // 解析也不截断：字段多长就留多长（与 Android 的宽容解析同一口径）。
+        let schedule = PromptGuidanceJSON.objectList(object, "schedule")
             .map { item in
                 WorldScheduleItem(
-                    day: PromptGuidanceJSON.string(item, "day", limit: 20) ?? "",
-                    start: PromptGuidanceJSON.string(item, "start", limit: 10) ?? "",
-                    end: PromptGuidanceJSON.string(item, "end", limit: 10) ?? "",
-                    activity: PromptGuidanceJSON.string(item, "activity", limit: 120) ?? ""
+                    day: PromptGuidanceJSON.string(item, "day") ?? "",
+                    start: PromptGuidanceJSON.string(item, "start") ?? "",
+                    end: PromptGuidanceJSON.string(item, "end") ?? "",
+                    activity: PromptGuidanceJSON.string(item, "activity") ?? ""
                 )
             }
-        let relationships = PromptGuidanceJSON.objectList(object, "relationships", limit: maxRelationships)
+        let relationships = PromptGuidanceJSON.objectList(object, "relationships")
             .map { item in
                 WorldRelationship(
-                    name: PromptGuidanceJSON.string(item, "name", limit: 40) ?? "",
-                    relation: PromptGuidanceJSON.string(item, "relation", limit: 40) ?? "",
-                    note: PromptGuidanceJSON.string(item, "note", limit: 160) ?? "",
+                    name: PromptGuidanceJSON.string(item, "name") ?? "",
+                    relation: PromptGuidanceJSON.string(item, "relation") ?? "",
+                    note: PromptGuidanceJSON.string(item, "note") ?? "",
                     intimacy: WorldRelationship.clampedIntimacy(
                         PromptGuidanceJSON.int(item, "intimacy")
                     )
                 )
             }
         return WorldPreset(
-            worldName: PromptGuidanceJSON.string(object, "worldName", limit: 80) ?? "",
-            era: PromptGuidanceJSON.string(object, "era", limit: 120) ?? "",
-            description: PromptGuidanceJSON.string(object, "description", limit: descriptionMax) ?? "",
+            worldName: PromptGuidanceJSON.string(object, "worldName") ?? "",
+            era: PromptGuidanceJSON.string(object, "era") ?? "",
+            description: PromptGuidanceJSON.string(object, "description") ?? "",
             schedule: schedule,
             relationships: relationships,
-            obligations: PromptGuidanceJSON.stringList(object, "obligations", limit: maxObligations),
-            notes: PromptGuidanceJSON.string(object, "notes", limit: maxNotesChars) ?? ""
+            obligations: PromptGuidanceJSON.stringList(object, "obligations"),
+            notes: PromptGuidanceJSON.string(object, "notes") ?? ""
         )
     }
 
@@ -312,9 +317,13 @@ public struct WorldPreset: Equatable, Sendable {
         for obligation in obligations {
             lines.append("- 必须：" + obligation)
         }
-        if !notes.isEmpty {
+        // 渲染时才截断 notes（规范 §2.1 的 1200 字）：存储里是完整原文，提示词里只取前 1200 字。
+        // 与 Android `WorldPreset.renderForPrompt` 的 `notes.take(MAX_NOTES_CHARS)` 完全一致。
+        let renderedNotes = notes.count > Self.maxNotesChars
+            ? String(notes.prefix(Self.maxNotesChars)) : notes
+        if !renderedNotes.isEmpty {
             lines.append(PersonaPromptScaffold.fill(
-                PersonaPromptScaffold.worldNotes, ["notes": notes]
+                PersonaPromptScaffold.worldNotes, ["notes": renderedNotes]
             ))
         }
         lines.append(PersonaPromptScaffold.worldHint)
@@ -367,7 +376,6 @@ public struct WorldPreset: Equatable, Sendable {
             let activity = line.trimmingCharacters(in: .whitespaces)
             if day.isEmpty && start.isEmpty && activity.isEmpty { continue }
             items.append(WorldScheduleItem(day: day, start: start, end: end, activity: activity))
-            if items.count >= maxScheduleItems { break }
         }
         return items
     }
@@ -406,7 +414,6 @@ public struct WorldPreset: Equatable, Sendable {
             }
             if name.isEmpty && note.isEmpty { continue }
             items.append(WorldRelationship(name: name, relation: relation, note: note, intimacy: intimacy))
-            if items.count >= maxRelationships { break }
         }
         return items
     }
@@ -415,11 +422,10 @@ public struct WorldPreset: Equatable, Sendable {
     public static func parseObligationLines(_ text: String) -> [String] {
         let lines = text.split(whereSeparator: { $0 == "\n" || $0 == "\r" }).map(String.init)
         if lines.count > 1 {
-            return PersonaTags.normalize(lines, limit: maxObligations)
+            return PersonaTags.normalize(lines)
         }
         return PersonaTags.normalize(
-            text.split(whereSeparator: { "，,、；;".contains($0) }).map(String.init),
-            limit: maxObligations
+            text.split(whereSeparator: { "，,、；;".contains($0) }).map(String.init)
         )
     }
 

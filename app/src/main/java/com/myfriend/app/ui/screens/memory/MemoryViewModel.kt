@@ -278,8 +278,11 @@ class MemoryViewModel @Inject constructor(
 
     fun deleteMemory(memory: MemoryEntity) {
         viewModelScope.launch {
-            memoryRepository.delete(memory)
-            message.value = context.getString(R.string.memory_deleted)
+            runCatching { memoryRepository.delete(memory) }
+                .onSuccess { message.value = context.getString(R.string.memory_deleted) }
+                .onFailure {
+                    message.value = ErrorText.of(context, it, R.string.memory_delete_failed)
+                }
         }
     }
 

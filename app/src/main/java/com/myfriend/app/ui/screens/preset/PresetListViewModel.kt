@@ -88,8 +88,11 @@ class PresetListViewModel @Inject constructor(
 
     fun delete(presetId: String) {
         viewModelScope.launch {
-            presetRepository.delete(presetId)
-            message.value = context.getString(R.string.preset_deleted)
+            runCatching { presetRepository.delete(presetId) }
+                .onSuccess { message.value = context.getString(R.string.preset_deleted) }
+                .onFailure {
+                    message.value = ErrorText.of(context, it, R.string.preset_delete_failed)
+                }
         }
     }
 

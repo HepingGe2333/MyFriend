@@ -31,7 +31,12 @@ object AgentdApi {
     const val SERVICE = "myfriend-agentd"
     const val VERSION = "0.12.0"
 
-    /** 请求体字节上限（HTTP 层与 handler 层共用这一份）。 */
+    /**
+     * JSON 路由的请求体字节上限（HTTP 层与 handler 层共用这一份）。
+     *
+     * 媒体上传是唯一的例外：`MediaRoutes.MAX_REQUEST_BODY_BYTES`（4 MiB）在 HTTP 层放宽，
+     * 但单文件仍由路由按 2 MiB 拒绝。
+     */
     const val MAX_BODY_BYTES = 1024 * 1024
 
     /** 错误体里 `message` 的字符上限。 */

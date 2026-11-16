@@ -138,6 +138,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.myfriend.app.R
 import com.myfriend.app.ui.common.ErrorText
+import com.myfriend.app.ui.common.rememberMediaImageRequest
 import com.myfriend.app.data.prefs.BubbleStyle
 import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MessageEntity
@@ -180,7 +181,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import java.util.UUID
 
 private sealed interface ChatDisplayItem {
@@ -566,18 +566,13 @@ fun ChatScreen(
  * 一张 12MP 的照片按原尺寸是 48MB，按 272dp 的显示尺寸只有几百 KB。
  */
 @Composable
-private fun rememberSizedImageRequest(data: Any?, width: Dp, height: Dp): ImageRequest {
-    val context = LocalContext.current
+private fun rememberSizedImageRequest(data: String?, width: Dp, height: Dp): ImageRequest? {
     val density = LocalDensity.current
     val widthPx = with(density) { width.roundToPx() }.coerceAtLeast(1)
     val heightPx = with(density) { height.roundToPx() }.coerceAtLeast(1)
-    return remember(data, widthPx, heightPx) {
-        ImageRequest.Builder(context)
-            .data(data)
-            .size(widthPx, heightPx)
-            .crossfade(true)
-            .build()
-    }
+    // 本地图片是 file://，服务端同步回来的消息里是 `/v1/media/<id>`：
+    // 统一交给解析器（它会补 Authorization），聊天页不再出现「本地能看、服务端看不了」。
+    return rememberMediaImageRequest(raw = data, widthPx = widthPx, heightPx = heightPx)
 }
 
 /** 全屏尺寸（背景、大图查看器）：按屏幕像素解码，不碰原图分辨率。 */
@@ -1341,7 +1336,7 @@ private fun MessageBubble(
                 attachments.forEach { attachment ->
                     // 气泡里图片的最大显示尺寸就是解码目标：272×340 / 248×300dp。
                     val imageRequest = rememberSizedImageRequest(
-                        data = File(android.net.Uri.parse(attachment.uri).path ?: ""),
+                        data = attachment.uri,
                         width = if (imageOnly) 272.dp else 248.dp,
                         height = if (imageOnly) 340.dp else 300.dp
                     )
@@ -1814,7 +1809,7 @@ private fun Composer(
                     state.images.forEach { attachment ->
                         Box {
                             val pendingRequest = rememberSizedImageRequest(
-                                data = File(android.net.Uri.parse(attachment.uri).path ?: ""),
+                                data = attachment.uri,
                                 width = 62.dp,
                                 height = 62.dp
                             )
@@ -2023,14 +2018,14 @@ private fun ImageViewerDialog(attachment: MessageAttachment, onDismiss: () -> Un
             contentAlignment = Alignment.Center
         ) {
             // 大图查看器：目标就是屏幕，不再放大到原图分辨率；ContentScale.Fit 负责留边。
-            val context = LocalContext.current
+            // 服务端图片与大图同一条解析路径（带 Authorization + Coil 磁盘缓存）。
             val (screenWidthPx, screenHeightPx) = rememberScreenSize()
-            val viewerRequest = remember(attachment.uri, screenWidthPx, screenHeightPx) {
-                ImageRequest.Builder(context)
-                    .data(File(android.net.Uri.parse(attachment.uri).path ?: ""))
-                    .size(screenWidthPx, screenHeightPx)
-                    .build()
-            }
+            val viewerRequest = rememberMediaImageRequest(
+                raw = attachment.uri,
+                widthPx = screenWidthPx,
+                heightPx = screenHeightPx,
+                crossfade = false
+            )
             AsyncImage(
                 model = viewerRequest,
                 contentDescription = stringResource(R.string.chat_image),

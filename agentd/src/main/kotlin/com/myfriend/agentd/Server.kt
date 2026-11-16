@@ -41,7 +41,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * - 请求行 / 头部 / body 共用一个总时限 [READ_TIMEOUT_MS]，超时回 408（`SocketTimeoutException`
  *   或多字节慢速滴水都会在总时限处被截断）；
- * - 声明超过 [AgentdApi.MAX_BODY_BYTES] 的 body 直接 413，不读进内存；
+ * - 声明超过路由上限的 body 直接 413，不读进内存：媒体上传（`/v1/media`）放宽到 4 MiB，
+ *   其余路由仍是 [AgentdApi.MAX_BODY_BYTES]（1 MiB）；
  * - `Transfer-Encoding: chunked` 回 411（两端客户端发字符串 body 都带 `Content-Length`；
  *   chunked 没法在总时限内安全地增量解析，干脆不支持）；
  * - 处理请求的是 [WORKER_THREADS] 个固定线程 + 有界队列：慢连接最多占满池子，`/health`
@@ -62,6 +63,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * 0.12.0 的联网搜索 / 网页抓取 / 主动 tick（`/v1/tools/…`、`/v1/proactive/tick`）是普通的一次性
  * JSON 响应，走 [ToolsRoutes]：同样先过 token/限流/1 MiB 上限，不占用流式路径。
+ *
+ * 媒体（`/v1/media`，M5 上传/下载）走 [MediaRoutes]：它需要**原始字节**（上传）和**原始字节响应**
+ * （下载），所以在 body 被 UTF-8 解码之前分流；body 上限单独放宽到 4 MiB，文件大小仍由路由按
+ * 2 MiB 拒绝。下载的 304 由 [replyBinary] 写（无 body、只带 ETag/Cache-Control）。
  */
 object AgentdServer {
 
@@ -94,8 +99,6 @@ object AgentdServer {
 
     private const val ERROR_UNAUTHORIZED =
         """{"error":{"message":"缺少或错误的访问令牌","code":"unauthorized"}}"""
-    private const val ERROR_TOO_LARGE =
-        """{"error":{"message":"请求体超过 1024 KiB 上限","code":"content_too_large"}}"""
     private const val ERROR_TIMEOUT =
         """{"error":{"message":"读取请求体超时","code":"request_timeout"}}"""
     private const val ERROR_LENGTH_REQUIRED =
@@ -251,8 +254,8 @@ object AgentdServer {
         } catch (_: RequestTimeoutException) {
             reply(socket, output, 408, ERROR_TIMEOUT)
             return
-        } catch (_: BodyTooLargeException) {
-            reply(socket, output, 413, ERROR_TOO_LARGE)
+        } catch (tooLarge: BodyTooLargeException) {
+            reply(socket, output, 413, errorTooLarge(tooLarge.limitBytes))
             return
         } catch (_: LengthRequiredException) {
             reply(socket, output, 411, ERROR_LENGTH_REQUIRED)
@@ -291,6 +294,18 @@ object AgentdServer {
             return
         } catch (_: IOException) {
             return // 客户端提前断开
+        }
+
+        // 媒体路由要原始字节（上传）与原始字节响应（下载），必须在 UTF-8 解码之前分流。
+        // token/限流已经在上面处理；这里只多一个「媒体路径 4 MiB」的 body 上限（见 readHead）。
+        if (MediaRoutes.matches(head.target)) {
+            when (val result = MediaRoutes.handle(services, head.method, head.target, head.headers, body)) {
+                is MediaRoutes.MediaResult.Json ->
+                    reply(socket, output, result.response.status, result.response.body)
+
+                is MediaRoutes.MediaResult.Binary -> replyBinary(socket, output, result)
+            }
+            return
         }
 
         val bodyText = String(body, StandardCharsets.UTF_8)
@@ -423,7 +438,14 @@ object AgentdServer {
             raw.toLongOrNull() ?: throw BadRequestException()
         }
         if (contentLength != null && contentLength < 0) throw BadRequestException()
-        if (contentLength != null && contentLength > MAX_BODY_BYTES) throw BodyTooLargeException()
+        // 媒体上传路由单独放宽到 4 MiB，其它路由仍是 1 MiB（AgentdApi.MAX_BODY_BYTES）。
+        val bodyLimit = when {
+            MediaRoutes.matches(target) -> MediaRoutes.bodyLimit(target)
+            // 备份导入是整份 JSON（含媒体的 base64）：与客户端 v5 的 256 MiB 语义一致。
+            target.substringBefore('?') == "/v1/backup" -> 256 * 1024 * 1024
+            else -> MAX_BODY_BYTES
+        }
+        if (contentLength != null && contentLength > bodyLimit) throw BodyTooLargeException(bodyLimit)
         return RequestHead(method, target, headers, contentLength)
     }
 
@@ -611,6 +633,35 @@ object AgentdServer {
         }
     }
 
+    /**
+     * 写媒体下载响应：原始字节 + Content-Type + 每条响应自带的头（Cache-Control/ETag/…）。
+     *
+     * 304 没有 body（`Content-Length: 0`），也不写 Content-Type；状态行/ETag 仍然要有，
+     * 否则客户端无法确认「本地副本就是最新表示」。
+     */
+    private fun replyBinary(
+        socket: Socket,
+        output: OutputStream,
+        response: MediaRoutes.MediaResult.Binary
+    ) {
+        runCatching {
+            val headers = buildString {
+                append("HTTP/1.1 ").append(response.status).append(' ').append(reason(response.status)).append("\r\n")
+                if (response.contentType != null) {
+                    append("Content-Type: ").append(response.contentType).append("\r\n")
+                }
+                append("Content-Length: ").append(response.bytes.size).append("\r\n")
+                append("Connection: close\r\n")
+                for ((name, value) in response.headers) append(name).append(": ").append(value).append("\r\n")
+                append("\r\n")
+            }
+            output.write(headers.toByteArray(StandardCharsets.ISO_8859_1))
+            if (response.bytes.isNotEmpty()) output.write(response.bytes)
+            output.flush()
+            socket.shutdownOutput()
+        }
+    }
+
     /** 关闭前短暂排空客户端还没发完的请求体，避免带未读数据的 close 触发 RST 把响应丢掉。 */
     private fun drainAndClose(socket: Socket, input: InputStream) {
         runCatching {
@@ -629,15 +680,23 @@ object AgentdServer {
         runCatching { socket.close() }
     }
 
+    /** 413 的文案带上实际生效的上限：媒体路由 4 MiB、其它路由 1 MiB。 */
+    private fun errorTooLarge(limitBytes: Int): String =
+        """{"error":{"message":"请求体超过 ${limitBytes / 1024} KiB 上限","code":"content_too_large"}}"""
+
     private fun reason(status: Int): String = when (status) {
         200 -> "OK"
+        201 -> "Created"
+        304 -> "Not Modified"
         400 -> "Bad Request"
         401 -> "Unauthorized"
         404 -> "Not Found"
         405 -> "Method Not Allowed"
         408 -> "Request Timeout"
+        409 -> "Conflict"
         411 -> "Length Required"
         413 -> "Payload Too Large"
+        415 -> "Unsupported Media Type"
         429 -> "Too Many Requests"
         500 -> "Internal Server Error"
         503 -> "Service Unavailable"
@@ -649,8 +708,8 @@ object AgentdServer {
     /** 读超时（映射为 408）。 */
     private class RequestTimeoutException : Exception()
 
-    /** 请求体超过上限（映射为 413）。 */
-    private class BodyTooLargeException : Exception()
+    /** 请求体超过路由对应的上限（映射为 413）。 */
+    private class BodyTooLargeException(val limitBytes: Int) : Exception()
 
     /** 只接受带 `Content-Length` 的 body（映射为 411）。 */
     private class LengthRequiredException : Exception()

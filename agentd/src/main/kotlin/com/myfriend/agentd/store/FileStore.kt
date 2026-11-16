@@ -19,6 +19,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
+import java.security.MessageDigest
+import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -47,7 +49,8 @@ import kotlin.concurrent.withLock
  *   events.jsonl                     每行一个事件（增量游标；append-only）
  *   sessions/<sessionId>/block_index.json   {"sessionId":…,"blocks":[{index,firstMessageId,…}]}
  *   sessions/<sessionId>/blocks/<blockIndex>.jsonl   每行一条消息（append-only）
- *   media/                           先只建目录；文件上传接口在下一阶段
+ *   media.json                      {"media":[{id,kind,personaId,mime,bytes,sha256,createdAt}]}
+ *   media/<id>.<ext>                图片原始字节（扩展名由 mime 决定）
  * ```
  *
  * 写入的原子性：
@@ -111,7 +114,17 @@ class FileStore(
         const val MEMORIES_FILE = "memories.json"
         const val PRESETS_FILE = "presets.json"
         const val PUSH_TOKENS_FILE = "push_tokens.json"
+        const val MEDIA_METADATA_FILE = "media.json"
         const val EVENTS_FILE = "events.jsonl"
+
+        /**
+         * 备份里媒体二进制的上限：单个文件 8 MiB、全部合计 128 MiB（按**原始字节**算）。
+         *
+         * 超限的媒体在导出时**跳过并计数**（`mediaSkipped`），不让一份备份因为一张大图
+         * 变成几百 MiB 的 base64；导入时超过同样上限则拒绝整份备份（宁可报错，不要静默丢图）。
+         */
+        const val MAX_BACKUP_MEDIA_FILE_BYTES = 8L * 1024 * 1024
+        const val MAX_BACKUP_MEDIA_TOTAL_BYTES = 128L * 1024 * 1024
 
         /** 当前导出的备份格式版本（与客户端 `BACKUP_FORMAT_VERSION` 对齐）。 */
         const val BACKUP_FORMAT_VERSION = 5
@@ -186,6 +199,12 @@ class FileStore(
     /** key = `platform|token`，保证「同一 token 重复注册」幂等。 */
     private val pushTokens = LinkedHashMap<String, PushRegistration>()
 
+    /**
+     * 媒体元数据索引（`data/media.json`）。二进制在 [mediaDir] 里，文件名 `<id>.<ext>`。
+     * 内存索引和磁盘清单一起更新（同一把写锁 + 原子写），重启后按清单读回。
+     */
+    private val media = LinkedHashMap<String, MediaItem>()
+
     /** 内存里的事件窗口（最早的会被裁剪；更早的从 [eventsFile] 读回）。 */
     private val events = ArrayDeque<StoredEvent>()
 
@@ -195,7 +214,7 @@ class FileStore(
     /** 本次打开是否新建了数据目录并播种（`main` 用它打印一行提示）。 */
     val seeded: Boolean
 
-    /** 媒体目录（本阶段只建目录，不上传文件）。 */
+    /** 媒体目录（`<root>/media/`）；上传的文件是 `<id>.<ext>`，清单在 [MEDIA_METADATA_FILE]。 */
     val mediaDirectory: Path get() = mediaDir
 
     init {
@@ -434,6 +453,103 @@ class FileStore(
     }
 
     fun preset(presetId: String): Preset? = lock.withLock { presets[presetId] }
+
+    // ================================================================== 读：媒体
+    //
+    // 二进制不常驻内存：清单在 `media.json`，字节按 id 从 `media/<id>.<ext>` 读。
+    // 上传/去重/删除都在同一把写锁内完成，所以「同 sha256 只落一份」在并发上传下也成立。
+
+    fun media(mediaId: String): MediaItem? = lock.withLock {
+        if (!MediaUrl.isValidId(mediaId)) null else media[mediaId]
+    }
+
+    /** 全部媒体元数据（按创建时间升序）；备份与诊断用。 */
+    fun mediaItems(): List<MediaItem> = lock.withLock {
+        media.values.sortedWith(compareBy({ it.createdAt }, { it.id }))
+    }
+
+    /** 读原始字节；未知 id / 文件缺失都返回 null（路由翻成 404，不把路径细节吐给客户端）。 */
+    fun mediaBytes(mediaId: String): ByteArray? = lock.withLock {
+        if (!MediaUrl.isValidId(mediaId)) return@withLock null
+        val item = media[mediaId] ?: return@withLock null
+        val file = mediaFile(item)
+        if (!Files.exists(file)) {
+            System.err.println("[agentd] 媒体元数据存在但文件缺失：$file")
+            return@withLock null
+        }
+        try {
+            Files.readAllBytes(file)
+        } catch (failure: IOException) {
+            System.err.println("[agentd] 读媒体文件失败：$file（${failure.message}）")
+            null
+        }
+    }
+
+    /** 当前有多少处引用（消息附件 / 人格头像 / 预设头像）；删除接口用它决定 409。 */
+    fun mediaReferenceCount(mediaId: String): Int = lock.withLock {
+        if (!MediaUrl.isValidId(mediaId)) 0 else mediaReferenceCountLocked(mediaId)
+    }
+
+    // ================================================================== 写：媒体
+
+    /**
+     * 保存一张媒体（上传接口的落盘入口）。
+     *
+     * - **id 由服务端生成**（UUID），扩展名只由 [mime] 决定，客户端不能影响路径；
+     * - 同 `sha256` 已存在 → 直接复用，不重复落盘（返回 `created = false`）；
+     * - 写文件是 `*.tmp` → `ATOMIC_MOVE`；清单 `media.json` 同样原子重写；
+     * - 整段在写锁内，两次并发上传同内容只会有一个 `created = true`、一个文件。
+     */
+    fun saveMedia(kind: String, personaId: String?, mime: String, data: ByteArray): MediaSaveResult =
+        lock.withLock {
+            require(MediaKind.isValid(kind)) { "不支持的媒体用途：$kind" }
+            require(MediaMime.isValid(mime)) { "不支持的媒体类型：$mime" }
+            val persona = personaId?.trim()?.takeIf { it.isNotEmpty() }
+            if (persona != null) {
+                if (!isValidId(persona)) throw IllegalArgumentException("非法的 personaId")
+                requirePersonaLocked(persona)
+            }
+            val sha = sha256Hex(data)
+            media.values.firstOrNull { it.sha256 == sha }?.let { existing ->
+                // 元数据在、文件被手工删掉时顺手补回：否则「上传成功但下载 404」很难排查。
+                // 仍是 200（内容没有产生第二份），只是把丢失的字节写回去。
+                if (!Files.exists(mediaFile(existing))) {
+                    writeBytesLocked(mediaFile(existing), data)
+                }
+                return@withLock MediaSaveResult(existing, created = false)
+            }
+            val item = MediaItem(
+                id = newId(),
+                kind = kind,
+                personaId = persona,
+                mime = mime,
+                bytes = data.size.toLong(),
+                sha256 = sha,
+                createdAt = clock()
+            )
+            writeBytesLocked(mediaFile(item), data)
+            media[item.id] = item
+            persistMediaLocked()
+            MediaSaveResult(item, created = true)
+        }
+
+    /**
+     * 删除一张媒体。被引用且没有 `force` 时**不删**，只返回引用数（路由回 409）。
+     *
+     * `force` 只删文件与清单，不发事件、不改消息里的引用字符串：那些消息会指向一个已删除的
+     * `/v1/media/<id>`（客户端下载得到 404）。这是契约里「客户端触发 GC」的语义，
+     * 服务端不替客户端改写历史消息。
+     */
+    fun deleteMedia(mediaId: String, force: Boolean): MediaDeleteResult = lock.withLock {
+        if (!MediaUrl.isValidId(mediaId)) return@withLock MediaDeleteResult(false, false, 0)
+        val item = media[mediaId] ?: return@withLock MediaDeleteResult(false, false, 0)
+        val references = mediaReferenceCountLocked(mediaId)
+        if (references > 0 && !force) return@withLock MediaDeleteResult(true, false, references)
+        media.remove(mediaId)
+        Files.deleteIfExists(mediaFile(item))
+        persistMediaLocked()
+        MediaDeleteResult(true, true, references)
+    }
 
     fun pushTokens(): List<PushRegistration> = lock.withLock { pushTokens.values.toList() }
 
@@ -1059,12 +1175,17 @@ class FileStore(
     /**
      * 导出备份 v5（`GET /v1/backup`）。
      *
-     * 只导服务端权威模式持有的内容：人格、会话、消息、记忆、预设、设置。**不含**：
-     * `secrets.json` / API Key / 搜索密钥（本来就不在人格/设置里）；媒体二进制；usage；
-     * api_configs 的密钥。`apiKeysOmitted: true` 是给读文件的人看的声明。
+     * 只导服务端权威模式持有的内容：人格、会话、消息、记忆、预设、设置、媒体。**不含**：
+     * `secrets.json` / API Key / 搜索密钥（本来就不在人格/设置里）；usage；api_configs 的密钥。
+     * `apiKeysOmitted: true` 是给读文件的人看的声明。
+     *
+     * 媒体以 base64 放进 `media[]`（每条带 `data`），受 [MAX_BACKUP_MEDIA_FILE_BYTES] /
+     * [MAX_BACKUP_MEDIA_TOTAL_BYTES] 限制；超限的条目不导，只把数量写进 `mediaSkipped`。
+     * 导入方据此知道「这份备份不是全量媒体」，而不是以为图片丢了。
      */
     fun exportBackup(appVersion: String, exportedAt: Long): JsonValue.Obj = lock.withLock {
         val allMessages = allMessagesLocked()
+        val exportedMedia = exportMediaLocked()
         StoreJson.obj(
             "format" to StoreJson.str(BACKUP_FORMAT_NAME),
             "formatVersion" to StoreJson.num(BACKUP_FORMAT_VERSION),
@@ -1078,6 +1199,8 @@ class FileStore(
                 memories.values.sortedBy { it.createdAt }.map { it.toJson() }
             ),
             "presets" to StoreJson.arr(presets.values.map { it.toJson() }),
+            "media" to StoreJson.arr(exportedMedia.items),
+            "mediaSkipped" to StoreJson.num(exportedMedia.skipped),
             "settings" to publicSettingsLocked()
         )
     }
@@ -1090,8 +1213,11 @@ class FileStore(
      * 校验失败绝不会写一半。
      *
      * merge：按 id 更新/新增，未在备份里的内容保留；
-     * replace：清空人格/会话/消息/记忆/预设/设置（以及随之孤儿化的心情、在场、主动计数）
+     * replace：清空人格/会话/消息/记忆/预设/设置/媒体（以及随之孤儿化的心情、在场、主动计数）
      * 后导入，usage/api_configs/secrets/push_tokens 不在备份里，因此保留。
+     *
+     * 媒体：备份 `media[]` 里的 base64 还原到 `media/<id>.<ext>`，清单写回 `media.json`；
+     * 消息/人格/预设里的 `/v1/media/<id>` 引用原样保留（备份里已经是规范形态），不需要重写历史。
      */
     fun importBackup(mode: String, data: JsonValue.Obj, now: Long): BackupImportResult = lock.withLock {
         if (mode != "merge" && mode != "replace") {
@@ -1154,6 +1280,17 @@ class FileStore(
         if (activePersonaId is JsonValue.Str && finalPersonas[activePersonaId.value] == null) {
             throw BackupValidationException("settings.activePersonaId 引用了不存在的人格 ${activePersonaId.value}")
         }
+        // 媒体：id 冲突（同 id 不同内容）和 persona 引用都不合法；在动盘之前拒绝整份备份。
+        for (entry in parsed.media) {
+            val existing = media[entry.item.id]
+            if (existing != null && existing.sha256 != entry.item.sha256) {
+                throw BackupValidationException("媒体 ${entry.item.id} 已存在且内容不同，不能用备份覆盖")
+            }
+            val personaId = entry.item.personaId
+            if (personaId != null && finalPersonas[personaId] == null) {
+                throw BackupValidationException("媒体 ${entry.item.id} 引用了不存在的人格 $personaId")
+            }
+        }
 
         // 受影响会话：导入的会话 + 导入消息落在的会话 + 被替换消息原来的会话。
         val affectedSessions = LinkedHashSet<String>()
@@ -1203,6 +1340,21 @@ class FileStore(
                 messageIndexCache.remove(sessionId)
             }
         }
+
+        if (mode == "replace") {
+            // replace = 用备份整个替换：旧媒体也清掉，避免留下再也没人引用的孤儿文件。
+            deleteRecursively(mediaDir)
+            Files.createDirectories(mediaDir)
+            media.clear()
+        }
+        for (entry in parsed.media) {
+            val existing = media[entry.item.id]
+            if (existing == null || !Files.exists(mediaFile(existing))) {
+                writeBytesLocked(mediaFile(entry.item), entry.data)
+            }
+            media[entry.item.id] = entry.item
+        }
+        persistMediaLocked()
 
         personas.clear()
         personas.addAll(finalPersonas.values)
@@ -1274,6 +1426,7 @@ class FileStore(
             messages = parsed.messages.size,
             memories = parsed.memories.size,
             presets = parsed.presets.size,
+            media = parsed.media.size,
             settings = parsed.settings != null
         )
     }
@@ -1320,8 +1473,12 @@ class FileStore(
         val messages: List<Message>,
         val memories: List<Memory>,
         val presets: List<Preset>,
+        val media: List<ParsedMedia>,
         val settings: JsonValue.Obj?
     )
+
+    /** 备份里一条媒体：元数据 + 解码后的原始字节（导入时直接落盘）。 */
+    private class ParsedMedia(val item: MediaItem, val data: ByteArray)
 
     private fun parseBackupLocked(data: JsonValue.Obj, now: Long): ParsedBackup {
         val where = "$root/backup"
@@ -1354,6 +1511,17 @@ class FileStore(
         val presets = section("presets").mapIndexed { index, obj ->
             parseBackupPreset(obj, "$where.presets[$index]", now)
         }
+        var mediaTotalBytes = 0L
+        val media = section("media").mapIndexed { index, obj ->
+            val entry = parseBackupMedia(obj, "$where.media[$index]", now)
+            mediaTotalBytes += entry.data.size
+            if (mediaTotalBytes > MAX_BACKUP_MEDIA_TOTAL_BYTES) {
+                throw BackupValidationException(
+                    "备份 media 总量超过 ${MAX_BACKUP_MEDIA_TOTAL_BYTES / (1024 * 1024)} MiB 上限"
+                )
+            }
+            entry
+        }
         val settings = data.optObj("settings", where)?.let { raw ->
             val fields = LinkedHashMap<String, JsonValue>()
             for ((key, value) in raw.fields) {
@@ -1367,7 +1535,8 @@ class FileStore(
         requireUniqueIds("messages", messages.map { it.id })
         requireUniqueIds("memories", memories.map { it.id })
         requireUniqueIds("presets", presets.map { it.id })
-        return ParsedBackup(personas, sessions, messages, memories, presets, settings)
+        requireUniqueIds("media", media.map { it.item.id })
+        return ParsedBackup(personas, sessions, messages, memories, presets, media, settings)
     }
 
     private fun requireUniqueIds(section: String, ids: List<String>) {
@@ -1498,6 +1667,55 @@ class FileStore(
         )
     }
 
+    /**
+     * 解析备份 `media[]` 的一项：base64 → 原始字节，sha256/bytes 都做完整性校验。
+     *
+     * 不接受「元数据说有 10 MB、实际 data 只有 1 KB」这种自相矛盾的条目：备份是长期资产，
+     * 静默修好比拒绝更糟（用户会以为图恢复了）。
+     */
+    private fun parseBackupMedia(obj: JsonValue.Obj, where: String, now: Long): ParsedMedia {
+        val id = obj.reqString("id", where)
+        if (!MediaUrl.isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val kind = obj.reqString("kind", where)
+        if (!MediaKind.isValid(kind)) throw BackupValidationException("$where 的 kind 不合法：$kind")
+        val mime = obj.reqString("mime", where)
+        if (!MediaMime.isValid(mime)) throw BackupValidationException("$where 的 mime 不合法：$mime")
+        val personaId = obj.optString("personaId", where)?.takeIf { it.isNotBlank() }
+        if (personaId != null && !isValidId(personaId)) {
+            throw BackupValidationException("$where 的 personaId 不合法")
+        }
+        val encoded = obj.reqString("data", where)
+        val data = try {
+            Base64.getDecoder().decode(encoded)
+        } catch (_: IllegalArgumentException) {
+            throw BackupValidationException("$where 的 data 不是合法 base64")
+        }
+        if (data.size > MAX_BACKUP_MEDIA_FILE_BYTES) {
+            throw BackupValidationException(
+                "$where 的媒体超过 ${MAX_BACKUP_MEDIA_FILE_BYTES / (1024 * 1024)} MiB 单文件上限"
+            )
+        }
+        val actualSha = sha256Hex(data)
+        val declaredSha = obj.optString("sha256", where)?.trim()?.lowercase()
+        if (declaredSha != null && declaredSha != actualSha) {
+            throw BackupValidationException("$where 的 sha256 与 data 不一致")
+        }
+        val declaredBytes = obj.optLong("bytes", where)
+        if (declaredBytes != null && declaredBytes != data.size.toLong()) {
+            throw BackupValidationException("$where 的 bytes 与 data 长度不一致")
+        }
+        val item = MediaItem(
+            id = id,
+            kind = kind,
+            personaId = personaId,
+            mime = mime,
+            bytes = data.size.toLong(),
+            sha256 = actualSha,
+            createdAt = obj.optLong("createdAt", where) ?: now
+        )
+        return ParsedMedia(item, data)
+    }
+
     private fun parseTags(value: JsonValue?, where: String): List<String> = when (value) {
         null, JsonValue.Null -> emptyList()
         is JsonValue.Arr -> value.items.map { item ->
@@ -1546,6 +1764,68 @@ class FileStore(
         return result.sortedWith(compareBy({ it.createdAt }, { it.id }))
     }
 
+    // ================================================================== 内部：媒体
+
+    private class MediaExport(val items: List<JsonValue.Obj>, val skipped: Int)
+
+    /**
+     * 把媒体读成 base64 备份条目。**读失败/超限都只跳过并计数**：一张图读不出来不该让整份
+     * 备份失败（用户至少还能带走文字），但必须让调用方知道跳过了几张（`mediaSkipped`）。
+     */
+    private fun exportMediaLocked(): MediaExport {
+        val items = ArrayList<JsonValue.Obj>()
+        var total = 0L
+        var skipped = 0
+        val ordered = media.values.sortedWith(compareBy({ it.createdAt }, { it.id }))
+        for (item in ordered) {
+            if (item.bytes > MAX_BACKUP_MEDIA_FILE_BYTES) {
+                skipped += 1
+                continue
+            }
+            val bytes = try {
+                Files.readAllBytes(mediaFile(item))
+            } catch (failure: IOException) {
+                System.err.println("[agentd] 备份跳过读不出的媒体：${item.id}（${failure.message}）")
+                skipped += 1
+                continue
+            }
+            if (bytes.size.toLong() > MAX_BACKUP_MEDIA_FILE_BYTES ||
+                total + bytes.size > MAX_BACKUP_MEDIA_TOTAL_BYTES
+            ) {
+                skipped += 1
+                continue
+            }
+            // 文件被手工改过（sha 对不上）时不让它进备份：否则导入端会因校验失败拒绝整份备份。
+            if (sha256Hex(bytes) != item.sha256) {
+                System.err.println("[agentd] 备份跳过内容与元数据不一致的媒体：${item.id}")
+                skipped += 1
+                continue
+            }
+            total += bytes.size
+            val fields = LinkedHashMap(item.toJson().fields)
+            fields["data"] = JsonValue.Str(Base64.getEncoder().encodeToString(bytes))
+            items += JsonValue.Obj(fields)
+        }
+        return MediaExport(items, skipped)
+    }
+
+    /** 引用统计：消息附件 / 人格头像 / 预设头像。`/v1/media/<id>` 与裸 id 都认。 */
+    private fun mediaReferenceCountLocked(mediaId: String): Int {
+        var references = 0
+        for (message in allMessagesLocked()) {
+            for (attachment in message.attachments) {
+                if (MediaUrl.idOf(attachment) == mediaId) references += 1
+            }
+        }
+        for (persona in personas) {
+            if (MediaUrl.idOf(persona.avatarUrl) == mediaId) references += 1
+        }
+        for (preset in presets.values) {
+            if (MediaUrl.idOf(preset.avatarUri) == mediaId) references += 1
+        }
+        return references
+    }
+
     // ================================================================== 内部：加载与播种
 
     private fun hasExistingData(): Boolean =
@@ -1554,8 +1834,10 @@ class FileStore(
             Files.exists(root.resolve(MEMORIES_FILE)) ||
             Files.exists(root.resolve(PRESETS_FILE)) ||
             Files.exists(root.resolve(PUSH_TOKENS_FILE)) ||
+            Files.exists(root.resolve(MEDIA_METADATA_FILE)) ||
             Files.exists(eventsFile) ||
-            Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() }
+            Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() } ||
+            Files.newDirectoryStream(mediaDir).use { it.iterator().hasNext() }
 
     private fun loadExistingData(metaJson: JsonValue) {
         val where = "${root.resolve(META_FILE)}"
@@ -1622,6 +1904,10 @@ class FileStore(
         loadOptionalObjectList(root.resolve(PRESETS_FILE), "presets") { obj, where ->
             val preset = Preset.fromJson(obj, where)
             presets[preset.id] = preset
+        }
+        loadOptionalObjectList(root.resolve(MEDIA_METADATA_FILE), "media") { obj, where ->
+            val item = MediaItem.fromJson(obj, where)
+            media[item.id] = item
         }
         loadOptionalObjectList(root.resolve(PUSH_TOKENS_FILE), "tokens") { obj, where ->
             val token = PushRegistration.fromJson(obj, where)
@@ -2015,6 +2301,15 @@ class FileStore(
         StoreJson.obj("tokens" to StoreJson.arr(pushTokens.values.map { it.toJson() }))
     )
 
+    private fun persistMediaLocked() = writeJsonLocked(
+        root.resolve(MEDIA_METADATA_FILE),
+        StoreJson.obj(
+            "media" to StoreJson.arr(
+                media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
     private fun readSecretsLocked(): Map<String, String> {
         val file = root.resolve(SECRETS_FILE)
         val json = readJsonFile(file) ?: return emptyMap()
@@ -2043,12 +2338,19 @@ class FileStore(
     }
 
     private fun writeTextLocked(file: Path, text: String, posixMode: String? = null) {
+        writeBytesLocked(file, text.toByteArray(StandardCharsets.UTF_8), posixMode)
+    }
+
+    /**
+     * 原子写任意字节：`*.tmp` → `ATOMIC_MOVE`。JSON 与媒体文件共用同一条路径。
+     *
+     * 不调 `force(true)`：原子性由 rename 保证；force 只影响「断电后能否保住最后几次写」，
+     * 而每次写都 fsync 会让「一条消息写 4 个文件」变成 4 次磁盘同步（并发追加测试会慢一个数量级）。
+     * 取舍写在 README 的「风险」里：进程崩溃安全，机器掉电可能丢最后几条（媒体可能是最后一张图）。
+     */
+    private fun writeBytesLocked(file: Path, bytes: ByteArray, posixMode: String? = null) {
         Files.createDirectories(file.parent)
         val temp = file.resolveSibling(file.fileName.toString() + ".tmp")
-        val bytes = text.toByteArray(StandardCharsets.UTF_8)
-        // 不调 `force(true)`：原子性由 rename 保证；force 只影响「断电后能否保住最后几次写」，
-        // 而每次写都 fsync 会让「一条消息写 4 个文件」变成 4 次磁盘同步（并发追加测试会慢一个数量级）。
-        // 取舍写在 README 的「风险」里：进程崩溃安全，机器掉电可能丢最后几条。
         FileChannel.open(
             temp,
             StandardOpenOption.CREATE,
@@ -2159,6 +2461,25 @@ class FileStore(
     private fun nextTimestampLocked(): Long {
         lastTimestamp = maxOf(clock(), lastTimestamp + 1)
         return lastTimestamp
+    }
+
+    /** 媒体文件路径：`media/<id>.<ext>`；扩展名只由 mime 决定（id 已按正则校验过）。 */
+    private fun mediaFile(item: MediaItem): Path {
+        val extension = MediaMime.extension(item.mime)
+            ?: throw StoreCorruptionException("媒体 ${item.id} 的 mime 不受支持：${item.mime}")
+        return mediaDir.resolve("${item.id}.$extension")
+    }
+
+    /** 原始字节的 SHA-256（小写十六进制）。用于去重、备份校验与下载 ETag。 */
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        val hex = "0123456789abcdef"
+        val builder = StringBuilder(digest.size * 2)
+        for (byte in digest) {
+            val value = byte.toInt() and 0xff
+            builder.append(hex[value ushr 4]).append(hex[value and 0x0f])
+        }
+        return builder.toString()
     }
 
     private fun newId(): String = UUID.randomUUID().toString()

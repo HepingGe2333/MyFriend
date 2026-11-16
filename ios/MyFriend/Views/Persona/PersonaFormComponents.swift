@@ -11,6 +11,9 @@ import SwiftUI
 ///
 /// 为什么不用系统 `Menu` / `Picker`：这些是「多个并列的小词」，用一排可点的胶囊
 /// 比展开一个列表更直观；用户还能看到「我现在一共有几个」。
+///
+/// 0.12：`limit` 只是**建议值**。超出时计数变成橙色提示，但「加上」照样可用 ——
+/// 编辑器不替用户决定哪些内容不配存下来（存储与哈希保留原文）。
 struct TagEditor: View {
     let title: String
     let hint: String
@@ -30,7 +33,7 @@ struct TagEditor: View {
                 Spacer()
                 Text("\(values.count)/\(limit)")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(values.count > limit ? .orange : .secondary)
             }
             Text(hint)
                 .font(.caption)
@@ -82,7 +85,7 @@ struct TagEditor: View {
                 Button(L("加上")) { add(draft) }
                     .font(.footnote)
                     .tint(accent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || values.count >= limit)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(.vertical, 12)
@@ -94,7 +97,7 @@ struct TagEditor: View {
 
     private func add(_ raw: String) {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, values.count < limit, !values.contains(trimmed) else {
+        guard !trimmed.isEmpty, !values.contains(trimmed) else {
             draft = ""
             return
         }

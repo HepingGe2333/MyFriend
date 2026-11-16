@@ -231,7 +231,7 @@ object WorldPresetCodec {
                     (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
                         ?.takeIf { it.isNotBlank() }
                 },
-                notes = root.str("notes").take(WorldPreset.MAX_NOTES_CHARS)
+                notes = root.str("notes")
             )
         }.getOrNull()
     }
@@ -275,7 +275,7 @@ object WorldPresetCodec {
             obligations = root.arr("obligations").mapNotNull { element ->
                 (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotBlank() }
             },
-            notes = root.str("notes").take(WorldPreset.MAX_NOTES_CHARS)
+            notes = root.str("notes")
         )
     }
 
@@ -310,7 +310,7 @@ object WorldPresetCodec {
                     preset.obligations.map { it.trim() }.filter { it.isNotBlank() }.take(MAX_ITEMS)
                         .map(::JsonPrimitive)
                 ),
-                "notes" to JsonPrimitive(preset.notes.trim().take(WorldPreset.MAX_NOTES_CHARS))
+                "notes" to JsonPrimitive(preset.notes.trim())
             )
         ).toString()
     }.getOrDefault("{}")

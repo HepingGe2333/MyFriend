@@ -52,7 +52,8 @@ public struct WorldEditorState: Equatable, Sendable {
     /// 关系的 `relation` 下拉选项；最后一档是「自定义」（用户直接写别的词）。
     public static let relationOptions = ["家人", "朋友", "同事", "上级", "同学", "其他"]
 
-    /// 义务的条数上限（与 `WorldPreset.maxObligations` 一致）。
+    /// 义务的**建议**条数（与 `WorldPreset.maxObligations` 同源）：只用来显示计数与提示，
+    /// 0.12 起不再阻止用户多加一条，也不截断输入。
     public static let maxObligations = WorldPreset.maxObligations
 
     public var worldName: String
@@ -78,8 +79,8 @@ public struct WorldEditorState: Equatable, Sendable {
         self.schedule = schedule
         self.relationships = relationships
         self.obligations = obligations
-        // 输入时就截断：界面不该让用户看到一个永远写不进去的第 1201 个字。
-        self.notes = String(notes.prefix(WorldPreset.maxNotesChars))
+        // 不截断输入：用户写的每个字都要能存进库（只有渲染提示词时才取前 1200 字）。
+        self.notes = notes
     }
 
     /// 从已保存的世界预设读出来（坏 JSON 传 nil 就得到空状态）。
@@ -104,7 +105,7 @@ public struct WorldEditorState: Equatable, Sendable {
             && notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    /// 落库形状（超出上限的字段由 `WorldPreset.init` 收敛）。
+    /// 落库形状（0.12：`WorldPreset.init` 也不再截断，字段原样进库）。
     public var preset: WorldPreset {
         WorldPreset(
             worldName: worldName,
@@ -189,9 +190,9 @@ public struct WorldEditorState: Equatable, Sendable {
 
     // MARK: - 义务
 
+    /// 加一条（0.12：不再因为「已经 6 条」而拒绝 —— 超出的条数只显示提示，不丢输入）。
     public func addObligation(_ text: String = "") -> WorldEditorState {
         var copy = self
-        guard copy.obligations.count < Self.maxObligations else { return self }
         copy.obligations.append(text)
         return copy
     }
@@ -212,17 +213,19 @@ public struct WorldEditorState: Equatable, Sendable {
 
     // MARK: - 其他背景
 
+    /// 改 notes：**不截断**，超过建议字数只让 `notesTooLong` 变成 true（界面提示）。
     public func withNotes(_ text: String) -> WorldEditorState {
         var copy = self
-        copy.notes = String(text.prefix(WorldPreset.maxNotesChars))
+        copy.notes = text
         return copy
     }
 
     public var notesCount: Int { notes.count }
+    /// 建议字数（提示用；提示词渲染时才按它截断）。
     public var notesLimit: Int { WorldPreset.maxNotesChars }
     public var notesTooLong: Bool { notes.count > WorldPreset.maxNotesChars }
-    /// 超长时被截掉了多少个字（界面提示"超出 N 字已截断"）。
-    public var notesTruncatedBy: Int { max(notes.count - WorldPreset.maxNotesChars, 0) }
+    /// 超出建议字数多少（界面提示「超出 N 字，仍会完整保存」）。
+    public var notesOverBy: Int { max(notes.count - WorldPreset.maxNotesChars, 0) }
 
     // MARK: - 跨午夜
 
@@ -279,9 +282,8 @@ public struct WorldEditorState: Equatable, Sendable {
         where obligation.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             result.append(WorldEditorIssue(field: .obligation, index: index))
         }
-        if notesTooLong {
-            result.append(WorldEditorIssue(field: .notes, index: 0))
-        }
+        // 0.12：notes 超过建议字数**不算错误**（只是提示）。保存不能因为「写得长」被拦住，
+        // 更不能在落库时切掉后半段；提示词渲染时才按 1200 字取。
         return result
     }
 

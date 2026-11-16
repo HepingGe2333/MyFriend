@@ -63,7 +63,13 @@ public enum JSONValue: Decodable, Equatable, Sendable {
         if case .null = self { return true }
         return false
     }
+
 }
+
+// MARK: - 编码
+//
+// `JSONValue` 的 Encodable 实现在 `Core/AgentCoreClient.swift`（工具参数原样往回发那一批）。
+// 服务端写路径直接复用 `[String: JSONValue]` 编 JSON，不再重复一份。
 
 // MARK: - 解析入口
 
@@ -213,7 +219,7 @@ public extension Dictionary where Key == String, Value == JSONValue {
     /// - 被再转义一次的 JSON 字符串 `"[\"慢热\"]"`（早期 tags 就是这种存法）；
     /// - 一串用顿号/逗号/换行分开的话 `"慢热、嘴硬心软"`；
     /// - 单个字符串 `"慢热"`。
-    func stringList(_ key: String, limit: Int) -> [String] {
+    func stringList(_ key: String) -> [String] {
         guard let value = self[key], !value.isNull else { return [] }
         switch value {
         case .array(let items):
@@ -222,9 +228,9 @@ public extension Dictionary where Key == String, Value == JSONValue {
                 // 数字标签（"1"）这种也收下：宁可多一个怪标签，也别丢字段。
                 if case .int(let number) = item { return String(number) }
                 return ""
-            }, limit: limit)
+            })
         case .string(let raw):
-            return PersonaTags.decode(raw, limit: limit)
+            return PersonaTags.decode(raw)
         default:
             return []
         }

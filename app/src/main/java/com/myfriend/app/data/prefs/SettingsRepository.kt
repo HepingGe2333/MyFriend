@@ -27,7 +27,9 @@ private val Context.settingsDataStore: DataStore<Preferences> by preferencesData
  */
 @Singleton
 class SettingsRepository @Inject constructor(
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    /** M5：白名单设置镜像到服务端（失败会抛给界面；本地已落盘，不回滚）。 */
+    private val serverWrites: com.myfriend.app.data.remote.ServerWriteGateway
 ) {
     private object Keys {
         val themeMode = stringPreferencesKey("theme_mode")
@@ -69,12 +71,12 @@ class SettingsRepository @Inject constructor(
         )
     }
 
-    suspend fun setThemeMode(mode: ThemeMode) = edit { it[Keys.themeMode] = mode.name }
-    suspend fun setAccentColor(argb: Long) = edit { it[Keys.accentColor] = argb }
-    suspend fun setFontScale(scale: Float) = edit { it[Keys.fontScale] = scale.coerceIn(0.85f, 1.3f) }
-    suspend fun setBubbleStyle(style: BubbleStyle) = edit { it[Keys.bubbleStyle] = style.name }
-    suspend fun setAnimationsEnabled(enabled: Boolean) = edit { it[Keys.animations] = enabled }
-    suspend fun setChatBackgroundColor(argb: Long?) = edit {
+    suspend fun setThemeMode(mode: ThemeMode) = editAndSync { it[Keys.themeMode] = mode.name }
+    suspend fun setAccentColor(argb: Long) = editAndSync { it[Keys.accentColor] = argb }
+    suspend fun setFontScale(scale: Float) = editAndSync { it[Keys.fontScale] = scale.coerceIn(0.85f, 1.3f) }
+    suspend fun setBubbleStyle(style: BubbleStyle) = editAndSync { it[Keys.bubbleStyle] = style.name }
+    suspend fun setAnimationsEnabled(enabled: Boolean) = editAndSync { it[Keys.animations] = enabled }
+    suspend fun setChatBackgroundColor(argb: Long?) = editAndSync {
         if (argb == null) it.remove(Keys.chatBackgroundColor) else it[Keys.chatBackgroundColor] = argb
     }
     suspend fun setChatBackgroundImageUri(uri: String?) = edit {
@@ -90,13 +92,13 @@ class SettingsRepository @Inject constructor(
     suspend fun setUserAvatarUri(uri: String?) = edit {
         if (uri == null) it.remove(Keys.userAvatarUri) else it[Keys.userAvatarUri] = uri
     }
-    suspend fun setActivePersonaId(id: String?) = edit {
+    suspend fun setActivePersonaId(id: String?) = editAndSync {
         if (id == null) it.remove(Keys.activePersonaId) else it[Keys.activePersonaId] = id
     }
-    suspend fun setHapticsEnabled(enabled: Boolean) = edit { it[Keys.haptics] = enabled }
+    suspend fun setHapticsEnabled(enabled: Boolean) = editAndSync { it[Keys.haptics] = enabled }
 
     /** 关掉「自动翻译人设」：之后一律用原文，缓存保留（重新打开时还能直接命中）。 */
-    suspend fun setAutoTranslatePersona(enabled: Boolean) = edit { it[Keys.autoTranslatePersona] = enabled }
+    suspend fun setAutoTranslatePersona(enabled: Boolean) = editAndSync { it[Keys.autoTranslatePersona] = enabled }
 
     /**
      * 清空所有设置。
@@ -124,7 +126,22 @@ class SettingsRepository @Inject constructor(
         context.settingsDataStore.edit(block)
     }
 
-    suspend fun setAgentLoopEnabled(enabled: Boolean) = edit { it[Keys.agentLoop] = enabled }
+    /**
+     * 本地先落盘，再把**白名单**设置镜像到服务端（M5）。
+     *
+     * 顺序刻意是「本地先写」：设置是设备偏好，服务端不可达时用户仍要能改主题；
+     * 但服务端失败会作为异常抛给设置页（用户应该知道「这台手机以外没同步上」），
+     * 不会静默吞掉。非白名单项（聊天背景图、我的头像、引导状态）不触发网络请求。
+     */
+    private suspend fun editAndSync(
+        block: (androidx.datastore.preferences.core.MutablePreferences) -> Unit
+    ) {
+        edit(block)
+        if (!serverWrites.isEnabled()) return
+        serverWrites.pushSettings(settings.first()).getOrThrow()
+    }
+
+    suspend fun setAgentLoopEnabled(enabled: Boolean) = editAndSync { it[Keys.agentLoop] = enabled }
 
     suspend fun setBackgroundTipDismissed(dismissed: Boolean) =
         edit { it[Keys.backgroundTipDismissed] = dismissed }

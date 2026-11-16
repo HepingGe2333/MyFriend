@@ -22,7 +22,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
@@ -30,8 +29,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import coil.request.ImageRequest
 import com.myfriend.app.R
+import com.myfriend.app.ui.common.rememberMediaImageRequest
 import com.myfriend.app.ui.theme.avatarPalette
 
 /**
@@ -127,7 +126,6 @@ private fun AvatarSurface(
     badgePadding: Dp,
     fallback: @Composable () -> Unit
 ) {
-    val context = LocalContext.current
     val density = LocalDensity.current
     // 头像本身的显示像素：带描边时内圈小一点，但目标尺寸差异可以忽略，统一按 size 算。
     val targetPx = remember(size, density) {
@@ -135,15 +133,14 @@ private fun AvatarSurface(
     }
     // 目标尺寸参与 key：同一个 uri 在 28dp 和 92dp 下需要不同尺寸的解码结果，
     // 否则小头像会复用大头像的位图（或反过来把大图缩了又缩）。
-    val request = remember(avatarUri, targetPx) {
-        avatarUri?.takeIf { it.isNotBlank() }?.let { uri ->
-            ImageRequest.Builder(context)
-                .data(uri)
-                .size(targetPx)
-                .crossfade(true)
-                .build()
-        }
-    }
+    //
+    // 0.12 M5：`avatarUri` 可能是服务端媒体引用（`/v1/media/<id>`）而不是本机文件；
+    // 统一交给 `rememberMediaImageRequest` 解析并补上 Authorization，头像不再分两套渲染。
+    val request = rememberMediaImageRequest(
+        raw = avatarUri,
+        widthPx = targetPx,
+        heightPx = targetPx
+    )
     // 文件被清掉 / 备份从另一台手机接回来时，avatarUri 可能指向一个不存在的路径。
     // 这时退回默认（色块+首字 / Person 图标），而不是留一个空圆圈。
     var loadFailed by remember(request) { mutableStateOf(false) }

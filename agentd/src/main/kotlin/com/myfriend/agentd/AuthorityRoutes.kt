@@ -4,6 +4,7 @@ import com.myfriend.agentd.AgentdApi.Response
 import com.myfriend.agentd.proactive.ActivityAvailability
 import com.myfriend.agentd.proactive.ActivityState
 import com.myfriend.agentd.store.FileStore
+import com.myfriend.agentd.store.MediaUrl
 import com.myfriend.agentd.store.Message
 import com.myfriend.agentd.store.Persona
 import com.myfriend.agentd.store.Session
@@ -186,7 +187,31 @@ object AuthorityRoutes {
             throw AgentdApi.ApiFailure(404, "not_found", "没有这个会话")
         }
         val request = parseSendRequest(body)
-        chat.send(sessionId, request, sink)
+        chat.send(sessionId, normalizeAttachments(store, request), sink)
+    }
+
+    /**
+     * 消息附件落地前的归一化（契约 §3.3/§3.6）：客户端可以传裸 `mediaId` 或 `/v1/media/<id>`，
+     * 服务端统一存成 `/v1/media/<id>`，并校验媒体确实存在。
+     *
+     * 不存在时回 **400 `unknown_media`**（不是 404）：错误在请求体里，不是 URL 指向的资源；
+     * 而且这一步发生在 SSE 第一帧之前，客户端还能拿到普通 JSON 错误。
+     */
+    internal fun normalizeAttachments(store: FileStore, request: SendMessageRequest): SendMessageRequest {
+        if (request.attachments.isEmpty()) return request
+        val normalized = request.attachments.map { raw ->
+            val mediaId = MediaUrl.idOf(raw)
+                ?: throw AgentdApi.ApiFailure(
+                    400,
+                    "invalid_argument",
+                    "attachments 里必须是媒体 id 或 /v1/media/<id>"
+                )
+            if (store.media(mediaId) == null) {
+                throw AgentdApi.ApiFailure(400, "unknown_media", "附件不存在或已删除")
+            }
+            MediaUrl.url(mediaId)
+        }
+        return request.copy(attachments = normalized)
     }
 
     // ------------------------------------------------------------------ GET /v1/state

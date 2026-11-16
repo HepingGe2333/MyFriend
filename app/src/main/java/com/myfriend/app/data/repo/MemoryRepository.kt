@@ -105,6 +105,8 @@ class MemoryRepository @Inject constructor(
     private val memoryTermDao: MemoryTermDao,
     /** 向量索引：与倒排索引互补的第二条线索（见 [MemoryVectorIndex]）。 */
     private val memoryVectorIndex: MemoryVectorIndex,
+    /** M5：服务端模式的记忆写路径（失败不回退静默本地写）。 */
+    private val serverWrites: com.myfriend.app.data.remote.ServerWriteGateway,
     private val json: Json
 ) {
     private val extractionMutex = Mutex()
@@ -383,30 +385,37 @@ class MemoryRepository @Inject constructor(
         if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
         if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
-        val id = UUID.randomUUID().toString()
-        memoryDao.insert(
-            MemoryEntity(
-                id = id,
-                personaId = personaId,
-                content = text,
-                category = category,
-                importance = importance.coerceIn(1, 5),
-                pinned = pinned,
-                sourceSessionId = sourceSessionId,
-                createdAt = now,
-                updatedAt = now,
-                lastUsedAt = 0,
-                useCount = 1,
-                drawer = drawer,
-                sourceQuote = sourceQuote?.take(300),
-                tags = MemoryTags.encode(tags),
-                happenedAt = happenedAt?.takeIf { it > 0L }
-            )
+        var memory = MemoryEntity(
+            id = UUID.randomUUID().toString(),
+            personaId = personaId,
+            content = text,
+            category = category,
+            importance = importance.coerceIn(1, 5),
+            pinned = pinned,
+            sourceSessionId = sourceSessionId,
+            createdAt = now,
+            updatedAt = now,
+            lastUsedAt = 0,
+            useCount = 1,
+            drawer = drawer,
+            sourceQuote = sourceQuote?.take(300),
+            tags = MemoryTags.encode(tags),
+            happenedAt = happenedAt?.takeIf { it > 0L }
         )
+        // M5：服务端模式先写服务端，成功后才写本机缓存；服务端分配的 id 就是缓存行的 id，
+        // 之后编辑/删除直接用同一个 id，不需要额外的映射表。
+        if (serverWrites.isEnabled()) {
+            val server = serverWrites.saveMemory(
+                personaId,
+                com.myfriend.app.data.remote.ServerMemoryWrite.payload(memory, creating = true)
+            ).getOrThrow()
+            memory = com.myfriend.app.data.remote.ServerMemoryWrite.localEntity(server, memory)
+        }
+        memoryDao.insert(memory)
         // 新记忆马上进倒排索引与向量索引：不建的话，它要等到下次全量补建才查得到。
-        rebuildTermIndex(id, text)
-        memoryVectorIndex.upsert(id, text)
-        id
+        rebuildTermIndex(memory.id, text)
+        memoryVectorIndex.upsert(memory.id, text)
+        memory.id
     }
 
     /**
@@ -435,15 +444,22 @@ class MemoryRepository @Inject constructor(
         val merged = if (appendedText.isNullOrBlank()) memory.content else {
             (memory.content.trimEnd() + "；" + appendedText.trim()).take(2000)
         }
-        memoryDao.update(
-            memory.copy(
-                content = merged,
-                importance = importance?.coerceIn(1, 5) ?: memory.importance,
-                useCount = memory.useCount + 1,
-                lastUsedAt = now,
-                updatedAt = now
-            )
+        var updated = memory.copy(
+            content = merged,
+            importance = importance?.coerceIn(1, 5) ?: memory.importance,
+            useCount = memory.useCount + 1,
+            lastUsedAt = now,
+            updatedAt = now
         )
+        // M5：加固也是一次「编辑」。服务端失败就整体失败，不能只在本机变长、服务端还是旧内容。
+        if (serverWrites.isEnabled()) {
+            val server = serverWrites.saveMemory(
+                memory.personaId,
+                com.myfriend.app.data.remote.ServerMemoryWrite.payload(updated, creating = false)
+            ).getOrThrow()
+            updated = com.myfriend.app.data.remote.ServerMemoryWrite.localEntity(server, updated)
+        }
+        memoryDao.update(updated)
         // 正文变长了：索引跟着重建，否则新补上的那句话永远搜不到。
         rebuildTermIndex(memoryId, merged)
         memoryVectorIndex.upsert(memoryId, merged)
@@ -460,24 +476,29 @@ class MemoryRepository @Inject constructor(
         if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
         if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
-        val id = UUID.randomUUID().toString()
-        memoryDao.insert(
-            MemoryEntity(
-                id = id,
-                personaId = personaId,
-                content = text,
-                category = category,
-                importance = importance.coerceIn(1, 5),
-                pinned = pinned,
-                sourceSessionId = null,
-                createdAt = now,
-                updatedAt = now,
-                lastUsedAt = 0,
-                useCount = 0
-            )
+        var memory = MemoryEntity(
+            id = UUID.randomUUID().toString(),
+            personaId = personaId,
+            content = text,
+            category = category,
+            importance = importance.coerceIn(1, 5),
+            pinned = pinned,
+            sourceSessionId = null,
+            createdAt = now,
+            updatedAt = now,
+            lastUsedAt = 0,
+            useCount = 0
         )
-        rebuildTermIndex(id, text)
-        memoryVectorIndex.upsert(id, text)
+        if (serverWrites.isEnabled()) {
+            val server = serverWrites.saveMemory(
+                personaId,
+                com.myfriend.app.data.remote.ServerMemoryWrite.payload(memory, creating = true)
+            ).getOrThrow()
+            memory = com.myfriend.app.data.remote.ServerMemoryWrite.localEntity(server, memory)
+        }
+        memoryDao.insert(memory)
+        rebuildTermIndex(memory.id, text)
+        memoryVectorIndex.upsert(memory.id, text)
     }
 
     suspend fun update(memory: MemoryEntity, content: String, category: MemoryCategory, importance: Int): Result<Unit> = runCatching {
@@ -485,17 +506,31 @@ class MemoryRepository @Inject constructor(
         if (text.isBlank()) userError(DomainErrorCode.MEMORY_EMPTY)
         if (text.length > 2000) userError(DomainErrorCode.MEMORY_TOO_LONG)
         val now = System.currentTimeMillis()
-        memoryDao.update(memory.copy(
+        var updated = memory.copy(
             content = text,
             category = category,
             importance = importance.coerceIn(1, 5),
             updatedAt = now
-        ))
-        rebuildTermIndex(memory.id, text)
-        memoryVectorIndex.upsert(memory.id, text)
+        )
+        // M5：服务端成功后才写本机；服务端返回的 content/importance 以它为准（可能与本地夹取不同）。
+        if (serverWrites.isEnabled()) {
+            val server = serverWrites.saveMemory(
+                memory.personaId,
+                com.myfriend.app.data.remote.ServerMemoryWrite.payload(updated, creating = false)
+            ).getOrThrow()
+            updated = com.myfriend.app.data.remote.ServerMemoryWrite.localEntity(server, updated)
+        }
+        memoryDao.update(updated)
+        rebuildTermIndex(updated.id, text)
+        memoryVectorIndex.upsert(updated.id, text)
     }
 
     suspend fun delete(memory: MemoryEntity) {
+        // M5：服务端是权威源；服务端删不掉时本机先留着，避免「这台看不见、那边还在」。
+        // 404 由 ServerWriteGateway 当成已删除处理。
+        if (serverWrites.isEnabled()) {
+            serverWrites.deleteMemory(memory.id).getOrThrow()
+        }
         memoryDao.deleteById(memory.id)
         // 记忆没了，索引也必须跟着没：留着会指向一条查不到的 id。
         // 顺序是先删记忆再删索引：万一删索引失败，孤儿词元只是查不到东西；反过来会留下「查得到但已经不记得」的坏状态。

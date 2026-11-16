@@ -493,6 +493,7 @@
     <string name="memory_updated">记忆已更新</string>
     <string name="memory_update_failed">更新失败</string>
     <string name="memory_deleted">记忆已删除</string>
+    <string name="memory_delete_failed">删除失败</string>
     <string name="memory_extract_failed">整理失败：%1$s</string>
     <string name="memory_extract_failed_detail">请检查该人格最近会话的 API 配置</string>
     <string name="memory_enqueue_failed">这次没能排上整理任务，稍后再试一次</string>
@@ -916,6 +917,7 @@
     <string name="preset_duplicated">已复制为新预设</string>
     <string name="preset_duplicate_failed">复制失败</string>
     <string name="preset_deleted">预设已删除</string>
+    <string name="preset_delete_failed">删除失败</string>
     <string name="preset_create_persona_failed">创建人格失败</string>
     <string name="preset_export_error">导出失败</string>
     <string name="preset_import_failed">导入失败</string>
@@ -1624,4 +1626,8 @@
     <string name="settings_server_reject_local_only">http 只允许本机或局域网地址</string>
     <string name="chat_server_reply_pending">回复还没接上，稍后会自动同步</string>
     <string name="chat_server_action_unsupported">服务端模式下暂不支持这个操作</string>
+    <string name="error_server_unreachable">服务端没连上，这次没有保存</string>
+    <string name="error_server_rejected">服务端没有接受这次修改，稍后再试一次</string>
+    <string name="error_server_media_too_large">图片太大，压不进服务端的 2MB 上限</string>
+    <string name="error_server_media_failed">图片没能传上去，这次没有发送</string>
 </resources>

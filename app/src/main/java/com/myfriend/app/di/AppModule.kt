@@ -318,6 +318,15 @@ object AppModule {
     @Singleton
     fun provideServerLocalStore(impl: DataStoreServerLocalStore): ServerLocalStore = impl
 
+    /**
+     * 写路径的依赖面（M5）：`ServerWriteGateway` 只关心「能不能用 + 拿客户端」，
+     * 抽接口是为了让纯 JVM 单测能用假实现覆盖成功/失败/404 语义。
+     */
+    @Provides
+    @Singleton
+    fun provideServerApiProvider(mode: com.myfriend.app.data.remote.ServerModeRepository):
+        com.myfriend.app.data.remote.ServerApiProvider = mode
+
     @Provides
     @Singleton
     fun provideServerPresenceStore(impl: DataStoreServerPresenceStore): ServerPresenceStore = impl

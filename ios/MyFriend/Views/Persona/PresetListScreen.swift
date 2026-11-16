@@ -49,6 +49,12 @@ struct PresetListScreen: View {
         .navigationTitle(L("人格预设"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
+        // 服务端模式：预设是服务端权威，进页面先拉一次并刷新本地缓存。
+        .task {
+            guard env.serverModeActive else { return }
+            await env.refreshPresetsFromServer()
+            reload()
+        }
         .mfAlert($banner)
         .confirmationDialog(
             pendingDelete.map { Lf("删除预设「%@」？", $0.name) } ?? L("删除这个预设？"),
@@ -175,11 +181,13 @@ struct PresetListScreen: View {
     private func deletePending() {
         guard let preset = pendingDelete else { return }
         pendingDelete = nil
-        do {
-            try env.stores.presets.delete(id: preset.id)
-            reload()
-        } catch {
-            banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
+        Task { @MainActor in
+            do {
+                try await env.deletePreset(id: preset.id)
+                reload()
+            } catch {
+                banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
+            }
         }
     }
 }

@@ -201,6 +201,9 @@ object ServerMergePlan {
         if (local != null) {
             return local.copy(
                 name = server.name.ifBlank { local.name },
+                // 本机没有头像文件、服务端有一个媒体引用时补上：换设备/服务端新建的人格
+                // 不该在首页是一块没有脸的色块。本机已有头像时保留本地文件（离线也能看）。
+                avatarUri = local.avatarUri?.takeIf { it.isNotBlank() } ?: server.avatarUrl,
                 updatedAt = maxOf(local.updatedAt, server.updatedAt)
             )
         }
@@ -208,7 +211,7 @@ object ServerMergePlan {
             id = server.id,
             name = server.name,
             description = "",
-            avatarUri = null,
+            avatarUri = server.avatarUrl,
             avatarSeed = server.id.hashCode(),
             prompt = "",
             category = DEFAULT_SERVER_PERSONA_CATEGORY,

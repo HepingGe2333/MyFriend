@@ -124,18 +124,20 @@ struct MemoryEditorSheet: View {
             banner = MFAlert(title: L("还没有人格"), message: L("先建一个人格，再往他的记忆里记东西。"))
             return
         }
-        let result = env.memoryRepository.addDetailed(
-            personaId: personaId,
-            content: content,
-            category: category,
-            importance: importance
-        )
-        switch result {
-        case .success:
-            onSaved()
-            dismiss()
-        case .failure(let error):
-            banner = MFAlert(title: L("没能记住"), message: error.localizedDescription)
+        Task { @MainActor in
+            do {
+                // 服务端模式：服务端生成 id 后再写本地缓存；本地模式行为不变。
+                _ = try await env.addMemory(
+                    personaId: personaId,
+                    content: content,
+                    category: category,
+                    importance: importance
+                )
+                onSaved()
+                dismiss()
+            } catch {
+                banner = MFAlert(title: L("没能记住"), message: error.localizedDescription)
+            }
         }
     }
 }

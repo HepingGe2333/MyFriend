@@ -279,6 +279,23 @@ object MediaStorage {
         }.getOrNull()
 
     /**
+     * 服务端模式上传聊天图片前的压缩（0.12 M5）。
+     *
+     * 与备份导入共用同一套策略 [BackupMediaLimits]：长边 ≤1600、JPEG 质量 85 起、
+     * 压不进 800 KiB 才逐档降到 50。**复用这份实现**而不是再写一份压缩器，
+     * 否则「备份里的图」和「聊天里传的图」会在两套参数下慢慢分叉。
+     *
+     * 坏图 / 压不进上限返回 null，由上传编排层报「这张图传不上去」并让整条消息失败
+     * （不能默默少一张图）。
+     */
+    fun compressChatImage(bytes: ByteArray, mime: String): BackupCompressedImage? =
+        compressBackupImage(bytes, mime, BackupMediaKind.CHAT_IMAGE)
+
+    /** 服务端模式上传头像前的压缩：长边 ≤512、≤400 KiB（与备份头像同一套策略）。 */
+    fun compressAvatarImage(bytes: ByteArray, mime: String): BackupCompressedImage? =
+        compressBackupImage(bytes, mime, BackupMediaKind.PERSONA_AVATAR)
+
+    /**
      * 把相册图片缩放后复制到私有目录，返回可长期引用的附件。
      * 视觉模型对图片尺寸敏感，长边限制在 1568px 可以在清晰度与请求体积之间取平衡。
      */

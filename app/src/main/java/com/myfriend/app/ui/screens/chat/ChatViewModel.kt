@@ -679,6 +679,11 @@ class ChatViewModel @Inject constructor(
                 }
                 if (result.accepted) {
                     ephemeral.update { it.copy(draft = "", images = emptyList()) }
+                    // M5：图片已经上传到服务端，本机这份压缩后的临时图不再被任何消息引用。
+                    // 仍然走引用守卫（内容寻址下同一张图可能被别的本地消息用着）。
+                    if (images.isNotEmpty()) {
+                        runCatching { mediaJanitor.deleteAttachmentsIfUnreferenced(images) }
+                    }
                 }
                 val error = result.error
                 ephemeral.update {
@@ -976,6 +981,13 @@ class ChatViewModel @Inject constructor(
     }
 
     fun deleteSession() {
+        // 服务端契约 §3.6 没有「删除单条会话」的接口（删人格会连带删会话）。
+        // 本地只删缓存会让服务端留下一段再也同步不回来的会话，所以这里明确拒绝，
+        // 而不是让用户以为删掉了、下次同步又冒出来。
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
+            return
+        }
         viewModelScope.launch {
             // 删除前先取消并等生成收尾：NonCancellable 的落库可能排在删除事务之后，
             // 仓库层的存在性/世代校验会丢弃它，这里等一等让顺序确定下来。

@@ -275,6 +275,48 @@ final class PersonaTranslationHashTests: XCTestCase {
                        Self.pythonReferencePersonaOnlyHash)
     }
 
+    // MARK: - 不再截断（0.12）
+
+    /// 超过旧 iOS 上限（tone 80 / habits 6 / avoid 5 / notes 1200）的源字段必须**完整**进哈希。
+    ///
+    /// 以前 Tone 截到 80 字、habits 截到 6 条、notes 截到 1200 字，于是「第 81 个字开始不同」
+    /// 的两个人格会算出同一个 `sourceHash`（缓存互相冒充）；Android 不按这些长度截，
+    /// 两端就对同一份人格各算一个值。这条用「前缀相同、尾部不同」的两份源夹住它。
+    func testFieldsBeyondOldLimitsAreFullyHashed() throws {
+        let baseTone = String(repeating: "冷", count: SpeechStyle.toneMax + 20)
+        var a = PersonaTranslatableSource(name: "林深")
+        a.speech = SpeechStyle(tone: baseTone + "甲")
+        var b = PersonaTranslatableSource(name: "林深")
+        b.speech = SpeechStyle(tone: baseTone + "乙")
+        XCTAssertNotEqual(
+            PersonaTranslation.sourceHash(for: a),
+            PersonaTranslation.sourceHash(for: b),
+            "tone 第 81 个字之后不同，哈希必须不同（以前会相同）"
+        )
+
+        let longNotes = String(repeating: "事", count: WorldPreset.maxNotesChars + 10)
+        var c = PersonaTranslatableSource(name: "林深")
+        c.world = WorldPreset(worldName: "临港新城", notes: longNotes + "甲")
+        var d = PersonaTranslatableSource(name: "林深")
+        d.world = WorldPreset(worldName: "临港新城", notes: longNotes + "乙")
+        XCTAssertNotEqual(
+            PersonaTranslation.sourceHash(for: c),
+            PersonaTranslation.sourceHash(for: d),
+            "notes 第 1201 个字之后不同，哈希必须不同（以前会相同）"
+        )
+
+        // 落库/解析一圈之后仍然是同一份哈希（JSON 不能把长字段吃掉）。
+        let cached = PersonaTranslation(
+            lang: "en", translatedAt: 1,
+            sourceHash: PersonaTranslation.sourceHash(for: c),
+            persona: PersonaTranslation.PersonaFields(name: "Lin"),
+            world: c.world
+        )
+        let decoded = try XCTUnwrap(PersonaTranslation.decode(cached.jsonString()))
+        XCTAssertEqual(decoded.world?.notes, longNotes + "甲", "翻译缓存里的 world 也不能截断")
+        XCTAssertEqual(decoded.sourceHash, cached.sourceHash)
+    }
+
     // MARK: - 与缓存命中的联动
 
     /// 哈希是缓存命中的唯一源判据：源字段不变 → 命中（零请求）；任一字段变 → 失效。

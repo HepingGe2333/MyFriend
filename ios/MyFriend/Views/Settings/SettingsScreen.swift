@@ -36,6 +36,13 @@ struct SettingsScreen: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
                     header
+                    if let error = env.serverWriteError {
+                        // 服务端模式：设置没写进服务端时明确说一句（本机保持上一次确认的值）。
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(MFUI.danger)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     appearanceSection
                     apiSection
                     ServerModeSection()

@@ -268,7 +268,14 @@ struct MemoryDetailScreen: View {
 
     private func deleteMemory() {
         guard let memory else { return }
-        env.memoryRepository.delete(memory)
-        dismiss()
+        Task { @MainActor in
+            do {
+                try await env.deleteMemory(memory)
+                dismiss()
+            } catch {
+                // 删不掉就留在原页（服务端没删成功时本地也还在）。
+                banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
+            }
+        }
     }
 }

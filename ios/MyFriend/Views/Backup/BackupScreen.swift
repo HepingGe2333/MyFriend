@@ -297,7 +297,8 @@ struct BackupScreen: View {
         Task.detached(priority: .userInitiated) {
             let outcome: Result<BackupExportResult, Error>
             do {
-                outcome = .success(try backup.exportWithWarnings())
+                // 服务端模式取服务端那份；本地模式仍是本机导出。
+                outcome = .success(try await env.exportBackup())
             } catch {
                 outcome = .failure(error)
             }
@@ -390,7 +391,9 @@ struct BackupScreen: View {
         Task.detached(priority: .userInitiated) {
             let outcome: Result<ImportSummary, Error>
             do {
-                outcome = .success(try backup.importBackup(text: text, mode: mode))
+                // 服务端模式先让服务端接，成功后同一份 JSON 再进本地缓存；
+                // 本地模式行为不变。
+                outcome = .success(try await env.importBackup(text: text, mode: mode))
             } catch {
                 outcome = .failure(error)
             }

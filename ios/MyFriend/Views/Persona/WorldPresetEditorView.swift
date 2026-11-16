@@ -19,7 +19,6 @@ struct WorldPresetEditorView: View {
 
     @Environment(\.colorScheme) private var scheme
     /// 用户写超过 1200 字时提示一次（内容按上限截断，不悄悄丢也不无限涨）。
-    @State private var notesOverflow = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -75,7 +74,7 @@ struct WorldPresetEditorView: View {
             }
             addButton(
                 title: L("加一行日程"),
-                disabled: state.schedule.count >= WorldPreset.maxScheduleItems
+                disabled: false
             ) {
                 state = state.addSchedule()
             }
@@ -193,7 +192,7 @@ struct WorldPresetEditorView: View {
             }
             addButton(
                 title: L("加一个人"),
-                disabled: state.relationships.count >= WorldPreset.maxRelationships
+                disabled: false
             ) {
                 state = state.addRelationship()
             }
@@ -342,7 +341,7 @@ struct WorldPresetEditorView: View {
             }
             addButton(
                 title: L("加一条"),
-                disabled: state.obligations.count >= WorldEditorState.maxObligations
+                disabled: false
             ) {
                 state = state.addObligation()
             }
@@ -366,20 +365,16 @@ struct WorldPresetEditorView: View {
             }
             multiline(notesBinding, height: 110,
                       placeholder: L("比如：事务所里没人叫他全名，都叫「深哥」。"))
-            if notesOverflow {
-                Text(Lf("已经到 %d 字上限，多出来的部分没有保存。", WorldPreset.maxNotesChars))
-                    .font(.caption2)
-                    .foregroundStyle(.orange)
-            }
+            // 超限只体现在计数变橙（不拦保存、也不截断输入）。
+
         }
     }
 
-    /// notes 的绑定：写入时按 1200 字截断（与落库同一上限），并对"写超了"给一句提示。
+    /// notes 的绑定：不截断输入，只把「写超了建议字数」记下来给一句提示。
     private var notesBinding: Binding<String> {
         Binding(
             get: { state.notes },
             set: { value in
-                if value.count > WorldPreset.maxNotesChars { notesOverflow = true }
                 state = state.withNotes(value)
             }
         )

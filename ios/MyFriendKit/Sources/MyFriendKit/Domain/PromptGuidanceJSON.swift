@@ -18,15 +18,16 @@ import Foundation
 
 public enum PromptGuidanceJSON {
 
-    /// 单段 JSON 文本的长度上限（超出直接当没有：提示词里塞不下，数据库也不该被撑大）。
-    public static let maxStoredChars = 16_000
-
-    /// 存库前的清洗：去空白、空串 → nil、超长截断。
+    /// 存库前的清洗：只去首尾空白、空串 → nil。
+    ///
+    /// **不截断**：0.12 起「存储 / 解析 / 哈希一律保留原文」，截断只允许发生在
+    /// 渲染提示词那一步（例如 `WorldPreset.renderForPrompt` 对 notes 的 1200 字上限）。
+    /// 以前这里有一个 16000 字的硬上限，超过就从中间切断 JSON —— 结果是库里留下
+    /// 一段解不出来的坏 JSON，用户写的东西静默消失。
     public static func clean(_ raw: String?) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
               !trimmed.isEmpty else { return nil }
-        let clipped = trimmed.count > maxStoredChars ? String(trimmed.prefix(maxStoredChars)) : trimmed
-        return clipped
+        return trimmed
     }
 
     /// 从「模型可能加了前后缀」的文本里取出第一个 JSON 对象。
@@ -112,7 +113,8 @@ public enum PromptGuidanceJSON {
 
     // MARK: - 字段读取（类型错了就当没写）
 
-    public static func string(_ object: [String: Any], _ key: String, limit: Int = 400) -> String? {
+    /// 取字符串字段：去首尾空白，**不截断**（存储/解析/哈希必须保留原文）。
+    public static func string(_ object: [String: Any], _ key: String) -> String? {
         let raw: String?
         if let text = object[key] as? String {
             raw = text
@@ -124,7 +126,7 @@ public enum PromptGuidanceJSON {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
         }
-        return trimmed.count <= limit ? trimmed : String(trimmed.prefix(limit))
+        return trimmed
     }
 
     public static func int(_ object: [String: Any], _ key: String) -> Int? {
@@ -134,8 +136,9 @@ public enum PromptGuidanceJSON {
     }
 
     /// 字符串数组：容忍「一个字符串」「数组里混了数字」「数组里混了对象」。
-    public static func stringList(_ object: [String: Any], _ key: String,
-                                  limit: Int, itemLimit: Int = 120) -> [String] {
+    ///
+    /// 不做条数/单条长度截断：保留用户写下的每一项原文（去空白、去重是解析的事）。
+    public static func stringList(_ object: [String: Any], _ key: String) -> [String] {
         var values: [String] = []
         if let array = object[key] as? [Any] {
             for element in array {
@@ -145,13 +148,15 @@ public enum PromptGuidanceJSON {
         } else if let single = object[key] as? String {
             values = single.split(whereSeparator: { "，,、\n；;".contains($0) }).map(String.init)
         }
-        return PersonaTags.normalize(values.map { String($0.prefix(itemLimit)) }, limit: limit)
+        return PersonaTags.normalize(values)
     }
 
     /// 对象数组（日程 / 关系）。
-    public static func objectList(_ object: [String: Any], _ key: String, limit: Int) -> [[String: Any]] {
+    ///
+    /// 不按条数截断：条数上限只是编辑器的建议值（写不下就滚动），不是存储限制。
+    public static func objectList(_ object: [String: Any], _ key: String) -> [[String: Any]] {
         guard let array = object[key] as? [Any] else { return [] }
-        return array.prefix(limit).compactMap { $0 as? [String: Any] }
+        return array.compactMap { $0 as? [String: Any] }
     }
 }
 

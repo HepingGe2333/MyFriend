@@ -606,13 +606,39 @@ final class ChatViewModel: ObservableObject {
             showToast(L("先去设置里配一个 API"))
             return
         }
+        // 服务端模式带图片：先压缩 → 上传，再入队发送（异步；期间显示「正在准备图片」）。
+        // 本地模式保持原来的同步链路（附件在选图时已经压好、落盘）。
+        if env.serverModeActive && !attachments.isEmpty {
+            isPreparingAttachments = true
+            Task { @MainActor in
+                let outcome = await env.sendCheckedWithMedia(
+                    sessionId: sessionId, text: text, attachments: attachments
+                )
+                isPreparingAttachments = false
+                applySendOutcome(outcome, text: text, attachments: attachments)
+            }
+            return
+        }
         // 只有「真的落库了」才清空输入状态（0.10.2 审计 P1-10）。
         // 消息过长 / 会话被删 / 配置没了都发生在落库之前：这时草稿与图片原样留着，
         // 用户点一下「重试」就能接着发；附件引用没变、文件还在磁盘上，不会留下孤儿图。
         //
         // 走 `env.sendChecked`：服务端模式走 SSE + 待发队列，本地模式走原链路。
         // 这个判断只出现在装配层一处，这里不重复。
-        switch env.sendChecked(sessionId: sessionId, text: text, attachments: attachments) {
+        applySendOutcome(
+            env.sendChecked(sessionId: sessionId, text: text, attachments: attachments),
+            text: text,
+            attachments: attachments
+        )
+    }
+
+    /// 发送结果落到界面状态：只有「真的入队/落库了」才清空输入；被拒绝时草稿与图片原样留着。
+    private func applySendOutcome(
+        _ outcome: ChatService.SendOutcome,
+        text: String,
+        attachments: [MessageAttachment]
+    ) {
+        switch outcome {
         case .started(let stream):
             sendFailure = nil
             draft = ""

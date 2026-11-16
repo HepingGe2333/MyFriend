@@ -6,10 +6,12 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -92,7 +94,7 @@ class ServerApi(
     private val json: Json = DEFAULT_JSON,
     connectTimeoutMillis: Long = DEFAULT_CONNECT_TIMEOUT_MILLIS,
     readTimeoutMillis: Long = DEFAULT_READ_TIMEOUT_MILLIS
-) {
+) : ServerMediaApi {
 
     /** 服务端根地址（去掉尾部 `/v1`，避免拼出 `/v1/v1/state`）；配置不可用时为 null。 */
     private val root: HttpUrl? =
@@ -334,6 +336,152 @@ class ServerApi(
             }
         )
 
+    // ------------------------------------------------------------------ M5：媒体
+
+    /**
+     * `POST /v1/media?mime=&kind=&personaId=`：**原始字节**请求体，不是 multipart。
+     *
+     * 客户端上传前已经把图片压成 JPEG（聊天图 ≤800 KB、头像 ≤400 KB），服务端仍按
+     * [ServerMediaLimits.MAX_UPLOAD_BYTES]（2 MiB）兜底：压缩器是可替换实现，不能只信它。
+     * 超限在这里就失败，不把 3 MB 的 body 发出去再等服务端 413。
+     */
+    override suspend fun uploadMedia(
+        bytes: ByteArray,
+        mime: String,
+        kind: String,
+        personaId: String?
+    ): ServerMedia {
+        if (bytes.isEmpty()) {
+            throw ServerApiException("media body is empty", code = "media_empty")
+        }
+        if (bytes.size > ServerMediaLimits.MAX_UPLOAD_BYTES) {
+            throw ServerApiException(
+                "media body exceeds the ${ServerMediaLimits.MAX_UPLOAD_BYTES} byte upload limit",
+                code = "media_too_large"
+            )
+        }
+        val type = mime.trim().takeIf { it.isNotEmpty() } ?: "application/octet-stream"
+        val request = requestBuilder(
+            url("v1", "media") { builder ->
+                builder.addQueryParameter("mime", type)
+                builder.addQueryParameter("kind", kind)
+                personaId?.takeIf { it.isNotBlank() }?.let { builder.addQueryParameter("personaId", it) }
+            }
+        )
+            .post(bytes.toRequestBody(type.toMediaType()))
+            .build()
+        val response = execute(client.newCall(request)) { result ->
+            val body = readBoundedText(result)
+            if (!result.isSuccessful) throw errorFrom(result.code, body)
+            body
+        }
+        val root = runCatching { json.parseToJsonElement(response).jsonObject }.getOrNull()
+            ?: throw invalidResponse(200, IllegalArgumentException("media response is not a JSON object"))
+        // 服务端可能回 `{media:{...}}`，也可能直接把条目放根上；两种都接受。
+        val item = root["media"]?.jsonObject ?: root
+        val media = runCatching { json.decodeFromJsonElement<ServerMedia>(item) }.getOrElse {
+            throw invalidResponse(200, it as? Exception ?: IllegalArgumentException(it.message))
+        }
+        if (media.id.isBlank()) {
+            throw ServerApiException(
+                "server returned a media entry without id",
+                code = "invalid_response"
+            )
+        }
+        return media.copy(url = media.url.ifBlank { ServerMediaRef.canonical(media.id).orEmpty() })
+    }
+
+    /** `GET /v1/media/{id}`：下载原始字节（备份/缓存导出用；渲染走 Coil 的磁盘缓存）。 */
+    suspend fun downloadMedia(mediaRef: String): ByteArray {
+        val id = ServerMediaRef.idOf(mediaRef)
+            ?: throw ServerApiException("not a media reference", code = "invalid_argument")
+        val request = requestBuilder(url("v1", "media", id)).get().build()
+        return execute(client.newCall(request)) { response ->
+            if (!response.isSuccessful) throw errorFrom(response.code, readBoundedText(response))
+            val body = response.body
+                ?: throw ServerApiException("server returned an empty media body", code = "invalid_response")
+            val declared = body.contentLength()
+            if (declared > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+                throw ServerApiException("media exceeds the download limit", code = "response_too_large")
+            }
+            val output = ByteArrayOutputStream()
+            val chunk = ByteArray(16 * 1024)
+            var total = 0
+            body.byteStream().use { input ->
+                while (true) {
+                    val read = input.read(chunk)
+                    if (read < 0) break
+                    total += read
+                    if (total > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+                        throw ServerApiException("media exceeds the download limit", code = "response_too_large")
+                    }
+                    output.write(chunk, 0, read)
+                }
+            }
+            output.toByteArray()
+        }
+    }
+
+    // ------------------------------------------------------------------ M5：CRUD（§3.6）
+
+    /** `POST /v1/personas`：新建（无 id）或更新（带 id）。返回 `{persona:{…}}` 根对象。 */
+    suspend fun savePersona(payload: JsonObject): JsonObject = postJsonObject(url("v1", "personas"), payload)
+
+    /** `DELETE /v1/personas/{id}`：连带会话/消息/记忆。404 由调用方决定是否当「已经没了」。 */
+    suspend fun deletePersona(personaId: String) = delete(url("v1", "personas", personaId))
+
+    /** `POST /v1/personas/{id}/memories`：新建（无 id）或更新（带 id）。 */
+    suspend fun saveMemory(personaId: String, payload: JsonObject): JsonObject =
+        postJsonObject(url("v1", "personas", personaId, "memories"), payload)
+
+    /** `DELETE /v1/memories/{id}`。 */
+    suspend fun deleteMemory(memoryId: String) = delete(url("v1", "memories", memoryId))
+
+    /** `POST /v1/presets`：新建/更新预设。 */
+    suspend fun savePreset(payload: JsonObject): JsonObject = postJsonObject(url("v1", "presets"), payload)
+
+    /** `DELETE /v1/presets/{id}`。 */
+    suspend fun deletePreset(presetId: String) = delete(url("v1", "presets", presetId))
+
+    /** `GET /v1/settings`：服务端公开设置（不含 API Key）。 */
+    suspend fun settings(): JsonObject =
+        requestJson(requestBuilder(url("v1", "settings")).get().build())
+
+    /** `POST /v1/settings`：白名单合并；请求里出现密钥类字段会被服务端忽略。 */
+    suspend fun postSettings(values: JsonObject): JsonObject =
+        postJsonObject(url("v1", "settings"), values)
+
+    /**
+     * `GET /v1/backup`：服务端导出 v5 备份 JSON。
+     *
+     * 返回**原始文本**而不是反序列化成 [ServerBackupImport]：这份 JSON 要直接写进用户选的文件，
+     * 客户端不能先解析再重新编码（字段顺序/未知字段都该原样保留）。
+     */
+    suspend fun exportBackup(): String {
+        val request = requestBuilder(url("v1", "backup")).get().build()
+        return execute(client.newCall(request)) { response ->
+            // 备份是唯一可能超过普通 2 MiB 响应上限的 JSON（聊天越多越大）；
+            // 单独的 64 MiB 上限仍然挡得住「服务端错误地回了一个几 GB 的东西」。
+            val body = readBoundedText(response, MAX_BACKUP_RESPONSE_BYTES)
+            if (!response.isSuccessful) throw errorFrom(response.code, body)
+            body
+        }
+    }
+
+    /**
+     * `POST /v1/backup`：导入 `{mode:"merge"|"replace", data:<备份对象>}`。
+     *
+     * `data` 是**对象**而不是字符串：服务端校验的是结构；把 JSON 编码成字符串再塞进去，
+     * 服务端要么拒收、要么得再解一次（两边多一层转义）。
+     */
+    suspend fun importBackup(mode: String, data: JsonObject): ServerBackupImport = postJson(
+        url("v1", "backup"),
+        buildJsonObject {
+            put("mode", mode)
+            put("data", data)
+        }
+    )
+
     // ------------------------------------------------------------------ 内部：请求构造 / 执行 / 解析
 
     private fun requestBuilder(url: HttpUrl): Request.Builder {
@@ -377,6 +525,19 @@ class ServerApi(
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         )
+
+    /** 写路径返回的是动态对象（人格/记忆/预设的字段会随版本增加）：保留 [JsonObject] 原样。 */
+    private suspend fun postJsonObject(url: HttpUrl, payload: JsonObject): JsonObject =
+        postJson(url, payload)
+
+    /** `DELETE`：成功只关心状态码，响应体只用于错误映射。 */
+    private suspend fun delete(url: HttpUrl) {
+        val request = requestBuilder(url).delete().build()
+        execute(client.newCall(request)) { response ->
+            val body = readBoundedText(response)
+            if (!response.isSuccessful) throw errorFrom(response.code, body)
+        }
+    }
 
     private fun invalidResponse(status: Int, cause: Exception): ServerApiException =
         ServerApiException(
@@ -422,12 +583,15 @@ class ServerApi(
         }
 
     /** 读响应体，超过 [MAX_RESPONSE_BYTES] 直接按失败处理（连接随后被 `response.use` 关掉）。 */
-    private fun readBoundedText(response: Response): String {
+    private fun readBoundedText(
+        response: Response,
+        maxBytes: Long = MAX_RESPONSE_BYTES
+    ): String {
         val body = response.body ?: return ""
         val declared = body.contentLength()
-        if (declared > MAX_RESPONSE_BYTES) {
+        if (declared > maxBytes) {
             throw ServerApiException(
-                "server response exceeds the $MAX_RESPONSE_BYTES byte limit",
+                "server response exceeds the $maxBytes byte limit",
                 code = "response_too_large",
                 status = response.code
             )
@@ -440,9 +604,9 @@ class ServerApi(
                 val read = input.read(chunk)
                 if (read < 0) break
                 total += read
-                if (total > MAX_RESPONSE_BYTES) {
+                if (total > maxBytes) {
                     throw ServerApiException(
-                        "server response exceeds the $MAX_RESPONSE_BYTES byte limit",
+                        "server response exceeds the $maxBytes byte limit",
                         code = "response_too_large",
                         status = response.code
                     )
@@ -528,6 +692,9 @@ class ServerApi(
 
         /** 非流式响应体上限：2 MiB。 */
         const val MAX_RESPONSE_BYTES = 2L * 1024 * 1024
+
+        /** 备份导出专用上限：64 MiB（聊天越多备份越大，普通 JSON 仍按 2 MiB）。 */
+        const val MAX_BACKUP_RESPONSE_BYTES = 64L * 1024 * 1024
 
         /** 服务端可能新增字段：忽略未知键 + 宽松解析（数字字符串也能收）。 */
         val DEFAULT_JSON: Json = Json {

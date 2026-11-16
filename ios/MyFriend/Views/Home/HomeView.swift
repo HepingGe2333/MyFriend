@@ -373,15 +373,17 @@ struct HomeView: View {
     private func deletePending() {
         guard let persona = pendingDelete else { return }
         pendingDelete = nil
-        do {
-            try env.deletePersona(persona)
-            if env.currentSettings.activePersonaId == persona.id {
-                let next = (try? env.stores.personas.allOrderedByUpdatedAt())?.first?.id
-                env.updateSettings { $0.activePersonaId = next }
+        Task { @MainActor in
+            do {
+                try await env.deletePersonaAsync(persona)
+                if env.currentSettings.activePersonaId == persona.id {
+                    let next = (try? env.stores.personas.allOrderedByUpdatedAt())?.first?.id
+                    env.updateSettings { $0.activePersonaId = next }
+                }
+                reload()
+            } catch {
+                errorText = error.localizedDescription
             }
-            reload()
-        } catch {
-            errorText = error.localizedDescription
         }
     }
 }

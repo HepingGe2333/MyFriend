@@ -532,6 +532,7 @@ object CrudRoutes {
                         "messages" to StoreJson.num(result.messages),
                         "memories" to StoreJson.num(result.memories),
                         "presets" to StoreJson.num(result.presets),
+                        "media" to StoreJson.num(result.media),
                         "settings" to StoreJson.bool(result.settings)
                     )
                 )

@@ -8,6 +8,7 @@ import com.myfriend.app.domain.NetworkErrorKind
 import com.myfriend.app.domain.UserError
 import com.myfriend.app.domain.UserErrorTokens
 import com.myfriend.app.domain.WebUrlPolicy
+import com.myfriend.app.data.remote.ServerApiException
 import com.myfriend.app.network.toUserError
 
 /**
@@ -34,9 +35,37 @@ object ErrorText {
      */
     fun of(context: Context, error: Throwable?, @StringRes fallback: Int? = null): String {
         if (error == null) return context.getString(fallback ?: R.string.error_unknown)
+        // 服务端权威写失败有专门的几句人话：编辑页/记忆页/预设页保存失败时，
+        // 「保存失败」太笼统，用户需要知道是没连上、还是服务端拒了、还是图片太大。
+        if (error is ServerApiException) return serverText(context, error)
         val mapped = error.toUserError()
         if (mapped == UserError.Unknown) return context.getString(fallback ?: R.string.error_unknown)
         return of(context, mapped)
+    }
+
+    /**
+     * 服务端错误的几句话。
+     *
+     * 只按结构化 code/status 分类，**不显示服务端原文**：服务端文案是给开发/部署看的
+     * （可能是英文技术句），用户界面统一用本机语言的同一套说法。
+     */
+    fun serverText(context: Context, error: ServerApiException): String {
+        val text = error.message.orEmpty()
+        return when {
+            error.code == "media_too_large" || error.status == 413 ->
+                context.getString(R.string.error_server_media_too_large)
+            error.code == "media_compress_failed" ||
+                error.code == "media_read_failed" ||
+                error.code == "media_empty" ||
+                error.code == "media_failed" ||
+                text.contains("media", ignoreCase = true) ->
+                context.getString(R.string.error_server_media_failed)
+            error.code == "timeout" ||
+                error.code == "io_error" ||
+                error.code == "server_unavailable" ->
+                context.getString(R.string.error_server_unreachable)
+            else -> context.getString(R.string.error_server_rejected)
+        }
     }
 
     fun of(context: Context, error: UserError?): String = when (error) {

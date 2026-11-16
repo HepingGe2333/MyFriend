@@ -62,6 +62,10 @@ class PresetRepository @Inject constructor(
     private val personaRepository: PersonaRepository,
     /** 删预设/换预设头像时删旧文件的引用守卫（0.12）：预设与人格经常共用同一张头像。 */
     private val mediaJanitor: MediaJanitor,
+    /** M5：服务端模式的权威写（失败不回退静默本地写）。 */
+    private val serverWrites: com.myfriend.app.data.remote.ServerWriteGateway,
+    /** M5：预设头像先压缩再上传成 `/v1/media/<id>`。 */
+    private val serverMediaSender: com.myfriend.app.data.remote.ServerChatMediaSender,
     private val json: Json
 ) {
     fun observeAll(): Flow<List<PersonaPresetEntity>> = presetDao.observeAll()
@@ -79,7 +83,7 @@ class PresetRepository @Inject constructor(
         if (draft.prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PRESET_PROMPT_TOO_LONG)
         val now = System.currentTimeMillis()
         val existing = draft.id?.let { presetDao.getById(it) }
-        val entity = PersonaPresetEntity(
+        var entity = PersonaPresetEntity(
             id = existing?.id ?: UUID.randomUUID().toString(),
             name = name,
             description = draft.description.trim().take(300),
@@ -92,6 +96,29 @@ class PresetRepository @Inject constructor(
             worldJson = draft.worldJson?.takeIf { it.isNotBlank() },
             speechStyleJson = draft.speechStyleJson?.takeIf { it.isNotBlank() }
         )
+        // M5：服务端成功之后才写 Room；保存失败让编辑页明确提示，不回退本地。
+        val creating = existing == null
+        if (serverWrites.isEnabled()) {
+            val avatarChanged = creating || existing?.avatarUri != entity.avatarUri
+            val avatarRef = when {
+                !avatarChanged -> null
+                com.myfriend.app.data.remote.ServerMediaRef.isMediaRef(entity.avatarUri) ->
+                    com.myfriend.app.data.remote.ServerMediaRef.canonical(entity.avatarUri)
+                else -> serverMediaSender.uploadPersonaAvatar(
+                    avatarUri = entity.avatarUri,
+                    personaId = null
+                ).getOrThrow()
+            }
+            val server = serverWrites.savePreset(
+                com.myfriend.app.data.remote.ServerPresetWrite.payload(
+                    preset = entity,
+                    avatarRef = avatarRef,
+                    creating = creating,
+                    includeAvatar = avatarChanged
+                )
+            ).getOrThrow()
+            entity = com.myfriend.app.data.remote.ServerPresetWrite.localEntity(server, entity)
+        }
         if (existing == null) presetDao.insert(entity) else presetDao.update(entity)
         // 换了头像：旧的按引用回收（预设之间/与人格之间可能共用同一个文件）。
         if (existing != null && existing.avatarUri != entity.avatarUri) {
@@ -103,12 +130,27 @@ class PresetRepository @Inject constructor(
     suspend fun duplicate(id: String, copySuffix: String): Result<String> = runCatching {
         val source = presetDao.getById(id) ?: userError(DomainErrorCode.PRESET_NOT_FOUND)
         val now = System.currentTimeMillis()
-        val copy = source.copy(
+        var copy = source.copy(
             id = UUID.randomUUID().toString(),
             name = (source.name + copySuffix).take(60),
             createdAt = now,
             updatedAt = now
         )
+        if (serverWrites.isEnabled()) {
+            val avatarRef = when {
+                com.myfriend.app.data.remote.ServerMediaRef.isMediaRef(copy.avatarUri) ->
+                    com.myfriend.app.data.remote.ServerMediaRef.canonical(copy.avatarUri)
+                else -> serverMediaSender.uploadPersonaAvatar(copy.avatarUri, personaId = null).getOrThrow()
+            }
+            val server = serverWrites.savePreset(
+                com.myfriend.app.data.remote.ServerPresetWrite.payload(
+                    preset = copy,
+                    avatarRef = avatarRef,
+                    creating = true
+                )
+            ).getOrThrow()
+            copy = com.myfriend.app.data.remote.ServerPresetWrite.localEntity(server, copy)
+        }
         presetDao.insert(copy)
         copy.id
     }
@@ -120,6 +162,10 @@ class PresetRepository @Inject constructor(
      * `avatar-*.jpg`，那个文件大概率还被原人格引用，闭眼删就会让原人格的脸消失。
      */
     suspend fun delete(id: String) {
+        // M5：服务端是权威源，删除失败就不动本机缓存（404 由 gateway 当成已删除）。
+        if (serverWrites.isEnabled()) {
+            serverWrites.deletePreset(id).getOrThrow()
+        }
         val existing = presetDao.getById(id)
         presetDao.deleteById(id)
         if (existing?.avatarUri != null) {

@@ -159,7 +159,9 @@ class BackupRepository @Inject constructor(
     /** 取消在跑的生成：替换时本机会话会被清掉，收尾写入不能落进刚恢复的会话。 */
     private val chatRepository: ChatRepository,
     /** 头像文件在应用私有目录里，导入时要按名字去查（安全 P2-5）。 */
-    @ApplicationContext private val appContext: Context
+    @ApplicationContext private val appContext: Context,
+    /** M5：服务端模式的导出/导入走 `/v1/backup`；本地模式仍走下面这套 v5。 */
+    private val serverWrites: com.myfriend.app.data.remote.ServerWriteGateway
 ) {
 
     /** 备份文件建议名字：`myfriend-backup-20261114-0140.json`。 */
@@ -176,6 +178,15 @@ class BackupRepository @Inject constructor(
      * 只读、只收集真实存在且落在 App 媒体目录里的文件（见 [MediaStorage.ownedFile]）。
      */
     suspend fun export(): BackupExport = withContext(Dispatchers.IO) {
+        // M5：服务端模式下「他」住在服务端，导出必须取服务端那份（本机 Room 只是缓存，
+        // 可能缺别的设备/服务端主动写入的内容）。客户端只负责把 JSON 原样写进用户选的文件，
+        // 备份里带不带媒体、带多少，都由服务端的约定决定。
+        if (serverWrites.isEnabled()) {
+            val json = serverWrites.exportBackup().getOrThrow()
+            // 与本地导出最后一道闸一致：服务端实现出错时，也绝不把含密钥字段的文件写到用户选的位置。
+            if (BackupCodec.containsSecretField(json)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
+            return@withContext BackupExport(json = json, mediaWarnings = emptyList(), mediaCount = 0)
+        }
         val now = System.currentTimeMillis()
         val personas = personaDao.getAll()
         // 一人一段：即使库外数据（旧备份、手工 SQL）塞进来多段，导出也只带最新那段。
@@ -279,7 +290,22 @@ class BackupRepository @Inject constructor(
     suspend fun preview(raw: String): BackupDecodeResult = withContext(Dispatchers.IO) {
         // 审计 P1-3：JSON 解析 + DOM 构造 + 逐段反序列化可能几十到几百毫秒（v3 上限 256MB），
         // 不能占着主线程。这里顺手把「结构不完整」也提前算出来，预览对话框先提醒一句。
-        when (val decoded = BackupCodec.decode(raw)) {
+        //
+        // M5：服务端备份用 `avatarUrl/importance(0–100)/unread/attachments 数组`，直接按本地
+        // v5 预览会把记忆/消息当成坏条目报 warning；预览与导入统一先过适配器。
+        val readable = if (serverWrites.isEnabled()) {
+            com.myfriend.app.data.remote.ServerBackupAdapter.toLocalBackupJson(raw) ?: raw
+        } else {
+            raw
+        }
+        // 本地模式保持原调用形态（契约测试与审计都按「同一个 BackupCodec」盯这条路径）；
+        // 服务端模式才走适配后的文本。
+        val decodedResult = if (readable == raw) {
+            BackupCodec.decode(raw)
+        } else {
+            BackupCodec.decode(readable)
+        }
+        when (val decoded = decodedResult) {
             is BackupDecodeResult.Failure -> decoded
             is BackupDecodeResult.Success -> {
                 val holes = BackupIntegrity.check(decoded.bundle)
@@ -306,6 +332,9 @@ class BackupRepository @Inject constructor(
      */
     suspend fun importJson(raw: String, mode: ImportMode): ImportSummary =
         withContext(Dispatchers.IO) {
+            if (serverWrites.isEnabled()) {
+                return@withContext importServerBackup(raw, mode)
+            }
             when (val decoded = BackupCodec.decode(raw)) {
                 is BackupDecodeResult.Failure -> throw BackupImportException(decoded.reason)
                 is BackupDecodeResult.Success -> {
@@ -317,6 +346,52 @@ class BackupRepository @Inject constructor(
                 }
             }
         }
+
+    /**
+     * 服务端模式的「接他回来」：先交给服务端导入，成功后再把同一份数据写进本机缓存。
+     *
+     * 为什么本机也要写一遍：服务端成功之后本机若还停在旧内容，用户会看到「接回来了但列表没变」，
+     * 直到下一次同步才恢复。缓存写失败**不推翻**服务端已经完成的事实——只记日志，
+     * 返回服务端的分段计数（界面提示以服务端为准），下一次同步会补齐。
+     */
+    private suspend fun importServerBackup(raw: String, mode: ImportMode): ImportSummary {
+        val serverMode = when (mode) {
+            ImportMode.MERGE -> com.myfriend.app.data.remote.ServerBackupMode.MERGE
+            ImportMode.REPLACE -> com.myfriend.app.data.remote.ServerBackupMode.REPLACE
+        }
+        val imported = serverWrites.importBackup(raw, serverMode).getOrThrow()
+        runCatching {
+            // 服务端 JSON 与客户端 v5 的字段名有差异（avatarUrl/importance/unread/attachments），
+            // 先适配再写本地缓存；不适配有「头像全没、重要度变成 80 星」这类静默错位。
+            val localRaw = com.myfriend.app.data.remote.ServerBackupAdapter.toLocalBackupJson(raw)
+                ?: return@runCatching
+            when (val decoded = BackupCodec.decode(localRaw)) {
+                is BackupDecodeResult.Failure -> Unit
+                is BackupDecodeResult.Success -> importBundle(decoded.bundle, mode)
+            }
+        }.onFailure { error ->
+            // 日志本身不能把「服务端已导入成功」翻成失败：纯 JVM 单测里 Log 也是 not mocked。
+            runCatching {
+                android.util.Log.w(
+                    "BackupRepository",
+                    "local cache refresh after server import failed: ${error.javaClass.simpleName}"
+                )
+            }
+        }
+        val counts = imported.imported
+        return ImportSummary(
+            personas = counts.personas,
+            memories = counts.memories,
+            sessions = counts.sessions,
+            messages = counts.messages,
+            rules = 0,
+            skipped = 0,
+            warnings = emptyList(),
+            mediaWarnings = emptyList(),
+            mode = mode,
+            presets = counts.presets
+        )
+    }
 
     /**
      * 把已经解码好的备份写进库。

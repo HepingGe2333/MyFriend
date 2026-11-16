@@ -75,9 +75,9 @@ object SpeechStyleCodec {
         val root = runCatching { json.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
         return runCatching {
             SpeechStyle(
-                tone = root.str("tone").take(120),
-                phrases = root.strings("phrases", 40),
-                habits = root.strings("habits", 40),
+                tone = root.str("tone"),
+                phrases = root.strings("phrases"),
+                habits = root.strings("habits"),
                 avoid = root.strings("avoid", 40)
             )
         }.getOrNull()
@@ -105,8 +105,8 @@ object SpeechStyleCodec {
         JsonObject(
             mapOf(
                 "tone" to JsonPrimitive(style.tone.trim()),
-                "phrases" to JsonArray(style.phrases.map { it.trim() }.filter { it.isNotBlank() }.take(40).map(::JsonPrimitive)),
-                "habits" to JsonArray(style.habits.map { it.trim() }.filter { it.isNotBlank() }.take(20).map(::JsonPrimitive)),
+                "phrases" to JsonArray(style.phrases.map { it.trim() }.filter { it.isNotBlank() }.map(::JsonPrimitive)),
+                "habits" to JsonArray(style.habits.map { it.trim() }.filter { it.isNotBlank() }.map(::JsonPrimitive)),
                 "avoid" to JsonArray(style.avoid.map { it.trim() }.filter { it.isNotBlank() }.take(20).map(::JsonPrimitive))
             )
         ).toString()
@@ -115,7 +115,7 @@ object SpeechStyleCodec {
     private fun JsonObject.str(key: String): String =
         ((this[key] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull ?: "").trim()
 
-    private fun JsonObject.strings(key: String, max: Int): List<String> =
+    private fun JsonObject.strings(key: String, max: Int = Int.MAX_VALUE): List<String> =
         ((this[key] as? JsonArray)?.toList().orEmpty()).mapNotNull { element ->
             (element as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotBlank() }
         }.distinct().take(max)

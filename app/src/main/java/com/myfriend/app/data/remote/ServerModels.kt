@@ -220,3 +220,27 @@ data class ServerPushRegistration(
     val registered: Boolean = true,
     val platform: String = ""
 )
+
+/**
+ * `POST /v1/backup` 的响应：只带「导入到服务端之后各段有多少条」。
+ *
+ * 服务端已经完成合并/替换；客户端把这些数字换算成界面摘要，不再用本机备份的条数冒充结果
+ * （合并模式下服务端可能保留了本机没有的条目）。
+ */
+@Serializable
+data class ServerBackupImport(
+    val mode: String = "",
+    val imported: ServerBackupCounts = ServerBackupCounts()
+)
+
+/** 服务端导入结果的分段计数。 */
+@Serializable
+data class ServerBackupCounts(
+    val personas: Int = 0,
+    val sessions: Int = 0,
+    val messages: Int = 0,
+    val memories: Int = 0,
+    val presets: Int = 0,
+    /** 设置段是否成功写入（不是条数）。 */
+    val settings: Boolean = false
+)

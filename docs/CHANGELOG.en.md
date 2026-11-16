@@ -273,6 +273,28 @@ API from this machine (contract and live notes: `spec/persona-guidance/README.md
 - **Tests**: Android **1366 / 126 classes / 0 failures**, `:agentcore` **90**, `:agentd` **329**, iOS **1588 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
 
 
+
+### 0.12 follow-up 6 (no version bump): M5 client writes, media upload, iOS truncation removed, tests completed
+
+- **M5 client**: in server mode, persona/memory/preset/settings/backup writes all go through `/v1/*` and only after the
+  server succeeds is the local cache updated; failures surface explicitly instead of silently falling back to local
+  writes. Local (offline) mode is unchanged.
+- **Media**: `agentd` gained `POST /v1/media` (raw bytes, type/size validation, sha256 de-duplication),
+  `GET /v1/media/{id}` (ETag/304) and `DELETE` (409 while referenced); backup v5 carries media (8 MiB each, 128 MiB
+  total, oversized entries skipped and counted). In server mode both clients **compress before upload** (avatars
+  512 px/400 KB, chat images 1600 px/800 KB) and render through an authenticated media cache; local mode keeps local files.
+- **iOS truncation removed**: world/speech/persona fields are no longer truncated while parsing, storing or hashing
+  (only prompt rendering trims), matching Android; Android also stopped truncating during parsing. Shared
+  `hash-cases.json` and long-text round-trip tests cover it.
+- **M6 push**: kept as "configured by the server deployer" — the server provides token registration and a pluggable
+  `PushSender` (Noop by default); APNs/FCM protocol, certificates and delivery stay out of the repository. Without push,
+  the client falls back to foreground event sync.
+- **Tests completed**: 56 Android instrumented tests on the emulator (v13→v14 migration, UI behaviour, media
+  compression); 16 iOS App-hosted tests (10 Kotlin parity + 6 UI behaviour) run via `simctl spawn xctest`.
+- **Tests**: Android 1412 / 132 classes / 0 failures + 56 instrumented, `:agentcore` 90, `:agentd` 358, iOS 1625
+  (2 skipped) + 16 App-hosted; Debug/Release and lint all pass.
+
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans

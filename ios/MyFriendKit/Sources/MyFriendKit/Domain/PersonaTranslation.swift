@@ -350,20 +350,21 @@ public struct PersonaTranslation: Equatable, Sendable {
     /// 从库里的 JSON 读出来；空 / 坏 JSON 返回 nil（等于没有缓存）。
     public static func decode(_ raw: String?) -> PersonaTranslation? {
         guard let object = PromptGuidanceJSON.object(from: raw) else { return nil }
-        let lang = PromptGuidanceJSON.string(object, "lang", limit: 40) ?? ""
-        let hash = PromptGuidanceJSON.string(object, "sourceHash", limit: 120) ?? ""
+        // 缓存里的字段也一律不截断：缓存是「同一份人格的另一种语言」，截断会让
+        // 译文比原文短，`sourceHash` 对不上、每次启动都重译。
+        let lang = PromptGuidanceJSON.string(object, "lang") ?? ""
+        let hash = PromptGuidanceJSON.string(object, "sourceHash") ?? ""
         guard !lang.isEmpty, hash.hasPrefix("sha256:") else { return nil }
         let personaObject = object["persona"] as? [String: Any] ?? [:]
         let persona = PersonaFields(
-            name: PromptGuidanceJSON.string(personaObject, "name", limit: 80) ?? "",
-            description: PromptGuidanceJSON.string(personaObject, "description", limit: 600) ?? "",
-            traits: PromptGuidanceJSON.stringList(personaObject, "traits", limit: PersonaFieldLimits.maxTraits),
-            likes: PromptGuidanceJSON.stringList(personaObject, "likes", limit: PersonaFieldLimits.maxLikes),
-            behaviors: PromptGuidanceJSON.stringList(personaObject, "behaviors",
-                                                    limit: PersonaFieldLimits.maxBehaviors),
-            backstory: PromptGuidanceJSON.string(personaObject, "backstory", limit: PersonaFieldLimits.backstoryMax) ?? "",
-            quirks: PromptGuidanceJSON.string(personaObject, "quirks", limit: PersonaFieldLimits.quirksMax) ?? "",
-            systemPrompt: PromptGuidanceJSON.string(personaObject, "systemPrompt", limit: 16_000) ?? ""
+            name: PromptGuidanceJSON.string(personaObject, "name") ?? "",
+            description: PromptGuidanceJSON.string(personaObject, "description") ?? "",
+            traits: PromptGuidanceJSON.stringList(personaObject, "traits"),
+            likes: PromptGuidanceJSON.stringList(personaObject, "likes"),
+            behaviors: PromptGuidanceJSON.stringList(personaObject, "behaviors"),
+            backstory: PromptGuidanceJSON.string(personaObject, "backstory") ?? "",
+            quirks: PromptGuidanceJSON.string(personaObject, "quirks") ?? "",
+            systemPrompt: PromptGuidanceJSON.string(personaObject, "systemPrompt") ?? ""
         )
         let world = (object["world"] as? [String: Any]).map(WorldPreset.from(object:))
         let speech = (object["speech"] as? [String: Any]).map(SpeechStyle.from(object:))
@@ -417,21 +418,21 @@ public struct PersonaTranslation: Equatable, Sendable {
         let speechObject = object["speech"] as? [String: Any]
 
         func pick(_ key: String, _ fallback: String) -> String {
-            guard let value = PromptGuidanceJSON.string(personaObject, key, limit: 16_000),
+            guard let value = PromptGuidanceJSON.string(personaObject, key),
                   !value.isEmpty else { return fallback }
             return value
         }
-        func pickList(_ key: String, _ fallback: [String], limit: Int) -> [String] {
-            let values = PromptGuidanceJSON.stringList(personaObject, key, limit: limit)
+        func pickList(_ key: String, _ fallback: [String]) -> [String] {
+            let values = PromptGuidanceJSON.stringList(personaObject, key)
             return values.isEmpty ? fallback : values
         }
 
         let persona = PersonaFields(
             name: pick("name", source.name),
             description: pick("description", source.description),
-            traits: pickList("traits", source.traits, limit: PersonaFieldLimits.maxTraits),
-            likes: pickList("likes", source.likes, limit: PersonaFieldLimits.maxLikes),
-            behaviors: pickList("behaviors", source.behaviors, limit: PersonaFieldLimits.maxBehaviors),
+            traits: pickList("traits", source.traits),
+            likes: pickList("likes", source.likes),
+            behaviors: pickList("behaviors", source.behaviors),
             backstory: pick("backstory", source.backstory),
             quirks: pick("quirks", source.quirks),
             systemPrompt: pick("systemPrompt", source.systemPrompt)
@@ -455,51 +456,45 @@ public struct PersonaTranslation: Equatable, Sendable {
         guard let object else { return source }
         // 日程 / 关系按行位置对齐：模型被要求"键名原样保留"，行数通常一致；
         // 行数不一致就整段回退原文（比按错位的行拼接要安全）。
-        let schedule = PromptGuidanceJSON.objectList(object, "schedule",
-                                                     limit: WorldPreset.maxScheduleItems)
+        let schedule = PromptGuidanceJSON.objectList(object, "schedule")
         let mergedSchedule: [WorldScheduleItem]
         if schedule.count == source.schedule.count {
             mergedSchedule = source.schedule.enumerated().map { index, origin in
                 let item = schedule[index]
                 return WorldScheduleItem(
-                    day: PromptGuidanceJSON.string(item, "day", limit: 20) ?? origin.day,
+                    day: PromptGuidanceJSON.string(item, "day") ?? origin.day,
                     start: origin.start,
                     end: origin.end,
-                    activity: PromptGuidanceJSON.string(item, "activity", limit: 120) ?? origin.activity
+                    activity: PromptGuidanceJSON.string(item, "activity") ?? origin.activity
                 )
             }
         } else {
             mergedSchedule = source.schedule
         }
-        let relationships = PromptGuidanceJSON.objectList(object, "relationships",
-                                                          limit: WorldPreset.maxRelationships)
+        let relationships = PromptGuidanceJSON.objectList(object, "relationships")
         let mergedRelationships: [WorldRelationship]
         if relationships.count == source.relationships.count {
             mergedRelationships = source.relationships.enumerated().map { index, origin in
                 let item = relationships[index]
                 return WorldRelationship(
-                    name: PromptGuidanceJSON.string(item, "name", limit: 40) ?? origin.name,
-                    relation: PromptGuidanceJSON.string(item, "relation", limit: 40) ?? origin.relation,
-                    note: PromptGuidanceJSON.string(item, "note", limit: 160) ?? origin.note,
+                    name: PromptGuidanceJSON.string(item, "name") ?? origin.name,
+                    relation: PromptGuidanceJSON.string(item, "relation") ?? origin.relation,
+                    note: PromptGuidanceJSON.string(item, "note") ?? origin.note,
                     intimacy: origin.intimacy
                 )
             }
         } else {
             mergedRelationships = source.relationships
         }
-        let obligations = PromptGuidanceJSON.stringList(
-            object, "obligations", limit: WorldPreset.maxObligations
-        )
+        let obligations = PromptGuidanceJSON.stringList(object, "obligations")
         return WorldPreset(
-            worldName: PromptGuidanceJSON.string(object, "worldName", limit: 80) ?? source.worldName,
-            era: PromptGuidanceJSON.string(object, "era", limit: 120) ?? source.era,
-            description: PromptGuidanceJSON.string(object, "description", limit: WorldPreset.descriptionMax)
-                ?? source.description,
+            worldName: PromptGuidanceJSON.string(object, "worldName") ?? source.worldName,
+            era: PromptGuidanceJSON.string(object, "era") ?? source.era,
+            description: PromptGuidanceJSON.string(object, "description") ?? source.description,
             schedule: mergedSchedule,
             relationships: mergedRelationships,
             obligations: obligations.isEmpty ? source.obligations : obligations,
-            notes: PromptGuidanceJSON.string(object, "notes", limit: WorldPreset.maxNotesChars)
-                ?? source.notes
+            notes: PromptGuidanceJSON.string(object, "notes") ?? source.notes
         )
     }
 
@@ -507,9 +502,9 @@ public struct PersonaTranslation: Equatable, Sendable {
     static func mergeSpeech(source: SpeechStyle?, object: [String: Any]?) -> SpeechStyle? {
         guard let source else { return nil }
         guard let object else { return source }
-        let tone = PromptGuidanceJSON.string(object, "tone", limit: SpeechStyle.toneMax) ?? source.tone
-        let habits = PromptGuidanceJSON.stringList(object, "habits", limit: SpeechStyle.maxHabits)
-        let avoid = PromptGuidanceJSON.stringList(object, "avoid", limit: SpeechStyle.maxAvoid)
+        let tone = PromptGuidanceJSON.string(object, "tone") ?? source.tone
+        let habits = PromptGuidanceJSON.stringList(object, "habits")
+        let avoid = PromptGuidanceJSON.stringList(object, "avoid")
         return SpeechStyle(
             tone: tone,
             phrases: source.phrases,

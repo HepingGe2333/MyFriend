@@ -201,8 +201,8 @@ final class WorldPresetTests: XCTestCase {
 
     // MARK: - notes（兜底自由文本）与亲密度
 
-    /// notes：解析 → 渲染 → 落库往返；超过 1200 字截断（不静默丢，界面另有提示）。
-    func testNotesRoundTripAndTruncation() throws {
+    /// notes：解析 → 渲染 → 落库往返；**存储不截断**，只有渲染提示词时取前 1200 字。
+    func testNotesRoundTripKeepsFullTextAndRendersLimited() throws {
         let preset = WorldPreset(
             worldName: "临港新城",
             description: "沿海城市。",
@@ -213,18 +213,78 @@ final class WorldPresetTests: XCTestCase {
         let json = try XCTUnwrap(preset.jsonString())
         XCTAssertEqual(WorldPreset.decode(json), preset)
 
-        // 超长：内存里就截到 1200 字，落库/渲染都不会出现第 1201 个字。
+        // 超长：内存/落库都保留全文（0.12 取消截断），只有渲染提示词时取前 1200 字。
         let long = String(repeating: "背", count: WorldPreset.maxNotesChars + 30)
-        let clipped = WorldPreset(notes: long)
-        XCTAssertEqual(clipped.notes.count, WorldPreset.maxNotesChars)
-        XCTAssertEqual(WorldPreset.decode(clipped.jsonString())?.notes.count, WorldPreset.maxNotesChars)
-        XCTAssertTrue(clipped.renderForPrompt().contains("其他背景："))
+        let untruncated = WorldPreset(notes: long)
+        XCTAssertEqual(untruncated.notes.count, long.count, "存储不得截断")
+        XCTAssertEqual(WorldPreset.decode(untruncated.jsonString())?.notes, long, "往返保留全文")
+        let longRendered = untruncated.renderForPrompt()
+        XCTAssertTrue(longRendered.contains("其他背景："))
+        XCTAssertFalse(longRendered.contains(long), "渲染时按 1200 字截断")
+        XCTAssertTrue(longRendered.contains(String(repeating: "背", count: WorldPreset.maxNotesChars)))
+        XCTAssertFalse(longRendered.contains(String(repeating: "背", count: WorldPreset.maxNotesChars + 1)))
 
         // 只有 notes 也算"有世界"（不能因为结构化字段都空就把它当没有）。
-        XCTAssertFalse(clipped.isEmpty)
+        XCTAssertFalse(untruncated.isEmpty)
         // 坏类型当成没写。
         XCTAssertEqual(WorldPreset.from(object: ["notes": 42]).notes, "42")
         XCTAssertTrue(WorldPreset.from(object: ["notes": ["x": 1]]).notes.isEmpty)
+    }
+
+    /// 0.12：解析/初始化/落库都不按建议上限截断 —— 大文本原样往返。
+    ///
+    /// 以前 description 600、notes 1200、日程 12 条、关系 8 人、义务 6 条都会在
+    /// `init` / `from(object:)` 里被砍；两端砍的长度不同，`sourceHash` 就会对同一份
+    /// 人格算出不同的值。这条用「全部超出旧上限」的一份预设夹住整条链路。
+    func testLargeFieldsAreNotTruncatedAnymore() throws {
+        let longDescription = String(repeating: "城", count: WorldPreset.descriptionMax + 120)
+        let longNotes = String(repeating: "事", count: WorldPreset.maxNotesChars + 200)
+        let manySchedule = (0..<(WorldPreset.maxScheduleItems + 3)).map { index in
+            WorldScheduleItem(day: "每天", start: "09:00", end: "10:00",
+                              activity: "第\(index)件事")
+        }
+        let manyRelationships = (0..<(WorldPreset.maxRelationships + 2)).map { index in
+            WorldRelationship(name: "人\(index)", relation: "朋友", note: "备注\(index)")
+        }
+        let manyObligations = (0..<(WorldPreset.maxObligations + 2)).map { "义务\($0)" }
+        let preset = WorldPreset(
+            worldName: "临港新城",
+            era: "当代",
+            description: longDescription,
+            schedule: manySchedule,
+            relationships: manyRelationships,
+            obligations: manyObligations,
+            notes: longNotes
+        )
+        XCTAssertEqual(preset.description, longDescription)
+        XCTAssertEqual(preset.notes, longNotes)
+        XCTAssertEqual(preset.schedule.count, manySchedule.count)
+        XCTAssertEqual(preset.relationships.count, manyRelationships.count)
+        XCTAssertEqual(preset.obligations.count, manyObligations.count)
+
+        let json = try XCTUnwrap(preset.jsonString())
+        let decoded = try XCTUnwrap(WorldPreset.decode(json))
+        XCTAssertEqual(decoded, preset, "落库/解析必须原样往返")
+
+        // `from(object:)` 走的是另一条解析路径（模型输出/手写 JSON），同样不能截断。
+        let object: [String: Any] = [
+            "worldName": "临港新城",
+            "description": longDescription,
+            "notes": longNotes,
+            "schedule": manySchedule.map { item in
+                ["day": item.day, "start": item.start, "end": item.end, "activity": item.activity]
+            },
+            "relationships": manyRelationships.map { person in
+                ["name": person.name, "relation": person.relation, "note": person.note]
+            },
+            "obligations": manyObligations
+        ]
+        let parsed = WorldPreset.from(object: object)
+        XCTAssertEqual(parsed.description, longDescription)
+        XCTAssertEqual(parsed.notes, longNotes)
+        XCTAssertEqual(parsed.schedule.count, manySchedule.count)
+        XCTAssertEqual(parsed.relationships.count, manyRelationships.count)
+        XCTAssertEqual(parsed.obligations, manyObligations)
     }
 
     /// §2.1：「没有世界预设」= **所有字段都为空**（`worldName` / `era` / `description` /

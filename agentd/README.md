@@ -110,7 +110,7 @@ one client cannot take it down or make it amplify traffic. All of it is covered 
 
 | Limit | Value | Behaviour |
 | --- | --- | --- |
-| Request body | 1 MiB (`AgentdApi.MAX_BODY_BYTES`) | `Content-Length` over the cap → `413 content_too_large`, body is not read into memory |
+| Request body | 1 MiB JSON routes (`AgentdApi.MAX_BODY_BYTES`); 4 MiB `POST /v1/media` (`MediaRoutes.MAX_REQUEST_BODY_BYTES`) | `Content-Length` over the route cap → `413 content_too_large`, body is not read into memory. The media route still rejects files over 2 MiB. |
 | Read timeout | 5 s (`AgentdServer.READ_TIMEOUT_MS`) | A body that stalls mid-transfer → `408 request_timeout`, connection closed, worker released |
 | Body framing | `Content-Length` only | `Transfer-Encoding: chunked` → `411 length_required` (both clients send `Content-Length`; a blocking chunked parse would reopen the slow-client hole) |
 | Workers | 4 fixed threads + a bounded 64-connection queue | Slow clients can occupy at most the pool; `/health` keeps responding on the remaining threads, and a full queue closes new connections instead of growing memory |
@@ -224,7 +224,7 @@ server {
     ssl_certificate     /etc/letsencrypt/live/agent.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/agent.example.com/privkey.pem;
 
-    client_max_body_size 1m;        # agentd 自己也会拒绝 >1 MiB
+    client_max_body_size 5m;        # agentd 自己会拒绝 >4 MiB（媒体）/ >1 MiB（其它路由）
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
@@ -478,7 +478,8 @@ environment variable, which wins over the default — same precedence as every o
   events.jsonl                   one event per line, append-only                 ← GET /v1/events cursor
   sessions/<sessionId>/block_index.json   {"sessionId":…,"blocks":[{index,firstMessageId,lastMessageId,firstAt,lastAt,count}]}
   sessions/<sessionId>/blocks/<blockIndex>.jsonl   one message per line (append-only, UTF-8)
-  media/                         directory only — the upload endpoint is a later phase
+  media.json                     {"media":[{id,kind,personaId,mime,bytes,sha256,createdAt}]}
+  media/<id>.<ext>               raw image bytes (jpg/png/webp; extension comes from mime)
 ```
 
 `memories.json`, `presets.json` and `push_tokens.json` are optional for old data directories
@@ -522,8 +523,9 @@ access (manual recovery for the crash window described below).
 
 ### API
 
-All endpoints sit behind the same `--token` / rate-limit / 1 MiB body cap as `/v1/core/*`, and errors
-use the same `{"error":{"message":"…","code":"…"}}` shape.
+All endpoints sit behind the same `--token` / rate-limit / error-body rules as `/v1/core/*`.
+The request-body cap is **1 MiB for JSON routes** and **4 MiB for `POST /v1/media`** (whose file
+limit is still 2 MiB — see the media section below).
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -532,7 +534,10 @@ use the same `{"error":{"message":"…","code":"…"}}` shape.
 | `POST` | `/v1/sessions` | `{personaId,title?}`. One session per persona; if it already exists the existing row is returned (`created:false`). |
 | `POST` | `/v1/sessions/{id}/read` | `{upTo?}` → mark assistant messages read, `unread:0`, returns `{unread,readAt,marked,session}`. |
 | `GET` | `/v1/sessions/{id}/messages?beforeBlock=&limitBlocks=1` | One block per page. No offset. `beforeBlock` = older page, `afterBlock` = newer page (additive extension for `hasMoreNewer` navigation). |
-| `POST` | `/v1/sessions/{id}/messages` | Send a message; responds with SSE (`accepted → delta* → tool* → done`). |
+| `POST` | `/v1/sessions/{id}/messages` | Send a message; responds with SSE (`accepted → delta* → tool* → done`). `attachments` are media ids or `/v1/media/<id>` and are stored/returned as URLs. |
+| `POST` | `/v1/media?kind=&mime=&personaId=` | Raw image bytes (`Content-Type: image/jpeg`/`png`/`webp`), single file ≤ 2 MiB. `201` new, `200` when the same sha256 already exists (dedup). |
+| `GET` | `/v1/media/{id}` | Raw bytes + `Content-Type` + `Cache-Control: private, max-age=31536000, immutable` + `ETag`. `If-None-Match` → `304`. |
+| `DELETE` | `/v1/media/{id}?force=1` | `409 media_in_use` + `references` while a message attachment / persona `avatarUrl` / preset `avatarUri` points at it; `force=1` deletes anyway (historical references then 404). |
 | `GET` | `/v1/personas` | Persona list, including client fields (`worldJson`, `speechStyleJson`, `traits`, `translationJson`, …) and parsed `activity`. |
 | `POST` | `/v1/personas` | Create (no `id`) or update (`id` must exist). Known core fields are typed; every other field is kept verbatim. |
 | `DELETE` | `/v1/personas/{id}` | Delete persona + its sessions/messages/memories/activity/proactive counters/mood/presence. Media files are **not** deleted. |
@@ -545,7 +550,7 @@ use the same `{"error":{"message":"…","code":"…"}}` shape.
 | `DELETE` | `/v1/presets/{id}` | Delete a preset (404 when absent). |
 | `GET` | `/v1/settings` | Whitelisted global settings (no API keys/secrets, ever). |
 | `POST` | `/v1/settings` | Merge whitelisted fields; unknown keys (including `apiKey`) are ignored. |
-| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings, **no secrets**). |
+| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings/media, **no secrets**). |
 | `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}`; validate everything first, then write. |
 | `POST` | `/v1/push/register` | `{platform:"ios"|"android",token,bundleId?}`; idempotent per `platform+token`. |
 | `DELETE` | `/v1/push/register` | Unregister by body `{token,platform?}` or query `?token=&platform=`; idempotent. |
@@ -603,13 +608,23 @@ curl -s -X POST "http://127.0.0.1:8788/v1/push/register" \
   -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token","bundleId":"com.example.myfriend"}'
 curl -s -X DELETE "http://127.0.0.1:8788/v1/push/register" \
   -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token"}'
+# 15. media: raw image bytes in, raw bytes out (client already compresses to ≤800 KB)
+curl -s -X POST "http://127.0.0.1:8788/v1/media?kind=CHAT_IMAGE&mime=image/jpeg" \
+  -H 'Content-Type: image/jpeg' --data-binary @chat.jpg
+# -> {"id":"…","kind":"CHAT_IMAGE","mime":"image/jpeg","bytes":…,"sha256":"…","url":"/v1/media/…"}
+curl -s "http://127.0.0.1:8788/v1/media/<id>" -o downloaded.jpg
+# 16. attach that media to a message (bare id or /v1/media/<id>)
+curl -N -s -X POST "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messages" \
+  -H 'Content-Type: application/json' -H 'Accept: text/event-stream' \
+  -d '{"clientMessageId":"0b1c2d3e-0000-4000-8000-000000000002","content":"看图","attachments":["<id>"]}'
 ```
 
 ### CRUD, backup and push (M3–M6 server side)
 
-The routes in the table above follow the same token/rate-limit/1 MiB/error-body rules as the rest
-of `/v1`. All writes go through the single `FileStore` lock, so a read-modify-write update (for
-example merging fields into one persona) cannot lose a concurrent request's field. Errors are
+The routes in the table above follow the same token/rate-limit/error-body rules as the rest
+of `/v1` (1 MiB JSON body cap; `POST /v1/media` is the one 4 MiB exception). All writes go
+through the single `FileStore` lock, so a read-modify-write update (for example merging fields into
+one persona) cannot lose a concurrent request's field. Errors are
 `404 not_found` for unknown ids, `400 missing_field` / `invalid_argument` / `invalid_json` for bad
 input, `409 unsupported_backup_version` when an import is newer than v5, and `405
 method_not_allowed` for a known path with the wrong verb.
@@ -648,6 +663,11 @@ method_not_allowed` for a known path with the wrong verb.
   "messages": [ … ],
   "memories": [ … ],
   "presets": [ … ],
+  "media": [
+    { "id": "…", "kind": "CHAT_IMAGE", "personaId": null, "mime": "image/jpeg",
+      "bytes": 12345, "sha256": "…", "createdAt": 1700000000000, "data": "<base64>" }
+  ],
+  "mediaSkipped": 0,
   "settings": { … }
 }
 ```
@@ -659,13 +679,63 @@ before importing. Validation of ids, references, uniqueness, roles and importanc
 any mutation**, so a bad request leaves the data directory untouched. It is not a database
 transaction: a process kill between the multiple atomic file writes can leave a partially imported
 directory (see risks). Only `formatVersion == 5` is accepted; anything else is `409
-unsupported_backup_version`. `usage.json`, `api_configs.json`, `secrets.json`, `push_tokens.json`
-and media are not part of a backup and are preserved by `replace`.
+unsupported_backup_version`. `usage.json`, `api_configs.json`, `secrets.json` and
+`push_tokens.json` are not part of a backup and are preserved by `replace`.
+
+**Media in backups.** `media[]` carries the raw bytes as base64 (`data`, never a filesystem path).
+A single media file is exported only when it is ≤ 8 MiB, and the total exported media is capped at
+128 MiB (raw bytes); entries above either limit are **skipped and counted** in `mediaSkipped`, so a
+reader can tell "this backup deliberately omitted N images" from "images were lost". On import the
+base64 is decoded back to `media/<id>.<ext>` and `media.json` is rewritten; `sha256` and `bytes` are
+verified, so a corrupted/base64-mismatched entry rejects the whole import with `400 invalid_backup`
+before anything is written. `replace` also deletes old media files (the backup is the new state);
+`merge` keeps existing media and overlays entries with the same id (a same-id/different-sha conflict
+is rejected). Note that `POST /v1/backup` itself still uses the 1 MiB JSON body cap, so a backup
+whose media payload is larger than that cannot be imported through the HTTP route — export it
+without media or raise the client-side staging limit in a later phase.
 
 > Format-version note: the client's `BACKUP_FORMAT_VERSION` is **5** and the M3–M6 write-path task
 > asks for v5, so this implementation reads/writes v5. The design document's endpoint table still
 > says "v6"; if that becomes the intended contract, bump the client constant, this constant and the
 > accepted version together (never silently accept both and guess).
+
+### Media upload, download and attachments (M5)
+
+Images are the last client-owned state moved to the server. The wire format is deliberately dumb:
+**raw bytes in, raw bytes out**, no multipart, no base64 on the hot path.
+
+```bash
+# upload: Content-Type is the mime; kind is required; personaId is optional (and must exist)
+curl -s -X POST "http://127.0.0.1:8788/v1/media?kind=CHAT_IMAGE&mime=image/jpeg" \
+  -H 'Content-Type: image/jpeg' --data-binary @chat.jpg
+# 201 new, 200 when the same sha256 already exists:
+{"id":"6f1c…","kind":"CHAT_IMAGE","mime":"image/jpeg","bytes":8123,
+ "sha256":"…","url":"/v1/media/6f1c…"}
+
+# download: same token as every /v1 route; immutable + strong ETag for cheap revalidation
+curl -s "http://127.0.0.1:8788/v1/media/6f1c…" -H "If-None-Match: \"<sha256>\"" -o chat.jpg
+
+# delete: 409 while referenced; force removes the file too
+curl -s -X DELETE "http://127.0.0.1:8788/v1/media/6f1c…?force=1"
+```
+
+- Storage: metadata in `media.json`, bytes in `media/<id>.<ext>`. `id` is a server-generated UUID;
+  the extension comes from the mime, so clients never supply a path/filename. Writes are
+  `*.tmp` → `ATOMIC_MOVE`, and metadata is rewritten atomically under the store lock.
+- Dedup: sha256 is the identity. Re-uploading identical bytes returns `200` with the **existing**
+  item (including its original `kind`/`personaId`), and no second file is written; concurrent
+  uploads of the same bytes are serialised by the store lock.
+- Limits: mime must be `image/jpeg` / `image/png` / `image/webp` (`415` otherwise; `?mime=` must
+  match `Content-Type`), single file ≤ 2 MiB (`413`), media route body ≤ 4 MiB, other routes 1 MiB.
+  The server does **not** decode or sniff the bytes (Content-Type is trusted; see risks).
+- Attachments: `POST /v1/sessions/{id}/messages` takes `attachments: ["<id>" | "/v1/media/<id>"]`,
+  validates every entry exists (`400 unknown_media`) and stores `/v1/media/<id>`. `GET` messages
+  (and `/v1/state`, backups) return the same **string-array-of-URLs** shape.
+- References / GC: `DELETE` scans message attachments + persona `avatarUrl` + preset `avatarUri`.
+  With references it returns `409 media_in_use` and the count; `?force=1` deletes anyway. Deleting
+  a persona still leaves its media alone (the client owns GC), and old messages are never rewritten.
+- Restart: `media.json` is optional for old data directories (missing = no media). A metadata row
+  whose file disappeared returns `404` plus one stderr warning instead of throwing.
 
 **Push registration (M6 server half).** `POST /v1/push/register` stores
 `{platform,token,bundleId}` in `push_tokens.json` (idempotent on `platform+token`); `DELETE`
@@ -855,8 +925,16 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   injected; without one, clients catch up on the next foreground sync. The proactive timer itself is
   still the existing debug tick path (`POST /v1/proactive/tick` / in-process scheduler), not a new
   daemon.
-- **No media upload yet.** `media/` exists and attachments are persisted as opaque `mediaId`
-  strings; `/v1/media/{id}` is a later phase.
+- **Media validation is Content-Type only.** The server does not decode or sniff image bytes: a
+  client with a valid token can upload arbitrary bytes labelled `image/jpeg`. Keep the token on and
+  the service behind a reverse proxy; magic-byte checks / re-encoding are a later hardening step.
+  Related media edges: dedup is by sha256, so uploading identical bytes for a different `kind`
+  returns the first item's `kind` with `200`; `DELETE ?force=1` does not rewrite historical messages
+  (they keep `/v1/media/<id>` and downloads then 404); `DELETE /v1/personas/{id}` still does **not**
+  delete media (the client owns media GC); and because backup import goes through the 1 MiB JSON
+  route, media-heavy backups cannot be imported over HTTP yet. Media metadata lives in
+  `media.json` under the same single process-wide lock (a missing file is treated as empty; a
+  metadata row whose file disappeared returns 404 with a stderr warning).
 - **No LLM and no prompts.** `EchoReplyGenerator` echoes the user text plus one fixed Chinese
   sentence and estimates tokens by character count. The server neither accepts prompts from clients
   nor stores them; prompt construction is the next phase's job. `secrets.json` (0600, best-effort on
@@ -886,7 +964,14 @@ emptied-block holes, missing-index rebuild, atomic writes (no `*.tmp`, parseable
 event cursors/long-poll timeout, torn-line tolerance and path-traversal guards.
 `StateApiTest` (18) covers full/incremental state, persona filtering, session list fields, both paging
 directions, hole skipping, invalid paging parameters, events long poll (immediate/timeout/wake-up)
-and the "no data directory → 503" path. `ChatSseTest` (9) covers event order, tool forwarding,
+and the "no data directory → 503" path. `MediaApiTest` (24) covers upload/dedup/PNG+WebP/type+kind+
+persona+size rejects, download headers/ETag/304, unknown and traversal-shaped ids, delete with
+message/persona/preset references + `force`, attachment id/URL canonicalisation and `unknown_media`,
+backup media round-trip / 8 MiB skip count / corrupt-sha rejection / replace clearing old media,
+restart persistence and 8 concurrent same-content uploads (one file). `MediaServerTest` (4) is the
+real-socket half: binary upload/download over HTTP, 304 revalidation, token enforcement on media
+routes, and the 4 MiB media vs 1 MiB other-route declared-body limits. The whole `:agentd:test`
+suite is now **358 tests**. `ChatSseTest` (10) covers event order, tool forwarding,
 sequential and concurrent idempotency, orphan-reply completion, a dead sink, attachment persistence
 and validation-before-stream. `AuthorityServerTest` (6) is the real-socket half: SSE over HTTP, a
 client that disconnects mid-stream still gets a persisted reply, token/rate limit on the new routes,
@@ -924,12 +1009,12 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | 400 | `unknown_tool` | `/v1/core/tool-args` got an unsupported tool (the tool name is **not** echoed back). |
 | 400 | `invalid_backup` | Backup export body failed validation (duplicate ids, missing persona/session references, bad role/importance…). No data was written. |
 | 401 | `unauthorized` | `--token` is set and the request has no/incorrect `Authorization: Bearer …`. |
-| 404 | `not_found` | Unknown route (the path is not echoed back). |
+| 404 | `not_found` | Unknown route / media / persona (the path is not echoed back). |
 | 405 | `method_not_allowed` | Known route with the wrong method. |
 | 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
-| 409 | `unsupported_backup_version` | `POST /v1/backup` received a `formatVersion` other than 5 (newer backups are refused instead of half-imported). |
+| 409 | `unsupported_backup_version` / `media_in_use` | Import of a `formatVersion` other than 5 is refused instead of half-imported; `DELETE /v1/media/{id}` is refused while the file is referenced (`references` count in the body) unless `?force=1`. |
 | 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
-| 413 | `content_too_large` | Declared or accumulated body exceeds 1 MiB. |
+| 413 | `content_too_large` | Declared or accumulated body exceeds the route cap (1 MiB JSON, 4 MiB media upload), or a media file exceeds 2 MiB. |
 | 429 | `rate_limited` | This source exceeded its token bucket; the response carries `Retry-After: <seconds>` (see “Rate limiting”). |
 | 500 | `internal_error` | Unexpected server-side failure; the response is a fixed message plus a random `errorId`, never the exception text. |
 
@@ -977,15 +1062,16 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
 
 - **No TLS of its own.** It binds to `127.0.0.1` by default and speaks plain HTTP; TLS and
   HTTP/2 belong in the reverse proxy in front of it (see “Deployment and TLS” above). Since 0.11.1
-  there is also an optional shared token (`--token`), a 1 MiB request-body cap, a 5 s read timeout
+  there is also an optional shared token (`--token`), a 1 MiB request-body cap (4 MiB for media upload), a 5 s read timeout
   and 4 fixed worker threads; since 0.12.0 a per-source token bucket (`--rate-limit` /
   `--rate-burst`). A token over plain HTTP is still not a substitute for TLS, and `0.0.0.0`
   remains “trusted network / behind a proxy only”.
 - **No SQL/Room.** Since 0.12.0 it *does* persist server-authoritative state (personas, sessions,
-  block-paged messages, memories, presets, mood/presence, push tokens, usage, API config metadata) as
-  JSON/JSONL under `--data`, and expose v5 backup export/import. It still does not touch the clients'
-  Room database, migrate existing client data automatically, or store media files/thoughts. Earlier
-  versions only exposed deterministic pure functions; see
+  block-paged messages, memories, presets, mood/presence, push tokens, usage, API config metadata,
+  image files + media metadata) as JSON/JSONL/binaries under `--data`, and expose v5 backup
+  export/import. It still does not touch the clients' Room database, migrate existing client data
+  automatically, or store "thoughts" — and media is not decoded/re-encoded. Earlier versions only
+  exposed deterministic pure functions; see
   [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
 - No LLM calls: `POST /v1/sessions/{id}/messages` streams, but the reply comes from the injectable
   `EchoReplyGenerator` (no prompting, no model call, no tool loop yet).
@@ -1025,10 +1111,19 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   params/`hasMoreMessages`/no secrets), `/v1/sessions` (fields, filter), one-block paging in both
   directions (hole skipping, `blockIndex: null` past the ends, invalid `limitBlocks`/offsets) and
   `/v1/events` (immediate/timeout/wake-up/negative cursor), plus `503` without a data directory.
-- `ChatSseTest` — 9 tests for the SSE send path: event order (`accepted → delta → done`), tool
+- `ChatSseTest` — 10 tests for the SSE send path: event order (`accepted → delta → done`), tool
   event forwarding, sequential **and concurrent** `clientMessageId` idempotency, orphaned
   user-message completion, a dead sink that must not stop generation, attachment persistence, and
   validation-before-stream.
+- `MediaApiTest` — 24 handler-level tests for `/v1/media`: upload 201 / sha256 dedup 200 / PNG+WebP /
+  Content-Type+kind+persona+2 MiB rejects, download bytes + cache headers + ETag/304 (exact/weak/`*`),
+  unknown and traversal-shaped ids, delete with message/persona/preset references + `409`/`force`,
+  attachment id-or-URL canonicalisation and `unknown_media`, backup media base64 round-trip / 8 MiB
+  skip count / corrupt-sha rejection / `replace` clearing old media, restart persistence, 8
+  concurrent same-content uploads, and `503`/`405`.
+- `MediaServerTest` — 4 real-socket tests: binary upload/download over HTTP with cache headers and
+  304 revalidation, token enforcement on media routes, the 4 MiB media vs 1 MiB other-route
+  declared-body limits, and the 2 MiB file limit inside the 4 MiB route.
 - `AuthorityServerTest` — 6 real-socket tests: state + SSE chat over HTTP (`text/event-stream`, no
   `Content-Length`, frame order), a client disconnecting mid-stream still getting the reply
   persisted, `--token`/rate limiting on the new routes, HTTP long poll waking up on a new message,
@@ -1043,6 +1138,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
   `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 329 tests in total in 0.12.0 — the authoritative-mode suites above plus the
+`:agentd:test` is 358 tests in total in 0.12.0 — the authoritative-mode suites above plus the
 `search/` (52) and `proactive/` (68) suites added in the same release. The 43 new tests for
-M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`.
+M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`; the 28
+media tests (M5 upload/download) are `MediaApiTest` and `MediaServerTest`.

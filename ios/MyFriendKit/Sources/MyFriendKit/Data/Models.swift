@@ -160,10 +160,14 @@ public enum PersonaFieldLimits {
 ///
 /// 为什么不做成关联表：这三样东西永远整组读写（提示词要一次拿全、编辑页一次保存），
 /// 而且需要跟着备份 JSON 原样搬走；拆成子表只会多三条 join，换不到任何查询好处。
-/// 解码永远宽容：坏 JSON、个数超限、空串元素都会被安静地清掉，绝不抛异常。
+/// 解码永远宽容：坏 JSON、空串元素都会被安静地清掉，绝不抛异常。
+///
+/// **不按条数截断**（0.12）：以前这里有一个 `limit` 参数，把 `traits` / `likes` /
+/// `behaviors` 以及世界里的 `obligations` 悄悄砍到上限以内；同一份人格在两端会被
+/// 砍成不同的条数，`sourceHash` 也跟着漂。存储层只负责清洗，条数只是编辑器的提示。
 public enum PersonaTags {
-    public static func encode(_ values: [String], limit: Int) -> String? {
-        let cleaned = normalize(values, limit: limit)
+    public static func encode(_ values: [String]) -> String? {
+        let cleaned = normalize(values)
         if cleaned.isEmpty { return nil }
         guard let data = try? JSONSerialization.data(withJSONObject: cleaned, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else { return nil }
@@ -171,19 +175,19 @@ public enum PersonaTags {
     }
 
     /// 库里读出来：JSON 数组；也容忍「一整个字符串」这种被手改坏的写法。
-    public static func decode(_ raw: String?, limit: Int) -> [String] {
+    public static func decode(_ raw: String?) -> [String] {
         guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else { return [] }
         if let data = raw.data(using: .utf8),
            let array = try? JSONSerialization.jsonObject(with: data) as? [Any] {
-            return normalize(array.map { $0 as? String ?? "" }, limit: limit)
+            return normalize(array.map { $0 as? String ?? "" })
         }
         // 不是 JSON：按顿号/逗号/换行拆一次，总比整段丢掉好。
         let pieces = raw.split(whereSeparator: { ",，、\n".contains($0) }).map(String.init)
-        return normalize(pieces, limit: limit)
+        return normalize(pieces)
     }
 
-    /// 去空白、去空项、去重（保序）、截断到上限。
-    public static func normalize(_ values: [String], limit: Int) -> [String] {
+    /// 去空白、去空项、去重（保序）；**不截断**。
+    public static func normalize(_ values: [String]) -> [String] {
         var seen = Set<String>()
         var result: [String] = []
         for value in values {
@@ -191,7 +195,6 @@ public enum PersonaTags {
             if trimmed.isEmpty || seen.contains(trimmed) { continue }
             seen.insert(trimmed)
             result.append(trimmed)
-            if result.count >= max(limit, 0) { break }
         }
         return result
     }
@@ -334,11 +337,13 @@ public struct PersonaEntity: Equatable, Sendable {
         self.moodReason = moodReason
         self.moodUpdatedAt = moodUpdatedAt
         self.moodNudgedAt = moodNudgedAt
-        self.traits = PersonaTags.normalize(traits, limit: PersonaFieldLimits.maxTraits)
-        self.likes = PersonaTags.normalize(likes, limit: PersonaFieldLimits.maxLikes)
-        self.behaviors = PersonaTags.normalize(behaviors, limit: PersonaFieldLimits.maxBehaviors)
-        self.backstory = Self.clean(backstory, limit: PersonaFieldLimits.backstoryMax)
-        self.quirks = Self.clean(quirks, limit: PersonaFieldLimits.quirksMax)
+        self.traits = PersonaTags.normalize(traits)
+        self.likes = PersonaTags.normalize(likes)
+        self.behaviors = PersonaTags.normalize(behaviors)
+        // 0.12：长文本字段保留原文（只 trim）。`backstory/quirks` 是人设哈希的输入，
+        // 按建议长度截断会让同一份人格在两端算出不同 `sourceHash`；渲染时再按上限取。
+        self.backstory = Self.clean(backstory)
+        self.quirks = Self.clean(quirks)
         self.proactiveLevel = PersonaFieldLimits.clampLevel(proactiveLevel)
         self.memoryRetention = PersonaFieldLimits.clampLevel(memoryRetention)
         self.extractionEvery = PersonaFieldLimits.clampExtractionEvery(extractionEvery)
@@ -353,12 +358,17 @@ public struct PersonaEntity: Equatable, Sendable {
         self.translationLang = translationLang?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// 长文本字段的清洗：去首尾空白，超长截断（不是拒绝，老数据可能很长）。
-    static func clean(_ raw: String?, limit: Int) -> String? {
+    /// 长文本字段的清洗：去首尾空白；**不截断**（0.12）。
+    ///
+    /// 保留 `limit` 参数是为了兼容备份导入侧「与 Android 同一条边界」的调用：
+    /// 传了 limit 就按它截（备份 v5 的 `backstory` 与 Android `take(MAX_BACKSTORY)` 对齐），
+    /// 不传就原样保留（库/编辑器/哈希路径）。
+    static func clean(_ raw: String?, limit: Int? = nil) -> String? {
         guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
             return nil
         }
-        return trimmed.count <= limit ? trimmed : String(trimmed.prefix(limit))
+        guard let limit, limit > 0, trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit))
     }
 
     /// 每天最多主动几次：由 `proactiveLevel` 决定（1→1 次、3→3 次、5→5 次）。

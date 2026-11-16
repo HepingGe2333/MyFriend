@@ -46,7 +46,7 @@ final class WorldPresetEditorStateTests: XCTestCase {
         XCTAssertTrue(state.removeRelationship(0).relationships.map(\.name) == ["母亲"])
     }
 
-    func testObligationsArePerLineAndCapped() {
+    func testObligationsArePerLineAndNotCapped() {
         var state = WorldEditorState()
         state = state.addObligation("按节点交图")
         state = state.addObligation("协调各专业")
@@ -55,10 +55,10 @@ final class WorldPresetEditorStateTests: XCTestCase {
         XCTAssertEqual(state.obligations[0], "按甲方节点交图")
         state = state.removeObligation(1)
         XCTAssertEqual(state.obligations, ["按甲方节点交图"])
-        // 超过上限就不再加（界面上的「添加」按钮会同时置灰）。
+        // 0.12：超过建议条数也能继续加（编辑器只显示计数与超限提示，不拒绝输入）。
         var full = WorldEditorState(obligations: Array(repeating: "x", count: WorldEditorState.maxObligations))
         full = full.addObligation("多出来的一条")
-        XCTAssertEqual(full.obligations.count, WorldEditorState.maxObligations)
+        XCTAssertEqual(full.obligations.count, WorldEditorState.maxObligations + 1)
     }
 
     func testCrossMidnightDetection() {
@@ -72,15 +72,15 @@ final class WorldPresetEditorStateTests: XCTestCase {
         XCTAssertTrue(item.contains(minuteOfDay: 60))
     }
 
-    func testNotesTruncationAndHint() throws {
+    func testNotesOverLimitHintWithoutTruncation() throws {
         var state = WorldEditorState()
         let long = String(repeating: "背", count: WorldPreset.maxNotesChars + 10)
         state = state.withNotes(long)
-        XCTAssertEqual(state.notes.count, WorldPreset.maxNotesChars, "输入时就截断到 1200 字")
-        XCTAssertFalse(state.notesTooLong)
-        XCTAssertEqual(state.notesTruncatedBy, 0)
+        XCTAssertEqual(state.notes.count, long.count, "输入不截断")
+        XCTAssertTrue(state.notesTooLong, "超过建议字数只给提示")
+        XCTAssertEqual(state.notesOverBy, 10)
         let preset = state.preset
-        XCTAssertEqual(preset.notes.count, WorldPreset.maxNotesChars)
+        XCTAssertEqual(preset.notes, long, "落库也保留全文")
         // 落库 JSON 里也带着 notes（备份 v5 的 worldJson 原样带走，不需要升版本）。
         let json = try XCTUnwrap(preset.jsonString())
         XCTAssertTrue(json.contains("\"notes\""))

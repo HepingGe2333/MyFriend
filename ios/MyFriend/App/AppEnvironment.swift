@@ -87,6 +87,12 @@ final class AppEnvironment: ObservableObject {
     private(set) var serverSync: ServerSyncService?
     private(set) var serverEvents: ServerEventService?
     private(set) var serverChat: ServerChatGateway?
+    /// 服务端写路径（M5：人格/记忆/预设/设置/备份）。服务端模式没起来时为 nil。
+    private(set) var serverWrites: ServerWriteService?
+    /// 服务端写失败要显示的那句话（设置页顶部一条提示；成功保存会清掉）。
+    @Published private(set) var serverWriteError: String?
+    /// 设置推送串行化：连点开关时只让最后一次生效（避免旧请求把新值盖回去）。
+    private var settingsPushTask: Task<Void, Never>?
     /// 前台事件长轮询任务（进后台就取消）。
     private var serverEventTask: Task<Void, Never>?
     /// 「App 在前台吗」的线程安全镜像。
@@ -426,6 +432,9 @@ final class AppEnvironment: ObservableObject {
             serverSync = nil
             serverEvents = nil
             serverChat = nil
+            serverWrites = nil
+            // 服务端媒体缓存也一起关掉：没有地址/令牌时不该再拿旧客户端去取图。
+            ServerMediaCache.shared.configure(client: nil)
             DebugSeeding.log("[server] 配置不合法：\(error.localizedDescription)")
             return
         }
@@ -435,12 +444,17 @@ final class AppEnvironment: ObservableObject {
             serverSync = nil
             serverEvents = nil
             serverChat = nil
+            serverWrites = nil
+            ServerMediaCache.shared.configure(client: nil)
             DebugSeeding.log("[server] 服务端模式未启用（继续用本地模式）")
             return
         }
 
         let session = URLSession(configuration: Self.sessionConfiguration())
         let client = ServerAPIClient(config: loaded, session: session)
+        // 图片渲染层（`AttachmentThumbnail`）拿不到 AppEnvironment，只能从进程级缓存拿客户端；
+        // 配置变了就换掉，关掉服务端模式就置空（不准再往旧地址发请求）。
+        ServerMediaCache.shared.configure(client: client)
         let outbox = ServerOutboxStore(database: stores.database)
         let chatGateway = ServerChatGateway(
             client: client,
@@ -475,6 +489,12 @@ final class AppEnvironment: ObservableObject {
             log: { DebugSeeding.log($0) }
         )
         serverChat = chatGateway
+        serverWrites = ServerWriteService(
+            client: client,
+            stores: stores,
+            memoryRepository: memoryRepository,
+            backup: backup
+        )
         serverModeActive = true
         DebugSeeding.log("[server] 服务端模式已启用：\(loaded.baseURL?.absoluteString ?? "-")")
         // 重启进程后待发队列里可能有上次没发出去的消息：先把气泡补回界面。
@@ -492,6 +512,22 @@ final class AppEnvironment: ObservableObject {
     ) -> ChatService.SendOutcome {
         if let gateway = serverChat, gateway.isActive {
             return gateway.sendChecked(sessionId: sessionId, text: text, attachments: attachments)
+        }
+        return chat.sendChecked(sessionId: sessionId, text: text, attachments: attachments)
+    }
+
+    /// 带图片的发送入口（服务端模式要先压缩 → 上传 → 再发）。
+    ///
+    /// 本地模式完全不变：附件已经在选图时压好、落盘，直接走原链路。
+    func sendCheckedWithMedia(
+        sessionId: String,
+        text: String,
+        attachments: [MessageAttachment]
+    ) async -> ChatService.SendOutcome {
+        if let gateway = serverChat, gateway.isActive {
+            return await gateway.sendCheckedWithMedia(
+                sessionId: sessionId, text: text, attachments: attachments
+            )
         }
         return chat.sendChecked(sessionId: sessionId, text: text, attachments: attachments)
     }
@@ -658,6 +694,31 @@ final class AppEnvironment: ObservableObject {
     func updateSettings(_ mutate: (inout AppSettings) -> Void) {
         var next = currentSettings
         mutate(&next)
+        // 服务端模式：设置也要以服务端为准。先推服务端，成功再写本机；失败保持原值
+        // 并在设置页顶部说明（不回退成「悄悄只写本地」）。
+        if serverModeActive, let writes = serverWrites {
+            let previous = currentSettings
+            settingsPushTask?.cancel()
+            settingsPushTask = Task { [weak self] in
+                guard let self, !Task.isCancelled else { return }
+                do {
+                    _ = try await writes.saveSettings(next)
+                    guard !Task.isCancelled else { return }
+                    self.settings.save(next)
+                    self.currentSettings = next
+                    self.serverWriteError = nil
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    // 本机保持服务端上一次确认过的值（不写 next）。
+                    self.currentSettings = previous
+                    self.serverWriteError = L("没能保存") + "：" + error.localizedDescription
+                    DebugSeeding.log("[server] 设置保存失败：\(error.localizedDescription)")
+                }
+            }
+            // 乐观地把界面切到新值：请求还在路上时开关不该弹回去；失败会改回 previous。
+            currentSettings = next
+            return
+        }
         settings.save(next)
         currentSettings = next
     }
@@ -752,6 +813,8 @@ final class AppEnvironment: ObservableObject {
         )
         let summary = dataReset.clearAll()
         dataReset.reseed = nil
+        // 服务端图片的本地缓存也一起清（服务端那一份不动；下次用到会重新下载）。
+        ServerMediaCache.shared.clear()
         reloadSettings()
         if let first = (try? stores.personas.all(orderBy: "createdAt ASC"))?.first {
             updateSettings { $0.activePersonaId = first.id }
@@ -840,6 +903,138 @@ final class AppEnvironment: ObservableObject {
         guard outcome.personaDeleted else {
             throw PersonaDeletionError.failed
         }
+        finishPersonaDeletion(persona, outcome: outcome)
+    }
+
+    // MARK: - M5 写路径（服务端模式优先，本地模式完全不变）
+
+    /// 保存人格：服务端模式先 POST（id 由服务端生成/确认），成功后写本地缓存。
+    func savePersona(_ persona: PersonaEntity, isNew: Bool) async throws -> PersonaEntity {
+        if serverModeActive, let writes = serverWrites {
+            let saved = try await writes.savePersona(persona, isNew: isNew)
+            ensureEveryPersonaHasSession()
+            return saved
+        }
+        try stores.personas.upsert(persona)
+        return persona
+    }
+
+    /// 删除人格（服务端模式先 DELETE，再本地级联；失败本地一个都不动）。
+    func deletePersonaAsync(_ persona: PersonaEntity) async throws {
+        guard serverModeActive, let writes = serverWrites else {
+            try deletePersona(persona)
+            return
+        }
+        let outcome = try await writes.deletePersona(
+            id: persona.id,
+            activePersonaId: currentSettings.activePersonaId
+        )
+        finishPersonaDeletion(persona, outcome: outcome)
+    }
+
+    /// 手动记一条记忆：服务端生成 id 后再写本地缓存（本地模式仍是原来的同步写入）。
+    func addMemory(
+        personaId: String,
+        content: String,
+        category: MemoryCategory,
+        importance: Int
+    ) async throws -> MemoryEntity {
+        if serverModeActive, let writes = serverWrites {
+            return try await writes.addMemory(
+                personaId: personaId,
+                content: content,
+                category: category,
+                importance: importance
+            )
+        }
+        switch memoryRepository.addDetailed(
+            personaId: personaId,
+            content: content,
+            category: category,
+            importance: importance
+        ) {
+        case .success(let id):
+            guard let memory = (try? stores.memories.byId(id)) ?? nil else {
+                throw MemoryRepositoryError.memoryMissing
+            }
+            return memory
+        case .failure(let error):
+            throw error
+        }
+    }
+
+    /// 忘掉一条记忆。
+    func deleteMemory(_ memory: MemoryEntity) async throws {
+        if serverModeActive, let writes = serverWrites {
+            try await writes.deleteMemory(id: memory.id)
+            return
+        }
+        memoryRepository.delete(memory)
+    }
+
+    /// 服务端模式下打开记忆页/预设列表时拉一次服务端内容并刷新本地缓存。
+    func refreshMemoriesFromServer(personaId: String) async {
+        guard serverModeActive, let writes = serverWrites else { return }
+        do {
+            let count = try await writes.refreshMemories(personaId: personaId)
+            DebugSeeding.log("[server] 记忆缓存已刷新：\(count) 条")
+        } catch {
+            DebugSeeding.log("[server] 记忆刷新失败（读缓存）：\(error.localizedDescription)")
+        }
+    }
+
+    func refreshPresetsFromServer() async {
+        guard serverModeActive, let writes = serverWrites else { return }
+        do {
+            let count = try await writes.refreshPresets()
+            DebugSeeding.log("[server] 预设缓存已刷新：\(count) 个")
+        } catch {
+            DebugSeeding.log("[server] 预设刷新失败（读缓存）：\(error.localizedDescription)")
+        }
+    }
+
+    func savePreset(_ preset: PersonaPresetEntity, isNew: Bool) async throws -> PersonaPresetEntity {
+        if serverModeActive, let writes = serverWrites {
+            return try await writes.savePreset(preset, isNew: isNew)
+        }
+        try stores.presets.upsert(preset)
+        return preset
+    }
+
+    func deletePreset(id: String) async throws {
+        if serverModeActive, let writes = serverWrites {
+            try await writes.deletePreset(id: id)
+            return
+        }
+        try stores.presets.delete(id: id)
+    }
+
+    /// 导出备份：服务端模式取服务端那份（本机缓存不再自己拼一份）。
+    func exportBackup() async throws -> BackupExportResult {
+        if serverModeActive, let writes = serverWrites {
+            return BackupExportResult(text: try await writes.exportBackup())
+        }
+        return try backup.exportWithWarnings()
+    }
+
+    /// 导入备份：服务端模式先让服务端接（merge/replace），成功后再导入本地缓存。
+    func importBackup(text: String, mode: ImportMode) async throws -> ImportSummary {
+        let summary: ImportSummary
+        if serverModeActive, let writes = serverWrites {
+            summary = try await writes.importBackup(text: text, mode: mode)
+        } else {
+            summary = try backup.importBackup(text: text, mode: mode)
+        }
+        // 导入会把设置/人格整体换掉：内存快照与心跳缓存都要重读。
+        reloadSettings()
+        heartbeat.clearCache()
+        ensureEveryPersonaHasSession()
+        bindMissingApiConfigs()
+        return summary
+    }
+
+    /// 删除之后的共同收尾（本地模式与服务端模式都必须走同一串：媒体引用、默认人格、心跳）。
+    private func finishPersonaDeletion(_ persona: PersonaEntity, outcome: PersonaDeletion.Outcome) {
         // 人已经删了，再决定头像文件要不要删：先删库行、再查引用，只有零引用才删文件。
         // 头像按内容哈希去重，可能与预设头像、我的头像或某条消息的图共用同一个文件；
         // 这里必须走 Kit 的 `deleteIfUnreferenced`，不能在 App 层复制一份引用查询。

@@ -85,6 +85,12 @@ struct MemoryListScreen: View {
         .navigationTitle(L("记忆"))
         .navigationBarTitleDisplayMode(.inline)
         .onAppear(perform: reload)
+        // 服务端模式：记忆是服务端权威，进页面先拉一次并刷新本地缓存（失败就读缓存）。
+        .task {
+            guard env.serverModeActive, let personaId else { return }
+            await env.refreshMemoriesFromServer(personaId: personaId)
+            reload()
+        }
         .mfAlert($banner)
         .sheet(isPresented: $showAdd) {
             MemoryEditorSheet(personaId: personaId) {
@@ -430,7 +436,13 @@ struct MemoryListScreen: View {
     private func deletePending() {
         guard let memory = pendingDelete else { return }
         pendingDelete = nil
-        env.memoryRepository.delete(memory)
-        reload()
+        Task { @MainActor in
+            do {
+                try await env.deleteMemory(memory)
+                reload()
+            } catch {
+                banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
+            }
+        }
     }
 }

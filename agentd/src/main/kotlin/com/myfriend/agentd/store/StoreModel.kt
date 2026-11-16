@@ -369,7 +369,8 @@ data class BackupImportResult(
     val messages: Int,
     val memories: Int,
     val presets: Int,
-    val settings: Boolean
+    val settings: Boolean,
+    val media: Int = 0
 )
 
 /** 备份里的 version 不受支持（路由翻成 409）。 */

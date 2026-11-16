@@ -79,7 +79,7 @@ data class SendMessageRequest(
         /** 单条消息正文上限（1 MiB 的请求体上限之外，消息本身也有上限）。 */
         const val MAX_CONTENT_CHARS = 65_536
 
-        /** 一条消息最多带几个附件（本阶段只存 mediaId 字符串）。 */
+        /** 一条消息最多带几个附件（每项是媒体 id 或 `/v1/media/<id>`，落库统一成后者）。 */
         const val MAX_ATTACHMENTS = 8
     }
 }

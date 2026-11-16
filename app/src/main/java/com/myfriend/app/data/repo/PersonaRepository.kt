@@ -5,6 +5,7 @@ import androidx.room.withTransaction
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigDao
 import com.myfriend.app.data.local.ChatSessionDao
+import com.myfriend.app.data.local.ChatSessionEntity
 import com.myfriend.app.data.local.MyFriendDatabase
 import com.myfriend.app.data.local.PersonaDao
 import com.myfriend.app.data.local.PersonaEntity
@@ -72,6 +73,10 @@ class PersonaRepository @Inject constructor(
     private val settingsRepository: SettingsRepository,
     @ApplicationContext private val appContext: Context,
     private val chatNotifier: com.myfriend.app.util.ChatNotifier,
+    /** M5：服务端模式的权威写（失败不回退静默本地写）。 */
+    private val serverWrites: com.myfriend.app.data.remote.ServerWriteGateway,
+    /** M5：人格头像先压缩再上传成 `/v1/media/<id>`。 */
+    private val serverMediaSender: com.myfriend.app.data.remote.ServerChatMediaSender,
     private val json: Json
 ) {
     fun observeAll(): Flow<List<PersonaEntity>> = personaDao.observeAll()
@@ -115,7 +120,7 @@ class PersonaRepository @Inject constructor(
             createdAt = now,
             updatedAt = now
         )
-        val entity = base.copy(
+        var entity = base.copy(
             name = name,
             description = draft.description.trim(),
             avatarUri = draft.avatarUri,
@@ -141,12 +146,29 @@ class PersonaRepository @Inject constructor(
             speechStyleJson = draft.speechStyleJson?.trim()?.takeIf { it.isNotBlank() },
             updatedAt = now
         )
+        // M5：服务端模式下先让服务端接受这次保存，成功之后才允许写 Room 缓存。
+        // 失败原样抛出（Result.failure），编辑页显示「没保存上」——绝不悄悄只写本机。
+        val creating = existing == null
+        val hadServerMode = serverWrites.isEnabled()
+        entity = serverPersist(entity, existing, creating)
+        // 新人格：服务端模式要把「服务端分配的那段会话」一起缓存下来；
+        // 服务端没建成（网络/服务端版本）时**不**在本地造一段随机 id 的会话，
+        // 留给 ChatRepository.createSession 下次走服务端建，避免本地/服务端会话 id 分叉。
+        val createdServerSession = if (creating && hadServerMode) {
+            serverWrites.createSession(entity.id)
+        } else {
+            null
+        }
         database.withTransaction {
             if (existing == null) {
                 personaDao.insert(entity)
                 insertRevision(entity, reason = PersonaRevisionReason.CREATED, now = now)
                 // 一人一段：新人格当场就有他的那一段会话，首页点进去就是聊天，不再有「新建对话」。
-                ensureSessionFor(entity, now)
+                if (createdServerSession != null) {
+                    insertServerSession(entity, createdServerSession, now)
+                } else if (!hadServerMode) {
+                    ensureSessionFor(entity, now)
+                }
             } else {
                 if (promptChanged) {
                     insertRevision(existing, reason = PersonaRevisionReason.BEFORE_EDIT, now = now)
@@ -156,7 +178,7 @@ class PersonaRepository @Inject constructor(
             }
             if (entity.isDefault) {
                 personaDao.clearDefaults()
-                personaDao.markDefault(id, now)
+                personaDao.markDefault(entity.id, now)
             }
         }
         // 头像换了一张（或恢复成默认头像）：旧文件不再被任何一行引用，得删掉，否则越攒越多。
@@ -166,9 +188,9 @@ class PersonaRepository @Inject constructor(
         }
         if (existing == null) {
             val active = settingsRepository.settings.first().activePersonaId
-            if (active.isNullOrBlank()) settingsRepository.setActivePersonaId(id)
+            if (active.isNullOrBlank()) runCatching { settingsRepository.setActivePersonaId(entity.id) }
         }
-        id
+        entity.id
     }
 
     suspend fun setDefault(personaId: String): Result<Unit> = runCatching {
@@ -187,7 +209,7 @@ class PersonaRepository @Inject constructor(
         // 删副本或给副本换头像都会把原人格的文件删掉（`deleteAvatar` 只按路径删，
         // 不查还有没有别的行引用）。
         val copyAvatarUri = MediaStorage.copyAvatar(appContext, source.avatarUri)
-        val copy = source.copy(
+        var copy = source.copy(
             id = UUID.randomUUID().toString(),
             name = (source.name + copySuffix).take(80),
             avatarUri = copyAvatarUri,
@@ -196,11 +218,18 @@ class PersonaRepository @Inject constructor(
             createdAt = now,
             updatedAt = now
         )
+        val hadServerMode = serverWrites.isEnabled()
+        copy = serverPersist(copy, existing = null, creating = true)
+        val createdServerSession = if (hadServerMode) serverWrites.createSession(copy.id) else null
         database.withTransaction {
             personaDao.insert(copy)
             insertRevision(copy, PersonaRevisionReason.COPIED, now)
             // 一人一段：复制出来的人立刻也有自己的那一段。
-            ensureSessionFor(copy, now)
+            if (createdServerSession != null) {
+                insertServerSession(copy, createdServerSession, now)
+            } else if (!hadServerMode) {
+                ensureSessionFor(copy, now)
+            }
         }
         copy.id
     }
@@ -232,6 +261,11 @@ class PersonaRepository @Inject constructor(
      * 只删 sessions/personas 会留下一堆孤儿行（尤其是念头和思考日志，它们不挂在会话上）。
      */
     suspend fun delete(personaId: String) {
+        // M5：服务端是权威源。先让服务端删（连带会话/消息/记忆），成功后再删本机缓存；
+        // 服务端 404 视为「已经没了」，本机也该同步消失。失败就抛出，本机一行都不动。
+        if (serverWrites.isEnabled()) {
+            serverWrites.deletePersona(personaId).getOrThrow()
+        }
         val wasActive = settingsRepository.settings.first().activePersonaId == personaId
         // 事务内只删表、只收集待删文件；文件必须等提交成功之后再删（审计 P1-4：
         // 事务回滚时消息/人格会回来，删掉的文件却回不来）。
@@ -258,8 +292,75 @@ class PersonaRepository @Inject constructor(
         runCatching { chatNotifier.cancelByPersona(appContext, personaId) }
         proactiveScheduler.ensureScheduled()
         if (wasActive) {
-            settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
+            runCatching { settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id) }
         }
+    }
+
+    /**
+     * 服务端模式的权威保存（M5）。
+     *
+     * - 本地模式：直接返回原实体（一次网络都不发，行为与旧版本逐字一致）；
+     * - 服务端模式：头像有变化就先压缩上传，再 `POST /v1/personas`；服务端成功之后用返回的
+     *   id/时间戳覆盖本机实体，调用方才写 Room。
+     *
+     * 头像**没变就不发 avatarUrl**：否则一次改名字会把服务端头像清成 null。
+     */
+    private suspend fun serverPersist(
+        entity: PersonaEntity,
+        existing: PersonaEntity?,
+        creating: Boolean
+    ): PersonaEntity {
+        if (!serverWrites.isEnabled()) return entity
+        val avatarChanged = creating || existing?.avatarUri != entity.avatarUri
+        val avatarRef = when {
+            !avatarChanged -> null
+            // 头像本来就是服务端媒体引用（从服务端同步下来的）：直接沿用，不再下载/上传一轮。
+            com.myfriend.app.data.remote.ServerMediaRef.isMediaRef(entity.avatarUri) ->
+                com.myfriend.app.data.remote.ServerMediaRef.canonical(entity.avatarUri)
+            else -> {
+                // 新建时服务端还没有这个人格，媒体上传不挂 personaId（服务端只把它当用途标记）。
+                serverMediaSender.uploadPersonaAvatar(
+                    avatarUri = entity.avatarUri,
+                    personaId = if (creating) null else entity.id
+                ).getOrThrow()
+            }
+        }
+        val payload = com.myfriend.app.data.remote.ServerPersonaWrite.payload(
+            persona = entity,
+            avatarUrl = avatarRef,
+            creating = creating,
+            includeAvatar = avatarChanged
+        )
+        val server = serverWrites.savePersona(payload).getOrThrow()
+        return com.myfriend.app.data.remote.ServerPersonaWrite.localEntity(server, entity)
+    }
+
+    /** 服务端模式下把服务端分配的会话缓存到本机（id 用服务端 id，发送时不再二次映射）。 */
+    private suspend fun insertServerSession(
+        persona: PersonaEntity,
+        session: com.myfriend.app.data.remote.ServerSession,
+        now: Long
+    ) {
+        if (session.id.isBlank() || sessionDao.latestForPersona(persona.id) != null) return
+        sessionDao.insertIgnore(
+            ChatSessionEntity(
+                id = session.id,
+                personaId = persona.id,
+                apiConfigId = persona.defaultApiConfigId,
+                model = persona.modelOverride?.takeIf { it.isNotBlank() }.orEmpty(),
+                title = session.title.ifBlank {
+                    appContext.getString(R.string.chat_session_default_title, persona.name)
+                },
+                lastMessagePreview = null,
+                lastMessageAt = session.lastMessageAt,
+                unreadCount = session.unread.coerceAtLeast(0),
+                pinned = false,
+                createdAt = session.createdAt.takeIf { it > 0L } ?: now,
+                updatedAt = session.updatedAt.takeIf { it > 0L } ?: now,
+                lastPersonaVersion = persona.version,
+                lastMemoryExtractedCount = 0
+            )
+        )
     }
 
     /** 一人一段：给还没有会话的人格补一段。旧库、导入的人格都可能缺。 */
@@ -340,9 +441,9 @@ class PersonaRepository @Inject constructor(
         // 旧版本里的头像路径可能已经被删掉了（换头像时删旧文件是 0.10.1 的行为）：
         // 恢复一个不存在的文件等于给界面一个点了没反应的地址，这里直接当成「没有头像」。
         val restoredAvatar = revision.avatarUri?.takeUnless { MediaStorage.isMissingLocalFile(it) }
-        database.withTransaction {
-            insertRevision(persona, PersonaRevisionReason.BEFORE_RESTORE, now)
-            val restored = persona.copy(
+        // 回滚也是「保存」：服务端模式下先把这一版同步过去，成功才写本机。
+        val restoredEntity = serverPersist(
+            persona.copy(
                 name = revision.name,
                 description = revision.description,
                 avatarUri = restoredAvatar,
@@ -351,9 +452,14 @@ class PersonaRepository @Inject constructor(
                 category = revision.category,
                 version = persona.version + 1,
                 updatedAt = now
-            )
-            personaDao.update(restored)
-            insertRevision(restored, PersonaRevisionReason.restored(revision.version), now)
+            ),
+            existing = persona,
+            creating = false
+        )
+        database.withTransaction {
+            insertRevision(persona, PersonaRevisionReason.BEFORE_RESTORE, now)
+            personaDao.update(restoredEntity)
+            insertRevision(restoredEntity, PersonaRevisionReason.restored(revision.version), now)
         }
         // 换了一张（或恢复成默认）：当前头像文件不再被引用，删掉。
         // 0.12：回滚版本换掉的头像同样先查引用（可能被预设/别的人格共享）。
@@ -367,13 +473,14 @@ class PersonaRepository @Inject constructor(
         if (newPrompt.isBlank()) userError(DomainErrorCode.EVOLVED_PROMPT_EMPTY)
         if (newPrompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PERSONA_PROMPT_TOO_LONG)
         val now = System.currentTimeMillis()
+        // 进化同样是一次人格保存：服务端模式下服务端成功才写本机。
+        val evolved = serverPersist(
+            persona.copy(prompt = newPrompt, version = persona.version + 1, updatedAt = now),
+            existing = persona,
+            creating = false
+        )
         database.withTransaction {
             insertRevision(persona, PersonaRevisionReason.BEFORE_EVOLUTION, now)
-            val evolved = persona.copy(
-                prompt = newPrompt,
-                version = persona.version + 1,
-                updatedAt = now
-            )
             personaDao.update(evolved)
             insertRevision(evolved, PersonaRevisionReason.evolved(summary), now)
         }
@@ -475,7 +582,7 @@ class PersonaRepository @Inject constructor(
         }
         if (imported > 0) {
             val active = settingsRepository.settings.first().activePersonaId
-            if (active.isNullOrBlank()) settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id)
+            if (active.isNullOrBlank()) runCatching { settingsRepository.setActivePersonaId(personaDao.getAll().firstOrNull()?.id) }
         }
         ImportResult(imported = imported, skipped = skipped)
     }

@@ -296,44 +296,54 @@ struct PresetEditorScreen: View {
     }
 
     private func save() {
-        let now = DomainClock.nowMillis
-        do {
-            try env.stores.presets.upsert(buildEntity(existing: existingPreset(), now: now))
-            dismiss()
-        } catch {
-            banner = MFAlert(title: L("没能保存"), message: error.localizedDescription)
+        Task { @MainActor in
+            let now = DomainClock.nowMillis
+            do {
+                _ = try await env.savePreset(
+                    buildEntity(existing: existingPreset(), now: now), isNew: existingPreset() == nil
+                )
+                dismiss()
+            } catch {
+                banner = MFAlert(title: L("没能保存"), message: error.localizedDescription)
+            }
         }
     }
 
     private func applyToPersona() {
         guard let persona = personas.first(where: { $0.id == targetPersonaId }) else { return }
-        let now = DomainClock.nowMillis
-        let preset = buildEntity(existing: existingPreset(), now: now)
-        do {
-            try env.stores.presets.upsert(preset)
-            let updated = PersonaPresetApplier.applying(preset, to: persona, now: now)
-            try env.stores.personas.upsert(updated)
-            _ = env.session(forPersona: updated.id)
-            dismiss()
-        } catch {
-            banner = MFAlert(title: L("没能应用"), message: error.localizedDescription)
+        Task { @MainActor in
+            let now = DomainClock.nowMillis
+            do {
+                let preset = try await env.savePreset(
+                    buildEntity(existing: existingPreset(), now: now), isNew: existingPreset() == nil
+                )
+                let updated = PersonaPresetApplier.applying(preset, to: persona, now: now)
+                _ = try await env.savePersona(updated, isNew: false)
+                _ = env.session(forPersona: updated.id)
+                dismiss()
+            } catch {
+                banner = MFAlert(title: L("没能应用"), message: error.localizedDescription)
+            }
         }
     }
 
     private func copyToNewPersona() {
-        let now = DomainClock.nowMillis
-        let preset = buildEntity(existing: existingPreset(), now: now)
-        do {
-            try env.stores.presets.upsert(preset)
-            let created = PersonaPresetApplier.newPersona(from: preset, now: now)
-            try env.stores.personas.upsert(created)
-            _ = env.session(forPersona: created.id)
-            if env.currentSettings.activePersonaId == nil {
-                env.updateSettings { $0.activePersonaId = created.id }
+        Task { @MainActor in
+            let now = DomainClock.nowMillis
+            do {
+                let preset = try await env.savePreset(
+                    buildEntity(existing: existingPreset(), now: now), isNew: existingPreset() == nil
+                )
+                let draft = PersonaPresetApplier.newPersona(from: preset, now: now)
+                let created = try await env.savePersona(draft, isNew: true)
+                _ = env.session(forPersona: created.id)
+                if env.currentSettings.activePersonaId == nil {
+                    env.updateSettings { $0.activePersonaId = created.id }
+                }
+                dismiss()
+            } catch {
+                banner = MFAlert(title: L("没能复制"), message: error.localizedDescription)
             }
-            dismiss()
-        } catch {
-            banner = MFAlert(title: L("没能复制"), message: error.localizedDescription)
         }
     }
 

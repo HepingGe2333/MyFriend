@@ -129,8 +129,12 @@ public final class SpeechStyleSummarizer {
             )
         }
         // 模型给的 phrases 里如果混进了「昵称：」，去掉前缀（§3.2 第 1 条的同一套规则）。
-        style.phrases = PersonaTags.normalize(
-            style.phrases.map(Self.strippingSpeakerPrefix), limit: SpeechStyle.maxPhrases
+        // 这是「生成」而不是「解析用户输入」：模型可能给几十条常用语，这里按本地兜底
+        // 的同一个上限收敛（`maxPhrases` 的语义就是「生成别太多」）。用户手写的话风
+        // 不经过这里，永远原样保存。
+        style.phrases = Array(
+            PersonaTags.normalize(style.phrases.map(Self.strippingSpeakerPrefix))
+                .prefix(SpeechStyle.maxPhrases)
         )
         style.source = .model
         if style.isEmpty {

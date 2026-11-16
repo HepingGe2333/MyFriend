@@ -497,6 +497,7 @@
     <string name="memory_updated">Memory updated</string>
     <string name="memory_update_failed">"Couldn't update it"</string>
     <string name="memory_deleted">Memory deleted</string>
+    <string name="memory_delete_failed">Couldn\'t delete it</string>
     <string name="memory_extract_failed">"Couldn't sort them out: %1$s"</string>
     <string name="memory_extract_failed_detail">check the API setup for his latest conversation</string>
     <string name="memory_enqueue_failed">"Couldn't get a sort queued this time. Try again in a moment."</string>
@@ -927,6 +928,7 @@
     <string name="preset_duplicated">Copied as a new preset</string>
     <string name="preset_duplicate_failed">Couldn\'t duplicate it</string>
     <string name="preset_deleted">Preset deleted</string>
+    <string name="preset_delete_failed">Couldn\'t delete it</string>
     <string name="preset_create_persona_failed">Couldn\'t create the persona</string>
     <string name="preset_export_error">Couldn\'t export it</string>
     <string name="preset_import_failed">Couldn\'t import it</string>
@@ -1674,4 +1676,8 @@
     <string name="settings_server_reject_local_only">http is only allowed for localhost or LAN addresses</string>
     <string name="chat_server_reply_pending">The reply did not arrive yet; it will sync shortly</string>
     <string name="chat_server_action_unsupported">This action is not supported in server mode yet</string>
+    <string name="error_server_unreachable">Couldn\'t reach the server, so this wasn\'t saved</string>
+    <string name="error_server_rejected">The server didn\'t accept this change. Try again in a moment.</string>
+    <string name="error_server_media_too_large">That image is too large for the server\'s 2MB limit</string>
+    <string name="error_server_media_failed">The image couldn\'t be uploaded, so nothing was sent</string>
 </resources>

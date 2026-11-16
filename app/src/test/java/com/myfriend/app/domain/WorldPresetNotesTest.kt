@@ -40,11 +40,16 @@ class WorldPresetNotesTest {
     }
 
     @Test
-    fun `宽松解析也读 notes 并截到 1200 字`() {
+    fun `宽松解析保留 notes 全文不截断`() {
+        // 0.12 起解析/存储不再截断（只渲染时截 1200），与 iOS 的规范化哈希保持一致。
         val long = "字".repeat(2000)
         val decoded = WorldPresetCodec.decode("""{"worldName":"某城","notes":"$long"}""")
             ?: error("读不出来")
-        assertEquals(WorldPreset.MAX_NOTES_CHARS, decoded.notes.length)
+        assertEquals(2000, decoded.notes.length)
+        // 渲染仍按 1200 截断（提示词体积），但存储不截断。
+        val rendered = decoded.renderForPrompt()
+        assertTrue(rendered.contains("字".repeat(WorldPreset.MAX_NOTES_CHARS)))
+        assertFalse(rendered.contains("字".repeat(WorldPreset.MAX_NOTES_CHARS + 1)))
     }
 
     @Test

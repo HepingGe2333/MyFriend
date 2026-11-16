@@ -17,9 +17,10 @@ import Foundation
 // - 发送成功（收到 `done`）才出队；失败留在队列里，`flushOutbox()` 在启动/回前台补发；
 // - 因为服务端按 `clientMessageId` 去重，补发同一条不会变成两句。
 //
-// 图片：服务端这一版只存附件 id、没有上传接口（`docs/design/server-authoritative.md` §3.2），
-// 所以服务端模式下**带图片的消息会明确拒绝**（`rejected` + 一句中文），
-// 而不是悄悄把本地文件路径发给服务端或悄悄丢掉图片。
+// 图片（M5）：服务端已有 `/v1/media` 上传接口。带图消息走 `sendCheckedWithMedia`：
+// 先压缩（复用选图时已经压好的 JPEG）→ 上传拿 `/v1/media/<id>` → 再把 mediaId 放进
+// `attachments` 发出去。上传失败**不入队**（`rejected`：草稿与图片还给界面）。
+// 同步入口 `sendChecked` 仍然只接受纯文字：它没有 await，不能在入队前完成上传。
 // ---------------------------------------------------------------------------
 
 public final class ServerChatGateway {
@@ -42,6 +43,10 @@ public final class ServerChatGateway {
     private let blockState: ServerSyncStateStore
     private let now: () -> Int64
     private let log: (String) -> Void
+    /// 上传图片（生产 = `ServerAPIClient`；测试注入假实现断言调用顺序）。
+    private let mediaUploader: (any ServerMediaUploading)?
+    /// 「本地附件 → 压缩后字节」（默认复用选图路径已经压好的 JPEG）。
+    private let mediaPreparer: any ServerChatMediaPreparing
     private let lock = NSLock()
     /// 正在发送的 clientMessageId（同一条不并发发两次；补发与用户手点撞上也只发一次）。
     private var inFlight: Set<String> = []
@@ -50,6 +55,8 @@ public final class ServerChatGateway {
         client: ServerAPIClient,
         stores: DatabaseStores,
         outbox: ServerOutboxStore? = nil,
+        mediaUploader: (any ServerMediaUploading)? = nil,
+        mediaPreparer: (any ServerChatMediaPreparing)? = nil,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -58,6 +65,9 @@ public final class ServerChatGateway {
         self.outbox = outbox ?? ServerOutboxStore(database: stores.database)
         self.sessions = ServerSessionResolver(stores: stores)
         self.blockState = ServerSyncStateStore(database: stores.database)
+        // `ServerAPIClient` 本身就是上传实现；显式注入只是测试口子。
+        self.mediaUploader = mediaUploader ?? client
+        self.mediaPreparer = mediaPreparer ?? LocalChatMediaPreparer()
         self.now = now
         self.log = log
     }
@@ -198,10 +208,11 @@ public final class ServerChatGateway {
         attachments: [MessageAttachment] = []
     ) -> ChatService.SendOutcome {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 同步入口没有 await：带图必须先上传，走 `sendCheckedWithMedia`。
         guard attachments.isEmpty else {
             return .rejected(ApiException(
                 statusCode: nil,
-                message: String(localized: "服务端模式还不能发图片")
+                message: "图片还没准备好，请重试"
             ))
         }
         guard !content.isEmpty else {
@@ -213,7 +224,83 @@ public final class ServerChatGateway {
         guard let session = (try? stores.sessions.byId(sessionId)) ?? nil else {
             return .rejected(ApiException(statusCode: nil, message: String(localized: "会话不存在")))
         }
+        return start(session: session, content: content, mediaIds: [])
+    }
 
+    /// 发一条**带图片**的消息：压缩 → 上传 → 入队 → 开始流。
+    ///
+    /// 与 `sendChecked` 的区别只有「先上传」这一步；失败语义一致：
+    /// 上传/准备失败 = `rejected`（什么都没落库，界面把草稿和图片留下来）。
+    ///
+    /// - Parameters:
+    ///   - attachments: 已经压好、存在沙盒里的本地附件（`ImageImport` 的产物）。
+    ///   - kind: 压缩策略（聊天图 `.chatImage`；头像另走 `uploadMedia`）。
+    public func sendCheckedWithMedia(
+        sessionId: String,
+        text: String,
+        attachments: [MessageAttachment],
+        kind: MediaKind = .chatImage
+    ) async -> ChatService.SendOutcome {
+        let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !content.isEmpty || !attachments.isEmpty else {
+            return .rejected(ApiException(statusCode: nil, message: String(localized: "消息不能为空")))
+        }
+        guard content.count <= ChatService.maxMessageLength else {
+            return .rejected(ApiException(statusCode: nil, message: String(localized: "消息太长了")))
+        }
+        guard let session = (try? stores.sessions.byId(sessionId)) ?? nil else {
+            return .rejected(ApiException(statusCode: nil, message: String(localized: "会话不存在")))
+        }
+        guard attachments.count <= AttachmentsCodec.maxImagesPerMessage else {
+            return .rejected(ApiException(statusCode: nil, message: "一条消息最多带 \(AttachmentsCodec.maxImagesPerMessage) 张图"))
+        }
+        if attachments.isEmpty {
+            return start(session: session, content: content, mediaIds: [])
+        }
+        guard let uploader = mediaUploader else {
+            return .rejected(ApiException(
+                statusCode: nil,
+                message: String(localized: "服务端模式还不能发图片")
+            ))
+        }
+
+        // 逐张：准备（压缩）→ 上传。顺序固定，测试用假实现断言「上传的字节已经是压缩产物」。
+        var mediaIds: [String] = []
+        for attachment in attachments {
+            if let existingId = ServerMediaReference.mediaId(from: attachment.uri) {
+                mediaIds.append(existingId)
+                continue
+            }
+            guard let prepared = mediaPreparer.prepare(attachment: attachment, kind: kind),
+                  !prepared.bytes.isEmpty else {
+                return .rejected(ApiException(
+                    statusCode: nil,
+                    message: "这张图片读不出来，换一张试试"
+                ))
+            }
+            do {
+                let media = try await uploader.uploadMedia(
+                    bytes: prepared.bytes,
+                    mime: prepared.mime,
+                    kind: ServerMediaKind(mediaKind: kind).rawValue,
+                    personaId: session.personaId
+                )
+                mediaIds.append(media.id)
+            } catch {
+                // 上传失败：不入队、不发文字 —— 用户看到的应该是一句「为什么没发出去」。
+                log("图片上传失败：\(ServerSyncService.describe(error))")
+                return .rejected(error)
+            }
+        }
+        return start(session: session, content: content, mediaIds: mediaIds)
+    }
+
+    /// 两条发送入口共用：写待发队列 + 落一条「排队中」的本地消息 + 开流。
+    private func start(
+        session: ChatSessionEntity,
+        content: String,
+        mediaIds: [String]
+    ) -> ChatService.SendOutcome {
         let at = now()
         let clientMessageId = UUID().uuidString
         let entry = ServerOutboxEntry(
@@ -221,7 +308,7 @@ public final class ServerChatGateway {
             sessionId: session.id,
             personaId: session.personaId,
             content: content,
-            attachments: [],
+            attachments: mediaIds,
             replyTo: nil,
             createdAt: at
         )
@@ -404,7 +491,8 @@ public final class ServerChatGateway {
             createdAt: entry.createdAt,
             updatedAt: entry.createdAt,
             status: .error,
-            errorMessage: String(localized: "还没发出去，联网后会自动补发")
+            errorMessage: String(localized: "还没发出去，联网后会自动补发"),
+            attachmentsJson: ServerSyncMapping.attachmentsJson(from: entry.attachments)
         )
         try stores.messages.upsert(message)
         if var session {
@@ -432,7 +520,8 @@ public final class ServerChatGateway {
                 content: entry.content,
                 createdAt: createdAt > 0 ? createdAt : entry.createdAt,
                 updatedAt: createdAt > 0 ? createdAt : entry.createdAt,
-                status: .complete
+                status: .complete,
+                attachmentsJson: ServerSyncMapping.attachmentsJson(from: entry.attachments)
             )
             try stores.messages.upsert(message)
         }

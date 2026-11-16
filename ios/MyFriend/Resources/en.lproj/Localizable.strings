@@ -1097,7 +1097,8 @@
 "预设名字" = "Preset name";
 "把他的设定翻成你在用的语言" = "Translate his setup into the language you use";
 "整理这段对话" = "Organize this conversation";
-"已经到 %d 字上限，多出来的部分没有保存。" = "Only the first %d characters are kept; the rest wasn't saved.";
+/* Removed in 0.12: notes are no longer truncated on input, so this warning has no
+   truthful scenario left. */
 
 /* 服务端模式（M3）：设置页的开关/地址/令牌，以及服务端链路的几句提示。 */
 "令牌" = "Token";
