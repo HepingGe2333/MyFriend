@@ -45,6 +45,15 @@ interface PersonaDao {
     @Query("DELETE FROM personas WHERE id = :id")
     suspend fun deleteById(id: String)
 
+    /**
+     * 写入 / 清空人格提示词的翻译缓存（schema v14）。
+     *
+     * 刻意不改 `updatedAt`：翻译是后台按需做的事，不是用户改人格；
+     * 让它搅乱首页排序（或让「最近改过」的含义变味）是错的。
+     */
+    @Query("UPDATE personas SET translationJson = :json, translationLang = :lang WHERE id = :id")
+    suspend fun setTranslation(id: String, json: String?, lang: String?)
+
     @Query("UPDATE personas SET defaultApiConfigId = NULL WHERE defaultApiConfigId = :configId")
     suspend fun unbindApiConfig(configId: String)
 

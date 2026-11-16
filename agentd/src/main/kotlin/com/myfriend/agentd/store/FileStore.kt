@@ -1,8 +1,15 @@
 package com.myfriend.agentd.store
 
+import com.myfriend.app.core.json.JsonParseException
 import com.myfriend.app.core.json.JsonValue
 import com.myfriend.agentd.store.StoreJson.optArr
+import com.myfriend.agentd.store.StoreJson.optInt
+import com.myfriend.agentd.store.StoreJson.optLong
 import com.myfriend.agentd.store.StoreJson.optObj
+import com.myfriend.agentd.store.StoreJson.optString
+import com.myfriend.agentd.store.StoreJson.reqLong
+import com.myfriend.agentd.store.StoreJson.reqString
+import com.myfriend.agentd.store.StoreJson.stringList
 import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -77,8 +84,19 @@ class FileStore(
         /** `GET /v1/state` 一次最多返回多少条消息（超出时 `hasMoreMessages = true`）。 */
         const val MAX_STATE_MESSAGES = 500
 
+        /**
+         * `personas.activityJson` 的长度上限（字符）。
+         *
+         * 活动是一句话（客户端 `PersonaActivity` 里 `activity` 最多 160 字），四格 JSON 撑不到
+         * 1 KiB。上限存在的意义是「不许借这个字段往 personas.json 里塞大块数据」。
+         */
+        const val MAX_ACTIVITY_JSON_CHARS = 1024
+
         /** 会话/人格 id 只允许 `[A-Za-z0-9_-]`：它们会拼进文件路径，不能接受 `..` / `/`。 */
         private val ID_PATTERN = Regex("[A-Za-z0-9_-]{1,64}")
+
+        /** 消息 id 不拼路径，但要防超长/奇怪值；客户端 UUID 与服务端 UUID 都满足。 */
+        private val MESSAGE_ID_PATTERN = Regex("[A-Za-z0-9_-]{1,128}")
 
         const val META_FILE = "meta.json"
         const val PERSONAS_FILE = "personas.json"
@@ -90,7 +108,28 @@ class FileStore(
         const val PRESENCE_FILE = "presence.json"
         const val USAGE_FILE = "usage.json"
         const val PROACTIVE_STATE_FILE = "proactive_state.json"
+        const val MEMORIES_FILE = "memories.json"
+        const val PRESETS_FILE = "presets.json"
+        const val PUSH_TOKENS_FILE = "push_tokens.json"
         const val EVENTS_FILE = "events.jsonl"
+
+        /** 当前导出的备份格式版本（与客户端 `BACKUP_FORMAT_VERSION` 对齐）。 */
+        const val BACKUP_FORMAT_VERSION = 5
+        const val BACKUP_FORMAT_NAME = "myfriend.backup"
+
+        /** `GET /v1/settings` / 备份可携带的设置键；任何 API Key / secrets 都不在白名单里。 */
+        val SETTINGS_WHITELIST: Set<String> = setOf(
+            "themeMode",
+            "accentColor",
+            "fontScale",
+            "bubbleStyle",
+            "animationsEnabled",
+            "hapticsEnabled",
+            "chatBackgroundColor",
+            "agentLoopEnabled",
+            "activePersonaId",
+            "autoTranslatePersona"
+        )
         const val SESSIONS_DIR = "sessions"
         const val BLOCKS_DIR = "blocks"
         const val BLOCK_INDEX_FILE = "block_index.json"
@@ -142,6 +181,10 @@ class FileStore(
     private var settings: JsonValue.Obj = JsonValue.Obj()
     private var usage = LinkedHashMap<String, UsageTotal>()
     private val proactiveStates = LinkedHashMap<String, ProactiveState>()
+    private val memories = LinkedHashMap<String, Memory>()
+    private val presets = LinkedHashMap<String, Preset>()
+    /** key = `platform|token`，保证「同一 token 重复注册」幂等。 */
+    private val pushTokens = LinkedHashMap<String, PushRegistration>()
 
     /** 内存里的事件窗口（最早的会被裁剪；更早的从 [eventsFile] 读回）。 */
     private val events = ArrayDeque<StoredEvent>()
@@ -208,6 +251,16 @@ class FileStore(
 
     fun presence(personaId: String): Presence? = lock.withLock { presence[personaId] }
 
+    /**
+     * 读他此刻的活动（`personas.json` 里的 `activityJson`，原样返回）。
+     *
+     * 不做解析也不做过期判断：`ActivityState`（`proactive/`）负责解析，读取方按 `now` 判断
+     * 「有没有过期」。没设过就是 `null`。
+     */
+    fun activity(personaId: String): String? = lock.withLock {
+        personas.firstOrNull { it.id == personaId }?.activityJson
+    }
+
     fun usage(personaId: String): UsageTotal = lock.withLock { usage[personaId] ?: UsageTotal() }
 
     fun usageAll(): Map<String, UsageTotal> = lock.withLock { LinkedHashMap(usage) }
@@ -231,11 +284,283 @@ class FileStore(
         recordProactiveFiredLocked(personaId, at, today)
     }
 
+    /**
+     * 写入 / 清掉「他此刻在做什么」（`POST /v1/personas/{id}/activity` 的落库入口）。
+     *
+     * - [activityJson] 为 `null` 表示清掉（读到就是「没在忙」）；
+     * - **同一把写锁内**改内存 + 原子重写 `personas.json`（与 `mood/presence/proactive_state`
+     *   完全一致的做法：`*.tmp` → `ATOMIC_MOVE`，重启后读回同一份）；
+     * - 顺手把 `updatedAt` 抬到新的时间戳：`GET /v1/state?since=` 靠 `updatedAt` 过滤人格，
+     *   不抬的话客户端增量同步看不到活动变化。
+     *
+     * 参数校验只做「人格存在 + 长度上限」：结构归一化（枚举、分钟夹取）在路由层，
+     * 存储层不猜调用方想表达什么。
+     */
+    fun updateActivity(personaId: String, activityJson: String?): Persona = lock.withLock {
+        requirePersonaLocked(personaId)
+        if (activityJson != null && activityJson.length > MAX_ACTIVITY_JSON_CHARS) {
+            throw IllegalArgumentException("activityJson 最长 $MAX_ACTIVITY_JSON_CHARS 个字符")
+        }
+        val index = personas.indexOfFirst { it.id == personaId }
+        val updated = personas[index].copy(
+            activityJson = activityJson?.takeIf { it.isNotBlank() },
+            updatedAt = nextTimestampLocked()
+        )
+        personas[index] = updated
+        persistPersonasLocked()
+        updated
+    }
+
+    /**
+     * 新建人格。id 由调用方给（可空→生成），时间戳由存储层给；创建与落盘同锁。
+     *
+     * 路由层通过 [transform] 拿到 now，把请求字段拼成 [Persona]；这里再统一覆盖
+     * `id/createdAt/updatedAt`，避免客户端伪造时间线。
+     */
+    fun createPersona(
+        requestedId: String?,
+        transform: (now: Long) -> Persona
+    ): Persona = lock.withLock {
+        val id = requestedId ?: newId()
+        if (!isValidId(id)) throw IllegalArgumentException("非法的人格 id")
+        if (personas.any { it.id == id }) throw IllegalArgumentException("人格 id 已存在：$id")
+        val now = nextTimestampLocked()
+        var persona = transform(now).copy(id = id, createdAt = now, updatedAt = now)
+        if (persona.name.isBlank()) throw IllegalArgumentException("name 不能为空")
+        if (persona.isDefault) {
+            for (index in personas.indices) personas[index] = personas[index].copy(isDefault = false)
+        }
+        personas += persona
+        persistPersonasLocked()
+        persona
+    }
+
+    /**
+     * 更新人格：读-改-写同一把锁。`transform` 收到当前值和 now，返回新值；核心 `id/createdAt`
+     * 由存储层钉住，`updatedAt` 由存储层抬到 now（`/v1/state?since=` 靠它做增量）。
+     */
+    fun updatePersona(
+        personaId: String,
+        transform: (existing: Persona, now: Long) -> Persona
+    ): Persona = lock.withLock {
+        if (!isValidId(personaId)) throw IllegalArgumentException("非法的人格 id")
+        val index = personas.indexOfFirst { it.id == personaId }
+        if (index < 0) throw StorePersonaNotFoundException(personaId)
+        val now = nextTimestampLocked()
+        val updated = transform(personas[index], now).copy(
+            id = personaId,
+            createdAt = personas[index].createdAt,
+            updatedAt = now
+        )
+        if (updated.name.isBlank()) throw IllegalArgumentException("name 不能为空")
+        if (updated.isDefault) {
+            for (i in personas.indices) {
+                if (i != index) personas[i] = personas[i].copy(isDefault = false)
+            }
+        }
+        personas[index] = updated
+        persistPersonasLocked()
+        updated
+    }
+
+    /**
+     * 删除人格并级联清理：
+     * - 该人格的会话目录（消息块 + 块表）与 `sessions.json` 行；
+     * - 记忆、活动（活动就在 personas.json 里，随人格一起消失）、主动计数；
+     * - 心情/在场（否则会留下无主记录）。
+     *
+     * **媒体文件不删**（`media/` 由客户端 GC，契约 §3.6）；usage / API 配置是服务端资源，
+     * 也不跟着人格走。返回是否真的存在过。
+     */
+    fun deletePersona(personaId: String): Boolean = lock.withLock {
+        if (!isValidId(personaId)) return@withLock false
+        val index = personas.indexOfFirst { it.id == personaId }
+        if (index < 0) return@withLock false
+        personas.removeAt(index)
+
+        val doomedSessions = sessions.values.filter { it.personaId == personaId }.map { it.id }
+        for (sessionId in doomedSessions) {
+            sessions.remove(sessionId)
+            blockCache.remove(sessionId)
+            messageIndexCache.remove(sessionId)
+            deleteRecursively(sessionDir(sessionId))
+        }
+        moods.remove(personaId)
+        presence.remove(personaId)
+        proactiveStates.remove(personaId)
+        memories.entries.removeAll { it.value.personaId == personaId }
+
+        persistPersonasLocked()
+        persistSessionsLocked()
+        persistMoodsLocked()
+        persistPresenceLocked()
+        persistProactiveStateLocked()
+        persistMemoriesLocked()
+        true
+    }
+
     fun apiConfigs(): List<ApiConfig> = lock.withLock { apiConfigs.values.toList() }
 
     fun apiKey(configId: String): String? = lock.withLock { readSecretsLocked()[configId] }
 
     fun settings(): JsonValue.Obj = lock.withLock { settings }
+
+    /**
+     * 对外可见的设置：只保留白名单键。
+     *
+     * 备份/HTTP 都走这里。即便有人在磁盘上手工塞了 `apiKey`，它也不会出现在响应里；
+     * 写路径也只接受白名单（见 [mergeSettings]）。
+     */
+    fun publicSettings(): JsonValue.Obj = lock.withLock { publicSettingsLocked() }
+
+    // ================================================================== 读：记忆 / 预设 / push
+
+    /**
+     * 某个人格的记忆，按 `updatedAt` 倒序。
+     *
+     * @param since 只返回 `updatedAt > since` 的记忆（与 `/v1/state` 的增量语义一致）
+     */
+    fun memories(personaId: String, limit: Int = 200, since: Long = 0L): List<Memory> = lock.withLock {
+        memories.values
+            .filter { it.personaId == personaId && (since <= 0 || it.updatedAt > since) }
+            .sortedWith(compareByDescending<Memory> { it.updatedAt }.thenByDescending { it.createdAt })
+            .take(limit.coerceAtLeast(0))
+    }
+
+    fun memory(memoryId: String): Memory? = lock.withLock { memories[memoryId] }
+
+    fun presets(): List<Preset> = lock.withLock {
+        presets.values.sortedWith(compareByDescending<Preset> { it.updatedAt }.thenBy { it.name })
+    }
+
+    fun preset(presetId: String): Preset? = lock.withLock { presets[presetId] }
+
+    fun pushTokens(): List<PushRegistration> = lock.withLock { pushTokens.values.toList() }
+
+    // ================================================================== 写：记忆 / 预设 / push
+
+    /**
+     * 新建或更新一条记忆。`id == null` 新建；给了 id 就必须已经存在（路由层把不存在翻成 404）。
+     *
+     * 整个读-改-写都在存储锁内，路由层不要先 `memory()` 再拼一个完整对象写回（会丢并发更新）。
+     */
+    fun saveMemory(
+        personaId: String,
+        memoryId: String?,
+        transform: (existing: Memory?, now: Long) -> Memory
+    ): Memory = lock.withLock {
+        requirePersonaLocked(personaId)
+        val now = nextTimestampLocked()
+        if (memoryId == null) {
+            val memory = transform(null, now).copy(
+                id = newId(),
+                personaId = personaId,
+                createdAt = now,
+                updatedAt = now
+            )
+            memories[memory.id] = memory
+            persistMemoriesLocked()
+            return@withLock memory
+        }
+        if (!isValidId(memoryId)) throw IllegalArgumentException("非法的记忆 id")
+        val existing = memories[memoryId] ?: throw StoreMemoryNotFoundException(memoryId)
+        if (existing.personaId != personaId) throw StoreMemoryNotFoundException(memoryId)
+        val updated = transform(existing, now).copy(
+            id = existing.id,
+            personaId = existing.personaId,
+            createdAt = existing.createdAt,
+            updatedAt = now
+        )
+        memories[updated.id] = updated
+        persistMemoriesLocked()
+        updated
+    }
+
+    fun deleteMemory(memoryId: String): Boolean = lock.withLock {
+        if (!isValidId(memoryId)) return@withLock false
+        if (memories.remove(memoryId) == null) return@withLock false
+        persistMemoriesLocked()
+        true
+    }
+
+    fun savePreset(
+        presetId: String?,
+        transform: (existing: Preset?, now: Long) -> Preset
+    ): Preset = lock.withLock {
+        val now = nextTimestampLocked()
+        if (presetId == null) {
+            val preset = transform(null, now).copy(
+                id = newId(),
+                createdAt = now,
+                updatedAt = now
+            )
+            presets[preset.id] = preset
+            persistPresetsLocked()
+            return@withLock preset
+        }
+        if (!isValidId(presetId)) throw IllegalArgumentException("非法的预设 id")
+        val existing = presets[presetId] ?: throw StorePresetNotFoundException(presetId)
+        val updated = transform(existing, now).copy(
+            id = existing.id,
+            createdAt = existing.createdAt,
+            updatedAt = now
+        )
+        presets[updated.id] = updated
+        persistPresetsLocked()
+        updated
+    }
+
+    fun deletePreset(presetId: String): Boolean = lock.withLock {
+        if (!isValidId(presetId)) return@withLock false
+        if (presets.remove(presetId) == null) return@withLock false
+        persistPresetsLocked()
+        true
+    }
+
+    /**
+     * 注册/更新推送 token（同一 `platform + token` 只留一条）。幂等：重复注册只刷新 `updatedAt`。
+     * 返回 `true` 表示新建，`false` 表示更新了既有注册。
+     */
+    fun registerPushToken(platform: String, token: String, bundleId: String?): Boolean = lock.withLock {
+        val key = pushTokenKey(platform, token)
+        val now = nextTimestampLocked()
+        val existing = pushTokens[key]
+        pushTokens[key] = PushRegistration(
+            platform = platform,
+            token = token,
+            bundleId = bundleId ?: existing?.bundleId,
+            createdAt = existing?.createdAt ?: now,
+            updatedAt = now
+        )
+        persistPushTokensLocked()
+        existing == null
+    }
+
+    /** 注销 token；幂等（本来没有也返回 false，不报错）。platform 为 null 时删掉这个 token 的所有平台。 */
+    fun unregisterPushToken(token: String, platform: String? = null): Boolean = lock.withLock {
+        val keys = pushTokens.entries
+            .filter { it.value.token == token && (platform == null || it.value.platform == platform) }
+            .map { it.key }
+        if (keys.isEmpty()) return@withLock false
+        keys.forEach { pushTokens.remove(it) }
+        persistPushTokensLocked()
+        true
+    }
+
+    /** 合并设置：只写白名单键；未知键（包括 `apiKey` / `secrets`）静默忽略，绝不落盘。 */
+    fun mergeSettings(values: Map<String, JsonValue>): JsonValue.Obj = lock.withLock {
+        // 从白名单开始重建：即使旧盘上手工塞过 apiKey，下一次设置写入也会把它清掉。
+        val updated = LinkedHashMap<String, JsonValue>()
+        for ((key, value) in settings.fields) {
+            if (key in SETTINGS_WHITELIST) updated[key] = value
+        }
+        for ((key, value) in values) {
+            if (key in SETTINGS_WHITELIST) updated[key] = value
+        }
+        settings = JsonValue.Obj(updated)
+        writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
+        publicSettingsLocked()
+    }
 
     // ================================================================== 读：块与消息
 
@@ -374,6 +699,34 @@ class FileStore(
     }
 
     // ================================================================== 写：会话 / 消息
+
+    /**
+     * 「一人格一会话」的建会话入口（`POST /v1/sessions`）。
+     *
+     * 已存在该人格的会话就返回既有会话（不覆盖 title，避免客户端一次重试把用户改过的标题写回默认）。
+     * 查找与创建在同一把锁内，两个并发 POST 不会建出两条。
+     *
+     * @return `created to session`
+     */
+    fun ensureSessionForPersona(personaId: String, title: String): Pair<Boolean, Session> = lock.withLock {
+        requirePersonaLocked(personaId)
+        sessions.values.firstOrNull { it.personaId == personaId }?.let { return@withLock false to it }
+        val now = nextTimestampLocked()
+        val session = Session(
+            id = newId(),
+            personaId = personaId,
+            title = title,
+            createdAt = now,
+            updatedAt = now,
+            lastMessageAt = null,
+            lastBlockIndex = -1,
+            unread = 0,
+            messageCount = 0
+        )
+        sessions[session.id] = session
+        persistSessionsLocked()
+        true to session
+    }
 
     /** 建会话（已存在则原样返回，方便测试与后续「建会话」接口复用）。 */
     fun ensureSession(personaId: String, title: String, sessionId: String = newId()): Session = lock.withLock {
@@ -567,8 +920,22 @@ class FileStore(
         false
     }
 
-    /** 把会话里的 assistant 消息标成已读并清零未读计数；返回标记了几条。 */
-    fun markSessionRead(sessionId: String): Int = lock.withLock {
+    /**
+     * 把会话里的 assistant 消息标成已读并清零未读计数；返回标记了几条。
+     *
+     * 兼容旧调用（全部标记）。HTTP 路由用 [markSessionReadUpTo] 拿 `readAt`。
+     */
+    fun markSessionRead(sessionId: String): Int = markSessionReadUpTo(sessionId, null).marked
+
+    /**
+     * `POST /v1/sessions/{id}/read` 的存储入口。
+     *
+     * @param upTo 只把 `createdAt <= upTo` 的未读 assistant 消息标已读（null = 全部）。
+     *   无论标了几条，会话的 `unread` 都归零：客户端说「我看到了这里」，契约就是
+     *   `unread = 0`；`upTo` 只决定哪些消息的 `readAt` 被补上。
+     * @return 标记条数、用于响应的 `readAt`（服务端时钟）、更新后的会话
+     */
+    fun markSessionReadUpTo(sessionId: String, upTo: Long?): SessionReadResult = lock.withLock {
         val session = requireSessionLocked(sessionId)
         var marked = 0
         val readAt = clock()
@@ -577,7 +944,10 @@ class FileStore(
             val messages = readBlockLocked(sessionId, block.index)
             var changed = false
             val updatedMessages = messages.map { message ->
-                if (message.role == MessageRole.ASSISTANT && message.readAt == null) {
+                if (message.role == MessageRole.ASSISTANT &&
+                    message.readAt == null &&
+                    (upTo == null || message.createdAt <= upTo)
+                ) {
                     marked += 1
                     changed = true
                     message.copy(readAt = readAt)
@@ -587,11 +957,10 @@ class FileStore(
             }
             if (changed) rewriteBlockLocked(sessionId, block.index, updatedMessages)
         }
-        if (session.unread != 0 || marked > 0) {
-            sessions[sessionId] = session.copy(unread = 0, updatedAt = nextTimestampLocked())
-            persistSessionsLocked()
-        }
-        marked
+        val updated = session.copy(unread = 0, updatedAt = nextTimestampLocked())
+        sessions[sessionId] = updated
+        persistSessionsLocked()
+        SessionReadResult(marked = marked, readAt = readAt, session = updated)
     }
 
     // ================================================================== 写：心情 / 在场 / 用量 / 配置
@@ -685,6 +1054,230 @@ class FileStore(
         true
     }
 
+    // ================================================================== 备份
+
+    /**
+     * 导出备份 v5（`GET /v1/backup`）。
+     *
+     * 只导服务端权威模式持有的内容：人格、会话、消息、记忆、预设、设置。**不含**：
+     * `secrets.json` / API Key / 搜索密钥（本来就不在人格/设置里）；媒体二进制；usage；
+     * api_configs 的密钥。`apiKeysOmitted: true` 是给读文件的人看的声明。
+     */
+    fun exportBackup(appVersion: String, exportedAt: Long): JsonValue.Obj = lock.withLock {
+        val allMessages = allMessagesLocked()
+        StoreJson.obj(
+            "format" to StoreJson.str(BACKUP_FORMAT_NAME),
+            "formatVersion" to StoreJson.num(BACKUP_FORMAT_VERSION),
+            "appVersion" to StoreJson.str(appVersion),
+            "exportedAt" to StoreJson.num(exportedAt),
+            "apiKeysOmitted" to StoreJson.bool(true),
+            "personas" to StoreJson.arr(personas.map { it.toJson() }),
+            "sessions" to StoreJson.arr(sessions.values.map { it.toJson() }),
+            "messages" to StoreJson.arr(allMessages.map { it.toJson() }),
+            "memories" to StoreJson.arr(
+                memories.values.sortedBy { it.createdAt }.map { it.toJson() }
+            ),
+            "presets" to StoreJson.arr(presets.values.map { it.toJson() }),
+            "settings" to publicSettingsLocked()
+        )
+    }
+
+    /**
+     * 导入备份（`POST /v1/backup`）。
+     *
+     * 事务性：先把所有段解析成候选内存模型、校验 id/引用/唯一性；**全部通过之后**才动
+     * 内存和磁盘。不是数据库事务（写多个文件时进程被杀仍可能留下部分文件），但请求级
+     * 校验失败绝不会写一半。
+     *
+     * merge：按 id 更新/新增，未在备份里的内容保留；
+     * replace：清空人格/会话/消息/记忆/预设/设置（以及随之孤儿化的心情、在场、主动计数）
+     * 后导入，usage/api_configs/secrets/push_tokens 不在备份里，因此保留。
+     */
+    fun importBackup(mode: String, data: JsonValue.Obj, now: Long): BackupImportResult = lock.withLock {
+        if (mode != "merge" && mode != "replace") {
+            throw BackupValidationException("mode 只能是 merge 或 replace")
+        }
+        val parsed = try {
+            parseBackupLocked(data, now)
+        } catch (corruption: StoreCorruptionException) {
+            throw BackupValidationException(corruption.message ?: "备份结构不合法")
+        } catch (invalid: JsonParseException) {
+            throw BackupValidationException("备份里有坏 JSON：${invalid.message.orEmpty()}")
+        }
+
+        val finalPersonas = LinkedHashMap<String, Persona>()
+        if (mode == "merge") personas.forEach { finalPersonas[it.id] = it }
+        for (persona in parsed.personas) finalPersonas[persona.id] = persona
+
+        val finalSessions = LinkedHashMap<String, Session>()
+        if (mode == "merge") sessions.forEach { (id, session) -> finalSessions[id] = session }
+        for (session in parsed.sessions) finalSessions[session.id] = session
+        // 契约：一人格一会话。导入数据里出现两条就拒绝，而不是悄悄造出客户端无法处理的形状。
+        val duplicatePersona = finalSessions.values
+            .groupBy { it.personaId }
+            .entries
+            .firstOrNull { it.value.size > 1 }
+        if (duplicatePersona != null) {
+            throw BackupValidationException("人格 ${duplicatePersona.key} 只能有一个会话，备份里有 ${duplicatePersona.value.size} 个")
+        }
+
+        val existingMessages = allMessagesLocked()
+        val finalMessages = LinkedHashMap<String, Message>()
+        if (mode == "merge") existingMessages.forEach { finalMessages[it.id] = it }
+        for (message in parsed.messages) finalMessages[message.id] = message
+
+        val finalMemories = LinkedHashMap<String, Memory>()
+        if (mode == "merge") memories.forEach { (id, memory) -> finalMemories[id] = memory }
+        for (memory in parsed.memories) finalMemories[memory.id] = memory
+
+        val finalPresets = LinkedHashMap<String, Preset>()
+        if (mode == "merge") presets.forEach { (id, preset) -> finalPresets[id] = preset }
+        for (preset in parsed.presets) finalPresets[preset.id] = preset
+
+        // 引用校验：会话的 persona、消息的 session 都必须在最终集合里。
+        for (session in finalSessions.values) {
+            if (finalPersonas[session.personaId] == null) {
+                throw BackupValidationException("会话 ${session.id} 引用了不存在的人格 ${session.personaId}")
+            }
+        }
+        for (message in finalMessages.values) {
+            if (finalSessions[message.sessionId] == null) {
+                throw BackupValidationException("消息 ${message.id} 引用了不存在的会话 ${message.sessionId}")
+            }
+        }
+        for (memory in parsed.memories) {
+            if (finalPersonas[memory.personaId] == null) {
+                throw BackupValidationException("记忆 ${memory.id} 引用了不存在的人格 ${memory.personaId}")
+            }
+        }
+        val activePersonaId = parsed.settings?.fields?.get("activePersonaId")
+        if (activePersonaId is JsonValue.Str && finalPersonas[activePersonaId.value] == null) {
+            throw BackupValidationException("settings.activePersonaId 引用了不存在的人格 ${activePersonaId.value}")
+        }
+
+        // 受影响会话：导入的会话 + 导入消息落在的会话 + 被替换消息原来的会话。
+        val affectedSessions = LinkedHashSet<String>()
+        if (mode == "replace") {
+            affectedSessions += finalSessions.keys
+        } else {
+            parsed.sessions.forEach { affectedSessions += it.id }
+            parsed.messages.forEach { affectedSessions += it.sessionId }
+            parsed.messages.forEach { message ->
+                existingMessages.firstOrNull { it.id == message.id }?.let { affectedSessions += it.sessionId }
+            }
+        }
+
+        // 块编号统一按最终消息顺序重排：备份导入不信任外部 blockIndex，避免出现 > 200 条的块。
+        for (sessionId in affectedSessions) {
+            val ordered = finalMessages.values
+                .filter { it.sessionId == sessionId }
+                .sortedWith(compareBy({ it.createdAt }, { it.id }))
+            ordered.forEachIndexed { index, message ->
+                finalMessages[message.id] = message.copy(blockIndex = index / BLOCK_SIZE)
+            }
+            val existing = finalSessions.getValue(sessionId)
+            val last = ordered.lastOrNull()
+            val unread = ordered.count { it.role == MessageRole.ASSISTANT && it.readAt == null }
+            finalSessions[sessionId] = existing.copy(
+                lastMessageAt = last?.createdAt,
+                lastBlockIndex = if (ordered.isEmpty()) -1 else (ordered.size - 1) / BLOCK_SIZE,
+                unread = unread,
+                messageCount = ordered.size.toLong(),
+                updatedAt = maxOf(existing.updatedAt, last?.createdAt ?: 0L)
+            )
+        }
+
+        // ---- 校验全部通过，开始改内存/落盘 ----
+        if (mode == "replace") {
+            deleteRecursively(sessionsDir)
+            Files.createDirectories(sessionsDir)
+            blockCache.clear()
+            messageIndexCache.clear()
+            moods.clear()
+            presence.clear()
+            proactiveStates.clear()
+        } else {
+            for (sessionId in affectedSessions) {
+                deleteRecursively(sessionDir(sessionId))
+                blockCache.remove(sessionId)
+                messageIndexCache.remove(sessionId)
+            }
+        }
+
+        personas.clear()
+        personas.addAll(finalPersonas.values)
+        sessions.clear()
+        sessions.putAll(finalSessions)
+        memories.clear()
+        memories.putAll(finalMemories)
+        presets.clear()
+        presets.putAll(finalPresets)
+
+        // 合并设置的语义：备份里给了 settings 才改；只接白名单键。
+        if (parsed.settings != null) {
+            val merged = LinkedHashMap<String, JsonValue>()
+            if (mode == "merge") {
+                for ((key, value) in settings.fields) {
+                    if (key in SETTINGS_WHITELIST) merged[key] = value
+                }
+            }
+            for ((key, value) in parsed.settings.fields) {
+                if (key in SETTINGS_WHITELIST) merged[key] = value
+            }
+            settings = JsonValue.Obj(merged)
+        } else if (mode == "replace") {
+            settings = JsonValue.Obj()
+        }
+
+        // 只重写受影响会话的块文件；其它会话的磁盘内容原样不动。
+        for (sessionId in affectedSessions) {
+            val messages = finalMessages.values
+                .filter { it.sessionId == sessionId }
+                .sortedWith(compareBy({ it.createdAt }, { it.id }))
+            val blocks = messages.groupBy { it.blockIndex }.toSortedMap()
+            val metas = ArrayList<BlockMeta>()
+            for ((index, blockMessages) in blocks) {
+                rewriteBlockLocked(sessionId, index, blockMessages)
+                metas += BlockMeta(
+                    index = index,
+                    firstMessageId = blockMessages.first().id,
+                    lastMessageId = blockMessages.last().id,
+                    firstAt = blockMessages.first().createdAt,
+                    lastAt = blockMessages.last().createdAt,
+                    count = blockMessages.size
+                )
+            }
+            blockCache[sessionId] = metas.toMutableList()
+            if (metas.isEmpty()) {
+                persistBlockIndexLocked(sessionId, emptyList())
+            } else {
+                persistBlockIndexLocked(sessionId, metas)
+            }
+        }
+
+        persistPersonasLocked()
+        persistSessionsLocked()
+        persistMoodsLocked()
+        persistPresenceLocked()
+        persistProactiveStateLocked()
+        persistMemoriesLocked()
+        persistPresetsLocked()
+        writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
+        lastTimestamp = maxOf(lastTimestamp, computeLastTimestampLocked())
+        for (memory in memories.values) lastTimestamp = maxOf(lastTimestamp, memory.updatedAt)
+        for (preset in presets.values) lastTimestamp = maxOf(lastTimestamp, preset.updatedAt)
+
+        BackupImportResult(
+            mode = mode,
+            personas = parsed.personas.size,
+            sessions = parsed.sessions.size,
+            messages = parsed.messages.size,
+            memories = parsed.memories.size,
+            presets = parsed.presets.size,
+            settings = parsed.settings != null
+        )
+    }
+
     // ================================================================== 事件（增量游标）
 
     /** 游标大于 [since] 的事件（最多 [limit] 条），同步读。 */
@@ -719,11 +1312,248 @@ class FileStore(
         }
     }
 
+    // ================================================================== 内部：备份解析
+
+    private class ParsedBackup(
+        val personas: List<Persona>,
+        val sessions: List<Session>,
+        val messages: List<Message>,
+        val memories: List<Memory>,
+        val presets: List<Preset>,
+        val settings: JsonValue.Obj?
+    )
+
+    private fun parseBackupLocked(data: JsonValue.Obj, now: Long): ParsedBackup {
+        val where = "$root/backup"
+        val format = data.optString("format", where)
+        if (format != null && format != BACKUP_FORMAT_NAME) {
+            throw BackupValidationException("不是 MyFriend 备份（format=$format）")
+        }
+        val versionValue = data.fields["formatVersion"]
+            ?: throw BackupValidationException("备份缺少 formatVersion")
+        val version = (versionValue as? JsonValue.Num)?.asInt
+            ?: throw BackupValidationException("备份的 formatVersion 必须是整数")
+        if (version != BACKUP_FORMAT_VERSION) throw UnsupportedBackupVersionException(version)
+
+        fun section(key: String): List<JsonValue.Obj> = data.optArr(key, where).mapIndexed { index, item ->
+            item as? JsonValue.Obj ?: throw BackupValidationException("备份 $key 第 ${index + 1} 项不是对象")
+        }
+
+        val personas = section("personas").mapIndexed { index, obj ->
+            parseBackupPersona(obj, "$where.personas[$index]", now)
+        }
+        val sessions = section("sessions").mapIndexed { index, obj ->
+            parseBackupSession(obj, "$where.sessions[$index]", now)
+        }
+        val messages = section("messages").mapIndexed { index, obj ->
+            parseBackupMessage(obj, "$where.messages[$index]", now)
+        }
+        val memories = section("memories").mapIndexed { index, obj ->
+            parseBackupMemory(obj, "$where.memories[$index]", now)
+        }
+        val presets = section("presets").mapIndexed { index, obj ->
+            parseBackupPreset(obj, "$where.presets[$index]", now)
+        }
+        val settings = data.optObj("settings", where)?.let { raw ->
+            val fields = LinkedHashMap<String, JsonValue>()
+            for ((key, value) in raw.fields) {
+                if (key in SETTINGS_WHITELIST) fields[key] = value
+            }
+            JsonValue.Obj(fields)
+        }
+
+        requireUniqueIds("personas", personas.map { it.id })
+        requireUniqueIds("sessions", sessions.map { it.id })
+        requireUniqueIds("messages", messages.map { it.id })
+        requireUniqueIds("memories", memories.map { it.id })
+        requireUniqueIds("presets", presets.map { it.id })
+        return ParsedBackup(personas, sessions, messages, memories, presets, settings)
+    }
+
+    private fun requireUniqueIds(section: String, ids: List<String>) {
+        val duplicated = ids.groupingBy { it }.eachCount().entries.firstOrNull { it.value > 1 }
+        if (duplicated != null) {
+            throw BackupValidationException("备份 $section 里 id=${duplicated.key} 重复")
+        }
+    }
+
+    private fun parseBackupPersona(obj: JsonValue.Obj, where: String, now: Long): Persona {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val name = obj.optString("name", where)?.trim().orEmpty()
+        if (name.isEmpty()) throw BackupValidationException("$where 缺少 name")
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val updatedAt = obj.optLong("updatedAt", where) ?: createdAt
+        val isDefault = obj.optBool("isDefault", where) ?: false
+        return Persona(
+            id = id,
+            name = name,
+            nameEn = obj.optString("nameEn", where) ?: "",
+            description = obj.optString("description", where) ?: "",
+            avatarUrl = obj.optString("avatarUrl", where),
+            isDefault = isDefault,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            activityJson = obj.optString("activityJson", where)?.takeIf { it.isNotBlank() },
+            extraFields = obj.fields.filterKeys { it !in Persona.RESERVED_KEYS }
+        )
+    }
+
+    private fun parseBackupSession(obj: JsonValue.Obj, where: String, now: Long): Session {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val updatedAt = obj.optLong("updatedAt", where) ?: createdAt
+        return Session(
+            id = id,
+            personaId = personaId,
+            title = obj.optString("title", where) ?: "",
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            lastMessageAt = obj.optLong("lastMessageAt", where),
+            lastBlockIndex = obj.optInt("lastBlockIndex", where) ?: -1,
+            // 兼容客户端备份的 `unreadCount`。
+            unread = obj.optInt("unread", where) ?: obj.optInt("unreadCount", where) ?: 0,
+            messageCount = obj.optLong("messageCount", where) ?: 0
+        )
+    }
+
+    private fun parseBackupMessage(obj: JsonValue.Obj, where: String, now: Long): Message {
+        val id = obj.reqString("id", where)
+        if (!MESSAGE_ID_PATTERN.matches(id)) throw BackupValidationException("$where 的 id 不合法")
+        val sessionId = obj.reqString("sessionId", where)
+        if (!isValidId(sessionId)) throw BackupValidationException("$where 的 sessionId 不合法")
+        val role = obj.reqString("role", where)
+        if (!MessageRole.isValid(role)) throw BackupValidationException("$where 的 role 不合法")
+        val content = obj.reqString("content", where)
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val blockIndex = obj.optInt("blockIndex", where) ?: 0
+        if (blockIndex < 0) throw BackupValidationException("$where 的 blockIndex 不能是负数")
+        val attachments = if (obj.fields.containsKey("attachments")) {
+            obj.stringList("attachments", where)
+        } else {
+            emptyList()
+        }
+        return Message(
+            id = id,
+            sessionId = sessionId,
+            blockIndex = blockIndex,
+            role = role,
+            content = content,
+            createdAt = createdAt,
+            readAt = obj.optLong("readAt", where),
+            attachments = attachments,
+            source = obj.optString("source", where) ?: MessageSource.IMPORT,
+            clientMessageId = obj.optString("clientMessageId", where),
+            replyTo = obj.optString("replyTo", where),
+            promptTokens = obj.optInt("promptTokens", where),
+            completionTokens = obj.optInt("completionTokens", where)
+        )
+    }
+
+    private fun parseBackupMemory(obj: JsonValue.Obj, where: String, now: Long): Memory {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        val content = obj.reqString("content", where)
+        if (content.isBlank()) throw BackupValidationException("$where 的 content 不能为空")
+        val importance = obj.optInt("importance", where) ?: 50
+        if (importance !in 0..100) throw BackupValidationException("$where 的 importance 必须在 0–100")
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val updatedAt = obj.optLong("updatedAt", where) ?: createdAt
+        return Memory(
+            id = id,
+            personaId = personaId,
+            content = content,
+            importance = importance,
+            tags = parseTags(obj.fields["tags"], where),
+            createdAt = createdAt,
+            updatedAt = updatedAt
+        )
+    }
+
+    private fun parseBackupPreset(obj: JsonValue.Obj, where: String, now: Long): Preset {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val name = obj.optString("name", where)?.trim().orEmpty()
+        if (name.isEmpty()) throw BackupValidationException("$where 缺少 name")
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val updatedAt = obj.optLong("updatedAt", where) ?: createdAt
+        return Preset(
+            id = id,
+            name = name,
+            description = obj.optString("description", where) ?: "",
+            prompt = obj.optString("prompt", where) ?: "",
+            category = obj.optString("category", where) ?: "",
+            avatarUri = obj.optString("avatarUri", where),
+            avatarSeed = obj.optInt("avatarSeed", where) ?: 0,
+            createdAt = createdAt,
+            updatedAt = updatedAt,
+            worldJson = obj.optString("worldJson", where)?.takeIf { it.isNotBlank() },
+            speechStyleJson = obj.optString("speechStyleJson", where)?.takeIf { it.isNotBlank() },
+            extraFields = obj.fields.filterKeys { it !in Preset.RESERVED_KEYS }
+        )
+    }
+
+    private fun parseTags(value: JsonValue?, where: String): List<String> = when (value) {
+        null, JsonValue.Null -> emptyList()
+        is JsonValue.Arr -> value.items.map { item ->
+            (item as? JsonValue.Str)?.value ?: throw BackupValidationException("$where 的 tags 里有非字符串元素")
+        }
+        is JsonValue.Str -> {
+            val text = value.value.trim()
+            if (text.isEmpty()) {
+                emptyList()
+            } else {
+                val parsed = try {
+                    com.myfriend.app.core.json.Json.parse(text)
+                } catch (_: JsonParseException) {
+                    // 也接受逗号分隔的旧写法；不把一条脏标签当成整份备份失败。
+                    return text.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                }
+                (parsed as? JsonValue.Arr)?.items?.map { item ->
+                    (item as? JsonValue.Str)?.value
+                        ?: throw BackupValidationException("$where 的 tags 里有非字符串元素")
+                } ?: listOf(text)
+            }
+        }
+        else -> throw BackupValidationException("$where 的 tags 必须是数组或字符串")
+    }
+
+    private fun JsonValue.Obj.optBool(key: String, where: String): Boolean? {
+        val value = fields[key] ?: return null
+        if (value is JsonValue.Null) return null
+        return (value as? JsonValue.Bool)?.value
+            ?: throw BackupValidationException("$where 的字段 $key 不是布尔")
+    }
+
+    private fun publicSettingsLocked(): JsonValue.Obj = JsonValue.Obj(
+        LinkedHashMap<String, JsonValue>().apply {
+            for ((key, value) in settings.fields) if (key in SETTINGS_WHITELIST) put(key, value)
+        }
+    )
+
+    private fun allMessagesLocked(): List<Message> {
+        val result = ArrayList<Message>()
+        for (session in sessions.values) {
+            for (block in blocksForLocked(session.id)) {
+                result.addAll(readBlockLocked(session.id, block.index))
+            }
+        }
+        return result.sortedWith(compareBy({ it.createdAt }, { it.id }))
+    }
+
     // ================================================================== 内部：加载与播种
 
     private fun hasExistingData(): Boolean =
         Files.exists(root.resolve(PERSONAS_FILE)) ||
             Files.exists(root.resolve(SESSIONS_FILE)) ||
+            Files.exists(root.resolve(MEMORIES_FILE)) ||
+            Files.exists(root.resolve(PRESETS_FILE)) ||
+            Files.exists(root.resolve(PUSH_TOKENS_FILE)) ||
             Files.exists(eventsFile) ||
             Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() }
 
@@ -784,6 +1614,18 @@ class FileStore(
         loadOptionalObjectList(root.resolve(PROACTIVE_STATE_FILE), "states") { obj, where ->
             val state = ProactiveState.fromJson(obj, where)
             proactiveStates[state.personaId] = state
+        }
+        loadOptionalObjectList(root.resolve(MEMORIES_FILE), "memories") { obj, where ->
+            val memory = Memory.fromJson(obj, where)
+            memories[memory.id] = memory
+        }
+        loadOptionalObjectList(root.resolve(PRESETS_FILE), "presets") { obj, where ->
+            val preset = Preset.fromJson(obj, where)
+            presets[preset.id] = preset
+        }
+        loadOptionalObjectList(root.resolve(PUSH_TOKENS_FILE), "tokens") { obj, where ->
+            val token = PushRegistration.fromJson(obj, where)
+            pushTokens[pushTokenKey(token.platform, token.token)] = token
         }
         if (Files.exists(root.resolve(SECRETS_FILE))) {
             // 0600 是承诺，不是建议：打开时再收紧一次（有人复制/解压可能带上更宽的权限）。
@@ -1158,6 +2000,21 @@ class FileStore(
         StoreJson.obj("states" to StoreJson.arr(proactiveStates.values.map { it.toJson() }))
     )
 
+    private fun persistMemoriesLocked() = writeJsonLocked(
+        root.resolve(MEMORIES_FILE),
+        StoreJson.obj("memories" to StoreJson.arr(memories.values.map { it.toJson() }))
+    )
+
+    private fun persistPresetsLocked() = writeJsonLocked(
+        root.resolve(PRESETS_FILE),
+        StoreJson.obj("presets" to StoreJson.arr(presets.values.map { it.toJson() }))
+    )
+
+    private fun persistPushTokensLocked() = writeJsonLocked(
+        root.resolve(PUSH_TOKENS_FILE),
+        StoreJson.obj("tokens" to StoreJson.arr(pushTokens.values.map { it.toJson() }))
+    )
+
     private fun readSecretsLocked(): Map<String, String> {
         val file = root.resolve(SECRETS_FILE)
         val json = readJsonFile(file) ?: return emptyMap()
@@ -1244,6 +2101,8 @@ class FileStore(
     }
 
     // ================================================================== 内部：路径与 id
+
+    private fun pushTokenKey(platform: String, token: String): String = "$platform|$token"
 
     private fun sessionDir(sessionId: String): Path {
         if (!isValidId(sessionId)) throw IllegalArgumentException("非法的会话 id")

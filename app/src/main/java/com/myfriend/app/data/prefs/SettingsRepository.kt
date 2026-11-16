@@ -42,6 +42,7 @@ class SettingsRepository @Inject constructor(
         val haptics = booleanPreferencesKey("haptics")
         val seeded = booleanPreferencesKey("initial_personas_seeded")
         val agentLoop = booleanPreferencesKey("agent_loop")
+        val autoTranslatePersona = booleanPreferencesKey("auto_translate_persona")
         val backgroundTipDismissed = booleanPreferencesKey("background_tip_dismissed")
         // 心跳的内部状态：只用来让冲动曲线跨重启接着走，不对外暴露（设置页里没有它）。
         val heartbeatLastResetAt = longPreferencesKey("heartbeat_last_reset_at")
@@ -61,6 +62,7 @@ class SettingsRepository @Inject constructor(
             activePersonaId = prefs[Keys.activePersonaId],
             hapticsEnabled = prefs[Keys.haptics] ?: true,
             agentLoopEnabled = prefs[Keys.agentLoop] ?: true,
+            autoTranslatePersona = prefs[Keys.autoTranslatePersona] ?: true,
             backgroundTipDismissed = prefs[Keys.backgroundTipDismissed] ?: false,
             heartbeatLastResetAt = prefs[Keys.heartbeatLastResetAt]?.takeIf { it > 0L } ?: 0L,
             heartbeatLastFiredAt = prefs[Keys.heartbeatLastFiredAt]?.takeIf { it > 0L }
@@ -92,6 +94,9 @@ class SettingsRepository @Inject constructor(
         if (id == null) it.remove(Keys.activePersonaId) else it[Keys.activePersonaId] = id
     }
     suspend fun setHapticsEnabled(enabled: Boolean) = edit { it[Keys.haptics] = enabled }
+
+    /** 关掉「自动翻译人设」：之后一律用原文，缓存保留（重新打开时还能直接命中）。 */
+    suspend fun setAutoTranslatePersona(enabled: Boolean) = edit { it[Keys.autoTranslatePersona] = enabled }
 
     /**
      * 清空所有设置。

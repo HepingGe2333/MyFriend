@@ -21,10 +21,14 @@ import com.myfriend.app.data.local.PersonaEntity
 import com.myfriend.app.data.local.ProviderType
 import com.myfriend.app.data.local.SeedPersonas
 import com.myfriend.app.data.prefs.AppSettings
+import com.myfriend.app.domain.PersonaTranslation
+import com.myfriend.app.data.ai.PersonaTranslationResult
 import com.myfriend.app.data.prefs.SettingsRepository
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.ChatRepository
 import com.myfriend.app.data.repo.MediaJanitor
+import com.myfriend.app.data.repo.PersonaTranslationCoordinator
+import com.myfriend.app.data.repo.PersonaTranslationGateway
 import com.myfriend.app.data.repo.MemoryRepository
 import com.myfriend.app.data.repo.MessageBlockWriter
 import com.myfriend.app.data.repo.MoodRepository
@@ -86,7 +90,15 @@ class ChatUiHarness(
     private val settingsRepository: SettingsRepository,
     private val chatNotifier: ChatNotifier,
     /** 0.12：删草稿图片前的引用守卫（合成一个真实现，避免测试里手拼假守卫）。 */
-    private val mediaJanitor: MediaJanitor
+    private val mediaJanitor: MediaJanitor,
+    /**
+     * 0.12 人格提示词翻译（spec/persona-translation §2）：这里给一个「不翻译」的实现。
+     *
+     * UI 行为测试要钉的是分页/定位/失败重试这些界面契约；翻译会发网络请求、还会写
+     * `translationJson`，把它接进这些测试只会让它们变慢变脆。默认实现让协调器直接
+     * 返回 MISSING（零请求），需要测翻译时单独注入。
+     */
+    private val translationCoordinator: PersonaTranslationCoordinator = offlineTranslationCoordinator()
 ) {
 
     val personaDao get() = db.personaDao()
@@ -217,6 +229,7 @@ class ChatUiHarness(
                 settingsRepository = settingsRepository,
                 chatNotifier = chatNotifier,
                 mediaJanitor = mediaJanitor,
+                translationCoordinator = translationCoordinator,
                 context = context
             ) as T
         }
@@ -237,6 +250,36 @@ class ChatUiHarness(
         settingsRepository.resetAll(preserveSeedMarker = preserveSeedMarker)
 
     companion object {
+        /**
+         * 测试用的「不翻译」协调器：网关永远说「没有人格」，于是协调器直接返回 MISSING，
+         * 不发请求、不写库、不碰设置。
+         */
+        fun offlineTranslationCoordinator(): PersonaTranslationCoordinator =
+            PersonaTranslationCoordinator(
+                object : PersonaTranslationGateway {
+                    override suspend fun persona(id: String): PersonaEntity? = null
+
+                    override suspend fun writeCache(
+                        personaId: String,
+                        translationJson: String?,
+                        lang: String?
+                    ) = Unit
+
+                    override suspend fun autoTranslateEnabled(): Boolean = false
+
+                    override suspend fun translate(
+                        persona: PersonaEntity,
+                        targetLang: String
+                    ): PersonaTranslationResult = PersonaTranslationResult(
+                        translation = PersonaTranslation(),
+                        ok = false,
+                        skipped = true
+                    )
+
+                    override fun appLanguage(): String = "en"
+                }
+            )
+
         const val DEFAULT_PERSONA_NAME = "测试联系人"
         const val DEFAULT_CONFIG_NAME = "测试配置"
 

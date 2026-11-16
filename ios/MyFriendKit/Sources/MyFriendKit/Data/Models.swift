@@ -266,6 +266,13 @@ public struct PersonaEntity: Equatable, Sendable {
     public var speechStyleJson: String?
     /// 当前活动的 JSON（`PersonaActivity`）：他在做什么、忙到什么时候。
     public var activityJson: String?
+    /// v14 的翻译缓存（`PersonaTranslation`）：人设/世界/话风翻成当前界面语言后的快照。
+    ///
+    /// 与 `translationLang` 一起用：`lang` 与当前界面语言不一致、或 `sourceHash` 与源字段
+    /// 对不上，就视为没有缓存（下次启动重译）。原文永远保留在本行其他列里，翻译只影响提示词。
+    public var translationJson: String?
+    /// 这份翻译的目标语言（`zh` / `en` / BCP-47）。
+    public var translationLang: String?
 
     public init(
         id: String,
@@ -302,7 +309,9 @@ public struct PersonaEntity: Equatable, Sendable {
         dndOnSleep: Bool = false,
         worldJson: String? = nil,
         speechStyleJson: String? = nil,
-        activityJson: String? = nil
+        activityJson: String? = nil,
+        translationJson: String? = nil,
+        translationLang: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -340,6 +349,8 @@ public struct PersonaEntity: Equatable, Sendable {
         self.worldJson = PromptGuidanceJSON.clean(worldJson)
         self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
         self.activityJson = PromptGuidanceJSON.clean(activityJson)
+        self.translationJson = PromptGuidanceJSON.clean(translationJson)
+        self.translationLang = translationLang?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 长文本字段的清洗：去首尾空白，超长截断（不是拒绝，老数据可能很长）。

@@ -211,23 +211,35 @@ public struct PersonaActivity: Equatable, Sendable {
     // MARK: - 渲染
 
     /// 「# 你此刻的状态」里的活动那半句（不含时间前缀，时间由 `PromptBuilder` 拼）。
+    ///
+    /// 文案来自规范脚手架（`spec/persona-guidance/scaffold.json` 的 `state_busy` / `state_limited`）：
+    /// 模板里写的是「你在{activity}」，而活动本身常常就是「在事务所赶方案」这种说法，
+    /// 所以填进去之前先去掉一个句首的「在」，否则会读成「你在在事务所…」。
     public func renderStateLine(now: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
-        // 不写「你在」+ 活动：活动本身就是「在事务所赶方案」这种说法，
-        // 再加一个「你在」会变成「你在在事务所赶方案」。
-        var line = activity
-        if isActive(now: now) {
-            line += "，大概 \(untilClockText(calendar: calendar)) 结束"
-        }
-        line += "。"
+        let untilText = until > 0 ? untilClockText(calendar: calendar) : "稍后"
+        let what = Self.activityPhrase(activity)
         switch availability {
         case .busy:
-            line += "这段时间你不太有空：回复短一点，明确说自己几点后再说；不要谎称有空，也不要主动开新话题。"
+            return PersonaPromptScaffold.fill(
+                PersonaPromptScaffold.stateBusy,
+                ["activity": what, "until": untilText]
+            )
         case .limited:
-            line += "这段时间你在忙：回得慢、回得短，对方问起就说自己在忙，别装得很有空。"
+            return PersonaPromptScaffold.fill(
+                PersonaPromptScaffold.stateLimited,
+                ["activity": what, "until": untilText]
+            )
         case .free:
-            line += "这段时间你有空。"
+            // 脚手架没有「有空」这一条；同形状写一句，不额外发明新规则。
+            return "你在\(what)，大概 \(untilText) 结束。这段时间你有空。"
         }
-        return line
+    }
+
+    /// 去掉活动句首的「在」（`在事务所赶方案` → `事务所赶方案`），只去一个。
+    static func activityPhrase(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("在") { return String(trimmed.dropFirst()) }
+        return trimmed
     }
 
     /// 界面那一行（只写他在做什么，不显示 `kind` 原值；§4）。

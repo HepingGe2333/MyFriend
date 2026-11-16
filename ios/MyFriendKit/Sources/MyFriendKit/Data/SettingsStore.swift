@@ -63,6 +63,9 @@ public struct AppSettings: Equatable, Sendable {
     public var heartbeatLastResetAt: Int64
     /// 上一次他真的因为这股冲动想了一回的时刻；nil = 还没发生过（内部状态）。
     public var heartbeatLastFiredAt: Int64?
+    /// 「自动翻译人设」（默认开，`spec/persona-translation/README.md` §6）：
+    /// 进聊天前把人设/世界/话风翻成当前界面语言；关掉就永远用原文。
+    public var autoTranslatePersona: Bool
 
     public init(
         themeMode: ThemeMode = .system,
@@ -78,7 +81,8 @@ public struct AppSettings: Equatable, Sendable {
         agentLoopEnabled: Bool = true,
         backgroundTipDismissed: Bool = false,
         heartbeatLastResetAt: Int64 = 0,
-        heartbeatLastFiredAt: Int64? = nil
+        heartbeatLastFiredAt: Int64? = nil,
+        autoTranslatePersona: Bool = true
     ) {
         self.themeMode = themeMode
         self.accentColor = accentColor
@@ -94,6 +98,7 @@ public struct AppSettings: Equatable, Sendable {
         self.backgroundTipDismissed = backgroundTipDismissed
         self.heartbeatLastResetAt = heartbeatLastResetAt
         self.heartbeatLastFiredAt = heartbeatLastFiredAt
+        self.autoTranslatePersona = autoTranslatePersona
     }
 }
 
@@ -162,6 +167,7 @@ public final class SettingsStore {
         case backgroundTipDismissed = "background_tip_dismissed"
         case heartbeatLastResetAt = "heartbeat_last_reset_at"
         case heartbeatLastFiredAt = "heartbeat_last_fired_at"
+        case autoTranslatePersona = "auto_translate_persona"
     }
 
     public let defaults: UserDefaults
@@ -188,7 +194,8 @@ public final class SettingsStore {
             agentLoopEnabled: bool(.agentLoopEnabled, fallback.agentLoopEnabled),
             backgroundTipDismissed: bool(.backgroundTipDismissed, fallback.backgroundTipDismissed),
             heartbeatLastResetAt: integer(.heartbeatLastResetAt) ?? fallback.heartbeatLastResetAt,
-            heartbeatLastFiredAt: integer(.heartbeatLastFiredAt)
+            heartbeatLastFiredAt: integer(.heartbeatLastFiredAt),
+            autoTranslatePersona: bool(.autoTranslatePersona, fallback.autoTranslatePersona)
         )
     }
 
@@ -209,6 +216,7 @@ public final class SettingsStore {
         defaults.set(settings.backgroundTipDismissed, forKey: Key.backgroundTipDismissed.rawValue)
         setInteger(settings.heartbeatLastResetAt, .heartbeatLastResetAt)
         setInteger(settings.heartbeatLastFiredAt, .heartbeatLastFiredAt)
+        defaults.set(settings.autoTranslatePersona, forKey: Key.autoTranslatePersona.rawValue)
     }
 
     /// 恢复默认：清掉所有键，而不是写一份默认值（两者在「以后加字段」时行为不同：

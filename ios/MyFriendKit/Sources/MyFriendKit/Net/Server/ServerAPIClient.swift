@@ -248,6 +248,117 @@ public final class ServerAPIClient {
 
     // MARK: - 普通请求
 
+    /// `POST` 一个 JSON body 并解出响应（写路径：新建会话 / 标已读 / 上报活动 / 注册推送）。
+    ///
+    /// 与 `get` 共用错误映射：非 2xx 时把服务端的 `{"error":{code,message}}` 原样翻成
+    /// `ServerAPIError`，界面上直接显示中文 `message`。
+    ///
+    /// - Note: 放在这里而不是新文件的 `extension` 里，是因为它要用本文件的私有
+    ///   `makeRequest` / `error(from:status:)`；公开的写路径方法在
+    ///   `ServerAPIClient+Write.swift` 里（同模块可见即可）。
+    func post<T: Decodable, Body: Encodable>(
+        path: String,
+        body: Body,
+        as type: T.Type,
+        timeout: TimeInterval = ServerAPIClient.requestTimeout
+    ) async throws -> T {
+        var request = try makeRequest(
+            path: path, query: [], method: "POST", accept: "application/json", timeout: timeout
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        do {
+            request.httpBody = try JSONEncoder().encode(body)
+        } catch {
+            throw ServerAPIError(code: ServerAPIError.Code.invalidArgument, message: "请求内容无法编码")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw ServerAPIError(
+                    code: ServerAPIError.Code.invalidResponse,
+                    message: "服务端没有返回 HTTP 响应"
+                )
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw Self.error(from: data, status: http.statusCode)
+            }
+            do {
+                return try JSONDecoder().decode(T.self, from: data)
+            } catch {
+                throw ServerAPIError(
+                    code: ServerAPIError.Code.decodeFailed,
+                    status: http.statusCode,
+                    message: "服务端返回的数据格式不正确"
+                )
+            }
+        } catch let error as ServerAPIError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw Self.mapURLError(error)
+        } catch {
+            throw ServerAPIError(code: ServerAPIError.Code.networkError, message: "连接服务端失败")
+        }
+    }
+
+    /// `GET /health`：设置页「测试连接」用。
+    ///
+    /// 为什么不用 `/v1/state` 试连接：那会真的读一遍全库（首次同步还可能带上最新块），
+    /// 用户点一下「测试」就产生一次完整同步；`/health` 只回服务名与版本，
+    /// 而且 agentd 给它单独一个限流桶，不会跟聊天抢配额。
+    func health() async throws -> ServerHealth {
+        guard config.enabled else {
+            throw ServerAPIError(code: ServerAPIError.Code.disabled, message: "服务端模式已关闭")
+        }
+        guard let baseURL = config.baseURL else {
+            throw ServerAPIError(code: ServerAPIError.Code.notConfigured, message: "还没有配置服务端地址")
+        }
+        // `/health` 在**根级**（不在 `/v1` 下），所以这里单独拼一次 URL，不走 `makeURL`。
+        var root = baseURL.absoluteString
+        while root.hasSuffix("/") { root.removeLast() }
+        if root.hasSuffix("/v1") { root = String(root.dropLast(3)) }
+        guard let url = URL(string: root + "/health") else {
+            throw ServerAPIError(code: ServerAPIError.Code.invalidArgument, message: "服务端地址无效")
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = ServerAPIClient.requestTimeout
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = config.token {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw ServerAPIError(
+                    code: ServerAPIError.Code.invalidResponse,
+                    message: "服务端没有返回 HTTP 响应"
+                )
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw Self.error(from: data, status: http.statusCode)
+            }
+            do {
+                return try JSONDecoder().decode(ServerHealth.self, from: data)
+            } catch {
+                throw ServerAPIError(
+                    code: ServerAPIError.Code.decodeFailed,
+                    status: http.statusCode,
+                    message: "服务端返回的数据格式不正确"
+                )
+            }
+        } catch let error as ServerAPIError {
+            throw error
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError {
+            throw Self.mapURLError(error)
+        } catch {
+            throw ServerAPIError(code: ServerAPIError.Code.networkError, message: "连接服务端失败")
+        }
+    }
+
     private func get<T: Decodable>(
         path: String,
         query: [URLQueryItem],

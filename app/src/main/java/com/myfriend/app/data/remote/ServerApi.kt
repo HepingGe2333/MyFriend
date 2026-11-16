@@ -262,6 +262,78 @@ class ServerApi(
         }
     }
 
+    // ------------------------------------------------------------------ 健康检查（设置页「测试连接」）
+
+    /**
+     * `GET /health`：设置页「测试连接」用的最小请求。
+     *
+     * 为什么不用 `/v1/state`：状态快照可能很大（首次同步每个会话一块），而「地址/令牌对不对」
+     * 只需要一个不会读库的端点。agentd 的 `/health` 与 `/v1/…` 走同一套 token 校验
+     * （`Main.kt`：设了 token 后所有请求都要 Bearer），所以能验证认证，又不会拉回整份状态。
+     */
+    suspend fun health(): ServerHealth = requestJson(
+        requestBuilder(url("health")).get().build()
+    )
+
+    // ------------------------------------------------------------------ 写路径（M3 最小闭环）
+
+    /**
+     * `POST /v1/sessions`：一人格一会话；已存在时服务端返回既有会话（`created=false`）。
+     *
+     * 成功后调用方负责把 [ServerSessionCreated.session] 落进本地缓存（服务端是唯一真相源）。
+     */
+    suspend fun createSession(personaId: String, title: String? = null): ServerSessionCreated =
+        postJson(
+            url("v1", "sessions"),
+            buildJsonObject {
+                put("personaId", personaId)
+                title?.trim()?.takeIf { it.isNotEmpty() }?.let { put("title", it) }
+            }
+        )
+
+    /**
+     * `POST /v1/sessions/{id}/read`：标已读到 [upTo]（null = 全部）。
+     *
+     * 服务端返回 `{unread:0, readAt, marked}`；失败由调用方决定是重试还是只记日志
+     * （读回执不该挡住用户看消息）。
+     */
+    suspend fun markRead(sessionId: String, upTo: Long? = null): ServerReadReceipt =
+        postJson(
+            url("v1", "sessions", sessionId, "read"),
+            buildJsonObject { upTo?.takeIf { it > 0 }?.let { put("upTo", it) } }
+        )
+
+    /**
+     * `POST /v1/personas/{id}/activity`：把 `set_activity` 的结果同步给服务端。
+     *
+     * 服务端会自己夹取 `minutes` / 校验 `until`；客户端只负责把本地已经归一化的活动原样上报。
+     */
+    suspend fun reportActivity(personaId: String, activity: ServerActivityWrite): ServerActivityReport =
+        postJson(
+            url("v1", "personas", personaId, "activity"),
+            buildJsonObject {
+                put("kind", activity.kind)
+                put("activity", activity.activity)
+                activity.minutes?.let { put("minutes", it) }
+                activity.until?.let { put("until", it) }
+                put("availability", activity.availability)
+            }
+        )
+
+    /**
+     * `POST /v1/push/register`（M6 脚手架）：服务端保存 token，有凭据时才有真实推送。
+     *
+     * 本阶段客户端不主动调用；先留方法，等推送凭据/协议落地时接线，避免那时候再改传输层。
+     */
+    suspend fun registerPush(platform: String, token: String): ServerPushRegistration =
+        postJson(
+            url("v1", "push", "register"),
+            buildJsonObject {
+                put("platform", platform)
+                put("token", token)
+            }
+        )
+
     // ------------------------------------------------------------------ 内部：请求构造 / 执行 / 解析
 
     private fun requestBuilder(url: HttpUrl): Request.Builder {
@@ -297,6 +369,14 @@ class ServerApi(
             throw invalidResponse(status, invalid)
         }
     }
+
+    /** `POST` + JSON 请求体 → 反序列化响应；写路径共用这一条，超时/错误映射与 GET 一致。 */
+    private suspend inline fun <reified T> postJson(url: HttpUrl, payload: kotlinx.serialization.json.JsonObject): T =
+        requestJson(
+            requestBuilder(url)
+                .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+        )
 
     private fun invalidResponse(status: Int, cause: Exception): ServerApiException =
         ServerApiException(

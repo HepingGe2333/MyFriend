@@ -173,6 +173,12 @@ public final class ChatService {
     /// agent 决策层（0.11.0）：睡眠判定与 `defer_reply` 计划走它。
     /// 默认本机实现（零网络）；App 装配时按 `AgentCoreClientFactory` 的选择结果注入。
     private let agentCore: any AgentCoreClient
+    /// 当前界面语言（`zh` / `en`）。
+    ///
+    /// 只用于「提示词拼装时读哪一份译文缓存」；**触发翻译**在视图层（进聊天前 kick 一次，
+    /// 见 `Views/Persona/PersonaTranslationTrigger.swift`），这样聊天生成不会被翻译拖慢，
+    /// 单测里也不会因为翻译多发一次网络请求。
+    private let translationLanguage: () -> String
 
     private let lock = NSLock()
     private var runningGenerations: [String: RunningGeneration] = [:]
@@ -195,6 +201,7 @@ public final class ChatService {
         languageDirective: (() -> String?)? = nil,
         media: MediaStorage = .shared,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
+        translationLanguage: (() -> String)? = nil,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.stores = stores
@@ -213,6 +220,7 @@ public final class ChatService {
         self.languageDirective = languageDirective
         self.media = media
         self.agentCore = agentCore
+        self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
         self.now = now
     }
 
@@ -550,14 +558,21 @@ public final class ChatService {
             let moodState = mood.current(personaId: persona.id, now: timestamp)
             let nudge = mood.reflectionNudge(personaId: persona.id, now: timestamp)
 
+            // 提示词翻译（`spec/persona-translation/README.md`）：用**已有缓存**里的译文拼提示词。
+            // 触发（kick）在进聊天时由视图层做，所以这一轮不会被翻译拖慢：
+            // 第一次进来通常还没译文（用原文），翻译落地后下一轮回复就用译文。
+            let language = translationLanguage()
+            let speakingPersona = PersonaTranslation.applyingCached(to: persona, lang: language)
+
             // 人设引导（`spec/persona-guidance/README.md` §1）：世界 → 此刻状态 → 话风 → 关系，
             // 四段都从人格上那三个 JSON 列读出来；坏 JSON / 空字段都安静地整节不出现。
-            let world = WorldPreset.decode(persona.worldJson)
-            let speechStyle = SpeechStyle.decode(persona.speechStyleJson)
-            let activity = PersonaActivity.decode(persona.activityJson, now: timestamp)
+            let world = WorldPreset.decode(speakingPersona.worldJson)
+            let speechStyle = SpeechStyle.decode(speakingPersona.speechStyleJson)
+            let activity = PersonaActivity.decode(speakingPersona.activityJson, now: timestamp)
             let system = PromptBuilder.systemPrompt(SystemPromptInput(
-                personaText: personaText?(persona) ?? PromptBuilder.personaSection(persona),
-                personaName: persona.name,
+                personaText: personaText?(speakingPersona)
+                    ?? PromptBuilder.personaSection(speakingPersona),
+                personaName: speakingPersona.name,
                 worldBlock: PromptBuilder.worldSection(world),
                 stateBlock: PromptBuilder.stateSection(
                     now: timestamp,
@@ -565,7 +580,7 @@ public final class ChatService {
                     presenceDetail: presenceDetail?(persona.id)
                 ),
                 speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
-                relationshipBlock: PromptBuilder.relationshipSection(persona: persona),
+                relationshipBlock: PromptBuilder.relationshipSection(persona: speakingPersona),
                 memoriesBlock: memoriesBlock,
                 earlierMemoryBlock: HistoryCompression.memoryBlock(
                     summary: session.historySummary, summarizedUpTo: session.historySummarizedUpTo

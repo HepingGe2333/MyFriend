@@ -52,11 +52,20 @@ object UsageKind {
 
     /** 把太长的会话压成一段摘要的过程。 */
     const val HISTORY = "HISTORY"
+
+    /**
+     * 启动前把人设/世界设定翻译成 App 语言（`spec/persona-translation/README.md` §6）。
+     *
+     * 它是一次普通的 completion：不算聊天、不算记忆，单独记一类，
+     * 这样「这个月花了多少在他说话上」不会被翻译悄悄摊薄。
+     */
+    const val TRANSLATION = "TRANSLATION"
     const val UNKNOWN = "UNKNOWN"
 
     /** 给「用量」页用的展示顺序：先聊天，再他背着你做的事。 */
     val displayOrder: List<String> = listOf(
-        CHAT, CONSOLIDATION, SCORING, AGENT, RECALL, EXTRACTION, RECONSOLIDATION, HISTORY, UNKNOWN
+        CHAT, CONSOLIDATION, SCORING, AGENT, RECALL, EXTRACTION, RECONSOLIDATION, HISTORY,
+        TRANSLATION, UNKNOWN
     )
 
     /** 宽松归一：大写、去空白；不认识的一律归到 UNKNOWN，绝不抛异常。 */
@@ -76,6 +85,7 @@ object UsageKind {
         RECALL -> "回忆你说过的事"
         EXTRACTION -> "从聊天里记东西"
         RECONSOLIDATION -> "想起旧事"
+        TRANSLATION -> "翻译人设"
         else -> "其他"
     }
 

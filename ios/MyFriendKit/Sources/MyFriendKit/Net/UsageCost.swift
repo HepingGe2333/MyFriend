@@ -54,11 +54,14 @@ public enum UsageKind {
     public static let reconsolidation = "RECONSOLIDATION"
     /// 把太长的会话压成一段摘要的过程。
     public static let history = "HISTORY"
+    /// 把中文人设/世界翻成当前界面语言（`spec/persona-translation` §6）。
+    public static let translation = "TRANSLATION"
     public static let unknown = "UNKNOWN"
 
     /// 给「用量」页用的展示顺序：先聊天，再他背着你做的事。
     public static let displayOrder: [String] = [
-        chat, consolidation, scoring, agent, recall, extraction, reconsolidation, history, unknown
+        chat, consolidation, scoring, agent, recall, extraction, reconsolidation, history,
+        translation, unknown
     ]
 
     /// 宽松归一：大写、去空白；不认识的一律归到 UNKNOWN，绝不抛异常。
@@ -77,6 +80,8 @@ public enum UsageKind {
         case recall: return String(localized: "回忆你说过的事")
         case extraction: return String(localized: "从聊天里记东西")
         case reconsolidation: return String(localized: "想起旧事")
+        case history: return String(localized: "整理这段对话")
+        case translation: return String(localized: "把他的设定翻成你在用的语言")
         default: return String(localized: "其他")
         }
     }

@@ -627,4 +627,31 @@ final class BackupCodecTests: XCTestCase {
         )
         XCTAssertTrue(en.contains("2025"), "英文文案应含年份：\(en)")
     }
+
+    /// 世界预设的兜底字段 notes 跟着 `worldJson` 原样往返（v5 格式不变、不升版本）。
+    ///
+    /// 备份里 `personas[].worldJson` 是一个**字符串**：notes 是它的一部分，
+    /// 所以「notes 会不会丢」等价于「worldJson 是否原样带走」。这里钉住这条。
+    func testWorldPresetNotesSurviveBackupRoundTrip() throws {
+        var bundle = BackupSamples.iosBundle()
+        var persona = bundle.personas[0]
+        let world = WorldPreset(
+            worldName: "临港新城",
+            era: "当代，中国沿海新一线城市",
+            description: "事务所竞争激烈。",
+            obligations: ["按节点交图"],
+            notes: "事务所里没人叫他全名，都叫「深哥」；行业黑话很多。"
+        )
+        persona.worldJson = world.jsonString()
+        bundle.personas[0] = persona
+
+        let encoded = try BackupCodec.encode(bundle)
+        XCTAssertEqual(BackupCodec.formatVersion, 5, "notes 不需要升备份版本")
+        let decoded = try XCTUnwrap(try success(encoded).bundle)
+        let restored = try XCTUnwrap(decoded.personas.first)
+        let restoredWorld = try XCTUnwrap(WorldPreset.decode(restored.worldJson))
+        XCTAssertEqual(restoredWorld.notes, "事务所里没人叫他全名，都叫「深哥」；行业黑话很多。")
+        XCTAssertEqual(restoredWorld, world, "世界整份往返一致（含 obligations 与 notes）")
+        XCTAssertTrue(encoded.contains("行业黑话很多"), "notes 就在 worldJson 字符串里，不需要额外字段")
+    }
 }

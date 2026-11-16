@@ -78,7 +78,9 @@ class ToolExecutor @Inject constructor(
     private val agentIntentRepository: AgentIntentRepository,
     private val messageDao: MessageDao,
     private val secretCipher: SecretCipher,
-    private val database: com.myfriend.app.data.local.MyFriendDatabase
+    private val database: com.myfriend.app.data.local.MyFriendDatabase,
+    /** 服务端模式的写路径：活动上报失败只记日志，本地照常（M3）。 */
+    private val serverWrite: com.myfriend.app.data.remote.ServerWriteGateway
 ) {
 
     suspend fun execute(
@@ -641,6 +643,9 @@ class ToolExecutor @Inject constructor(
                 )
             )
         }.getOrElse { return failure(invocation, it.toUserError()) }
+
+        // 服务端模式：本地已经写入，再把活动同步给服务端；失败只记日志（不影响本地/提示词）。
+        runCatching { serverWrite.reportActivity(persona.id, activity) }
 
         val clock = activity.formatUntil()
         val availabilityLine = when (activity.availability) {

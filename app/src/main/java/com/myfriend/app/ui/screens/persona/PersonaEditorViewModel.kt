@@ -6,11 +6,14 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.myfriend.app.domain.PersonaRevisionReason
 import com.myfriend.app.ui.common.ErrorText
+import com.myfriend.app.ui.common.WorldEditorErrors
 import com.myfriend.app.R
 import com.myfriend.app.data.local.ApiConfigEntity
 import com.myfriend.app.data.repo.ApiConfigRepository
 import com.myfriend.app.data.repo.PersonaCardRepository
 import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.data.repo.PersonaTranslationCoordinator
+import com.myfriend.app.data.repo.PersonaTranslationOutcome
 import com.myfriend.app.data.ai.SpeechStyleResult
 import com.myfriend.app.data.ai.SpeechStyleSource
 import com.myfriend.app.data.ai.SpeechStyleSummarizer
@@ -24,9 +27,12 @@ import com.myfriend.app.domain.ProactiveLevel
 import com.myfriend.app.domain.SleepPolicy
 import com.myfriend.app.domain.SpeechStyle
 import com.myfriend.app.domain.SpeechStyleCodec
-import com.myfriend.app.domain.WorldPreset
+import com.myfriend.app.domain.WorldEditorState
 import com.myfriend.app.domain.WorldPresetCodec
 import com.myfriend.app.domain.PersonaDraft
+import com.myfriend.app.domain.PersonaPromptLocalization
+import com.myfriend.app.domain.PersonaTranslationCodec
+import com.myfriend.app.domain.PersonaTranslationSource
 import com.myfriend.app.domain.PersonaTrait
 import com.myfriend.app.util.MediaStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -70,13 +76,8 @@ data class PersonaForm(
     val sleepAt: String = "",
     val wakeAt: String = "",
     val wakeThreshold: Int = 6,
-    // ---- 0.12 人设引导：世界 / 话风 / 当前活动（v13） ------------------------
-    val worldName: String = "",
-    val era: String = "",
-    val worldDescription: String = "",
-    val scheduleJson: String = "",
-    val relationshipsJson: String = "",
-    val obligationsText: String = "",
+    // ---- 0.12 人设引导：世界 / 话风 / 当前活动（v13；世界是可视化编辑器状态） ----
+    val world: WorldEditorState = WorldEditorState(),
     val speechTone: String = "",
     val speechPhrases: List<String> = emptyList(),
     val speechHabits: String = "",
@@ -117,7 +118,13 @@ data class PersonaEditorUiState(
     /** 他此刻在做什么（只读展示；到点自动按「没在忙什么」显示）。 */
     val currentActivity: PersonaActivity? = null,
     val worldFilling: Boolean = false,
-    val speechSummarizing: Boolean = false
+    val speechSummarizing: Boolean = false,
+    // ---- 0.12 提示词翻译（spec/persona-translation） -------------------------
+    /** 已缓存的译文语言；null = 还没有缓存。 */
+    val translationLang: String? = null,
+    /** 缓存是否仍然有效（语言与源字段哈希都对得上）。 */
+    val translationFresh: Boolean = false,
+    val translating: Boolean = false
 ) {
     val isDirty: Boolean get() = form != initialForm || card != initialCard
     val boundConfig: ApiConfigEntity? get() = configs.firstOrNull { it.id == form.defaultApiConfigId }
@@ -135,6 +142,7 @@ class PersonaEditorViewModel @Inject constructor(
     private val personaCardRepository: PersonaCardRepository,
     private val speechStyleSummarizer: SpeechStyleSummarizer,
     private val worldPresetExpander: WorldPresetExpander,
+    private val translationCoordinator: PersonaTranslationCoordinator,
     apiConfigRepository: ApiConfigRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
@@ -185,12 +193,7 @@ class PersonaEditorViewModel @Inject constructor(
                         sleepAt = persona.quietSleepMinutes?.let { formatClock(it) }.orEmpty(),
                         wakeAt = persona.quietWakeMinutes?.let { formatClock(it) }.orEmpty(),
                         wakeThreshold = SleepPolicy.normalizeThreshold(persona.wakeThreshold),
-                        worldName = world?.worldName.orEmpty(),
-                        era = world?.era.orEmpty(),
-                        worldDescription = world?.description.orEmpty(),
-                        scheduleJson = WorldPresetCodec.encodeSchedule(world?.schedule.orEmpty()),
-                        relationshipsJson = WorldPresetCodec.encodeRelationships(world?.relationships.orEmpty()),
-                        obligationsText = world?.obligations.orEmpty().joinToString("\n"),
+                        world = WorldEditorState.from(world),
                         speechTone = speech?.tone.orEmpty(),
                         speechPhrases = speech?.phrases.orEmpty(),
                         speechHabits = speech?.habits.orEmpty().joinToString("\n"),
@@ -199,6 +202,11 @@ class PersonaEditorViewModel @Inject constructor(
                     // 还没有卡时，这里会从旧的一整段提示词里尽力拆一份出来（只读，不写库）。
                     val card = runCatching { personaCardRepository.cardOf(persona.id) }
                         .getOrDefault(PersonaCard())
+                    val translation = PersonaTranslationCodec.decode(persona.translationJson)
+                    val translationFresh = translation?.matches(
+                        PersonaTranslationSource.hashOf(persona),
+                        PersonaPromptLocalization.currentAppLanguage()
+                    ) == true
                     _state.update {
                         it.copy(
                             form = form,
@@ -208,6 +216,8 @@ class PersonaEditorViewModel @Inject constructor(
                             initialCard = card,
                             isDefault = persona.isDefault,
                             currentActivity = PersonaActivityCodec.decode(persona.activityJson),
+                            translationLang = translation?.lang?.takeIf(String::isNotBlank),
+                            translationFresh = translationFresh,
                             loading = false
                         )
                     }
@@ -325,14 +335,14 @@ class PersonaEditorViewModel @Inject constructor(
             _state.update { state ->
                 state.copy(
                     worldFilling = false,
-                    form = if (result == null) state.form else state.form.copy(
-                        worldName = result.preset.worldName,
-                        era = result.preset.era,
-                        worldDescription = result.preset.description,
-                        scheduleJson = WorldPresetCodec.encodeSchedule(result.preset.schedule),
-                        relationshipsJson = WorldPresetCodec.encodeRelationships(result.preset.relationships),
-                        obligationsText = result.preset.obligations.joinToString("\n")
-                    )
+                    // 只填空白项：用户已经改过的世界不会被一次「AI 补全」冲掉（规范 §2.3）。
+                    form = if (result == null) {
+                        state.form
+                    } else {
+                        state.form.copy(
+                            world = state.form.world.mergedWith(WorldEditorState.from(result.preset))
+                        )
+                    }
                 )
             }
             events.send(
@@ -397,18 +407,50 @@ class PersonaEditorViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 「重新翻译」：清空缓存并立刻译一次（`spec/persona-translation/README.md` §4）。
+     *
+     * 手动触发不受「自动翻译人设」开关影响；结果只更新这一页的状态与一句提示，
+     * 成功后下次打开聊天就会用新译文（提示词是在生成时读缓存的）。
+     */
+    fun retranslate() {
+        val id = _state.value.personaId ?: return
+        if (_state.value.translating) return
+        viewModelScope.launch {
+            _state.update { it.copy(translating = true) }
+            val outcome = translationCoordinator.ensureTranslated(id, force = true)
+            val persona = runCatching { personaRepository.getById(id) }.getOrNull()
+            val translation = PersonaTranslationCodec.decode(persona?.translationJson)
+            _state.update { state ->
+                state.copy(
+                    translating = false,
+                    translationLang = translation?.lang?.takeIf(String::isNotBlank)
+                        ?: state.translationLang.takeIf { outcome != PersonaTranslationOutcome.TRANSLATED },
+                    translationFresh = translation != null && persona != null &&
+                        translation.matches(
+                            PersonaTranslationSource.hashOf(persona),
+                            PersonaPromptLocalization.currentAppLanguage()
+                        )
+                )
+            }
+            events.send(PersonaEditorEvent.Message(context.getString(translationMessage(outcome))))
+        }
+    }
+
+    /** 语言标签的可读名字（「中文」「English」），界面显示「已翻译成 …」。 */
+    fun languageLabel(tag: String): String = translationCoordinator.languageLabel(tag)
+
+    private fun translationMessage(outcome: PersonaTranslationOutcome): Int = when (outcome) {
+        PersonaTranslationOutcome.TRANSLATED -> R.string.persona_editor_translation_ok
+        PersonaTranslationOutcome.FAILED -> R.string.persona_editor_translation_failed
+        PersonaTranslationOutcome.SAME_LANGUAGE -> R.string.persona_editor_translation_skipped
+        PersonaTranslationOutcome.DISABLED -> R.string.persona_editor_translation_disabled
+        PersonaTranslationOutcome.CACHED -> R.string.persona_editor_translation_ok
+        PersonaTranslationOutcome.MISSING -> R.string.persona_editor_persona_missing
+    }
+
     private fun buildWorldJson(form: PersonaForm): String? {
-        val schedule = WorldPresetCodec.decodeSchedule(form.scheduleJson) ?: return null
-        val relationships = WorldPresetCodec.decodeRelationships(form.relationshipsJson) ?: return null
-        val world = WorldPreset(
-            worldName = form.worldName,
-            era = form.era,
-            description = form.worldDescription,
-            schedule = schedule,
-            relationships = relationships,
-            obligations = form.obligationsText.lineSequence().map { it.trim() }
-                .filter { it.isNotBlank() }.toList()
-        )
+        val world = form.world.toPreset()
         return if (world.isEmpty() || world.worldName.isBlank()) null else WorldPresetCodec.encode(world)
     }
 
@@ -438,15 +480,11 @@ class PersonaEditorViewModel @Inject constructor(
             }
             return
         }
-        if (WorldPresetCodec.decodeSchedule(form.scheduleJson) == null) {
+        // 可视化编辑器也要校验：问题定位到「哪一段的第几行」，不静默丢条目（规范 §2.3）。
+        val worldIssues = form.world.issues()
+        if (worldIssues.isNotEmpty()) {
             viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_world_schedule_invalid)))
-            }
-            return
-        }
-        if (WorldPresetCodec.decodeRelationships(form.relationshipsJson) == null) {
-            viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.guidance_world_relationships_invalid)))
+                events.send(PersonaEditorEvent.Message(WorldEditorErrors.message(context, worldIssues)))
             }
             return
         }

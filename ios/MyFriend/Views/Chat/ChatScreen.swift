@@ -144,6 +144,9 @@ struct ChatScreen: View {
         .animation(.easeInOut(duration: 0.18), value: model.toast)
         .onAppear {
             model.bind(env: env, sessionId: sessionId)
+            // 进聊天前异步翻译一次（`spec/persona-translation` §2）：不阻塞首屏，
+            // 本轮用已有缓存，翻译落地后的回复就用译文。
+            PersonaTranslationTrigger.kick(env, sessionId: sessionId)
             model.enter()
             // 定位模式：用户点的是「某条老消息」，先别跟随到底部，否则等于白点。
             if let focusMessageId {

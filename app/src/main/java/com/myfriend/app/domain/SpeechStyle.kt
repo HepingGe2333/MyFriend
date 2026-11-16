@@ -10,7 +10,7 @@ import kotlinx.serialization.json.contentOrNull
  * 话风（`spec/persona-guidance/README.md` §3）。
  *
  * 回答「他怎么说话」：一句 tone、若干他真说过的常用语、若干语言习惯与不该出现的表达。
- * 常用语是**参考不是模板**（§1.1 第 4 条）：提示词里最多列 6 条，并要求「自然使用，不要每句都套」。
+ * 常用语是**参考不是模板**（§1.1 第 4 条）：提示词里最多列 6 条，并要求「自然使用，最多带 1 处」。
  */
 data class SpeechStyle(
     val tone: String = "",
@@ -24,22 +24,25 @@ data class SpeechStyle(
     /**
      * §6.3 的「你怎么说话」段正文（不含 `#` 标题，由 [PromptBuilder] 统一加）。
      *
+     * 每一行的文案都来自 [PromptBuilder.Scaffold]：脚手架的 voice 段只有 rules / tone / phrases /
+     * no_narration 四类行，所以 [habits] 与 [avoid] **不进提示词**（数据仍然保存、编辑器里能改；
+     * 它们的语义由 tone 和两条 voice_rules 覆盖）。多列一条「习惯：…」就等于给两端加一行
+     * 规范之外的中文，「两端逐字一致」的契约测试会立刻出现差异。
+     *
      * phrases 只取前 [MAX_PROMPT_PHRASES] 条：常用语一多，模型就会开始背台词。
      */
     fun renderForPrompt(): String {
         val lines = mutableListOf<String>()
-        lines += "- 句子短（1-2 句），少感叹号，少书面词。"
-        if (tone.isNotBlank()) lines += "- 语气：${tone.trim().take(120)}"
-        habits.map { it.trim() }.filter { it.isNotBlank() }.take(6)
-            .forEach { lines += "- 习惯：$it" }
+        lines += PromptBuilder.Scaffold.VOICE_RULES
+        if (tone.isNotBlank()) {
+            lines += PromptBuilder.Scaffold.VOICE_TONE.replace("{tone}", tone.trim().take(120))
+        }
         val used = phrases.map { it.trim() }.filter { it.isNotBlank() }.distinct().take(MAX_PROMPT_PHRASES)
         if (used.isNotEmpty()) {
-            lines += "- 参考你平时会说的话（自然使用，不要每句都套）：" +
-                used.joinToString("、") { "「$it」" }
+            lines += PromptBuilder.Scaffold.VOICE_PHRASES
+                .replace("{phrases}", used.joinToString("、") { "「$it」" })
         }
-        avoid.map { it.trim() }.filter { it.isNotBlank() }.take(6)
-            .forEach { lines += "- 不要：$it" }
-        lines += "- 不要写动作描写、不要括号旁白。"
+        lines += PromptBuilder.Scaffold.VOICE_NO_NARRATION
         return lines.joinToString("\n")
     }
 

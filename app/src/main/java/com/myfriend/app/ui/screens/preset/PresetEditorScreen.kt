@@ -47,6 +47,7 @@ import com.myfriend.app.ui.components.AppHeader
 import com.myfriend.app.ui.components.BackNavigation
 import com.myfriend.app.ui.components.SpeechStyleCard
 import com.myfriend.app.ui.components.WorldPresetCard
+import com.myfriend.app.domain.WorldEditorState
 import com.myfriend.app.ui.components.PersonaAvatar
 import com.myfriend.app.ui.components.PrimaryButton
 import com.myfriend.app.ui.components.SectionLabel
@@ -208,22 +209,17 @@ fun PresetEditorScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Spacer(Modifier.height(22.dp))
+            // 世界编辑是这一页里的一个区块（规范 §2.3），不是独立页面。
             WorldPresetCard(
-                worldName = state.form.worldName,
-                era = state.form.era,
-                description = state.form.worldDescription,
-                scheduleJson = state.form.scheduleJson,
-                relationshipsJson = state.form.relationshipsJson,
-                obligationsText = state.form.obligationsText,
-                onWorldName = { value -> viewModel.update { it.copy(worldName = value) } },
-                onEra = { value -> viewModel.update { it.copy(era = value) } },
-                onDescription = { value -> viewModel.update { it.copy(worldDescription = value) } },
-                onScheduleJson = { value -> viewModel.update { it.copy(scheduleJson = value) } },
-                onRelationshipsJson = { value -> viewModel.update { it.copy(relationshipsJson = value) } },
-                onObligationsText = { value -> viewModel.update { it.copy(obligationsText = value) } },
+                state = state.form.world,
+                onChange = { value -> viewModel.update { it.copy(world = value) } },
                 onAiFill = viewModel::fillWorldWithAi,
                 aiFilling = state.worldFilling,
-                aiHint = null
+                aiHint = null,
+                issues = state.form.world.issues(),
+                onUseExample = {
+                    viewModel.update { it.copy(world = WorldEditorState.example()) }
+                }
             )
             Spacer(Modifier.height(10.dp))
             SpeechStyleCard(

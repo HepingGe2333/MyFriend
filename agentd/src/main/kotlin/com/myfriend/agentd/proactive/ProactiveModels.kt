@@ -47,7 +47,15 @@ data class PersonaState(
     /** 今天（服务端本地日）已经主动开口几次。 */
     val proactiveCountToday: Int = 0,
     /** 他此刻的心情（会影响上限与冲动概率）。 */
-    val mood: MoodState = MoodState()
+    val mood: MoodState = MoodState(),
+    /**
+     * 他此刻的活动（`personas.activityJson` 经 [ActivityState.decode]）；`null` = 没设过。
+     *
+     * 与作息（`SleepState`）是**两件可以同时存在的事**：安静时段是「不被打扰」，活动是
+     * 「我在做事」。判定只用 [ActivityState.availabilityAt]（过期自动变 FREE），
+     * 所以这里塞一个过期活动也不会让他一直不开口。
+     */
+    val activity: ActivityState? = null
 )
 
 /**
@@ -129,6 +137,22 @@ enum class ProactiveReason(val code: String, val message: String) {
 
     /** 刚聊完（[Heartbeat.COOL_DOWN_MINUTES] 之内）：不是概率低一点，而是根本不掷。 */
     RECENT_INTERACTION("recent_interaction", "刚聊完，先安静一会儿"),
+
+    /**
+     * 他正在忙（`activityJson` 的 `availability == BUSY` 且还没到 `until`）。
+     *
+     * 依据 `spec/persona-guidance/README.md` §4：「`availability = BUSY` 时主动消息不该发
+     * （除非用户先说话）」。这一拍连骰子都不掷，`scheduledAt` 给到活动结束时刻。
+     */
+    BUSY("busy", "他正忙着，这一拍不主动开口"),
+
+    /**
+     * 他在忙（`LIMITED`）：概率按 [ActivityState.LIMITED_PROACTIVE_FACTOR] 降权之后**没掷中**。
+     *
+     * 与 [NOT_THIS_TICK] 分开，是因为「为什么没开口」对客户端/日志是两件事：一个是运气，
+     * 一个是他确实在忙。
+     */
+    LIMITED("limited", "他在忙，主动概率降到 35% 之后没掷中"),
 
     /** 今天主动开口的次数用完了（上限由主动程度 + 心情决定）。 */
     DAILY_CAP("daily_cap", "今天主动的次数用完了"),

@@ -524,6 +524,29 @@ public enum ToolProtocol {
             .joined(separator: "\n\n")
     }
 
+    /// 工具在界面上的中文标题（「联网搜索」「去忙了」…）。
+    ///
+    /// 抽成公开函数是因为服务端模式的 `ServerChatGateway` 只拿到工具**名字**
+    ///（SSE 的 `tool` 事件不带 `ToolResult`），但它要画同一张动作卡片。
+    /// 让两处各写一份中文，第一次改动就会漂。
+    public static func title(forTool name: String) -> String {
+        switch name {
+        case ToolCatalog.think: return String(localized: "想了想")
+        case ToolCatalog.webSearch: return String(localized: "联网搜索")
+        case ToolCatalog.webFetch: return String(localized: "读了网页")
+        case ToolCatalog.remember: return String(localized: "记住了一件事")
+        case ToolCatalog.updatePersona: return String(localized: "调整了自己的人设")
+        case ToolCatalog.setQuietHours: return String(localized: "安排了自己的作息")
+        case ToolCatalog.setActivity: return String(localized: "去忙了")
+        case ToolCatalog.setMood: return String(localized: "心情变了")
+        case ToolCatalog.recall: return String(localized: "回想了一下")
+        case ToolCatalog.deferReply: return String(localized: "决定先不回")
+        default:
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? String(localized: "动作") : trimmed
+        }
+    }
+
     /// 聊天界面上的动作卡片文案：标题 + 副标题（可空）。
     public static func describe(_ result: ToolResult) -> (title: String, subtitle: String?) {
         let summary = result.summary.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -534,22 +557,7 @@ public enum ToolProtocol {
             if let error, !error.isEmpty { return error }
             return summary.isEmpty ? nil : summary
         }()
-        let title: String
-        switch result.invocation.name {
-        case ToolCatalog.think: title = String(localized: "想了想")
-        case ToolCatalog.webSearch: title = String(localized: "联网搜索")
-        case ToolCatalog.webFetch: title = String(localized: "读了网页")
-        case ToolCatalog.remember: title = String(localized: "记住了一件事")
-        case ToolCatalog.updatePersona: title = String(localized: "调整了自己的人设")
-        case ToolCatalog.setQuietHours: title = String(localized: "安排了自己的作息")
-        case ToolCatalog.setActivity: title = String(localized: "去忙了")
-        case ToolCatalog.setMood: title = String(localized: "心情变了")
-        case ToolCatalog.recall: title = String(localized: "回想了一下")
-        case ToolCatalog.deferReply: title = String(localized: "决定先不回")
-        default:
-            let name = result.invocation.name.trimmingCharacters(in: .whitespacesAndNewlines)
-            title = name.isEmpty ? String(localized: "动作") : name
-        }
+        let title = title(forTool: result.invocation.name)
         if result.invocation.name == ToolCatalog.think { return (title, nil) }
         return (title, subtitle)
     }

@@ -96,6 +96,10 @@ final class WorldPresetTests: XCTestCase {
         )
         let text = preset.renderForPrompt()
         XCTAssertTrue(text.hasPrefix("# 你所在的世界"))
+        // world_name 用规范模板渲染，并且是世界段第一行。
+        XCTAssertTrue(text.hasPrefix(
+            "# 你所在的世界\n" + PersonaPromptScaffold.worldNameLine("临港新城·云筑建筑事务所")
+        ))
         XCTAssertTrue(text.contains("当代，中国沿海新一线城市"))
         XCTAssertTrue(text.contains("临港新城·云筑建筑事务所"))
         XCTAssertTrue(text.contains("工作日 09:00-18:30 在事务所画图"))
@@ -193,5 +197,139 @@ final class WorldPresetTests: XCTestCase {
         let json = try XCTUnwrap(preset.jsonString())
         XCTAssertEqual(WorldPreset.decode(json), preset)
         XCTAssertNil(WorldPreset().jsonString(), "空世界不落库")
+    }
+
+    // MARK: - notes（兜底自由文本）与亲密度
+
+    /// notes：解析 → 渲染 → 落库往返；超过 1200 字截断（不静默丢，界面另有提示）。
+    func testNotesRoundTripAndTruncation() throws {
+        let preset = WorldPreset(
+            worldName: "临港新城",
+            description: "沿海城市。",
+            notes: "事务所里没人叫他全名，都叫「深哥」。"
+        )
+        let rendered = preset.renderForPrompt()
+        XCTAssertTrue(rendered.contains("其他背景：事务所里没人叫他全名，都叫「深哥」。"))
+        let json = try XCTUnwrap(preset.jsonString())
+        XCTAssertEqual(WorldPreset.decode(json), preset)
+
+        // 超长：内存里就截到 1200 字，落库/渲染都不会出现第 1201 个字。
+        let long = String(repeating: "背", count: WorldPreset.maxNotesChars + 30)
+        let clipped = WorldPreset(notes: long)
+        XCTAssertEqual(clipped.notes.count, WorldPreset.maxNotesChars)
+        XCTAssertEqual(WorldPreset.decode(clipped.jsonString())?.notes.count, WorldPreset.maxNotesChars)
+        XCTAssertTrue(clipped.renderForPrompt().contains("其他背景："))
+
+        // 只有 notes 也算"有世界"（不能因为结构化字段都空就把它当没有）。
+        XCTAssertFalse(clipped.isEmpty)
+        // 坏类型当成没写。
+        XCTAssertEqual(WorldPreset.from(object: ["notes": 42]).notes, "42")
+        XCTAssertTrue(WorldPreset.from(object: ["notes": ["x": 1]]).notes.isEmpty)
+    }
+
+    /// §2.1：「没有世界预设」= **所有字段都为空**（`worldName` / `era` / `description` /
+    /// `schedule` / `relationships` / `obligations` / **`notes`**）。
+    ///
+    /// 这条不是"再测一遍 isEmpty"，而是用**手写的 JSON** 和**逐字段构造**两侧夹住这个判定：
+    /// 任何一处退回"只看前四个字段"（曾经在两端出现过的偏差形态），notes 那一组就会红。
+    func testEmptyWorldMeansAllSevenFieldsEmpty() throws {
+        // 1) 七字段全空 → 没有世界预设（decode 与落库都要走同一个判定）。
+        XCTAssertTrue(WorldPreset().isEmpty)
+        XCTAssertNil(WorldPreset.decode("{}"))
+        XCTAssertNil(WorldPreset.decode(
+            #"{"worldName":"","era":"","description":"","schedule":[],"relationships":[],"obligations":[],"notes":""}"#
+        ))
+        XCTAssertNil(WorldPreset().jsonString(), "没有世界不落库")
+
+        // 2) 七个字段里**任何一个**单独非空 → 就算有世界。
+        let variants: [WorldPreset] = [
+            WorldPreset(worldName: "临港新城"),
+            WorldPreset(era: "当代"),
+            WorldPreset(description: "沿海城市里的事务所。"),
+            WorldPreset(schedule: [
+                WorldScheduleItem(day: "工作日", start: "09:00", end: "18:30", activity: "画图")
+            ]),
+            WorldPreset(relationships: [WorldRelationship(name: "母亲", relation: "家人")]),
+            WorldPreset(obligations: ["按节点交图"]),
+            WorldPreset(notes: "事务所里没人叫他全名。")
+        ]
+        XCTAssertEqual(variants.count, 7, "§2.1 一共七个字段")
+        for (index, preset) in variants.enumerated() {
+            XCTAssertFalse(preset.isEmpty, "只有第 \(index + 1) 个字段非空时不能当成「没有世界」")
+        }
+
+        // 3) 只有 notes 的 JSON：decode 必须返回非 nil，并且能渲染、能落库往返。
+        let decoded = try XCTUnwrap(WorldPreset.decode(#"{"notes":"行业黑话很多。"}"#),
+                                    "只有 notes 也算有世界（它是被翻译/被渲染的字段）")
+        XCTAssertEqual(decoded.notes, "行业黑话很多。")
+        XCTAssertEqual(WorldPreset.decode(try XCTUnwrap(decoded.jsonString())), decoded)
+        XCTAssertTrue(decoded.renderForPrompt().contains("其他背景：行业黑话很多。"))
+    }
+
+    /// 亲密度是可选的：不填不写 key，1–5 之外当成没填。
+    func testRelationshipIntimacyRoundTrip() throws {
+        let person = WorldRelationship(name: "母亲", relation: "家人", note: "打电话", intimacy: 4)
+        XCTAssertEqual(person.renderedLine, "母亲（家人）：打电话，亲密度 4/5")
+        XCTAssertEqual(WorldPreset.parseRelationshipLines(person.renderedLine), [person])
+        let plain = WorldRelationship(name: "老周", relation: "同事", note: "")
+        XCTAssertEqual(plain.renderedLine, "老周（同事）")
+        XCTAssertNil(WorldRelationship(name: "x", intimacy: 0).intimacy)
+
+        let preset = WorldPreset(
+            worldName: "事务所",
+            relationships: [person, plain]
+        )
+        let json = try XCTUnwrap(preset.jsonString())
+        XCTAssertTrue(json.contains("\"intimacy\":4"))
+        XCTAssertEqual(WorldPreset.decode(json)?.relationships, [person, plain])
+        let rendered = preset.renderForPrompt()
+        XCTAssertTrue(rendered.contains("亲密度 4/5"))
+    }
+
+    /// 空状态示例必须与 `spec/.../cases/world-preset-linshen.json` 的 `expect` 一致。
+    ///
+    /// 抄一份样本进源码（App 里没有 spec/ 目录）就有漂的风险，这条测试是那份"抄本"的守卫。
+    func testSampleMatchesSpecCase() throws {
+        let root = try specCase()
+        let expect = try XCTUnwrap(root["expect"] as? [String: Any])
+        let data = try JSONSerialization.data(withJSONObject: expect)
+        let text = try XCTUnwrap(String(data: data, encoding: .utf8))
+        let fromSpec = try XCTUnwrap(WorldPreset.decode(text))
+        let sample = WorldPresetSample.linshen
+        XCTAssertEqual(sample.worldName, fromSpec.worldName)
+        XCTAssertEqual(sample.era, fromSpec.era)
+        XCTAssertEqual(sample.description, fromSpec.description)
+        XCTAssertEqual(sample.schedule, fromSpec.schedule)
+        XCTAssertEqual(sample.relationships, fromSpec.relationships)
+        XCTAssertEqual(sample.obligations, fromSpec.obligations)
+        XCTAssertEqual(sample.notes, fromSpec.notes)
+    }
+
+    /// worldName 为空时 world_name 整行省略（其余世界字段照常渲染）。
+    func testWorldNameLineOnlyAppearsWhenSet() {
+        let nameless = WorldPreset(era: "当代", description: "沿海城市。")
+        XCTAssertFalse(nameless.renderForPrompt().contains("你所在的地方："))
+        let named = WorldPreset(worldName: "临港新城")
+        XCTAssertTrue(named.renderForPrompt().contains(
+            PersonaPromptScaffold.worldNameLine("临港新城")
+        ))
+        XCTAssertTrue(named.renderForPrompt().hasSuffix(PersonaPromptScaffold.worldHint))
+    }
+
+    /// 世界段用规范脚手架渲染：开场白、背景提示、notes 的「其他背景：」都在。
+    func testPromptUsesScaffoldWorldLines() {
+        let preset = WorldPreset(
+            worldName: "临港新城",
+            era: "当代，沿海城市",
+            description: "事务所竞争激烈。",
+            obligations: ["按节点交图"],
+            notes: "行业黑话很多。"
+        )
+        let rendered = preset.renderForPrompt()
+        XCTAssertTrue(rendered.hasPrefix(PersonaPromptScaffold.worldSection))
+        XCTAssertTrue(rendered.contains("当代，沿海城市。事务所竞争激烈。"))
+        XCTAssertTrue(rendered.contains("- 必须：按节点交图"))
+        XCTAssertTrue(rendered.contains("其他背景：行业黑话很多。"))
+        XCTAssertTrue(rendered.contains(PersonaPromptScaffold.worldHint))
     }
 }

@@ -4,13 +4,17 @@ import Foundation
 // 服务端权威模式的连接配置（P1a）。
 //
 // 这一层只回答一个问题：**现在能不能、以及该往哪里发请求**。
-// 它不读数据库、不碰 UI、不保存 token 到 Keychain（见交付报告里的「没做/风险」）。
+// 它不读数据库、不碰 UI。令牌的来源由 `ServerCredentialReading`（默认实现
+// `ServerCredentialStore`：Keychain + UserDefaults）提供，`load(...)` 不去 new 它 ——
+// 命令行/单测进程里 SystemKeychain 可能弹系统授权框，所以默认不读 Keychain，
+// 由 App 装配层显式注入（`ServerConfig.loadForApp()`）。
 //
 // 来源优先级（与 `docs/design/server-authoritative.md` §7 的安全边界一致）：
-// 1. 进程环境变量（`MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`），
+// 1. 设备上的设置（设置页的开关/地址 + Keychain 里的令牌，M3 新增，最高优先级）；
+// 2. 进程环境变量（`MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`），
 //    方便 `swift run`、Xcode Scheme、命令行调试时临时覆盖；
-// 2. Info.plist（`MyFriendServerURL` / `MyFriendServerToken`），发布包内配置的兜底；
-// 3. 都没有 → `enabled = false`，客户端继续走本地模式。
+// 3. Info.plist（`MyFriendServerURL` / `MyFriendServerToken`），发布包内配置的兜底；
+// 4. 都没有 → `enabled = false`，客户端继续走本地模式。
 //
 // HTTP 只在「调试构建 + 本机/局域网地址」下放行：
 // - 明文 HTTP 会把 Bearer Token 和聊天内容交给同网段所有人，对外必须 TLS 反代；
@@ -124,35 +128,46 @@ public extension ServerConfig {
         #endif
     }
 
-    /// 从环境变量 / Info.plist 组装配置。
+    /// 从「设备设置 / 环境变量 / Info.plist」组装配置。
     ///
     /// - Parameters:
     ///   - environment: 默认 `ProcessInfo.processInfo.environment`；测试可注入。
     ///   - infoDictionary: 默认 `Bundle.main.infoDictionary`；测试可注入。
     ///   - buildAllowsInsecureHTTP: 默认跟随构建；测试用 .init 注入「Release」。
+    ///   - credentials: 设备设置（Keychain 令牌 + UserDefaults 开关/地址）。
+    ///     默认 `nil` = 不读 Keychain（命令行测试进程里读系统 Keychain 可能弹授权框）；
+    ///     App 走 `loadForApp(...)`，那里会显式传 `ServerCredentialStore()`。
     /// - Returns: 没有配置地址时返回 `enabled = false` 的空配置（不抛错，App 回退本地模式）。
     /// - Throws: 配了地址但不合法（格式/协议/Release 明文 http）时抛 `ServerConfigError`。
     static func load(
         environment: [String: String] = ProcessInfo.processInfo.environment,
         infoDictionary: [String: Any]? = Bundle.main.infoDictionary,
-        buildAllowsInsecureHTTP: Bool = buildAllowsInsecureHTTP
+        buildAllowsInsecureHTTP: Bool = buildAllowsInsecureHTTP,
+        credentials: ServerCredentialReading? = nil
     ) throws -> ServerConfig {
         let rawURL = firstNonEmpty(
+            credentials?.storedBaseURLText(),
             environment[EnvironmentKey.url],
             infoDictionary.flatMap { firstNonEmptyString(in: $0, keys: InfoPlistKey.urlAliases) }
         )
+        // 令牌：Keychain 优先。环境变量里的令牌是开发者临时覆盖（CI、抓包联调），
+        // 不该把用户在设置页保存的那一份顶掉——用户看不到环境变量，只会觉得「设置没生效」。
         let token = firstNonEmpty(
+            credentials?.token(),
             environment[EnvironmentKey.token],
             infoDictionary.flatMap { firstNonEmptyString(in: $0, keys: InfoPlistKey.tokenAliases) }
         )
         guard let rawURL else {
+            // 没地址 = 服务端模式不可用。开关即便是 true 也不算可用（`isUsable` 要求地址）。
             return ServerConfig(baseURL: nil, token: token, enabled: false)
         }
 
         let url = try validatedURL(rawURL, buildAllowsInsecureHTTP: buildAllowsInsecureHTTP)
 
         let explicitEnabled: Bool?
-        if let raw = firstNonEmpty(environment[EnvironmentKey.enabled]) {
+        if let stored = credentials?.modeEnabled() {
+            explicitEnabled = stored
+        } else if let raw = firstNonEmpty(environment[EnvironmentKey.enabled]) {
             explicitEnabled = try parseEnabledFlag(raw)
         } else if let raw = infoDictionary.flatMap({ firstNonEmptyString(in: $0, keys: InfoPlistKey.enabledAliases) }) {
             explicitEnabled = try parseEnabledFlag(raw)
@@ -166,6 +181,24 @@ public extension ServerConfig {
             baseURL: url,
             token: token,
             enabled: explicitEnabled ?? true
+        )
+    }
+
+    /// App 启动/设置页改完配置后走这一条：设备设置（Keychain + UserDefaults）优先。
+    ///
+    /// 与 `load(...)` 的区别只是「默认值不同」：这里默认真的去读设备设置。
+    /// 装配层（`AppEnvironment`）必须用这个入口，否则设置页填的地址/令牌不会生效。
+    static func loadForApp(
+        credentials: ServerCredentialReading = ServerCredentialStore(),
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        infoDictionary: [String: Any]? = Bundle.main.infoDictionary,
+        buildAllowsInsecureHTTP: Bool = buildAllowsInsecureHTTP
+    ) throws -> ServerConfig {
+        try load(
+            environment: environment,
+            infoDictionary: infoDictionary,
+            buildAllowsInsecureHTTP: buildAllowsInsecureHTTP,
+            credentials: credentials
         )
     }
 

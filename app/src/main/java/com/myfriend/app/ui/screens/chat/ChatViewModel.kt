@@ -28,6 +28,7 @@ import com.myfriend.app.data.repo.PresenceRepository
 import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.ProactiveScheduler
 import com.myfriend.app.data.repo.PersonaRepository
+import com.myfriend.app.data.repo.PersonaTranslationCoordinator
 import com.myfriend.app.domain.MessageAttachment
 import com.myfriend.app.domain.ReadReceipt
 import com.myfriend.app.domain.PersonaSwitchNotice
@@ -169,6 +170,8 @@ class ChatViewModel @Inject constructor(
     private val chatNotifier: ChatNotifier,
     /** 删草稿图片之前的引用守卫（0.12）：用户可能选了一张已经发过的图（内容寻址同名文件）。 */
     private val mediaJanitor: MediaJanitor,
+    /** 打开会话前按需翻译人设（`spec/persona-translation/README.md` §2 第 1 条）。 */
+    private val translationCoordinator: PersonaTranslationCoordinator,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -321,6 +324,20 @@ class ChatViewModel @Inject constructor(
             chatRepository.markRead(sessionId)
             initialPrepare()
         }
+        // 服务端模式：先把最新一块拉进 Room。聊天页的窗口/块边界逻辑完全复用本地实现，
+        // 这里只负责「首屏数据从服务端来」；失败安静（事件/下一次同步会补）。
+        if (chatRepository.isServerMode()) {
+            viewModelScope.launch {
+                runCatching { chatRepository.openServerSession(sessionId) }
+            }
+        }
+        // 开聊之前先把人设翻译好：异步、不阻塞首屏；失败静默（用原文）。
+        // 同一进程内按 `personaId + lang + sourceHash` 去重，缓存命中时零请求。
+        viewModelScope.launch {
+            val personaId = runCatching { chatRepository.getSession(sessionId)?.personaId }.getOrNull()
+                ?: return@launch
+            translationCoordinator.prefetch(personaId)
+        }
         // 首屏只加载**最新一块**（规范 §3）：最新块编号从块表观察，
         // 这样「会话从空变成有一块」「最新块被删空」都能重新定位。
         viewModelScope.launch {
@@ -368,6 +385,9 @@ class ChatViewModel @Inject constructor(
      */
     fun showLatest() {
         viewModelScope.launch {
+            if (chatRepository.isServerMode()) {
+                runCatching { chatRepository.loadServerPage(sessionId) }
+            }
             val last = runCatching { chatRepository.lastBlockIndex(sessionId) }.getOrNull()
             val first = runCatching { chatRepository.firstBlockIndex(sessionId) }.getOrNull()
             window.value = MessageBlockPaging.onLatest(window.value, last, first)
@@ -425,6 +445,7 @@ class ChatViewModel @Inject constructor(
     }
 
     private suspend fun initialPrepare() {
+        if (chatRepository.isServerMode()) return
         val session = chatRepository.getSession(sessionId) ?: return
         if (session.apiConfigId == null && apiConfigRepository.getAll().isNotEmpty()) {
             ephemeral.update { it.copy(showConfigPicker = true) }
@@ -444,6 +465,10 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val oldest = window.value.oldestBlock
+                // 服务端模式：先让服务端把「上一块」写进 Room，再走同一套块边界查询。
+                if (chatRepository.isServerMode() && oldest != null) {
+                    chatRepository.loadServerPage(sessionId, beforeBlock = oldest)
+                }
                 // 「上一块」不是 oldest - 1：块删空之后编号会留缺口（规范 §1），要查。
                 val previous = oldest?.let { chatRepository.blocksAround(sessionId, it).older }
                 window.update { MessageBlockPaging.onOlderLoaded(it, previous) }
@@ -469,6 +494,9 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val newest = window.value.newestBlock
+                if (chatRepository.isServerMode() && newest != null) {
+                    chatRepository.loadServerPage(sessionId, afterBlock = newest)
+                }
                 val following = newest?.let { chatRepository.blocksAround(sessionId, it).newer }
                 window.update { MessageBlockPaging.onNewerLoaded(it, following) }
             } catch (cancel: CancellationException) {
@@ -562,8 +590,13 @@ class ChatViewModel @Inject constructor(
         val images = ephemeral.value.images
         if ((text.isBlank() && images.isEmpty()) || ephemeral.value.isGenerating || operationInFlight) return
         val current = uiState.value
-        if (current.config == null) {
+        // 服务端模式不需要本地 API 配置：模型与密钥都在服务端。
+        if (!chatRepository.isServerMode() && current.config == null) {
             ephemeral.update { it.copy(showConfigPicker = true, snackbar = context.getString(R.string.chat_select_config_first)) }
+            return
+        }
+        if (chatRepository.isServerMode()) {
+            sendViaServer(text, images)
             return
         }
         viewModelScope.launch {
@@ -591,6 +624,94 @@ class ChatViewModel @Inject constructor(
                 )
                 ephemeral.update { it.copy(draft = "", images = emptyList(), snackbar = null) }
                 startGeneration(readDelay)
+            } finally {
+                operationInFlight = false
+            }
+        }
+    }
+
+    /**
+     * 服务端模式发送：SSE 事件 → 界面增量；消息落库由 ChatRepository/ServerChatGateway 负责。
+     *
+     * 失败时**草稿留在输入框**（[ephemeral] 的 draft/images 直到 accepted 才清空）：
+     * 发送失败最常见的原因是没网，用户刚打的一段话不该被清掉；只有服务端确认 accepted
+     * 之后才清空，因为那时服务端已经落库、重发会产生重复（幂等键只对同一 id 有效）。
+     */
+    private fun sendViaServer(text: String, images: List<MessageAttachment>) {
+        viewModelScope.launch {
+            if (operationInFlight) return@launch
+            operationInFlight = true
+            try {
+                leaveJumpWindowForNewMessage()
+                ephemeral.update {
+                    it.copy(
+                        isGenerating = true,
+                        hasStarted = false,
+                        streamingText = "",
+                        streamingTraces = emptyList(),
+                        snackbar = null
+                    )
+                }
+                val result = chatRepository.sendServerMessage(sessionId, text, images) { event ->
+                    when (event) {
+                        is com.myfriend.app.data.remote.ServerSendEvent.Accepted ->
+                            ephemeral.update { it.copy(hasStarted = true) }
+
+                        is com.myfriend.app.data.remote.ServerSendEvent.Delta ->
+                            ephemeral.update { it.copy(streamingText = it.streamingText + event.text) }
+
+                        is com.myfriend.app.data.remote.ServerSendEvent.Tool ->
+                            ephemeral.update {
+                                it.copy(
+                                    streamingTraces = it.streamingTraces + ToolTraceItem(
+                                        name = event.name,
+                                        title = event.name,
+                                        subtitle = event.summary,
+                                        detail = event.summary.orEmpty(),
+                                        ok = event.status != "error"
+                                    )
+                                )
+                            }
+
+                        is com.myfriend.app.data.remote.ServerSendEvent.Done -> Unit
+                        is com.myfriend.app.data.remote.ServerSendEvent.Error -> Unit
+                    }
+                }
+                if (result.accepted) {
+                    ephemeral.update { it.copy(draft = "", images = emptyList()) }
+                }
+                val error = result.error
+                ephemeral.update {
+                    it.copy(
+                        isGenerating = false,
+                        hasStarted = false,
+                        streamingText = "",
+                        streamingTraces = emptyList(),
+                        // accepted 之前的失败才是「没发出去」；accepted 之后流断了只是回复没接上，
+                        // 不能显示「发送失败」去误导用户重发（重发会产生第二条，虽然服务端幂等）。
+                        snackbar = when {
+                            error != null && !result.accepted ->
+                                ErrorText.of(context, error, R.string.chat_send_failed)
+
+                            !result.done -> context.getString(R.string.chat_server_reply_pending)
+                            else -> null
+                        }
+                    )
+                }
+            } catch (cancel: CancellationException) {
+                // 用户点了停止：SSE 连接关闭，服务端继续生成并落库；本机下一次同步/事件会拿到。
+                ephemeral.update { it.copy(isGenerating = false, hasStarted = false, streamingText = "") }
+                throw cancel
+            } catch (error: Exception) {
+                ephemeral.update {
+                    it.copy(
+                        isGenerating = false,
+                        hasStarted = false,
+                        streamingText = "",
+                        streamingTraces = emptyList(),
+                        snackbar = ErrorText.of(context, error, R.string.chat_send_failed)
+                    )
+                }
             } finally {
                 operationInFlight = false
             }
@@ -671,6 +792,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun regenerate() {
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
+            return
+        }
         if (ephemeral.value.isGenerating || operationInFlight) return
         viewModelScope.launch {
             if (operationInFlight) return@launch
@@ -692,6 +817,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun editUserMessage(messageId: String, content: String) {
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
+            return
+        }
         if (ephemeral.value.isGenerating || operationInFlight) return
         viewModelScope.launch {
             if (operationInFlight) return@launch
@@ -713,6 +842,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun deleteMessage(messageId: String) {
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
+            return
+        }
         viewModelScope.launch {
             chatRepository.deleteMessage(messageId)
                 .onFailure { error -> ephemeral.update { it.copy(snackbar = ErrorText.of(context, error, R.string.chat_delete_failed)) } }
@@ -720,6 +853,10 @@ class ChatViewModel @Inject constructor(
     }
 
     fun clearContext() {
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
+            return
+        }
         viewModelScope.launch {
             // 先停下正在跑的生成并**等它收尾**：仓库层还会用世代号 + 存在性校验兜底，
             // 但界面上不能出现「清空成功之后又冒出一条半截回复」。

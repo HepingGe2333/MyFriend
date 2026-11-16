@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.myfriend.app.ui.common.ErrorText
+import com.myfriend.app.ui.common.WorldEditorErrors
 import com.myfriend.app.R
 import com.myfriend.app.data.ai.SpeechStyleResult
 import com.myfriend.app.data.ai.SpeechStyleSource
@@ -14,7 +15,7 @@ import com.myfriend.app.data.repo.PresetDraft
 import com.myfriend.app.data.repo.PresetRepository
 import com.myfriend.app.domain.SpeechStyle
 import com.myfriend.app.domain.SpeechStyleCodec
-import com.myfriend.app.domain.WorldPreset
+import com.myfriend.app.domain.WorldEditorState
 import com.myfriend.app.domain.WorldPresetCodec
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -32,13 +33,8 @@ data class PresetForm(
     val prompt: String = "",
     val category: String = "通用",
     val avatarSeed: Int = 0,
-    // ---- 世界设定（v13） ----------------------------------------------------
-    val worldName: String = "",
-    val era: String = "",
-    val worldDescription: String = "",
-    val scheduleJson: String = "",
-    val relationshipsJson: String = "",
-    val obligationsText: String = "",
+    // ---- 世界设定（v13；v14 起是可视化编辑器的状态，不再是 JSON 文本） --------
+    val world: WorldEditorState = WorldEditorState(),
     // ---- 话风（v13） --------------------------------------------------------
     val speechTone: String = "",
     val speechPhrases: List<String> = emptyList(),
@@ -97,14 +93,7 @@ class PresetEditorViewModel @Inject constructor(
                                 prompt = preset.prompt,
                                 category = preset.category,
                                 avatarSeed = preset.avatarSeed,
-                                worldName = world?.worldName.orEmpty(),
-                                era = world?.era.orEmpty(),
-                                worldDescription = world?.description.orEmpty(),
-                                scheduleJson = WorldPresetCodec.encodeSchedule(world?.schedule.orEmpty()),
-                                relationshipsJson = WorldPresetCodec.encodeRelationships(
-                                    world?.relationships.orEmpty()
-                                ),
-                                obligationsText = world?.obligations.orEmpty().joinToString("\n"),
+                                world = WorldEditorState.from(world),
                                 speechTone = speech?.tone.orEmpty(),
                                 speechPhrases = speech?.phrases.orEmpty(),
                                 speechHabits = speech?.habits.orEmpty().joinToString("\n"),
@@ -148,15 +137,13 @@ class PresetEditorViewModel @Inject constructor(
                 events.send(PresetEditorEvent.Message(context.getString(R.string.guidance_world_ai_fallback)))
                 return@launch
             }
+            // 只填空白项：用户已经改过的世界不会被一次「AI 补全」冲掉（规范 §2.3）。
             _state.update { state ->
                 state.copy(
                     form = state.form.copy(
-                        worldName = result.preset.worldName,
-                        era = result.preset.era,
-                        worldDescription = result.preset.description,
-                        scheduleJson = WorldPresetCodec.encodeSchedule(result.preset.schedule),
-                        relationshipsJson = WorldPresetCodec.encodeRelationships(result.preset.relationships),
-                        obligationsText = result.preset.obligations.joinToString("\n")
+                        world = state.form.world.mergedWith(
+                            WorldEditorState.from(result.preset)
+                        )
                     )
                 )
             }
@@ -230,26 +217,15 @@ class PresetEditorViewModel @Inject constructor(
             viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_prompt_required))) }
             return
         }
-        // 日程 / 关系是用户手写的 JSON：格式不对就明确报错，不当场吞掉这些条目。
-        val schedule = WorldPresetCodec.decodeSchedule(form.scheduleJson)
-        if (schedule == null) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.guidance_world_schedule_invalid))) }
+        // 可视化编辑器也要校验：问题定位到「哪一段的第几行」，不静默丢条目（规范 §2.3）。
+        val worldIssues = form.world.issues()
+        if (worldIssues.isNotEmpty()) {
+            viewModelScope.launch {
+                events.send(PresetEditorEvent.Message(WorldEditorErrors.message(context, worldIssues)))
+            }
             return
         }
-        val relationships = WorldPresetCodec.decodeRelationships(form.relationshipsJson)
-        if (relationships == null) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.guidance_world_relationships_invalid))) }
-            return
-        }
-        val world = WorldPreset(
-            worldName = form.worldName,
-            era = form.era,
-            description = form.worldDescription,
-            schedule = schedule,
-            relationships = relationships,
-            obligations = form.obligationsText.lineSequence().map { it.trim() }
-                .filter { it.isNotBlank() }.toList()
-        )
+        val world = form.world.toPreset()
         val speech = SpeechStyle(
             tone = form.speechTone,
             phrases = form.speechPhrases,

@@ -43,7 +43,10 @@ class PresenceRepository @Inject constructor(
     private val agentTickDao: AgentTickDao,
     private val agentIntentDao: AgentIntentDao,
     private val chatSessionDao: ChatSessionDao,
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    /** 服务端模式：presence 由服务端推进，本地只缓存/展示（M4）。 */
+    private val serverMode: com.myfriend.app.data.remote.ServerModeRepository,
+    private val serverPresence: com.myfriend.app.data.remote.ServerPresenceStore
 ) {
 
     /** 界面用的那个流：跟着他自己的动静走，也自己按 [PULSE_MS] 往前走。 */
@@ -61,13 +64,21 @@ class PresenceRepository @Inject constructor(
                 delay(PULSE_MS)
             }
         }
-        return combine(ticks, pulse) { recent, now -> recent to now }
+        val derived = combine(ticks, pulse) { recent, now -> recent to now }
             .map { (recent, now) -> snapshot(personaId, recent, now, zone) }
             .catch { error ->
                 if (error is CancellationException) throw error
                 // 数据库出问题不该让聊天标题栏空掉：退回最朴素的一句。
                 emit(PresenceDeriver.IDLE_FALLBACK)
             }
+        // 服务端模式：以服务端下发的 presence 为准；切回本地模式立刻回到推导（不清缓存）。
+        val serverSnapshot = combine(
+            serverMode.state,
+            serverPresence.observe(personaId)
+        ) { state, snapshot -> snapshot.takeIf { state.usable } }
+        return combine(derived, serverSnapshot) { local, server ->
+            server?.toPresence() ?: local
+        }
     }
 
     // ------------------------------------------------------------ 内部
@@ -87,6 +98,10 @@ class PresenceRepository @Inject constructor(
         now: Long = System.currentTimeMillis(),
         zone: ZoneId = ZoneId.systemDefault()
     ): Presence {
+        // 服务端模式下服务端才是「他在做什么」的真相源；没有缓存才退回本地推导。
+        if (serverMode.isEnabled()) {
+            serverPresence.current(personaId)?.let { return it.toPresence() }
+        }
         val ticks = runCatching {
             agentTickDao.observeRecent(personaId, RECENT_TICKS).first()
         }.getOrDefault(emptyList())

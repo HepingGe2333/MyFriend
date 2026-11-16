@@ -263,7 +263,10 @@ final class ChatServiceTests: XCTestCase {
         let system = try systemPrompt()
         XCTAssertTrue(system.contains("# 你是谁"))
         XCTAssertTrue(system.contains("# 边界"))
-        XCTAssertFalse(system.contains("# 你所在的世界"))
+        // 没有世界设定时，这一节仍然存在、只写一句「没有特别的世界设定」（脚手架 `world_empty`）：
+        // 模型需要知道"这里没有设定"，而不是自己编一个世界出来。
+        XCTAssertTrue(system.contains("# 你所在的世界"))
+        XCTAssertTrue(system.contains("你没有特别的世界设定"))
         XCTAssertFalse(system.contains("# 你怎么说话"))
         // 没有活动也要说清「没在忙什么」（§6.3）。
         XCTAssertTrue(system.contains("没在忙什么"))
@@ -354,7 +357,7 @@ final class ChatServiceTests: XCTestCase {
 
         let system = try systemPrompt()
         XCTAssertTrue(system.contains("## 你现在的心情"))
-        XCTAssertTrue(system.contains("雀跃（强度 4/5，很浓）"))
+        XCTAssertTrue(system.contains("心情：雀跃（强度 4/5）。"))
         XCTAssertTrue(system.contains("原因：他夸我了"))
     }
 
@@ -799,7 +802,17 @@ final class ChatServiceTests: XCTestCase {
             current = current.deletingLastPathComponent()
         }
         let source = try String(contentsOf: try XCTUnwrap(path), encoding: .utf8)
-        XCTAssertTrue(source.contains("env.chat.sendChecked("), "ViewModel 要走能分辨「有没有落库」的入口")
+        // 0.12 服务端模式之后，「走哪条链路」的判断收进了装配层：
+        // `env.sendChecked(...)` 内部按模式选 `ChatService` 或 `ServerChatGateway`，
+        // 但入口仍然必须是**能分辨「有没有落库」**的那个（两者都返回 `SendOutcome`）。
+        XCTAssertTrue(
+            source.contains("env.sendChecked("),
+            "ViewModel 要走能分辨「有没有落库」的入口"
+        )
+        XCTAssertFalse(
+            source.contains("env.chat.sendChecked("),
+            "链路选择只该出现在 AppEnvironment 一处，不该在界面里再分叉"
+        )
         XCTAssertTrue(source.contains("case .rejected(let error)"), "被拒要走单独分支")
         XCTAssertTrue(source.contains("sendFailure = message"), "被拒时要留一个可重试状态")
         // 清空动作必须只出现在 `.started` 分支里（``.rejected` 分支只留提示，不碰输入状态）。

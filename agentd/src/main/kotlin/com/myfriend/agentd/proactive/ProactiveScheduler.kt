@@ -13,6 +13,22 @@ data class ProactiveTarget(
 )
 
 /**
+ * 一拍判定完的完整结果。
+ *
+ * [decisions] 是**每个人格一条**（包括没开口的），[fired] 只是其中 `shouldFire` 的那些。
+ * 分开的理由：落库/事件流只关心掷中的，而「为什么没开口」（睡着、刚聊完、正在忙、概率降了）
+ * 是客户端诊断与 `/v1/proactive/tick` 的 `skipped` 要用的。
+ *
+ * @param now 这一拍判定的时刻（同一个 `now` 重复调用会得到空 [decisions]）
+ */
+data class ProactiveTick(
+    val now: Long,
+    val decisions: List<ProactiveDecision>
+) {
+    val fired: List<ProactiveDecision> get() = decisions.filter { it.shouldFire }
+}
+
+/**
  * 一拍要判定谁。
  *
  * 由主线接存储层：从 `personas` / `sessions` / `messages` / `moods` 里读出
@@ -115,12 +131,23 @@ class ProactiveScheduler(
      *
      * @param now 要判定的时刻；默认取 [clock]。同一个 `now` 重复调用只生效第一次
      */
-    fun tickOnce(now: Long = clock.millis()): List<ProactiveDecision> = synchronized(lock) {
-        if (now <= lastTickAt) return emptyList()
+    fun tickOnce(now: Long = clock.millis()): List<ProactiveDecision> = tick(now).fired
+
+    /**
+     * 跑一拍，返回**全部**判定（含没开口的原因）。
+     *
+     * 与 [tickOnce] 是同一次判定（同一个 `now` 只生效一次；「刚发过」overlay 也照旧），
+     * 区别只是把 `BUSY` / `LIMITED` / `DAILY_CAP` 这些「为什么没开口」一起交回去——
+     * `POST /v1/proactive/tick` 的 `skipped` 数组就是从这里来的。
+     *
+     * @param now 要判定的时刻；默认取 [clock]
+     */
+    fun tick(now: Long = clock.millis()): ProactiveTick = synchronized(lock) {
+        if (now <= lastTickAt) return ProactiveTick(now, emptyList())
         lastTickAt = now
         resetOverlayIfDayChanged(now)
 
-        val fired = ArrayList<ProactiveDecision>(1)
+        val decisions = ArrayList<ProactiveDecision>(1)
         for (target in source.targets(now)) {
             val persona = merged(target.persona)
             val decision = try {
@@ -130,19 +157,20 @@ class ProactiveScheduler(
                 System.err.println("[proactive] 判定失败 persona=${persona.personaId.take(32)}：${error::class.simpleName}")
                 continue
             }
+            // 没掷中的也要留着：客户端/日志靠它解释「他为什么没开口」（BUSY/LIMITED/…）。
+            decisions += decision
             if (!decision.shouldFire) continue
             overlay[persona.personaId] = persona.copy(
                 lastProactiveAt = now,
                 proactiveCountToday = persona.proactiveCountToday + 1
             )
-            fired += decision
             try {
                 sink.onFired(decision)
             } catch (error: Exception) {
                 System.err.println("[proactive] 落库失败 persona=${persona.personaId.take(32)}：${error::class.simpleName}")
             }
         }
-        fired
+        ProactiveTick(now, decisions)
     }
 
     // ------------------------------------------------------------------ 内部

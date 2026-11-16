@@ -50,6 +50,12 @@ public final class ToolExecutor: ToolRunning {
     /// agent 决策层（0.11.0）：工具参数夹取与 `defer_reply` 计划走它。
     /// 默认本机实现；配成远程时失败会回退本机（工具执行不该因为内核服务没起而失败）。
     private let agentCore: any AgentCoreClient
+    /// 服务端模式下把 `set_activity` 的当前活动上报给服务端（M3 写路径的最小闭环）。
+    ///
+    /// 为什么是闭包而不是直接依赖 `ServerAPIClient`：工具执行器在 Kit 里，
+    /// 它不该知道「现在是不是服务端模式」；装配层（`AppEnvironment`）按当时配置决定接不接。
+    /// nil = 本地模式（什么都不做，本地那份活动已经写进人格了）。
+    private let activityReported: ((PersonaActivity, String) -> Void)?
     private let now: () -> Int64
     private let log: (String) -> Void
 
@@ -68,6 +74,7 @@ public final class ToolExecutor: ToolRunning {
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
+        activityReported: ((PersonaActivity, String) -> Void)? = nil,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -82,6 +89,7 @@ public final class ToolExecutor: ToolRunning {
         self.webTools = webTools
         self.scorer = scorer
         self.agentCore = agentCore
+        self.activityReported = activityReported
         self.now = now
         self.log = log
     }
@@ -701,6 +709,9 @@ public final class ToolExecutor: ToolRunning {
         case .success:
             break
         }
+        // 服务端模式：把「我在忙什么」上报给服务端（主动引擎据此决定要不要开口，规范 §4）。
+        // 失败不影响本地那一份（装配层只记日志），所以这里不等结果。
+        activityReported?(activity, persona.id)
         // 界面那一行（跟随界面语言）与提示词那一行（脚手架保持中文）分开：与 set_quiet_hours 同一口径。
         let clock = activity.untilClockText()
         let availabilityLine: String

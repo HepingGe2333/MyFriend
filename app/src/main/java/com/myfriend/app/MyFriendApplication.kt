@@ -36,6 +36,9 @@ class MyFriendApplication : Application(), Configuration.Provider, ImageLoaderFa
     @Inject lateinit var memoryRepository: com.myfriend.app.data.repo.MemoryRepository
     @Inject lateinit var historyCompressor: com.myfriend.app.data.repo.HistoryCompressor
 
+    /** 服务端模式的前台同步/事件订阅（默认关闭时不发任何请求）。 */
+    @Inject lateinit var serverModeRuntime: com.myfriend.app.data.remote.ServerModeRuntime
+
     /** 流水仓库在这里被 Hilt 构造出来，启动时把 90 天前的旧流水清掉。 */
     @Inject lateinit var usageRepository: ApiUsageRepository
 
@@ -86,5 +89,7 @@ class MyFriendApplication : Application(), Configuration.Provider, ImageLoaderFa
         }
         // 设置里「常驻后台」一开，就把他的循环拉起来；关了就走 WorkManager 粗粒度。
         agentLoopController.observe()
+        // 服务端模式：启动/回前台同步一次，前台时事件长轮询；关闭时什么都不做。
+        serverModeRuntime.start(appScope)
     }
 }

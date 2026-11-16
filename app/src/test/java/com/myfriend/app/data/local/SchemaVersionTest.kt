@@ -7,6 +7,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -302,6 +304,75 @@ class SchemaVersionTest {
         ).forEach { ddl -> assertTrue("DDL 必须与规范一致：$ddl", block.contains(ddl)) }
         assertTrue("加列前要先查 PRAGMA table_info", block.contains("PRAGMA table_info"))
         assertTrue("MIGRATION_12_13 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_12_13"))
+    }
+
+    /**
+     * v14：人格提示词的翻译缓存（`spec/persona-translation/README.md` §4）。
+     *
+     * 这次只加两列，改动很小，但恰恰最容易写错：两列必须都是可空 `TEXT`，不带 `DEFAULT`、不带 `NOT NULL`。
+     * 一旦写成 `NOT NULL DEFAULT ''`，老库升级时会被逼着给每一行塞一个空串；而代码判「有没有缓存」
+     * 看的是 `translationLang != null`，空串会被当成「有缓存但语言为空」，于是每次启动都重译一遍——
+     * 这种错不会有任何报错，只会让用户觉得翻译一直在重来。所以这里连「只允许 ADD COLUMN ... TEXT」
+     * 这条形状也一起钉住。
+     */
+    @Test
+    fun `MIGRATION_13_14 幂等 只加可空列 且注册进了 Room`() {
+        val text = databaseSource.readText()
+        val start = text.indexOf("MIGRATION_13_14 = object : Migration(13, 14)")
+        assertTrue("没找到 MIGRATION_13_14 的声明", start >= 0)
+        // 只切到声明 + migrate 主体（下一段 KDoc 之前）：否则后面迁移的注释与 DDL 会混进来干扰断言。
+        val docComment = text.indexOf("/**", start)
+        val end = if (docComment > start) docComment else minOf(text.length, start + 1200)
+        val block = text.substring(start, end)
+
+        listOf(
+            "ALTER TABLE `personas` ADD COLUMN `translationJson` TEXT",
+            "ALTER TABLE `personas` ADD COLUMN `translationLang` TEXT"
+        ).forEach { ddl -> assertTrue("DDL 必须与规范一致：$ddl", block.contains(ddl)) }
+        assertFalse("只允许加可空列，DDL 里不许出现 NOT NULL", block.contains("NOT NULL"))
+        assertFalse("只允许加可空列，DDL 里不许出现 DEFAULT", block.contains("DEFAULT"))
+
+        // 幂等靠 PRAGMA：MIGRATION_13_14 复用 columns(db, "personas")，helper 自己发 PRAGMA table_info。
+        assertTrue(
+            "加列前要先查 PRAGMA table_info（复用 columns(db, \"personas\")）",
+            block.contains("columns(db, \"personas\")")
+        )
+        assertTrue("columns(...) 必须用 PRAGMA table_info 读列名", text.contains("PRAGMA table_info"))
+
+        assertTrue("MIGRATION_13_14 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_13_14"))
+        assertTrue(
+            "v14 的 schema json 必须导出，否则 review 时看不出这一版只加了两列：$schemaDir",
+            File(schemaDir, "14.json").isFile
+        )
+    }
+
+    /**
+     * v14：译文缓存两列在导出的 schema 里必须与迁移同名同责。
+     *
+     * `notNull=false` 是这次的唯一契约（老库读出来 = NULL = 还没翻译过）；`defaultValue` 必须没有，
+     * 否则「没有缓存」会被写成一个空串，判空逻辑全部失效。
+     */
+    @Test
+    fun `v14 的 schema 里翻译缓存两列都在且可空`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "14.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+        val personas = entities.first { it["tableName"]!!.jsonPrimitive.content == "personas" }
+        val personaFields = personas["fields"]!!.jsonArray.map { it.jsonObject }.associateBy {
+            it["columnName"]!!.jsonPrimitive.content
+        }
+
+        listOf("translationJson", "translationLang").forEach { column ->
+            val field = personaFields[column] ?: error("v14 的 personas 里没有 $column")
+            assertEquals("$column 必须是 TEXT", "TEXT", field["affinity"]!!.jsonPrimitive.content)
+            assertEquals("$column 必须可空（老库升级后是 NULL）", false, field["notNull"]!!.jsonPrimitive.boolean)
+            assertNull("$column 不能有默认值，否则「没有缓存」会变成空串", field["defaultValue"])
+        }
+
+        // v13 的引导字段不能被这次迁移顺手改掉。
+        listOf("worldJson", "speechStyleJson", "activityJson").forEach { column ->
+            val field = personaFields[column] ?: error("v14 的 personas 里丢了 v13 的 $column")
+            assertEquals("$column 必须还是可空", false, field["notNull"]!!.jsonPrimitive.boolean)
+        }
     }
 
     // ---------------------------------------------------------------- 解析源码

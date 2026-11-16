@@ -193,21 +193,14 @@ public enum PromptBuilder {
     /// 特殊场景（比如主动消息要更短的一段），默认永远是这一段。
     ///
     /// 文案里刻意写出**反例**（§1.2）：模型对「不要写成 …」的服从度明显高于抽象要求。
-    public static let defaultBoundary = """
-    # 边界
-    - 不解释 AI 身份、不复述人设、不总结这段对话，也不替对方做决定。
-    - 不写动作描写、不写括号里的神态；不要用第三人称讲自己（不要「他觉得」「他叹了口气」这种）。
-    - 不知道的事就说「不清楚」「回头再说」，不要编造现实世界的事实。
-    - 不要心理分析对方（不要「你是不是因为……」），也不要每句都用同一个口头禅开头。
-    """
+    public static let defaultBoundary = PersonaPromptScaffold.boundariesText()
 
     /// 第一人称规则（§1.1 第 1 条）。`name` 空时不点名，避免出现「你是 本人」这种句子。
-    public static func firstPersonRule(name: String) -> String {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "你不是助手，你就是这个人本人。用第一人称「我」说话；不要用第三人称自述，也不要旁白式描述自己。"
-        }
-        return "你不是助手，你是\(trimmed)本人。用第一人称「我」说话；不要用「\(trimmed)觉得」「他说」这种第三人称自述，也不要旁白式描述自己。"
+    ///
+    /// 文案逐字来自 `spec/persona-guidance/scaffold.json` 的 `identity_body` /
+    /// `identity_body_with_meta`：`meta`（年龄、职业这类补充）由调用方给，空时不带括号。
+    public static func firstPersonRule(name: String, meta: String = "") -> String {
+        PersonaPromptScaffold.identityLine(name: name, meta: meta)
     }
 
     /// 把「人格正文」包成 `# 你是谁` 一节；正文自己已经带了第一人称规则时不重复写。
@@ -221,11 +214,15 @@ public enum PromptBuilder {
         return "# 你是谁\n" + firstPersonRule(name: name) + "\n\n" + body
     }
 
-    /// 世界预设那一段（空预设返回空串，整节不出现）。
+    /// 世界预设那一段。
+    ///
+    /// 没有预设时**仍然出现**这一节、只写 `world_empty` 那一句（脚手架 `world_empty`）：
+    /// 模型需要知道「这里没有设定」，而不是自己猜一个世界出来。
     public static func worldSection(_ world: WorldPreset?) -> String {
-        guard let world else { return "" }
-        let rendered = world.renderForPrompt()
-        return rendered.isEmpty ? "" : "\n\n" + rendered
+        let rendered = world?.renderForPrompt() ?? ""
+        if !rendered.isEmpty { return "\n\n" + rendered }
+        return "\n\n" + PersonaPromptScaffold.worldSection
+            + "\n" + PersonaPromptScaffold.worldEmpty
     }
 
     /// 话风那一段（空风格返回空串）。
@@ -250,8 +247,10 @@ public enum PromptBuilder {
         if !bond.isEmpty { parts.append(bond) }
         let description = persona.description.trimmingCharacters(in: .whitespacesAndNewlines)
         if parts.isEmpty, !description.isEmpty { parts.append(description) }
-        guard !parts.isEmpty else { return "" }
-        return "\n\n# 你们的关系\n" + parts.joined(separator: "\n")
+        // 一句结构化关系都没有时用脚手架里的兜底（不能留一个只有标题的空段落）。
+        if parts.isEmpty { parts.append(PersonaPromptScaffold.relationshipDefault) }
+        return "\n\n" + PersonaPromptScaffold.relationshipSection + "\n"
+            + parts.joined(separator: "\n")
     }
 
     /// 「# 你此刻的状态」整段：现在是几点、他在做什么、忙不忙。
@@ -266,15 +265,17 @@ public enum PromptBuilder {
         calendar: Calendar = ServiceTime.calendar()
     ) -> String {
         guard now > 0 else { return "" }
-        let clock = PromptClock.weekdayText(now, calendar: calendar) + " "
-            + PromptClock.clockText(now, calendar: calendar)
-        var line = "现在是\(clock)。"
+        // 「现在是周三 19:40。」逐字来自脚手架 `state_line`；`state_idle` 同理。
+        var line = PersonaPromptScaffold.fill(PersonaPromptScaffold.stateLine, [
+            "weekday": PromptClock.weekdayText(now, calendar: calendar),
+            "time": PromptClock.clockText(now, calendar: calendar)
+        ])
         if let activity, activity.isActive(now: now) {
             line += activity.renderStateLine(now: now, calendar: calendar)
         } else {
-            line += "没在忙什么。"
+            line += PersonaPromptScaffold.stateIdle
         }
-        var lines = ["# 你此刻的状态", line]
+        var lines = [PersonaPromptScaffold.stateSection, line]
         let presence = (presenceDetail ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if !presence.isEmpty { lines.append("（你自己的状态：\(presence)）") }
         return "\n\n" + lines.joined(separator: "\n")

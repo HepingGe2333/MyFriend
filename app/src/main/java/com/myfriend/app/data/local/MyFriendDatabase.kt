@@ -27,7 +27,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryVersionEntity::class,
         MemoryVectorEntity::class
     ],
-    version = 13,
+    version = 14,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -58,6 +58,29 @@ abstract class MyFriendDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "myfriend.db"
+
+        /**
+         * v14：人格提示词的翻译缓存（`spec/persona-translation/README.md` §4）。
+         *
+         * 只给 `personas` 加两列可空 `TEXT`：
+         * - `translationJson`：`{lang, translatedAt, sourceHash, persona{…}, world{…}}`；
+         * - `translationLang`：与 `lang` 同时写，方便不解析 JSON 就判断「这份缓存是不是当前语言」。
+         *
+         * 不动任何既有数据：老库升级后读出来是 NULL = 「还没翻译过」，下次启动会按需译一次。
+         *
+         * 幂等：先查 `PRAGMA table_info`，列已经在就跳过（迁移测试与将来的修复脚本会重复调用）。
+         */
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                if ("translationJson" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `translationJson` TEXT")
+                }
+                if ("translationLang" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `translationLang` TEXT")
+                }
+            }
+        }
 
         /**
          * v13：人设引导（`spec/persona-guidance/README.md` §2 / §3 / §4）。

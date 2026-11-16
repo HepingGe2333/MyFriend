@@ -161,7 +161,9 @@ extension PersonaEntity: SQLiteRecord {
         "proactiveLevel", "memoryRetention", "extractionEvery",
         "sleepEnabled", "wakeThreshold", "dndOnSleep",
         // v13 的人设引导：世界预设 / 话风 / 当前活动（JSON 文本，可空）。
-        "worldJson", "speechStyleJson", "activityJson"
+        "worldJson", "speechStyleJson", "activityJson",
+        // v14 的翻译缓存：人设/世界/话风翻成界面语言后的快照（JSON 文本，可空）。
+        "translationJson", "translationLang"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -179,7 +181,8 @@ extension PersonaEntity: SQLiteRecord {
             .optionalText(backstory), .optionalText(quirks),
             .int(proactiveLevel), .int(memoryRetention), .int(extractionEvery),
             .bool(sleepEnabled), .int(wakeThreshold), .bool(dndOnSleep),
-            .optionalText(worldJson), .optionalText(speechStyleJson), .optionalText(activityJson)
+            .optionalText(worldJson), .optionalText(speechStyleJson), .optionalText(activityJson),
+            .optionalText(translationJson), .optionalText(translationLang)
         ]
     }
 
@@ -228,7 +231,9 @@ extension PersonaEntity: SQLiteRecord {
             // v13：三列可空；老库没有这三列时 `optionalText` 给 nil（= 没设定）。
             worldJson: try row.optionalText("worldJson"),
             speechStyleJson: try row.optionalText("speechStyleJson"),
-            activityJson: try row.optionalText("activityJson")
+            activityJson: try row.optionalText("activityJson"),
+            translationJson: try row.optionalText("translationJson"),
+            translationLang: try row.optionalText("translationLang")
         )
     }
 }
@@ -654,6 +659,25 @@ extension ApiUsageEntity: SQLiteRecord {
 // ---------------------------------------------------------------------------
 
 public final class PersonaStore: SQLiteStore<PersonaEntity> {
+
+    /// 只写「翻译缓存」两列（`spec/persona-translation/README.md` §4）。
+    ///
+    /// 为什么单独一个方法而不是整行 upsert：翻译发生在聊天前的一次后台任务里，
+    /// 而人格可能正被用户在编辑页改。整行写回会用一份旧快照覆盖用户的编辑；
+    /// 只写这两列则互不干扰（翻译缓存永远可以被下一次重译覆盖）。
+    ///
+    /// - Returns: false 表示人格已被删（没写）。
+    @discardableResult
+    public func updateTranslation(id: String, json: String?, lang: String?) throws -> Bool {
+        let changed = try database.executeUpdate(
+            "UPDATE personas SET translationJson = ?, translationLang = ? WHERE id = ?",
+            [json.map { SQLiteValue.text($0) } ?? .null,
+             lang.map { SQLiteValue.text($0) } ?? .null,
+             .text(id)]
+        )
+        return changed > 0
+    }
+
     /// 当前默认人格。理论上只有一个，万一数据里有多条（导入合并过）取最近更新的。
     public func defaultPersona() throws -> PersonaEntity? {
         try first(where: "isDefault = 1", orderBy: "updatedAt DESC")

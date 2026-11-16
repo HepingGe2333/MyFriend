@@ -1,8 +1,11 @@
 package com.myfriend.agentd
 
 import com.myfriend.agentd.AgentdApi.Response
+import com.myfriend.agentd.proactive.ActivityAvailability
+import com.myfriend.agentd.proactive.ActivityState
 import com.myfriend.agentd.store.FileStore
 import com.myfriend.agentd.store.Message
+import com.myfriend.agentd.store.Persona
 import com.myfriend.agentd.store.Session
 import com.myfriend.agentd.store.StateSnapshot
 import com.myfriend.agentd.store.StoreJson
@@ -11,6 +14,7 @@ import com.myfriend.app.core.json.JsonParseException
 import com.myfriend.app.core.json.JsonValue
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 
 /**
  * 服务端权威模式的第一批 HTTP 路由（`docs/design/server-authoritative.md` §3.1/§3.2/§3.3/§3.4）：
@@ -21,6 +25,7 @@ import java.nio.charset.StandardCharsets
  * | `GET`  | `/v1/sessions?personaId=` | 会话列表 |
  * | `GET`  | `/v1/sessions/{id}/messages?beforeBlock=&afterBlock=&limitBlocks=1` | 一页一块的消息分页 |
  * | `POST` | `/v1/sessions/{id}/messages` | 发送消息（SSE 流） |
+ * | `POST` | `/v1/personas/{id}/activity` | 上报「他此刻在做什么」（M3 客户端的占用时间） |
  * | `GET`  | `/v1/events?since=&timeoutSeconds=&limit=` | 增量事件（长轮询；SSE 下一阶段） |
  *
  * 为什么路由不放进 `AgentdApi`：`AgentdApi` 是**纯函数**（方法/路径/body → Response），而本文件里的
@@ -35,8 +40,10 @@ object AuthorityRoutes {
 
     const val STATE_PATH = "/v1/state"
     const val SESSIONS_PATH = "/v1/sessions"
+    const val PERSONAS_PATH = "/v1/personas"
     const val EVENTS_PATH = "/v1/events"
     private const val MESSAGES_SEGMENT = "messages"
+    private const val ACTIVITY_SEGMENT = "activity"
 
     /** 长轮询默认等待（秒）；与契约 §3.4 的「最多 25s」一致。 */
     const val DEFAULT_EVENT_WAIT_SECONDS = 25L
@@ -54,7 +61,8 @@ object AuthorityRoutes {
     fun matches(method: String, rawPath: String): Boolean {
         val path = rawPath.substringBefore('?')
         if (path == STATE_PATH || path == EVENTS_PATH || path == SESSIONS_PATH) return true
-        return path.startsWith("$SESSIONS_PATH/")
+        if (path.startsWith("$SESSIONS_PATH/") || path.startsWith("$PERSONAS_PATH/")) return true
+        return CrudRoutes.matches(path)
     }
 
     /** `POST /v1/sessions/{id}/messages`：唯一需要流式写响应的路由。 */
@@ -94,16 +102,38 @@ object AuthorityRoutes {
                 }
 
                 path == SESSIONS_PATH -> {
-                    requireGet(verb, SESSIONS_PATH)
-                    sessionList(store, rawPath)
+                    when (verb) {
+                        "GET" -> sessionList(store, rawPath)
+                        "POST" -> CrudRoutes.handle(store, method, rawPath, body)
+                        else -> throw AgentdApi.ApiFailure(405, "method_not_allowed", "$SESSIONS_PATH 只支持 GET/POST")
+                    }
+                }
+
+                path == PERSONAS_PATH -> CrudRoutes.handle(store, method, rawPath, body)
+
+                path.startsWith("$PERSONAS_PATH/") -> {
+                    val sub = personaSubPath(path)
+                    if (sub?.second == ACTIVITY_SEGMENT) {
+                        requirePost(verb, "$PERSONAS_PATH/{id}/$ACTIVITY_SEGMENT")
+                        activity(store, sub.first, body)
+                    } else {
+                        // DELETE /v1/personas/{id}（没有子路径）、GET/POST /v1/personas/{id}/memories
+                        CrudRoutes.handle(store, method, rawPath, body)
+                    }
                 }
 
                 path.startsWith("$SESSIONS_PATH/") -> {
-                    val sub = sessionSubPath(path) ?: throw notFound()
-                    if (sub.second != MESSAGES_SEGMENT) throw notFound()
-                    requireGet(verb, "$SESSIONS_PATH/{id}/$MESSAGES_SEGMENT")
-                    messagePage(store, sub.first, rawPath)
+                    val sub = sessionSubPath(path)
+                    if (sub?.second == MESSAGES_SEGMENT) {
+                        requireGet(verb, "$SESSIONS_PATH/{id}/$MESSAGES_SEGMENT")
+                        messagePage(store, sub.first, rawPath)
+                    } else {
+                        // POST /v1/sessions/{id}/read（未知子路径由 CrudRoutes 回 404）
+                        CrudRoutes.handle(store, method, rawPath, body)
+                    }
                 }
+
+                CrudRoutes.matches(path) -> CrudRoutes.handle(store, method, rawPath, body)
 
                 else -> throw notFound()
             }
@@ -113,6 +143,12 @@ object AuthorityRoutes {
             AgentdApi.errorResponse(400, "invalid_json", "请求体不是合法 JSON：${invalid.message.orEmpty()}")
         } catch (missing: StoreSessionNotFoundException) {
             AgentdApi.errorResponse(404, "not_found", "没有这个会话")
+        } catch (missing: com.myfriend.agentd.store.StorePersonaNotFoundException) {
+            AgentdApi.errorResponse(404, "not_found", "没有这个人格")
+        } catch (missing: com.myfriend.agentd.store.StoreMemoryNotFoundException) {
+            AgentdApi.errorResponse(404, "not_found", "没有这条记忆")
+        } catch (missing: com.myfriend.agentd.store.StorePresetNotFoundException) {
+            AgentdApi.errorResponse(404, "not_found", "没有这个预设")
         } catch (invalid: IllegalArgumentException) {
             // 存储层的参数校验（非法 id、非法角色等）是客户端的问题，不是 500。
             AgentdApi.errorResponse(400, "invalid_argument", invalid.message ?: "参数不合法")
@@ -174,7 +210,9 @@ object AuthorityRoutes {
 
     private fun snapshotJson(snapshot: StateSnapshot): JsonValue.Obj = StoreJson.obj(
         "serverTime" to StoreJson.num(snapshot.serverTime),
-        "personas" to StoreJson.arr(snapshot.personas.map { it.toJson() }),
+        // 人格多带一格可有可无的 `activity`（结构化活动对象，`null` = 没在忙）；
+        // 磁盘上的 `activityJson` 原样保留，客户端爱用哪个用哪个。
+        "personas" to StoreJson.arr(snapshot.personas.map { personaJson(it) }),
         "sessions" to StoreJson.arr(snapshot.sessions.map { it.toJson() }),
         "messages" to StoreJson.arr(snapshot.messages.map { it.toJson() }),
         "mood" to (snapshot.mood?.toJson() ?: JsonValue.Null),
@@ -183,6 +221,82 @@ object AuthorityRoutes {
         // 契约外的可加字段：首次同步只给最新一块，客户端据此知道要不要继续翻分页接口。
         "hasMoreMessages" to StoreJson.bool(snapshot.messagesTruncated)
     )
+
+    // ------------------------------------------------------------------ POST /v1/personas/{id}/activity
+
+    /**
+     * 上报「他此刻在做什么」（`spec/persona-guidance/README.md` §4 的 `set_activity`）。
+     *
+     * 请求体与客户端 `PersonaActivity` 的 JSON 同构，字段全部可选（除了 `activity`）：
+     *
+     * ```json
+     * {"kind":"WORK","activity":"在事务所赶第三版方案","minutes":90,"availability":"BUSY"}
+     * {"kind":"WORK","activity":"在事务所赶第三版方案","until":1763200000000,"availability":"LIMITED"}
+     * ```
+     *
+     * 服务端做的归一化（客户端可以不管格式，但别指望服务端接受乱的意义）：
+     * - `minutes` 夹到 15–480；既没给 `minutes` 也没给 `until` 时默认 60 分钟；
+     * - `until` 接受毫秒时间戳或 ISO-8601，**必须是未来**（过去的时刻由读取方当 FREE，
+     *   写进来就是一条立刻失效的活动，静默接受没意义，直接 400 更诚实）；
+     * - `kind` 认不出 → `OTHER`；`availability` 认不出 → `BUSY`（保守：不谎称有空）；
+     * - `activity` `trim` 后最多 160 字，空串 → 400。
+     *
+     * 落库走 [FileStore.updateActivity]（同一把写锁 + 原子重写 `personas.json`），
+     * 所以「重启后活动还在」和「主动门禁立刻读到」是同一份数据。
+     */
+    private fun activity(store: FileStore, personaId: String, body: String?): Response {
+        if (!FileStore.isValidId(personaId)) throw notFound()
+        if (store.persona(personaId) == null) {
+            throw AgentdApi.ApiFailure(404, "not_found", "没有这个人格")
+        }
+        val payload = parseJsonObject(body)
+        val activityText = payload.stringField("activity")?.trim().orEmpty()
+        if (activityText.isEmpty()) {
+            throw AgentdApi.ApiFailure(400, "invalid_argument", "activity 不能为空（用一句他自己的口吻写）")
+        }
+        val kind = ActivityState.parseKind(payload.stringField("kind"))
+        val availability = ActivityAvailability.parse(payload.stringField("availability"))
+        val minutes = payload.intField("minutes")
+        val explicitUntil = payload.untilField()
+        val now = store.serverTime()
+        val until = explicitUntil
+            ?: now + ActivityState.clampMinutes(minutes ?: ActivityState.DEFAULT_MINUTES) * 60_000L
+        if (until <= now) {
+            throw AgentdApi.ApiFailure(
+                400,
+                "invalid_argument",
+                "until 必须是未来的时刻（毫秒时间戳或 ISO-8601）"
+            )
+        }
+        val activity = ActivityState(
+            kind = kind,
+            activity = activityText.take(ActivityState.MAX_ACTIVITY_CHARS),
+            until = until,
+            availability = availability
+        )
+        val persona = store.updateActivity(personaId, ActivityState.encode(activity))
+        return Response(
+            200,
+            StoreJson.stringify(
+                StoreJson.obj(
+                    "persona" to personaJson(persona),
+                    "activity" to activity.toJson()
+                )
+            )
+        )
+    }
+
+    /**
+     * 人格的 HTTP 形状 = 磁盘形状 + `activity`（解析后；`null` = 没设过或坏 JSON）。
+     *
+     * 为什么两个字段都给：`activityJson` 是**原样文本**（客户端可能直接存下来，或原样再上报），
+     * `activity` 是**解析后的对象**（`GET /v1/state` 的读者不用再解析一遍）。
+     */
+    private fun personaJson(persona: Persona): JsonValue.Obj {
+        val fields = LinkedHashMap(persona.toJson().fields)
+        fields["activity"] = ActivityState.decode(persona.activityJson)?.toJson() ?: JsonValue.Null
+        return JsonValue.Obj(fields)
+    }
 
     // ------------------------------------------------------------------ GET /v1/sessions
 
@@ -291,6 +405,58 @@ object AuthorityRoutes {
 
     // ------------------------------------------------------------------ 请求体解析
 
+    /** 解析「必须是一个 JSON 对象」的 body（空 body / 坏 JSON / 非对象都翻成 400）。 */
+    private fun parseJsonObject(body: String?): JsonValue.Obj {
+        if (body.isNullOrBlank()) throw AgentdApi.ApiFailure(400, "empty_body", "请求体不能为空")
+        val root = try {
+            com.myfriend.app.core.json.Json.parse(body)
+        } catch (invalid: JsonParseException) {
+            throw AgentdApi.ApiFailure(400, "invalid_json", "请求体不是合法 JSON：${invalid.message.orEmpty()}")
+        }
+        return root as? JsonValue.Obj
+            ?: throw AgentdApi.ApiFailure(400, "invalid_body", "请求体必须是一个 JSON 对象")
+    }
+
+    /** 可选字符串字段：缺省/null → null；类型不对 → 400（不猜调用方想说什么）。 */
+    private fun JsonValue.Obj.stringField(key: String): String? = when (val value = fields[key]) {
+        null, JsonValue.Null -> null
+        is JsonValue.Str -> value.value
+        else -> throw AgentdApi.ApiFailure(400, "invalid_argument", "字段 $key 必须是字符串")
+    }
+
+    /** 可选整数字段：缺省/null → null；不是整数 → 400。 */
+    private fun JsonValue.Obj.intField(key: String): Int? = when (val value = fields[key]) {
+        null, JsonValue.Null -> null
+        is JsonValue.Num -> value.asInt
+            ?: throw AgentdApi.ApiFailure(400, "invalid_argument", "字段 $key 必须是整数")
+
+        else -> throw AgentdApi.ApiFailure(400, "invalid_argument", "字段 $key 必须是整数")
+    }
+
+    /** `until`：毫秒时间戳或 ISO-8601；缺省/null → null；两种都认不出来 → 400。 */
+    private fun JsonValue.Obj.untilField(): Long? = when (val value = fields["until"]) {
+        null, JsonValue.Null -> null
+        is JsonValue.Num -> value.asLong
+            ?: throw AgentdApi.ApiFailure(400, "invalid_argument", "字段 until 必须是整数毫秒时间戳")
+
+        is JsonValue.Str -> {
+            val text = value.value.trim()
+            text.toLongOrNull()
+                ?: runCatching { Instant.parse(text).toEpochMilli() }.getOrNull()
+                ?: throw AgentdApi.ApiFailure(
+                    400,
+                    "invalid_argument",
+                    "字段 until 必须是整数毫秒时间戳或 ISO-8601（例如 2026-11-16T13:30:00Z）"
+                )
+        }
+
+        else -> throw AgentdApi.ApiFailure(
+            400,
+            "invalid_argument",
+            "字段 until 必须是整数毫秒时间戳或 ISO-8601 字符串"
+        )
+    }
+
     /** 解析 `POST /v1/sessions/{id}/messages` 的 body（字段与限制见 [SendMessageRequest]）。 */
     internal fun parseSendRequest(body: String?): SendMessageRequest {
         if (body.isNullOrBlank()) throw AgentdApi.ApiFailure(400, "empty_body", "请求体不能为空")
@@ -377,8 +543,14 @@ object AuthorityRoutes {
         }
     }
 
+    private fun requirePost(verb: String, path: String) {
+        if (verb != "POST") {
+            throw AgentdApi.ApiFailure(405, "method_not_allowed", "$path 只支持 POST")
+        }
+    }
+
     private fun notFound(): AgentdApi.ApiFailure =
-        AgentdApi.ApiFailure(404, "not_found", "没有这个会话或接口")
+        AgentdApi.ApiFailure(404, "not_found", "没有这个会话/人格或接口")
 
     /**
      * `/v1/sessions/{id}/<sub>` → `(id, sub)`；路径形状不对返回 null（由调用方回 404）。
@@ -394,6 +566,19 @@ object AuthorityRoutes {
         val sub = rest.substring(slash + 1)
         if (sessionId.isEmpty() || sub.isEmpty()) return null
         return sessionId to sub
+    }
+
+    /** `/v1/personas/{id}/<sub>` → `(id, sub)`；形状不对返回 null（由调用方回 404）。 */
+    private fun personaSubPath(path: String): Pair<String, String>? {
+        val prefix = "$PERSONAS_PATH/"
+        if (!path.startsWith(prefix)) return null
+        val rest = path.substring(prefix.length)
+        val slash = rest.indexOf('/')
+        if (slash <= 0) return null
+        val personaId = rest.substring(0, slash)
+        val sub = rest.substring(slash + 1)
+        if (personaId.isEmpty() || sub.isEmpty()) return null
+        return personaId to sub
     }
 
     /** 查询串（只取第一个值；未知参数忽略；非法百分号转义 → 400）。 */

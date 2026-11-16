@@ -93,7 +93,9 @@ final class SchemaParityTests: XCTestCase {
         // Android 后来给它们补了 DEFAULT（历史差异，不属于这一版的范围）。
         let expected: [(table: String, columns: [(name: String, ddl: String)])] = [
             ("personas", Schema.personaGuidanceColumns),
-            ("persona_presets", Schema.presetGuidanceColumns)
+            ("persona_presets", Schema.presetGuidanceColumns),
+            // v14 的翻译缓存两列：列名两端固定（`spec/persona-translation/README.md` §8）。
+            ("personas", Schema.personaTranslationColumns)
         ]
         for item in expected {
             let entity = try XCTUnwrap(

@@ -26,7 +26,9 @@ public enum Schema {
     /// 0.12（同版第二次 schema 变更）= v12：`api_configs.webToolsProvider`（搜索服务选择）。
     /// 0.12（人设引导）= v13：`personas.worldJson` / `speechStyleJson` / `activityJson`、
     /// `persona_presets.worldJson` / `speechStyleJson`（见 `spec/persona-guidance/README.md` §5）。
-    public static let version: Int32 = 13
+    /// 0.12（提示词翻译）= v14：`personas.translationJson` / `translationLang`
+    ///（见 `spec/persona-translation/README.md` §8：缓存列名两端固定）。
+    public static let version: Int32 = 14
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -66,7 +68,28 @@ public enum Schema {
     /// 为什么补 DDL 不改 `user_version`：这是 1.8 就欠着的两张表（Android Room v10 里一直有），
     /// 属于「iOS 建表语句漏了」而不是 schema 版本演进；补上之后当次的 `user_version` 没有变
     ///（0.9.1 时是 10，v11 之后是 11），两端「同一版号同一含义」这条约定不受影响。
-    public static let supplementaryTables: [String] = [agentTicksTable, memoryEchoesTable]
+    public static let supplementaryTables: [String] = [
+        agentTicksTable, memoryEchoesTable, serverSyncStateTable, serverOutboxTable
+    ]
+
+    // MARK: - 服务端模式（M3/M4）的两张客户端侧表
+
+    /// 服务端模式的客户端侧状态：同步游标（`since`）与「服务端权威的 presence 快照」。
+    ///
+    /// 为什么不放 UserDefaults / Keychain：游标必须和**同一批数据**一起提交，
+    /// 否则「数据进了库、游标没前进」会重复拉一次（无害），
+    /// 而「游标前进了、数据没进库」会**永久丢一段历史**（有害）。
+    /// 只有和 upsert 同一个 SQLite 事务，才能保证两者的原子性。
+    ///
+    /// 它也不是记录型表（没有实体/仓储），形状就是一张 key-value：
+    /// `server.cursor` / `presence.<personaId>` / `mood.<personaId>` 这类键。
+    public static let serverSyncStateTable = "server_sync_state"
+
+    /// 服务端模式的待发队列：`clientMessageId` 是幂等键，离线排队、恢复补发都靠它。
+    ///
+    /// 为什么也进 SQLite：待发消息必须在**杀进程之后还在**（用户打完字就去地铁了，
+    /// 回来必须能补发），而且「补发成功 → 出队」要和消息落库同一个事务语义。
+    public static let serverOutboxTable = "server_outbox"
 
     // MARK: - v11 的派生表：分块历史
 
@@ -148,6 +171,15 @@ public enum Schema {
         ("activityJson", "TEXT")
     ]
 
+    /// v14 给 `personas` 加的列：提示词翻译缓存（`spec/persona-translation/README.md` §4）。
+    ///
+    /// 两列都可空：null = 还没有缓存（与"翻译过但源语言相同"是两件事，后者会写一份
+    /// `lang` 等于源语言的缓存，从而零请求）。
+    public static let personaTranslationColumns: [(name: String, ddl: String)] = [
+        ("translationJson", "TEXT"),
+        ("translationLang", "TEXT")
+    ]
+
     /// v13 给 `persona_presets` 加的列：预设可以带世界与话风（应用到人格时复制过去）。
     ///
     /// 预设没有 `activityJson`：当前活动是「这个人此刻在做什么」，不是可套用的设定。
@@ -201,6 +233,8 @@ public enum Schema {
             worldJson TEXT,
             speechStyleJson TEXT,
             activityJson TEXT,
+            translationJson TEXT,
+            translationLang TEXT,
             PRIMARY KEY (id)
         )
         """,
@@ -511,7 +545,36 @@ public enum Schema {
         "CREATE INDEX IF NOT EXISTS index_memory_echoes_createdAt ON memory_echoes (createdAt)",
 
         "CREATE INDEX IF NOT EXISTS index_api_usage_kind_at ON api_usage (kind, at)",
-        "CREATE INDEX IF NOT EXISTS index_api_usage_personaId_at ON api_usage (personaId, at)"
+        "CREATE INDEX IF NOT EXISTS index_api_usage_personaId_at ON api_usage (personaId, at)",
+
+        // 服务端模式的客户端侧状态（同步游标 / presence 快照）。表名见 `serverSyncStateTable`。
+        // 与 agent_ticks 同一性质：只有本端读写的缓存/簿记，没有实体与仓储，
+        // 因此补建表不改 `user_version`（老库打开时 IF NOT EXISTS 直接补上）。
+        """
+        CREATE TABLE IF NOT EXISTS server_sync_state (
+            key TEXT NOT NULL,
+            value TEXT NOT NULL,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY (key)
+        )
+        """,
+        // 服务端模式的待发队列（离线排队 / 幂等补发）。表名见 `serverOutboxTable`。
+        """
+        CREATE TABLE IF NOT EXISTS server_outbox (
+            clientMessageId TEXT NOT NULL,
+            sessionId TEXT NOT NULL,
+            personaId TEXT,
+            content TEXT NOT NULL,
+            attachmentsJson TEXT NOT NULL DEFAULT '[]',
+            replyTo TEXT,
+            createdAt INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            lastError TEXT,
+            PRIMARY KEY (clientMessageId)
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS index_server_outbox_sessionId ON server_outbox (sessionId)",
+        "CREATE INDEX IF NOT EXISTS index_server_outbox_createdAt ON server_outbox (createdAt)"
     ]
 
     /// 建库入口：App 首次启动、以及测试里建临时库都走这里。
@@ -540,9 +603,9 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10/v11/v12 → v13
+    // MARK: - v8/v9/v10/v11/v12 → v14
 
-    /// 老库升到 v13：补列（含 v12 的 `webToolsProvider` 与 v13 的人设引导三列）、清 Harness 列、
+    /// 老库升到 v14：补列（含 v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、清 Harness 列、
     /// 一人一段、补默认配置、建块表并回填块号。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
@@ -560,6 +623,10 @@ public enum Schema {
         // v13：世界预设 / 话风 / 当前活动。全部可空 —— 老数据没有这些设定是**正确**的状态，
         // 回填一个空 JSON 只会让「没填过」和「填了又清空」变得无法区分。加列本身幂等。
         for column in personaGuidanceColumns {
+            try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
+        // v14：提示词翻译缓存。同样可空、同样幂等（用户升级后译文会在下一次进聊天时补上）。
+        for column in personaTranslationColumns {
             try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
         }
         for column in presetGuidanceColumns {

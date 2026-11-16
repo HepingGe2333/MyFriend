@@ -47,6 +47,9 @@ struct MyFriendApp: App {
                     await env.performCatchUp()
                     // 之后每 30 秒一拍（低电量 2 分钟），与 Android 的前台服务同节拍。
                     env.startForegroundPulse()
+                    // 服务端模式（M3/M4）：同步一次状态、起前台事件长轮询、补发待发消息。
+                    // 本地模式下 `activateServerMode()` 立刻返回，什么都不做。
+                    await env.activateServerMode()
                     lastScenePhase = scenePhase
                 }
                 .onChange(of: scenePhase) { phase in
@@ -58,9 +61,13 @@ struct MyFriendApp: App {
                             Task { await env.performCatchUp() }
                         }
                         env.startForegroundPulse()
+                        // 回前台：服务端模式重新同步 + 重新起事件流（进后台时被取消了）。
+                        Task { await env.activateServerMode() }
                     case .background:
                         AppNotifications.shared.setAppActive(false)
                         env.stopForegroundPulse()
+                        // 事件长轮询是前台才做的事：进后台立刻停，省电也省流量。
+                        env.stopServerEvents()
                         // 进后台前把下一次后台时间排上；拿不到就算了。
                         BackgroundScheduler.shared.scheduleNext()
                     default:

@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Alarm
+import androidx.compose.material.icons.outlined.Translate
 import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bookmarks
@@ -429,6 +430,24 @@ fun SettingsScreen(
                     )
                 }
 
+                SectionLabel(stringResource(R.string.settings_section_language))
+                SettingCard {
+                    // 0.12：人设提示词翻译（spec/persona-translation §6）。默认开，关掉就一律用原文。
+                    SettingRow(
+                        title = stringResource(R.string.settings_auto_translate_persona),
+                        description = stringResource(R.string.settings_auto_translate_persona_desc),
+                        icon = Icons.Outlined.Translate,
+                        trailing = {
+                            Switch(
+                                checked = state.settings.autoTranslatePersona,
+                                onCheckedChange = viewModel::setAutoTranslatePersona,
+                                colors = switchColors()
+                            )
+                        },
+                        showDivider = false
+                    )
+                }
+
                 SectionLabel(stringResource(R.string.settings_section_background))
                 SettingCard {
                     SettingRow(
@@ -580,6 +599,14 @@ fun SettingsScreen(
                         showDivider = false
                     )
                 }
+
+                ServerModeSection(
+                    state = state.server,
+                    onSave = viewModel::saveServerConnection,
+                    onSetEnabled = viewModel::setServerEnabled,
+                    onTest = viewModel::testServerConnection,
+                    onClearToken = viewModel::clearServerToken
+                )
 
                 BackupSection(
                     state = backupState,

@@ -62,6 +62,13 @@ class ProactiveRepository @Inject constructor(
     private val idleBrowsing: IdleBrowsing,
     private val scheduler: ProactiveScheduler,
     private val foregroundTracker: AppForegroundTracker,
+    /**
+     * 主动消息生成前的按需翻译（`spec/persona-translation/README.md` §2 第 2 条）。
+     *
+     * 放在仓储层而不是 Worker 里：不管主动消息从定时规则、心跳还是别的地方发起，
+     * 只要经过 [fire] 就一定先确保人设是当前语言的。
+     */
+    private val translationCoordinator: PersonaTranslationCoordinator,
     private val database: MyFriendDatabase,
     /** 块元数据的唯一写入入口（规范 §2）：主动消息/心跳消息也是新消息。 */
     private val blockWriter: MessageBlockWriter,
@@ -338,7 +345,10 @@ class ProactiveRepository @Inject constructor(
 
         // 这一轮模型会读到会话里的历史，所以用户消息此刻算「已读」。
         runCatching { messageDao.markUserMessagesRead(session.id, now) }
-        val messages = buildProactiveMessages(session, persona, rule)
+        // 生成前的按需翻译：失败静默（用原文），绝不因为翻译把主动消息拦下来。
+        runCatching { translationCoordinator.ensureTranslated(persona.id) }
+        val localizedPersona = com.myfriend.app.domain.PersonaPromptLocalization.effective(persona)
+        val messages = buildProactiveMessages(session, localizedPersona, rule)
         val raw = registry.adapterFor(resolved.config.provider).complete(
             config = resolved.config,
             apiKey = resolved.apiKey,

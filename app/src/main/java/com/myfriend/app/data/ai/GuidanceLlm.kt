@@ -19,12 +19,23 @@ import javax.inject.Singleton
  */
 interface JsonLlmClient {
     /**
-     * @param system 系统提示词（§6.1 / §6.2 的原文）
-     * @param user 本次要分析的内容（聊天记录原文 / 角色简介）
+     * @param system 系统提示词（§6.1 / §6.2 / 翻译 §5 的原文）
+     * @param user 本次要分析的内容（聊天记录原文 / 角色简介 / 待翻译的人设）
      * @param configId 指定 API 配置；null 表示用当前可用的那条
+     * @param kind 记账类别（[com.myfriend.app.domain.UsageKind]）：总结是 UNKNOWN，
+     *   翻译人设是 TRANSLATION，这样用量页能分开看。
+     * @param temperature 采样温度；JSON 总结/翻译都用 0.2。
+     * @param maxOutputTokens 输出上限：翻译的 JSON 比总结长，调用方按需调大。
      * @return 模型原文；没有配置、调用失败、超时都返回 null（调用方走本地兜底）
      */
-    suspend fun completeJson(system: String, user: String, configId: String? = null): String?
+    suspend fun completeJson(
+        system: String,
+        user: String,
+        configId: String? = null,
+        kind: String = UsageKind.UNKNOWN,
+        temperature: Double = 0.2,
+        maxOutputTokens: Int = 1200
+    ): String?
 }
 
 /**
@@ -44,7 +55,14 @@ class DefaultJsonLlmClient @Inject constructor(
     private val registry: AiProviderRegistry
 ) : JsonLlmClient {
 
-    override suspend fun completeJson(system: String, user: String, configId: String?): String? {
+    override suspend fun completeJson(
+        system: String,
+        user: String,
+        configId: String?,
+        kind: String,
+        temperature: Double,
+        maxOutputTokens: Int
+    ): String? {
         val resolved = runCatching {
             val explicit = configId?.trim()?.takeIf { it.isNotBlank() }
                 ?.let { apiConfigRepository.resolve(it) }
@@ -64,15 +82,11 @@ class DefaultJsonLlmClient @Inject constructor(
                     WireMessage("system", system),
                     WireMessage("user", user)
                 ),
-                // 总结不需要创造力；输出上限够一份 JSON（含 12 条常用语）。
-                params = InferenceParams(temperature = TEMPERATURE, maxOutputTokens = MAX_OUTPUT_TOKENS),
-                kind = UsageKind.UNKNOWN
+                // 总结/翻译都不需要创造力；输出上限由调用方给（翻译要带整份人设+世界）。
+                params = InferenceParams(temperature = temperature, maxOutputTokens = maxOutputTokens),
+                kind = kind
             )
         }.getOrNull()
     }
 
-    private companion object {
-        const val TEMPERATURE = 0.2
-        const val MAX_OUTPUT_TOKENS = 1200
-    }
 }

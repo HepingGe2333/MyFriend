@@ -224,9 +224,14 @@ public enum MoodPrompt {
         default: intensityText = "满脑子都是"
         }
         var text = "\n\n## 你现在的心情\n"
-        text += "\(state.label)（强度 \(state.intensity)/5，\(intensityText)）"
-        if !state.reason.trimmed.isEmpty { text += "。原因：\(state.reason)" }
-        text += "。"
+        // 第一行就是规范脚手架里的 `state_mood`（`scaffold.json`）：
+        // 心情的**名字与强度**是两端约定，后面那半句分寸提示才是这里自己的内容。
+        text += PersonaPromptScaffold.fill(
+            PersonaPromptScaffold.stateMood,
+            ["mood": state.label, "intensity": String(state.intensity)]
+        )
+        text += "\(intensityText)。"
+        if !state.reason.trimmed.isEmpty { text += "原因：\(state.reason)。" }
         if word.valence <= -2 {
             text += "这种心情会让你说话慢一点、少一点，但不要卖惨，也别反复解释情绪。"
         } else if word.energy <= -2 {

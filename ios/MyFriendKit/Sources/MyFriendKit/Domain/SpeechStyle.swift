@@ -112,29 +112,37 @@ public struct SpeechStyle: Equatable, Sendable {
 
     // MARK: - 渲染
 
-    /// 规范 §6.3 的「# 你怎么说话」那一段。空风格返回空串。
+    /// 「# 你怎么说话」那一段（文案来自规范脚手架 `spec/persona-guidance/scaffold.json`）。
     ///
-    /// 三条固定要求（句子短 / 情绪压着说 / 不写动作描写）来自 §6.3 的实测组合：
+    /// 空风格返回空串（整节不出现）。
+    /// 脚手架固定了四条：两条语气规则、tone、常用语、以及「不旁白」——
     /// 它们是「怎么说话」里最强的成分，即使用户没填 tone 也要在。
+    /// habits / avoid 不在脚手架里，按同一种 `- ` 形状追加，空就不出现。
     public func renderForPrompt() -> String {
         guard !isEmpty else { return "" }
-        var lines: [String] = ["# 你怎么说话"]
-        lines.append("- 句子短（1-2 句），少感叹号，少书面词。")
+        var lines: [String] = [PersonaPromptScaffold.voiceSection]
+        for rule in PersonaPromptScaffold.voiceRules {
+            lines.append("- " + rule)
+        }
         if !tone.isEmpty {
-            lines.append("- 你的说话风格：\(tone)。")
+            lines.append("- " + PersonaPromptScaffold.fill(
+                PersonaPromptScaffold.voiceTone, ["tone": tone]
+            ))
         }
         for habit in habits {
-            lines.append("- \(habit)")
+            lines.append("- " + habit)
         }
         let spoken = Array(phrases.prefix(Self.promptPhraseLimit))
         if !spoken.isEmpty {
             let quoted = spoken.map { "「\($0)」" }.joined(separator: "、")
-            lines.append("- 你平时会说的话（自然使用，最多带 1 处，不要每句都套）：\(quoted)")
+            lines.append("- " + PersonaPromptScaffold.fill(
+                PersonaPromptScaffold.voicePhrases, ["phrases": quoted]
+            ))
         }
         if !avoid.isEmpty {
             lines.append("- 不要出现：" + avoid.joined(separator: "、") + "。")
         }
-        lines.append("- 不要写动作描写、不要括号旁白。")
+        lines.append("- " + PersonaPromptScaffold.voiceNoNarration)
         return lines.joined(separator: "\n")
     }
 }

@@ -28,13 +28,13 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV13() throws {
-        XCTAssertEqual(Schema.version, 13,
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV14() throws {
+        XCTAssertEqual(Schema.version, 14,
                        "v13 = 人设引导（personas.worldJson/speechStyleJson/activityJson + 预设两列）")
         XCTAssertEqual(Schema.tables.count, 13, "13 张记录型表")
-        XCTAssertEqual(Schema.supplementaryTables.count, 2, "两张服务层用表")
+        XCTAssertEqual(Schema.supplementaryTables.count, 4, "四张服务层用表（两张 1.8 遗留 + 两张服务端模式）")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
-        XCTAssertEqual(Schema.allTables.count, 16, "13 + 2 + message_blocks")
+        XCTAssertEqual(Schema.allTables.count, 18, "13 + 4 + message_blocks")
 
         let names = try stores.database.tableNames()
         for table in Schema.allTables {

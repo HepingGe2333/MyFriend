@@ -247,6 +247,32 @@ API from this machine (contract and live notes: `spec/persona-guidance/README.md
 - Leftovers fixed: agentd proactive counters are now persisted (survive restarts, reset across local midnight, concurrent ticks fire once), both platforms serialise "write file + return reference" with "check references + delete file" behind one file lock (media TOCTOU), and Android proactive rules now respect the `BUSY` gate.
 - Tests: full batch — Android **1210 / 111 classes / 0 failures**, `:agentcore` 60, `:agentd` **249**, iOS **1453 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
 
+
+### 0.12 follow-up 5 (no version bump): visual world editor, persona translation, server mode M3/M4 and CRUD
+
+- **Visual world editor**: schedule/relationships are now row-based editors (time pickers, relation dropdowns, intimacy),
+  obligations are list items, and a free-text "other background" (`notes`, ≤1200 chars) captures unstructured world
+  data; the editor is integrated into the persona preset screen (Android preset/persona pages share it; iOS gained a
+  preset list and editor).
+- **Persona prompt localisation**: schema v14 (`personas.translationJson/translationLang`); before opening a chat or
+  generating a proactive message the app asks the LLM to translate the persona and world into the UI language; cache
+  invalidation uses a canonical-JSON SHA-256 shared by both platforms (`hash-cases.json`), `phrases` are never
+  translated; missing key/failure/timeout falls back to the original text and the feature can be turned off.
+- **Single prompt scaffold**: `:agentcore` gained `PersonaPromptScaffold` (byte-identical to
+  `spec/persona-guidance/scaffold.json`); both `PromptBuilder`s use the same Chinese wording with contract tests, plus a
+  new `world_name` line.
+- **Server BUSY gate**: `agentd` personas carry `activityJson`, `POST /v1/personas/{id}/activity`; the proactive engine
+  skips `BUSY`, scales `LIMITED` by 0.35 and recovers after expiry; `/v1/proactive/tick` returns `skipped` reasons;
+  counters and activity are persisted.
+- **Server CRUD (M5 server side)**: session create/mark-read, persona/memory/preset/settings CRUD, backup export/import
+  (v5, no secrets), `/v1/push/register` with a pluggable `PushSender` (Noop by default).
+- **Client server mode (M3/M4)**: both platforms configure server URL/token (Keystore / Keychain), test the connection,
+  sync state incrementally into the local cache (timestamp cursor + event cursor), chat over the server SSE stream
+  (idempotent `clientMessageId`, offline outbox), proactive messages arrive through the event stream and become local
+  notifications, mood/presence come from the server; local mode remains as the offline form.
+- **Tests**: Android **1366 / 126 classes / 0 failures**, `:agentcore` **90**, `:agentd` **329**, iOS **1588 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
+
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans

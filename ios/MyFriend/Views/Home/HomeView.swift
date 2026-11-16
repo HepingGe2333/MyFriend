@@ -64,6 +64,12 @@ struct HomeView: View {
         .toolbar(.hidden, for: .navigationBar)
         .overlay(alignment: .bottomTrailing) { newPersonaButton }
         .onAppear {
+            // 生成主动消息前也要有译文（§2）：首页出现时给"正在聊的那个人"踢一次。
+            if let activeId = env.currentSettings.activePersonaId {
+                PersonaTranslationTrigger.kick(env, personaId: activeId)
+            } else if let defaultPersona = (try? env.stores.personas.defaultPersona()) ?? nil {
+                PersonaTranslationTrigger.kick(env, personaId: defaultPersona.id)
+            }
             isVisible = true
             reload()
             startDigestPulse()

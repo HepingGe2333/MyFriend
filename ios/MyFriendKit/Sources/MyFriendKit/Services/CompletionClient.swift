@@ -63,6 +63,9 @@ public enum CompletionKind: String, CaseIterable, Sendable {
     /// 历史压缩（滚动摘要）。Android 的 `UsageKind.HISTORY` 同名，
     /// 用量页要把「他在整理自己的记性」和聊天分开。
     case history = "HISTORY"
+    /// 人格提示词的语言本地化（`spec/persona-translation/README.md` §6：
+    /// 每次翻译是一次普通 completion，计入 `api_usage`，`kind=TRANSLATION`）。
+    case translation = "TRANSLATION"
 }
 
 /// 服务层能看到的 API 配置：只包含「发一次请求需要的东西」。

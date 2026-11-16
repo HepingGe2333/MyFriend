@@ -16,7 +16,7 @@ MyFriend is a companion app for Android and iOS that models a "persona" as a lon
 | Database schema | v13 (messages in blocks of 200; personas carry a world preset, speech style and current activity; both platforms aligned) |
 | Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 1210 on Android (111 classes) + 47 instrumented, 60 in `:agentcore`, 249 in `:agentd`, 1453 on iOS (`swift test`) |
+| Unit tests | 1366 on Android (126 classes) + 47 instrumented, 90 in `:agentcore`, 329 in `:agentd`, 1588 on iOS (`swift test`) |
 | CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
 
 ## Feature overview

@@ -118,6 +118,34 @@ event: error      data: {"code":"...","message":"..."}
 - `QUORA` → `q + " site:quora.com"`
 - 返回统一结构 `{title,url,snippet}`；**不抓取登录墙后的正文**，`web_fetch` 只抓公开页面。
 
+
+### 3.6 服务端 CRUD 与推送（M3–M6 契约）
+
+以下接口补齐「客户端只做 UI」所需的写路径。统一前缀 `/v1`，JSON，沿用 token/限流/错误体。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/v1/sessions` | `{personaId, title?}` → 新建会话（一人格一会话，已存在则返回既有） |
+| `POST` | `/v1/sessions/{id}/read` | `{upTo?}` → 标已读（unread=0），返回 `{unread:0, readAt}` |
+| `GET` | `/v1/personas` | 人格列表（含 world/style/activity/translation 摘要） |
+| `POST` | `/v1/personas` | 新建/更新人格（`id` 可空=新建）；字段与本地 schema 同义 |
+| `DELETE` | `/v1/personas/{id}` | 删人格（连带会话/消息/记忆；媒体交给客户端 GC） |
+| `POST` | `/v1/personas/{id}/activity` | 上报/清除当前活动（`{}` 清除） |
+| `GET` | `/v1/personas/{id}/memories?limit=&since=` | 记忆列表 |
+| `POST` | `/v1/personas/{id}/memories` | 新建/更新记忆 |
+| `DELETE` | `/v1/memories/{id}` | 删记忆 |
+| `GET` | `/v1/presets` · `POST /v1/presets` · `DELETE /v1/presets/{id}` | 人格预设（含 world/style） |
+| `GET` | `/v1/settings` · `POST /v1/settings` | 全局设置（不含 API Key） |
+| `GET` | `/v1/backup` | 导出备份 JSON（v5，与客户端一致） |
+| `POST` | `/v1/backup` | 导入备份（merge/replace） |
+| `POST` | `/v1/push/register` | `{platform: ios|android, token, bundleId/packageName}` → 注册推送 token |
+| `DELETE` | `/v1/push/register` | 注销 token |
+
+- 人格/记忆/预设的**字段名**与客户端 schema 同义（`worldJson`/`speechStyleJson`/`activityJson`/`translationJson`…），
+  服务端可以有自己的存储形态，但 JSON 契约一致。
+- 推送：服务端只负责「有 token 就调用推送适配器」（APNs/FCM 的具体实现作为可插拔接口，凭据在部署配置里）；
+  没有凭据时降级为「客户端前台同步」。
+
 ## 4. 服务端存储
 
 - 单文件 SQLite（`agentd --data <path>`，默认 `~/.myfriend/agentd.db`），用 JDBC（`org.xerial:sqlite-jdbc`）
@@ -157,10 +185,10 @@ event: error      data: {"code":"...","message":"..."}
 | --- | --- | --- |
 | **M1 服务端权威 P1** | 服务端持久化（文件存储、块维护、事件游标）、`/v1/state`、`/v1/sessions`、区块分页、SSE 发送（幂等 + 断开仍生成）、长轮询事件、服务端搜索（MessageAPI/Tavily/SearXNG/Bing/站点过滤）、主动引擎与 `/v1/proactive/tick` | ✅ 完成（`agentd` 244 条测试） |
 | **M2 客户端传输层 P1a** | Android `data/remote/`（ServerConfig/ServerApi/SSE/映射）、iOS `Net/Server/`（同构）；配置来源、URL/明文策略、SSE 增量解析、取消关闭连接、状态映射 | ✅ 完成（Android 54 条、iOS 71 条） |
-| M3 客户端接线 P1b | 首页/聊天改走服务端、离线待发队列、DI 与设置项（服务端地址/令牌）、前台事件订阅 | ⏳ 下一步 |
-| M4 状态迁移 P2 | 心跳/主动消息/心情/在场由服务端下发并在客户端展示；本地模式保留为离线形态 | ⏳ 未开始 |
-| M5 存储迁移 P3/P4 | 人格/记忆/备份 CRUD 上移；客户端只留缓存；删除客户端业务逻辑 | ⏳ 未开始 |
-| M6 推送 | APNs / FCM（需要账号与证书；当前服务端只推进状态，客户端前台同步） | ⏳ 未开始 |
+| M3 客户端接线 P1b | 首页/聊天改走服务端、离线待发队列、DI 与设置项（服务端地址/令牌）、前台事件订阅 | ✅ 本轮（两端服务端模式） |
+| M4 状态迁移 P2 | 状态快照增量同步、主动消息经事件流下发、心情/在场展示；本地模式保留 | ✅ 本轮（服务端模式） |
+| M5 存储迁移 P3/P4 | 人格/记忆/预设/设置/备份 CRUD 已上移（服务端 `/v1`）；客户端仍保留本地模式与缓存，删除客户端逻辑未做 | 🟡 服务端完成、客户端切换未全量 |
+| M6 推送 | 服务端 token 注册 + 可插拔 `PushSender`（默认 Noop）；APNs/FCM 协议与证书由部署侧提供 | 🟡 脚手架完成 |
 
 已知边界（M1/M2 之后仍然成立）：
 

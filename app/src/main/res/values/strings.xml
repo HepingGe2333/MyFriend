@@ -811,18 +811,50 @@
     <string name="guidance_world_name_placeholder">临港新城·云筑建筑事务所</string>
     <string name="guidance_world_era_label">时代与地点</string>
     <string name="guidance_world_description_label">处境（100-200 字）</string>
-    <string name="guidance_world_schedule_label">日程（JSON 数组）</string>
-    <string name="guidance_world_schedule_placeholder">[{"day":"工作日","start":"09:00","end":"18:30","activity":"在事务所画图"}]</string>
-    <string name="guidance_world_relationships_label">关系（JSON 数组）</string>
-    <string name="guidance_world_relationships_placeholder">[{"name":"母亲","relation":"母亲","note":"每周三晚打电话"}]</string>
-    <string name="guidance_world_obligations_label">必须承担的事（一行一条）</string>
-    <string name="guidance_world_obligations_placeholder">按节点交图\n协调各专业</string>
+    <!-- 0.12 可视化世界编辑器（规范 §2.3）：行式列表 + 下拉 + 时间选择器，不再有 JSON 文本框 -->
+    <string name="guidance_world_schedule_title">日程</string>
+    <string name="guidance_world_schedule_hint">他一天里被什么占着。跨午夜的时间会标成「次日」。</string>
+    <string name="guidance_world_day_label">日子</string>
+    <string name="guidance_world_start_label">开始</string>
+    <string name="guidance_world_end_label">结束</string>
+    <string name="guidance_world_next_day">次日</string>
+    <string name="guidance_world_activity_label">在做什么</string>
+    <string name="guidance_world_activity_placeholder">在事务所画图、审图</string>
+    <string name="guidance_world_add_schedule">加一条日程</string>
+    <string name="guidance_world_relationships_title">人际关系</string>
+    <string name="guidance_world_relationships_hint">他身边固定出现的几个人。</string>
+    <string name="guidance_world_relationship_name_label">称呼</string>
+    <string name="guidance_world_relationship_relation_label">关系</string>
+    <string name="guidance_world_relationship_custom">自定义</string>
+    <string name="guidance_world_relationship_custom_label">自己写的关系</string>
+    <string name="guidance_world_relationship_note_label">一句细节</string>
+    <string name="guidance_world_intimacy_label">亲密度</string>
+    <string name="guidance_world_intimacy_none">不填</string>
+    <string name="guidance_world_add_relationship">加一个人</string>
+    <string name="guidance_world_obligations_title">义务</string>
+    <string name="guidance_world_obligations_hint">他必须承担的事、躲不掉的压力。</string>
+    <string name="guidance_world_obligation_label">一条义务</string>
+    <string name="guidance_world_add_obligation">加一条义务</string>
+    <string name="guidance_world_notes_title">其他背景</string>
+    <string name="guidance_world_notes_hint">结构化字段写不下的都写这里：城市气质、行业黑话、家庭旧事、忌讳…</string>
+    <string name="guidance_world_notes_label">自由文本</string>
+    <string name="guidance_world_notes_truncated">超出字数的部分会被截掉</string>
+    <string name="guidance_world_move_up">上移</string>
+    <string name="guidance_world_move_down">下移</string>
+    <string name="guidance_world_delete_row">删除这一行</string>
+    <string name="guidance_world_example_hint">还没填世界。可以先填一个示例（临港新城的建筑师），再改成你自己的。</string>
+    <string name="guidance_world_example_fill">用示例填上</string>
+    <string name="guidance_world_error_schedule_day">日程第 %1$d 行的「日子」不在允许的取值里。</string>
+    <string name="guidance_world_error_schedule_start">日程第 %1$d 行的开始时间要写成 HH:mm。</string>
+    <string name="guidance_world_error_schedule_end">日程第 %1$d 行的结束时间要写成 HH:mm。</string>
+    <string name="guidance_world_error_schedule_activity">日程第 %1$d 行还没写在做什么。</string>
+    <string name="guidance_world_error_relation_name">关系第 %1$d 行还没有称呼或关系。</string>
+    <string name="guidance_world_error_relation_intimacy">关系第 %1$d 行的亲密度要在 1–5 之间。</string>
+    <string name="guidance_world_error_notes">其他背景超过 %1$d 字，请删掉一些。</string>
     <string name="guidance_world_ai_fill">AI 补全</string>
     <string name="guidance_world_ai_filling">补全中…</string>
     <string name="guidance_world_ai_llm">模型补全了世界设定，可以逐项修改。</string>
     <string name="guidance_world_ai_fallback">这次没生成完整的世界，先按角色名建了一个空世界，可以手填。</string>
-    <string name="guidance_world_schedule_invalid">日程 JSON 格式不对（每一条都要有 day/start/end/activity），保存前请检查。</string>
-    <string name="guidance_world_relationships_invalid">关系 JSON 格式不对（每一条要有 name/relation/note），保存前请检查。</string>
     <string name="guidance_speech_section">话风</string>
     <string name="guidance_speech_hint">粘贴一段他真实的聊天记录，总结出 tone / 常用语 / 习惯 / 不要的表达。原文不会保存。</string>
     <string name="guidance_speech_sample_label">聊天记录原文</string>
@@ -846,6 +878,17 @@
     <string name="guidance_speech_summarize_failed">总结失败，已用本地规则粗略总结。</string>
     <string name="persona_editor_guidance_section">世界与话风</string>
     <string name="persona_editor_guidance_hint">可以从预设带入，也可以在这里改；只会影响这个人。</string>
+    <!-- 0.12 人格提示词翻译（spec/persona-translation） -->
+    <string name="persona_editor_translation_section">提示词语言</string>
+    <string name="persona_editor_translation_hint">打开聊天前会按需把人设与世界设定翻译成软件当前语言；失败就用原文。</string>
+    <string name="persona_editor_translation_none">还没有翻译缓存，下次打开聊天时会自动翻译。</string>
+    <string name="persona_editor_translation_done">已翻译成 %1$s</string>
+    <string name="persona_editor_translation_skipped">源语言与界面语言相同，不需要翻译。</string>
+    <string name="persona_editor_translation_failed">翻译失败，正在用原文；可以重试。</string>
+    <string name="persona_editor_translation_ok">已翻译好，下次打开聊天就用新译文。</string>
+    <string name="persona_editor_translation_disabled">设置里关了「自动翻译人设」。</string>
+    <string name="persona_editor_retranslate">重新翻译</string>
+    <string name="persona_editor_translating">翻译中…</string>
     <string name="persona_editor_activity_section">当前活动</string>
     <string name="persona_editor_activity_none">没在忙什么</string>
     <string name="persona_editor_activity_line">%1$s（到 %2$s）</string>
@@ -897,6 +940,10 @@
     </plurals>
     <plurals name="preset_editor_prompt_chars">
         <item quantity="other">%1$d 字符</item>
+    </plurals>
+    <!-- 世界设定「其他背景」的字数提示（规范 §2.1：最多 1200 字） -->
+    <plurals name="guidance_world_notes_counter">
+        <item quantity="other">%1$d/%2$d 字</item>
     </plurals>
 
     <!-- ===== 主动唤醒 / 成长 ===== -->
@@ -1077,6 +1124,10 @@
     <string name="settings_haptics_desc">长按与操作时的轻微振动</string>
 
     <!-- 让他在后台活着 -->
+    <!-- 0.12 人格提示词翻译开关（spec/persona-translation §6，默认开） -->
+    <string name="settings_section_language">语言</string>
+    <string name="settings_auto_translate_persona">自动翻译人设</string>
+    <string name="settings_auto_translate_persona_desc">打开聊天前把人设与世界设定翻译成软件当前语言，失败就用原文。关掉后一直用原文。</string>
     <string name="settings_section_background">让他在后台活着</string>
     <string name="settings_agent_loop">常驻后台</string>
     <string name="settings_agent_loop_desc">关掉他就只在应用打开时存在；开着时他会在后台继续想事情，偶尔主动找你。</string>
@@ -1548,4 +1599,29 @@
     <string name="chat_preview_image">图片</string>
     <string name="chat_preview_proactive">主动提议</string>
     <string name="chat_preview_failed">回复失败</string>
+    <!-- 服务端模式（M3/M4）：默认关闭；地址与令牌走加密存储 -->
+    <string name="settings_section_server">服务端</string>
+    <string name="settings_server_title">服务端模式</string>
+    <string name="settings_server_desc">把状态和聊天交给 agentd，本机只做缓存</string>
+    <string name="settings_server_url">服务端地址</string>
+    <string name="settings_server_url_hint">https://…；调试时可填 http://局域网IP:8788</string>
+    <string name="settings_server_token">访问令牌</string>
+    <string name="settings_server_token_hint">留空表示沿用已保存的令牌</string>
+    <string name="settings_server_token_saved">已保存：%1$s</string>
+    <string name="settings_server_token_masked">当前令牌：%1$s</string>
+    <string name="settings_server_clear_token">清除令牌</string>
+    <string name="settings_server_test">测试连接</string>
+    <string name="settings_server_testing">正在连接…</string>
+    <string name="settings_server_test_success">连接成功：%1$s</string>
+    <string name="settings_server_test_failed">连接失败</string>
+    <string name="settings_server_save">保存</string>
+    <string name="settings_server_saved">服务端设置已保存</string>
+    <string name="settings_server_save_failed">服务端设置没保存上（设备的安全存储不可用）</string>
+    <string name="settings_server_off_hint">关闭时一切行为与本地模式相同</string>
+    <string name="settings_server_reject_empty">请填写服务端地址</string>
+    <string name="settings_server_reject_invalid">地址格式不对，需要以 http:// 或 https:// 开头</string>
+    <string name="settings_server_reject_https_only">发布版只允许 https 地址</string>
+    <string name="settings_server_reject_local_only">http 只允许本机或局域网地址</string>
+    <string name="chat_server_reply_pending">回复还没接上，稍后会自动同步</string>
+    <string name="chat_server_action_unsupported">服务端模式下暂不支持这个操作</string>
 </resources>

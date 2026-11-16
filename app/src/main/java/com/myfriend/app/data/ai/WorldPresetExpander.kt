@@ -25,6 +25,9 @@ object WorldPresetSource {
  * 没有配置 / 调用失败 / 坏 JSON 时走兜底：**至少返回 worldName = 角色名、空数组**，
  * 这样「AI 补全」永远不会把用户刚写的名字弄丢，也不会让界面卡在 loading。
  *
+ * v14 起兜底还把**角色简介原文**放进 `notes`（规范 §2.1 的兜底自由文本）：
+ * 模型没帮上忙的时候，用户写下的那段设定不该被扔掉——它至少还能进提示词的「其他背景」。
+ *
  * 原文（角色简介）只用于这一次调用，不落库、不写日志。
  */
 @Singleton
@@ -34,20 +37,27 @@ class WorldPresetExpander @Inject constructor(
 
     suspend fun expand(brief: String, name: String, configId: String? = null): WorldPresetResult {
         val input = brief.trim().ifBlank { name.trim() }
-        if (input.isBlank()) return fallback(name)
+        if (input.isBlank()) return fallback(name, "")
         val raw = runCatching { llm.completeJson(PROMPT, input.take(MAX_BRIEF_CHARS), configId) }
             .getOrNull()
         val parsed = raw?.let { WorldPresetCodec.decode(GuidanceJson.firstObject(it)) }
         return if (parsed != null && !parsed.isEmpty() && parsed.worldName.isNotBlank()) {
             WorldPresetResult(parsed, WorldPresetSource.LLM)
         } else {
-            fallback(name)
+            fallback(name, input)
         }
     }
 
-    /** §2.2 的兜底：worldName = 角色名，其余空数组；用户仍可逐字段手填。 */
-    private fun fallback(name: String): WorldPresetResult = WorldPresetResult(
-        WorldPreset(worldName = name.trim().take(60)),
+    /**
+     * §2.2 的兜底：`worldName` = 角色名，`notes` = 角色简介原文（截到 1200 字），其余空数组。
+     *
+     * 把简介放进 `notes` 而不是丢掉：那一段是用户自己写的设定，是「其他背景」最原始的材料。
+     */
+    private fun fallback(name: String, brief: String): WorldPresetResult = WorldPresetResult(
+        WorldPreset(
+            worldName = name.trim().take(60),
+            notes = brief.trim().take(WorldPreset.MAX_NOTES_CHARS)
+        ),
         WorldPresetSource.FALLBACK
     )
 

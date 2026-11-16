@@ -44,6 +44,7 @@ import com.myfriend.app.domain.MoodPrompt
 import com.myfriend.app.domain.OpenSessionTracker
 import com.myfriend.app.domain.PersonaActivityCodec
 import com.myfriend.app.domain.PersonaProfile
+import com.myfriend.app.domain.PersonaPromptLocalization
 import com.myfriend.app.domain.PromptBuilder
 import com.myfriend.app.domain.PersonaSwitchNotice
 import com.myfriend.app.domain.PersonaSwitchResult
@@ -239,6 +240,10 @@ class ChatRepository @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val chatNotifier: ChatNotifier,
     private val foregroundTracker: com.myfriend.app.util.AppForegroundTracker,
+    /** 服务端模式开关/配置（M3）：默认关闭，本地模式路径完全不受影响。 */
+    private val serverMode: com.myfriend.app.data.remote.ServerModeRepository,
+    /** 服务端发送/分页编排（M3）；不可用时所有方法都返回 failure，不会碰网络。 */
+    private val serverChat: com.myfriend.app.data.remote.ServerChatGateway,
     private val json: Json
 ) {
     /**
@@ -315,6 +320,83 @@ class ChatRepository @Inject constructor(
     suspend fun getConfig(id: String?): com.myfriend.app.data.local.ApiConfigEntity? =
         id?.let { apiConfigDao.getById(it) }
 
+    /** 现在是不是服务端模式（地址合法且开关打开）。 */
+    fun isServerMode(): Boolean = serverMode.isEnabled()
+
+    /**
+     * 服务端模式的建会话：先 `POST /v1/sessions`，成功后把服务端会话落本地缓存。
+     *
+     * 为什么失败不回退到本地建会话：服务端 id 与本地 id 是两套世界，本地偷偷建一条会让
+     * 「发消息」落到一个服务端不存在的会话上。失败原样返回，调用方（首页/启动补会话）
+     * 保持已有的本地缓存可读，等下次同步恢复。
+     */
+    suspend fun createServerSession(personaId: String, title: String? = null): Result<ChatSessionEntity> =
+        runCatching {
+            val created = serverChat.createSession(personaId, title).getOrThrow()
+            val server = created.session
+            if (server.id.isBlank()) userError(DomainErrorCode.SESSION_NOT_FOUND)
+            // 一人一段：本机可能已有同一人格的会话（id 与服务端不同）。复用本地那一行，
+            // 把服务端 id 记为映射，绝不能让 REPLACE 把本地历史删掉。
+            val local = sessionDao.getById(server.id) ?: sessionDao.latestForPersona(personaId)
+            val merged = com.myfriend.app.data.remote.ServerMergePlan.session(
+                local = local,
+                server = server
+            )
+            if (local == null) sessionDao.insert(merged) else sessionDao.update(merged)
+            // 本地一人一段的唯一索引意味着本地 id 可能和服务端 id 不同：记下映射，
+            // 之后发送/分页/事件都用本地 id 进、服务端 id 出。
+            serverChat.registerSessionMapping(merged.id, server.id)
+            sessionDao.getById(merged.id) ?: merged
+        }
+
+    /**
+     * 服务端模式发送（SSE）。UI 只消费 [onEvent]，消息落库由 gateway/sink 完成。
+     *
+     * 图片附件暂不上传（M3 只做文本）：传本地 `file://` 路径给服务端没有意义，
+     * 所以只把非空 uri 作为 opaque id 带上；真正的媒体同步在 M5。
+     */
+    suspend fun sendServerMessage(
+        sessionId: String,
+        text: String,
+        attachments: List<MessageAttachment> = emptyList(),
+        onEvent: (com.myfriend.app.data.remote.ServerSendEvent) -> Unit = {}
+    ): com.myfriend.app.data.remote.ServerSendResult {
+        val content = text.trim()
+        // 媒体同步不在 M3 范围：本地 file:// 路径不能当媒体 id 发给服务端，也不该离开设备。
+        // 因此服务端模式只发文本；只有图片没有文字时明确失败，而不是发一条空消息。
+        if (content.isEmpty()) {
+            return com.myfriend.app.data.remote.ServerSendResult(
+                accepted = false,
+                done = false,
+                error = userError(DomainErrorCode.MESSAGE_EMPTY)
+            )
+        }
+        if (content.length > 32_000) {
+            return com.myfriend.app.data.remote.ServerSendResult(
+                accepted = false,
+                done = false,
+                error = userError(DomainErrorCode.MESSAGE_TOO_LONG)
+            )
+        }
+        return serverChat.send(
+            sessionId = sessionId,
+            content = content,
+            attachments = emptyList(),
+            onEvent = onEvent
+        )
+    }
+
+    /** 服务端模式打开会话：拉最新一块写进 Room（之后的窗口逻辑仍走本地块表）。 */
+    suspend fun openServerSession(sessionId: String): Result<Unit> =
+        serverChat.openSession(sessionId).map { }
+
+    /** 服务端模式前翻/后翻：拉一块写进 Room，再让现有窗口按块编号定位。 */
+    suspend fun loadServerPage(
+        sessionId: String,
+        beforeBlock: Int? = null,
+        afterBlock: Int? = null
+    ): Result<Unit> = serverChat.loadPage(sessionId, beforeBlock, afterBlock).map { }
+
     /**
      * 取这个人格的那一段会话。
      *
@@ -327,6 +409,10 @@ class ChatRepository @Inject constructor(
         title: String? = null
     ): Result<ChatSessionEntity> = runCatching {
         sessionDao.latestForPersona(personaId)?.let { return@runCatching it }
+        // 服务端模式：会话必须在服务端存在（id 由服务端分配），不能先在本机造一条。
+        if (serverMode.isEnabled()) {
+            return@runCatching createServerSession(personaId, title).getOrThrow()
+        }
         val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val configId = apiConfigId ?: persona.defaultApiConfigId
         val config = configId?.let { apiConfigDao.getById(it) }
@@ -915,8 +1001,20 @@ class ChatRepository @Inject constructor(
         sessionDao.setPinned(sessionId, pinned, System.currentTimeMillis())
     }
 
+    /**
+     * 标已读：本地缓存立刻清未读；服务端模式下再尽力 `POST /v1/sessions/{id}/read`。
+     *
+     * 服务端回执失败**不影响**本地已读（用户已经在看消息了）；失败只记一行日志，
+     * 下次同步会用服务端的 unread 覆盖。日志不打印地址/令牌。
+     */
     suspend fun markRead(sessionId: String) {
         sessionDao.markRead(sessionId)
+        if (!serverMode.isEnabled()) return
+        runCatching {
+            serverChat.markRead(sessionId).getOrThrow()
+        }.onFailure { error ->
+            android.util.Log.w("ChatRepository", "server markRead failed: ${error.javaClass.simpleName}")
+        }
     }
 
     /**
@@ -1309,10 +1407,14 @@ class ChatRepository @Inject constructor(
 
     private suspend fun buildContext(
         session: ChatSessionEntity,
-        persona: PersonaEntity,
+        rawPersona: PersonaEntity,
         config: com.myfriend.app.data.local.ApiConfigEntity,
         recentMessages: List<MessageEntity>
     ): List<WireMessage> {
+        // 提示词里用的「他」：有匹配当前语言的翻译缓存就用译文，否则原样
+        // （`spec/persona-translation/README.md` §1；缓存的写入口在
+        // [PersonaTranslationCoordinator]，这里只读）。
+        val persona = PersonaPromptLocalization.effective(rawPersona)
         // 近处这一段按时间正序排好；已经被摘要盖住的那部分不再逐字塞进来
         // ——它已经在 system 里那一段「更早之前你记得的」里了，同一个意思说两遍只会让他混乱。
         val summarizedUpTo = session.historySummarizedUpTo?.takeIf { it > 0L }

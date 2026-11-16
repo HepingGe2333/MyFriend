@@ -221,6 +221,25 @@
 - 顺带修复上一轮遗留：agentd 主动计数落盘（重启不丢、跨日重置、并发只发一条）、两端媒体删除 TOCTOU（同一把文件锁覆盖「写文件+引用」与「查引用+删文件」）、Android 主动规则也受 `BUSY` 门禁约束。
 - 测试：全量批次 —— Android **1210 条 / 111 类 / 0 失败**、`:agentcore` 60、`:agentd` **249**、iOS **1453 条（2 skip）/ 0 失败**；两端 Debug/Release 与 lint 全过。
 
+
+### 0.12 续 5（未升版本）：世界观可视化、人设翻译、服务端模式 M3/M4 与 CRUD
+
+- **世界观可视化编辑器**：日程/关系改为行式编辑（时间选择器、关系下拉、亲密度），义务逐条，新增「其他背景（notes）」
+  兜底自由文本（≤1200 字）；整合进人格预设界面（Android 预设页/人格页共用；iOS 新增预设列表与编辑页）。
+- **人设提示词本地化**：schema v14（`personas.translationJson/translationLang`），进入聊天/主动生成前按需调用 LLM
+  把人物与世界观翻译成软件语言；缓存按规范化 JSON 的 SHA-256 指纹失效（两端同一算法，共享 `hash-cases.json`），
+  `phrases` 永不翻译；无 Key/失败/超时用原文，设置可关闭。
+- **提示词脚手架唯一来源**：`:agentcore` 新增 `PersonaPromptScaffold`（与 `spec/persona-guidance/scaffold.json`
+  逐字一致），两端 `PromptBuilder` 使用同一套中文措辞并各带契约测试；新增 `world_name` 行。
+- **服务端 BUSY 门禁**：`agentd` 人格支持 `activityJson`，`POST /v1/personas/{id}/activity`，主动引擎 `BUSY` 不开口、
+  `LIMITED` 降概率×0.35、过期恢复；`/v1/proactive/tick` 返回 `skipped` 原因；主动计数/活动均落盘。
+- **服务端 CRUD（M5 服务端部分）**：会话创建/标已读、人格 CRUD、记忆 CRUD、预设、设置、备份导出/导入（v5，不含 secrets）、
+  `/v1/push/register` 与可插拔 `PushSender`（默认 Noop）。
+- **客户端服务端模式（M3/M4）**：两端设置页可配服务端地址/令牌（Android Keystore / iOS Keychain）、测试连接；
+  前台按增量同步状态到本地缓存（双游标：时间戳增量 + 事件游标）、聊天走服务端 SSE（幂等 `clientMessageId`、
+  离线待发队列）、主动消息经事件流落缓存并发本地通知、心情/在场由服务端下发；本地模式保留为离线形态。
+- **测试**：Android **1366 条 / 126 类 / 0 失败**、`:agentcore` **90**、`:agentd` **329**、iOS **1588 条（2 skip）/ 0 失败**；两端 Debug/Release 与 lint 全过。
+
 ## 0.11.2
 
 小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。

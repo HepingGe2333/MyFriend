@@ -33,6 +33,13 @@ data class AppSettings(
     val hapticsEnabled: Boolean = true,
     /** 让他常驻后台继续「活着」（前台服务 + 自主循环）。 */
     val agentLoopEnabled: Boolean = true,
+    /**
+     * 打开聊天 / 生成主动消息前，按需把人格提示词翻译成软件当前语言
+     * （`spec/persona-translation/README.md` §6，默认开）。
+     *
+     * 关掉之后一律用原文：对「我就是要用中文设定配英文界面」的人，翻译只是多余的一次请求。
+     */
+    val autoTranslatePersona: Boolean = true,
     /** 是否还显示「把他留在后台」的引导卡片。 */
     val backgroundTipDismissed: Boolean = false,
     /**

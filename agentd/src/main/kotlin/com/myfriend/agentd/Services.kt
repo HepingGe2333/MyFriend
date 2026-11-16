@@ -38,7 +38,12 @@ class AgentdServices(
      * 主动判定的随机源；生产是 [Random.nextDouble]，测试注入固定值（例如 `{ 0.0 }`）。
      * 只影响「掷没掷中」，不改变睡眠/冷却/每日上限这些门槛。
      */
-    val proactiveRoll: () -> Double = { Random.nextDouble() }
+    val proactiveRoll: () -> Double = { Random.nextDouble() },
+    /**
+     * 推送适配器（M6）。默认 [NoopPushSender]：没有 APNs/FCM 凭据时只落库，客户端前台再同步。
+     * 有 token 时 [ProactiveTicker] 会在主动消息落库后调用它。
+     */
+    val pushSender: PushSender = NoopPushSender
 ) {
     /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
     val chatService: ChatService? = store?.let { ChatService(it, replyGenerator) }
@@ -49,5 +54,5 @@ class AgentdServices(
      * `internal` 是因为它是接线细节，不是给外部（或未来客户端）用的 API。
      */
     internal val proactiveTicker: ProactiveTicker? =
-        store?.let { ProactiveTicker(it, roll = proactiveRoll) }
+        store?.let { ProactiveTicker(it, roll = proactiveRoll, pushSender = pushSender) }
 }

@@ -31,10 +31,37 @@ import com.myfriend.app.core.AgentCoreClient
 import com.myfriend.app.core.AgentCoreClients
 import com.myfriend.app.data.ai.DefaultJsonLlmClient
 import com.myfriend.app.data.ai.JsonLlmClient
+import com.myfriend.app.data.repo.DefaultPersonaTranslationGateway
+import com.myfriend.app.data.repo.PersonaTranslationGateway
 import com.myfriend.app.data.repo.AndroidErasureFiles
 import com.myfriend.app.data.repo.MediaReferenceSource
 import com.myfriend.app.data.repo.RoomErasureStore
 import com.myfriend.app.data.repo.RoomMediaReferenceSource
+import com.myfriend.app.data.repo.RoomServerChatSink
+import com.myfriend.app.data.repo.RoomServerEventSink
+import com.myfriend.app.data.repo.RoomServerStateSink
+import com.myfriend.app.data.remote.CredentialBackend
+import com.myfriend.app.data.remote.DataStoreServerLocalStore
+import com.myfriend.app.data.remote.DataStoreServerPresenceStore
+import com.myfriend.app.data.remote.ServerApiRemote
+import com.myfriend.app.data.remote.ServerChatGateway
+import com.myfriend.app.data.remote.ServerChatSink
+import com.myfriend.app.data.remote.ServerEventNotifier
+import com.myfriend.app.data.remote.ServerEventPoller
+import com.myfriend.app.data.remote.ServerEventSink
+import com.myfriend.app.data.remote.ServerLocalStore
+import com.myfriend.app.data.remote.ServerModeRepository
+import com.myfriend.app.data.remote.ServerPresenceStore
+import com.myfriend.app.data.remote.ModeServerRemoteProvider
+import com.myfriend.app.data.remote.ServerRemoteProvider
+import com.myfriend.app.data.remote.ServerStateSink
+import com.myfriend.app.data.remote.ServerModeStateSource
+import com.myfriend.app.data.remote.ServerStateSource
+import com.myfriend.app.data.remote.ServerSyncManager
+import com.myfriend.app.data.remote.SharedPreferencesCredentialBackend
+import com.myfriend.app.data.secure.SecretCipher
+import com.myfriend.app.data.secure.StringCipher
+import com.myfriend.app.util.ServerModeNotifier
 import com.myfriend.app.domain.AppMemoryBudget
 import com.myfriend.app.domain.DataEraser
 import com.myfriend.app.domain.ErasureFiles
@@ -76,7 +103,8 @@ object AppModule {
                 MyFriendDatabase.MIGRATION_9_10,
                 MyFriendDatabase.MIGRATION_10_11,
                 MyFriendDatabase.MIGRATION_11_12,
-                MyFriendDatabase.MIGRATION_12_13
+                MyFriendDatabase.MIGRATION_12_13,
+                MyFriendDatabase.MIGRATION_13_14
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -257,4 +285,94 @@ object AppModule {
     @Provides
     @Singleton
     fun provideJsonLlmClient(impl: DefaultJsonLlmClient): JsonLlmClient = impl
+
+    /**
+     * 「按需翻译人设」的依赖面（`spec/persona-translation/README.md` §2）。
+     *
+     * 绑定成接口而不是直接用实现：协调器的去重/缓存规则必须在纯 JVM 单测里可跑，
+     * 而生产实现背后是 Room + DataStore。
+     */
+    @Provides
+    @Singleton
+    fun providePersonaTranslationGateway(
+        impl: DefaultPersonaTranslationGateway
+    ): PersonaTranslationGateway = impl
+
+    // ---------------------------------------------------------------- 服务端模式（M3/M4）
+
+    /**
+     * 服务端地址/令牌复用 API Key 的 Keystore AES-GCM 方案。
+     *
+     * 抽 [StringCipher] 接口只为了纯 JVM 单测：Keystore 在单测里不存在，但「地址/令牌
+     * 是不是加密存的、解不开时怎么回退」必须能测。
+     */
+    @Provides
+    @Singleton
+    fun provideStringCipher(impl: SecretCipher): StringCipher = impl
+
+    @Provides
+    @Singleton
+    fun provideCredentialBackend(impl: SharedPreferencesCredentialBackend): CredentialBackend = impl
+
+    @Provides
+    @Singleton
+    fun provideServerLocalStore(impl: DataStoreServerLocalStore): ServerLocalStore = impl
+
+    @Provides
+    @Singleton
+    fun provideServerPresenceStore(impl: DataStoreServerPresenceStore): ServerPresenceStore = impl
+
+    @Provides
+    @Singleton
+    fun provideServerStateSink(impl: RoomServerStateSink): ServerStateSink = impl
+
+    @Provides
+    @Singleton
+    fun provideServerStateSource(impl: ServerModeStateSource): ServerStateSource = impl
+
+    @Provides
+    @Singleton
+    fun provideServerChatSink(impl: RoomServerChatSink): ServerChatSink = impl
+
+    @Provides
+    @Singleton
+    fun provideServerEventSink(impl: RoomServerEventSink): ServerEventSink = impl
+
+    @Provides
+    @Singleton
+    fun provideServerEventNotifier(impl: ServerModeNotifier): ServerEventNotifier = impl
+
+    /**
+     * 「此刻可用的远程客户端」不是单例：设置页换地址后要立刻换。
+     * 下游（同步/发送/事件）都拿这个 lambda，每次调用现向 [ServerModeRepository] 要。
+     */
+    @Provides
+    @Singleton
+    fun provideServerRemoteProvider(mode: ServerModeRepository): ServerRemoteProvider =
+        ModeServerRemoteProvider(mode)
+
+    @Provides
+    @Singleton
+    fun provideServerSyncManager(
+        source: ServerStateSource,
+        sink: ServerStateSink,
+        localStore: ServerLocalStore
+    ): ServerSyncManager = ServerSyncManager(source, sink, localStore)
+
+    @Provides
+    @Singleton
+    fun provideServerChatGateway(
+        remoteProvider: ServerRemoteProvider,
+        localStore: ServerLocalStore,
+        sink: ServerChatSink
+    ): ServerChatGateway = ServerChatGateway(remoteProvider, localStore, sink)
+
+    @Provides
+    @Singleton
+    fun provideServerEventPoller(
+        remoteProvider: ServerRemoteProvider,
+        localStore: ServerLocalStore,
+        sink: ServerEventSink,
+        notifier: ServerEventNotifier
+    ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier)
 }

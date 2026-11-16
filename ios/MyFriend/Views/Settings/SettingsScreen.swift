@@ -38,6 +38,7 @@ struct SettingsScreen: View {
                     header
                     appearanceSection
                     apiSection
+                    ServerModeSection()
                     personaSection
                     SettingsUsageSection()
                     proactiveSection
@@ -396,10 +397,46 @@ struct SettingsScreen: View {
 
                 MFRowDivider(leadingInset: 0)
 
+                NavigationLink(destination: PresetListScreen()) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "doc.on.doc")
+                            .font(.system(size: 15))
+                            .foregroundStyle(accent)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("人格预设"))
+                                .font(.system(.body, design: .serif))
+                            Text(L("一整套设定：他是谁、他在什么世界、他怎么说话。可以应用或复制到人身上。"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(10)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                MFRowDivider(leadingInset: 0)
+
                 myAvatarRow
             }
 
             MFNote(text: L("这一版不再有「记忆开关」和「回复节奏」：他记不记得、什么时候回，都由他自己决定。"))
+
+            MFCard {
+                MFToggleRow(
+                    icon: "character.book.closed",
+                    title: L("自动翻译人设"),
+                    subtitle: L("界面是英文时，进聊天前把他的人设、世界与话风翻成英文；只发设定，不发聊天记录。"),
+                    isOn: binding(\.autoTranslatePersona),
+                    tint: accent
+                )
+            }
         }
     }
 

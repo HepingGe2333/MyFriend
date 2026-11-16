@@ -148,3 +148,75 @@ data class ServerUsage(
     val promptTokens: Long = 0,
     val completionTokens: Long = 0
 )
+
+/**
+ * `GET /health` 的健康检查响应。
+ *
+ * 字段全部可缺省：这个接口的契约只保证「200 + JSON」，服务端版本升级时多/少字段
+ * 都不该让「测试连接」失败。真正的失败判定是 HTTP 状态与 `ok`（缺省按 true 处理，
+ * 因为老版本 agentd 的 /health 只回 `{"status":"ok"}`）。
+ */
+@Serializable
+data class ServerHealth(
+    val ok: Boolean = true,
+    val status: String = "",
+    val name: String = "",
+    val version: String = "",
+    val serverTime: Long = 0
+) {
+    /** 服务端明确自报不健康时才算失败（缺字段 = 老版本，按健康处理）。 */
+    val healthy: Boolean get() = ok && !status.equals("error", ignoreCase = true)
+}
+
+/** `POST /v1/sessions` 的响应：`{created, session}`（已存在时 `created=false`）。 */
+@Serializable
+data class ServerSessionCreated(
+    val created: Boolean = false,
+    val session: ServerSession = ServerSession()
+)
+
+/** `POST /v1/sessions/{id}/read` 的响应。 */
+@Serializable
+data class ServerReadReceipt(
+    val sessionId: String = "",
+    val unread: Int = 0,
+    val readAt: Long = 0,
+    val marked: Int = 0,
+    val session: ServerSession? = null
+)
+
+/**
+ * `POST /v1/personas/{id}/activity` 的请求体（`spec/persona-guidance/README.md` §4）。
+ *
+ * 字段与客户端 `PersonaActivity` 同构；服务端会自己夹取 `minutes`、并校验 `until` 在未来。
+ */
+@Serializable
+data class ServerActivityWrite(
+    val kind: String = "OTHER",
+    val activity: String = "",
+    val minutes: Int? = null,
+    val until: Long? = null,
+    val availability: String = "BUSY"
+)
+
+/** `POST /v1/personas/{id}/activity` 的响应：只取活动；人格本体可能很大，不需要解析。 */
+@Serializable
+data class ServerActivityReport(
+    val activity: ServerActivity? = null
+)
+
+/** 服务端归一化之后的活动。 */
+@Serializable
+data class ServerActivity(
+    val kind: String = "",
+    val activity: String = "",
+    val until: Long = 0,
+    val availability: String = ""
+)
+
+/** `POST /v1/push/register` 的响应只用来确认；字段缺省也接受。 */
+@Serializable
+data class ServerPushRegistration(
+    val registered: Boolean = true,
+    val platform: String = ""
+)

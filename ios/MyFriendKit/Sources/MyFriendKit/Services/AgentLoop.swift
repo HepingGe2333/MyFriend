@@ -87,6 +87,9 @@ public final class AgentLoop {
     private let onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)?
     /// 一次只让他「想一下」：并发 tick 会重复读同一份处境、也可能发两条一样的消息。
     private let tickGate = AsyncMutex()
+    /// 当前界面语言：主动消息也用缓存里的译文拼提示词（`spec/persona-translation`）。
+    /// 触发翻译在视图层，这一层只读缓存。
+    private let translationLanguage: () -> String
 
     public init(
         stores: DatabaseStores,
@@ -104,7 +107,8 @@ public final class AgentLoop {
         personaPatchApplier: ((String, String, String) -> Bool)? = nil,
         browseOnce: ((String, Int64) -> BrowseOutcome?)? = nil,
         browsingDigest: @escaping (String) -> String? = { _ in nil },
-        onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)? = nil
+        onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)? = nil,
+        translationLanguage: (() -> String)? = nil
     ) {
         self.stores = stores
         self.settings = settings
@@ -122,6 +126,7 @@ public final class AgentLoop {
         self.browseOnce = browseOnce
         self.browsingDigest = browsingDigest
         self.onMessageDelivered = onMessageDelivered
+        self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
     }
 
     /// 最近一次思考的时间（任何人格）：服务刚被拉起时用来说明「是不是想得太近了」。
@@ -394,13 +399,17 @@ public final class AgentLoop {
         session: ChatSessionEntity,
         now: Int64
     ) -> [CompletionMessage] {
+        // 主动消息也是「他以自己的人格说话」：提示词用缓存里的译文（没有就用原文）。
+        let speakingPersona = PersonaTranslation.applyingCached(
+            to: persona, lang: translationLanguage()
+        )
         let memories = memoryRepository.getRelevant(personaId: persona.id)
         var instruction = "现在是 \(ServiceTime.formatted(now))，按之前和对方的约定，到了你主动开口的时间。\n"
         instruction += "这件事的背景：\(rule.note.isEmpty ? "你希望主动关心对方" : rule.note)\n"
         instruction += "开口时的指引：\(rule.hint.isEmpty ? "用你的方式自然地关心对方此刻的状态" : rule.hint)\n"
         instruction += "要求：只写这一条消息本身，像平时发消息一样，1-3 句，不要解释你在执行规则，不要使用列表，不要提及「主动唤醒」这个功能。"
 
-        var system = personaTextForPrompt(persona) + mood.promptLine(personaId: persona.id, now: now)
+        var system = personaTextForPrompt(speakingPersona) + mood.promptLine(personaId: persona.id, now: now)
         if let hint = PersonaSleep.hint(persona) {
             system += "\n（\(hint)）"
         }

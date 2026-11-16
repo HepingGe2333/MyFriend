@@ -23,6 +23,11 @@ import com.myfriend.app.data.repo.PresetRepository
 import com.myfriend.app.data.repo.PersonaRepositoryInitializer
 import com.myfriend.app.data.repo.ProactiveRepository
 import com.myfriend.app.data.repo.UsageTotals
+import com.myfriend.app.data.remote.ServerConfigRejection
+import com.myfriend.app.data.remote.ServerCredentials
+import com.myfriend.app.data.remote.ServerModeRepository
+import com.myfriend.app.data.remote.ServerConnectionState
+import com.myfriend.app.data.remote.ServerLocalStore
 import com.myfriend.app.domain.BackupDecodeResult
 import com.myfriend.app.domain.BackupPreview
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,6 +46,26 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
+/**
+ * 设置页「服务端模式」小节的状态。
+ *
+ * 令牌**不进这个状态**：界面只拿到脱敏串/“有没有”，输入框里新填的令牌由 Composable 自己
+ * 持有，保存时直接交给 ViewModel。这样重组、状态保存、日志都不会把明文令牌带出去。
+ */
+data class ServerSettingsUiState(
+    val url: String = "",
+    val enabled: Boolean = false,
+    val hasToken: Boolean = false,
+    val maskedToken: String = "",
+    val usable: Boolean = false,
+    val rejection: ServerConfigRejection? = null,
+    val testing: Boolean = false,
+    /** 测试连接的结果（成功一行摘要 / 失败原因），直接显示在按钮下面。 */
+    val testMessage: String? = null,
+    /** 保存/清除失败时的提示。 */
+    val error: String? = null
+)
+
 data class SettingsUiState(
     val settings: AppSettings = AppSettings(),
     val personaCount: Int = 0,
@@ -48,7 +73,9 @@ data class SettingsUiState(
     val busy: Boolean = false,
     val message: String? = null,
     /** 他这个月自己上网、整理记忆花掉的量（只在本机）。 */
-    val usage: UsageTotals = UsageTotals.EMPTY
+    val usage: UsageTotals = UsageTotals.EMPTY,
+    /** 服务端模式（M3）：默认关闭。 */
+    val server: ServerSettingsUiState = ServerSettingsUiState()
 )
 
 sealed interface SettingsEvent {
@@ -86,6 +113,8 @@ class SettingsViewModel @Inject constructor(
     /** 「我的头像」换新图之后，旧文件按引用回收（0.12：共享文件不删）。 */
     private val mediaJanitor: MediaJanitor,
     private val personaInitializer: PersonaRepositoryInitializer,
+    private val serverModeRepository: ServerModeRepository,
+    private val serverLocalStore: ServerLocalStore,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -103,13 +132,27 @@ class SettingsViewModel @Inject constructor(
         SettingsUiState(settings, personas.size, configs.size, isBusy, currentMessage)
     }
 
+    private val serverTesting = MutableStateFlow(false)
+    private val serverTestMessage = MutableStateFlow<String?>(null)
+    private val serverError = MutableStateFlow<String?>(null)
+
+    private val serverState: Flow<ServerSettingsUiState> = combine(
+        serverModeRepository.state,
+        serverTesting,
+        serverTestMessage,
+        serverError
+    ) { state, testing, testMessage, error ->
+        state.toUiState(testing = testing, testMessage = testMessage, error = error)
+    }
+
     /** 「用量」要实时刷新：订阅本月流水与按人的排行，聊天或后台任务一跑，这里立刻变。 */
     val uiState: StateFlow<SettingsUiState> = combine(
         baseState,
         apiUsageRepository.observeMonth(),
-        apiUsageRepository.observeMonthBySession()
-    ) { current, usage, bySession ->
-        current.copy(usage = usage.copy(bySession = bySession))
+        apiUsageRepository.observeMonthBySession(),
+        serverState
+    ) { current, usage, bySession, server ->
+        current.copy(usage = usage.copy(bySession = bySession), server = server)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SettingsUiState())
 
     private val backupBusy = MutableStateFlow(false)
@@ -141,6 +184,9 @@ class SettingsViewModel @Inject constructor(
     fun setBubbleStyle(style: BubbleStyle) = launchSetting { settingsRepository.setBubbleStyle(style) }
     fun setAnimations(enabled: Boolean) = launchSetting { settingsRepository.setAnimationsEnabled(enabled) }
     fun setHaptics(enabled: Boolean) = launchSetting { settingsRepository.setHapticsEnabled(enabled) }
+
+    fun setAutoTranslatePersona(enabled: Boolean) =
+        launchSetting { settingsRepository.setAutoTranslatePersona(enabled) }
 
     fun setChatBackgroundColor(color: Long?) = launchSetting { settingsRepository.setChatBackgroundColor(color) }
     fun setChatBackgroundImage(uri: String?) = launchSetting { settingsRepository.setChatBackgroundImageUri(uri) }
@@ -224,6 +270,8 @@ class SettingsViewModel @Inject constructor(
                 // 媒体文件（files/media + files/avatars）由 ChatRepository.wipeAllData 内的
                 // DataEraser 一并清掉：删表与删文件走同一份清单，避免两处各自漏。
                 settingsRepository.resetAll(preserveSeedMarker = false)
+                // 服务端连接也一起清：否则「删除全部数据」之后 App 还会连回旧服务器。
+                clearServerConnectionQuietly()
                 // 与 iOS 对齐：清空之后按当前语言重新播种，别让用户面对一个空白 App。
                 personaInitializer.seedIfNeeded()
             }.onSuccess { message.value = context.getString(R.string.settings_wiped) }
@@ -307,4 +355,102 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
+
+    // ---------------------------------------------------------------- 服务端模式（M3）
+
+    /**
+     * 保存地址/令牌/开关。
+     *
+     * 令牌输入框留空 = 沿用已保存的令牌（脱敏展示时用户不该为了改地址而重新粘贴一次）；
+     * 要清除令牌用 [clearServerToken]。
+     */
+    fun saveServerConnection(url: String, tokenInput: String, enabled: Boolean) {
+        viewModelScope.launch {
+            val current = serverModeRepository.currentCredentials()
+            val token = tokenInput.trim().ifEmpty { current.token }
+            val credentials = ServerCredentials(url = url, token = token, enabled = enabled)
+            serverModeRepository.save(credentials)
+                .onSuccess {
+                    serverTestMessage.value = null
+                    serverError.value = null
+                    message.value = context.getString(R.string.settings_server_saved)
+                }
+                .onFailure {
+                    serverError.value = context.getString(R.string.settings_server_save_failed)
+                }
+        }
+    }
+
+    /** 打开/关闭服务端模式：先落盘，失败时界面靠 [serverState] 回滚。 */
+    fun setServerEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            serverModeRepository.setEnabled(enabled)
+                .onFailure { serverError.value = context.getString(R.string.settings_server_save_failed) }
+        }
+    }
+
+    /** 清除已保存令牌（地址/开关保留）。 */
+    fun clearServerToken() {
+        viewModelScope.launch {
+            val current = serverModeRepository.currentCredentials()
+            serverModeRepository.save(current.copy(token = ""))
+                .onFailure { serverError.value = context.getString(R.string.settings_server_save_failed) }
+        }
+    }
+
+    /**
+     * 测试连接：用界面上**当前输入**试一次（令牌留空则用已保存的）。
+     *
+     * 测试成功不代表已保存：用户可能还在改地址；保存是另一个动作，避免「点测试就悄悄改了配置」。
+     */
+    fun testServerConnection(url: String, tokenInput: String) {
+        viewModelScope.launch {
+            if (serverTesting.value) return@launch
+            serverTesting.value = true
+            serverTestMessage.value = null
+            val current = serverModeRepository.currentCredentials()
+            val credentials = ServerCredentials(
+                url = url,
+                token = tokenInput.trim().ifEmpty { current.token },
+                enabled = true
+            )
+            serverModeRepository.testConnection(credentials)
+                .onSuccess { result ->
+                    serverTestMessage.value =
+                        context.getString(R.string.settings_server_test_success, result.describe())
+                }
+                .onFailure { error ->
+                    serverTestMessage.value = ErrorText.of(
+                        context,
+                        error,
+                        R.string.settings_server_test_failed
+                    )
+                }
+            serverTesting.value = false
+        }
+    }
+
+    /** 删除全部数据后连服务端配置一起清掉（否则新用户会连上旧服务器/旧游标）。 */
+    private suspend fun clearServerConnectionQuietly() {
+        serverModeRepository.clear()
+        serverModeRepository.reload()
+        // 游标、会话映射、待发队列都属于那台服务端；数据清空后它们没有意义。
+        runCatching { serverLocalStore.resetForNewServer() }
+    }
+
+    private fun ServerConnectionState.toUiState(
+        testing: Boolean,
+        testMessage: String?,
+        error: String?
+    ): ServerSettingsUiState = ServerSettingsUiState(
+        url = credentials.cleanUrl,
+        enabled = credentials.enabled,
+        hasToken = credentials.cleanToken.isNotEmpty(),
+        maskedToken = credentials.maskedToken(),
+        usable = usable,
+        rejection = config.rejection(),
+        testing = testing,
+        testMessage = testMessage,
+        error = error
+    )
 }

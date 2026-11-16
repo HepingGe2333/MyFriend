@@ -40,14 +40,13 @@ struct PersonaEditorScreen: View {
     @State private var backstory = ""
     @State private var quirks = ""
     // 人设引导（0.12）：世界设定 / 话风。都是「可留空」的补充设定，提示词里空着就整节不出现。
-    @State private var worldName = ""
-    @State private var worldEra = ""
-    @State private var worldDescription = ""
-    @State private var worldScheduleText = ""
-    @State private var worldRelationsText = ""
-    @State private var worldObligationsText = ""
+    /// 世界设定的可视化编辑器状态（`spec/persona-guidance/README.md` §2.3：不是 JSON 文本框）。
+    @State private var worldEditor = WorldEditorState()
     /// 载入时的世界 JSON：用来判断「这次有没有真的动过」（不动就不写库，别把版本/时间戳白推一次）。
     @State private var initialWorldJson: String?
+    /// 提示词翻译（`spec/persona-translation/README.md`）：缓存状态 + 「重新翻译」的进行中标志。
+    @State private var translationSummary = ""
+    @State private var translationBusy = false
     @State private var speechTone = ""
     @State private var speechPhrases: [String] = []
     @State private var speechHabits: [String] = []
@@ -88,6 +87,7 @@ struct PersonaEditorScreen: View {
                 identityCard
                 worldCard
                 speechCard
+                translationCard
                 characterCard
                 storyCard
                 personaCardCard
@@ -257,38 +257,24 @@ struct PersonaEditorScreen: View {
             }
             MFNote(text: L("他在哪儿生活、平时怎么过。留空就只有人格，没有世界。"))
 
-            FieldCaption(L("世界 / 城市"), hint: L("一句话，例如「临港新城·云筑建筑事务所」。"))
-            TextField(L("比如：临港新城·云筑建筑事务所"), text: $worldName)
-                .textFieldStyle(.plain)
-                .padding(.vertical, 8)
-                .padding(.horizontal, 10)
-                .background(fieldBackground)
-                .padding(.bottom, 14)
-
-            FieldCaption(L("时代与地点"), hint: L("例如「当代，中国沿海新一线城市，2026 年」。"))
-            TextField(L("比如：当代，中国沿海新一线城市"), text: $worldEra)
-                .textFieldStyle(.plain)
-                .padding(.vertical, 8)
-                .padding(.horizontal, 10)
-                .background(fieldBackground)
-                .padding(.bottom, 14)
-
-            FieldCaption(L("世界与他的处境"), hint: L("100–200 字：世界长什么样、他在里面是什么处境。"))
-            multilineField($worldDescription, height: 92, placeholder: L("比如：事务所竞争激烈、甲方频繁改图，他带组赶一个高层住宅项目。"))
-                .padding(.bottom, 14)
-
-            FieldCaption(L("日程"), hint: L("一行一条，例如「工作日 09:00-18:30 在事务所画图」。"))
-            multilineField($worldScheduleText, height: 76, placeholder: L("工作日 09:00-18:30 在事务所画图"))
-                .padding(.bottom, 14)
-
-            FieldCaption(L("关系"), hint: L("一行一条，例如「母亲（母亲）：每周三晚打电话」。"))
-            multilineField($worldRelationsText, height: 60, placeholder: L("母亲（母亲）：每周三晚打电话"))
-                .padding(.bottom, 14)
-
-            FieldCaption(L("要承担的事"), hint: L("一行一条：他必须做的事与压力。"))
-            multilineField($worldObligationsText, height: 56, placeholder: L("按节点交图"))
+            WorldPresetEditorView(state: $worldEditor, accent: accent)
+                .padding(.top, 10)
 
             MFNote(text: L("AI 只是帮你起个头：随时可以手填、改，也可以完全不用它。补全只用上面的介绍与「个人设定」，不会上传对话。"))
+                .padding(.top, 10)
+
+            NavigationLink(destination: PresetListScreen()) {
+                HStack(spacing: 6) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12))
+                    Text(L("从人格预设里拿一份设定"))
+                        .font(.footnote)
+                }
+                .foregroundStyle(accent)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+
             if !worldIsCleared {
                 Button(L("清空世界设定"), role: .destructive) { clearWorld() }
                     .font(.footnote)
@@ -382,6 +368,89 @@ struct PersonaEditorScreen: View {
                     .font(.footnote)
                     .padding(.top, 8)
             }
+        }
+    }
+
+    // MARK: - 提示词翻译（`spec/persona-translation/README.md`）
+
+    /// 一张只读的卡片：现在有没有译文、以及「重新翻译」。
+    ///
+    /// 自动翻译在进聊天前发生（`ChatService` 里 kick 一次，不阻塞首屏）；
+    /// 这里的手动按钮是「我刚改了设定、想立刻看到译文」时的入口（§4）。
+    private var translationCard: some View {
+        MFCard {
+            HStack(alignment: .firstTextBaseline) {
+                Text(L("提示词翻译"))
+                    .font(.system(.body, design: .serif))
+                Spacer()
+                if translationBusy {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Button(L("重新翻译")) { Task { await retranslate() } }
+                        .font(.footnote)
+                        .tint(accent)
+                        .disabled(personaId == nil)
+                }
+            }
+            MFNote(text: L("界面是英文时，进聊天前会把人设、世界与话风翻成英文；只发这些设定，不发聊天记录与记忆。"))
+            Text(translationSummary.isEmpty ? L("现在用的是原文") : translationSummary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.top, 6)
+        }
+    }
+
+    private func retranslate() async {
+        guard let personaId else { return }
+        guard let resolved = guidanceConfig() else {
+            banner = MFAlert(
+                title: L("还没有可用的 API 配置"),
+                message: L("先用原文；等配好模型再点一次「重新翻译」。")
+            )
+            return
+        }
+        translationBusy = true
+        let service = PersonaTranslationService.makeDefault(stores: env.stores, settings: env.settings)
+        try? service.clearTranslation(personaId: personaId)
+        let lang = PersonaTranslationLanguage.current()
+        let outcome = await service.ensureTranslation(
+            personaId: personaId, lang: lang,
+            config: resolved.config, model: resolved.model
+        )
+        translationBusy = false
+        switch outcome {
+        case .translated:
+            translationSummary = Lf("已翻译成 %@，下次聊天就用它。", lang)
+        case .cached:
+            translationSummary = Lf("已有 %@ 的翻译缓存。", lang)
+        case .skippedSameLanguage:
+            translationSummary = L("界面语言与设定语言相同，不需要翻译。")
+        case .disabled:
+            translationSummary = L("设置里关掉了「自动翻译人设」。")
+        case .noConfig:
+            banner = MFAlert(
+                title: L("还没有可用的 API 配置"),
+                message: L("先用原文；等配好模型再点一次「重新翻译」。")
+            )
+        case .failed:
+            translationSummary = L("翻译失败，可重试；现在仍然用原文。")
+        }
+        loadTranslationSummary()
+    }
+
+    private func loadTranslationSummary() {
+        guard let personaId,
+              let persona = (try? env.stores.personas.byId(personaId)) ?? nil else {
+            translationSummary = ""
+            return
+        }
+        let source = PersonaTranslatableSource(persona: persona)
+        let lang = PersonaTranslationLanguage.current()
+        if let cached = PersonaTranslation.decode(persona.translationJson),
+           cached.isValid(for: source, lang: lang) {
+            translationSummary = Lf("已有 %@ 的翻译缓存。", lang)
+        } else {
+            translationSummary = ""
         }
     }
 
@@ -993,17 +1062,8 @@ struct PersonaEditorScreen: View {
         .background(fieldBackground)
     }
 
-    /// 编辑中的世界预设（字段 → 结构；空的整块就是空预设）。
-    private var editingWorld: WorldPreset {
-        WorldPreset(
-            worldName: worldName,
-            era: worldEra,
-            description: worldDescription,
-            schedule: WorldPreset.parseScheduleLines(worldScheduleText),
-            relationships: WorldPreset.parseRelationshipLines(worldRelationsText),
-            obligations: WorldPreset.parseObligationLines(worldObligationsText)
-        )
-    }
+    /// 编辑中的世界预设（可视化编辑器的状态 → 结构；空的整块就是空预设）。
+    private var editingWorld: WorldPreset { worldEditor.preset }
 
     private var editingSpeechStyle: SpeechStyle {
         SpeechStyle(
@@ -1032,14 +1092,9 @@ struct PersonaEditorScreen: View {
         editingSpeechStyle.isEmpty
     }
 
-    /// 把世界结构写回编辑字段（载入与 AI 补全共用一条路径，避免两边长得不一样）。
+    /// 把世界结构写进编辑器状态（载入与 AI 补全共用一条路径，避免两边长得不一样）。
     private func apply(world: WorldPreset?) {
-        worldName = world?.worldName ?? ""
-        worldEra = world?.era ?? ""
-        worldDescription = world?.description ?? ""
-        worldScheduleText = world.map { WorldPreset.scheduleLines($0.schedule) } ?? ""
-        worldRelationsText = world.map { WorldPreset.relationshipLines($0.relationships) } ?? ""
-        worldObligationsText = world.map { WorldPreset.obligationLines($0.obligations) } ?? ""
+        worldEditor = WorldEditorState(preset: world)
     }
 
     private func apply(style: SpeechStyle?) {
@@ -1086,7 +1141,8 @@ struct PersonaEditorScreen: View {
             model: resolved.model
         )
         worldBusy = false
-        apply(world: result.preset)
+        // 补全只填空白项：用户已经写下的名字/描述/日程不会被覆盖（§2.3）。
+        worldEditor = worldEditor.mergingBlanks(from: result.preset)
         if !result.usedModel {
             banner = MFAlert(
                 title: L("这次没补成"),
@@ -1155,6 +1211,7 @@ struct PersonaEditorScreen: View {
         apply(world: WorldPreset.decode(persona.worldJson))
         initialSpeechStyleJson = persona.speechStyleJson
         apply(style: SpeechStyle.decode(persona.speechStyleJson))
+        loadTranslationSummary()
         let now = DomainClock.nowMillis
         if let activity = PersonaActivity.decode(persona.activityJson, now: now) {
             activityLine = Lf("%@（到 %@ 结束）", activity.activity, activity.untilClockText())
@@ -1334,188 +1391,5 @@ struct PersonaEditorScreen: View {
     fileprivate static func time(fromMinutes minutes: Int) -> Date {
         let wrapped = ((minutes % 1440) + 1440) % 1440
         return time(hour: wrapped / 60, minute: wrapped % 60)
-    }
-}
-
-// MARK: - 表单小部件
-
-/// 一个可多选的标签编辑器：点建议词加上/去掉，也可以自己写一个。
-///
-/// 为什么不用系统 `Menu` / `Picker`：这些是「多个并列的小词」，用一排可点的胶囊
-/// 比展开一个列表更直观；用户还能看到「我现在一共有几个」。
-private struct TagEditor: View {
-    let title: String
-    let hint: String
-    let suggestions: [String]
-    let limit: Int
-    @Binding var values: [String]
-    let accent: Color
-
-    @State private var draft = ""
-    @FocusState private var draftFocused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.system(.body, design: .serif))
-                Spacer()
-                Text("\(values.count)/\(limit)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Text(hint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if !values.isEmpty {
-                FlowingTags(values: values, accent: accent) { tag in
-                    values.removeAll { $0 == tag }
-                }
-            }
-
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(availableSuggestions, id: \.self) { suggestion in
-                        Button {
-                            add(suggestion)
-                        } label: {
-                            HStack(spacing: 4) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 9, weight: .bold))
-                                Text(suggestion)
-                                    .font(.caption)
-                            }
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                            .background(
-                                Capsule().strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-
-            HStack(spacing: 8) {
-                TextField(L("自己写一个"), text: $draft)
-                    .font(.footnote)
-                    .focused($draftFocused)
-                    .onSubmit { add(draft) }
-                    .padding(.vertical, 7)
-                    .padding(.horizontal, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
-                            .fill(Color.secondary.opacity(0.08))
-                    )
-                Button(L("加上")) { add(draft) }
-                    .font(.footnote)
-                    .tint(accent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || values.count >= limit)
-            }
-        }
-        .padding(.vertical, 12)
-    }
-
-    private var availableSuggestions: [String] {
-        suggestions.filter { !values.contains($0) }
-    }
-
-    private func add(_ raw: String) {
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, values.count < limit, !values.contains(trimmed) else {
-            draft = ""
-            return
-        }
-        values.append(trimmed)
-        draft = ""
-    }
-}
-
-/// 已选标签的换行排列（iOS 16 没有 FlowLayout，用固定列数的 LazyVGrid 近似）。
-private struct FlowingTags: View {
-    let values: [String]
-    let accent: Color
-    let onRemove: (String) -> Void
-
-    private let columns = [GridItem(.adaptive(minimum: 72), spacing: 8)]
-
-    var body: some View {
-        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-            ForEach(values, id: \.self) { tag in
-                Button {
-                    onRemove(tag)
-                } label: {
-                    HStack(spacing: 4) {
-                        Text(tag)
-                            .font(.caption)
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8, weight: .bold))
-                    }
-                    .foregroundStyle(accent)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(accent.opacity(0.12), in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(Lf("去掉 %@", tag)))
-            }
-        }
-    }
-}
-
-/// 「主动程度 / 记性 / 唤醒阈值」共用的一行：标题 + 人话解释 + 滑杆 + 当前第几档。
-private struct LevelSliderRow: View {
-    let title: String
-    let hint: String
-    @Binding var value: Double
-    let range: ClosedRange<Double>
-    let step: Double
-    let accent: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title)
-                    .font(.system(.body, design: .serif))
-                Spacer()
-                Text("\(Int(value.rounded()))")
-                    .font(.footnote)
-                    .foregroundStyle(accent)
-            }
-            Text(hint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Slider(value: $value, in: range, step: step)
-                .tint(accent)
-        }
-        .padding(.vertical, 12)
-    }
-}
-
-/// 表单里的小标题 + 一句解释（人格编辑页用）。
-private struct FieldCaption: View {
-    let title: String
-    let hint: String
-
-    init(_ title: String, hint: String) {
-        self.title = title
-        self.hint = hint
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(title)
-                .font(.footnote.weight(.medium))
-            Text(hint)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(.bottom, 6)
     }
 }

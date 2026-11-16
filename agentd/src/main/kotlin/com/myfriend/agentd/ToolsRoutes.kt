@@ -1,6 +1,7 @@
 package com.myfriend.agentd
 
 import com.myfriend.agentd.AgentdApi.Response
+import com.myfriend.agentd.proactive.ActivityState
 import com.myfriend.agentd.proactive.LevelPolicy
 import com.myfriend.agentd.proactive.MoodState
 import com.myfriend.agentd.proactive.PendingProactive
@@ -37,6 +38,9 @@ import kotlin.random.Random
  * | `POST` | `/v1/tools/web-search` | 服务端执行搜索，返回归一化结果 |
  * | `POST` | `/v1/tools/web-fetch` | 服务端抓取公开页面并抽正文 |
  * | `POST` | `/v1/proactive/tick` | 立刻跑一次主动判定（生产由服务端定时器驱动） |
+ *
+ * `POST /v1/personas/{id}/activity`（客户端上报「他此刻在做什么」）在 [AuthorityRoutes]，
+ * 因为它是状态写入而不是工具调用；判定侧只从 `store/` 读那份活动，见 [ProactiveTicker]。
  *
  * 三条路由都只做「HTTP 形状 ↔ 已测试的领域模块」的翻译：
  * - 搜索/抓取直接调 [com.myfriend.agentd.search.WebSearchService]（provider 请求形状与结果归一化在那里）；
@@ -209,7 +213,8 @@ object ToolsRoutes {
         }
         // 固定时钟：同一个 now 重复 tick 只生效一次（去重在 ProactiveTicker/ProactiveScheduler 里）。
         val now = explicitNow ?: store.serverTime()
-        val fired = ticker.tick(now)
+        val outcome = ticker.tickWithDecisions(now)
+        val fired = outcome.fired
         val decisions = fired.map { decision ->
             StoreJson.obj(
                 "personaId" to StoreJson.str(decision.personaId),
@@ -218,13 +223,29 @@ object ToolsRoutes {
                 "reason" to StoreJson.str(decision.reason)
             )
         }
+        // 「为什么没开口」：睡着、刚聊完、今天说够了、**正在忙（BUSY）**、**在忙且概率降了
+        // 没掷中（LIMITED）**……每一样都在这里给一条，客户端/日志不必再猜。
+        val skipped = outcome.decisions
+            .filter { !it.shouldFire }
+            .map { decision ->
+                StoreJson.obj(
+                    "personaId" to StoreJson.str(decision.targetPersonaId),
+                    "reason" to StoreJson.str(decision.reason.code),
+                    "scheduledAt" to StoreJson.num(decision.scheduledAt),
+                    "probability" to StoreJson.num(decision.probability),
+                    "roll" to StoreJson.num(decision.roll),
+                    "dailyCap" to StoreJson.num(decision.dailyCap),
+                    "sentToday" to StoreJson.num(decision.sentToday)
+                )
+            }
         return Response(
             200,
             StoreJson.stringify(
                 StoreJson.obj(
                     "now" to StoreJson.num(now),
                     "fired" to StoreJson.num(fired.size),
-                    "decisions" to StoreJson.arr(decisions)
+                    "decisions" to StoreJson.arr(decisions),
+                    "skipped" to StoreJson.arr(skipped)
                 )
             )
         )
@@ -275,6 +296,18 @@ object ToolsRoutes {
     private class RouteFailure(val status: Int, val code: String, message: String) : Exception(message)
 }
 
+/**
+ * `ProactiveTicker` 跑一拍的完整结果。
+ *
+ * @param fired 真正落库的主动消息（含 messageId；被上限/冷却挡在锁外的不会出现在这里）
+ * @param decisions 每个人格一条判定，`shouldFire == false` 的那些就是路由响应里的 `skipped`
+ */
+internal data class ProactiveTickOutcome(
+    val now: Long,
+    val fired: List<FiredProactive>,
+    val decisions: List<ProactiveDecision>
+)
+
 /** 一次 tick 里真正落库的主动消息（路由响应里需要 messageId）。 */
 internal data class FiredProactive(
     val personaId: String,
@@ -296,7 +329,8 @@ internal data class FiredProactive(
 internal class ProactiveTicker(
     private val store: FileStore,
     private val clock: Clock = Clock.systemDefaultZone(),
-    private val roll: () -> Double = { Random.nextDouble() }
+    private val roll: () -> Double = { Random.nextDouble() },
+    private val pushSender: PushSender = NoopPushSender
 ) {
 
     private val lock = Any()
@@ -310,10 +344,18 @@ internal class ProactiveTicker(
     )
 
     /** 跑一拍，返回这一拍真正落库的主动消息。同一个 `now` 重复调用返回空列表。 */
-    fun tick(now: Long): List<FiredProactive> = synchronized(lock) {
+    fun tick(now: Long): List<FiredProactive> = tickWithDecisions(now).fired
+
+    /**
+     * 跑一拍，额外把**全部判定**（含没开口的原因）交回去。
+     *
+     * 与 [tick] 是同一次判定：`lastTickAt` 去重与「刚发过」overlay 都在 [ProactiveScheduler] 里，
+     * 所以「先 tick 一次拿 fired、再 tick 一次拿原因」这种写法在这里不存在（第二次会是空的）。
+     */
+    fun tickWithDecisions(now: Long): ProactiveTickOutcome = synchronized(lock) {
         fired.clear()
-        scheduler.tickOnce(now)
-        fired.toList()
+        val tick = scheduler.tick(now)
+        ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
     }
 
     /** 只有「有人格的会话」才参与判定：没有会话就没有落库的地方，不掷骰子。 */
@@ -336,6 +378,8 @@ internal class ProactiveTicker(
         } ?: MoodState()
         // 每日上限按服务端本地自然日算；跨日时 store 会把计数读成 0。
         val proactive = store.proactiveState(persona.id, localDate(now))
+        // 占用时间（`set_activity`）：坏 JSON / 没设过都是 null；过期由引擎读取时判断。
+        val activity = ActivityState.decode(store.activity(persona.id))
         return PersonaState(
             personaId = persona.id,
             displayName = persona.name,
@@ -343,7 +387,8 @@ internal class ProactiveTicker(
             lastInteractionAt = session.lastMessageAt ?: 0L,
             lastProactiveAt = proactive.lastProactiveAt,
             proactiveCountToday = proactive.proactiveCountToday,
-            mood = mood
+            mood = mood,
+            activity = activity
         )
     }
 
@@ -373,6 +418,26 @@ internal class ProactiveTicker(
             messageId = message.id,
             reason = decision.reason.code
         )
+        // M6：消息已经落库后才调用适配器；失败只记日志，绝不回滚消息或影响 tick 响应。
+        val tokens = store.pushTokens()
+        if (tokens.isNotEmpty()) {
+            val personaName = store.persona(decision.targetPersonaId)?.name.orEmpty()
+            runCatching {
+                pushSender.send(
+                    tokens,
+                    PushMessage(
+                        personaId = decision.targetPersonaId,
+                        sessionId = session.id,
+                        messageId = message.id,
+                        title = personaName.ifBlank { "MyFriend" },
+                        body = message.content,
+                        createdAt = message.createdAt
+                    )
+                )
+            }.onFailure { failure ->
+                System.err.println("[agentd] 推送适配器调用失败：${failure::class.simpleName}")
+            }
+        }
     }
 
     /** 服务端本地自然日（`yyyy-MM-dd`）；主动计数与每日上限都按它翻页。 */

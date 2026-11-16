@@ -38,10 +38,45 @@ class SpeechStyleTest {
             phrases = (1..8).map { "口头禅$it" }
         )
         val text = style.renderForPrompt()
-        assertTrue(text.contains("自然使用，不要每句都套"))
-        assertTrue(text.contains("口头禅1"))
-        assertTrue(text.contains("口头禅6"))
+        assertTrue(text.contains("最多带 1 处，不要每句都套"))
+        assertTrue("常用语要带「」", text.contains("「口头禅1」"))
+        assertTrue(text.contains("「口头禅6」"))
         assertFalse("第 7 条不该出现", text.contains("口头禅7"))
+    }
+
+    @Test
+    fun `渲染出的每一行都来自脚手架`() {
+        val style = SpeechStyleCodec.decode(sample)!!
+        val scaffold = PromptBuilder.Scaffold
+        val lines = style.renderForPrompt().lines()
+        assertEquals("开头是脚手架的 voice_rules", scaffold.VOICE_RULES, lines.take(scaffold.VOICE_RULES.size))
+        assertEquals("结尾是脚手架的 voice_no_narration", scaffold.VOICE_NO_NARRATION, lines.last())
+        assertTrue(lines.contains(scaffold.VOICE_TONE.replace("{tone}", style.tone)))
+        assertTrue(lines.contains(scaffold.VOICE_PHRASES.replace(
+            "{phrases}",
+            style.phrases.joinToString("、") { "「$it」" }
+        )))
+    }
+
+    @Test
+    fun `习惯与避免清单不进提示词 脚手架没有对应行`() {
+        val style = SpeechStyleCodec.decode(sample)!!
+        val text = style.renderForPrompt()
+        assertFalse("不能自己加「习惯：」这种规范外的行", text.contains("习惯："))
+        assertFalse("不能自己加「- 不要：」这种规范外的行", text.contains("- 不要："))
+        // 数据本身仍然保存着，编辑器里能改。
+        assertEquals(listOf("句子很短", "少用感叹号"), style.habits)
+        assertEquals(listOf("长篇大论", "书面化表达"), style.avoid)
+    }
+
+    @Test
+    fun `没有 tone 与常用语时只留脚手架规则`() {
+        val text = SpeechStyle().renderForPrompt()
+        val scaffold = PromptBuilder.Scaffold
+        assertEquals(
+            (scaffold.VOICE_RULES + scaffold.VOICE_NO_NARRATION).joinToString("\n"),
+            text
+        )
     }
 
     @Test

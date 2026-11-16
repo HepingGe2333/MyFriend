@@ -23,7 +23,14 @@ class SpeechStyleSummarizerTest {
     private class FakeLlm(private val reply: String?) : JsonLlmClient {
         var lastUser: String? = null
         var calls: Int = 0
-        override suspend fun completeJson(system: String, user: String, configId: String?): String? {
+        override suspend fun completeJson(
+            system: String,
+            user: String,
+            configId: String?,
+            kind: String,
+            temperature: Double,
+            maxOutputTokens: Int
+        ): String? {
             calls++
             lastUser = user
             return reply

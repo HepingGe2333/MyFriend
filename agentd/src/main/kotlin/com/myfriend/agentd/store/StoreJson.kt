@@ -29,6 +29,9 @@ internal object StoreJson {
 
     fun num(value: Int): JsonValue.Num = JsonValue.Num(value.toString())
 
+    /** 概率/随机数这类小数（只用于诊断字段；`NaN`/`Inf` 由调用方保证不会出现）。 */
+    fun num(value: Double): JsonValue.Num = JsonValue.Num(value.toString())
+
     fun bool(value: Boolean): JsonValue.Bool = JsonValue.Bool(value)
 
     fun nullableStr(value: String?): JsonValue = if (value == null) JsonValue.Null else JsonValue.Str(value)

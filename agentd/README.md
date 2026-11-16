@@ -469,14 +469,24 @@ environment variable, which wins over the default — same precedence as every o
   sessions.json                  {"sessions":[…]}                                ← lastMessageAt / unread / lastBlockIndex
   moods.json  presence.json      {"moods":[…]} / {"presence":[…]}                ← mood.changed / presence.changed sources
   usage.json                     {"usage":{personaId:{promptTokens,completionTokens,replies}}}
-  settings.json                  {"settings":{…}}
+  settings.json                  {"settings":{…}}                                ← whitelist only; never API keys
   api_configs.json               {"configs":[…]}                                 ← metadata only, **no keys**
   secrets.json                   {"keys":{…}}                                    ← 0600, server-side only, never in a response
+  memories.json                  {"memories":[{id,personaId,content,importance,tags,createdAt,updatedAt}]}
+  presets.json                   {"presets":[{id,name,…,worldJson,speechStyleJson}]}
+  push_tokens.json               {"tokens":[{platform,token,bundleId,createdAt,updatedAt}]}
   events.jsonl                   one event per line, append-only                 ← GET /v1/events cursor
   sessions/<sessionId>/block_index.json   {"sessionId":…,"blocks":[{index,firstMessageId,lastMessageId,firstAt,lastAt,count}]}
   sessions/<sessionId>/blocks/<blockIndex>.jsonl   one message per line (append-only, UTF-8)
   media/                         directory only — the upload endpoint is a later phase
 ```
+
+`memories.json`, `presets.json` and `push_tokens.json` are optional for old data directories
+(missing = empty). `GET /v1/settings` and `GET /v1/backup` filter `settings.json` through a
+whitelist, so even a hand-edited `apiKey` key never appears in a response or a backup. The
+whitelist is: `themeMode`, `accentColor`, `fontScale`, `bubbleStyle`, `animationsEnabled`,
+`hapticsEnabled`, `chatBackgroundColor`, `agentLoopEnabled`, `activePersonaId`,
+`autoTranslatePersona`.
 
 **Seeding.** A missing/empty directory is seeded with three personas and one empty session, so the
 `curl` examples below work immediately. `:agentd` has no Android resources, so the ids are fixed
@@ -519,8 +529,26 @@ use the same `{"error":{"message":"…","code":"…"}}` shape.
 | --- | --- | --- |
 | `GET` | `/v1/state?since=&personaId=` | Snapshot. `since` filters personas/sessions by `updatedAt > since` and messages by `createdAt > since`. `serverCursor` is the current global event cursor. |
 | `GET` | `/v1/sessions?personaId=` | Session list with `lastMessageAt`, `unread`, `lastBlockIndex` (plus `messageCount`/timestamps). |
+| `POST` | `/v1/sessions` | `{personaId,title?}`. One session per persona; if it already exists the existing row is returned (`created:false`). |
+| `POST` | `/v1/sessions/{id}/read` | `{upTo?}` → mark assistant messages read, `unread:0`, returns `{unread,readAt,marked,session}`. |
 | `GET` | `/v1/sessions/{id}/messages?beforeBlock=&limitBlocks=1` | One block per page. No offset. `beforeBlock` = older page, `afterBlock` = newer page (additive extension for `hasMoreNewer` navigation). |
 | `POST` | `/v1/sessions/{id}/messages` | Send a message; responds with SSE (`accepted → delta* → tool* → done`). |
+| `GET` | `/v1/personas` | Persona list, including client fields (`worldJson`, `speechStyleJson`, `traits`, `translationJson`, …) and parsed `activity`. |
+| `POST` | `/v1/personas` | Create (no `id`) or update (`id` must exist). Known core fields are typed; every other field is kept verbatim. |
+| `DELETE` | `/v1/personas/{id}` | Delete persona + its sessions/messages/memories/activity/proactive counters/mood/presence. Media files are **not** deleted. |
+| `POST` | `/v1/personas/{id}/activity` | Report/clear the current activity (M3 client integration). |
+| `GET` | `/v1/personas/{id}/memories?limit=&since=` | Memories for a persona, newest `updatedAt` first. |
+| `POST` | `/v1/personas/{id}/memories` | Create (no `id`) or update (`id` must exist and belong to this persona). |
+| `DELETE` | `/v1/memories/{id}` | Delete one memory (404 when absent). |
+| `GET` | `/v1/presets` | Persona presets including `worldJson` / `speechStyleJson`. |
+| `POST` | `/v1/presets` | Create/update a preset; unknown fields are kept verbatim. |
+| `DELETE` | `/v1/presets/{id}` | Delete a preset (404 when absent). |
+| `GET` | `/v1/settings` | Whitelisted global settings (no API keys/secrets, ever). |
+| `POST` | `/v1/settings` | Merge whitelisted fields; unknown keys (including `apiKey`) are ignored. |
+| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings, **no secrets**). |
+| `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}`; validate everything first, then write. |
+| `POST` | `/v1/push/register` | `{platform:"ios"|"android",token,bundleId?}`; idempotent per `platform+token`. |
+| `DELETE` | `/v1/push/register` | Unregister by body `{token,platform?}` or query `?token=&platform=`; idempotent. |
 | `GET` | `/v1/events?since=&timeoutSeconds=&limit=` | Incremental events (`message.created`, `mood.changed`, `presence.changed`). Long poll, 25 s max by default. |
 | `POST` | `/v1/tools/web-search` | Server-side search; the search key never leaves the server (see below). |
 | `POST` | `/v1/tools/web-fetch` | Server-side fetch of a public page, body text extracted. |
@@ -550,7 +578,112 @@ curl -s -X POST "http://127.0.0.1:8788/v1/tools/web-fetch" \
 # 9. run one proactive heartbeat immediately (debug endpoint; same now only fires once)
 curl -s -X POST "http://127.0.0.1:8788/v1/proactive/tick" \
   -H 'Content-Type: application/json' -d '{"now":1700000000000}'
+# 10. one session per persona; creating twice returns the existing row
+curl -s -X POST "http://127.0.0.1:8788/v1/sessions" \
+  -H 'Content-Type: application/json' -d '{"personaId":"seed-linshen"}'
+# 11. mark a session read (unread → 0)
+curl -s -X POST "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/read" \
+  -H 'Content-Type: application/json' -d '{}'
+# 12. persona / memory / preset CRUD
+curl -s -X POST "http://127.0.0.1:8788/v1/personas" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"新朋友","worldJson":"{\"worldName\":\"临港\"}","traits":["慢热"]}'
+curl -s -X POST "http://127.0.0.1:8788/v1/personas/seed-linshen/memories" \
+  -H 'Content-Type: application/json' -d '{"content":"他喜欢雨天","importance":80,"tags":["天气"]}'
+curl -s "http://127.0.0.1:8788/v1/personas/seed-linshen/memories?limit=20"
+curl -s -X POST "http://127.0.0.1:8788/v1/presets" \
+  -H 'Content-Type: application/json' -d '{"name":"夏夜","worldJson":"{}"}'
+# 13. backup (v5, no secrets) and merge/replace import
+curl -s "http://127.0.0.1:8788/v1/backup" > backup.json
+curl -s -X POST "http://127.0.0.1:8788/v1/backup" \
+  -H 'Content-Type: application/json' \
+  -d "{\"mode\":\"merge\",\"data\":$(cat backup.json)}"
+# 14. push token registration (APNs/FCM delivery is deployment-side)
+curl -s -X POST "http://127.0.0.1:8788/v1/push/register" \
+  -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token","bundleId":"com.example.myfriend"}'
+curl -s -X DELETE "http://127.0.0.1:8788/v1/push/register" \
+  -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token"}'
 ```
+
+### CRUD, backup and push (M3–M6 server side)
+
+The routes in the table above follow the same token/rate-limit/1 MiB/error-body rules as the rest
+of `/v1`. All writes go through the single `FileStore` lock, so a read-modify-write update (for
+example merging fields into one persona) cannot lose a concurrent request's field. Errors are
+`404 not_found` for unknown ids, `400 missing_field` / `invalid_argument` / `invalid_json` for bad
+input, `409 unsupported_backup_version` when an import is newer than v5, and `405
+method_not_allowed` for a known path with the wrong verb.
+
+**Personas, memories and presets.** These endpoints accept the client field names directly.
+- `POST /v1/personas`: no/`null` `id` creates a new persona (server-generated id); a non-null `id`
+  updates that existing persona and is `404` when it does not exist. Core fields (`name`,
+  `nameEn`, `description`, `avatarUrl`, `isDefault`, `activityJson`) are typed; **every other key**
+  (`worldJson`, `speechStyleJson`, `traits`, `likes`, `behaviors`, `backstory`, `quirks`,
+  `translationJson`, `translationLang`, `personaCardJson`, unknown future fields) is stored and
+  returned as raw JSON. Missing fields on update keep their old value. Setting `isDefault:true`
+  clears the other personas' default flag.
+- `DELETE /v1/personas/{id}` removes the persona's sessions, block files/messages, memories,
+  activity (stored on the persona row), proactive counters, mood and presence. `media/` is left
+  alone — the client owns media GC (contract §3.6).
+- Memories live in `memories.json`; `since` filters on `updatedAt > since`, `limit` is 1–500
+  (default 200). `tags` is a JSON string array on the wire (the client database stores it as a
+  JSON string, but the HTTP/backup contract uses an array).
+- Presets live in `presets.json`. They carry `worldJson` / `speechStyleJson` and keep unknown
+  fields verbatim.
+- Settings are merged through a whitelist and filtered on every read/export. There is **no API
+  key route**: `apiKey`, `apiKeys`, `secrets` and friends are ignored by the write path and can
+  never appear in a response or backup.
+
+**Backup v5.** `GET /v1/backup` returns:
+
+```json
+{
+  "format": "myfriend.backup",
+  "formatVersion": 5,
+  "appVersion": "0.12.0",
+  "exportedAt": 1700000000000,
+  "apiKeysOmitted": true,
+  "personas": [ … ],
+  "sessions": [ … ],
+  "messages": [ … ],
+  "memories": [ … ],
+  "presets": [ … ],
+  "settings": { … }
+}
+```
+
+`POST /v1/backup` takes `{"mode":"merge"|"replace","data":{…}}` (the `data` object is exactly the
+export shape). `merge` updates/inserts by id and keeps everything not mentioned; `replace` clears
+personas/sessions/messages/memories/presets/settings (and orphaned mood/presence/proactive rows)
+before importing. Validation of ids, references, uniqueness, roles and importance happens **before
+any mutation**, so a bad request leaves the data directory untouched. It is not a database
+transaction: a process kill between the multiple atomic file writes can leave a partially imported
+directory (see risks). Only `formatVersion == 5` is accepted; anything else is `409
+unsupported_backup_version`. `usage.json`, `api_configs.json`, `secrets.json`, `push_tokens.json`
+and media are not part of a backup and are preserved by `replace`.
+
+> Format-version note: the client's `BACKUP_FORMAT_VERSION` is **5** and the M3–M6 write-path task
+> asks for v5, so this implementation reads/writes v5. The design document's endpoint table still
+> says "v6"; if that becomes the intended contract, bump the client constant, this constant and the
+> accepted version together (never silently accept both and guess).
+
+**Push registration (M6 server half).** `POST /v1/push/register` stores
+`{platform,token,bundleId}` in `push_tokens.json` (idempotent on `platform+token`); `DELETE`
+removes it by body or query. `agentd` does **not** implement APNs or FCM itself. It exposes a
+pluggable interface:
+
+```kotlin
+fun interface PushSender {
+    fun send(tokens: List<PushRegistration>, message: PushMessage)
+}
+```
+
+The default is `NoopPushSender`, so without credentials the server simply persists the proactive
+message and clients catch up via `/v1/state`, `/v1/events` or SSE. When tokens exist,
+`ProactiveTicker` calls the injected sender after the proactive message is committed; a sender
+failure is logged and never rolls back the message or breaks `POST /v1/proactive/tick`. Production
+credentials and the actual APNs/FCM HTTP client are **deployment-side** — wire a real `PushSender`
+through `AgentdServices.pushSender`; nothing secret belongs in this repository.
 
 ### Server-side search, fetch and proactive tick (0.12.0)
 
@@ -700,7 +833,9 @@ Honest list; most of these are deliberate scope cuts, not oversights.
 - **No SQL, no transactions.** All state is JSON/JSONL with one process-wide write lock. Queries are
   bounded per block, but idempotency lookups build a per-session in-memory index by scanning blocks
   once (then maintained incrementally). Running two `agentd` processes against one data directory is
-  **not** supported — the lock is in-process only.
+  **not** supported — the lock is in-process only. Backup import validates everything before mutating
+  memory/disk, but the multi-file write itself is not an atomic transaction: a process kill in the
+  middle can leave a partially imported directory (re-import from the same backup to finish).
 - **No fsync / crash window.** Rename gives atomic replacement, and a killed process keeps
   consistent files, but a message line that was appended before `block_index.json`/`sessions.json`
   were rewritten can leave the block count off by one. Recovery: delete that session's
@@ -710,9 +845,16 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   user and assistant, `mood.changed`, `presence.changed` only). Deleting a message (`FileStore.deleteMessage`,
   used by tests) does not emit an event, so an incremental client will not learn about deletions
   until a full sync / a P3 delete-event contract.
-- **Unread only increases.** `unread` counts unread assistant messages, and `markSessionRead` exists
-  in the store and is tested, but there is no HTTP endpoint for it yet (P3), so clients cannot clear
-  the counter through the API in this phase.
+- **Read receipts are all-or-nothing per session.** `POST /v1/sessions/{id}/read` always sets
+  `unread = 0`; `upTo` only limits which messages get a `readAt` timestamp. This matches the
+  contract phrase `{upTo?} → unread=0`, but it means a client cannot represent "I read only the
+  older half and still have something new" through this endpoint.
+- **No push protocol, no background scheduler wiring.** `PushSender` is an interface and
+  `NoopPushSender` is the default; APNs/FCM credentials, HTTP/2 clients and retry policy are
+  deployment-side. Tokens are stored, but a proactive message is only pushed if a real sender was
+  injected; without one, clients catch up on the next foreground sync. The proactive timer itself is
+  still the existing debug tick path (`POST /v1/proactive/tick` / in-process scheduler), not a new
+  daemon.
 - **No media upload yet.** `media/` exists and attachments are persisted as opaque `mediaId`
   strings; `/v1/media/{id}` is a later phase.
 - **No LLM and no prompts.** `EchoReplyGenerator` echoes the user text plus one fixed Chinese
@@ -729,10 +871,10 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   next phase; the HTTP route is what the tests and `curl` use. De-duplication of the same `now` and
   the "just fired" overlay are **in-process** (`ProactiveTicker` → `ProactiveScheduler`), so they do
   not survive a restart and are not shared between processes (running two processes on one data
-  directory is unsupported anyway). Today's proactive count is not persisted (the store has no
-  `proactiveCountToday` / `lastProactiveAt` columns yet): each tick derives `0` from the store, and
-  what keeps the route from spamming is the engine's 10-minute cooldown plus the in-process overlay.
-  Persisting the count is a P3 follow-up.
+  directory is unsupported anyway). Today's proactive count and last-fired timestamp **are**
+  persisted in `proactive_state.json` (0.12.0); the remaining in-process pieces are only the
+  same-`now` dedupe and the "just fired" overlay. A production timer still needs to be wired to
+  `ProactiveTicker`; the HTTP route is the current debug/test entry point.
 - **Still plain HTTP.** The token/rate-limit docs above apply unchanged; TLS belongs to the reverse
   proxy.
 
@@ -756,6 +898,13 @@ mapping, "the key never appears in a response or a log", tag-stripped fetch + `U
 proactive tick (one `source=PROACTIVE` assistant message persisted + event emitted, same `now` fires
 once, `now` defaults to the server clock, `503` without a data directory), plus one real-socket case
 proving `AgentdServer` dispatches the new paths behind the same `--token`.
+`CrudRoutesTest` (23) covers sessions (`POST`, one-per-persona, read/upTo), persona create/update/
+delete with unknown-field preservation and cascade cleanup, memory/preset/settings CRUD, 400/404/405,
+concurrent updates of one persona (no lost fields), and restart persistence. `BackupApiTest` (12)
+covers v5 export contents/no secrets, replace/merge semantics, export→import→export equality,
+version-6 → 409, reference validation before any write, and restart. `PushRoutesTest` (8) covers
+registration/idempotency/unregistration/persistence, the `PushSender` invocation after a proactive
+message, no-token silence, and a throwing sender that must not break the tick.
 
 ## Errors
 
@@ -773,10 +922,12 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | 400 | `missing_field` | A required field is absent. |
 | 400 | `invalid_argument` | A field has the wrong type / can't be parsed. |
 | 400 | `unknown_tool` | `/v1/core/tool-args` got an unsupported tool (the tool name is **not** echoed back). |
+| 400 | `invalid_backup` | Backup export body failed validation (duplicate ids, missing persona/session references, bad role/importance…). No data was written. |
 | 401 | `unauthorized` | `--token` is set and the request has no/incorrect `Authorization: Bearer …`. |
 | 404 | `not_found` | Unknown route (the path is not echoed back). |
 | 405 | `method_not_allowed` | Known route with the wrong method. |
 | 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
+| 409 | `unsupported_backup_version` | `POST /v1/backup` received a `formatVersion` other than 5 (newer backups are refused instead of half-imported). |
 | 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
 | 413 | `content_too_large` | Declared or accumulated body exceeds 1 MiB. |
 | 429 | `rate_limited` | This source exceeded its token bucket; the response carries `Retry-After: <seconds>` (see “Rate limiting”). |
@@ -831,10 +982,11 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `--rate-burst`). A token over plain HTTP is still not a substitute for TLS, and `0.0.0.0`
   remains “trusted network / behind a proxy only”.
 - **No SQL/Room.** Since 0.12.0 it *does* persist server-authoritative state (personas, sessions,
-  block-paged messages, mood/presence, usage, API config metadata) as JSON/JSONL under `--data`, but
-  it still does not touch the clients' Room database, does not import/export backups and does not
-  store memories, thoughts or media files. Earlier versions only exposed deterministic pure
-  functions; see [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
+  block-paged messages, memories, presets, mood/presence, push tokens, usage, API config metadata) as
+  JSON/JSONL under `--data`, and expose v5 backup export/import. It still does not touch the clients'
+  Room database, migrate existing client data automatically, or store media files/thoughts. Earlier
+  versions only exposed deterministic pure functions; see
+  [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
 - No LLM calls: `POST /v1/sessions/{id}/messages` streams, but the reply comes from the injectable
   `EchoReplyGenerator` (no prompting, no model call, no tool loop yet).
 - Android does not start it as an embedded service; remote mode is a development build switch.
@@ -891,5 +1043,6 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
   `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 244 tests in total in 0.12.0 — the authoritative-mode suites above plus the
-`search/` (52) and `proactive/` (68) suites added in the same release.
+`:agentd:test` is 329 tests in total in 0.12.0 — the authoritative-mode suites above plus the
+`search/` (52) and `proactive/` (68) suites added in the same release. The 43 new tests for
+M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`.

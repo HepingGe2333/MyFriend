@@ -92,6 +92,31 @@ class MessageBlockWriter @Inject constructor(
         insertAtAnchor(message, message.blockIndex)
     }
 
+    /**
+     * 服务端同步：写入**服务端已经分好块**的消息，并按块内实际行重算元数据。
+     *
+     * 与 [append] 的区别：服务端模式下块编号由服务端决定（权威），不能再按本地
+     * `planAppend` 重新分配——否则两边对「第几块」的理解会分叉，聊天页前翻会翻错。
+     * 这里只做「按给定编号落库 + 让 `message_blocks` 与 `messages` 自洽」。
+     *
+     * 幂等：`insertAll` 是 REPLACE，同一条消息重复同步只是重写一行；块元数据每次按现有行重算，
+     * 因此「同步同一快照两次」不会把块越堆越长。
+     *
+     * @param messages 同一块内的消息（每条自带的 `blockIndex` 会被 [blockIndex] 覆盖）
+     */
+    suspend fun applyServerBlock(
+        sessionId: String,
+        blockIndex: Int,
+        messages: List<MessageEntity>
+    ) = inTransaction {
+        if (messages.isEmpty()) return@inTransaction Unit
+        messageDao.insertAll(messages.map { it.copy(sessionId = sessionId, blockIndex = blockIndex) })
+        // 服务端的块可能一次补齐多条（首次同步/前翻一页），所以这里不能用「追加」规则，
+        // 而是按块内现有行重算首尾与条数（refreshBlock 对增长/缩短都成立）。
+        refreshBlock(sessionId, blockIndex)
+        Unit
+    }
+
     /** 删除一条消息（规范 §2 Delete）：块会变短；空了就删掉块行并留下编号空洞。 */
     suspend fun deleteMessage(message: MessageEntity) = inTransaction {
         messageDao.deleteById(message.id)

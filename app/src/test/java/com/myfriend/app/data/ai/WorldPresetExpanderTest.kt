@@ -1,5 +1,6 @@
 package com.myfriend.app.data.ai
 
+import com.myfriend.app.domain.WorldPreset
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,7 +18,14 @@ class WorldPresetExpanderTest {
     private class FakeLlm(private val reply: String?) : JsonLlmClient {
         var lastSystem: String? = null
         var lastUser: String? = null
-        override suspend fun completeJson(system: String, user: String, configId: String?): String? {
+        override suspend fun completeJson(
+            system: String,
+            user: String,
+            configId: String?,
+            kind: String,
+            temperature: Double,
+            maxOutputTokens: Int
+        ): String? {
             lastSystem = system
             lastUser = user
             return reply
@@ -70,19 +78,32 @@ class WorldPresetExpanderTest {
     }
 
     @Test
-    fun `坏 JSON 走兜底 worldName 等于角色名`() {
+    fun `坏 JSON 走兜底 worldName 等于角色名 简介进 notes`() {
         val result = expand("坏掉的结果")
         assertEquals(WorldPresetSource.FALLBACK, result.source)
         assertEquals("林深", result.preset.worldName)
         assertTrue(result.preset.schedule.isEmpty())
         assertTrue(result.isFallback)
+        // v14：模型没帮上忙时，用户写的角色简介原文进「其他背景」，不要被扔掉。
+        assertEquals(brief, result.preset.notes)
+        assertTrue(result.preset.renderForPrompt().contains("其他背景："))
     }
 
     @Test
-    fun `没有配置走兜底`() {
+    fun `没有配置走兜底 简介仍然进 notes`() {
         val result = expand(null)
         assertEquals(WorldPresetSource.FALLBACK, result.source)
         assertEquals("林深", result.preset.worldName)
+        assertEquals(brief, result.preset.notes)
+    }
+
+    @Test
+    fun `兜底把超长简介截到 1200 字`() {
+        val longBrief = "设定".repeat(2000)
+        val result = runBlocking {
+            WorldPresetExpander(FakeLlm(null)).expand(brief = longBrief, name = "林深")
+        }
+        assertEquals(WorldPreset.MAX_NOTES_CHARS, result.preset.notes.length)
     }
 
     @Test

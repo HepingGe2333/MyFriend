@@ -173,7 +173,10 @@ final class SchemaMigrationTests: XCTestCase {
     func testFreshDatabaseCreatesSupplementaryTables() throws {
         let stores = try DatabaseStores.open(path: databasePath)
         let names = try stores.database.tableNames()
-        XCTAssertEqual(Schema.supplementaryTables, ["agent_ticks", "memory_echoes"])
+        XCTAssertEqual(
+            Schema.supplementaryTables,
+            ["agent_ticks", "memory_echoes", "server_sync_state", "server_outbox"]
+        )
         for table in Schema.supplementaryTables {
             XCTAssertTrue(names.contains(table), "缺表：\(table)")
         }
@@ -182,6 +185,9 @@ final class SchemaMigrationTests: XCTestCase {
         XCTAssertTrue(indexes.contains("index_agent_ticks_at"))
         XCTAssertTrue(indexes.contains("index_memory_echoes_personaId_drawer"))
         XCTAssertTrue(indexes.contains("index_memory_echoes_createdAt"))
+        // 服务端模式的两张客户端侧表（游标 / 待发队列）连同索引一起建出来。
+        XCTAssertTrue(indexes.contains("index_server_outbox_sessionId"))
+        XCTAssertTrue(indexes.contains("index_server_outbox_createdAt"))
     }
 
     /// 老库：v10 但缺这两张表（0.9.1 之前建的库）→ 打开一次就自动补建，`user_version` 不变。
@@ -664,6 +670,90 @@ final class SchemaMigrationTests: XCTestCase {
         for column in Schema.personaGuidanceColumns {
             XCTAssertTrue(columns.contains(column.name))
         }
+    }
+
+
+    // MARK: - v13 → v14：提示词翻译缓存两列（`spec/persona-translation/README.md` §4）
+
+    /// 造一个「v13 的库」：把 v14 加的翻译两列拆掉、灌一份带世界的人格，版本号记回 13。
+    private func seedV13Database() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        for column in Schema.personaTranslationColumns {
+            try database.execute("ALTER TABLE personas DROP COLUMN \(column.name)")
+        }
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt, worldJson, speechStyleJson)
+            VALUES ('\(personaId)', '林深', 'v13 的人格', 7, '你叫林深。', '朋友', 3,
+                    1, 1, \(now), '{"worldName":"临港新城"}', '{"tone":"简短直接"}')
+            """)
+        try database.setUserVersion(13)
+        stores = nil
+        database.close()
+    }
+
+    /// v13 → v14：翻译两列补齐、数据一条不丢、老数据默认 NULL（= 还没翻译过）。
+    func testV13ToV14AddsTranslationColumnsWithoutLosingData() throws {
+        try seedV13Database()
+        let stores = try DatabaseStores.open(path: databasePath)
+
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
+        let columns = try columnNames(stores.database, table: "personas")
+        for column in Schema.personaTranslationColumns {
+            XCTAssertTrue(columns.contains(column.name), "缺列：personas.\(column.name)")
+        }
+        let persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        XCTAssertEqual(persona.name, "林深")
+        XCTAssertEqual(persona.version, 3)
+        XCTAssertEqual(WorldPreset.decode(persona.worldJson)?.worldName, "临港新城")
+        XCTAssertNil(persona.translationJson, "老数据没有缓存是正确状态，不回填空 JSON")
+        XCTAssertNil(persona.translationLang)
+
+        // 两列可写、可被「只写缓存」的方法单独更新（不碰用户正在编辑的其他列）。
+        let source = PersonaTranslatableSource(persona: persona)
+        let translation = PersonaTranslation(
+            lang: "en", translatedAt: now,
+            sourceHash: PersonaTranslation.sourceHash(for: source),
+            persona: .init(name: "Lin Shen"),
+            world: WorldPreset(worldName: "Lingang New City")
+        )
+        let json = try XCTUnwrap(translation.jsonString())
+        XCTAssertTrue(try stores.personas.updateTranslation(id: personaId, json: json, lang: "en"))
+        stores.database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        let reloaded = try XCTUnwrap(try reopened.personas.byId(personaId))
+        XCTAssertEqual(reloaded.translationLang, "en")
+        XCTAssertEqual(PersonaTranslation.decode(reloaded.translationJson)?.persona.name, "Lin Shen")
+        XCTAssertEqual(reloaded.name, "林深", "原文不受影响")
+        // 幂等：二次打开不会重复加列。
+        XCTAssertEqual(
+            try reopened.database.scalarInt64(
+                "SELECT COUNT(*) FROM pragma_table_info('personas') WHERE name = 'translationJson'", []
+            ),
+            1
+        )
+    }
+
+    /// 空库 v13 也要能升上来。
+    func testV13EmptyDatabaseMigratesToV14() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        for column in Schema.personaTranslationColumns {
+            try database.execute("ALTER TABLE personas DROP COLUMN \(column.name)")
+        }
+        try database.setUserVersion(13)
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        let columns = try columnNames(reopened.database, table: "personas")
+        for column in Schema.personaTranslationColumns {
+            XCTAssertTrue(columns.contains(column.name))
+        }
+        XCTAssertEqual(try reopened.personas.count(), 0)
     }
 
     // MARK: - 小工具

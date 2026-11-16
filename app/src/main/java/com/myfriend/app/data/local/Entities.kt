@@ -89,7 +89,19 @@ data class PersonaEntity(
     /** 话风 JSON（[com.myfriend.app.domain.SpeechStyleCodec]），为空表示没学过话风。 */
     val speechStyleJson: String? = null,
     /** 他此刻在做什么（[com.myfriend.app.domain.PersonaActivityCodec]）；到点自动失效。 */
-    val activityJson: String? = null
+    val activityJson: String? = null,
+
+    // ---- 0.12 人格提示词翻译缓存（schema v14） --------------------------------
+    /**
+     * 翻译后的人设/世界 JSON（[com.myfriend.app.domain.PersonaTranslationCodec]），
+     * 含 `lang` / `translatedAt` / `sourceHash`。为空表示还没翻译过。
+     *
+     * 只是缓存：源字段一变（`sourceHash` 对不上）或目标语言变了就重译；
+     * 备份恢复时如果 `lang` 与当前不符，直接忽略它。
+     */
+    val translationJson: String? = null,
+    /** 上面那份缓存对应的语言（BCP-47：`zh` / `en` …）；为空表示没有缓存。 */
+    val translationLang: String? = null
 )
 
 @Entity(

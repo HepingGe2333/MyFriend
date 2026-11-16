@@ -287,6 +287,20 @@ class PersonaRepository @Inject constructor(
         )
     }
 
+    /**
+     * 写入 / 清空翻译缓存（`spec/persona-translation/README.md` §4，schema v14）。
+     *
+     * 与 `save` 分开：`save` 是用户改人格，这条是后台按需翻译。它不该产生新版本、
+     * 不该动 `updatedAt`，也不该触发任何通知。
+     */
+    suspend fun updateTranslationCache(personaId: String, translationJson: String?, lang: String?) {
+        val json = translationJson?.takeIf { it.isNotBlank() }
+        personaDao.setTranslation(personaId, json, json?.let { lang?.takeIf(String::isNotBlank) })
+    }
+
+    /** 「重新翻译」：先清掉旧缓存，再让协调器立刻译一次。 */
+    suspend fun clearTranslationCache(personaId: String) = personaDao.setTranslation(personaId, null, null)
+
     suspend fun updateAvatar(personaId: String, uri: String?): Result<Unit> = runCatching {
         val persona = personaDao.getById(personaId) ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
         val now = System.currentTimeMillis()

@@ -110,11 +110,23 @@ public struct WorldRelationship: Equatable, Sendable {
     public var relation: String
     /// 一句细节（「每周三晚打电话」）。
     public var note: String
+    /// 亲密度 1–5（规范 §2.3 的「可选亲密度」）；nil = 不填。
+    ///
+    /// 与 Android `WorldRelationship.intimacy` 同一形状、同一个 key：不填就不写进 JSON，
+    /// 老数据/另一端的宽容解析都读不出差别。
+    public var intimacy: Int?
 
-    public init(name: String = "", relation: String = "", note: String = "") {
+    public init(name: String = "", relation: String = "", note: String = "", intimacy: Int? = nil) {
         self.name = name
         self.relation = relation
         self.note = note
+        self.intimacy = WorldRelationship.clampedIntimacy(intimacy)
+    }
+
+    /// 只认 1–5；越界当成没填（不把 0 或 9 写进提示词）。
+    public static func clampedIntimacy(_ raw: Int?) -> Int? {
+        guard let raw, (1...5).contains(raw) else { return nil }
+        return raw
     }
 
     public var isEmpty: Bool {
@@ -127,8 +139,9 @@ public struct WorldRelationship: Equatable, Sendable {
         let rel = relation.trimmingCharacters(in: .whitespacesAndNewlines)
         if !rel.isEmpty, rel != name { head += head.isEmpty ? rel : "（\(rel)）" }
         let detail = note.trimmingCharacters(in: .whitespacesAndNewlines)
-        if detail.isEmpty { return head }
-        return head.isEmpty ? detail : "\(head)：\(detail)"
+        let body = detail.isEmpty ? head : (head.isEmpty ? detail : "\(head)：\(detail)")
+        guard let intimacy else { return body }
+        return body.isEmpty ? "亲密度 \(intimacy)/5" : "\(body)，亲密度 \(intimacy)/5"
     }
 }
 
@@ -139,6 +152,8 @@ public struct WorldPreset: Equatable, Sendable {
 
     /// 描述的字数上限：再长就不像「处境」，像小说大纲了。
     public static let descriptionMax = 600
+    /// 「其他背景（notes）」的字数上限（规范 §2.1）：渲染时截断并提示，不静默丢。
+    public static let maxNotesChars = 1200
     /// 日程最多几条（多到十几条时模型只会挑一条念，不如少给几条真的）。
     public static let maxScheduleItems = 12
     public static let maxRelationships = 8
@@ -150,6 +165,10 @@ public struct WorldPreset: Equatable, Sendable {
     public var schedule: [WorldScheduleItem]
     public var relationships: [WorldRelationship]
     public var obligations: [String]
+    /// 兜底自由文本（规范 §2.1）：结构化字段表达不了的世界观（历史、规矩、行业细节、忌讳）。
+    ///
+    /// 渲染成 `其他背景：…` 附在世界段末尾，最多 `maxNotesChars` 字；超出截断（界面另有字数提示）。
+    public var notes: String
 
     public init(
         worldName: String = "",
@@ -157,7 +176,8 @@ public struct WorldPreset: Equatable, Sendable {
         description: String = "",
         schedule: [WorldScheduleItem] = [],
         relationships: [WorldRelationship] = [],
-        obligations: [String] = []
+        obligations: [String] = [],
+        notes: String = ""
     ) {
         self.worldName = Self.trim(worldName)
         self.era = Self.trim(era)
@@ -169,12 +189,16 @@ public struct WorldPreset: Equatable, Sendable {
         self.obligations = Array(
             PersonaTags.normalize(obligations, limit: Self.maxObligations)
         )
+        let text = Self.trim(notes)
+        self.notes = text.count > Self.maxNotesChars
+            ? String(text.prefix(Self.maxNotesChars)) : text
     }
 
-    /// 空 = 没有世界预设（退回纯人设，提示词里不出现「你所在的世界」这一节）。
+    /// 空 = 没有世界预设（退回纯人设；提示词里用 `worldEmpty` 那一句说明"没有设定"）。
     public var isEmpty: Bool {
         worldName.isEmpty && era.isEmpty && description.isEmpty
             && schedule.isEmpty && relationships.isEmpty && obligations.isEmpty
+            && notes.isEmpty
     }
 
     // MARK: - 解析
@@ -207,7 +231,10 @@ public struct WorldPreset: Equatable, Sendable {
                 WorldRelationship(
                     name: PromptGuidanceJSON.string(item, "name", limit: 40) ?? "",
                     relation: PromptGuidanceJSON.string(item, "relation", limit: 40) ?? "",
-                    note: PromptGuidanceJSON.string(item, "note", limit: 160) ?? ""
+                    note: PromptGuidanceJSON.string(item, "note", limit: 160) ?? "",
+                    intimacy: WorldRelationship.clampedIntimacy(
+                        PromptGuidanceJSON.int(item, "intimacy")
+                    )
                 )
             }
         return WorldPreset(
@@ -216,11 +243,15 @@ public struct WorldPreset: Equatable, Sendable {
             description: PromptGuidanceJSON.string(object, "description", limit: descriptionMax) ?? "",
             schedule: schedule,
             relationships: relationships,
-            obligations: PromptGuidanceJSON.stringList(object, "obligations", limit: maxObligations)
+            obligations: PromptGuidanceJSON.stringList(object, "obligations", limit: maxObligations),
+            notes: PromptGuidanceJSON.string(object, "notes", limit: maxNotesChars) ?? ""
         )
     }
 
     /// 落库用的 JSON（键顺序固定：写进备份后两端 diff 只出现真正的变化）。
+    ///
+    /// `notes` 只在真有内容时写（空串不落一个空键）；`intimacy` 同理（nil 不写）。
+    /// 备份 v5 的 `worldJson` 原样带走整份字符串，所以 notes **不需要升备份版本**。
     public func jsonString() -> String? {
         guard !isEmpty else { return nil }
         var object: [String: Any] = [
@@ -230,10 +261,15 @@ public struct WorldPreset: Equatable, Sendable {
             "schedule": schedule.map { item in
                 ["day": item.day, "start": item.start, "end": item.end, "activity": item.activity]
             },
-            "relationships": relationships.map { person in
-                ["name": person.name, "relation": person.relation, "note": person.note]
+            "relationships": relationships.map { person -> [String: Any] in
+                var entry: [String: Any] = [
+                    "name": person.name, "relation": person.relation, "note": person.note
+                ]
+                if let intimacy = person.intimacy { entry["intimacy"] = intimacy }
+                return entry
             },
-            "obligations": obligations
+            "obligations": obligations,
+            "notes": notes
         ]
         // 空数组照样写（规范 §2.1：所有字段可空数组）；只有整份为空才返回 nil。
         object = object.filter { !($0.value is String && ($0.value as? String ?? "").isEmpty) }
@@ -255,26 +291,33 @@ public struct WorldPreset: Equatable, Sendable {
         return schedule.first { $0.matches(weekday: weekday) && $0.contains(minuteOfDay: minuteOfDay) }
     }
 
-    /// 规范 §6.3 的「# 你所在的世界」那一段。空预设返回空串（整节不出现）。
+    /// 「# 你所在的世界」那一段（文案来自规范脚手架 `scaffold.json`）。
+    ///
+    /// 空预设返回空串（由调用方改用 `worldEmpty` 那一句）：不能让提示词里出现只有标题的空段落。
+    /// 义务沿用 Android 的 `- 必须：` 形状，`notes` 用 `其他背景：` 形状（规范 §2.1/§6.3）。
     public func renderForPrompt() -> String {
         guard !isEmpty else { return "" }
-        var lines: [String] = ["# 你所在的世界"]
-        // 中文句子之间不加空格：`era` 与「你在 X」各自以句号收尾，直接连起来就是一段话。
-        var lead: [String] = []
-        if !era.isEmpty { lead.append(era.hasSuffix("。") ? era : era + "。") }
-        if !worldName.isEmpty { lead.append("你在\(worldName)。") }
-        if !description.isEmpty { lead.append(description) }
-        if !lead.isEmpty { lines.append(lead.joined()) }
+        var lines: [String] = [PersonaPromptScaffold.worldSection]
+        // world_name 是规范里的一行：非空时用模板渲染，为空时整行省略（不自己拼「你所在的地方」）。
+        let nameLine = PersonaPromptScaffold.worldNameLine(worldName)
+        if !nameLine.isEmpty { lines.append(nameLine) }
+        let intro = PersonaPromptScaffold.worldIntroLine(era: era, description: description)
+        if !intro.isEmpty { lines.append(intro) }
         for item in schedule {
             lines.append("- " + item.renderedLine)
         }
         for person in relationships {
             lines.append("- " + person.renderedLine)
         }
-        if !obligations.isEmpty {
-            lines.append("- 你要承担的事：" + obligations.joined(separator: "；"))
+        for obligation in obligations {
+            lines.append("- 必须：" + obligation)
         }
-        lines.append("这些是你的生活背景：**只在跟话题相关时带一句**，不要主动汇报日程，也不要念设定。")
+        if !notes.isEmpty {
+            lines.append(PersonaPromptScaffold.fill(
+                PersonaPromptScaffold.worldNotes, ["notes": notes]
+            ))
+        }
+        lines.append(PersonaPromptScaffold.worldHint)
         return lines.joined(separator: "\n")
     }
 
@@ -352,8 +395,17 @@ public struct WorldPreset: Equatable, Sendable {
                 relation = String(name[name.index(after: open)..<close]).trimmingCharacters(in: .whitespaces)
                 name = String(name[name.startIndex..<open]).trimmingCharacters(in: .whitespaces)
             }
+            // 亲密度是行尾的可选后缀「，亲密度 4/5」（`renderedLine` 写出来的形状），读回来还给它。
+            var intimacy: Int?
+            if let range = note.range(of: #"[，,]\s*亲密度\s*([1-5])\s*/\s*5\s*$"#, options: .regularExpression) {
+                let matched = String(note[range])
+                let digits = matched.filter { $0.isNumber }
+                intimacy = Int(String(digits.prefix(1)))
+                note = String(note[note.startIndex..<range.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             if name.isEmpty && note.isEmpty { continue }
-            items.append(WorldRelationship(name: name, relation: relation, note: note))
+            items.append(WorldRelationship(name: name, relation: relation, note: note, intimacy: intimacy))
             if items.count >= maxRelationships { break }
         }
         return items

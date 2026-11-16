@@ -17,13 +17,13 @@ import javax.inject.Singleton
  * Ciphertext format: Base64(IV || AES-GCM ciphertext).
  */
 @Singleton
-class SecretCipher @Inject constructor() {
+class SecretCipher @Inject constructor() : StringCipher {
 
     private val keyStore: KeyStore by lazy {
         KeyStore.getInstance(KEYSTORE).apply { load(null) }
     }
 
-    fun encrypt(plainText: String): String {
+    override fun encrypt(plainText: String): String {
         if (plainText.isEmpty()) return ""
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
@@ -32,7 +32,7 @@ class SecretCipher @Inject constructor() {
         return Base64.encodeToString(combined, Base64.NO_WRAP)
     }
 
-    fun decrypt(encoded: String?): String? {
+    override fun decrypt(encoded: String?): String? {
         if (encoded.isNullOrBlank()) return null
         return runCatching {
             val combined = Base64.decode(encoded, Base64.NO_WRAP)

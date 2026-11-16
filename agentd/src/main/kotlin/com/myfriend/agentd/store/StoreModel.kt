@@ -31,6 +31,25 @@ import com.myfriend.app.core.json.JsonValue
  * 写在 `agentd/README.md` 的「服务端权威模式」一节里。
  */
 
+/**
+ * 不进入任何响应/备份的字段名（客户端 schema 里没有这些；有人手工塞进来也不能被带走）。
+ *
+ * 未知字段要保留，但「未知」不等于「可以夹带密钥」：`apiKey` / `*Cipher` /
+ * `authorization` 这类名字在导出时一律丢弃。真正的服务端密钥本来只在 `secrets.json`。
+ */
+internal fun isSecretLikeFieldName(key: String): Boolean {
+    val lower = key.lowercase()
+    return lower == "authorization" ||
+        lower == "apikey" ||
+        lower == "api_key" ||
+        lower == "apikeys" ||
+        lower == "secret" ||
+        lower == "secrets" ||
+        lower.contains("apikey") ||
+        lower.endsWith("cipher") ||
+        lower.contains("secret")
+}
+
 // ---------------------------------------------------------------------- 角色 / 来源
 
 object MessageRole {
@@ -94,20 +113,57 @@ data class Persona(
     val avatarUrl: String?,
     val isDefault: Boolean,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /**
+     * 他此刻在做什么（`spec/persona-guidance/README.md` §4 的「占用时间」）；`null` = 没设过。
+     *
+     * 存的是**原样 JSON 文本**（结构同客户端 `PersonaActivity`：`kind` / `activity` /
+     * `until` / `availability`），与客户端 `personas.activityJson` 同名字段一一对应，
+     * 这样备份/M3 上报都不必再做一层映射。为什么服务端不存结构化对象：
+     * 过期判断只需要 `until`，读的人（主动门禁、`GET /v1/state`）各取所需，
+     * 而存原样文本能让「客户端写什么、服务端就回什么」，字段演进不必同时改两边的模型。
+     *
+     * 到点自动失效**不靠定时任务**：读取方用 `ActivityState.availabilityAt(now)` 把过期的
+     * 活动当成 `FREE`（`README.md` §4「到 until 自动失效（读取时判断）」）。
+     */
+    val activityJson: String? = null,
+    /**
+     * 客户端 schema 里、服务端没有专门建模的字段（`worldJson` / `speechStyleJson` /
+     * `traits` / `likes` / `behaviors` / `backstory` / `quirks` / `translationJson` /
+     * `translationLang` / `personaCardJson` …）。
+     *
+     * HTTP 写路径按字段名原样收下、原样回给客户端：服务端不需要理解每一格的语义，但
+     * **不能丢**（客户端下一次同步/备份依赖它们）。核心列（id/name/…）不在这里，
+     * 避免和上面的 `copy` 产生两份真相。
+     */
+    val extraFields: Map<String, JsonValue> = emptyMap()
 ) {
-    fun toJson(): JsonValue.Obj = obj(
-        "id" to str(id),
-        "name" to str(name),
-        "nameEn" to str(nameEn),
-        "description" to str(description),
-        "avatarUrl" to nullableStr(avatarUrl),
-        "isDefault" to StoreJson.bool(isDefault),
-        "createdAt" to num(createdAt),
-        "updatedAt" to num(updatedAt)
-    )
+    fun toJson(): JsonValue.Obj {
+        val fields = linkedMapOf(
+            "id" to str(id),
+            "name" to str(name),
+            "nameEn" to str(nameEn),
+            "description" to str(description),
+            "avatarUrl" to nullableStr(avatarUrl),
+            "isDefault" to StoreJson.bool(isDefault),
+            "createdAt" to num(createdAt),
+            "updatedAt" to num(updatedAt),
+            "activityJson" to nullableStr(activityJson)
+        )
+        // 保留客户端字段的原始 JSON 形状，未知字段也一样（“未知字段保留原文”），
+        // 但密钥形状的字段不出口（见 isSecretLikeFieldName）。
+        for ((key, value) in extraFields) {
+            if (key !in RESERVED_KEYS && !isSecretLikeFieldName(key)) fields[key] = value
+        }
+        return JsonValue.Obj(fields)
+    }
 
     companion object {
+        val RESERVED_KEYS: Set<String> = setOf(
+            "id", "name", "nameEn", "description", "avatarUrl", "isDefault",
+            "createdAt", "updatedAt", "activityJson"
+        )
+
         fun fromJson(value: JsonValue.Obj, where: String): Persona = Persona(
             id = value.reqString("id", where),
             name = value.reqString("name", where),
@@ -116,7 +172,10 @@ data class Persona(
             avatarUrl = value.optString("avatarUrl", where),
             isDefault = value.fields.containsKey("isDefault") && value.reqBool("isDefault", where),
             createdAt = value.reqLong("createdAt", where),
-            updatedAt = value.reqLong("updatedAt", where)
+            updatedAt = value.reqLong("updatedAt", where),
+            // 可加字段：老数据目录没有这一格（null），不需要版本号 +1。
+            activityJson = value.optString("activityJson", where)?.takeIf { it.isNotBlank() },
+            extraFields = value.fields.filterKeys { it !in RESERVED_KEYS }
         )
     }
 }
@@ -160,6 +219,165 @@ data class ProactiveState(
         )
     }
 }
+
+// ---------------------------------------------------------------------- memories.json
+
+/**
+ * 一条长期记忆（`memories.json`）。
+ *
+ * 字段名与客户端 `memories` / 备份 v5 的 `memories[]` 同义。服务端这一阶段只做
+ * 「CRUD + 备份搬运」，不做抽取/衰减/整理——那些仍属于后续阶段。
+ *
+ * `tags` 在客户端数据库里是 JSON 字符串，但 HTTP/备份契约用数组；服务端内部统一成
+ * `List<String>`，读写时两边都兼容（见 `FileStore` 的导入解析）。
+ */
+data class Memory(
+    val id: String,
+    val personaId: String,
+    val content: String,
+    val importance: Int = 50,
+    val tags: List<String> = emptyList(),
+    val createdAt: Long,
+    val updatedAt: Long
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "id" to str(id),
+        "personaId" to str(personaId),
+        "content" to str(content),
+        "importance" to num(importance),
+        "tags" to strArr(tags),
+        "createdAt" to num(createdAt),
+        "updatedAt" to num(updatedAt)
+    )
+
+    companion object {
+        fun fromJson(value: JsonValue.Obj, where: String): Memory = Memory(
+            id = value.reqString("id", where),
+            personaId = value.reqString("personaId", where),
+            content = value.reqString("content", where),
+            importance = value.optInt("importance", where) ?: 50,
+            tags = value.stringList("tags", where),
+            createdAt = value.reqLong("createdAt", where),
+            updatedAt = value.reqLong("updatedAt", where)
+        )
+    }
+}
+
+// ---------------------------------------------------------------------- presets.json
+
+/**
+ * 人格预设（`presets.json`）。客户端 `persona_presets` 的跨端形态。
+ *
+ * `worldJson` / `speechStyleJson` 按原始文本存（与人格上的同名字段一致）；
+ * 未知字段走 [extraFields] 原样保留。
+ */
+data class Preset(
+    val id: String,
+    val name: String,
+    val description: String = "",
+    val prompt: String = "",
+    val category: String = "",
+    val avatarUri: String? = null,
+    val avatarSeed: Int = 0,
+    val createdAt: Long,
+    val updatedAt: Long,
+    val worldJson: String? = null,
+    val speechStyleJson: String? = null,
+    val extraFields: Map<String, JsonValue> = emptyMap()
+) {
+    fun toJson(): JsonValue.Obj {
+        val fields = linkedMapOf(
+            "id" to str(id),
+            "name" to str(name),
+            "description" to str(description),
+            "prompt" to str(prompt),
+            "category" to str(category),
+            "avatarUri" to nullableStr(avatarUri),
+            "avatarSeed" to num(avatarSeed),
+            "createdAt" to num(createdAt),
+            "updatedAt" to num(updatedAt),
+            "worldJson" to nullableStr(worldJson),
+            "speechStyleJson" to nullableStr(speechStyleJson)
+        )
+        for ((key, value) in extraFields) {
+            if (key !in RESERVED_KEYS && !isSecretLikeFieldName(key)) fields[key] = value
+        }
+        return JsonValue.Obj(fields)
+    }
+
+    companion object {
+        val RESERVED_KEYS: Set<String> = setOf(
+            "id", "name", "description", "prompt", "category", "avatarUri", "avatarSeed",
+            "createdAt", "updatedAt", "worldJson", "speechStyleJson"
+        )
+
+        fun fromJson(value: JsonValue.Obj, where: String): Preset = Preset(
+            id = value.reqString("id", where),
+            name = value.reqString("name", where),
+            description = value.optString("description", where) ?: "",
+            prompt = value.optString("prompt", where) ?: "",
+            category = value.optString("category", where) ?: "",
+            avatarUri = value.optString("avatarUri", where),
+            avatarSeed = value.optInt("avatarSeed", where) ?: 0,
+            createdAt = value.reqLong("createdAt", where),
+            updatedAt = value.reqLong("updatedAt", where),
+            worldJson = value.optString("worldJson", where)?.takeIf { it.isNotBlank() },
+            speechStyleJson = value.optString("speechStyleJson", where)?.takeIf { it.isNotBlank() },
+            extraFields = value.fields.filterKeys { it !in RESERVED_KEYS }
+        )
+    }
+}
+
+// ---------------------------------------------------------------------- push_tokens.json
+
+/** 一条推送注册（服务端只存 token，真正的 APNs/FCM 发送由部署侧实现 [PushSender]）。 */
+data class PushRegistration(
+    val platform: String,
+    val token: String,
+    val bundleId: String?,
+    val createdAt: Long,
+    val updatedAt: Long
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "platform" to str(platform),
+        "token" to str(token),
+        "bundleId" to nullableStr(bundleId),
+        "createdAt" to num(createdAt),
+        "updatedAt" to num(updatedAt)
+    )
+
+    companion object {
+        const val PLATFORM_IOS = "ios"
+        const val PLATFORM_ANDROID = "android"
+        val PLATFORMS = listOf(PLATFORM_IOS, PLATFORM_ANDROID)
+
+        fun fromJson(value: JsonValue.Obj, where: String): PushRegistration = PushRegistration(
+            platform = value.reqString("platform", where),
+            token = value.reqString("token", where),
+            bundleId = value.optString("bundleId", where),
+            createdAt = value.reqLong("createdAt", where),
+            updatedAt = value.reqLong("updatedAt", where)
+        )
+    }
+}
+
+/** 备份导入的结果计数（路由回给客户端；方便确认 merge/replace 实际写了什么）。 */
+data class BackupImportResult(
+    val mode: String,
+    val personas: Int,
+    val sessions: Int,
+    val messages: Int,
+    val memories: Int,
+    val presets: Int,
+    val settings: Boolean
+)
+
+/** 备份里的 version 不受支持（路由翻成 409）。 */
+class UnsupportedBackupVersionException(val version: Int) :
+    IllegalArgumentException("备份格式 v$version 不受支持（本服务只读 v5）")
+
+/** 备份内容结构/引用不合法（路由翻成 400；导入前校验，不写盘）。 */
+class BackupValidationException(message: String) : IllegalArgumentException(message)
 
 // ---------------------------------------------------------------------- sessions.json
 
@@ -461,3 +679,22 @@ data class EventWaitResult(
     val events: List<StoredEvent>,
     val cursor: Long
 )
+
+/** `POST /v1/sessions/{id}/read` 的存储结果。 */
+data class SessionReadResult(
+    val marked: Int,
+    val readAt: Long,
+    val session: Session
+)
+
+/** 人格不存在（路由翻成 404，不是 500）。 */
+class StorePersonaNotFoundException(val personaId: String) :
+    NoSuchElementException("没有这个人格：$personaId")
+
+/** 记忆不存在 / 不属于 URL 里的人格（路由翻成 404）。 */
+class StoreMemoryNotFoundException(val memoryId: String) :
+    NoSuchElementException("没有这条记忆：$memoryId")
+
+/** 预设不存在（路由翻成 404）。 */
+class StorePresetNotFoundException(val presetId: String) :
+    NoSuchElementException("没有这个预设：$presetId")

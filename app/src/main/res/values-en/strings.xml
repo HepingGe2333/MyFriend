@@ -822,18 +822,50 @@
     <string name="guidance_world_name_placeholder">Lingang New City · Yunzhu Architects</string>
     <string name="guidance_world_era_label">Era and place</string>
     <string name="guidance_world_description_label">Situation (100-200 words)</string>
-    <string name="guidance_world_schedule_label">Schedule (JSON array)</string>
-    <string name="guidance_world_schedule_placeholder">[{"day":"weekday","start":"09:00","end":"18:30","activity":"drawing at the office"}]</string>
-    <string name="guidance_world_relationships_label">Relationships (JSON array)</string>
-    <string name="guidance_world_relationships_placeholder">[{"name":"Mom","relation":"mother","note":"calls every Wednesday evening"}]</string>
-    <string name="guidance_world_obligations_label">Obligations (one per line)</string>
-    <string name="guidance_world_obligations_placeholder">Deliver drawings on schedule\nCoordinate disciplines</string>
+    <!-- 0.12 visual world editor (spec §2.3): row lists + dropdowns + time picker, no JSON box -->
+    <string name="guidance_world_schedule_title">Schedule</string>
+    <string name="guidance_world_schedule_hint">What fills his day. Times past midnight are marked as the next day.</string>
+    <string name="guidance_world_day_label">Day</string>
+    <string name="guidance_world_start_label">Start</string>
+    <string name="guidance_world_end_label">End</string>
+    <string name="guidance_world_next_day">Next day</string>
+    <string name="guidance_world_activity_label">Doing what</string>
+    <string name="guidance_world_activity_placeholder">Drawing and reviewing plans at the office</string>
+    <string name="guidance_world_add_schedule">Add a schedule row</string>
+    <string name="guidance_world_relationships_title">People</string>
+    <string name="guidance_world_relationships_hint">The few people who keep showing up around him.</string>
+    <string name="guidance_world_relationship_name_label">Name</string>
+    <string name="guidance_world_relationship_relation_label">Relation</string>
+    <string name="guidance_world_relationship_custom">Custom</string>
+    <string name="guidance_world_relationship_custom_label">Your own relation</string>
+    <string name="guidance_world_relationship_note_label">A detail</string>
+    <string name="guidance_world_intimacy_label">Closeness</string>
+    <string name="guidance_world_intimacy_none">Unset</string>
+    <string name="guidance_world_add_relationship">Add a person</string>
+    <string name="guidance_world_obligations_title">Obligations</string>
+    <string name="guidance_world_obligations_hint">What he has to carry, the pressure he cannot drop.</string>
+    <string name="guidance_world_obligation_label">An obligation</string>
+    <string name="guidance_world_add_obligation">Add an obligation</string>
+    <string name="guidance_world_notes_title">Other background</string>
+    <string name="guidance_world_notes_hint">Anything the structured fields cannot hold: city mood, trade slang, family history, taboos…</string>
+    <string name="guidance_world_notes_label">Free text</string>
+    <string name="guidance_world_notes_truncated">Anything beyond the limit is cut off</string>
+    <string name="guidance_world_move_up">Move up</string>
+    <string name="guidance_world_move_down">Move down</string>
+    <string name="guidance_world_delete_row">Delete this row</string>
+    <string name="guidance_world_example_hint">No world yet. You can start from an example (an architect in Lingang New City) and make it yours.</string>
+    <string name="guidance_world_example_fill">Use the example</string>
+    <string name="guidance_world_error_schedule_day">Schedule row %1$d has a day that is not allowed.</string>
+    <string name="guidance_world_error_schedule_start">Schedule row %1$d needs a start time like HH:mm.</string>
+    <string name="guidance_world_error_schedule_end">Schedule row %1$d needs an end time like HH:mm.</string>
+    <string name="guidance_world_error_schedule_activity">Schedule row %1$d does not say what he is doing.</string>
+    <string name="guidance_world_error_relation_name">Relationship row %1$d has neither a name nor a relation.</string>
+    <string name="guidance_world_error_relation_intimacy">Relationship row %1$d needs closeness between 1 and 5.</string>
+    <string name="guidance_world_error_notes">Other background exceeds %1$d characters; please trim it.</string>
     <string name="guidance_world_ai_fill">AI fill</string>
     <string name="guidance_world_ai_filling">Filling…</string>
     <string name="guidance_world_ai_llm">The world was filled in by the model; edit any field.</string>
     <string name="guidance_world_ai_fallback">No complete world this time. An empty one was created with the character name; fill it in by hand.</string>
-    <string name="guidance_world_schedule_invalid">Schedule JSON is invalid (each entry needs day/start/end/activity). Please fix before saving.</string>
-    <string name="guidance_world_relationships_invalid">Relationships JSON is invalid (each entry needs name/relation/note). Please fix before saving.</string>
     <string name="guidance_speech_section">Speech style</string>
     <string name="guidance_speech_hint">Paste a real chat log to summarize tone, common phrases, habits and things to avoid. The raw text is never saved.</string>
     <string name="guidance_speech_sample_label">Chat log</string>
@@ -857,6 +889,17 @@
     <string name="guidance_speech_summarize_failed">Summarizing failed; a rough local summary was used instead.</string>
     <string name="persona_editor_guidance_section">World and speech</string>
     <string name="persona_editor_guidance_hint">Copied from a preset, or edited here; affects only this persona.</string>
+    <!-- 0.12 persona prompt translation (spec/persona-translation) -->
+    <string name="persona_editor_translation_section">Prompt language</string>
+    <string name="persona_editor_translation_hint">Before a chat opens, the persona and world are translated into the app language when needed; the original is used if that fails.</string>
+    <string name="persona_editor_translation_none">No translation cached yet; it will happen automatically the next time the chat opens.</string>
+    <string name="persona_editor_translation_done">Translated into %1$s</string>
+    <string name="persona_editor_translation_skipped">Source and app language already match; no translation needed.</string>
+    <string name="persona_editor_translation_failed">Translation failed; the original is being used. You can retry.</string>
+    <string name="persona_editor_translation_ok">Translated; the next chat will use it.</string>
+    <string name="persona_editor_translation_disabled">"Auto-translate persona" is turned off in settings.</string>
+    <string name="persona_editor_retranslate">Translate again</string>
+    <string name="persona_editor_translating">Translating…</string>
     <string name="persona_editor_activity_section">Current activity</string>
     <string name="persona_editor_activity_none">Not busy with anything</string>
     <string name="persona_editor_activity_line">%1$s (until %2$s)</string>
@@ -910,6 +953,11 @@
     <plurals name="preset_editor_prompt_chars">
         <item quantity="one">%1$d character</item>
         <item quantity="other">%1$d characters</item>
+    </plurals>
+    <!-- Notes counter for the world editor (spec §2.1: 1200 chars max) -->
+    <plurals name="guidance_world_notes_counter">
+        <item quantity="one">%1$d/%2$d character</item>
+        <item quantity="other">%1$d/%2$d characters</item>
     </plurals>
 
     <!-- ===== 主动唤醒 / 成长 ===== -->
@@ -1096,6 +1144,10 @@
     <string name="settings_haptics_desc">A light buzz on long presses and actions</string>
 
     <!-- Keeping him alive in the background -->
+    <!-- 0.12 persona translation toggle (spec/persona-translation §6, on by default) -->
+    <string name="settings_section_language">Language</string>
+    <string name="settings_auto_translate_persona">Auto-translate persona</string>
+    <string name="settings_auto_translate_persona_desc">Translate the persona and world into the app language before a chat opens; fall back to the original. Turn off to always use the original.</string>
     <string name="settings_section_background">Keeping him alive in the background</string>
     <string name="settings_agent_loop">Stay in the background</string>
     <string name="settings_agent_loop_desc">When off, he exists only while the app is open. When on, he keeps thinking in the background and sometimes reaches out first.</string>
@@ -1597,4 +1649,29 @@
     <string name="chat_preview_image">Photo</string>
     <string name="chat_preview_proactive">Reached out</string>
     <string name="chat_preview_failed">Reply failed</string>
+    <!-- Server mode (M3/M4): off by default; address/token stored encrypted -->
+    <string name="settings_section_server">Server</string>
+    <string name="settings_server_title">Server mode</string>
+    <string name="settings_server_desc">Let agentd own state and chat; this device only caches</string>
+    <string name="settings_server_url">Server address</string>
+    <string name="settings_server_url_hint">https://…; on debug builds http://LAN-IP:8788 also works</string>
+    <string name="settings_server_token">Access token</string>
+    <string name="settings_server_token_hint">Leave blank to keep the saved token</string>
+    <string name="settings_server_token_saved">Saved: %1$s</string>
+    <string name="settings_server_token_masked">Current token: %1$s</string>
+    <string name="settings_server_clear_token">Clear token</string>
+    <string name="settings_server_test">Test connection</string>
+    <string name="settings_server_testing">Connecting…</string>
+    <string name="settings_server_test_success">Connected: %1$s</string>
+    <string name="settings_server_test_failed">Connection failed</string>
+    <string name="settings_server_save">Save</string>
+    <string name="settings_server_saved">Server settings saved</string>
+    <string name="settings_server_save_failed">Could not save server settings (secure storage unavailable)</string>
+    <string name="settings_server_off_hint">While off, everything behaves exactly like local mode</string>
+    <string name="settings_server_reject_empty">Enter a server address</string>
+    <string name="settings_server_reject_invalid">That address is malformed; it must start with http:// or https://</string>
+    <string name="settings_server_reject_https_only">Release builds only allow https addresses</string>
+    <string name="settings_server_reject_local_only">http is only allowed for localhost or LAN addresses</string>
+    <string name="chat_server_reply_pending">The reply did not arrive yet; it will sync shortly</string>
+    <string name="chat_server_action_unsupported">This action is not supported in server mode yet</string>
 </resources>

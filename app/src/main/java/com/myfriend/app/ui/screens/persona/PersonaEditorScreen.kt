@@ -102,10 +102,12 @@ import com.myfriend.app.ui.components.BottomSheetTitle
 import com.myfriend.app.ui.components.ConfirmDialog
 import com.myfriend.app.ui.components.PersonaAvatar
 import com.myfriend.app.ui.components.PrimaryButton
+import com.myfriend.app.ui.components.SecondaryButton
 import com.myfriend.app.ui.components.SectionLabel
 import com.myfriend.app.ui.components.SpeechStyleCard
 import com.myfriend.app.ui.components.StyledOutlinedField
 import com.myfriend.app.ui.components.WorldPresetCard
+import com.myfriend.app.domain.WorldEditorState
 import com.myfriend.app.ui.components.TextPill
 import com.myfriend.app.ui.theme.LocalAccentColor
 import com.myfriend.app.ui.theme.avatarPalette
@@ -336,6 +338,18 @@ fun PersonaEditorScreen(
                         onSummarizeSpeech = viewModel::summarizeSpeech,
                         onClearSpeech = viewModel::clearSpeech
                     )
+
+                    // 0.12 提示词翻译（spec/persona-translation §4/§7）：显示缓存状态 + 手动重译。
+                    // 新建人格还没有 id，没有缓存可言，整段不出现。
+                    if (state.personaId != null) {
+                        TranslationSection(
+                            translating = state.translating,
+                            translationLang = state.translationLang,
+                            translationFresh = state.translationFresh,
+                            languageLabel = viewModel::languageLabel,
+                            onRetranslate = viewModel::retranslate
+                        )
+                    }
 
                     SectionLabel(stringResource(R.string.persona_editor_api_section))
                     Surface(
@@ -873,21 +887,13 @@ private fun PersonaGuidanceSection(
     )
     Spacer(Modifier.height(8.dp))
     WorldPresetCard(
-        worldName = form.worldName,
-        era = form.era,
-        description = form.worldDescription,
-        scheduleJson = form.scheduleJson,
-        relationshipsJson = form.relationshipsJson,
-        obligationsText = form.obligationsText,
-        onWorldName = { value -> onUpdate { it.copy(worldName = value) } },
-        onEra = { value -> onUpdate { it.copy(era = value) } },
-        onDescription = { value -> onUpdate { it.copy(worldDescription = value) } },
-        onScheduleJson = { value -> onUpdate { it.copy(scheduleJson = value) } },
-        onRelationshipsJson = { value -> onUpdate { it.copy(relationshipsJson = value) } },
-        onObligationsText = { value -> onUpdate { it.copy(obligationsText = value) } },
+        state = form.world,
+        onChange = { value -> onUpdate { it.copy(world = value) } },
         onAiFill = onFillWorld,
         aiFilling = worldFilling,
-        aiHint = null
+        aiHint = null,
+        issues = form.world.issues(),
+        onUseExample = { onUpdate { it.copy(world = WorldEditorState.example()) } }
     )
     Spacer(Modifier.height(10.dp))
     SpeechStyleCard(
@@ -1510,4 +1516,53 @@ private fun PromptFullScreenEditor(
                 }
             }
     }
+}
+
+/**
+ * 「提示词语言」：显示当前缓存的翻译状态，并提供「重新翻译」。
+ *
+ * 文案刻意只描述事实：有没有缓存、缓存是不是还新鲜、上次失败没有。
+ * 不假装翻译成功，也不在没有缓存时催用户点按钮（打开聊天就会自动译）。
+ */
+@Composable
+private fun TranslationSection(
+    translating: Boolean,
+    translationLang: String?,
+    translationFresh: Boolean,
+    languageLabel: (String) -> String,
+    onRetranslate: () -> Unit
+) {
+    SectionLabel(stringResource(R.string.persona_editor_translation_section))
+    Text(
+        stringResource(R.string.persona_editor_translation_hint),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+    Spacer(Modifier.height(8.dp))
+    Text(
+        text = when {
+            translationLang == null -> stringResource(R.string.persona_editor_translation_none)
+            translationFresh -> stringResource(
+                R.string.persona_editor_translation_done,
+                languageLabel(translationLang)
+            )
+            // 有缓存但源字段/语言变了：下次打开聊天会自动重译。
+            else -> stringResource(R.string.persona_editor_translation_none)
+        },
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+    Spacer(Modifier.height(8.dp))
+    SecondaryButton(
+        text = if (translating) {
+            stringResource(R.string.persona_editor_translating)
+        } else {
+            stringResource(R.string.persona_editor_retranslate)
+        },
+        onClick = onRetranslate,
+        enabled = !translating,
+        loading = translating
+    )
 }

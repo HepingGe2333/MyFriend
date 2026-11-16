@@ -11,12 +11,17 @@ import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
  *
  * ## 来源与优先级
  *
- * 1. **系统属性** `MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`（非空时覆盖下面的构建期值）；
- * 2. **BuildConfig** `MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`（由 Gradle property 透传，默认空）；
- * 3. 都没有 → [baseUrl] 为空、[enabled] = false（App 继续走本地 Room 路径）。
+ * 0.12（M3）起新增**用户在设置页保存的那一份**（[ServerCredentials]，加密落盘）：
  *
- * 系统属性优先是为了让 JVM 单测 / 真机联调不必重新打包；生产实际用的是 BuildConfig 那一份
- * （release 构建把两者都强制成空，见 `app/build.gradle.kts`）。
+ * 1. **用户保存的配置**（[ServerCredentials.cleanUrl] 非空时）：这是用户显式选择，
+ *    即使开关关着也不再回落到构建期值——否则「我在设置里关了服务端」会被 debug 构建的
+ *    `-PMYFRIEND_SERVER_URL` 悄悄覆盖；
+ * 2. **系统属性** `MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`（非空时覆盖下面的构建期值）；
+ * 3. **BuildConfig** `MYFRIEND_SERVER_URL` / `MYFRIEND_SERVER_TOKEN`（由 Gradle property 透传，默认空）；
+ * 4. 都没有 → [baseUrl] 为空、[enabled] = false（App 继续走本地 Room 路径）。
+ *
+ * 系统属性优先是为了让 JVM 单测 / 真机联调不必重新打包；生产实际用的是用户保存的那一份
+ * （release 构建把 2、3 两处都强制成空，见 `app/build.gradle.kts`）。
  *
  * ## 安全边界（与现有发布包策略一致）
  *
@@ -120,16 +125,28 @@ data class ServerConfig(
         val DISABLED: ServerConfig = ServerConfig()
 
         /**
-         * 按「系统属性 → BuildConfig → 默认关闭」解析配置。
+         * 按「用户保存的配置 → 系统属性 → BuildConfig → 默认关闭」解析配置。
          *
-         * 两个来源都可由参数注入（默认读真实 BuildConfig / `System.getProperty`），
+         * 三个来源都可由参数注入（默认读真实加密存储 / BuildConfig / `System.getProperty`），
          * 这样单测不需要改进程级状态就能覆盖优先级与空值语义。
+         *
+         * [credentials] 为 null 时与旧行为完全一致（P1a 的 54 条测试不需要改）。
+         * 用户保存的地址非空时，**开关状态以用户为准**：关着就返回 `enabled = false`，
+         * 不会再拿构建期地址把它打开。
          */
         fun resolve(
+            credentials: ServerCredentials? = null,
             buildUrl: String? = BuildConfig.MYFRIEND_SERVER_URL,
             buildToken: String? = BuildConfig.MYFRIEND_SERVER_TOKEN,
             systemProperty: (String) -> String? = { name -> System.getProperty(name) }
         ): ServerConfig {
+            if (credentials != null && credentials.cleanUrl.isNotEmpty()) {
+                return ServerConfig(
+                    baseUrl = credentials.cleanUrl,
+                    token = credentials.cleanToken.takeIf { it.isNotEmpty() },
+                    enabled = credentials.enabled
+                )
+            }
             val propertyUrl = systemProperty(URL_PROPERTY)?.trim().orEmpty()
             val url = propertyUrl.ifEmpty { buildUrl?.trim().orEmpty() }
             val propertyToken = systemProperty(TOKEN_PROPERTY)?.trim().orEmpty()

@@ -216,6 +216,8 @@ public final class DataReset {
             MemoryEchoStore(database: stores.database).deleteAll()
             try stores.memoryConsolidations.deleteAll()
             _ = try? stores.memoryVectors.deleteAll()
+            // 聊天都删了：待发队列里的消息也不该在下次补发时冒出来。
+            try ServerOutboxStore(database: stores.database).deleteAll()
         }
         clearChatMedia()
         return summary
@@ -265,6 +267,10 @@ public final class DataReset {
             attempt("memories") { try stores.memories.deleteAll() }
             attempt("memory_consolidations") { try stores.memoryConsolidations.deleteAll() }
             attempt("memory_vectors") { try stores.memoryVectors.deleteAll() }
+            // 2.5) 服务端模式的客户端侧簿记：同步游标与待发队列
+            //（留着游标会让「删除全部数据」之后再同步只拿增量，用户的对话就永远补不回来）。
+            attempt("server_sync_state") { try ServerSyncStateStore(database: stores.database).deleteAll() }
+            attempt("server_outbox") { try ServerOutboxStore(database: stores.database).deleteAll() }
             // 3) 人格与配置
             attempt("personas") { try stores.personas.deleteAll() }
             attempt("api_configs") { try stores.apiConfigs.deleteAll() }

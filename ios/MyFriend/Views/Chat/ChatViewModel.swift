@@ -121,6 +121,16 @@ final class ChatViewModel: ObservableObject {
         refreshContext()
         loaded = true
         restartPulses()
+        // 服务端模式：内容在服务端，进页面先去拉一次「最新一块」（并按需标已读、补发队列）。
+        // 拉完再重读一次库，界面上看到的就是刚下发的历史；拉失败就照旧显示缓存。
+        if env.serverModeActive {
+            Task { [weak self] in
+                await env.prepareServerChat(sessionId: sessionId)
+                guard let self, !Task.isCancelled, self.isVisible else { return }
+                self.reloadMessages(preservingLoadedRange: true)
+                self.refreshContext()
+            }
+        }
     }
 
     /// 页面离开：把「正开着」的标记撤掉，停掉脉冲。
@@ -291,6 +301,11 @@ final class ChatViewModel: ObservableObject {
         hasMoreNewer = ((try? env.stores.messages.newerBlockIndex(
             sessionId: sessionId, after: range.upperBound
         )) ?? nil) != nil
+        // 服务端模式：更早的内容可能还没缓存到本地（本地块只到第一块，但服务端还有）。
+        // 界面上的「加载更早」必须按服务端的说法显示，否则用户永远翻不到历史。
+        if env.serverModeActive && env.serverHasMoreOlder(sessionId: sessionId) {
+            hasMoreHistory = true
+        }
     }
 
     /// 往上翻到顶：把**上一块**接在窗口前面（v11：一页 = 一块，规范 §3 Older）。
@@ -300,6 +315,19 @@ final class ChatViewModel: ObservableObject {
     func loadEarlierMessages() {
         guard let env, hasMoreHistory, !isLoadingEarlier, loadedBlockRange != nil else { return }
         isLoadingEarlier = true
+        // 服务端模式：更早的内容在服务端，先按**服务端的块**拉一页（块号不通用，见
+        // `ServerSyncMapping.message` 的注释），写完缓存再按本地块接上。
+        if env.serverModeActive {
+            let id = sessionId
+            Task { [weak self] in
+                await env.loadOlderServerBlock(sessionId: id)
+                guard let self, !Task.isCancelled else { return }
+                self.isLoadingEarlier = false
+                self.reloadMessages(preservingLoadedRange: true)
+                self.refreshHasMore()
+            }
+            return
+        }
         #if DEBUG
         // 分页验收：让「正在加载更早…」这一帧停留得久一点，好让 simctl 截到图。
         if ProcessInfo.processInfo.environment["MYFRIEND_DEBUG_SLOW_PAGING"] == "1" {
@@ -416,8 +444,18 @@ final class ChatViewModel: ObservableObject {
     /// presence 什么都不写。30 秒重算一次，与 Android 的 Flow 语义一致。
     func refreshContext() {
         guard let env else { return }
-        hasApiConfig = env.resolvedChatConfig() != nil
+        // 服务端模式下「能不能聊」由服务端决定，本机不需要任何 API 配置：
+        // 没有这一行，用户一开服务端模式就会看到「先去设置里配一个 API」。
+        hasApiConfig = env.serverModeActive || env.resolvedChatConfig() != nil
         guard let persona else { return }
+        if env.serverModeActive {
+            // 服务端模式（M4）：心情/在场由服务端下发，本机不再做衰减推导。
+            // 服务端没下发时退回本地推导（第一次同步还没跑完的那一小段时间）。
+            let live = env.serverLiveState
+            mood = live.moodForDisplay ?? env.moodRepository.current(personaId: persona.id)
+            presence = live.presenceForDisplay ?? env.presence.current(personaId: persona.id)
+            return
+        }
         mood = env.moodRepository.current(personaId: persona.id)
         presence = env.presence.current(personaId: persona.id)
     }
@@ -561,9 +599,9 @@ final class ChatViewModel: ObservableObject {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = pendingAttachments
         guard !text.isEmpty || !attachments.isEmpty else { return }
-        // 没有 API 配置就不发一个注定失败的请求：禁用输入栏 + 一句引导。
-        // 会话绑定哪个配置由装配层负责（`AppEnvironment` 建会话时写 `apiConfigId`）。
-        guard env.resolvedChatConfig() != nil else {
+        // 服务端模式下内容与生成都在服务端，本机不需要 API 配置。
+        // 本地模式保持原样：没有配置就不发一个注定失败的请求（并给一句引导）。
+        guard env.serverModeActive || env.resolvedChatConfig() != nil else {
             hasApiConfig = false
             showToast(L("先去设置里配一个 API"))
             return
@@ -571,7 +609,10 @@ final class ChatViewModel: ObservableObject {
         // 只有「真的落库了」才清空输入状态（0.10.2 审计 P1-10）。
         // 消息过长 / 会话被删 / 配置没了都发生在落库之前：这时草稿与图片原样留着，
         // 用户点一下「重试」就能接着发；附件引用没变、文件还在磁盘上，不会留下孤儿图。
-        switch env.chat.sendChecked(sessionId: sessionId, text: text, attachments: attachments) {
+        //
+        // 走 `env.sendChecked`：服务端模式走 SSE + 待发队列，本地模式走原链路。
+        // 这个判断只出现在装配层一处，这里不重复。
+        switch env.sendChecked(sessionId: sessionId, text: text, attachments: attachments) {
         case .started(let stream):
             sendFailure = nil
             draft = ""
@@ -596,6 +637,12 @@ final class ChatViewModel: ObservableObject {
     /// 重新生成：`ChatService` 会删掉最后一条助手消息再跑一轮。
     func regenerate() {
         guard let env, !isGenerating else { return }
+        // 服务端模式这一版没有「重新生成」接口（服务端只在收到消息后生成），
+        // 与其让用户点一个注定失败的按钮，不如明确说一句。
+        guard !env.serverModeActive else {
+            showToast(L("服务端模式下重新生成还没做"))
+            return
+        }
         guard env.resolvedChatConfig() != nil else {
             hasApiConfig = false
             showToast(L("先去设置里配一个 API"))

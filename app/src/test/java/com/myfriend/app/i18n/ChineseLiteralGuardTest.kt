@@ -91,6 +91,9 @@ class ChineseLiteralGuardTest {
             "话风总结提示词（规范 §6.1 原文）与本地兜底说明：面向模型 / 落库的风格值，不是界面文案",
         "src/main/java/com/myfriend/app/data/ai/WorldPresetExpander.kt" to
             "世界预设补全提示词（规范 §6.2 原文）：面向模型，不进界面",
+        "src/main/java/com/myfriend/app/data/ai/PersonaTranslator.kt" to
+            "人设提示词翻译的提示词（spec/persona-translation §5 原文）与请求 JSON：面向模型，" +
+            "只发用户自己写的设定，不进界面、不落库",
     )
 
     @Test

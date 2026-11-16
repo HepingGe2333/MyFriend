@@ -11,6 +11,8 @@ import Foundation
 /// 这个文件只做装配，不写业务逻辑：任何「怎么回一句话」「怎么挑记忆」都在 MyFriendKit 里。
 @MainActor
 final class AppEnvironment: ObservableObject {
+    /// 见文件末尾 `AppEnvironmentBox` 注释。
+    private let envBox = AppEnvironmentBox()
 
     // MARK: - 存储
 
@@ -66,6 +68,33 @@ final class AppEnvironment: ObservableObject {
 
     /// 设置变了要通知界面重绘；View 用 `@EnvironmentObject` 读它。
     @Published private(set) var currentSettings: AppSettings
+
+    // MARK: - 服务端模式（M3/M4）
+    //
+    // 装配层只做三件事：读配置、造三件套（同步 / 事件 / 聊天）、把它们接到生命周期上。
+    // 真正的逻辑都在 MyFriendKit（`ServerSyncService` / `ServerEventService` /
+    // `ServerChatGateway`），这里不复制任何一条业务规则。
+
+    /// 服务端模式的设置来源（令牌在 Keychain，开关/地址在 UserDefaults）。
+    let serverCredentials: ServerCredentialStore
+    /// 当前生效的服务端配置（设置页改完会重建）。
+    @Published private(set) var serverConfig: ServerConfig
+    /// 服务端模式是不是真的可用（开关 + 合法地址）。界面用它决定走哪条链路。
+    @Published private(set) var serverModeActive: Bool
+    /// 服务端下发的心情/在场（M4：这两种东西在服务端模式下是「下发」的，不是本机推导的）。
+    @Published private(set) var serverLiveState: ServerLiveState
+
+    private(set) var serverSync: ServerSyncService?
+    private(set) var serverEvents: ServerEventService?
+    private(set) var serverChat: ServerChatGateway?
+    /// 前台事件长轮询任务（进后台就取消）。
+    private var serverEventTask: Task<Void, Never>?
+    /// 「App 在前台吗」的线程安全镜像。
+    ///
+    /// 为什么不用 `isForeground` 那个 `private(set) var`：它属于 `@MainActor`，
+    /// 而服务端事件流在**后台线程**上问这一句（决定要不要弹通知）。跨隔离域读一个
+    /// 可变属性是数据竞争，所以这里单独一份加锁的布尔值，主线程写、任意线程读。
+    private let serverForeground = ServerForegroundFlag()
 
     // MARK: - 前台心跳与补算的节流状态（0.10.2 审计 P1-2 / P1-3）
 
@@ -263,6 +292,8 @@ final class AppEnvironment: ObservableObject {
             completion: completion,
             log: { DebugSeeding.log($0) }
         )
+        // 服务端模式下的活动上报：init 里不能捕获 self，用局部转发变量在装配完成后赋值。
+        let box = envBox
         let toolExecutor = ToolExecutor(
             stores: fallbackStores,
             apiKeys: apiKeys,
@@ -274,6 +305,11 @@ final class AppEnvironment: ObservableObject {
             webTools: webTools,
             scorer: webSearchScorer,
             agentCore: agentCore,
+            // 服务端模式下把 `set_activity` 上报给服务端（写路径最小闭环）。
+            // 这里的闭包要读「现在的模式」，所以通过弱引用问 self，而不是在装配时拍死。
+            activityReported: { activity, personaId in
+                box.env?.reportServerActivity(activity, personaId: personaId)
+            },
             log: { DebugSeeding.log($0) }
         )
         let chatBackground = ChatBackgroundService(
@@ -332,14 +368,285 @@ final class AppEnvironment: ObservableObject {
         )
         chatBox.chat = self.chat
 
+        // ---- 服务端模式 ----
+        // 令牌与 API Key 共用同一份 Keychain 分区；开关/地址在 UserDefaults。
+        // 这里只把「设置来源」建出来；真正的客户端/服务在 `applyServerConfig()` 里装配
+        //（它要在 init 完全结束之后才碰 self，见那边的注释）。
+        let serverCredentials = ServerCredentialStore(keychain: ResilientKeychain())
+        self.serverCredentials = serverCredentials
+        let loadedServerConfig = (try? ServerConfig.loadForApp(credentials: serverCredentials))
+            ?? ServerConfig(baseURL: nil, token: nil, enabled: false)
+        self.serverConfig = loadedServerConfig
+        self.serverModeActive = loadedServerConfig.isUsable
+        self.serverLiveState = ServerLiveState()
+
         if bootError == nil {
-            seedIfNeeded()
+            // 服务端模式下**不再种本地人格**：人和会话都是服务端下发的，
+            // 本机再种一份会变成「同一个人出现两次」（本地一个、服务端一个不同 id 的）。
+            // 已有本地人格的情况属于 M5（人格/记忆 CRUD 上移）的迁移范围，这里不做合并：
+            // 同步只按 id 命中，命中不了的服务端人格会作为新的人格出现（见交付报告的已知限制）。
+            if !loadedServerConfig.isUsable {
+                seedIfNeeded()
+            } else {
+                DebugSeeding.log("[server] 服务端模式：跳过本地人格种子（人以服务端为准）")
+            }
             bindMissingApiConfigs()
             ensureEveryPersonaHasSession()
             // 并发闸超时只写进日志：用户不该看见「他排队超时了」。
             gate.onTimeout = { lane, waited in
                 DebugSeeding.log("[gate] \(lane.label)等了 \(waited / 1000) 秒没拿到名额，这次先不做")
             }
+        }
+
+        // 服务端模式：读设置 → 造客户端 → 决定走哪条链路。
+        // 放在 init 最后一行的理由：`applyServerConfig()` 会捕获 self（事件流要知道
+        // 「前台吗 / 这个会话开着吗」），而捕获 self 必须等所有存储属性都初始化完。
+        applyServerConfig()
+        box.env = self
+    }
+
+    // MARK: - 服务端模式（M3/M4）
+
+    /// 读设置并重建服务端三件套。设置页改完地址/令牌/开关之后调它。
+    ///
+    /// 三件事按顺序：
+    /// 1. `ServerConfig.loadForApp`：设备设置（Keychain 令牌 + UserDefaults 开关/地址）优先，
+    ///    其次环境变量 / Info.plist（与 P1a 的 `ServerConfig.load` 同一套校验，https 规则不变）；
+    /// 2. 合法就造一个 `ServerAPIClient` 与同步/事件/聊天三件套；不合法就把它们清空；
+    /// 3. 把「为什么没起来」写进 Debug 日志（配置错误里绝不含令牌）。
+    func applyServerConfig() {
+        let loaded: ServerConfig
+        do {
+            loaded = try ServerConfig.loadForApp(credentials: serverCredentials)
+        } catch {
+            // 地址不合法（http 明文 / 格式错 / Release 里写 http）：服务端模式直接不可用，
+            // 界面会在「测试连接」处显示原因。
+            serverConfig = ServerConfig(baseURL: nil, token: nil, enabled: false)
+            serverModeActive = false
+            serverSync = nil
+            serverEvents = nil
+            serverChat = nil
+            DebugSeeding.log("[server] 配置不合法：\(error.localizedDescription)")
+            return
+        }
+        serverConfig = loaded
+        guard loaded.isUsable else {
+            serverModeActive = false
+            serverSync = nil
+            serverEvents = nil
+            serverChat = nil
+            DebugSeeding.log("[server] 服务端模式未启用（继续用本地模式）")
+            return
+        }
+
+        let session = URLSession(configuration: Self.sessionConfiguration())
+        let client = ServerAPIClient(config: loaded, session: session)
+        let outbox = ServerOutboxStore(database: stores.database)
+        let chatGateway = ServerChatGateway(
+            client: client,
+            stores: stores,
+            outbox: outbox,
+            log: { DebugSeeding.log($0) }
+        )
+        serverSync = ServerSyncService(
+            client: client,
+            stores: stores,
+            log: { DebugSeeding.log($0) }
+        )
+        // 这两件事会被服务端事件流在**后台线程**上问，所以只捕获「已经造好的对象」
+        // 与「加锁的布尔值」，不捕获 self（跨隔离域读 @MainActor 的可变状态是数据竞争）：
+        // - `ChatService.isSessionOpen` 自己带锁，任意线程可调；
+        // - `ServerForegroundFlag` 也是带锁的。
+        let chatRef = chat
+        let foreground = serverForeground
+        serverEvents = ServerEventService(
+            client: client,
+            stores: stores,
+            notifier: ServerNotifications(isSessionOpen: { sessionId in
+                chatRef.isSessionOpen(sessionId)
+            }),
+            isSessionOpen: { sessionId in
+                chatRef.isSessionOpen(sessionId)
+            },
+            isForeground: { foreground.isActive },
+            onLiveState: { [weak self] state in
+                Task { @MainActor in self?.serverLiveState = state }
+            },
+            log: { DebugSeeding.log($0) }
+        )
+        serverChat = chatGateway
+        serverModeActive = true
+        DebugSeeding.log("[server] 服务端模式已启用：\(loaded.baseURL?.absoluteString ?? "-")")
+        // 重启进程后待发队列里可能有上次没发出去的消息：先把气泡补回界面。
+        let restored = chatGateway.recoverPendingMessages()
+        if restored > 0 { DebugSeeding.log("[server] 恢复了 \(restored) 条待发消息") }
+    }
+
+    /// 服务端模式下的「发送」入口：服务端可用就走服务端，否则走本地（行为一字未改）。
+    ///
+    /// 界面（`ChatViewModel.send`）只认这一个入口，所以「哪种模式」的判断只在这里出现一次。
+    func sendChecked(
+        sessionId: String,
+        text: String,
+        attachments: [MessageAttachment] = []
+    ) -> ChatService.SendOutcome {
+        if let gateway = serverChat, gateway.isActive {
+            return gateway.sendChecked(sessionId: sessionId, text: text, attachments: attachments)
+        }
+        return chat.sendChecked(sessionId: sessionId, text: text, attachments: attachments)
+    }
+
+    /// 进聊天页：服务端模式下把它该做的事做掉（拉最新块 / 标已读 / 补发队列）。
+    ///
+    /// 失败只写日志：这些都是「让内容更新」的辅助动作，不该在打开页面时弹错误
+    ///（本地模式照旧读缓存，界面上不会空白）。
+    func prepareServerChat(sessionId: String) async {
+        guard let gateway = serverChat, gateway.isActive else { return }
+        // 0) 本地会话还没和服务端会话对上号（第一次进服务端模式、或本地模式先建的会话）：
+        //    先 `POST /v1/sessions` 建/取回它，把服务端 id 记到本机那条会话上。
+        //    没有这一步，后面所有写路径都会打到本机 UUID 上（服务端 404）。
+        if let session = ((try? stores.sessions.byId(sessionId)) ?? nil),
+           session.serverSessionId == nil || session.serverSessionId?.isEmpty == true {
+            do {
+                _ = try await gateway.ensureSession(personaId: session.personaId, title: session.title)
+            } catch {
+                DebugSeeding.log("[server] 建会话失败：\(error.localizedDescription)")
+            }
+        }
+        do {
+            try await gateway.loadLatestBlock(sessionId: sessionId)
+        } catch {
+            DebugSeeding.log("[server] 拉会话块失败：\(error.localizedDescription)")
+        }
+        await gateway.markRead(sessionId: sessionId)
+        if !gateway.pendingEntries(sessionId: sessionId).isEmpty {
+            _ = await gateway.flushOutbox()
+        }
+    }
+
+    /// 服务端模式下往前翻一块（聊天页上滑到底）。
+    ///
+    /// 用的是**服务端的块号**（`ServerChatGateway` 自己记着），不是本地块号：
+    /// 本地块由 `MessageBlockStore` 按写入顺序切，两边块号不是一回事。
+    func loadOlderServerBlock(sessionId: String) async {
+        guard let gateway = serverChat, gateway.isActive else { return }
+        do {
+            try await gateway.loadOlderBlockRememberingPosition(sessionId: sessionId)
+        } catch {
+            DebugSeeding.log("[server] 翻更早的块失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 服务端说这个会话上面还有没有更早的块（本地缓存可能还没拉到那么早）。
+    func serverHasMoreOlder(sessionId: String) -> Bool {
+        guard let gateway = serverChat, gateway.isActive else { return false }
+        return gateway.hasOlderOnServer(sessionId: sessionId)
+    }
+
+    /// 同步一次服务端状态（启动 / 回前台 / 事件流空闲时）。
+    @discardableResult
+    func syncServerNow() async -> ServerSyncOutcome? {
+        guard let sync = serverSync else { return nil }
+        let outcome = await sync.syncNow()
+        switch outcome {
+        case .synced(let report):
+            DebugSeeding.log("[server] 同步完成：会话 \(report.sessions) / 消息 \(report.messages)")
+        case .failed(let message, let attempts):
+            DebugSeeding.log("[server] 同步失败（\(attempts) 次）：\(message)")
+        case .skipped(let reason):
+            DebugSeeding.log("[server] 同步跳过：\(reason)")
+        }
+        return outcome
+    }
+
+    /// 起前台事件订阅（长轮询）。重复调用是安全的。
+    func startServerEvents() {
+        guard let events = serverEvents, serverModeActive else { return }
+        guard serverEventTask == nil else { return }
+        serverEventTask = Task { [weak events] in
+            await events?.runLoop()
+        }
+        DebugSeeding.log("[server] 事件订阅已启动")
+    }
+
+    func stopServerEvents() {
+        serverEventTask?.cancel()
+        serverEventTask = nil
+    }
+
+    /// 服务端模式的一次「进前台」全套动作：同步状态 + 起事件流 + 补发队列。
+    ///
+    /// 顺序有意为之：先同步（把离线期间的整段状态补齐），再起事件流（从这里开始只收增量），
+    /// 否则事件流会一边补历史一边收增量，游标语义会乱。
+    func activateServerMode() async {
+        guard serverModeActive else { return }
+        await syncServerNow()
+        if let gateway = serverChat, gateway.isActive {
+            _ = await gateway.flushOutbox()
+        }
+        startServerEvents()
+    }
+
+    /// `set_activity` 在服务端模式下要上报给服务端（规范 §4：主动引擎据此决定要不要开口）。
+    ///
+    /// 失败只记日志：本地那份活动已经写进人格了，界面上「在忙」照样显示；
+    /// 下一次同步会被服务端权威值覆盖，不需要在这里回滚用户看得见的东西。
+    func reportServerActivity(_ activity: PersonaActivity, personaId: String) {
+        guard serverModeActive else { return }
+        // `ServerChatGateway` 不暴露 client，这里单独造一个同配置的（成本只是一次 init）。
+        let api = ServerAPIClient(config: serverConfig, session: URLSession(configuration: Self.sessionConfiguration()))
+        Task { @MainActor in
+            do {
+                _ = try await api.reportActivity(
+                    personaId: personaId,
+                    activity: activity.activity,
+                    kind: activity.kind.stored,
+                    minutes: activity.minutes,
+                    availability: activity.availability.rawValue
+                )
+                DebugSeeding.log("[server] 活动已上报：\(activity.activity)")
+            } catch {
+                DebugSeeding.log("[server] 活动上报失败（只记日志）：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 注册推送 token（M6 的脚手架：服务端有 token 就交给可插拔的 `PushSender`）。
+    func registerServerPushToken(_ token: String) async {
+        guard serverModeActive else { return }
+        let api = ServerAPIClient(config: serverConfig, session: URLSession(configuration: Self.sessionConfiguration()))
+        do {
+            let result = try await api.registerPushToken(
+                token: token,
+                bundleId: Bundle.main.bundleIdentifier
+            )
+            DebugSeeding.log("[server] 推送 token 已注册：created=\(result.created)")
+        } catch {
+            DebugSeeding.log("[server] 推送 token 注册失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 设置页「测试连接」用：只打 `/health`，不触发同步。
+    func testServerConnection() async -> Result<ServerHealth, Error> {
+        let api = ServerAPIClient(config: serverConfig, session: URLSession(configuration: Self.sessionConfiguration()))
+        do {
+            return .success(try await api.testConnection())
+        } catch {
+            return .failure(error)
+        }
+    }
+
+    /// 设置页保存服务端设置：写 Keychain / UserDefaults，然后立刻生效。
+    ///
+    /// - Throws: 地址不合法（http 明文 / 格式错）时抛给界面显示中文原因；令牌已经写进 Keychain 了。
+    func saveServerSettings(enabled: Bool, baseURLText: String, token: String?) throws {
+        serverCredentials.setModeEnabled(enabled)
+        serverCredentials.setBaseURLText(baseURLText)
+        try serverCredentials.setToken(token)
+        applyServerConfig()
+        stopServerEvents()
+        if serverModeActive {
+            Task { await activateServerMode() }
         }
     }
 
@@ -627,6 +934,7 @@ final class AppEnvironment: ObservableObject {
     /// 进后台时 `cancel()` 立刻生效；`Timer` 在后台会被系统挂着，开销和语义都更差。
     func startForegroundPulse() {
         isForeground = true
+        serverForeground.set(true)
         guard foregroundPulseTask == nil else { return }
         let hasConfig = resolvedChatConfig() != nil
         let hasPersona = currentPersona() != nil
@@ -654,6 +962,7 @@ final class AppEnvironment: ObservableObject {
     /// 进后台：停定时器（系统会挂起进程，留着只是白占资源）。
     func stopForegroundPulse() {
         isForeground = false
+        serverForeground.set(false)
         foregroundPulseTask?.cancel()
         foregroundPulseTask = nil
         // 回到前台时重新读一次真实状态（心情、最后互动），别拿几分钟前的快照掷骰子。
@@ -759,4 +1068,28 @@ final class AppEnvironment: ObservableObject {
 /// 装配期的一个小盒子：`AgentLoop` 的回调要读 `chat`，而 `chat` 在它之后才建好。
 private final class ChatServiceBox {
     var chat: ChatService?
+}
+
+/// 「App 在前台吗」的线程安全镜像（服务端事件流会在后台线程问它）。
+final class ServerForegroundFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = true
+
+    func set(_ active: Bool) {
+        lock.lock()
+        value = active
+        lock.unlock()
+    }
+
+    var isActive: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+/// `init` 里不能捕获 `self`（会触发「used before being initialized」）。
+/// 用一个小盒子在装配完成后回填：闭包捕获盒子（无 `self`），盒子在 init 末尾拿到 self。
+final class AppEnvironmentBox {
+    weak var env: AppEnvironment?
 }
