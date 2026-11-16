@@ -101,6 +101,37 @@ data class ServerSessionList(
 )
 
 /**
+ * `POST /v1/sessions/{id}/messages/import` 的一条历史消息（0.12.1 bootstrap 全量推送）。
+ *
+ * 为什么单独一个 DTO 而不是复用 [ServerMessage]：
+ * - 导入端只接受「可写字段」，`sessionId/blockIndex` 由服务端自己分配（块归属以服务端为准）；
+ * - 客户端要在**不依赖服务端时钟**的情况下保留原消息时间：`createdAt` 必传、`readAt` 可空；
+ * - `id` 是幂等键：服务端按它去重，重试同一批不会产生第二条；`clientMessageId` 是第二道
+ *   保险（服务端如果自行分配 id，仍能按它认出「这是同一条导入消息」）。
+ */
+@Serializable
+data class ServerMessageImport(
+    val id: String = "",
+    val role: String = "",
+    val content: String = "",
+    val createdAt: Long = 0,
+    val readAt: Long? = null,
+    val attachments: List<String> = emptyList(),
+    val source: String = "IMPORT",
+    val clientMessageId: String? = null,
+    val replyTo: String? = null
+)
+
+/** `POST /v1/sessions/{id}/messages/import` 的响应；计数缺省也能接受（服务端版本差异）。 */
+@Serializable
+data class ServerMessageImportResult(
+    val imported: Int = 0,
+    val skipped: Int = 0,
+    val sessionId: String = "",
+    val session: ServerSession? = null
+)
+
+/**
  * `GET /v1/sessions/{id}/messages?beforeBlock=&afterBlock=` 的一页。
  *
  * 一页一块（服务端 `limitBlocks` 只接受 1）：客户端不拼 offset，

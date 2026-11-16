@@ -63,8 +63,13 @@ class RoomServerStateSink @Inject constructor(
             // ---- 人格：服务端只拥有 name/updatedAt，其余本地字段原样保留 ----
             snapshot.personas.forEach { server ->
                 if (server.id.isBlank()) return@forEach
-                val local = personaDao.getById(server.id)
-                val merged = ServerMergePlan.persona(local, server)
+                // bootstrap 推送过的人格：本地主键是客户端 UUID，服务端是它分配的 id。
+                // 不先查映射就会在本地多插一个「同名的他」（会话/消息又会挂到新行上）。
+                val mappedLocalId = localStore.localPersonaId(server.id)
+                val local = personaDao.getById(mappedLocalId ?: server.id)
+                val merged = ServerMergePlan.persona(local, server).let { entity ->
+                    if (local != null) entity.copy(id = local.id) else entity
+                }
                 if (local == null) {
                     personaDao.insert(merged)
                     personas++
@@ -72,6 +77,7 @@ class RoomServerStateSink @Inject constructor(
                     personaDao.update(merged)
                     personas++
                 }
+                if (merged.id != server.id) localStore.setPersonaMapping(server.id, merged.id)
             }
 
             // ---- 会话：服务端拥有 title/未读/最后消息时间 ----
@@ -117,10 +123,11 @@ class RoomServerStateSink @Inject constructor(
 
             // ---- 心情：服务端推进；本地更晚的心情不被旧快照覆盖 ----
             snapshot.mood?.takeIf { it.personaId.isNotBlank() }?.let { mood ->
-                val local = personaDao.getById(mood.personaId) ?: return@let
+                val localPersonaId = localPersonaFor(mood.personaId)
+                val local = personaDao.getById(localPersonaId) ?: return@let
                 if (ServerMergePlan.shouldOverwrite(local.moodUpdatedAt, mood.updatedAt)) {
                     personaDao.setMood(
-                        id = mood.personaId,
+                        id = localPersonaId,
                         mood = mood.label.ifBlank { local.mood },
                         intensity = mood.intensity.coerceIn(1, 5).takeIf { mood.intensity > 0 } ?: local.moodIntensity,
                         reason = local.moodReason,
@@ -132,8 +139,8 @@ class RoomServerStateSink @Inject constructor(
         }
 
         var presence = 0
-        snapshot.presence?.takeIf { it.personaId.isNotBlank() }?.let {
-            presenceStore.save(it)
+        snapshot.presence?.takeIf { it.personaId.isNotBlank() }?.let { state ->
+            presenceStore.save(state.copy(personaId = localPersonaFor(state.personaId)))
             presence = 1
         }
 
@@ -194,5 +201,9 @@ class RoomServerStateSink @Inject constructor(
     private suspend fun findLocalSession(server: com.yap.app.data.remote.ServerSession) =
         sessionDao.getById(server.id)
             ?: localStore.localSessionId(server.id)?.let { sessionDao.getById(it) }
-            ?: sessionDao.latestForPersona(server.personaId)
+            ?: sessionDao.latestForPersona(localPersonaFor(server.personaId))
+
+    /** 服务端人格 id → 本地人格 id（bootstrap 推送后两者可能不同）。 */
+    private suspend fun localPersonaFor(serverPersonaId: String): String =
+        localStore.localPersonaId(serverPersonaId) ?: serverPersonaId
 }

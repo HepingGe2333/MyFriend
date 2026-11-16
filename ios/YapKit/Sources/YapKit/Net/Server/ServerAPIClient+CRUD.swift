@@ -235,4 +235,13 @@ public extension JSONValue {
         if case .int(let number) = self { return number }
         return nil
     }
+
+    /// `.double` 与 `.int` 都当成浮点读：服务端可能把同一个设置写成 `1` 或 `1.0`。
+    var doubleValue: Double? {
+        switch self {
+        case .double(let number): return number
+        case .int(let number): return Double(number)
+        default: return nil
+        }
+    }
 }

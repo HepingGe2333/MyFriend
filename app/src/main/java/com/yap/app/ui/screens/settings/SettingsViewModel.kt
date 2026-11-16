@@ -16,7 +16,6 @@ import com.yap.app.data.repo.ApiConfigRepository
 import com.yap.app.data.repo.ApiUsageRepository
 import com.yap.app.data.repo.BackupRepository
 import com.yap.app.data.repo.ChatRepository
-import com.yap.app.data.repo.MediaJanitor
 import com.yap.app.data.repo.ImportMode
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PresetRepository
@@ -27,7 +26,11 @@ import com.yap.app.data.remote.ServerConfigRejection
 import com.yap.app.data.remote.ServerCredentials
 import com.yap.app.data.remote.ServerModeRepository
 import com.yap.app.data.remote.ServerConnectionState
+import com.yap.app.data.remote.ServerBootstrapManager
+import com.yap.app.data.remote.ServerBootstrapPhase
+import com.yap.app.data.remote.ServerBootstrapProgress
 import com.yap.app.data.remote.ServerLocalStore
+import com.yap.app.data.remote.UserAvatarCoordinator
 import com.yap.app.domain.BackupDecodeResult
 import com.yap.app.domain.BackupPreview
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -39,7 +42,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -63,7 +65,9 @@ data class ServerSettingsUiState(
     /** 测试连接的结果（成功一行摘要 / 失败原因），直接显示在按钮下面。 */
     val testMessage: String? = null,
     /** 保存/清除失败时的提示。 */
-    val error: String? = null
+    val error: String? = null,
+    /** 0.12.1 一次性数据对齐（bootstrap）的一行状态；没有可显示的内容时为 null。 */
+    val bootstrapStatus: String? = null
 )
 
 data class SettingsUiState(
@@ -110,11 +114,13 @@ class SettingsViewModel @Inject constructor(
     apiConfigRepository: ApiConfigRepository,
     private val apiUsageRepository: ApiUsageRepository,
     private val backupRepository: BackupRepository,
-    /** 「我的头像」换新图之后，旧文件按引用回收（0.12：共享文件不删）。 */
-    private val mediaJanitor: MediaJanitor,
     private val personaInitializer: PersonaRepositoryInitializer,
     private val serverModeRepository: ServerModeRepository,
     private val serverLocalStore: ServerLocalStore,
+    /** 0.12.1：一次性全量对齐的进度（设置页一行字）。 */
+    private val serverBootstrap: ServerBootstrapManager,
+    /** 0.12.1：头像「压缩→上传→写设置→镜像」链路。 */
+    private val userAvatarCoordinator: UserAvatarCoordinator,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -140,9 +146,15 @@ class SettingsViewModel @Inject constructor(
         serverModeRepository.state,
         serverTesting,
         serverTestMessage,
-        serverError
-    ) { state, testing, testMessage, error ->
-        state.toUiState(testing = testing, testMessage = testMessage, error = error)
+        serverError,
+        serverBootstrap.progress
+    ) { state, testing, testMessage, error, bootstrap ->
+        state.toUiState(
+            testing = testing,
+            testMessage = testMessage,
+            error = error,
+            bootstrapStatus = bootstrapMessage(bootstrap)
+        )
     }
 
     /** 「用量」要实时刷新：订阅本月流水与按人的排行，聊天或后台任务一跑，这里立刻变。 */
@@ -192,16 +204,30 @@ class SettingsViewModel @Inject constructor(
     fun setChatBackgroundImage(uri: String?) = launchSetting { settingsRepository.setChatBackgroundImageUri(uri) }
 
     /**
-     * 「我的头像」只写 DataStore 里的路径；文件已经由 MediaStorage 采样压缩好了。
+     * 「我的头像」换了一张新图（文件已经由 `MediaStorage.persistAvatar` 采样压缩好）。
      *
-     * 0.12：换新图之后旧文件按引用回收——旧实现从不删旧图，每换一次就多一个孤儿文件；
-     * 而「删」必须查引用（同一个 `avatar-*.jpg` 可能还被某个人格/预设引用着）。
+     * 0.12.1：
+     * - 本地模式：只写本地文件路径（行为与旧版本一致）；
+     * - 服务端模式：压缩 → `POST /v1/media?kind=USER_AVATAR` → 写 `/v1/media/<id>` 并镜像设置；
+     *   **上传/推送失败时保留旧头像**并提示，不出现「看起来换了、其实没同步」；
+     * - 成功后旧文件按引用回收（共享文件不删）。
      */
-    fun setUserAvatar(uri: String?) = launchSetting {
-        val previous = runCatching { settingsRepository.settings.first().userAvatarUri }.getOrNull()
-        settingsRepository.setUserAvatarUri(uri)
-        if (previous != null && previous != uri) {
-            runCatching { mediaJanitor.deleteIfUnreferenced(previous) }
+    fun onUserAvatarPicked(localFileUri: String) {
+        viewModelScope.launch {
+            runCatching { userAvatarCoordinator.applyPicked(localFileUri) }
+                .onFailure {
+                    message.value = context.getString(R.string.settings_error_avatar_upload)
+                }
+        }
+    }
+
+    /** 恢复默认头像；服务端模式下会先把服务端引用清掉，失败则恢复旧头像。 */
+    fun clearUserAvatar() {
+        viewModelScope.launch {
+            runCatching { userAvatarCoordinator.clear() }
+                .onFailure {
+                    message.value = context.getString(R.string.settings_error_avatar_upload)
+                }
         }
     }
 
@@ -432,16 +458,20 @@ class SettingsViewModel @Inject constructor(
 
     /** 删除全部数据后连服务端配置一起清掉（否则新用户会连上旧服务器/旧游标）。 */
     private suspend fun clearServerConnectionQuietly() {
+        // 本机数据被清空后，同一台服务端也应该重新做一次全量对齐：清掉它的 bootstrap 标记。
+        val baseUrl = runCatching { serverModeRepository.currentConfig().baseUrl }.getOrDefault("")
         serverModeRepository.clear()
         serverModeRepository.reload()
         // 游标、会话映射、待发队列都属于那台服务端；数据清空后它们没有意义。
         runCatching { serverLocalStore.resetForNewServer() }
+        if (baseUrl.isNotBlank()) runCatching { serverLocalStore.clearBootstrapDone(baseUrl) }
     }
 
     private fun ServerConnectionState.toUiState(
         testing: Boolean,
         testMessage: String?,
-        error: String?
+        error: String?,
+        bootstrapStatus: String?
     ): ServerSettingsUiState = ServerSettingsUiState(
         url = credentials.cleanUrl,
         enabled = credentials.enabled,
@@ -451,6 +481,26 @@ class SettingsViewModel @Inject constructor(
         rejection = config.rejection(),
         testing = testing,
         testMessage = testMessage,
-        error = error
+        error = error,
+        // 关掉服务端模式后这一行没有意义（数据对齐是服务端模式的状态）。
+        bootstrapStatus = bootstrapStatus?.takeIf { credentials.enabled }
     )
+
+    /** bootstrap 阶段 → 一行中文/英文（文案在资源里，数据层不出现面向用户的句子）。 */
+    private fun bootstrapMessage(progress: ServerBootstrapProgress): String? = when (progress.phase) {
+        ServerBootstrapPhase.IDLE,
+        ServerBootstrapPhase.ALREADY_DONE -> null
+        ServerBootstrapPhase.INSPECTING ->
+            context.getString(R.string.settings_server_bootstrap_inspecting)
+        ServerBootstrapPhase.PUSHING ->
+            context.getString(R.string.settings_server_bootstrap_pushing, progress.messages)
+        ServerBootstrapPhase.PULLING ->
+            context.getString(R.string.settings_server_bootstrap_pulling, progress.messages)
+        ServerBootstrapPhase.MERGING ->
+            context.getString(R.string.settings_server_bootstrap_merging, progress.messages)
+        ServerBootstrapPhase.COMPLETED ->
+            context.getString(R.string.settings_server_bootstrap_done, progress.messages)
+        ServerBootstrapPhase.FAILED ->
+            context.getString(R.string.settings_server_bootstrap_failed)
+    }
 }

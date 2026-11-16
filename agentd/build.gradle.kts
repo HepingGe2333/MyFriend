@@ -32,6 +32,12 @@ dependencies {
 }
 
 tasks.test {
+    /**
+     * 0.12.1 的「备份不进内存」是硬要求，测试用 **256 MiB 堆**跑：`BackupStreamMemoryTest`
+     * 在 `-Xmx256m` 下导出/导入 1 万条消息 + 50 张图，只要实现又退回「整份 JsonValue/字符串」
+     * 就会 OOM（这是断言，不是口号）。整套 `:agentd:test` 都很小，256m 足够。
+     */
+    maxHeapSize = "256m"
     testLogging {
         events("passed", "failed", "skipped")
     }

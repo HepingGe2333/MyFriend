@@ -38,6 +38,32 @@ public final class ServerSyncStateStore {
         public static func block(_ sessionId: String) -> String { "server.block.\(sessionId)" }
         /// 服务端说这个会话上面还有没有更早的块（"1" / "0"）。
         public static func hasOlder(_ sessionId: String) -> String { "server.hasOlder.\(sessionId)" }
+
+        // ---- 0.12.1：首次全量同步（bootstrap）的簿记 ----
+        //
+        // 完成标记按 **baseURL** 分开：换一台服务端就是「另一段关系」，必须重新搬一次。
+        // 三个 id 映射是给「服务端不接受本机 id、回落成新建」准备的：没有它，重试会
+        // 在服务端上再建一份同一个人/同一条记忆（服务端幂等只按 id，不按内容）。
+        /// 某台服务端是否做过首次全量同步（JSON：时间/方向/条数）。
+        public static func bootstrapDone(_ baseURL: String) -> String {
+            "server_bootstrap_done:\(baseURL)"
+        }
+        /// 首次全量同步没做完时的进度（JSON；重试从这里接着跑）。
+        public static func bootstrapProgress(_ baseURL: String) -> String {
+            "server_bootstrap_progress:\(baseURL)"
+        }
+        /// 本地人格 id → 服务端人格 id（服务端另建了 id 时才有这一行）。
+        public static func personaIdMap(_ localPersonaId: String) -> String {
+            "server.idmap.persona.\(localPersonaId)"
+        }
+        /// 本地预设 id → 服务端预设 id。
+        public static func presetIdMap(_ localPresetId: String) -> String {
+            "server.idmap.preset.\(localPresetId)"
+        }
+        /// 本地记忆 id → 服务端记忆 id。
+        public static func memoryIdMap(_ localMemoryId: String) -> String {
+            "server.idmap.memory.\(localMemoryId)"
+        }
     }
 
     private let database: SQLiteDatabase

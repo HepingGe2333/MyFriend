@@ -125,6 +125,14 @@ fun ServerModeSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            // 0.12.1：首次连接后的一次性数据对齐进度（四象限全量搬运 / 合并）。
+            state.bootstrapStatus?.let { status ->
+                Text(
+                    text = status,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Row(
                 Modifier
                     .fillMaxWidth()

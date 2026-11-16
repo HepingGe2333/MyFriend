@@ -2,6 +2,7 @@ package com.yap.app.data.remote
 
 import com.yap.app.util.AppForegroundTracker
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
@@ -59,7 +60,8 @@ class ServerModeRuntime @Inject constructor(
     private val poller: ServerEventPoller,
     private val gateway: ServerChatGateway,
     private val foregroundTracker: AppForegroundTracker,
-    private val localStore: ServerLocalStore
+    private val localStore: ServerLocalStore,
+    private val bootstrap: ServerBootstrapManager
 ) {
     /** 上一次看到的服务端地址：换地址＝换服务端，旧游标/队列必须清掉。 */
     private var lastBaseUrl: String? = null
@@ -81,21 +83,36 @@ class ServerModeRuntime @Inject constructor(
                         localStore.resetForNewServer()
                     }
                     lastBaseUrl = baseUrl
+                    // 0.12.1：这台服务端的第一次连接先把两端数据量对齐（四象限全量搬运），
+                    // 已做过就直接返回；失败不阻塞后面的增量同步，下一次前台/启动重试。
+                    bootstrap.runIfNeeded(baseUrl)
                     // 启动/回前台/刚切换到服务端模式：先补一次状态与离线队列。
                     syncManager.syncNow()
                     if (gateway.isAvailable()) {
                         runCatching { gateway.resendPending() }
                     }
                     if (!foreground) return@collectLatest
-                    while (currentCoroutineContext().isActive) {
-                        val outcome = poller.pollOnce()
-                        delay(
-                            if (outcome.success) {
-                                POLL_INTERVAL_MILLIS
-                            } else {
-                                POLL_RETRY_MILLIS
+                    coroutineScope {
+                        // 轻量增量：前台每 5 分钟拉一次 state（不是全量），事件长轮询照常负责实时消息。
+                        launch {
+                            while (currentCoroutineContext().isActive) {
+                                delay(INCREMENTAL_INTERVAL_MILLIS)
+                                // 上次 bootstrap 失败（服务端当时没起来）也在这里重试：
+                                // 标记没写就会真的再试一轮，写过就立刻返回。
+                                bootstrap.runIfNeeded(baseUrl)
+                                syncManager.syncNow()
                             }
-                        )
+                        }
+                        while (currentCoroutineContext().isActive) {
+                            val outcome = poller.pollOnce()
+                            delay(
+                                if (outcome.success) {
+                                    POLL_INTERVAL_MILLIS
+                                } else {
+                                    POLL_RETRY_MILLIS
+                                }
+                            )
+                        }
                     }
                 }
         }
@@ -107,5 +124,8 @@ class ServerModeRuntime @Inject constructor(
 
         /** 失败退避：网络断了不要每 500ms 打一次。 */
         const val POLL_RETRY_MILLIS = 5_000L
+
+        /** 前台轻量增量间隔（`/v1/state?since=` 只回变化；不是全量）。 */
+        const val INCREMENTAL_INTERVAL_MILLIS = 5 * 60 * 1_000L
     }
 }

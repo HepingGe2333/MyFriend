@@ -32,19 +32,27 @@ import com.yap.app.core.AgentCoreClients
 import com.yap.app.data.ai.DefaultJsonLlmClient
 import com.yap.app.data.ai.JsonLlmClient
 import com.yap.app.data.repo.DefaultPersonaTranslationGateway
+import com.yap.app.data.repo.MediaSenderUserAvatarPort
+import com.yap.app.data.repo.SettingsUserAvatarPort
 import com.yap.app.data.repo.PersonaTranslationGateway
 import com.yap.app.data.repo.AndroidErasureFiles
 import com.yap.app.data.repo.MediaReferenceSource
 import com.yap.app.data.repo.RoomErasureStore
 import com.yap.app.data.repo.RoomMediaReferenceSource
+import com.yap.app.data.repo.RoomServerBootstrapLocal
 import com.yap.app.data.repo.RoomServerChatSink
 import com.yap.app.data.repo.RoomServerEventSink
 import com.yap.app.data.repo.RoomServerStateSink
 import com.yap.app.data.remote.CredentialBackend
 import com.yap.app.data.remote.DataStoreServerLocalStore
 import com.yap.app.data.remote.DataStoreServerPresenceStore
+import com.yap.app.data.remote.ServerApiBootstrapRemote
 import com.yap.app.data.remote.ServerApiRemote
+import com.yap.app.data.remote.ServerBootstrapLocal
+import com.yap.app.data.remote.ServerBootstrapManager
+import com.yap.app.data.remote.ServerBootstrapRemote
 import com.yap.app.data.remote.ServerChatGateway
+import com.yap.app.data.remote.ServerChatMediaSender
 import com.yap.app.data.remote.ServerChatSink
 import com.yap.app.data.remote.ServerEventNotifier
 import com.yap.app.data.remote.ServerEventPoller
@@ -52,6 +60,8 @@ import com.yap.app.data.remote.ServerEventSink
 import com.yap.app.data.remote.ServerLocalStore
 import com.yap.app.data.remote.ServerModeRepository
 import com.yap.app.data.remote.ServerPresenceStore
+import com.yap.app.data.remote.UserAvatarCoordinator
+import com.yap.app.data.remote.UserAvatarLocalDeleter
 import com.yap.app.data.remote.ModeServerRemoteProvider
 import com.yap.app.data.remote.ServerRemoteProvider
 import com.yap.app.data.remote.ServerStateSink
@@ -375,6 +385,59 @@ object AppModule {
         localStore: ServerLocalStore,
         sink: ServerChatSink
     ): ServerChatGateway = ServerChatGateway(remoteProvider, localStore, sink)
+
+    /**
+     * 0.12.1：一次性 bootstrap（四象限全量搬运）。
+     *
+     * 三个依赖各自可替换：本地实现走 Room、远端实现每次现取 [ServerApi]、头像上传复用
+     * 人格头像那条「压缩 → 上传 → 规范化引用」链路。编排逻辑本身在纯 JVM 单测里用假实现覆盖。
+     */
+    /**
+     * 「我的头像」上传链路（0.12.1）：压缩→上传 USER_AVATAR→写设置→镜像；失败回滚旧头像。
+     *
+     * 装配成单例：端口自己无状态，失败回滚的语义只取决于传入的旧值。
+     */
+    @Provides
+    @Singleton
+    fun provideUserAvatarCoordinator(
+        settings: SettingsUserAvatarPort,
+        uploader: MediaSenderUserAvatarPort,
+        mode: ServerModeRepository,
+        mediaJanitor: com.yap.app.data.repo.MediaJanitor
+    ): UserAvatarCoordinator = UserAvatarCoordinator(
+        settings = settings,
+        uploader = uploader,
+        isServerMode = { mode.isEnabled() },
+        deleter = UserAvatarLocalDeleter { uri -> mediaJanitor.deleteIfUnreferenced(uri) }
+    )
+
+    @Provides
+    @Singleton
+    fun provideServerBootstrapLocal(impl: RoomServerBootstrapLocal): ServerBootstrapLocal = impl
+
+    @Provides
+    @Singleton
+    fun provideServerBootstrapRemote(mode: ServerModeRepository): ServerBootstrapRemote =
+        ServerApiBootstrapRemote(mode)
+
+    @Provides
+    @Singleton
+    fun provideServerBootstrapManager(
+        local: ServerBootstrapLocal,
+        remote: ServerBootstrapRemote,
+        localStore: ServerLocalStore,
+        mediaSender: ServerChatMediaSender
+    ): ServerBootstrapManager = ServerBootstrapManager(
+        local = local,
+        remote = remote,
+        store = localStore,
+        uploadAvatar = { uri, personaId ->
+            mediaSender.uploadPersonaAvatar(uri, personaId).getOrThrow()
+        },
+        uploadUserAvatar = { uri ->
+            mediaSender.uploadUserAvatar(uri).getOrThrow()
+        }
+    )
 
     @Provides
     @Singleton

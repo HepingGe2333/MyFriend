@@ -177,6 +177,11 @@ struct ChatScreen: View {
                 break
             }
         }
+        // 服务端模式：首次全量同步 / 每 5 分钟增量同步写库之后，聊天页也要立刻看到
+        //（否则要等它自己 4 秒一拍，或者「进来时还没同步完」就会一直空着）。
+        .onChange(of: env.serverDataVersion) { _ in
+            model.reloadMessages(preservingLoadedRange: true)
+        }
     }
 
     @ViewBuilder

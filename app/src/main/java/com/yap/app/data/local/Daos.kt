@@ -351,6 +351,14 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countInSession(sessionId: String): Int
 
+    /**
+     * 全库消息条数（bootstrap 四象限判定用）。
+     *
+     * 只回一个数字：判断「本地有没有聊天历史」不需要把消息物化出来，大库上这仍是一条索引扫描。
+     */
+    @Query("SELECT COUNT(*) FROM messages")
+    suspend fun countAll(): Int
+
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
 

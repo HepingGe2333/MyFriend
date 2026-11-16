@@ -227,7 +227,7 @@ class BackupRepository @Inject constructor(
             candidates += BackupMediaCandidate(kind, personaId, file.name, file, mime)
         }
         personas.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, it.id, it.avatarUri, avatarDir) }
-        addCandidate(BackupMediaKind.USER_AVATAR, null, settings.userAvatarUri, avatarDir)
+        addCandidate(BackupMediaKind.USER_AVATAR, null, settings.userAvatarLocalUri ?: settings.userAvatarUri, avatarDir)
         presets.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, null, it.avatarUri, avatarDir) }
         messages.forEach { message ->
             AttachmentsCodec.decode(message.attachmentsJson).forEach { attachment ->

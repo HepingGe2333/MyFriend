@@ -110,8 +110,8 @@ one client cannot take it down or make it amplify traffic. All of it is covered 
 
 | Limit | Value | Behaviour |
 | --- | --- | --- |
-| Request body | 1 MiB JSON routes (`AgentdApi.MAX_BODY_BYTES`); 4 MiB `POST /v1/media` (`MediaRoutes.MAX_REQUEST_BODY_BYTES`) | `Content-Length` over the route cap → `413 content_too_large`, body is not read into memory. The media route still rejects files over 2 MiB. |
-| Read timeout | 5 s (`AgentdServer.READ_TIMEOUT_MS`) | A body that stalls mid-transfer → `408 request_timeout`, connection closed, worker released |
+| Request body | 1 MiB JSON routes (`AgentdApi.MAX_BODY_BYTES`); 4 MiB `POST /v1/media` (`MediaRoutes.MAX_REQUEST_BODY_BYTES`); 8 MiB `POST /v1/sessions/{id}/messages/import` (`CrudRoutes.MAX_IMPORT_BODY_BYTES`); 256 MiB `POST /v1/backup` (`AgentdServer.MAX_BACKUP_BODY_BYTES`) | `Content-Length` over the route cap → `413 content_too_large`, body is not read into memory. The media route still rejects files over 2 MiB; the backup route is the only one whose body is streamed to disk instead of into a `ByteArray`. |
+| Read timeout | 5 s (`AgentdServer.READ_TIMEOUT_MS`); `POST /v1/backup` gets 300 s for its body (`BACKUP_IMPORT_READ_TIMEOUT_SECONDS`, 5 s per socket read) | A body that stalls mid-transfer → `408 request_timeout`, connection closed, worker released |
 | Body framing | `Content-Length` only | `Transfer-Encoding: chunked` → `411 length_required` (both clients send `Content-Length`; a blocking chunked parse would reopen the slow-client hole) |
 | Workers | 4 fixed threads + a bounded 64-connection queue | Slow clients can occupy at most the pool; `/health` keeps responding on the remaining threads, and a full queue closes new connections instead of growing memory |
 | Error bodies | message ≤ 512 chars | Client input is never echoed (unknown tool / long path / invalid JSON are answered with fixed text); `500` is a fixed message + random `errorId`, details only go to stderr |
@@ -144,7 +144,7 @@ Every source (the request's TCP peer address, as a string) gets its own **token 
   requests, then it is throttled to the refill rate;
 - each request takes one token. When the bucket is empty the server answers
   `429 rate_limited` with a `Retry-After: <seconds>` header (always ≥ 1) **before** reading the
-  request body, so an over-quota client cannot make the service read 1 MiB or parse JSON;
+  request body, so an over-quota client cannot make the service read the body or parse JSON;
 - the limiter runs **before authentication**: an over-quota client gets `429` even with a wrong
   token (it saves the constant-time compare, and leaves no `401` vs `200` difference to probe);
 - `--rate-limit 0` / `YAP_AGENTD_RATE_LIMIT=0` disables it completely (no buckets are kept).
@@ -224,7 +224,8 @@ server {
     ssl_certificate     /etc/letsencrypt/live/agent.example.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/agent.example.com/privkey.pem;
 
-    client_max_body_size 5m;        # agentd 自己会拒绝 >4 MiB（媒体）/ >1 MiB（其它路由）
+    client_max_body_size 5m;        # 媒体上传 4 MiB；备份导入要单独放到 256m（或走本机/内网直连）
+                                    # agentd 自己会按路由拒绝超限 body（媒体 4 MiB / 消息导入 8 MiB / 备份 256 MiB / 其它 1 MiB）
     add_header Strict-Transport-Security "max-age=31536000" always;
 
     location / {
@@ -480,6 +481,7 @@ environment variable, which wins over the default — same precedence as every o
   sessions/<sessionId>/blocks/<blockIndex>.jsonl   one message per line (append-only, UTF-8)
   media.json                     {"media":[{id,kind,personaId,mime,bytes,sha256,createdAt}]}
   media/<id>.<ext>               raw image bytes (jpg/png/webp; extension comes from mime)
+  .staging/                      transient: streamed backup upload + media decode targets (wiped on start)
 ```
 
 `memories.json`, `presets.json` and `push_tokens.json` are optional for old data directories
@@ -487,7 +489,12 @@ environment variable, which wins over the default — same precedence as every o
 whitelist, so even a hand-edited `apiKey` key never appears in a response or a backup. The
 whitelist is: `themeMode`, `accentColor`, `fontScale`, `bubbleStyle`, `animationsEnabled`,
 `hapticsEnabled`, `chatBackgroundColor`, `agentLoopEnabled`, `activePersonaId`,
-`autoTranslatePersona`.
+`autoTranslatePersona`, `userAvatarUri`.
+
+`userAvatarUri` holds the signed-in user's own avatar as a media reference (`"/v1/media/<id>"`, or
+`null` to clear it) and travels with backups. The older alias `myAvatarUri` is still **accepted on
+write** but normalised: `settings.json`, `GET /v1/settings` and backups only ever contain
+`userAvatarUri` (see `FileStore.SETTINGS_ALIASES`).
 
 **Seeding.** A missing/empty directory is seeded with three personas and one empty session, so the
 `curl` examples below work immediately. `:agentd` has no Android resources, so the ids are fixed
@@ -524,8 +531,9 @@ access (manual recovery for the crash window described below).
 ### API
 
 All endpoints sit behind the same `--token` / rate-limit / error-body rules as `/v1/core/*`.
-The request-body cap is **1 MiB for JSON routes** and **4 MiB for `POST /v1/media`** (whose file
-limit is still 2 MiB — see the media section below).
+The request-body cap is **1 MiB for JSON routes**, **4 MiB for `POST /v1/media`** (whose file limit
+is still 2 MiB), **8 MiB for `POST /v1/sessions/{id}/messages/import`** and **256 MiB for
+`POST /v1/backup`** (streamed to a staging file, never held as one `ByteArray`).
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -535,6 +543,7 @@ limit is still 2 MiB — see the media section below).
 | `POST` | `/v1/sessions/{id}/read` | `{upTo?}` → mark assistant messages read, `unread:0`, returns `{unread,readAt,marked,session}`. |
 | `GET` | `/v1/sessions/{id}/messages?beforeBlock=&limitBlocks=1` | One block per page. No offset. `beforeBlock` = older page, `afterBlock` = newer page (additive extension for `hasMoreNewer` navigation). |
 | `POST` | `/v1/sessions/{id}/messages` | Send a message; responds with SSE (`accepted → delta* → tool* → done`). `attachments` are media ids or `/v1/media/<id>` and are stored/returned as URLs. |
+| `POST` | `/v1/sessions/{id}/messages/import` | **0.12.1.** Batch-import client-side history (`{"messages":[…]}`; ≤200 per batch, ≤8 MiB body). Idempotent by message id, atomic per batch, never touches `unread` and never calls the LLM. See “Batch history import” below. |
 | `POST` | `/v1/media?kind=&mime=&personaId=` | Raw image bytes (`Content-Type: image/jpeg`/`png`/`webp`), single file ≤ 2 MiB. `201` new, `200` when the same sha256 already exists (dedup). |
 | `GET` | `/v1/media/{id}` | Raw bytes + `Content-Type` + `Cache-Control: private, max-age=31536000, immutable` + `ETag`. `If-None-Match` → `304`. |
 | `DELETE` | `/v1/media/{id}?force=1` | `409 media_in_use` + `references` while a message attachment / persona `avatarUrl` / preset `avatarUri` points at it; `force=1` deletes anyway (historical references then 404). |
@@ -550,8 +559,8 @@ limit is still 2 MiB — see the media section below).
 | `DELETE` | `/v1/presets/{id}` | Delete a preset (404 when absent). |
 | `GET` | `/v1/settings` | Whitelisted global settings (no API keys/secrets, ever). |
 | `POST` | `/v1/settings` | Merge whitelisted fields; unknown keys (including `apiKey`) are ignored. |
-| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings/media, **no secrets**). |
-| `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}`; validate everything first, then write. |
+| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings/media, **no secrets**). **0.12.1: streamed** (`Transfer-Encoding: chunked`, no `Content-Length`) — the whole backup is never built in memory. |
+| `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}`; validate everything first, then write. **0.12.1: the request body is streamed to a temp file and parsed incrementally** (body cap 256 MiB). |
 | `POST` | `/v1/push/register` | `{platform:"ios"|"android",token,bundleId?}`; idempotent per `platform+token`. |
 | `DELETE` | `/v1/push/register` | Unregister by body `{token,platform?}` or query `?token=&platform=`; idempotent. |
 | `GET` | `/v1/events?since=&timeoutSeconds=&limit=` | Incremental events (`message.created`, `mood.changed`, `presence.changed`). Long poll, 25 s max by default. |
@@ -599,10 +608,21 @@ curl -s "http://127.0.0.1:8788/v1/personas/seed-linshen/memories?limit=20"
 curl -s -X POST "http://127.0.0.1:8788/v1/presets" \
   -H 'Content-Type: application/json' -d '{"name":"夏夜","worldJson":"{}"}'
 # 13. backup (v5, no secrets) and merge/replace import
+#     GET is a chunked stream (no Content-Length); curl writes it straight to a file
 curl -s "http://127.0.0.1:8788/v1/backup" > backup.json
-curl -s -X POST "http://127.0.0.1:8788/v1/backup" \
+#     POST streams the body to a staging file server-side; build the envelope without
+#     loading the backup into a shell variable (`--data-binary @-` + printf/cat)
+{ printf '{"mode":"merge","data":'; cat backup.json; printf '}'; } \
+  | curl -s -X POST "http://127.0.0.1:8788/v1/backup" \
+      -H 'Content-Type: application/json' --data-binary @-
+# 13b. batch history import (client-side local history → server, ≤200 per batch, ≤8 MiB)
+curl -s -X POST "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messages/import" \
   -H 'Content-Type: application/json' \
-  -d "{\"mode\":\"merge\",\"data\":$(cat backup.json)}"
+  -d '{"messages":[{"id":"0b1c2d3e-0000-4000-8000-000000000010","role":"USER",
+       "content":"本地历史第一条","createdAt":1763200000000},
+       {"id":"0b1c2d3e-0000-4000-8000-000000000011","role":"ASSISTANT",
+       "content":"本地历史第二条","createdAt":1763200000500,"readAt":1763200000900}]}'
+# -> {"sessionId":"…","imported":2,"skipped":0,"blockRange":{"first":0,"last":0},"messageCount":2}
 # 14. push token registration (APNs/FCM delivery is deployment-side)
 curl -s -X POST "http://127.0.0.1:8788/v1/push/register" \
   -H 'Content-Type: application/json' -d '{"platform":"ios","token":"device-token","bundleId":"com.example.yap"}'
@@ -622,7 +642,8 @@ curl -N -s -X POST "http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messa
 ### CRUD, backup and push (M3–M6 server side)
 
 The routes in the table above follow the same token/rate-limit/error-body rules as the rest
-of `/v1` (1 MiB JSON body cap; `POST /v1/media` is the one 4 MiB exception). All writes go
+of `/v1` (1 MiB JSON body cap, with three deliberate exceptions: `POST /v1/media` 4 MiB,
+`POST /v1/sessions/{id}/messages/import` 8 MiB and `POST /v1/backup` 256 MiB). All writes go
 through the single `FileStore` lock, so a read-modify-write update (for example merging fields into
 one persona) cannot lose a concurrent request's field. Errors are
 `404 not_found` for unknown ids, `400 missing_field` / `invalid_argument` / `invalid_json` for bad
@@ -690,9 +711,113 @@ base64 is decoded back to `media/<id>.<ext>` and `media.json` is rewritten; `sha
 verified, so a corrupted/base64-mismatched entry rejects the whole import with `400 invalid_backup`
 before anything is written. `replace` also deletes old media files (the backup is the new state);
 `merge` keeps existing media and overlays entries with the same id (a same-id/different-sha conflict
-is rejected). Note that `POST /v1/backup` itself still uses the 1 MiB JSON body cap, so a backup
-whose media payload is larger than that cannot be imported through the HTTP route — export it
-without media or raise the client-side staging limit in a later phase.
+is rejected). `POST /v1/backup` accepts up to 256 MiB of body (streamed to disk, see the streaming
+section below), so media-heavy v5 backups **can** be imported over HTTP as of 0.12.1.
+
+### Batch history import (0.12.1)
+
+`POST /v1/sessions/{id}/messages/import` pushes a client's **local history** to the server when the
+client switches to server mode (local data is not migrated automatically).
+
+```json
+{"messages":[
+  {"id":"<client message id>","role":"USER","content":"嗨","createdAt":1763200000000,
+   "readAt":1763200000500,"attachments":["/v1/media/<id>"],"source":"IMPORT",
+   "clientMessageId":"<optional>","replyTo":"<optional>"}
+]}
+```
+
+- `id` (required): **kept verbatim** (no new id is generated) and must match `[A-Za-z0-9_-]{1,128}`
+  (UUID strings are fine). `role` (required): `USER`/`ASSISTANT`/`SYSTEM`, case-insensitive on input
+  and stored upper-case. `content` (required, may be **empty** — image-only history). `createdAt`
+  (required, epoch millis). `readAt` (optional, epoch millis; absent/`null` = unread).
+  `attachments` (optional, ≤8; a media id or `/v1/media/<id>`, normalised to the URL form; the media
+  **must already exist**, otherwise `400 unknown_media`). `source` (optional; `CHAT`/`PROACTIVE`/
+  `IMPORT`, unrecognised values are stored as `IMPORT`). `clientMessageId`/`replyTo` (optional,
+  ≤128 chars). `blockIndex` is ignored — the server owns block layout.
+- Limits: **≤200 messages per batch** (`400 too_many_messages`) and **≤8 MiB** per request
+  (`413 content_too_large`).
+- Response: `{"sessionId","imported","skipped","blockRange":{"first","last"}|null,"messageCount"}`.
+  `blockRange` is the block range touched by this batch (`null` when `imported == 0`).
+- Idempotency: a message id that already exists is **skipped, not overwritten** (`skipped++`), and the
+  status is always `200` — retrying a batch is safe. A batch is atomic: one invalid item rejects the
+  whole batch with `400` and writes nothing.
+- Ordering: messages are sorted by `(createdAt, id)` and inserted into the block they belong to
+  (block contents stay ordered). Existing messages keep their `id`, `content`, `createdAt`, `readAt`
+  and `blockIndex`; only when an insert would push a block past 200 messages does the whole session
+  get re-blocked (block indices are structural, message contents are not modified).
+- Side effects: the session's `lastMessageAt`, `messageCount`, `lastBlockIndex` and `updatedAt` are
+  updated; **`unread` is not touched** (history must not turn into "N unread"), no `message.created`
+  event is emitted, and no LLM call happens.
+- Errors use the standard `{"error":{"code","message"}}`: `not_found` (unknown session),
+  `invalid_argument`, `missing_field`, `invalid_json`, `unknown_media`, `too_many_messages`,
+  `content_too_large`.
+- Scale note: each batch re-reads the session's message ids to enforce idempotency (O(history) per
+  batch), so migrating 100k messages as 500 batches costs on the order of tens of seconds of IO. That
+  is fine for a one-time "switch to remote" push, but this route is not a bulk-copy engine.
+- Typical client flow: `GET /v1/sessions`; if every session has `messageCount == 0`, push local
+  history in `(createdAt, id)` order, 200 messages per batch. Reading history back:
+  `GET /v1/sessions/{id}/messages` returns the newest block, `beforeBlock=<blockIndex>` walks older
+  pages, and `hasMoreOlder == false` ends the walk (block indices may have holes, so do not use
+  `blockIndex == 0` as the stop condition). An empty session answers `blockIndex: null`,
+  `messages: []` with both `hasMoreOlder`/`hasMoreNewer` false.
+
+### Streaming backup (0.12.1)
+
+Both backup directions used to hold the whole payload in memory (a v5 JSON tree + string, plus every
+media `ByteArray`/base64 string). With 100k messages and 500 images that was hundreds of MiB of heap.
+0.12.1 makes both directions streaming.
+
+**Export (`GET /v1/backup`).** The response is `HTTP/1.1 200` with `Transfer-Encoding: chunked` and
+**no `Content-Length`** (`Connection: close` ends the body; an HTTP/1.0 request gets a close-delimited
+body instead). The server:
+1. takes a metadata snapshot under the store lock (personas/sessions/memories/presets/settings/media
+   list — all small);
+2. writes the JSON head (`format`, `formatVersion`, `appVersion`, `exportedAt`, `apiKeysOmitted`) and
+   the small sections, then streams `messages` as a **k-way merge**: one lazy cursor per session
+   reading one block (≤200 messages) at a time, so global `(createdAt, id)` order is preserved with
+   memory independent of history length;
+3. streams `media[]` one file at a time: a streaming SHA-256 pre-check (8 KiB buffer) followed by
+   chunked base64 encoding (24 KiB of raw bytes per chunk), so an 8 MiB image never becomes an
+   in-memory `ByteArray` + base64 `String`. Entries that are missing/tampered/too large are skipped
+   and counted in `mediaSkipped`.
+
+Peak heap is therefore a few tens of KiB of buffers + one message, regardless of backup size (target
+≤32 MiB for 100k messages + 500 images; the test below runs in a 256 MiB heap). Trade-off: the store
+lock is only held for the snapshot, so a message appended while the export runs may or may not be
+included (the backup is always valid JSON; a session deleted mid-export is simply skipped).
+
+**Import (`POST /v1/backup`).** The request body is streamed (64 KiB at a time, with its own 300 s read
+deadline) into `<data>/.staging/upload-*.json`; that file is then parsed **incrementally** by a small
+streaming JSON reader (`store/BackupJson.kt`) instead of `ByteArray` + `String` + `Json.parse`:
+- `personas`/`sessions`/`memories`/`presets` are small and stay in memory as model objects;
+- `messages` are validated one item at a time and appended to a per-session JSONL spool
+  (`.staging/messages-<hash>.jsonl`), then read back **per affected session** when the block files are
+  rewritten (peak = one session's messages);
+- `media[].data` is base64-decoded **straight to a staging file** (`.staging/media-<n>.bin`, 3-byte
+  quartets, ≤8 MiB enforced while decoding), with `sha256`/`bytes` verified before committing;
+  committing moves the file into `media/` with an atomic rename;
+- unknown top-level sections/keys are skipped (forward compatibility); the envelope requires `mode`
+  **before** `data` (both our export and the clients' `JSON.stringify` keep that order).
+
+Validation (ids, references, one-session-per-persona, media conflicts, settings whitelist) still runs
+**before any mutation**, so a bad request leaves the data directory untouched. `.staging/` is always
+removed afterwards (and swept on startup if the process was killed). Peak heap is dominated by "one
+message + one media chunk + one session's messages" (target ≤64 MiB for a 100k-message backup). Disk:
+the request body is on disk twice while an import runs (the upload file + the media staging files), so
+size that volume accordingly.
+
+**Testing the memory bound.** `agentd/build.gradle.kts` runs the whole `:agentd:test` task with
+`maxHeapSize = "256m"`, and `BackupStreamMemoryTest` proves the guarantee end to end: it seeds
+**10,000 messages + 50 × 64 KiB images**, exports over real HTTP with
+`HttpResponse.BodyHandlers.ofFile` (chunked response → file), wraps the result into a
+`{"mode":"replace","data":…}` envelope by streaming, posts it back with
+`HttpRequest.BodyPublishers.ofFile`, and asserts the imported counts and media bytes. Any
+implementation that buffers the whole backup would `OutOfMemoryError` under that heap. The test also
+asserts `Runtime.maxMemory() <= 320 MiB`, so "it did not OOM" is meaningful. `BackupStreamTest`
+covers the transport details: chunked framing replayed from a raw socket, absence of
+`Content-Length`, "chunked body == handler-level export", 8 MiB single-media round-trip, corrupt
+base64 rejected without writing media, and unknown sections skipped.
 
 > Format-version note: the client's `BACKUP_FORMAT_VERSION` is **5** and the M3–M6 write-path task
 > asks for v5, so this implementation reads/writes v5. The design document's endpoint table still
@@ -726,7 +851,8 @@ curl -s -X DELETE "http://127.0.0.1:8788/v1/media/6f1c…?force=1"
   item (including its original `kind`/`personaId`), and no second file is written; concurrent
   uploads of the same bytes are serialised by the store lock.
 - Limits: mime must be `image/jpeg` / `image/png` / `image/webp` (`415` otherwise; `?mime=` must
-  match `Content-Type`), single file ≤ 2 MiB (`413`), media route body ≤ 4 MiB, other routes 1 MiB.
+  match `Content-Type`), single file ≤ 2 MiB (`413`), media route body ≤ 4 MiB, message import ≤ 8 MiB,
+  backup import ≤ 256 MiB (streamed to disk), all other routes 1 MiB.
   The server does **not** decode or sniff the bytes (Content-Type is trusted; see risks).
 - Attachments: `POST /v1/sessions/{id}/messages` takes `attachments: ["<id>" | "/v1/media/<id>"]`,
   validates every entry exists (`400 unknown_media`) and stores `/v1/media/<id>`. `GET` messages
@@ -931,10 +1057,26 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   Related media edges: dedup is by sha256, so uploading identical bytes for a different `kind`
   returns the first item's `kind` with `200`; `DELETE ?force=1` does not rewrite historical messages
   (they keep `/v1/media/<id>` and downloads then 404); `DELETE /v1/personas/{id}` still does **not**
-  delete media (the client owns media GC); and because backup import goes through the 1 MiB JSON
-  route, media-heavy backups cannot be imported over HTTP yet. Media metadata lives in
-  `media.json` under the same single process-wide lock (a missing file is treated as empty; a
-  metadata row whose file disappeared returns 404 with a stderr warning).
+  delete media (the client owns media GC). Media metadata lives in `media.json` under the same single
+  process-wide lock (a missing file is treated as empty; a metadata row whose file disappeared
+  returns 404 with a stderr warning). `POST /v1/sessions/{id}/messages/import` validates
+  `attachments` by asking `media.json`, so an attachment pushed before its image is uploaded is
+  rejected with `400 unknown_media` — upload media first, then messages.
+- **Backup streaming has deliberate constraints (0.12.1).** `GET /v1/backup` now needs a client that
+  understands `Transfer-Encoding: chunked` (all mainstream HTTP stacks do; a hand-written socket
+  parser must decode chunks; the response has no `Content-Length`). The import envelope requires
+  `mode` **before** `data`; a JSON writer that reorders top-level keys gets `400 invalid_backup`
+  instead of a half-applied import. The incremental parser is a second JSON implementation (~450
+  lines) kept to the strict subset of the backup format — it is covered by the stream/round-trip
+  tests, but it is not a general-purpose JSON parser and should not be reused elsewhere. During an
+  import the request body and media staging files occupy disk under `<data>/.staging/` (worst case
+  roughly body size + decoded media size); a process kill mid-import leaves that directory behind and
+  it is swept on the next start (the *data* itself is still all-or-nothing up to the commit point).
+  Import memory is bounded by the largest affected session (its messages are materialised to rewrite
+  its block files), not by the whole backup — a single session with hundreds of thousands of messages
+  will still use correspondingly more heap. Export no longer holds the store lock for its whole
+  duration, so a concurrent append/delete can be reflected "as of a slightly fuzzy instant"
+  (still valid JSON; the alternative was blocking chat for the whole transfer).
 - **No LLM and no prompts.** `EchoReplyGenerator` echoes the user text plus one fixed Chinese
   sentence and estimates tokens by character count. The server neither accepts prompts from clients
   nor stores them; prompt construction is the next phase's job. `secrets.json` (0600, best-effort on
@@ -958,6 +1100,20 @@ Honest list; most of these are deliberate scope cuts, not oversights.
 
 ### Tests for this phase
 
+`MessageImportApiTest` (19) covers `POST /v1/sessions/{id}/messages/import`: normal/out-of-order
+import into the right block, idempotent skip (no overwrite, `readAt` untouched), unknown session,
+>200 per batch, bad role / illegal id / missing `createdAt`, unknown attachment, empty batch, 8 MiB
+body cap, restart persistence, pagination consistency over 450 messages (blocks 200/200/50),
+"existing messages keep every field", `unread`/event cursor untouched, and `GET` on the path → 405.
+`BackupStreamTest` (14) covers the streaming transport: chunked framing decoded from a raw socket
+(no `Content-Length`), chunked body == handler-level export, HTTP import with a streamed body +
+staging cleanup, bad JSON → `400 invalid_json` with no leftovers, `data` before `mode` rejected,
+non-object `data`, trailing garbage, an 8 MiB single-media round-trip through the file-based
+streaming path, oversized media counted in `mediaSkipped`, corrupt base64 rejected without writing
+media, sections in any order + unknown sections skipped, and the `userAvatarUri`/`myAvatarUri`
+settings normalisation. `BackupStreamMemoryTest` (1) is the memory proof: 10,000 messages + 50
+images exported/imported over real HTTP inside a 256 MiB heap (`maxHeapSize = "256m"` on the whole
+test task) — a buffering implementation would OOM there.
 `FileStoreTest` (19) covers seeding/read-back, block splitting at 200, delete boundary recomputation,
 emptied-block holes, missing-index rebuild, atomic writes (no `*.tmp`, parseable JSON), 8 threads ×
 125 concurrent appends with no loss, idempotency lookup, `secrets.json` permissions, usage,
@@ -971,7 +1127,7 @@ backup media round-trip / 8 MiB skip count / corrupt-sha rejection / replace cle
 restart persistence and 8 concurrent same-content uploads (one file). `MediaServerTest` (4) is the
 real-socket half: binary upload/download over HTTP, 304 revalidation, token enforcement on media
 routes, and the 4 MiB media vs 1 MiB other-route declared-body limits. The whole `:agentd:test`
-suite is now **358 tests**. `ChatSseTest` (10) covers event order, tool forwarding,
+suite is now **392 tests** (0.12.0's 358 + 34 for batch import and streaming backup). `ChatSseTest` (10) covers event order, tool forwarding,
 sequential and concurrent idempotency, orphan-reply completion, a dead sink, attachment persistence
 and validation-before-stream. `AuthorityServerTest` (6) is the real-socket half: SSE over HTTP, a
 client that disconnects mid-stream still gets a persisted reply, token/rate limit on the new routes,
@@ -1014,7 +1170,7 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
 | 409 | `unsupported_backup_version` / `media_in_use` | Import of a `formatVersion` other than 5 is refused instead of half-imported; `DELETE /v1/media/{id}` is refused while the file is referenced (`references` count in the body) unless `?force=1`. |
 | 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
-| 413 | `content_too_large` | Declared or accumulated body exceeds the route cap (1 MiB JSON, 4 MiB media upload), or a media file exceeds 2 MiB. |
+| 413 | `content_too_large` | Declared or accumulated body exceeds the route cap (1 MiB JSON, 4 MiB media upload, 8 MiB message import, 256 MiB backup import), or a media file exceeds 2 MiB. |
 | 429 | `rate_limited` | This source exceeded its token bucket; the response carries `Retry-After: <seconds>` (see “Rate limiting”). |
 | 500 | `internal_error` | Unexpected server-side failure; the response is a fixed message plus a random `errorId`, never the exception text. |
 
@@ -1102,6 +1258,17 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   requests, half-open body (health stays fast, then `408`), oversized declared body (`413`),
   chunked body (`411`), the optional token (`401`/`200`), and 0.12.0 rate limiting
   (`429` + `Retry-After`, `/health` in its own bucket, `--rate-limit 0` disabling it).
+- `MessageImportApiTest` — 19 handler-level tests for batch history import: idempotent by id,
+  out-of-order inserts into the right block, atomic rejection (bad role / illegal id / unknown
+  attachment / >200), 8 MiB body cap, restart persistence, pagination consistency and
+  "`unread`/events untouched".
+- `BackupStreamTest` — 14 tests for the streaming backup: `Transfer-Encoding: chunked` replayed from
+  a raw socket, body equality with the handler-level export, HTTP import with a streamed request
+  body, bad-JSON/envelope-order rejection with zero leftovers, 8 MiB media round-trip, corrupt
+  base64, `mediaSkipped`, section-order/unknown-section tolerance and `userAvatarUri` normalisation.
+- `BackupStreamMemoryTest` — the 256 MiB-heap proof: 10,000 messages + 50 images exported (chunked)
+  and imported (streamed request body) over real HTTP; the whole `:agentd:test` task runs with
+  `maxHeapSize = "256m"`, so any regression to "whole backup in memory" fails here with an OOM.
 - `FileStoreTest` — 19 storage tests: seeding/read-back, block split at 200, delete boundary
   recomputation, emptied-block holes (no renumbering), missing-`block_index.json` rebuild, atomic
   writes (no `*.tmp`, parseable JSON), 8×125 concurrent appends with no loss/duplication,
@@ -1138,7 +1305,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
   `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 358 tests in total in 0.12.0 — the authoritative-mode suites above plus the
+`:agentd:test` is 392 tests in total in 0.12.1 (358 in 0.12.0) — the authoritative-mode suites above plus the
 `search/` (52) and `proactive/` (68) suites added in the same release. The 43 new tests for
 M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`; the 28
 media tests (M5 upload/download) are `MediaApiTest` and `MediaServerTest`.

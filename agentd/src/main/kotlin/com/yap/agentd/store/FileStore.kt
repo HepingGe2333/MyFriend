@@ -10,10 +10,13 @@ import com.yap.agentd.store.StoreJson.optString
 import com.yap.agentd.store.StoreJson.reqLong
 import com.yap.agentd.store.StoreJson.reqString
 import com.yap.agentd.store.StoreJson.stringList
+import java.io.BufferedWriter
 import java.io.IOException
+import java.io.Reader
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -21,6 +24,7 @@ import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
 import java.util.Base64
+import java.util.PriorityQueue
 import java.util.UUID
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
@@ -142,8 +146,40 @@ class FileStore(
             "chatBackgroundColor",
             "agentLoopEnabled",
             "activePersonaId",
-            "autoTranslatePersona"
+            "autoTranslatePersona",
+            // 用户自己的头像（`/v1/media/<id>`）。客户端切换远程后要能把它带到服务端，
+            // 所以进白名单；它是**媒体引用**，不是密钥，随备份一起走。
+            // `myAvatarUri` 是历史别名，读写都会被归一成 `userAvatarUri`（见 SETTINGS_ALIASES）。
+            "userAvatarUri",
+            "myAvatarUri"
         )
+
+        /**
+         * 备份导入的临时目录（相对数据目录）：请求体先流式落盘到这里，媒体逐条解码成
+         * `media-<n>.bin`，提交时再原子移进 `media/`。崩溃留下的残渣在下次打开时清掉。
+         */
+        const val STAGING_DIR = ".staging"
+
+        /** 一条消息批量导入接口的单批上限（与 `CrudRoutes` 的校验共用一份）。 */
+        const val MAX_IMPORT_MESSAGES = 200
+
+        /** 一份备份里允许的最大消息条数（挡住「用 1 亿条消息的备份把内存/磁盘打满」）。 */
+        const val MAX_BACKUP_MESSAGES = 1_000_000
+
+        /** 消息（`createdAt` 相同则按 id）的稳定顺序：块内、分页、备份都按它排。 */
+        val MESSAGE_ORDER: Comparator<Message> = compareBy({ it.createdAt }, { it.id })
+
+        /**
+         * 设置键的历史别名 → 规范键。
+         *
+         * `myAvatarUri` 是最早讨论「我的头像」时用的名字，客户端最终统一到
+         * `userAvatarUri`；服务端**接受两者、只存/只回规范键**，这样备份与跨端还原不会出现
+         * 同一份头像两条记录。
+         */
+        val SETTINGS_ALIASES: Map<String, String> = mapOf("myAvatarUri" to "userAvatarUri")
+
+        /** 设置键的规范形态（未知键原样返回，调用方再用白名单过滤）。 */
+        fun canonicalSettingKey(key: String): String = SETTINGS_ALIASES[key] ?: key
         const val SESSIONS_DIR = "sessions"
         const val BLOCKS_DIR = "blocks"
         const val BLOCK_INDEX_FILE = "block_index.json"
@@ -222,6 +258,9 @@ class FileStore(
         Files.createDirectories(root)
         Files.createDirectories(sessionsDir)
         Files.createDirectories(mediaDir)
+        // 上次导入/导出如果进程被杀，`.staging/` 里会留下请求体与媒体暂存文件：
+        // 它们不是数据（提交前不落 `media/`），启动时直接清掉，避免占盘。
+        deleteRecursively(root.resolve(STAGING_DIR))
         val metaJson = readJsonFile(root.resolve(META_FILE))
         if (metaJson == null) {
             if (hasExistingData()) {
@@ -667,12 +706,15 @@ class FileStore(
     /** 合并设置：只写白名单键；未知键（包括 `apiKey` / `secrets`）静默忽略，绝不落盘。 */
     fun mergeSettings(values: Map<String, JsonValue>): JsonValue.Obj = lock.withLock {
         // 从白名单开始重建：即使旧盘上手工塞过 apiKey，下一次设置写入也会把它清掉。
+        // 键一律先归一（`myAvatarUri` → `userAvatarUri`）：同一份头像只留一条记录。
         val updated = LinkedHashMap<String, JsonValue>()
         for ((key, value) in settings.fields) {
-            if (key in SETTINGS_WHITELIST) updated[key] = value
+            val canonical = canonicalSettingKey(key)
+            if (canonical in SETTINGS_WHITELIST) updated[canonical] = value
         }
         for ((key, value) in values) {
-            if (key in SETTINGS_WHITELIST) updated[key] = value
+            val canonical = canonicalSettingKey(key)
+            if (canonical in SETTINGS_WHITELIST) updated[canonical] = value
         }
         settings = JsonValue.Obj(updated)
         writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
@@ -1080,6 +1122,217 @@ class FileStore(
         SessionReadResult(marked = marked, readAt = readAt, session = updated)
     }
 
+    // ================================================================== 写：批量历史消息导入
+
+    /**
+     * `POST /v1/sessions/{id}/messages/import` 的存储入口：**把客户端本地历史搬到服务端**。
+     *
+     * 语义（与 HTTP 契约一一对应，写在 `agentd/README.md`）：
+     * - **幂等**：同 id 已存在就跳过（`skipped++`），不覆盖、不改 `readAt`；所以客户端重试/重推
+     *   同一批永远安全；
+     * - **原子**：一批要么全落，要么一条不落（校验先做，写盘在最后）；
+     * - **不改已有消息**：走「插入到正确块」的路径，只有块内行数超过 [BLOCK_SIZE] 时才整会话重排
+     *   （块编号是结构信息，消息正文/时间/已读状态不动）；
+     * - **不发事件、不写 unread**：历史消息不该让会话显示「N 条未读」，也不该触发推送；
+     *   会话的 `lastMessageAt` / `messageCount` / `lastBlockIndex` / `updatedAt` 仍然更新
+     *   （否则 `/v1/sessions` 与 `/v1/state` 会自相矛盾）。
+     *
+     * @param incoming 已由路由层校验过 role/attachments 的消息（id 与 role 这里再挡一次）
+     */
+    fun importMessages(sessionId: String, incoming: List<ImportMessage>): MessageImportResult = lock.withLock {
+        val session = requireSessionLocked(sessionId)
+        if (incoming.size > MAX_IMPORT_MESSAGES) {
+            throw IllegalArgumentException("单批最多 $MAX_IMPORT_MESSAGES 条消息")
+        }
+        // 1) 校验（任何写之前）：id/role 合法、同批不重复。
+        val batchIds = HashSet<String>(incoming.size * 2)
+        for (message in incoming) {
+            if (!MESSAGE_ID_PATTERN.matches(message.id)) {
+                throw IllegalArgumentException("消息 id 不合法（只允许 [A-Za-z0-9_-]{1,128}）：${message.id.take(64)}")
+            }
+            if (!MessageRole.isValid(message.role)) throw IllegalArgumentException("非法的角色：${message.role}")
+            if (message.createdAt < 0) throw IllegalArgumentException("createdAt 不能是负数")
+            if (!batchIds.add(message.id)) throw IllegalArgumentException("同一批里消息 id 重复：${message.id}")
+        }
+
+        // 2) 幂等过滤：已存在的 id 只计数，不覆盖。
+        val blocks = blocksForLocked(sessionId)
+        val existingIds = HashSet<String>()
+        for (block in blocks) {
+            for (message in readBlockLocked(sessionId, block.index)) existingIds += message.id
+        }
+        val skipped = incoming.count { it.id in existingIds }
+        val fresh = incoming.asSequence()
+            .filter { it.id !in existingIds }
+            .map { message ->
+                Message(
+                    id = message.id,
+                    sessionId = sessionId,
+                    blockIndex = 0, // 真实块号由 insertMessagesLocked 决定
+                    role = message.role,
+                    content = message.content,
+                    createdAt = message.createdAt,
+                    readAt = message.readAt,
+                    attachments = message.attachments,
+                    source = message.source,
+                    clientMessageId = message.clientMessageId,
+                    replyTo = message.replyTo,
+                    promptTokens = null,
+                    completionTokens = null
+                )
+            }
+            .sortedWith(MESSAGE_ORDER)
+            .toList()
+        if (fresh.isEmpty()) {
+            return@withLock MessageImportResult(
+                imported = 0,
+                skipped = skipped,
+                firstBlock = null,
+                lastBlock = null,
+                messageCount = session.messageCount
+            )
+        }
+
+        // 3) 落块 + 更新会话（块表、会话表各原子写一次）。
+        val range = insertMessagesLocked(sessionId, blocks, fresh)
+        persistBlockIndexLocked(sessionId, blocks)
+        val lastBlock = blocks.lastOrNull()
+        val updated = session.copy(
+            lastMessageAt = lastBlock?.lastAt ?: session.lastMessageAt,
+            lastBlockIndex = lastBlock?.index ?: -1,
+            updatedAt = nextTimestampLocked(),
+            messageCount = session.messageCount + fresh.size
+        )
+        sessions[sessionId] = updated
+        persistSessionsLocked()
+        for (message in fresh) indexForAppendLocked(sessionId, message)
+        MessageImportResult(
+            imported = fresh.size,
+            skipped = skipped,
+            firstBlock = range.first,
+            lastBlock = range.second,
+            messageCount = updated.messageCount
+        )
+    }
+
+    /**
+     * 把**已按 `(createdAt, id)` 排好序**的新消息插入块序列，返回被触及的块范围。
+     *
+     * 两条路径：
+     * - 常见路径（客户端按时间顺序推历史、或服务端还没有更新的消息）：新消息落在某块的中间/末尾，
+     *   只重写**被插到的那几块**；已有消息的 `blockIndex` 与内容都不变；
+     * - 兜底路径：某块插入后超过 [BLOCK_SIZE] 时整会话按时间重排并重新切块（块编号会变，
+     *   消息正文不变）。客户端按块分页，所以只要块表与块文件一致就不会读到坏形状。
+     */
+    private fun insertMessagesLocked(
+        sessionId: String,
+        blocks: MutableList<BlockMeta>,
+        sorted: List<Message>
+    ): Pair<Int, Int> {
+        var firstTouched = Int.MAX_VALUE
+        var lastTouched = Int.MIN_VALUE
+        fun touch(blockIndex: Int) {
+            firstTouched = minOf(firstTouched, blockIndex)
+            lastTouched = maxOf(lastTouched, blockIndex)
+        }
+
+        // 每条新消息落到「第一块 last >= 它」的块；都比所有块新就追加到末尾。
+        val inserts = LinkedHashMap<Int, MutableList<Message>>()
+        val appended = ArrayList<Message>()
+        var blockPosition = 0
+        for (message in sorted) {
+            while (blockPosition < blocks.size) {
+                val block = blocks[blockPosition]
+                val afterBlock = message.createdAt > block.lastAt ||
+                    (message.createdAt == block.lastAt && message.id > block.lastMessageId)
+                if (!afterBlock) break
+                blockPosition += 1
+            }
+            if (blockPosition < blocks.size) {
+                inserts.getOrPut(blocks[blockPosition].index) { ArrayList() }.add(message)
+            } else {
+                appended.add(message)
+            }
+        }
+
+        var overflow = false
+        for ((blockIndex, news) in inserts) {
+            val position = blocks.indexOfFirst { it.index == blockIndex }
+            val existing = readBlockLocked(sessionId, blockIndex)
+            val merged = (existing + news).sortedWith(MESSAGE_ORDER)
+            if (merged.size > BLOCK_SIZE) {
+                overflow = true
+                break
+            }
+            rewriteBlockLocked(sessionId, blockIndex, merged)
+            blocks[position] = blocks[position].copy(
+                firstMessageId = merged.first().id,
+                lastMessageId = merged.last().id,
+                firstAt = merged.first().createdAt,
+                lastAt = merged.last().createdAt,
+                count = merged.size
+            )
+            touch(blockIndex)
+        }
+
+        if (overflow) {
+            // 整会话重排：按 id 去重后重写全部块（已重写过的块里可能已经有新消息，去重保证不重复）。
+            val byId = LinkedHashMap<String, Message>()
+            for (block in blocks) {
+                for (message in readBlockLocked(sessionId, block.index)) byId[message.id] = message
+            }
+            for (message in sorted) byId[message.id] = message
+            val ordered = byId.values.sortedWith(MESSAGE_ORDER)
+            val oldIndexes = blocks.map { it.index }
+            val metas = writeSessionBlocksLocked(sessionId, ordered)
+            for (index in oldIndexes) {
+                if (metas.none { it.index == index }) Files.deleteIfExists(blockFile(sessionId, index))
+            }
+            blocks.clear()
+            blocks.addAll(metas)
+            for (meta in metas) touch(meta.index)
+            return firstTouched to lastTouched
+        }
+
+        if (appended.isNotEmpty()) {
+            var remaining: List<Message> = appended
+            val lastBlock = blocks.lastOrNull()
+            if (lastBlock != null && lastBlock.count < BLOCK_SIZE) {
+                val take = minOf(BLOCK_SIZE - lastBlock.count, remaining.size)
+                val merged = (readBlockLocked(sessionId, lastBlock.index) + remaining.subList(0, take))
+                    .sortedWith(MESSAGE_ORDER)
+                rewriteBlockLocked(sessionId, lastBlock.index, merged)
+                val position = blocks.indexOfFirst { it.index == lastBlock.index }
+                blocks[position] = lastBlock.copy(
+                    firstMessageId = merged.first().id,
+                    lastMessageId = merged.last().id,
+                    firstAt = merged.first().createdAt,
+                    lastAt = merged.last().createdAt,
+                    count = merged.size
+                )
+                touch(lastBlock.index)
+                remaining = remaining.subList(take, remaining.size)
+            }
+            var nextIndex = (blocks.lastOrNull()?.index ?: -1) + 1
+            for (chunk in remaining.chunked(BLOCK_SIZE)) {
+                val blockIndex = nextIndex++
+                rewriteBlockLocked(sessionId, blockIndex, chunk)
+                blocks.add(
+                    BlockMeta(
+                        index = blockIndex,
+                        firstMessageId = chunk.first().id,
+                        lastMessageId = chunk.last().id,
+                        firstAt = chunk.first().createdAt,
+                        lastAt = chunk.last().createdAt,
+                        count = chunk.size
+                    )
+                )
+                touch(blockIndex)
+            }
+        }
+        return firstTouched to lastTouched
+    }
+
     // ================================================================== 写：心情 / 在场 / 用量 / 配置
 
     /** 改心情；值真的变了才落盘并发 `mood.changed` 事件。 */
@@ -1171,67 +1424,543 @@ class FileStore(
         true
     }
 
-    // ================================================================== 备份
+    // ================================================================== 备份（流式导出）
 
     /**
-     * 导出备份 v5（`GET /v1/backup`）。
+     * 流式导出备份 v5（`GET /v1/backup`）——**不构造整份 `JsonValue` 树、不构造整份字符串**。
      *
-     * 只导服务端权威模式持有的内容：人格、会话、消息、记忆、预设、设置、媒体。**不含**：
-     * `secrets.json` / API Key / 搜索密钥（本来就不在人格/设置里）；usage；api_configs 的密钥。
-     * `apiKeysOmitted: true` 是给读文件的人看的声明。
+     * 为什么必须流式：v5 备份里的 `media[].data` 是 base64（单张 ≤8 MiB、合计 ≤128 MiB），
+     * 0.12.0 的实现把整份备份先拼成 `JsonValue.Obj`、再 `stringify` 成 `String`、再
+     * `toByteArray` 写 socket —— 10 万条消息 + 500 张图时峰值是几百 MB。现在改成：
      *
-     * 媒体以 base64 放进 `media[]`（每条带 `data`），受 [MAX_BACKUP_MEDIA_FILE_BYTES] /
-     * [MAX_BACKUP_MEDIA_TOTAL_BYTES] 限制；超限的条目不导，只把数量写进 `mediaSkipped`。
-     * 导入方据此知道「这份备份不是全量媒体」，而不是以为图片丢了。
+     * 1. 在写锁内**只取元数据快照**（人格/会话/记忆/预设/设置/媒体清单，都是小对象）；
+     * 2. 消息段按 `(createdAt, id)` 全局有序输出，每个会话一个惰性游标（一次读一块 ≤200 条），
+     *    k 路归并 → 内存与「历史总长度」无关；
+     * 3. 媒体段逐文件读、**边读边 base64 编码**（每次 24 KiB 原始字节），只做一次 sha256 校验
+     *    预扫（同样是流式摘要），校验不过就跳过并计入 `mediaSkipped`；
+     * 4. 直接写进调用方给的可追加对象（生产是 socket 上的 chunked writer）。
+     *
+     * 锁的取舍：0.12.0 在整个导出期间持锁；现在只在取快照时持锁，消息/媒体按块/按文件读取
+     * （每次 `blocks()`/`blockMessages()` 自己短暂持锁）。好处是 100 MB 备份不会让聊天卡住，
+     * 代价是导出期间新追加的消息**可能落在**快照与读取之间（备份仍是自洽的合法 JSON，只是
+     * 不保证严格时间点一致；导出期间被删除的会话会被跳过）。
+     *
+     * 输出与 0.12.0 逐字节兼容：字段顺序、转义规则与 `Json.stringify` 一致。
      */
-    fun exportBackup(appVersion: String, exportedAt: Long): JsonValue.Obj = lock.withLock {
-        val allMessages = allMessagesLocked()
-        val exportedMedia = exportMediaLocked()
-        StoreJson.obj(
-            "format" to StoreJson.str(BACKUP_FORMAT_NAME),
-            "formatVersion" to StoreJson.num(BACKUP_FORMAT_VERSION),
-            "appVersion" to StoreJson.str(appVersion),
-            "exportedAt" to StoreJson.num(exportedAt),
-            "apiKeysOmitted" to StoreJson.bool(true),
-            "personas" to StoreJson.arr(personas.map { it.toJson() }),
-            "sessions" to StoreJson.arr(sessions.values.map { it.toJson() }),
-            "messages" to StoreJson.arr(allMessages.map { it.toJson() }),
-            "memories" to StoreJson.arr(
-                memories.values.sortedBy { it.createdAt }.map { it.toJson() }
-            ),
-            "presets" to StoreJson.arr(presets.values.map { it.toJson() }),
-            "media" to StoreJson.arr(exportedMedia.items),
-            "mediaSkipped" to StoreJson.num(exportedMedia.skipped),
-            "settings" to publicSettingsLocked()
-        )
+    fun writeBackup(appVersion: String, exportedAt: Long, out: Appendable) {
+        val snapshot = lock.withLock {
+            ExportSnapshot(
+                personas = personas.map { it.toJson() },
+                sessions = sessions.values.map { it.toJson() },
+                sessionIds = sessions.keys.toList(),
+                memories = memories.values.sortedBy { it.createdAt }.map { it.toJson() },
+                presets = presets.values.map { it.toJson() },
+                settings = publicSettingsLocked(),
+                media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList()
+            )
+        }
+
+        val writer = JsonStreamWriter(out)
+        writer.startObject()
+        writer.key("format")
+        writer.stringValue(BACKUP_FORMAT_NAME)
+        writer.key("formatVersion")
+        writer.number(BACKUP_FORMAT_VERSION)
+        writer.key("appVersion")
+        writer.stringValue(appVersion)
+        writer.key("exportedAt")
+        writer.number(exportedAt)
+        writer.key("apiKeysOmitted")
+        writer.bool(true)
+        writer.key("personas")
+        writer.value(jsonArray(snapshot.personas))
+        writer.key("sessions")
+        writer.value(jsonArray(snapshot.sessions))
+        writer.key("messages")
+        writer.startArray()
+        writeMessagesStreamed(writer, snapshot.sessionIds)
+        writer.endArray()
+        writer.key("memories")
+        writer.value(jsonArray(snapshot.memories))
+        writer.key("presets")
+        writer.value(jsonArray(snapshot.presets))
+        writer.key("media")
+        writer.startArray()
+        val mediaSkipped = writeMediaStreamed(writer, snapshot.media)
+        writer.endArray()
+        writer.key("mediaSkipped")
+        writer.number(mediaSkipped)
+        writer.key("settings")
+        writer.value(snapshot.settings)
+        writer.endObject()
+    }
+
+    /** 导出开始时在锁内取的元数据快照（消息与媒体字节故意不在里面）。 */
+    private class ExportSnapshot(
+        val personas: List<JsonValue>,
+        val sessions: List<JsonValue>,
+        val sessionIds: List<String>,
+        val memories: List<JsonValue>,
+        val presets: List<JsonValue>,
+        val settings: JsonValue.Obj,
+        val media: List<MediaItem>
+    )
+
+    private fun jsonArray(items: List<JsonValue>): JsonValue.Arr = JsonValue.Arr(items.toMutableList())
+
+    /**
+     * 消息段：按 `(createdAt, id)` 全局有序输出，但**不把 10 万条消息读进内存**——
+     * 每个会话一个惰性游标（一次一块 = 最多 [BLOCK_SIZE] 条），用优先队列做 k 路归并。
+     * 内存上限 ≈ 会话数 × 1 条消息，与历史长度无关。
+     */
+    private fun writeMessagesStreamed(writer: JsonStreamWriter, sessionIds: List<String>) {
+        val queue = PriorityQueue(compareBy<MessageHead> { it.message.createdAt }.thenBy { it.message.id })
+        for (sessionId in sessionIds) {
+            val cursor = SessionMessageCursor(sessionId)
+            cursor.advance()?.let { queue.add(MessageHead(it, cursor)) }
+        }
+        while (queue.isNotEmpty()) {
+            val head = queue.poll()
+            writer.element()
+            writer.value(head.message.toJson())
+            head.cursor.advance()?.let { queue.add(MessageHead(it, head.cursor)) }
+        }
+    }
+
+    private class MessageHead(val message: Message, val cursor: SessionMessageCursor)
+
+    /** 一个会话的消息游标：按块前进，内存里最多一块（[BLOCK_SIZE] 条）。 */
+    private inner class SessionMessageCursor(private val sessionId: String) {
+        private val blockIndexes: List<Int> = try {
+            blocks(sessionId).map { it.index }
+        } catch (_: Exception) {
+            emptyList() // 导出期间会话被删掉：跳过它，不要打挂整份备份
+        }
+        private var blockPosition = 0
+        private var buffer: List<Message> = emptyList()
+        private var messagePosition = 0
+
+        fun advance(): Message? {
+            while (true) {
+                if (messagePosition < buffer.size) return buffer[messagePosition++]
+                if (blockPosition >= blockIndexes.size) return null
+                buffer = try {
+                    blockMessages(sessionId, blockIndexes[blockPosition++])
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                messagePosition = 0
+            }
+        }
     }
 
     /**
-     * 导入备份（`POST /v1/backup`）。
+     * 媒体段：逐文件读、流式 base64。
      *
-     * 事务性：先把所有段解析成候选内存模型、校验 id/引用/唯一性；**全部通过之后**才动
-     * 内存和磁盘。不是数据库事务（写多个文件时进程被杀仍可能留下部分文件），但请求级
-     * 校验失败绝不会写一半。
-     *
-     * merge：按 id 更新/新增，未在备份里的内容保留；
-     * replace：清空人格/会话/消息/记忆/预设/设置/媒体（以及随之孤儿化的心情、在场、主动计数）
-     * 后导入，usage/api_configs/secrets/push_tokens 不在备份里，因此保留。
-     *
-     * 媒体：备份 `media[]` 里的 base64 还原到 `media/<id>.<ext>`，清单写回 `media.json`；
-     * 消息/人格/预设里的 `/v1/media/<id>` 引用原样保留（备份里已经是规范形态），不需要重写历史。
+     * 先流式计算一次 sha256（与 `media.json` 的元数据比对），再流式编码；两步都只占 8–24 KiB
+     * 缓冲。读不出/超限/sha 对不上的条目**跳过并计数**（`mediaSkipped`），不让一张图毁掉整份
+     * 备份，也不让导入端因为坏条目整份拒绝。
      */
-    fun importBackup(mode: String, data: JsonValue.Obj, now: Long): BackupImportResult = lock.withLock {
+    private fun writeMediaStreamed(writer: JsonStreamWriter, items: List<MediaItem>): Int {
+        var total = 0L
+        var skipped = 0
+        for (item in items) {
+            if (item.bytes > MAX_BACKUP_MEDIA_FILE_BYTES) {
+                skipped += 1
+                continue
+            }
+            val file = try {
+                mediaFile(item)
+            } catch (_: StoreCorruptionException) {
+                skipped += 1
+                continue
+            }
+            if (!Files.exists(file)) {
+                System.err.println("[agentd] 备份跳过文件缺失的媒体：${item.id}")
+                skipped += 1
+                continue
+            }
+            val actualSize = try {
+                Files.size(file)
+            } catch (_: IOException) {
+                -1L
+            }
+            if (actualSize < 0 ||
+                actualSize > MAX_BACKUP_MEDIA_FILE_BYTES ||
+                total + actualSize > MAX_BACKUP_MEDIA_TOTAL_BYTES
+            ) {
+                skipped += 1
+                continue
+            }
+            val actualSha = sha256OfFile(file)
+            if (actualSha == null || actualSha != item.sha256) {
+                System.err.println("[agentd] 备份跳过内容与元数据不一致的媒体：${item.id}")
+                skipped += 1
+                continue
+            }
+            total += actualSize
+            writer.element()
+            writer.startObject()
+            writer.key("id")
+            writer.stringValue(item.id)
+            writer.key("kind")
+            writer.stringValue(item.kind)
+            writer.key("personaId")
+            if (item.personaId == null) writer.nullValue() else writer.stringValue(item.personaId)
+            writer.key("mime")
+            writer.stringValue(item.mime)
+            writer.key("bytes")
+            writer.number(item.bytes)
+            writer.key("sha256")
+            writer.stringValue(item.sha256)
+            writer.key("createdAt")
+            writer.number(item.createdAt)
+            writer.key("data")
+            writer.beginLongString()
+            appendBase64(writer, file)
+            writer.endLongString()
+            writer.endObject()
+        }
+        return skipped
+    }
+
+    /**
+     * 分块 base64：每次读 3 的整数倍字节，编码后的片段可以直接拼接（等价于整份编码），
+     * 因此不需要把 8 MiB 图片一次读进内存。
+     */
+    private fun appendBase64(writer: JsonStreamWriter, file: Path) {
+        val chunk = ByteArray(3 * 8192)
+        Files.newInputStream(file).use { input ->
+            while (true) {
+                var read = 0
+                while (read < chunk.size) {
+                    val n = input.read(chunk, read, chunk.size - read)
+                    if (n < 0) break
+                    read += n
+                }
+                if (read <= 0) return
+                val slice = if (read == chunk.size) chunk else chunk.copyOf(read)
+                writer.stringChunk(Base64.getEncoder().encodeToString(slice))
+                if (read < chunk.size) return
+            }
+        }
+    }
+
+    // ================================================================== 备份（流式导入）
+
+    /**
+     * `POST /v1/backup` 的入口：解析信封 `{"mode":"merge"|"replace","data":{…}}` 并导入。
+     *
+     * 输入是 [Reader]（生产是「请求体先流式落到的临时文件」、handler 直调路径是 `StringReader`），
+     * 所以**整份备份从不进内存**。约束：`mode` 必须出现在 `data` 之前（我们自己的导出与
+     * 0.12.x 客户端的 `JSON.stringify` 都保持这个顺序），否则 400 —— 见 README 的「风险」。
+     */
+    fun importBackupRequest(input: Reader): BackupImportResult {
+        val reader = BackupJsonReader(input)
+        reader.beginObject()
+        var mode: String? = null
+        var result: BackupImportResult? = null
+        while (true) {
+            val key = reader.nextKey() ?: break
+            when (key) {
+                "mode" -> {
+                    mode = (reader.readValue() as? JsonValue.Str)?.value
+                        ?: throw BackupValidationException("mode 必须是字符串")
+                }
+
+                "data" -> {
+                    val requested = mode
+                        ?: throw BackupValidationException("备份请求里 mode 必须出现在 data 之前")
+                    if (result != null) throw BackupValidationException("备份请求里 data 出现了两次")
+                    result = importBackupData(requested, reader)
+                }
+
+                else -> reader.skipValue()
+            }
+        }
+        reader.expectEnd()
+        return result ?: throw BackupValidationException("缺少字段 data（备份对象）")
+    }
+
+    /**
+     * 流式导入一份备份。
+     *
+     * 分两段：
+     * 1. **解析 + 字段校验 + 暂存**（不持写锁）：人格/会话/记忆/预设是小对象，留在内存；
+     *    消息**逐条写进 `.staging/` 的 JSONL**（每条一个 `Message` 对象，随写随弃）；
+     *    媒体 `data` 逐条 base64 解码到 `.staging/media-<n>.bin`（不产生 ByteArray 大块）。
+     * 2. **引用校验 + 落盘**（持写锁）：所有校验通过后才动磁盘；媒体用原子 rename 移进
+     *    `media/`，会话的块文件整份重写（块编号按最终顺序重排，与 0.12.0 语义一致）。
+     *
+     * 任何一步失败都会删掉整个 `.staging/` 子目录：**不会留下一半数据**，修好请求可以整份重试。
+     */
+    private fun importBackupData(mode: String, reader: BackupJsonReader): BackupImportResult {
         if (mode != "merge" && mode != "replace") {
             throw BackupValidationException("mode 只能是 merge 或 replace")
         }
-        val parsed = try {
-            parseBackupLocked(data, now)
-        } catch (corruption: StoreCorruptionException) {
-            throw BackupValidationException(corruption.message ?: "备份结构不合法")
-        } catch (invalid: JsonParseException) {
-            throw BackupValidationException("备份里有坏 JSON：${invalid.message.orEmpty()}")
+        val staging = root.resolve(STAGING_DIR).resolve("import-${UUID.randomUUID()}")
+        Files.createDirectories(staging)
+        try {
+            val parsed = parseBackupStream(reader, staging)
+            return lock.withLock { commitBackupStreamed(mode, parsed) }
+        } finally {
+            deleteRecursively(staging)
+            // 空目录也不留：导入失败时数据目录里应该「什么都没多出来」（测试与运维都靠这个）。
+            runCatching { Files.deleteIfExists(root.resolve(STAGING_DIR)) }
+        }
+    }
+
+    /** 流式解析后的中间形态：只有小对象在内存里，消息在 `.staging/` 下的 JSONL、媒体在暂存文件里。 */
+    private class StreamedBackup(
+        val personas: List<Persona>,
+        val sessions: List<Session>,
+        val memories: List<Memory>,
+        val presets: List<Preset>,
+        val settings: JsonValue.Obj?,
+        val media: List<StreamedMedia>,
+        /** sessionId → 该会话的导出消息（每行一个 `Message` JSON）。 */
+        val messageSpools: Map<String, Path>,
+        val messageCount: Int
+    )
+
+    /** 备份里一条已解码到暂存文件的媒体（提交时原子移进 `media/`）。 */
+    private class StreamedMedia(val item: MediaItem, val staged: Path)
+
+    private fun parseBackupStream(reader: BackupJsonReader, staging: Path): StreamedBackup {
+        val where = "backup"
+        val now = clock()
+        var format: String? = null
+        var version: Int? = null
+        val personas = ArrayList<Persona>()
+        val sessions = ArrayList<Session>()
+        val memories = ArrayList<Memory>()
+        val presets = ArrayList<Preset>()
+        var settings: JsonValue.Obj? = null
+        val media = ArrayList<StreamedMedia>()
+        val messageSpools = LinkedHashMap<String, Path>()
+        val spoolWriters = LinkedHashMap<String, BufferedWriter>()
+        val messageIds = HashSet<String>()
+        var messageCount = 0
+        var mediaTotal = 0L
+
+        fun spoolFor(sessionId: String): BufferedWriter = spoolWriters.getOrPut(sessionId) {
+            // 文件名用 sessionId 的 sha256 前缀（sessionId 本身已经过正则校验，这里再隔离一层）。
+            val digest = sha256Hex(sessionId.toByteArray(StandardCharsets.UTF_8)).take(16)
+            val file = staging.resolve("messages-$digest.jsonl")
+            messageSpools[sessionId] = file
+            Files.newBufferedWriter(file, StandardCharsets.UTF_8)
         }
 
+        try {
+            reader.beginObject()
+            while (true) {
+                val key = reader.nextKey() ?: break
+                when (key) {
+                    "format" -> format = (reader.readValue() as? JsonValue.Str)?.value
+                    "formatVersion" -> version = (reader.readValue() as? JsonValue.Num)?.asInt
+                        ?: throw BackupValidationException("备份的 formatVersion 必须是整数")
+
+                    "personas" -> readBackupSection(reader, "personas") { obj, index ->
+                        personas += parseBackupPersona(obj, "$where.personas[$index]", now)
+                    }
+
+                    "sessions" -> readBackupSection(reader, "sessions") { obj, index ->
+                        sessions += parseBackupSession(obj, "$where.sessions[$index]", now)
+                    }
+
+                    "messages" -> {
+                        reader.beginArray()
+                        var index = 0
+                        while (reader.hasNextElement()) {
+                            val obj = reader.readValue() as? JsonValue.Obj
+                                ?: throw BackupValidationException("备份 messages 第 ${index + 1} 项不是对象")
+                            val message = parseBackupMessage(obj, "$where.messages[$index]", now)
+                            if (!messageIds.add(message.id)) {
+                                throw BackupValidationException("备份 messages 里 id=${message.id} 重复")
+                            }
+                            messageCount += 1
+                            if (messageCount > MAX_BACKUP_MESSAGES) {
+                                throw BackupValidationException("备份里的消息超过 $MAX_BACKUP_MESSAGES 条上限")
+                            }
+                            val spool = spoolFor(message.sessionId)
+                            spool.write(StoreJson.stringify(message.toJson()))
+                            spool.newLine()
+                            index += 1
+                        }
+                    }
+
+                    "memories" -> readBackupSection(reader, "memories") { obj, index ->
+                        memories += parseBackupMemory(obj, "$where.memories[$index]", now)
+                    }
+
+                    "presets" -> readBackupSection(reader, "presets") { obj, index ->
+                        presets += parseBackupPreset(obj, "$where.presets[$index]", now)
+                    }
+
+                    "media" -> {
+                        reader.beginArray()
+                        var index = 0
+                        while (reader.hasNextElement()) {
+                            val entry = readStreamedMedia(reader, staging, index, now)
+                            mediaTotal += entry.item.bytes
+                            if (mediaTotal > MAX_BACKUP_MEDIA_TOTAL_BYTES) {
+                                throw BackupValidationException(
+                                    "备份 media 总量超过 ${MAX_BACKUP_MEDIA_TOTAL_BYTES / (1024 * 1024)} MiB 上限"
+                                )
+                            }
+                            media += entry
+                            index += 1
+                        }
+                    }
+
+                    "settings" -> {
+                        val raw = reader.readValue() as? JsonValue.Obj
+                            ?: throw BackupValidationException("备份的 settings 必须是对象")
+                        settings = settingsFromBackup(raw)
+                    }
+
+                    else -> reader.skipValue()
+                }
+            }
+        } finally {
+            for (writer in spoolWriters.values) runCatching { writer.close() }
+        }
+
+        if (format != null && format != BACKUP_FORMAT_NAME) {
+            throw BackupValidationException("不是 Yap 备份（format=$format）")
+        }
+        if (version == null) throw BackupValidationException("备份缺少 formatVersion")
+        if (version != BACKUP_FORMAT_VERSION) throw UnsupportedBackupVersionException(version)
+
+        requireUniqueIds("personas", personas.map { it.id })
+        requireUniqueIds("sessions", sessions.map { it.id })
+        requireUniqueIds("memories", memories.map { it.id })
+        requireUniqueIds("presets", presets.map { it.id })
+        requireUniqueIds("media", media.map { it.item.id })
+
+        return StreamedBackup(
+            personas = personas,
+            sessions = sessions,
+            memories = memories,
+            presets = presets,
+            settings = settings,
+            media = media,
+            messageSpools = messageSpools,
+            messageCount = messageCount
+        )
+    }
+
+    /** 读一个「对象数组」段：一次只持有一个元素，交给 [consume] 校验/收集。 */
+    private inline fun readBackupSection(
+        reader: BackupJsonReader,
+        name: String,
+        consume: (JsonValue.Obj, Int) -> Unit
+    ) {
+        reader.beginArray()
+        var index = 0
+        while (reader.hasNextElement()) {
+            val obj = reader.readValue() as? JsonValue.Obj
+                ?: throw BackupValidationException("备份 $name 第 ${index + 1} 项不是对象")
+            consume(obj, index)
+            index += 1
+        }
+    }
+
+    /** 设置段：只留白名单键，并把历史别名归一成规范键（`myAvatarUri` → `userAvatarUri`）。 */
+    private fun settingsFromBackup(raw: JsonValue.Obj): JsonValue.Obj {
+        val fields = LinkedHashMap<String, JsonValue>()
+        for ((key, value) in raw.fields) {
+            val canonical = canonicalSettingKey(key)
+            if (canonical in SETTINGS_WHITELIST) fields[canonical] = value
+        }
+        return JsonValue.Obj(fields)
+    }
+
+    /**
+     * 流式解析一条媒体：`data` 边读边 base64 解码到暂存文件，其余字段与字段顺序无关
+     * （`data` 出现在 `sha256` 之前也可以）。校验规则与 0.12.0 的 `parseBackupMedia` 一致。
+     */
+    private fun readStreamedMedia(
+        reader: BackupJsonReader,
+        staging: Path,
+        index: Int,
+        now: Long
+    ): StreamedMedia {
+        val where = "backup.media[$index]"
+        val staged = staging.resolve("media-$index.bin")
+        var id: String? = null
+        var kind: String? = null
+        var mime: String? = null
+        var personaId: String? = null
+        var declaredBytes: Long? = null
+        var declaredSha: String? = null
+        var createdAt: Long? = null
+        var actualBytes = 0L
+        var dataSeen = false
+
+        reader.beginObject()
+        while (true) {
+            val key = reader.nextKey() ?: break
+            when (key) {
+                "id" -> id = (reader.readValue() as? JsonValue.Str)?.value
+                "kind" -> kind = (reader.readValue() as? JsonValue.Str)?.value
+                "mime" -> mime = (reader.readValue() as? JsonValue.Str)?.value
+                "personaId" -> personaId = (reader.readValue() as? JsonValue.Str)?.value
+                    ?.takeIf { it.isNotBlank() }
+
+                "bytes" -> declaredBytes = (reader.readValue() as? JsonValue.Num)?.asLong
+                "sha256" -> declaredSha = (reader.readValue() as? JsonValue.Str)?.value?.trim()?.lowercase()
+                "createdAt" -> createdAt = (reader.readValue() as? JsonValue.Num)?.asLong
+                "data" -> {
+                    if (dataSeen) throw BackupValidationException("$where 的 data 出现了两次")
+                    dataSeen = true
+                    Files.createDirectories(staged.parent)
+                    actualBytes = Files.newOutputStream(staged).use { output ->
+                        reader.readBase64To(output, MAX_BACKUP_MEDIA_FILE_BYTES, "$where.data")
+                    }
+                }
+
+                else -> reader.skipValue()
+            }
+        }
+
+        val mediaId = id ?: throw BackupValidationException("$where 缺少 id")
+        if (!MediaUrl.isValidId(mediaId)) throw BackupValidationException("$where 的 id 不合法")
+        val kindValue = kind ?: throw BackupValidationException("$where 缺少 kind")
+        if (!MediaKind.isValid(kindValue)) throw BackupValidationException("$where 的 kind 不合法：$kindValue")
+        val mimeValue = mime ?: throw BackupValidationException("$where 缺少 mime")
+        if (!MediaMime.isValid(mimeValue)) throw BackupValidationException("$where 的 mime 不合法：$mimeValue")
+        if (personaId != null && !isValidId(personaId)) {
+            throw BackupValidationException("$where 的 personaId 不合法")
+        }
+        if (!dataSeen) throw BackupValidationException("$where 缺少 data")
+        val actualSha = sha256OfFile(staged)
+            ?: throw BackupValidationException("$where 的 data 读不回来")
+        if (declaredSha != null && declaredSha != actualSha) {
+            throw BackupValidationException("$where 的 sha256 与 data 不一致")
+        }
+        if (declaredBytes != null && declaredBytes != actualBytes) {
+            throw BackupValidationException("$where 的 bytes 与 data 长度不一致")
+        }
+        val item = MediaItem(
+            id = mediaId,
+            kind = kindValue,
+            personaId = personaId,
+            mime = mimeValue,
+            bytes = actualBytes,
+            sha256 = actualSha,
+            createdAt = createdAt ?: now
+        )
+        return StreamedMedia(item, staged)
+    }
+
+    /**
+     * 引用校验 + 落盘（**在写锁内**）。
+     *
+     * 校验顺序与 0.12.0 一致：人格/会话唯一性、一人格一会话、会话→人格、消息→会话、
+     * 记忆→人格、`settings.activePersonaId`、媒体 id 冲突与 persona 引用。全部通过后才动磁盘。
+     */
+    private fun commitBackupStreamed(mode: String, parsed: StreamedBackup): BackupImportResult {
         val finalPersonas = LinkedHashMap<String, Persona>()
         if (mode == "merge") personas.forEach { finalPersonas[it.id] = it }
         for (persona in parsed.personas) finalPersonas[persona.id] = persona
@@ -1239,49 +1968,40 @@ class FileStore(
         val finalSessions = LinkedHashMap<String, Session>()
         if (mode == "merge") sessions.forEach { (id, session) -> finalSessions[id] = session }
         for (session in parsed.sessions) finalSessions[session.id] = session
-        // 契约：一人格一会话。导入数据里出现两条就拒绝，而不是悄悄造出客户端无法处理的形状。
         val duplicatePersona = finalSessions.values
             .groupBy { it.personaId }
             .entries
             .firstOrNull { it.value.size > 1 }
         if (duplicatePersona != null) {
-            throw BackupValidationException("人格 ${duplicatePersona.key} 只能有一个会话，备份里有 ${duplicatePersona.value.size} 个")
+            throw BackupValidationException(
+                "人格 ${duplicatePersona.key} 只能有一个会话，备份里有 ${duplicatePersona.value.size} 个"
+            )
         }
-
-        val existingMessages = allMessagesLocked()
-        val finalMessages = LinkedHashMap<String, Message>()
-        if (mode == "merge") existingMessages.forEach { finalMessages[it.id] = it }
-        for (message in parsed.messages) finalMessages[message.id] = message
-
-        val finalMemories = LinkedHashMap<String, Memory>()
-        if (mode == "merge") memories.forEach { (id, memory) -> finalMemories[id] = memory }
-        for (memory in parsed.memories) finalMemories[memory.id] = memory
-
-        val finalPresets = LinkedHashMap<String, Preset>()
-        if (mode == "merge") presets.forEach { (id, preset) -> finalPresets[id] = preset }
-        for (preset in parsed.presets) finalPresets[preset.id] = preset
-
-        // 引用校验：会话的 persona、消息的 session 都必须在最终集合里。
         for (session in finalSessions.values) {
             if (finalPersonas[session.personaId] == null) {
                 throw BackupValidationException("会话 ${session.id} 引用了不存在的人格 ${session.personaId}")
             }
         }
-        for (message in finalMessages.values) {
-            if (finalSessions[message.sessionId] == null) {
-                throw BackupValidationException("消息 ${message.id} 引用了不存在的会话 ${message.sessionId}")
+        for (sessionId in parsed.messageSpools.keys) {
+            if (finalSessions[sessionId] == null) {
+                throw BackupValidationException("消息引用了不存在的会话 $sessionId")
             }
         }
+        val finalMemories = LinkedHashMap<String, Memory>()
+        if (mode == "merge") memories.forEach { (id, memory) -> finalMemories[id] = memory }
+        for (memory in parsed.memories) finalMemories[memory.id] = memory
         for (memory in parsed.memories) {
             if (finalPersonas[memory.personaId] == null) {
                 throw BackupValidationException("记忆 ${memory.id} 引用了不存在的人格 ${memory.personaId}")
             }
         }
+        val finalPresets = LinkedHashMap<String, Preset>()
+        if (mode == "merge") presets.forEach { (id, preset) -> finalPresets[id] = preset }
+        for (preset in parsed.presets) finalPresets[preset.id] = preset
         val activePersonaId = parsed.settings?.fields?.get("activePersonaId")
         if (activePersonaId is JsonValue.Str && finalPersonas[activePersonaId.value] == null) {
             throw BackupValidationException("settings.activePersonaId 引用了不存在的人格 ${activePersonaId.value}")
         }
-        // 媒体：id 冲突（同 id 不同内容）和 persona 引用都不合法；在动盘之前拒绝整份备份。
         for (entry in parsed.media) {
             val existing = media[entry.item.id]
             if (existing != null && existing.sha256 != entry.item.sha256) {
@@ -1293,36 +2013,23 @@ class FileStore(
             }
         }
 
-        // 受影响会话：导入的会话 + 导入消息落在的会话 + 被替换消息原来的会话。
+        // 受影响会话：导入的会话 + 导入消息落在的会话（replace 时是所有最终会话）。
         val affectedSessions = LinkedHashSet<String>()
         if (mode == "replace") {
             affectedSessions += finalSessions.keys
         } else {
             parsed.sessions.forEach { affectedSessions += it.id }
-            parsed.messages.forEach { affectedSessions += it.sessionId }
-            parsed.messages.forEach { message ->
-                existingMessages.firstOrNull { it.id == message.id }?.let { affectedSessions += it.sessionId }
-            }
+            parsed.messageSpools.keys.forEach { affectedSessions += it }
         }
-
-        // 块编号统一按最终消息顺序重排：备份导入不信任外部 blockIndex，避免出现 > 200 条的块。
-        for (sessionId in affectedSessions) {
-            val ordered = finalMessages.values
-                .filter { it.sessionId == sessionId }
-                .sortedWith(compareBy({ it.createdAt }, { it.id }))
-            ordered.forEachIndexed { index, message ->
-                finalMessages[message.id] = message.copy(blockIndex = index / BLOCK_SIZE)
+        affectedSessions.retainAll(finalSessions.keys)
+        // merge 语义需要旧消息：必须在删会话目录**之前**读出来。
+        val existingPerSession = HashMap<String, List<Message>>()
+        if (mode == "merge") {
+            for (sessionId in affectedSessions) {
+                if (sessions.containsKey(sessionId)) {
+                    existingPerSession[sessionId] = readSessionMessagesLocked(sessionId)
+                }
             }
-            val existing = finalSessions.getValue(sessionId)
-            val last = ordered.lastOrNull()
-            val unread = ordered.count { it.role == MessageRole.ASSISTANT && it.readAt == null }
-            finalSessions[sessionId] = existing.copy(
-                lastMessageAt = last?.createdAt,
-                lastBlockIndex = if (ordered.isEmpty()) -1 else (ordered.size - 1) / BLOCK_SIZE,
-                unread = unread,
-                messageCount = ordered.size.toLong(),
-                updatedAt = maxOf(existing.updatedAt, last?.createdAt ?: 0L)
-            )
         }
 
         // ---- 校验全部通过，开始改内存/落盘 ----
@@ -1351,11 +2058,32 @@ class FileStore(
         for (entry in parsed.media) {
             val existing = media[entry.item.id]
             if (existing == null || !Files.exists(mediaFile(existing))) {
-                writeBytesLocked(mediaFile(entry.item), entry.data)
+                moveStagedMedia(entry.staged, mediaFile(entry.item))
             }
             media[entry.item.id] = entry.item
         }
         persistMediaLocked()
+
+        // 只重写受影响会话的块文件：消息按 (createdAt, id) 重排后按 BLOCK_SIZE 重新切块。
+        for (sessionId in affectedSessions) {
+            val template = finalSessions.getValue(sessionId)
+            val merged = LinkedHashMap<String, Message>()
+            existingPerSession[sessionId]?.forEach { merged[it.id] = it }
+            for (message in readMessageSpool(parsed.messageSpools[sessionId])) merged[message.id] = message
+            val ordered = merged.values.sortedWith(MESSAGE_ORDER)
+            val metas = writeSessionBlocksLocked(sessionId, ordered)
+            blockCache[sessionId] = metas.toMutableList()
+            persistBlockIndexLocked(sessionId, metas)
+            val last = ordered.lastOrNull()
+            val unread = ordered.count { it.role == MessageRole.ASSISTANT && it.readAt == null }
+            finalSessions[sessionId] = template.copy(
+                lastMessageAt = last?.createdAt,
+                lastBlockIndex = if (ordered.isEmpty()) -1 else (ordered.size - 1) / BLOCK_SIZE,
+                unread = unread,
+                messageCount = ordered.size.toLong(),
+                updatedAt = maxOf(template.updatedAt, last?.createdAt ?: 0L)
+            )
+        }
 
         personas.clear()
         personas.addAll(finalPersonas.values)
@@ -1370,9 +2098,7 @@ class FileStore(
         if (parsed.settings != null) {
             val merged = LinkedHashMap<String, JsonValue>()
             if (mode == "merge") {
-                for ((key, value) in settings.fields) {
-                    if (key in SETTINGS_WHITELIST) merged[key] = value
-                }
+                for ((key, value) in publicSettingsLocked().fields) merged[key] = value
             }
             for ((key, value) in parsed.settings.fields) {
                 if (key in SETTINGS_WHITELIST) merged[key] = value
@@ -1380,32 +2106,6 @@ class FileStore(
             settings = JsonValue.Obj(merged)
         } else if (mode == "replace") {
             settings = JsonValue.Obj()
-        }
-
-        // 只重写受影响会话的块文件；其它会话的磁盘内容原样不动。
-        for (sessionId in affectedSessions) {
-            val messages = finalMessages.values
-                .filter { it.sessionId == sessionId }
-                .sortedWith(compareBy({ it.createdAt }, { it.id }))
-            val blocks = messages.groupBy { it.blockIndex }.toSortedMap()
-            val metas = ArrayList<BlockMeta>()
-            for ((index, blockMessages) in blocks) {
-                rewriteBlockLocked(sessionId, index, blockMessages)
-                metas += BlockMeta(
-                    index = index,
-                    firstMessageId = blockMessages.first().id,
-                    lastMessageId = blockMessages.last().id,
-                    firstAt = blockMessages.first().createdAt,
-                    lastAt = blockMessages.last().createdAt,
-                    count = blockMessages.size
-                )
-            }
-            blockCache[sessionId] = metas.toMutableList()
-            if (metas.isEmpty()) {
-                persistBlockIndexLocked(sessionId, emptyList())
-            } else {
-                persistBlockIndexLocked(sessionId, metas)
-            }
         }
 
         persistPersonasLocked()
@@ -1420,16 +2120,114 @@ class FileStore(
         for (memory in memories.values) lastTimestamp = maxOf(lastTimestamp, memory.updatedAt)
         for (preset in presets.values) lastTimestamp = maxOf(lastTimestamp, preset.updatedAt)
 
-        BackupImportResult(
+        return BackupImportResult(
             mode = mode,
             personas = parsed.personas.size,
             sessions = parsed.sessions.size,
-            messages = parsed.messages.size,
+            messages = parsed.messageCount,
             memories = parsed.memories.size,
             presets = parsed.presets.size,
             media = parsed.media.size,
             settings = parsed.settings != null
         )
+    }
+
+    private fun requireUniqueIds(section: String, ids: List<String>) {
+        val duplicated = ids.groupingBy { it }.eachCount().entries.firstOrNull { it.value > 1 }
+        if (duplicated != null) {
+            throw BackupValidationException("备份 $section 里 id=${duplicated.key} 重复")
+        }
+    }
+
+    /** 读回一个会话的暂存消息（每行一个 `Message`）；没有消息时返回空表。 */
+    private fun readMessageSpool(file: Path?): List<Message> {
+        if (file == null || !Files.exists(file)) return emptyList()
+        val result = ArrayList<Message>()
+        var lineNumber = 0
+        Files.newBufferedReader(file, StandardCharsets.UTF_8).use { reader ->
+            while (true) {
+                val line = reader.readLine() ?: break
+                lineNumber += 1
+                if (line.isBlank()) continue
+                val where = "$file 第 $lineNumber 行"
+                val parsed = try {
+                    StoreJson.parse(line, where) as? JsonValue.Obj
+                        ?: throw StoreCorruptionException("$where 不是 JSON 对象")
+                } catch (failure: StoreCorruptionException) {
+                    // 暂存文件是我们自己刚写的：读不回来说明磁盘/内存出了问题，按备份不合法上报。
+                    throw BackupValidationException("备份消息暂存文件读不回来：${failure.message}")
+                }
+                result += Message.fromJson(parsed, where)
+            }
+        }
+        return result
+    }
+
+    /** 会话磁盘上的全部消息（按块顺序）。merge 导入需要它来保留未提及的旧消息。 */
+    private fun readSessionMessagesLocked(sessionId: String): List<Message> {
+        val result = ArrayList<Message>()
+        for (block in blocksForLocked(sessionId)) {
+            result.addAll(readBlockLocked(sessionId, block.index))
+        }
+        return result
+    }
+
+    /** 把一个按顺序排好的消息表整份写成块文件，返回新的块表。 */
+    private fun writeSessionBlocksLocked(sessionId: String, ordered: List<Message>): List<BlockMeta> {
+        val metas = ArrayList<BlockMeta>()
+        var start = 0
+        while (start < ordered.size) {
+            val end = minOf(start + BLOCK_SIZE, ordered.size)
+            val blockIndex = start / BLOCK_SIZE
+            val slice = ordered.subList(start, end)
+            val text = buildString {
+                for (message in slice) {
+                    append(StoreJson.stringify(message.copy(blockIndex = blockIndex).toJson()))
+                    append('\n')
+                }
+            }
+            writeTextLocked(blockFile(sessionId, blockIndex), text)
+            metas += BlockMeta(
+                index = blockIndex,
+                firstMessageId = slice.first().id,
+                lastMessageId = slice.last().id,
+                firstAt = slice.first().createdAt,
+                lastAt = slice.last().createdAt,
+                count = slice.size
+            )
+            start = end
+        }
+        return metas
+    }
+
+    /** 暂存媒体 → `media/<id>.<ext>`：同一文件系统，优先原子 rename。 */
+    private fun moveStagedMedia(staged: Path, target: Path) {
+        Files.createDirectories(target.parent)
+        try {
+            Files.move(staged, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        } catch (_: AtomicMoveNotSupportedException) {
+            Files.move(staged, target, StandardCopyOption.REPLACE_EXISTING)
+        }
+    }
+
+    /** 流式 SHA-256（小写十六进制）；文件不存在/读失败返回 null（导出侧把它当成「跳过这张图」）。 */
+    private fun sha256OfFile(file: Path): String? {
+        if (!Files.exists(file)) return null
+        val digest = MessageDigest.getInstance("SHA-256")
+        return try {
+            Files.newInputStream(file).use { input ->
+                val buffer = ByteArray(8192)
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    digest.update(buffer, 0, read)
+                }
+            }
+            hex(digest.digest())
+        } catch (failure: IOException) {
+            System.err.println("[agentd] 读媒体文件失败：$file（${failure.message}）")
+            null
+        }
     }
 
     // ================================================================== 事件（增量游标）
@@ -1466,86 +2264,10 @@ class FileStore(
         }
     }
 
-    // ================================================================== 内部：备份解析
+    // ================================================================== 内部：备份字段解析
 
-    private class ParsedBackup(
-        val personas: List<Persona>,
-        val sessions: List<Session>,
-        val messages: List<Message>,
-        val memories: List<Memory>,
-        val presets: List<Preset>,
-        val media: List<ParsedMedia>,
-        val settings: JsonValue.Obj?
-    )
-
-    /** 备份里一条媒体：元数据 + 解码后的原始字节（导入时直接落盘）。 */
-    private class ParsedMedia(val item: MediaItem, val data: ByteArray)
-
-    private fun parseBackupLocked(data: JsonValue.Obj, now: Long): ParsedBackup {
-        val where = "$root/backup"
-        val format = data.optString("format", where)
-        if (format != null && format != BACKUP_FORMAT_NAME) {
-            throw BackupValidationException("不是 Yap 备份（format=$format）")
-        }
-        val versionValue = data.fields["formatVersion"]
-            ?: throw BackupValidationException("备份缺少 formatVersion")
-        val version = (versionValue as? JsonValue.Num)?.asInt
-            ?: throw BackupValidationException("备份的 formatVersion 必须是整数")
-        if (version != BACKUP_FORMAT_VERSION) throw UnsupportedBackupVersionException(version)
-
-        fun section(key: String): List<JsonValue.Obj> = data.optArr(key, where).mapIndexed { index, item ->
-            item as? JsonValue.Obj ?: throw BackupValidationException("备份 $key 第 ${index + 1} 项不是对象")
-        }
-
-        val personas = section("personas").mapIndexed { index, obj ->
-            parseBackupPersona(obj, "$where.personas[$index]", now)
-        }
-        val sessions = section("sessions").mapIndexed { index, obj ->
-            parseBackupSession(obj, "$where.sessions[$index]", now)
-        }
-        val messages = section("messages").mapIndexed { index, obj ->
-            parseBackupMessage(obj, "$where.messages[$index]", now)
-        }
-        val memories = section("memories").mapIndexed { index, obj ->
-            parseBackupMemory(obj, "$where.memories[$index]", now)
-        }
-        val presets = section("presets").mapIndexed { index, obj ->
-            parseBackupPreset(obj, "$where.presets[$index]", now)
-        }
-        var mediaTotalBytes = 0L
-        val media = section("media").mapIndexed { index, obj ->
-            val entry = parseBackupMedia(obj, "$where.media[$index]", now)
-            mediaTotalBytes += entry.data.size
-            if (mediaTotalBytes > MAX_BACKUP_MEDIA_TOTAL_BYTES) {
-                throw BackupValidationException(
-                    "备份 media 总量超过 ${MAX_BACKUP_MEDIA_TOTAL_BYTES / (1024 * 1024)} MiB 上限"
-                )
-            }
-            entry
-        }
-        val settings = data.optObj("settings", where)?.let { raw ->
-            val fields = LinkedHashMap<String, JsonValue>()
-            for ((key, value) in raw.fields) {
-                if (key in SETTINGS_WHITELIST) fields[key] = value
-            }
-            JsonValue.Obj(fields)
-        }
-
-        requireUniqueIds("personas", personas.map { it.id })
-        requireUniqueIds("sessions", sessions.map { it.id })
-        requireUniqueIds("messages", messages.map { it.id })
-        requireUniqueIds("memories", memories.map { it.id })
-        requireUniqueIds("presets", presets.map { it.id })
-        requireUniqueIds("media", media.map { it.item.id })
-        return ParsedBackup(personas, sessions, messages, memories, presets, media, settings)
-    }
-
-    private fun requireUniqueIds(section: String, ids: List<String>) {
-        val duplicated = ids.groupingBy { it }.eachCount().entries.firstOrNull { it.value > 1 }
-        if (duplicated != null) {
-            throw BackupValidationException("备份 $section 里 id=${duplicated.key} 重复")
-        }
-    }
+    // 字段级校验（persona / session / message / memory / preset / tags）在流式导入里复用；
+    // 0.12.1 起不再有「整份 JsonValue 备份」那条路径，所以这里只有逐条解析。
 
     private fun parseBackupPersona(obj: JsonValue.Obj, where: String, now: Long): Persona {
         val id = obj.reqString("id", where)
@@ -1668,55 +2390,6 @@ class FileStore(
         )
     }
 
-    /**
-     * 解析备份 `media[]` 的一项：base64 → 原始字节，sha256/bytes 都做完整性校验。
-     *
-     * 不接受「元数据说有 10 MB、实际 data 只有 1 KB」这种自相矛盾的条目：备份是长期资产，
-     * 静默修好比拒绝更糟（用户会以为图恢复了）。
-     */
-    private fun parseBackupMedia(obj: JsonValue.Obj, where: String, now: Long): ParsedMedia {
-        val id = obj.reqString("id", where)
-        if (!MediaUrl.isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
-        val kind = obj.reqString("kind", where)
-        if (!MediaKind.isValid(kind)) throw BackupValidationException("$where 的 kind 不合法：$kind")
-        val mime = obj.reqString("mime", where)
-        if (!MediaMime.isValid(mime)) throw BackupValidationException("$where 的 mime 不合法：$mime")
-        val personaId = obj.optString("personaId", where)?.takeIf { it.isNotBlank() }
-        if (personaId != null && !isValidId(personaId)) {
-            throw BackupValidationException("$where 的 personaId 不合法")
-        }
-        val encoded = obj.reqString("data", where)
-        val data = try {
-            Base64.getDecoder().decode(encoded)
-        } catch (_: IllegalArgumentException) {
-            throw BackupValidationException("$where 的 data 不是合法 base64")
-        }
-        if (data.size > MAX_BACKUP_MEDIA_FILE_BYTES) {
-            throw BackupValidationException(
-                "$where 的媒体超过 ${MAX_BACKUP_MEDIA_FILE_BYTES / (1024 * 1024)} MiB 单文件上限"
-            )
-        }
-        val actualSha = sha256Hex(data)
-        val declaredSha = obj.optString("sha256", where)?.trim()?.lowercase()
-        if (declaredSha != null && declaredSha != actualSha) {
-            throw BackupValidationException("$where 的 sha256 与 data 不一致")
-        }
-        val declaredBytes = obj.optLong("bytes", where)
-        if (declaredBytes != null && declaredBytes != data.size.toLong()) {
-            throw BackupValidationException("$where 的 bytes 与 data 长度不一致")
-        }
-        val item = MediaItem(
-            id = id,
-            kind = kind,
-            personaId = personaId,
-            mime = mime,
-            bytes = data.size.toLong(),
-            sha256 = actualSha,
-            createdAt = obj.optLong("createdAt", where) ?: now
-        )
-        return ParsedMedia(item, data)
-    }
-
     private fun parseTags(value: JsonValue?, where: String): List<String> = when (value) {
         null, JsonValue.Null -> emptyList()
         is JsonValue.Arr -> value.items.map { item ->
@@ -1751,7 +2424,10 @@ class FileStore(
 
     private fun publicSettingsLocked(): JsonValue.Obj = JsonValue.Obj(
         LinkedHashMap<String, JsonValue>().apply {
-            for ((key, value) in settings.fields) if (key in SETTINGS_WHITELIST) put(key, value)
+            for ((key, value) in settings.fields) {
+                val canonical = canonicalSettingKey(key)
+                if (canonical in SETTINGS_WHITELIST) put(canonical, value)
+            }
         }
     )
 
@@ -1766,49 +2442,6 @@ class FileStore(
     }
 
     // ================================================================== 内部：媒体
-
-    private class MediaExport(val items: List<JsonValue.Obj>, val skipped: Int)
-
-    /**
-     * 把媒体读成 base64 备份条目。**读失败/超限都只跳过并计数**：一张图读不出来不该让整份
-     * 备份失败（用户至少还能带走文字），但必须让调用方知道跳过了几张（`mediaSkipped`）。
-     */
-    private fun exportMediaLocked(): MediaExport {
-        val items = ArrayList<JsonValue.Obj>()
-        var total = 0L
-        var skipped = 0
-        val ordered = media.values.sortedWith(compareBy({ it.createdAt }, { it.id }))
-        for (item in ordered) {
-            if (item.bytes > MAX_BACKUP_MEDIA_FILE_BYTES) {
-                skipped += 1
-                continue
-            }
-            val bytes = try {
-                Files.readAllBytes(mediaFile(item))
-            } catch (failure: IOException) {
-                System.err.println("[agentd] 备份跳过读不出的媒体：${item.id}（${failure.message}）")
-                skipped += 1
-                continue
-            }
-            if (bytes.size.toLong() > MAX_BACKUP_MEDIA_FILE_BYTES ||
-                total + bytes.size > MAX_BACKUP_MEDIA_TOTAL_BYTES
-            ) {
-                skipped += 1
-                continue
-            }
-            // 文件被手工改过（sha 对不上）时不让它进备份：否则导入端会因校验失败拒绝整份备份。
-            if (sha256Hex(bytes) != item.sha256) {
-                System.err.println("[agentd] 备份跳过内容与元数据不一致的媒体：${item.id}")
-                skipped += 1
-                continue
-            }
-            total += bytes.size
-            val fields = LinkedHashMap(item.toJson().fields)
-            fields["data"] = JsonValue.Str(Base64.getEncoder().encodeToString(bytes))
-            items += JsonValue.Obj(fields)
-        }
-        return MediaExport(items, skipped)
-    }
 
     /** 引用统计：消息附件 / 人格头像 / 预设头像。`/v1/media/<id>` 与裸 id 都认。 */
     private fun mediaReferenceCountLocked(mediaId: String): Int {
@@ -2472,13 +3105,16 @@ class FileStore(
     }
 
     /** 原始字节的 SHA-256（小写十六进制）。用于去重、备份校验与下载 ETag。 */
-    private fun sha256Hex(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        val hex = "0123456789abcdef"
+    private fun sha256Hex(bytes: ByteArray): String =
+        hex(MessageDigest.getInstance("SHA-256").digest(bytes))
+
+    /** 摘要 → 小写十六进制（备份校验、媒体去重、下载 ETag 都用同一份格式）。 */
+    private fun hex(digest: ByteArray): String {
+        val digits = "0123456789abcdef"
         val builder = StringBuilder(digest.size * 2)
         for (byte in digest) {
             val value = byte.toInt() and 0xff
-            builder.append(hex[value ushr 4]).append(hex[value and 0x0f])
+            builder.append(digits[value ushr 4]).append(digits[value and 0x0f])
         }
         return builder.toString()
     }

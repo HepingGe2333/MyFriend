@@ -311,6 +311,8 @@ class PersonaRepository @Inject constructor(
         creating: Boolean
     ): PersonaEntity {
         if (!serverWrites.isEnabled()) return entity
+        // bootstrap 推送过的人格：本地 id 是客户端 UUID，服务端只认它分配的 id。
+        val serverPersonaId = if (creating) entity.id else serverWrites.serverPersonaId(entity.id)
         val avatarChanged = creating || existing?.avatarUri != entity.avatarUri
         val avatarRef = when {
             !avatarChanged -> null
@@ -321,12 +323,13 @@ class PersonaRepository @Inject constructor(
                 // 新建时服务端还没有这个人格，媒体上传不挂 personaId（服务端只把它当用途标记）。
                 serverMediaSender.uploadPersonaAvatar(
                     avatarUri = entity.avatarUri,
-                    personaId = if (creating) null else entity.id
+                    personaId = if (creating) null else serverPersonaId
                 ).getOrThrow()
             }
         }
         val payload = com.yap.app.data.remote.ServerPersonaWrite.payload(
-            persona = entity,
+            // 更新时 payload 里的 id 必须是服务端 id；返回的实体仍保留本地主键。
+            persona = if (creating) entity else entity.copy(id = serverPersonaId),
             avatarUrl = avatarRef,
             creating = creating,
             includeAvatar = avatarChanged

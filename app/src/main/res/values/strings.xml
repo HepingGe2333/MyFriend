@@ -1174,6 +1174,7 @@
     <!-- 设置页的提示与失败 -->
     <string name="settings_error_background_image">背景图片保存失败</string>
     <string name="settings_error_avatar">头像保存失败</string>
+    <string name="settings_error_avatar_upload">头像上传失败，已保留原头像</string>
     <string name="settings_error_unwritable_file">无法写入文件</string>
     <string name="settings_export_success">聊天记录已导出</string>
     <string name="settings_export_failed">导出失败：%1$s</string>
@@ -1626,6 +1627,13 @@
     <string name="settings_server_reject_invalid">地址格式不对，需要以 http:// 或 https:// 开头</string>
     <string name="settings_server_reject_https_only">发布版只允许 https 地址</string>
     <string name="settings_server_reject_local_only">http 只允许本机或局域网地址</string>
+    <!-- 0.12.1 一次性 bootstrap：设置页一行进度 -->
+    <string name="settings_server_bootstrap_inspecting">正在对比本机与服务端的数据…</string>
+    <string name="settings_server_bootstrap_pushing">正在把本机数据搬到服务端：%1$d 条消息</string>
+    <string name="settings_server_bootstrap_pulling">正在从服务端取回数据：%1$d 条消息</string>
+    <string name="settings_server_bootstrap_merging">正在合并两端数据：%1$d 条消息</string>
+    <string name="settings_server_bootstrap_done">数据已对齐（%1$d 条消息）</string>
+    <string name="settings_server_bootstrap_failed">数据对齐没完成，会在下次连接时重试</string>
     <string name="chat_server_reply_pending">回复还没接上，稍后会自动同步</string>
     <string name="chat_server_action_unsupported">服务端模式下暂不支持这个操作</string>
     <string name="error_server_unreachable">服务端没连上，这次没有保存</string>

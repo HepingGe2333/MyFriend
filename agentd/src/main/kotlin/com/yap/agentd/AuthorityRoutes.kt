@@ -44,6 +44,9 @@ object AuthorityRoutes {
     const val PERSONAS_PATH = "/v1/personas"
     const val EVENTS_PATH = "/v1/events"
     private const val MESSAGES_SEGMENT = "messages"
+
+    /** `/v1/sessions/{id}/messages/import` 在 [sessionSubPath] 里的样子（`sub` = `messages/import`）。 */
+    private const val MESSAGES_IMPORT_SEGMENT = "messages/import"
     private const val ACTIVITY_SEGMENT = "activity"
 
     /** 长轮询默认等待（秒）；与契约 §3.4 的「最多 25s」一致。 */
@@ -80,11 +83,18 @@ object AuthorityRoutes {
      * （与 `AgentdApi.handle` 的行为一致：调用方只需要看 [Response]）。
      */
     fun handle(services: AgentdServices, method: String, rawPath: String, body: String?): Response {
-        if (body != null && body.toByteArray(StandardCharsets.UTF_8).size > AgentdApi.MAX_BODY_BYTES) {
+        // 批量历史消息导入放宽到 8 MiB（其余 JSON 路由仍是 1 MiB）；`AgentdServer` 在
+        // readHead 里用同一个常量挡，所以 handler 直调路径与真实 HTTP 路径的上限一致。
+        val bodyLimit = if (CrudRoutes.isMessageImportPath(rawPath.substringBefore('?'))) {
+            CrudRoutes.MAX_IMPORT_BODY_BYTES
+        } else {
+            AgentdApi.MAX_BODY_BYTES
+        }
+        if (body != null && body.toByteArray(StandardCharsets.UTF_8).size > bodyLimit) {
             return AgentdApi.errorResponse(
                 413,
                 "content_too_large",
-                "请求体超过 ${AgentdApi.MAX_BODY_BYTES / 1024} KiB 上限"
+                "请求体超过 ${bodyLimit / 1024} KiB 上限"
             )
         }
         return try {
@@ -125,9 +135,12 @@ object AuthorityRoutes {
 
                 path.startsWith("$SESSIONS_PATH/") -> {
                     val sub = sessionSubPath(path)
-                    if (sub?.second == MESSAGES_SEGMENT) {
+                    if (sub != null && sub.second == MESSAGES_SEGMENT) {
                         requireGet(verb, "$SESSIONS_PATH/{id}/$MESSAGES_SEGMENT")
                         messagePage(store, sub.first, rawPath)
+                    } else if (sub != null && sub.second == MESSAGES_IMPORT_SEGMENT) {
+                        requirePost(verb, "$SESSIONS_PATH/{id}/$MESSAGES_SEGMENT/import")
+                        CrudRoutes.importMessages(store, sub.first, body)
                     } else {
                         // POST /v1/sessions/{id}/read（未知子路径由 CrudRoutes 回 404）
                         CrudRoutes.handle(store, method, rawPath, body)

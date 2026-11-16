@@ -1194,6 +1194,7 @@
     <!-- Settings toasts and failures -->
     <string name="settings_error_background_image">Couldn\'t save that background image</string>
     <string name="settings_error_avatar">Couldn\'t save that avatar</string>
+    <string name="settings_error_avatar_upload">Avatar upload failed; the previous avatar was kept</string>
     <string name="settings_error_unwritable_file">Couldn\'t write that file</string>
     <string name="settings_export_success">Chats exported</string>
     <string name="settings_export_failed">Export failed: %1$s</string>
@@ -1676,6 +1677,13 @@
     <string name="settings_server_reject_invalid">That address is malformed; it must start with http:// or https://</string>
     <string name="settings_server_reject_https_only">Release builds only allow https addresses</string>
     <string name="settings_server_reject_local_only">http is only allowed for localhost or LAN addresses</string>
+    <!-- 0.12.1 one-time bootstrap: one progress line in settings -->
+    <string name="settings_server_bootstrap_inspecting">Comparing on-device and server data…</string>
+    <string name="settings_server_bootstrap_pushing">Moving on-device data to the server: %1$d messages</string>
+    <string name="settings_server_bootstrap_pulling">Fetching data from the server: %1$d messages</string>
+    <string name="settings_server_bootstrap_merging">Merging data from both sides: %1$d messages</string>
+    <string name="settings_server_bootstrap_done">Data aligned (%1$d messages)</string>
+    <string name="settings_server_bootstrap_failed">Data alignment did not finish; it will retry on the next connection</string>
     <string name="chat_server_reply_pending">The reply did not arrive yet; it will sync shortly</string>
     <string name="chat_server_action_unsupported">This action is not supported in server mode yet</string>
     <string name="error_server_unreachable">Couldn\'t reach the server, so this wasn\'t saved</string>

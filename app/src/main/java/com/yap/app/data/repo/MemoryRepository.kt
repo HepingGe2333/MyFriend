@@ -455,7 +455,11 @@ class MemoryRepository @Inject constructor(
         if (serverWrites.isEnabled()) {
             val server = serverWrites.saveMemory(
                 memory.personaId,
-                com.yap.app.data.remote.ServerMemoryWrite.payload(updated, creating = false)
+                com.yap.app.data.remote.ServerMemoryWrite.payload(
+                    updated,
+                    creating = false,
+                    idOverride = serverWrites.serverMemoryId(updated.id)
+                )
             ).getOrThrow()
             updated = com.yap.app.data.remote.ServerMemoryWrite.localEntity(server, updated)
         }
@@ -516,7 +520,11 @@ class MemoryRepository @Inject constructor(
         if (serverWrites.isEnabled()) {
             val server = serverWrites.saveMemory(
                 memory.personaId,
-                com.yap.app.data.remote.ServerMemoryWrite.payload(updated, creating = false)
+                com.yap.app.data.remote.ServerMemoryWrite.payload(
+                    updated,
+                    creating = false,
+                    idOverride = serverWrites.serverMemoryId(updated.id)
+                )
             ).getOrThrow()
             updated = com.yap.app.data.remote.ServerMemoryWrite.localEntity(server, updated)
         }

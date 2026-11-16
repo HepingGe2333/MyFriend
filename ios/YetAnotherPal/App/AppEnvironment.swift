@@ -89,6 +89,23 @@ final class AppEnvironment: ObservableObject {
     private(set) var serverChat: ServerChatGateway?
     /// 服务端写路径（M5：人格/记忆/预设/设置/备份）。服务端模式没起来时为 nil。
     private(set) var serverWrites: ServerWriteService?
+    /// 首次连上某台服务端时的双向全量同步（0.12.1；每个 baseURL 只跑一次）。
+    private(set) var serverBootstrap: ServerBootstrapService?
+    /// 我的头像上传（`USER_AVATAR`）。服务端模式没起来时为 nil。
+    private(set) var avatarUploader: ServerUserAvatarUploader?
+    /// 首次同步的进度（设置页显示成一行；跑完/失败后清空）。
+    @Published private(set) var serverBootstrapProgress: ServerBootstrapProgress?
+    /// 首次同步失败的原因（设置页一条提示；重试成功后清掉）。
+    @Published private(set) var serverBootstrapError: String?
+    /// 服务端推送回来的数据版本：bootstrap 拉完 / 每次增量同步写库后 +1。
+    /// 首页与聊天页用它触发一次重载（不用等各自的轮询拍）。
+    @Published private(set) var serverDataVersion = 0
+    /// 首次同步正在跑（避免两次并发；`activateServerMode` 会被冷启动 + 回前台各调一次）。
+    private var isBootstrapping = false
+    /// 上一次「轻量增量同步」的时间（5 分钟节流用）。
+    private var lastServerSyncAttemptAt: Int64 = 0
+    /// 前台每 5 分钟一次的轻量增量同步。
+    private var serverSyncPulseTask: Task<Void, Never>?
     /// 服务端写失败要显示的那句话（设置页顶部一条提示；成功保存会清掉）。
     @Published private(set) var serverWriteError: String?
     /// 设置推送串行化：连点开关时只让最后一次生效（避免旧请求把新值盖回去）。
@@ -442,6 +459,11 @@ final class AppEnvironment: ObservableObject {
             serverEvents = nil
             serverChat = nil
             serverWrites = nil
+            serverBootstrap = nil
+            avatarUploader = nil
+            serverBootstrapProgress = nil
+            serverBootstrapError = nil
+            stopServerSyncPulse()
             // 服务端媒体缓存也一起关掉：没有地址/令牌时不该再拿旧客户端去取图。
             ServerMediaCache.shared.configure(client: nil)
             DebugSeeding.log("[server] 配置不合法：\(error.localizedDescription)")
@@ -454,6 +476,11 @@ final class AppEnvironment: ObservableObject {
             serverEvents = nil
             serverChat = nil
             serverWrites = nil
+            serverBootstrap = nil
+            avatarUploader = nil
+            serverBootstrapProgress = nil
+            serverBootstrapError = nil
+            stopServerSyncPulse()
             ServerMediaCache.shared.configure(client: nil)
             DebugSeeding.log("[server] 服务端模式未启用（继续用本地模式）")
             return
@@ -503,6 +530,23 @@ final class AppEnvironment: ObservableObject {
             stores: stores,
             memoryRepository: memoryRepository,
             backup: backup
+        )
+        // 我的头像：压缩（复用选图产物）→ `POST /v1/media?kind=USER_AVATAR` → 写设置。
+        avatarUploader = ServerUserAvatarUploader(uploader: client)
+        // 首次全量同步：每个 baseURL 一次；进度回调切回主线程发布给设置页。
+        // 这里只捕获「弱引用 self」，不把整棵依赖图塞进 actor。
+        serverBootstrap = ServerBootstrapService(
+            client: client,
+            stores: stores,
+            settings: settings,
+            memories: memoryRepository,
+            avatarUploader: avatarUploader,
+            log: { DebugSeeding.log($0) },
+            progress: { [weak self] progress in
+                Task { @MainActor in
+                    self?.serverBootstrapProgress = progress
+                }
+            }
         )
         serverModeActive = true
         DebugSeeding.log("[server] 服务端模式已启用：\(loaded.baseURL?.absoluteString ?? "-")")
@@ -595,6 +639,7 @@ final class AppEnvironment: ObservableObject {
         let outcome = await sync.syncNow()
         switch outcome {
         case .synced(let report):
+            if report.sessions > 0 || report.messages > 0 { serverDataVersion &+= 1 }
             DebugSeeding.log("[server] 同步完成：会话 \(report.sessions) / 消息 \(report.messages)")
         case .failed(let message, let attempts):
             DebugSeeding.log("[server] 同步失败（\(attempts) 次）：\(message)")
@@ -617,19 +662,124 @@ final class AppEnvironment: ObservableObject {
     func stopServerEvents() {
         serverEventTask?.cancel()
         serverEventTask = nil
+        // 增量同步的 5 分钟一拍也是前台才做的事：进后台一起停。
+        stopServerSyncPulse()
     }
 
-    /// 服务端模式的一次「进前台」全套动作：同步状态 + 起事件流 + 补发队列。
+    /// 服务端模式的一次「进前台」全套动作：首次全量（如需要）+ 轻量增量 + 起事件流 + 补发队列。
     ///
-    /// 顺序有意为之：先同步（把离线期间的整段状态补齐），再起事件流（从这里开始只收增量），
-    /// 否则事件流会一边补历史一边收增量，游标语义会乱。
+    /// 顺序有意为之：
+    /// 1. **先 bootstrap**（换了一台服务端、两边数据不一样时那次全量）；它会把本机/服务端的
+    ///    历史对齐，不先做的话后面的增量同步只搬「游标之后」的几条；
+    /// 2. 再增量同步（把离线期间的整段状态补齐）；
+    /// 3. 再起事件流（从这里开始只收增量），否则事件流会一边补历史一边收增量，游标语义会乱；
+    /// 4. 最后补发队列（离线时排队的消息）。
     func activateServerMode() async {
         guard serverModeActive else { return }
-        await syncServerNow()
+        await runServerBootstrapIfNeeded()
+        await quickServerSync(minIntervalMillis: 20_000)
         if let gateway = serverChat, gateway.isActive {
             _ = await gateway.flushOutbox()
         }
         startServerEvents()
+        startServerSyncPulse()
+    }
+
+    // MARK: - 首次全量同步（0.12.1）
+
+    /// 如果这台服务端还没做过首次同步，就做一次（幂等；已经有完成标记时立刻返回 nil）。
+    ///
+    /// - Parameter force: 设置页「重新同步」用；生产路径不要传。
+    @discardableResult
+    func runServerBootstrapIfNeeded(force: Bool = false) async -> ServerBootstrapOutcome? {
+        guard serverModeActive, let bootstrap = serverBootstrap else { return nil }
+        if !force, await bootstrap.isBootstrapped() { return nil }
+        guard !isBootstrapping else { return nil }
+        isBootstrapping = true
+        defer { isBootstrapping = false }
+        serverBootstrapError = nil
+        let outcome = await bootstrap.bootstrap(force: force)
+        switch outcome {
+        case .completed(let report):
+            serverBootstrapProgress = nil
+            serverBootstrapError = nil
+            // 服务端拉回来的设置（主题/字号/我的头像）要立刻被界面看到。
+            reloadSettings()
+            ensureEveryPersonaHasSession()
+            bindMissingApiConfigs()
+            serverDataVersion &+= 1
+            DebugSeeding.log("[server] 首次同步完成：\(report.describe)")
+        case .failed(let message, let attempts):
+            serverBootstrapProgress = nil
+            // 直接显示 Kit 给的那句话（`ServerBootstrapService` 的失败文案本来就是中文）：
+            // 这里不拼中文前缀 —— App 层不许新増裸中文，本地化资源又不在本次改动范围。
+            serverBootstrapError = message
+            DebugSeeding.log("[server] 首次同步失败（\(attempts) 次）：\(message)")
+        case .skipped(let reason):
+            serverBootstrapProgress = nil
+            DebugSeeding.log("[server] 首次同步跳过：\(reason)")
+        }
+        return outcome
+    }
+
+    /// 设置页「重新同步一次」：清掉完成标记重跑（幂等，不会造出第二份）。
+    func redoServerBootstrap() async {
+        await runServerBootstrapIfNeeded(force: true)
+    }
+
+    /// 轻量增量同步（带节流）。
+    ///
+    /// 为什么需要节流：`activateServerMode` 在冷启动与回前台各会调一次，前台还有 5 分钟一拍；
+    /// 没有节流时三处会同时各打一次 `/v1/state`（幂等但白花流量）。
+    @discardableResult
+    func quickServerSync(minIntervalMillis: Int64 = 20_000) async -> ServerSyncOutcome? {
+        guard serverModeActive, serverSync != nil else { return nil }
+        let now = DomainClock.nowMillis
+        if lastServerSyncAttemptAt > 0, now - lastServerSyncAttemptAt < minIntervalMillis {
+            return nil
+        }
+        lastServerSyncAttemptAt = now
+        return await syncServerNow()
+    }
+
+    /// 前台每 5 分钟一次的轻量增量（只拉增量，不重跑全量）。
+    func startServerSyncPulse() {
+        guard serverModeActive else { return }
+        guard serverSyncPulseTask == nil else { return }
+        serverSyncPulseTask = Task { [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(nanoseconds: 5 * 60 * 1_000_000_000)
+                } catch {
+                    return
+                }
+                guard let self, !Task.isCancelled else { return }
+                guard self.isForeground, self.serverModeActive else { return }
+                await self.quickServerSync(minIntervalMillis: 0)
+            }
+        }
+        DebugSeeding.log("[server] 增量同步已排上：前台每 5 分钟一次")
+    }
+
+    func stopServerSyncPulse() {
+        serverSyncPulseTask?.cancel()
+        serverSyncPulseTask = nil
+    }
+
+    // MARK: - 我的头像（USER_AVATAR）
+
+    /// 上传「我的头像」并写进设置，返回 `/v1/media/<id>`。
+    ///
+    /// 只在服务端模式下调用；本地模式仍走原来的 `file://` 路径（行为一字未改）。
+    /// 上传成功以 `POST /v1/media` 的 2xx 为准（设置接口静默忽略未知键，不能拿它当证据）。
+    /// - Returns: 写进设置的 `/v1/media/<id>`；服务端模式没起来时返回 nil（调用方是设置页，
+    ///   它本来就只在 `serverModeActive` 时进来）。
+    func uploadMyAvatar(localURI: String) async throws -> String? {
+        guard serverModeActive, let uploader = avatarUploader else { return nil }
+        let result = try await uploader.upload(localURI: localURI)
+        updateSettings { $0.myAvatarUri = result.uri }
+        DebugSeeding.log("[server] 我的头像已上传：\(result.uri)")
+        return result.uri
     }
 
     /// `set_activity` 在服务端模式下要上报给服务端（规范 §4：主动引擎据此决定要不要开口）。

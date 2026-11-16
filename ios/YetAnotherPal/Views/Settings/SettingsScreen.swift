@@ -498,6 +498,11 @@ struct SettingsScreen: View {
             let outcome = await ImageImport.importOne(item, kind: .avatar)
             switch outcome {
             case .success(let attachment):
+                if env.serverModeActive {
+                    // 服务端模式：设置里存的是 `/v1/media/<id>`，别的设备也看得到。
+                    await uploadMyAvatar(attachment)
+                    return
+                }
                 let previous = env.currentSettings.myAvatarUri
                 env.updateSettings { $0.myAvatarUri = attachment.uri }
                 // 新头像已经落库，再删旧图；只删零引用的（旧图可能与人格/预设头像共用）。
@@ -511,8 +516,57 @@ struct SettingsScreen: View {
         }
     }
 
+    /// 服务端模式下选头像：本地选图（已压缩到 ≤512/≤400KB）→ `POST /v1/media?kind=USER_AVATAR`
+    /// → 设置里写 `/v1/media/<id>`。失败时本机设置不动，只把原因显示出来。
+    private func uploadMyAvatar(_ attachment: MessageAttachment) async {
+        let previous = env.currentSettings.myAvatarUri
+        do {
+            guard let uri = try await env.uploadMyAvatar(localURI: attachment.uri) else { return }
+            // 换下来的是本机文件就删掉（只删零引用的；服务端路径不能被本地媒体清理碰到）。
+            MediaStorage.shared.deleteIfUnreferenced(
+                previous,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
+            // 刚上传的这份本机副本已经不再被设置引用：同样按引用计数清理。
+            MediaStorage.shared.deleteIfUnreferenced(
+                attachment.uri,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
+            DebugSeeding.log("[server] 我的头像已换成 \(uri)")
+        } catch {
+            // 上传失败：清掉刚落的临时文件，设置保持原样。
+            MediaStorage.shared.deleteIfUnreferenced(
+                attachment.uri,
+                references: MediaReferences(stores: env.stores, settings: env.settings)
+            )
+            banner = MFAlert(
+                title: L("这张图用不了"),
+                message: error.localizedDescription
+            )
+        }
+    }
+
     private func removeMyAvatar() {
         let previous = env.currentSettings.myAvatarUri
+        if env.serverModeActive, let writes = env.serverWrites {
+            // 服务端模式：删除必须**显式**推一个 null 上去。缺键在服务端是「别动它」，
+            // 只写本机的话，下次拉设置又会被装回来。
+            Task { @MainActor in
+                var cleared = env.currentSettings
+                cleared.myAvatarUri = nil
+                do {
+                    _ = try await writes.clearUserAvatar(from: cleared)
+                    env.updateSettings { $0.myAvatarUri = nil }
+                    MediaStorage.shared.deleteIfUnreferenced(
+                        previous,
+                        references: MediaReferences(stores: env.stores, settings: env.settings)
+                    )
+                } catch {
+                    banner = MFAlert(title: L("没能删掉"), message: error.localizedDescription)
+                }
+            }
+            return
+        }
         env.updateSettings { $0.myAvatarUri = nil }
         // 设置里已经不再引用它；仍要确认人格/预设/消息没有引用同一张图。
         MediaStorage.shared.deleteIfUnreferenced(

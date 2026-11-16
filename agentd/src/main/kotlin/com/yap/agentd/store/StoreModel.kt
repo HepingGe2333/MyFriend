@@ -480,6 +480,45 @@ data class Message(
     }
 }
 
+// ---------------------------------------------------------------------- 批量历史消息导入
+
+/**
+ * `POST /v1/sessions/{id}/messages/import` 里的一条消息（**客户端自带 id**）。
+ *
+ * 与 [Message] 的区别：没有 `sessionId`（URL 里给）、没有 `blockIndex`（服务端按
+ * `createdAt` 切块）、没有 token 用量（历史消息本来就没有）。
+ *
+ * `readAt` 缺省/null = 未读：批量导入**不会**把它算进会话的 `unread`（历史消息不该在客户端
+ * 切到远程后突然显示一堆未读），但会原样存下请求给的 `readAt`。
+ */
+data class ImportMessage(
+    val id: String,
+    val role: String,
+    val content: String,
+    val createdAt: Long,
+    val readAt: Long?,
+    /** 已由路由层归一化成 `/v1/media/<id>` 并校验过存在。 */
+    val attachments: List<String> = emptyList(),
+    val source: String = MessageSource.IMPORT,
+    val clientMessageId: String? = null,
+    val replyTo: String? = null
+)
+
+/**
+ * 一次批量导入的结果。
+ *
+ * - [imported] / [skipped]：真正写入的条数 / 因为 id 已存在而跳过的条数；
+ * - [firstBlock] / [lastBlock]：本次新写入消息覆盖到的块编号区间（`imported == 0` 时都是 null）；
+ * - [messageCount]：导入后该会话的总消息数（客户端用来对账，不用再拉一次列表）。
+ */
+data class MessageImportResult(
+    val imported: Int,
+    val skipped: Int,
+    val firstBlock: Int?,
+    val lastBlock: Int?,
+    val messageCount: Long
+)
+
 /** 块表的一行，对应 `sessions/<id>/block_index.json` 的 `blocks[]`。 */
 data class BlockMeta(
     val index: Int,

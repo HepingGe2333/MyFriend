@@ -164,7 +164,7 @@ fun SettingsScreen(
         if (uri != null) {
             scope.launch {
                 com.yap.app.util.MediaStorage.persistAvatar(context, uri)
-                    .onSuccess { viewModel.setUserAvatar(it) }
+                    .onSuccess { viewModel.onUserAvatarPicked(it) }
                     .onFailure {
                         snackbar.showSnackbar(
                             ErrorText.of(context, it, R.string.settings_error_avatar)
@@ -264,6 +264,7 @@ fun SettingsScreen(
                         trailing = {
                             UserAvatar(
                                 avatarUri = state.settings.userAvatarUri,
+                                fallbackUri = state.settings.userAvatarLocalUri,
                                 size = 32.dp
                             )
                         },
@@ -279,7 +280,7 @@ fun SettingsScreen(
                             Modifier.fillMaxWidth().padding(start = 16.dp, end = 12.dp),
                             horizontalArrangement = Arrangement.End
                         ) {
-                            TextButton(onClick = { viewModel.setUserAvatar(null) }) {
+                            TextButton(onClick = { viewModel.clearUserAvatar() }) {
                                 Text(
                                     stringResource(R.string.settings_restore_default),
                                     style = MaterialTheme.typography.labelMedium,

@@ -85,10 +85,16 @@ fun PersonaAvatar(
 fun UserAvatar(
     avatarUri: String?,
     size: Dp = 28.dp,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * 离线兜底：服务端模式下 [avatarUri] 是 `/v1/media/<id>`，服务端不可达时取不到图，
+     * 这里传本机缓存副本（`settings.userAvatarLocalUri`）。本地模式下留空即可。
+     */
+    fallbackUri: String? = null
 ) {
     AvatarSurface(
         avatarUri = avatarUri,
+        fallbackUri = fallbackUri,
         size = size,
         modifier = modifier,
         ringColor = null,
@@ -118,6 +124,7 @@ fun UserAvatar(
 @Composable
 private fun AvatarSurface(
     avatarUri: String?,
+    fallbackUri: String? = null,
     size: Dp,
     modifier: Modifier,
     ringColor: Color?,
@@ -141,9 +148,21 @@ private fun AvatarSurface(
         widthPx = targetPx,
         heightPx = targetPx
     )
+    // 0.12.1 离线兜底：服务端引用加载失败时用本机缓存副本再试一次。
+    val fallbackRequest = rememberMediaImageRequest(
+        raw = fallbackUri,
+        widthPx = targetPx,
+        heightPx = targetPx
+    )
     // 文件被清掉 / 备份从另一台手机接回来时，avatarUri 可能指向一个不存在的路径。
     // 这时退回默认（色块+首字 / Person 图标），而不是留一个空圆圈。
-    var loadFailed by remember(request) { mutableStateOf(false) }
+    var primaryFailed by remember(request) { mutableStateOf(false) }
+    var fallbackFailed by remember(fallbackRequest) { mutableStateOf(false) }
+    val activeRequest = when {
+        request != null && !primaryFailed -> request
+        fallbackRequest != null && !fallbackFailed -> fallbackRequest
+        else -> null
+    }
     val shape = CircleShape
     val borderModifier = if (ringColor != null) {
         Modifier.border(2.dp, ringColor, shape).padding(badgePadding)
@@ -156,13 +175,15 @@ private fun AvatarSurface(
             .background(background),
         contentAlignment = Alignment.Center
     ) {
-        if (request != null && !loadFailed) {
+        if (activeRequest != null) {
             AsyncImage(
-                model = request,
+                model = activeRequest,
                 contentDescription = contentDescription,
                 modifier = Modifier.matchParentSize(),
                 contentScale = ContentScale.Crop,
-                onError = { loadFailed = true }
+                onError = {
+                    if (activeRequest === request) primaryFailed = true else fallbackFailed = true
+                }
             )
         } else {
             fallback()

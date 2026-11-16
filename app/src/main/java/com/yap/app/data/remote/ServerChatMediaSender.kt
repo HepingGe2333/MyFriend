@@ -27,6 +27,7 @@ import javax.inject.Singleton
 @Singleton
 class ServerChatMediaSender @Inject constructor(
     private val mode: ServerModeRepository,
+    private val localStore: ServerLocalStore,
     @ApplicationContext private val context: Context
 ) {
 
@@ -50,7 +51,11 @@ class ServerChatMediaSender @Inject constructor(
             compressor = compressor,
             readBytes = { uri -> readOwned(uri, mediaDirectory()) }
         )
-        return uploader.uploadImages(attachments, personaId)
+        // 服务端媒体端点会校验 personaId 存在：bootstrap 推送过的本地人格必须换成服务端 id。
+        val serverPersonaId = personaId?.takeIf { it.isNotBlank() }?.let { localId ->
+            localStore.serverPersonaId(localId) ?: localId
+        }
+        return uploader.uploadImages(attachments, serverPersonaId)
     }
 
     /**
@@ -58,7 +63,23 @@ class ServerChatMediaSender @Inject constructor(
      *
      * 头像上传失败必须让人格保存失败：静默丢掉头像会让用户以为换好了，下次打开又变回旧的。
      */
-    suspend fun uploadPersonaAvatar(avatarUri: String?, personaId: String?): Result<String?> {
+    suspend fun uploadPersonaAvatar(avatarUri: String?, personaId: String?): Result<String?> =
+        uploadAvatar(avatarUri, ServerMediaKinds.PERSONA_AVATAR, personaId)
+
+    /**
+     * 上传「我的头像」（0.12.1）：与人格头像同一条压缩/上传链路，只是 `kind=USER_AVATAR`。
+     *
+     * 本地文件不在/为空时返回 `null`；压缩失败或上传失败原样抛出，由
+     * [com.yap.app.data.remote.UserAvatarCoordinator] 回滚设置并让界面提示。
+     */
+    suspend fun uploadUserAvatar(avatarUri: String?): Result<String?> =
+        uploadAvatar(avatarUri, ServerMediaKinds.USER_AVATAR, null)
+
+    private suspend fun uploadAvatar(
+        avatarUri: String?,
+        kind: String,
+        personaId: String?
+    ): Result<String?> {
         val value = avatarUri?.trim().orEmpty()
         if (value.isEmpty()) return Result.success(null)
         val api = mode.api() ?: return Result.failure(
@@ -73,11 +94,14 @@ class ServerChatMediaSender @Inject constructor(
                         "avatar could not be compressed for upload",
                         code = "media_compress_failed"
                     )
+                val serverPersonaId = personaId?.takeIf { it.isNotBlank() }?.let { localId ->
+                    localStore.serverPersonaId(localId) ?: localId
+                }
                 val media = api.uploadMedia(
                     bytes = compressed.bytes,
                     mime = compressed.mime,
-                    kind = ServerMediaKinds.PERSONA_AVATAR,
-                    personaId = personaId
+                    kind = kind,
+                    personaId = serverPersonaId
                 )
                 ServerMediaRef.canonical(media.url)
                     ?: ServerMediaRef.canonical(media.id)

@@ -6,6 +6,8 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.add
@@ -179,6 +181,65 @@ class ServerApi(
                     afterBlock?.let { builder.addQueryParameter("afterBlock", it.toString()) }
                 }
             ).get().build()
+        )
+    }
+
+    // ------------------------------------------------------------------ 0.12.1 批量导入历史消息
+
+    /**
+     * `POST /v1/sessions/{id}/messages/import`：把本机历史消息批量搬进服务端（bootstrap 用）。
+     *
+     * 契约要点（与 `agentd` 并行开发中的导入端点一致）：
+     * - **单批最多 [MAX_IMPORT_MESSAGES] 条**：超了直接在客户端失败，不发出去等服务端 400；
+     * - **幂等**：每条带 `id`，重试同一批不会产生重复消息；
+     * - `createdAt/readAt/role/attachments` 原样保留，服务端按自己的块规则分配 `blockIndex`。
+     *
+     * 返回的计数只用于进度显示；服务端多给/少给字段都不影响「这批处理完了」这个事实。
+     */
+    suspend fun importMessages(
+        sessionId: String,
+        messages: List<ServerMessageImport>
+    ): ServerMessageImportResult {
+        if (messages.isEmpty()) return ServerMessageImportResult(sessionId = sessionId)
+        if (messages.size > MAX_IMPORT_MESSAGES) {
+            throw ServerApiException(
+                "import batch exceeds the $MAX_IMPORT_MESSAGES message limit",
+                code = "invalid_argument"
+            )
+        }
+        // 逐字段手写而不是 `json.encodeToJsonElement`：序列化器默认省略「等于默认值」的字段，
+        // `source=IMPORT` 会被省掉、服务端可能落成 CHAT；导入契约要求这几列一定带上。
+        return postJson(
+            url("v1", "sessions", sessionId, "messages", "import"),
+            buildJsonObject {
+                put(
+                    "messages",
+                    buildJsonArray {
+                        messages.forEach { message ->
+                            add(
+                                buildJsonObject {
+                                    if (message.id.isNotBlank()) put("id", message.id)
+                                    put("role", message.role)
+                                    put("content", message.content)
+                                    put("createdAt", message.createdAt)
+                                    message.readAt?.let { put("readAt", it) }
+                                    if (message.attachments.isNotEmpty()) {
+                                        put(
+                                            "attachments",
+                                            buildJsonArray {
+                                                message.attachments.forEach { add(it) }
+                                            }
+                                        )
+                                    }
+                                    put("source", message.source)
+                                    message.clientMessageId?.let { put("clientMessageId", it) }
+                                    message.replyTo?.let { put("replyTo", it) }
+                                }
+                            )
+                        }
+                    }
+                )
+            }
         )
     }
 
@@ -443,9 +504,37 @@ class ServerApi(
     /** `DELETE /v1/presets/{id}`。 */
     suspend fun deletePreset(presetId: String) = delete(url("v1", "presets", presetId))
 
+    /** `GET /v1/personas`：完整人格列表（含客户端扩展字段，服务端原样回传）。 */
+    suspend fun personas(): List<JsonObject> =
+        requestObjectList(url("v1", "personas"), "personas")
+
+    /** `GET /v1/presets`：全部预设（bootstrap 全量拉取用）。 */
+    suspend fun presets(): List<JsonObject> =
+        requestObjectList(url("v1", "presets"), "presets")
+
+    /**
+     * `GET /v1/personas/{id}/memories?limit=&since=`：一个记忆分页。
+     *
+     * `since` 是 `updatedAt` 游标（服务端过滤 `updatedAt > since`），bootstrap 用它翻完全部记忆：
+     * 服务端单页上限 500，`limit` 超过会被夹取，所以客户端自己按 [MEMORY_PAGE_LIMIT] 翻页。
+     */
+    suspend fun memories(
+        personaId: String,
+        limit: Int = MEMORY_PAGE_LIMIT,
+        since: Long = 0L
+    ): List<JsonObject> =
+        requestObjectList(
+            url("v1", "personas", personaId, "memories") { builder ->
+                builder.addQueryParameter("limit", limit.coerceIn(1, MEMORY_PAGE_LIMIT).toString())
+                if (since > 0L) builder.addQueryParameter("since", since.toString())
+            },
+            "memories"
+        )
+
     /** `GET /v1/settings`：服务端公开设置（不含 API Key）。 */
     suspend fun settings(): JsonObject =
         requestJson(requestBuilder(url("v1", "settings")).get().build())
+
 
     /** `POST /v1/settings`：白名单合并；请求里出现密钥类字段会被服务端忽略。 */
     suspend fun postSettings(values: JsonObject): JsonObject =
@@ -525,6 +614,41 @@ class ServerApi(
                 .post(payload.toString().toRequestBody(JSON_MEDIA_TYPE))
                 .build()
         )
+
+    /**
+     * GET 一个「对象数组」端点：服务端可能回 `{ "<key>": [...] }`，也可能直接回裸数组。
+     *
+     * 为什么不反序列化成强类型：人格/预设/记忆的服务端字段会随版本增加（`extraFields`
+     * 就是为这个存在的），bootstrap 需要把**原始对象**交给映射层逐字段挑，不能先丢掉没建模的键。
+     */
+    private suspend fun requestObjectList(url: HttpUrl, key: String): List<JsonObject> {
+        var status = 0
+        val text = execute(client.newCall(requestBuilder(url).get().build())) { response ->
+            val body = readBoundedText(response)
+            if (!response.isSuccessful) throw errorFrom(response.code, body)
+            status = response.code
+            body
+        }
+        val element = try {
+            json.parseToJsonElement(text)
+        } catch (invalid: SerializationException) {
+            throw invalidResponse(status, invalid)
+        }
+        val array: JsonArray = when (element) {
+            is JsonArray -> element
+            is JsonObject -> element[key] as? JsonArray ?: JsonArray(emptyList())
+            else -> throw invalidResponse(status, IllegalArgumentException("expected a JSON array"))
+        }
+        val items = ArrayList<JsonObject>(array.size)
+        array.forEach { item ->
+            val obj = item as? JsonObject
+            if (obj == null) {
+                throw invalidResponse(status, IllegalArgumentException("expected JSON objects"))
+            }
+            items += obj
+        }
+        return items
+    }
 
     /** 写路径返回的是动态对象（人格/记忆/预设的字段会随版本增加）：保留 [JsonObject] 原样。 */
     private suspend fun postJsonObject(url: HttpUrl, payload: JsonObject): JsonObject =
@@ -692,6 +816,12 @@ class ServerApi(
 
         /** 非流式响应体上限：2 MiB。 */
         const val MAX_RESPONSE_BYTES = 2L * 1024 * 1024
+
+        /** `POST /v1/sessions/{id}/messages/import` 单批上限（服务端契约）。 */
+        const val MAX_IMPORT_MESSAGES = 200
+
+        /** `GET /v1/personas/{id}/memories` 的单页上限（服务端 `MAX_MEMORY_LIMIT`）。 */
+        const val MEMORY_PAGE_LIMIT = 500
 
         /** 备份导出专用上限：64 MiB（聊天越多备份越大，普通 JSON 仍按 2 MiB）。 */
         const val MAX_BACKUP_RESPONSE_BYTES = 64L * 1024 * 1024

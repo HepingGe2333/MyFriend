@@ -999,6 +999,7 @@ private fun ChatMessageList(
                                 message = item.message,
                                 settings = state.settings,
                                 userAvatarUri = state.settings.userAvatarUri,
+                                userAvatarFallbackUri = state.settings.userAvatarLocalUri,
                                 highlighted = item.message.id == focusMessageId,
                                 isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
                                 // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
@@ -1242,6 +1243,7 @@ private fun MessageBubble(
     settings: AppSettings,
     /** 「我的头像」；null 时不画（默认就是没有头像的克制样子）。 */
     userAvatarUri: String? = null,
+    userAvatarFallbackUri: String? = null,
     /** 从检索结果定位过来时短暂亮一下（见 ChatScreen 的 focusedMessageId）。 */
     highlighted: Boolean = false,
     isLatestAssistant: Boolean,
@@ -1502,6 +1504,7 @@ private fun MessageBubble(
             // 像 Telegram 的「自己这一侧」：小头像贴在这条消息的右下角，只占一条窄槽。
             UserAvatar(
                 avatarUri = userAvatarUri,
+                fallbackUri = userAvatarFallbackUri,
                 size = 28.dp,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)

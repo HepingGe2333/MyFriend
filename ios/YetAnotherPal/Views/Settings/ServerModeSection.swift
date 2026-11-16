@@ -146,6 +146,35 @@ struct ServerModeSection: View {
                         .padding(.top, 6)
                 }
 
+                // 首次连上这台服务端时，会在后台把两边记录对齐（人格/记忆/聊天历史）。
+                // 这一步可能跑几十秒，所以把它说清楚、给出进度，而不是让用户等一个黑屏。
+                if let progress = env.serverBootstrapProgress {
+                    HStack(alignment: .top, spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        // 进度文案由 Kit 的 `ServerBootstrapProgress.describe` 给（中文，
+                        // 和错误文案同一套；不新增本地化 key，资源文件不在本次改动范围）。
+                        Text(verbatim: progress.describe)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.top, 6)
+                } else if let error = env.serverBootstrapError {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(verbatim: error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Button(L("再试一次")) {
+                            Task { await env.redoServerBootstrap() }
+                        }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(accent)
+                    }
+                    .padding(.top, 6)
+                }
+
                 MFNote(text: L("令牌只存在这台设备的钥匙串里，不进备份、不会出现在日志里。"))
             }
         }

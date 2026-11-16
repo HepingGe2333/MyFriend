@@ -113,7 +113,8 @@ class RoomMediaReferenceSource @Inject constructor(
             .toSet()
 
     override suspend fun userAvatarName(): String? =
-        runCatching { settingsRepository.settings.first().userAvatarUri }
+        runCatching { settingsRepository.settings.first() }
             .getOrNull()
+            .let { settings -> settings?.userAvatarLocalUri ?: settings?.userAvatarUri }
             .let(MediaFileGc::fileNameOf)
 }

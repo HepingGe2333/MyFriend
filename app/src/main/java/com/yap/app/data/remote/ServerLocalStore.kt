@@ -94,10 +94,61 @@ interface ServerLocalStore {
     suspend fun setSessionMapping(serverSessionId: String, localSessionId: String) = Unit
 
     /**
+     * 人格 id 映射：`serverPersonaId ↔ localPersonaId`。
+     *
+     * 为什么初始 bootstrap 需要它：本地模式的人格 id 是客户端 UUID，`POST /v1/personas`
+     * 不带 id 时服务端会分配自己的 id（服务端不接受客户端指定未知 id）。之后本地的写路径
+     * （改人格、记忆、建会话、活动上报）必须用服务端 id，否则会 404；而增量同步拿回的
+     * 服务端人格也不能按服务端 id 再插一行（本地会多出一个「同名的他」）。
+     */
+    suspend fun localPersonaId(serverPersonaId: String): String? = null
+
+    /** 本地人格 id → 服务端人格 id。 */
+    suspend fun serverPersonaId(localPersonaId: String): String? = null
+
+    suspend fun setPersonaMapping(serverPersonaId: String, localPersonaId: String) = Unit
+
+    /**
+     * 记忆 id 映射：bootstrap 推送本地记忆时服务端会分配新 id。
+     *
+     * 本地记忆行保留自己的 id（`memory_terms` / `memory_vectors` / 回声都按它索引，
+     * 换主键等于把这些派生表全部重写），改之后的「编辑/删除记忆」用映射查服务端 id。
+     */
+    suspend fun localMemoryId(serverMemoryId: String): String? = null
+
+    suspend fun serverMemoryId(localMemoryId: String): String? = null
+
+    suspend fun setMemoryMapping(serverMemoryId: String, localMemoryId: String) = Unit
+
+    /**
+     * 本机是否已经对**这台服务端**做过一次性 bootstrap（`server_bootstrap_done:<baseUrl>`）。
+     *
+     * 按地址分键而不是一个全局布尔：换服务端后新地址要重新判断两端数据量；
+     * 换回旧地址时也不该再全量搬一遍（那次已经搬过，之后靠增量同步）。
+     */
+    suspend fun bootstrapDone(baseUrl: String): Boolean = false
+
+    /** bootstrap 成功（或判定无需搬运）之后写标记；失败不写，下次前台重试。 */
+    suspend fun markBootstrapDone(baseUrl: String) = Unit
+
+    /**
+     * 清掉某台服务端的 bootstrap 标记（「删除全部数据」/主动断开时用）。
+     *
+     * 普通换地址**不**调用它：换回旧地址时上次已经搬过，应该继续靠增量同步；
+     * 只有本机数据被清空、需要重新做一次全量对齐时才清。
+     */
+    suspend fun clearBootstrapDone(baseUrl: String) = Unit
+
+    /**
      * 换了一台服务端：清空游标/会话映射/待发队列。
      *
      * 旧游标是旧服务端的单调游标，带着它去问新服务端会漏掉新服务端 0..old 的事件；
-     * 待发队列里的 clientMessageId 与 sessionId 也只对旧服务端有意义。
+     * 待发队列里的 clientMessageId 与 sessionId 也只对旧服务端有意义；会话 id 只对旧服务端
+     * 有意义（**人格/记忆 id 映射刻意保留**：它们把「本机 UUID」绑到「某个服务端 id」，
+     * 换回旧地址时没有它，增量同步会在本机多插一份同名人格；新服务端上刚开始用不到，
+     * bootstrap 推送时会先核对远端列表再决定是否沿用）。
+     *
+     * **刻意不清 bootstrap 标记**：它是「这台地址搬过没有」的历史，按地址分键本身就不冲突。
      * 默认空操作，方便假实现只测自己关心的规则。
      */
     suspend fun resetForNewServer() = Unit
@@ -186,12 +237,78 @@ class DataStoreServerLocalStore @Inject constructor(
 
     override suspend fun setSessionMapping(serverSessionId: String, localSessionId: String) {
         if (serverSessionId.isBlank() || localSessionId.isBlank()) return
+        // 映射在每次增量同步都会走到：值没变就不要写盘（DataStore 的写入不是零成本）。
+        val current = context.serverStateDataStore.data.first()
+        if (decodeMap(current[Keys.serverToLocal])[serverSessionId] == localSessionId) return
         context.serverStateDataStore.edit { prefs ->
             val serverToLocal = decodeMap(prefs[Keys.serverToLocal]) + (serverSessionId to localSessionId)
             val localToServer = decodeMap(prefs[Keys.localToServer]) + (localSessionId to serverSessionId)
             prefs[Keys.serverToLocal] = encodeMap(serverToLocal)
             prefs[Keys.localToServer] = encodeMap(localToServer)
         }
+    }
+
+    override suspend fun localPersonaId(serverPersonaId: String): String? {
+        if (serverPersonaId.isBlank()) return null
+        return decodeMap(context.serverStateDataStore.data.first()[Keys.serverToLocalPersona])[serverPersonaId]
+    }
+
+    override suspend fun serverPersonaId(localPersonaId: String): String? {
+        if (localPersonaId.isBlank()) return null
+        return decodeMap(context.serverStateDataStore.data.first()[Keys.localToServerPersona])[localPersonaId]
+    }
+
+    override suspend fun setPersonaMapping(serverPersonaId: String, localPersonaId: String) {
+        if (serverPersonaId.isBlank() || localPersonaId.isBlank()) return
+        val current = context.serverStateDataStore.data.first()
+        if (decodeMap(current[Keys.serverToLocalPersona])[serverPersonaId] == localPersonaId) return
+        context.serverStateDataStore.edit { prefs ->
+            prefs[Keys.serverToLocalPersona] = encodeMap(
+                decodeMap(prefs[Keys.serverToLocalPersona]) + (serverPersonaId to localPersonaId)
+            )
+            prefs[Keys.localToServerPersona] = encodeMap(
+                decodeMap(prefs[Keys.localToServerPersona]) + (localPersonaId to serverPersonaId)
+            )
+        }
+    }
+
+    override suspend fun localMemoryId(serverMemoryId: String): String? {
+        if (serverMemoryId.isBlank()) return null
+        return decodeMap(context.serverStateDataStore.data.first()[Keys.serverToLocalMemory])[serverMemoryId]
+    }
+
+    override suspend fun serverMemoryId(localMemoryId: String): String? {
+        if (localMemoryId.isBlank()) return null
+        return decodeMap(context.serverStateDataStore.data.first()[Keys.localToServerMemory])[localMemoryId]
+    }
+
+    override suspend fun setMemoryMapping(serverMemoryId: String, localMemoryId: String) {
+        if (serverMemoryId.isBlank() || localMemoryId.isBlank()) return
+        val current = context.serverStateDataStore.data.first()
+        if (decodeMap(current[Keys.serverToLocalMemory])[serverMemoryId] == localMemoryId) return
+        context.serverStateDataStore.edit { prefs ->
+            prefs[Keys.serverToLocalMemory] = encodeMap(
+                decodeMap(prefs[Keys.serverToLocalMemory]) + (serverMemoryId to localMemoryId)
+            )
+            prefs[Keys.localToServerMemory] = encodeMap(
+                decodeMap(prefs[Keys.localToServerMemory]) + (localMemoryId to serverMemoryId)
+            )
+        }
+    }
+
+    override suspend fun bootstrapDone(baseUrl: String): Boolean {
+        val key = bootstrapKey(baseUrl) ?: return false
+        return context.serverStateDataStore.data.first()[key] == BOOTSTRAP_DONE_VALUE
+    }
+
+    override suspend fun markBootstrapDone(baseUrl: String) {
+        val key = bootstrapKey(baseUrl) ?: return
+        context.serverStateDataStore.edit { prefs -> prefs[key] = BOOTSTRAP_DONE_VALUE }
+    }
+
+    override suspend fun clearBootstrapDone(baseUrl: String) {
+        val key = bootstrapKey(baseUrl) ?: return
+        context.serverStateDataStore.edit { prefs -> prefs.remove(key) }
     }
 
     override suspend fun resetForNewServer() {
@@ -201,7 +318,21 @@ class DataStoreServerLocalStore @Inject constructor(
             prefs.remove(Keys.pending)
             prefs.remove(Keys.serverToLocal)
             prefs.remove(Keys.localToServer)
+            // 人格/记忆映射保留：换回旧地址时它们仍然正确；新服务端上 bootstrap 会先核对
+            // 远端列表，不会盲目沿用（见 ServerBootstrapManager 的 `in remotePersonaIds` 判断）。
         }
+    }
+
+    /**
+     * 标记键：`server_bootstrap_done:<归一化 baseUrl>`。
+     *
+     * 归一只做 `trimEnd('/')`：与 [ServerModeRepository] 交给运行时的 `config.baseUrl` 同形，
+     * 不做协议归一化（`http`/`https` 是两台不同的服务端，不能共用标记）。
+     */
+    private fun bootstrapKey(baseUrl: String): Preferences.Key<String>? {
+        val clean = baseUrl.trim().trimEnd('/')
+        if (clean.isEmpty()) return null
+        return stringPreferencesKey("$BOOTSTRAP_KEY_PREFIX$clean")
     }
 
     private fun decode(raw: String?): List<PendingServerMessage> {
@@ -228,5 +359,17 @@ class DataStoreServerLocalStore @Inject constructor(
         val pending = stringPreferencesKey("server_pending_messages")
         val serverToLocal = stringPreferencesKey("server_session_to_local")
         val localToServer = stringPreferencesKey("local_session_to_server")
+        val serverToLocalPersona = stringPreferencesKey("server_persona_to_local")
+        val localToServerPersona = stringPreferencesKey("local_persona_to_server")
+        val serverToLocalMemory = stringPreferencesKey("server_memory_to_local")
+        val localToServerMemory = stringPreferencesKey("local_memory_to_server")
+    }
+
+    private companion object {
+        /** bootstrap 标记的键前缀（后接归一化 baseUrl）。 */
+        const val BOOTSTRAP_KEY_PREFIX = "server_bootstrap_done:"
+
+        /** 标记值；DataStore 只存字符串，值本身不重要，但只要键存在就代表完成。 */
+        const val BOOTSTRAP_DONE_VALUE = "1"
     }
 }

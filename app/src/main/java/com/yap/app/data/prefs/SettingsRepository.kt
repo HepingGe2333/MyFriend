@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.serialization.json.JsonObject
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
@@ -40,6 +41,7 @@ class SettingsRepository @Inject constructor(
         val chatBackgroundColor = longPreferencesKey("chat_background_color")
         val chatBackgroundImageUri = stringPreferencesKey("chat_background_image")
         val userAvatarUri = stringPreferencesKey("user_avatar_uri")
+        val userAvatarLocalUri = stringPreferencesKey("user_avatar_local_uri")
         val activePersonaId = stringPreferencesKey("active_persona_id")
         val haptics = booleanPreferencesKey("haptics")
         val seeded = booleanPreferencesKey("initial_personas_seeded")
@@ -68,6 +70,7 @@ class SettingsRepository @Inject constructor(
             chatBackgroundColor = prefs[Keys.chatBackgroundColor],
             chatBackgroundImageUri = prefs[Keys.chatBackgroundImageUri],
             userAvatarUri = prefs[Keys.userAvatarUri],
+            userAvatarLocalUri = prefs[Keys.userAvatarLocalUri],
             activePersonaId = prefs[Keys.activePersonaId],
             hapticsEnabled = prefs[Keys.haptics] ?: true,
             agentLoopEnabled = prefs[Keys.agentLoop] ?: true,
@@ -98,6 +101,72 @@ class SettingsRepository @Inject constructor(
      */
     suspend fun setUserAvatarUri(uri: String?) = edit {
         if (uri == null) it.remove(Keys.userAvatarUri) else it[Keys.userAvatarUri] = uri
+    }
+
+    /**
+     * 一次写两个引用（服务端引用 + 本机缓存副本），只写本地。
+     *
+     * 「我的头像」上传链路（[com.yap.app.data.remote.UserAvatarCoordinator]）用它在
+     * 「上传成功之后、推送之前」原子地落盘；推送失败时调用方会再写回旧值。
+     */
+    suspend fun setUserAvatar(serverRef: String?, localRef: String?) = edit {
+        if (serverRef == null) it.remove(Keys.userAvatarUri) else it[Keys.userAvatarUri] = serverRef
+        if (localRef == null) it.remove(Keys.userAvatarLocalUri) else it[Keys.userAvatarLocalUri] = localRef
+    }
+
+    /** 把当前白名单设置镜像到服务端（头像链路在写完引用之后显式调用；失败抛异常）。 */
+    suspend fun pushServerSettings() {
+        if (!serverWrites.isEnabled()) return
+        serverWrites.pushSettings(settings.first()).getOrThrow()
+    }
+
+    /**
+     * 把服务端 `GET /v1/settings` 的白名单值写回本地（bootstrap 全量拉取 / 新客户端首连）。
+     *
+     * 只覆盖**响应里确实出现的键**：服务端版本较老时缺 `userAvatarUri`，不能把本机头像清掉。
+     * 不触发 `POST /v1/settings`（避免「拉下来又立刻推回去」的回路），也不改开关本身的
+     * 服务端连接配置（那不属于白名单）。
+     */
+    suspend fun applyServerSettings(values: JsonObject) {
+        if (values.isEmpty()) return
+        val parsed = com.yap.app.data.remote.ServerSettingsWrite.read(values)
+        context.settingsDataStore.edit { prefs ->
+            parsed.themeMode?.let { mode ->
+                runCatching { ThemeMode.valueOf(mode) }.getOrNull()?.let { prefs[Keys.themeMode] = it.name }
+            }
+            parsed.accentColor?.let { prefs[Keys.accentColor] = it }
+            parsed.fontScale?.let { prefs[Keys.fontScale] = it.coerceIn(0.85f, 1.3f) }
+            parsed.bubbleStyle?.let { style ->
+                runCatching { BubbleStyle.valueOf(style) }.getOrNull()?.let { prefs[Keys.bubbleStyle] = it.name }
+            }
+            parsed.animationsEnabled?.let { prefs[Keys.animations] = it }
+            parsed.hapticsEnabled?.let { prefs[Keys.haptics] = it }
+            if (parsed.clearChatBackground) {
+                prefs.remove(Keys.chatBackgroundColor)
+            } else {
+                parsed.chatBackgroundColor?.let { prefs[Keys.chatBackgroundColor] = it }
+            }
+            parsed.agentLoopEnabled?.let { prefs[Keys.agentLoop] = it }
+            if (parsed.clearActivePersona) {
+                prefs.remove(Keys.activePersonaId)
+            } else {
+                parsed.activePersonaId?.takeIf { it.isNotBlank() }?.let { prefs[Keys.activePersonaId] = it }
+            }
+            parsed.autoTranslatePersona?.let { prefs[Keys.autoTranslatePersona] = it }
+            when {
+                parsed.clearUserAvatar -> {
+                    // 服务端明确清空：本机缓存副本也一起清，否则老文件会被当成「还在引用」永不回收。
+                    prefs.remove(Keys.userAvatarUri)
+                    prefs.remove(Keys.userAvatarLocalUri)
+                }
+                !parsed.userAvatarUri.isNullOrBlank() -> {
+                    // 服务端引用统一存规范形态；本机缓存副本（userAvatarLocalUri）不动：
+                    // 离线时仍能用旧图兜底，直到用户下次换头像。
+                    val ref = com.yap.app.data.remote.ServerBootstrapMapping.avatarRef(parsed.userAvatarUri)
+                    if (ref != null) prefs[Keys.userAvatarUri] = ref
+                }
+            }
+        }
     }
     suspend fun setActivePersonaId(id: String?) = editAndSync {
         if (id == null) it.remove(Keys.activePersonaId) else it[Keys.activePersonaId] = id

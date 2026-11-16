@@ -294,7 +294,9 @@ class ServerWriteMappingTest {
                 "chatBackgroundColor",
                 "agentLoopEnabled",
                 "activePersonaId",
-                "autoTranslatePersona"
+                "autoTranslatePersona",
+                // 0.12.1：我的头像的服务端媒体引用（图片本体走 POST /v1/media?kind=USER_AVATAR）。
+                "userAvatarUri"
             ),
             ServerSettingsWrite.WHITELIST
         )

@@ -12,6 +12,7 @@ import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 
@@ -114,8 +115,15 @@ object ServerPersonaWrite {
  */
 object ServerMemoryWrite {
 
-    fun payload(memory: MemoryEntity, creating: Boolean): JsonObject = buildJsonObject {
-        if (!creating) put("id", memory.id)
+    /**
+     * @param idOverride 更新时的服务端 id（bootstrap 推送过的本地记忆与服务端 id 不同）
+     */
+    fun payload(
+        memory: MemoryEntity,
+        creating: Boolean,
+        idOverride: String? = null
+    ): JsonObject = buildJsonObject {
+        if (!creating) put("id", idOverride ?: memory.id)
         put("content", memory.content)
         put("importance", importanceToServer(memory.importance))
         val tags = MemoryTags.decode(memory.tags)
@@ -188,7 +196,15 @@ object ServerSettingsWrite {
         "chatBackgroundColor",
         "agentLoopEnabled",
         "activePersonaId",
-        "autoTranslatePersona"
+        "autoTranslatePersona",
+        /**
+         * 「我的头像」的服务端媒体引用（0.12.1）。
+         *
+         * 值只可能是 `/v1/media/<id>` 或 null：图片本身走 `POST /v1/media?kind=USER_AVATAR`，
+         * 这里只是跨端还原「他/她长什么样」的那一个指针。服务端旧版本忽略未知键时，
+         * 客户端下拉的设置里缺这个键，[read] 会把「缺键」当成「不知道」而不是「清空」。
+         */
+        "userAvatarUri"
     )
 
     fun payload(settings: AppSettings): JsonObject = buildJsonObject {
@@ -202,8 +218,55 @@ object ServerSettingsWrite {
         put("agentLoopEnabled", settings.agentLoopEnabled)
         put("activePersonaId", settings.activePersonaId?.let(::JsonPrimitive) ?: JsonNull)
         put("autoTranslatePersona", settings.autoTranslatePersona)
+        put("userAvatarUri", settings.userAvatarUri?.let(::JsonPrimitive) ?: JsonNull)
     }
+
+    /**
+     * 服务端设置 JSON → 可写回 DataStore 的一组「出现过的键」。
+     *
+     * 所有字段可空，语义是「服务端没给这个键 = 不知道，不要动本地」；
+     * 显式的 JSON null 则用 `clear*` 表达「服务端明确清空」（头像、当前人格、聊天背景）。
+     */
+    fun read(values: JsonObject): ServerSettingsValues = ServerSettingsValues(
+        themeMode = values.string("themeMode"),
+        accentColor = values.long("accentColor"),
+        fontScale = runCatching { values.get("fontScale")?.jsonPrimitive?.content?.toFloat() }.getOrNull(),
+        bubbleStyle = values.string("bubbleStyle"),
+        animationsEnabled = values.bool("animationsEnabled"),
+        hapticsEnabled = values.bool("hapticsEnabled"),
+        chatBackgroundColor = values.long("chatBackgroundColor"),
+        clearChatBackground = values.isExplicitNull("chatBackgroundColor"),
+        agentLoopEnabled = values.bool("agentLoopEnabled"),
+        activePersonaId = values.string("activePersonaId"),
+        clearActivePersona = values.isExplicitNull("activePersonaId"),
+        autoTranslatePersona = values.bool("autoTranslatePersona"),
+        // 兼容旧键 `myAvatarUri`（早期草案/其他端可能这么写）。
+        userAvatarUri = values.string("userAvatarUri") ?: values.string("myAvatarUri"),
+        clearUserAvatar = values.isExplicitNull("userAvatarUri") || values.isExplicitNull("myAvatarUri")
+    )
+
+    private fun JsonObject.isExplicitNull(key: String): Boolean =
+        runCatching { get(key) is JsonNull }.getOrDefault(false)
 }
+
+/** [ServerSettingsWrite.read] 的结果；null = 服务端没给这个键。 */
+data class ServerSettingsValues(
+    val themeMode: String? = null,
+    val accentColor: Long? = null,
+    val fontScale: Float? = null,
+    val bubbleStyle: String? = null,
+    val animationsEnabled: Boolean? = null,
+    val hapticsEnabled: Boolean? = null,
+    val chatBackgroundColor: Long? = null,
+    val clearChatBackground: Boolean = false,
+    val agentLoopEnabled: Boolean? = null,
+    val activePersonaId: String? = null,
+    val clearActivePersona: Boolean = false,
+    val autoTranslatePersona: Boolean? = null,
+    val userAvatarUri: String? = null,
+    val clearUserAvatar: Boolean = false
+)
+
 
 // --------------------------------------------------------------------------- JSON 小工具
 //

@@ -36,11 +36,25 @@ enum class ServerBackupMode(val wire: String) {
  */
 @Singleton
 class ServerWriteGateway @Inject constructor(
-    private val mode: ServerApiProvider
+    private val mode: ServerApiProvider,
+    private val localStore: ServerLocalStore
 ) {
 
     /** 现在是不是服务端模式（仓储层据此决定走权威写还是本地写）。 */
     fun isEnabled(): Boolean = mode.isEnabled()
+
+    /**
+     * 本地人格 id → 服务端人格 id。
+     *
+     * bootstrap 推送过的本地人格保留客户端 UUID，服务端是它分配的 id；写路径不换这个 id
+     * 就会 404（服务端只认自己的 id）。没有映射时原样返回（本地/服务端 id 一致的情况）。
+     */
+    suspend fun serverPersonaId(localPersonaId: String): String =
+        localStore.serverPersonaId(localPersonaId) ?: localPersonaId
+
+    /** 本地记忆 id → 服务端记忆 id（同上：bootstrap 推送后两者不同）。 */
+    suspend fun serverMemoryId(localMemoryId: String): String =
+        localStore.serverMemoryId(localMemoryId) ?: localMemoryId
 
     // ------------------------------------------------------------------ 尽力而为（本地优先）
 
@@ -49,7 +63,7 @@ class ServerWriteGateway @Inject constructor(
         runCatching {
             val api = mode.api() ?: return@runCatching
             api.reportActivity(
-                personaId = personaId,
+                personaId = serverPersonaId(personaId),
                 activity = ServerActivityWrite(
                     kind = activity.kind.name,
                     activity = activity.activity,
@@ -66,7 +80,7 @@ class ServerWriteGateway @Inject constructor(
 
     /** `POST /v1/sessions` 的薄封装（供仓储层之外的小路径复用；失败返回 null）。 */
     suspend fun createSession(personaId: String, title: String? = null): ServerSession? =
-        runCatching { mode.api()?.createSession(personaId, title)?.session }
+        runCatching { mode.api()?.createSession(serverPersonaId(personaId), title)?.session }
             .onFailure { error ->
                 warn("server createSession failed: ${error.javaClass.simpleName}")
             }
@@ -108,14 +122,14 @@ class ServerWriteGateway @Inject constructor(
      * 否则用户会看到一个服务端根本不存在的人格。
      */
     suspend fun deletePersona(personaId: String): Result<Unit> = runCatching {
-        guardDelete { requireApi().deletePersona(personaId) }
+        guardDelete { requireApi().deletePersona(serverPersonaId(personaId)) }
     }.onFailure { error ->
         warn("server deletePersona failed: ${error.javaClass.simpleName}")
     }
 
     /** `POST /v1/personas/{id}/memories`：返回 `memory` 对象。 */
     suspend fun saveMemory(personaId: String, payload: JsonObject): Result<JsonObject> = runCatching {
-        val response = requireApi().saveMemory(personaId, payload)
+        val response = requireApi().saveMemory(serverPersonaId(personaId), payload)
         response.child("memory") ?: throw ServerApiException(
             "server memory response is missing the memory object",
             code = "invalid_response"
@@ -126,7 +140,7 @@ class ServerWriteGateway @Inject constructor(
 
     /** `DELETE /v1/memories/{id}`；404 视为已经删掉。 */
     suspend fun deleteMemory(memoryId: String): Result<Unit> = runCatching {
-        guardDelete { requireApi().deleteMemory(memoryId) }
+        guardDelete { requireApi().deleteMemory(serverMemoryId(memoryId)) }
     }.onFailure { error ->
         warn("server deleteMemory failed: ${error.javaClass.simpleName}")
     }
@@ -156,7 +170,14 @@ class ServerWriteGateway @Inject constructor(
      * 但仓储层会把失败交给界面提示（用户应该知道这台机器以外没有同步上）。
      */
     suspend fun pushSettings(settings: AppSettings): Result<Unit> = runCatching {
-        requireApi().postSettings(ServerSettingsWrite.payload(settings))
+        // 服务端会校验 activePersonaId 指向存在的人格；bootstrap 之后本地主键与 service id
+        // 可能不同，必须先换成服务端 id，否则每次改主题都会 400。
+        val activePersonaId = settings.activePersonaId?.let { localId ->
+            localStore.serverPersonaId(localId) ?: localId
+        }
+        requireApi().postSettings(
+            ServerSettingsWrite.payload(settings.copy(activePersonaId = activePersonaId))
+        )
         Unit
     }.onFailure { error ->
         warn("server settings push failed: ${error.javaClass.simpleName}")

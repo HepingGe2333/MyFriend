@@ -59,8 +59,8 @@ final class AppWiringGuardTests: XCTestCase {
         XCTAssertEqual(Set(builds).count, 1, "两处 build 号必须一致：\(builds)")
 
         // 精确断言：0.12.0 / 18。改版本时忘了改这里 → 红；改这里忘了改工程文件 → 也红。
-        XCTAssertEqual(Set(marketing), ["0.12.0"], "MARKETING_VERSION 必须精确等于 0.12.0：\(marketing)")
-        XCTAssertEqual(Set(builds), ["18"], "CURRENT_PROJECT_VERSION 必须精确等于 18：\(builds)")
+        XCTAssertEqual(Set(marketing), ["0.12.1"], "MARKETING_VERSION 必须精确等于 0.12.1：\(marketing)")
+        XCTAssertEqual(Set(builds), ["19"], "CURRENT_PROJECT_VERSION 必须精确等于 19：\(builds)")
     }
 
     // MARK: - Swift 第二实现只在 macOS 测试构建里（0.12.0）

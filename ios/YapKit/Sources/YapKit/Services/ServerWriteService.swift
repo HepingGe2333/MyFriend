@@ -69,13 +69,19 @@ public final class ServerWriteService {
     /// - Parameter isNew: 新建时不要带 `id`（服务端自己生成；带一个不存在的 id 会 404）。
     /// - Returns: 服务端确认后的人格（带服务端 id/时间戳），调用方应使用它刷新界面。
     public func savePersona(_ persona: PersonaEntity, isNew: Bool) async throws -> PersonaEntity {
-        let body = Self.personaBody(persona, includeID: !isNew)
+        var body = Self.personaBody(persona, includeID: !isNew)
+        // 首次全量同步推上去的人格，服务端可能另发了一个 id：更新时要用服务端认得的那个，
+        // 否则 `POST /v1/personas` 带一个它没见过的 id 会 404（界面显示「保存失败」）。
+        let mappedId = isNew ? nil : mappedServerPersonaId(persona.id)
+        if let mappedId { body["id"] = .string(mappedId) }
         let envelope = try await client.savePersona(body)
         guard let object = envelope.persona else {
             throw ServerWriteError.invalidResponse("缺少 persona")
         }
         let existing = ((try? stores.personas.byId(persona.id)) ?? nil) ?? persona
-        let saved = try Self.persona(from: object, existing: existing)
+        var saved = try Self.persona(from: object, existing: existing)
+        // 本机 id 保持权威（与 bootstrap 同一口径）：否则本地会多出「同一个人」的第二行。
+        if mappedId != nil { saved.id = persona.id }
         do {
             try stores.personas.upsert(saved)
         } catch {
@@ -92,7 +98,7 @@ public final class ServerWriteService {
         id: String,
         activePersonaId: String?
     ) async throws -> PersonaDeletion.Outcome {
-        _ = try await client.deletePersona(id: id)
+        _ = try await client.deletePersona(id: mappedServerPersonaId(id) ?? id)
         let outcome = PersonaDeletion.delete(
             personaId: id,
             stores: stores,
@@ -109,15 +115,26 @@ public final class ServerWriteService {
 
     /// 新建/更新一条记忆（服务端只认 content/importance/tags；其余本地列保留）。
     public func saveMemory(_ memory: MemoryEntity, isNew: Bool) async throws -> MemoryEntity {
+        // 服务端路径用的 personaId 要换算（本机人格 id ≠ 服务端 id 的映射来自 bootstrap）；
+        // body 里的记忆 id 同理：推上去时服务端另发过 id 的话，更新要用它的那个。
+        let serverPersonaId = mappedServerPersonaId(memory.personaId) ?? memory.personaId
+        let mappedMemoryId = isNew ? nil : mappedServerMemoryId(memory.id)
+        var body = Self.memoryBody(memory, includeID: !isNew)
+        if let mappedMemoryId { body["id"] = .string(mappedMemoryId) }
         let envelope = try await client.saveMemory(
-            personaId: memory.personaId,
-            body: Self.memoryBody(memory, includeID: !isNew)
+            personaId: serverPersonaId,
+            body: body
         )
         guard let object = envelope.memory else {
             throw ServerWriteError.invalidResponse("缺少 memory")
         }
         let existing = ((try? stores.memories.byId(memory.id)) ?? nil) ?? memory
-        let saved = try Self.memory(from: object, existing: existing, personaId: memory.personaId)
+        var saved = try Self.memory(from: object, existing: existing, personaId: memory.personaId)
+        // 新建时沿用服务端 id（本机同时也只认这个 id）；只有「bootstrap 另发过 id」的
+        // 更新才保留本机 id —— 否则本地会多出同一条记忆的第二行。
+        if mappedMemoryId != nil { saved.id = memory.id }
+        // personaId 只要换算过就必须写回本机 id（界面按本机人格分组记忆）。
+        if serverPersonaId != memory.personaId { saved.personaId = memory.personaId }
         do {
             try stores.memories.upsert(saved)
             // 倒排/向量索引跟着正文走（与 MemoryRepository 的写入路径同一套维护）。
@@ -131,7 +148,7 @@ public final class ServerWriteService {
 
     /// 删除一条记忆：服务端删成功后再删本地（连带索引）。
     public func deleteMemory(id: String) async throws {
-        _ = try await client.deleteMemory(id: id)
+        _ = try await client.deleteMemory(id: mappedServerMemoryId(id) ?? id)
         memoryRepository.deleteById(id)
         guard ((try? stores.memories.byId(id)) ?? nil) == nil else {
             throw ServerWriteError.cacheUpdateFailed("本地没有删掉这条记忆")
@@ -216,12 +233,16 @@ public final class ServerWriteService {
     // MARK: - 预设
 
     public func savePreset(_ preset: PersonaPresetEntity, isNew: Bool) async throws -> PersonaPresetEntity {
-        let envelope = try await client.savePreset(Self.presetBody(preset, includeID: !isNew))
+        var body = Self.presetBody(preset, includeID: !isNew)
+        let mappedId = isNew ? nil : mappedServerPresetId(preset.id)
+        if let mappedId { body["id"] = .string(mappedId) }
+        let envelope = try await client.savePreset(body)
         guard let object = envelope.preset else {
             throw ServerWriteError.invalidResponse("缺少 preset")
         }
         let existing = ((try? stores.presets.byId(preset.id)) ?? nil) ?? preset
-        let saved = try Self.preset(from: object, existing: existing)
+        var saved = try Self.preset(from: object, existing: existing)
+        if mappedId != nil { saved.id = preset.id }
         do {
             try stores.presets.upsert(saved)
         } catch {
@@ -231,7 +252,7 @@ public final class ServerWriteService {
     }
 
     public func deletePreset(id: String) async throws {
-        _ = try await client.deletePreset(id: id)
+        _ = try await client.deletePreset(id: mappedServerPresetId(id) ?? id)
         do {
             try stores.presets.delete(id: id)
         } catch {
@@ -246,7 +267,24 @@ public final class ServerWriteService {
     /// 服务端会忽略白名单外的键（包括任何密钥形状的键），所以这里传整份也不会泄密。
     @discardableResult
     public func saveSettings(_ settings: AppSettings) async throws -> [String: JSONValue] {
-        try await client.updateSettings(Self.settingsBody(settings))
+        try await client.updateSettings(settingsBodyForServer(settings))
+    }
+
+    /// 删掉服务端上的用户头像（0.12.1）。
+    ///
+    /// 为什么不能只调 `saveSettings`：本机删掉头像后 `myAvatarUri == nil`，而
+    /// `ServerSettingsMapping.body` 对 nil 是**不写键**（缺键 = 别动服务端那一份）。
+    /// 于是服务端头像还在，下次拉设置又把它装回来 —— 用户会觉得「删不掉」。
+    /// 这里把白名单里的头像键显式写成 null。
+    @discardableResult
+    public func clearUserAvatar(from settings: AppSettings) async throws -> [String: JSONValue] {
+        var body = ServerSettingsMapping.body(settings, clearingAvatar: true)
+        // 「正在聊的人」那一项也要（如果它是换算过的）：否则服务端会以
+        // 「activePersonaId 指向不存在的人格」整条 400，头像也就删不掉。
+        if let active = settings.activePersonaId, let mapped = mappedServerPersonaId(active) {
+            body["activePersonaId"] = .string(mapped)
+        }
+        return try await client.updateSettings(body)
     }
 
     // MARK: - 备份
@@ -344,19 +382,49 @@ public final class ServerWriteService {
         return body
     }
 
+    /// 设置 body 的唯一构造处（bootstrap 也用它，键名不许出现两份）。
+    ///
+    /// 0.12.1 起用户头像（`/v1/media/<id>`）也在白名单里，见 `ServerSettingsMapping`。
     static func settingsBody(_ settings: AppSettings) -> [String: JSONValue] {
-        var body: [String: JSONValue] = [
-            "themeMode": .string(settings.themeMode.stored),
-            "accentColor": .int(settings.accentColor),
-            "fontScale": .double(Double(settings.fontScale)),
-            "bubbleStyle": .string(settings.bubbleStyle.stored),
-            "animationsEnabled": .bool(settings.animationsEnabled),
-            "hapticsEnabled": .bool(settings.hapticsEnabled),
-            "agentLoopEnabled": .bool(settings.agentLoopEnabled),
-            "autoTranslatePersona": .bool(settings.autoTranslatePersona)
-        ]
-        body["chatBackgroundColor"] = settings.chatBackgroundColor.map { .int($0) } ?? .null
-        body["activePersonaId"] = settings.activePersonaId.map(JSONValue.string) ?? .null
+        ServerSettingsMapping.body(settings)
+    }
+
+    // MARK: - 本机 id ⇄ 服务端 id（bootstrap 记下的映射）
+
+    /// 本机 id → 服务端 id 的通用读法（键名由 `ServerSyncStateStore.Key` 统一给）。
+    private func mappedId(
+        _ localId: String,
+        key: (String) -> String
+    ) -> String? {
+        guard !localId.isEmpty else { return nil }
+        let state = ServerSyncStateStore(database: stores.database)
+        guard let mapped = state.string(key(localId)),
+              !mapped.isEmpty, mapped != localId else { return nil }
+        return mapped
+    }
+
+    private func mappedServerPersonaId(_ localId: String) -> String? {
+        mappedId(localId, key: ServerSyncStateStore.Key.personaIdMap)
+    }
+
+    private func mappedServerPresetId(_ localId: String) -> String? {
+        mappedId(localId, key: ServerSyncStateStore.Key.presetIdMap)
+    }
+
+    private func mappedServerMemoryId(_ localId: String) -> String? {
+        mappedId(localId, key: ServerSyncStateStore.Key.memoryIdMap)
+    }
+
+    /// 推设置的 body：`activePersonaId` 换成本机 id 对应的服务端 id。
+    ///
+    /// 为什么必须换算：bootstrap 的 PUSH 会把本机人格以「服务端另发 id」的方式搬上去，
+    /// 本机设置里记的仍是本机 id；直接推过去服务端会说「activePersonaId 指向不存在的人格」，
+    /// 整条 400 —— 用户之后每次改主题/换头像都会失败。
+    private func settingsBodyForServer(_ settings: AppSettings) -> [String: JSONValue] {
+        var body = Self.settingsBody(settings)
+        if let active = settings.activePersonaId, let mapped = mappedServerPersonaId(active) {
+            body["activePersonaId"] = .string(mapped)
+        }
         return body
     }
 

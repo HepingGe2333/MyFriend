@@ -50,7 +50,7 @@ class ServerWriteGatewayTest {
             debuggable = true
         )
         provider = FakeProvider(api = api, enabled = true)
-        gateway = ServerWriteGateway(provider)
+        gateway = ServerWriteGateway(provider, TestServerLocalStore())
     }
 
     @After

@@ -29,6 +29,14 @@ data class AppSettings(
      * 备份走，换手机之后重新选一张就好。
      */
     val userAvatarUri: String? = null,
+    /**
+     * 「我的头像」的**本机缓存副本**（服务端模式才有值）。
+     *
+     * 服务端模式下 [userAvatarUri] 存 `/v1/media/<id>`，渲染走带鉴权的媒体组件；
+     * 但服务端不可达（离线/关掉服务端模式）时那张图取不到，所以上传成功后再留一份本地文件，
+     * 渲染层用它兜底。本地模式下它恒为 null（此时 [userAvatarUri] 本身就是本地文件）。
+     */
+    val userAvatarLocalUri: String? = null,
     val activePersonaId: String? = null,
     val hapticsEnabled: Boolean = true,
     /** 让他常驻后台继续「活着」（前台服务 + 自主循环）。 */

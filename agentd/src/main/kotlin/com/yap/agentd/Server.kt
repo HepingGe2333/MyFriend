@@ -1,6 +1,7 @@
 package com.yap.agentd
 
 import com.yap.agentd.AgentdApi.Response
+import com.yap.agentd.store.FileStore
 import com.yap.app.core.json.JsonParseException
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
@@ -9,11 +10,14 @@ import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.OutputStreamWriter
 import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CopyOnWriteArraySet
@@ -76,6 +80,9 @@ object AgentdServer {
     /** 一次请求（请求行 + 头部 + body）的总读时限（毫秒）。 */
     const val READ_TIMEOUT_MS = 5_000L
 
+    /** `POST /v1/backup` 的请求体上限（与客户端 v5 备份的 256 MiB 语义一致）。 */
+    const val MAX_BACKUP_BODY_BYTES = 256 * 1024 * 1024
+
     /** 处理请求的固定线程数：慢客户端最多占住这些线程，`/health` 仍有线程可用。 */
     const val WORKER_THREADS = 4
 
@@ -97,6 +104,15 @@ object AgentdServer {
     /** 关闭连接前的排空时限（毫秒）。 */
     private const val DRAIN_TIMEOUT_MS = 50L
 
+    /**
+     * `POST /v1/backup` 的 body 读时限（秒）。整份备份可能上百 MB：沿用 5 秒的
+     * [READ_TIMEOUT_MS] 会让「慢一点但正常的上传」在读到一半时被 408 打断。
+     */
+    private const val BACKUP_IMPORT_READ_TIMEOUT_SECONDS = 300L
+
+    /** 备份导出的 chunked 分段大小（每段独立 flush；16 KiB 与 socket 缓冲匹配）。 */
+    private const val STREAM_CHUNK_BYTES = 16 * 1024
+
     private const val ERROR_UNAUTHORIZED =
         """{"error":{"message":"缺少或错误的访问令牌","code":"unauthorized"}}"""
     private const val ERROR_TIMEOUT =
@@ -109,6 +125,8 @@ object AgentdServer {
         """{"error":{"message":"服务内部错误","code":"internal_error"}}"""
     private const val ERROR_RATE_LIMITED =
         """{"error":{"message":"请求过于频繁，请稍后再试","code":"rate_limited"}}"""
+    private const val ERROR_STATE_UNAVAILABLE =
+        """{"error":{"message":"服务端权威模式未启用：启动时没有配置 --data（数据目录）","code":"state_unavailable"}}"""
 
     /** 起好的服务：监听 socket + 处理线程池 + accept 线程，`stop()` 时一起关掉。 */
     class StartedServer internal constructor(
@@ -284,6 +302,18 @@ object AgentdServer {
             return
         }
 
+        // 备份的两条路径都不允许「整份进内存」，所以必须在 readBody 之前分流：
+        // - `GET  /v1/backup`：chunked 流式写响应（边读磁盘边写 socket）；
+        // - `POST /v1/backup`：请求体流式落到 `--data` 下的 `.staging/` 临时文件，再增量解析。
+        if (isBackupExport(head.method, head.target)) {
+            handleBackupExport(socket, output, services, head.http10)
+            return
+        }
+        if (isBackupImport(head.method, head.target)) {
+            handleBackupImport(socket, output, input, deadlineNanos, head, services)
+            return
+        }
+
         val body = try {
             readBody(input, output, deadlineNanos, head)
         } catch (_: RequestTimeoutException) {
@@ -397,7 +427,9 @@ object AgentdServer {
         val method: String,
         val target: String,
         val headers: Map<String, String>,
-        val contentLength: Long?
+        val contentLength: Long?,
+        /** 请求行是 HTTP/1.0：chunked 是 1.1 的特性，这类连接改成「关闭即结束」。 */
+        val http10: Boolean
     )
 
     private fun readHead(input: InputStream, deadlineNanos: Long): RequestHead {
@@ -441,12 +473,14 @@ object AgentdServer {
         // 媒体上传路由单独放宽到 4 MiB，其它路由仍是 1 MiB（AgentdApi.MAX_BODY_BYTES）。
         val bodyLimit = when {
             MediaRoutes.matches(target) -> MediaRoutes.bodyLimit(target)
+            // 批量历史消息导入：200 条一批、单批 ≤8 MiB（与 handler 层同一个常量）。
+            CrudRoutes.isMessageImportPath(target.substringBefore('?')) -> CrudRoutes.MAX_IMPORT_BODY_BYTES
             // 备份导入是整份 JSON（含媒体的 base64）：与客户端 v5 的 256 MiB 语义一致。
-            target.substringBefore('?') == "/v1/backup" -> 256 * 1024 * 1024
+            target.substringBefore('?') == CrudRoutes.BACKUP_PATH -> MAX_BACKUP_BODY_BYTES
             else -> MAX_BODY_BYTES
         }
         if (contentLength != null && contentLength > bodyLimit) throw BodyTooLargeException(bodyLimit)
-        return RequestHead(method, target, headers, contentLength)
+        return RequestHead(method, target, headers, contentLength, version.equals("HTTP/1.0", ignoreCase = true))
     }
 
     private fun readBody(
@@ -602,6 +636,214 @@ object AgentdServer {
             }
             output.write(head.toByteArray(StandardCharsets.ISO_8859_1))
             output.flush()
+        }
+    }
+
+    // ------------------------------------------------------------------ 备份（流式）
+
+    private fun pathOf(target: String): String = target.substringBefore('?')
+
+    private fun isBackupExport(method: String, target: String): Boolean =
+        method.equals("GET", ignoreCase = true) && pathOf(target) == CrudRoutes.BACKUP_PATH
+
+    private fun isBackupImport(method: String, target: String): Boolean =
+        method.equals("POST", ignoreCase = true) && pathOf(target) == CrudRoutes.BACKUP_PATH
+
+    /**
+     * `GET /v1/backup`：**流式（chunked）**写响应。
+     *
+     * 为什么不用 Content-Length：长度等于「整份 JSON 的字节数」，只有把整份备份构造出来才知道，
+     * 那正是要避免的。chunked 让服务端边读磁盘边写 socket：10 万条消息 + 500 张图时峰值内存
+     * 仍是几十 KB（见 `FileStore.writeBackup`）。
+     *
+     * 错误处理：写响应头之前出错 → 普通 JSON 错误（状态码正确）；**已经开始写之后**出错 → 只能
+     * 断开连接（客户端会读到不完整的 JSON 并自己失败），细节只进 stderr。
+     */
+    private fun handleBackupExport(
+        socket: Socket,
+        output: OutputStream,
+        services: AgentdServices,
+        http10: Boolean
+    ) {
+        val store = services.store
+        if (store == null) {
+            reply(socket, output, 503, ERROR_STATE_UNAVAILABLE)
+            return
+        }
+        // HTTP/1.0 没有 chunked：不写 `Transfer-Encoding`，靠关闭连接表示结束。
+        val useChunked = !http10
+        val chunked = if (useChunked) ChunkedOutputStream(output) else null
+        val stream: OutputStream = chunked ?: output
+        var started = false
+        try {
+            writeChunkedHead(socket, output, chunked = useChunked)
+            started = true
+            val writer = OutputStreamWriter(stream, StandardCharsets.UTF_8)
+            store.writeBackup(AgentdApi.VERSION, store.serverTime(), writer)
+            writer.flush()
+            chunked?.finish()
+            output.flush()
+            socket.shutdownOutput()
+        } catch (failure: Exception) {
+            // 已经发了 200 + 部分 body：不能再改成错误状态码，断开连接让客户端知道没收全。
+            System.err.println(
+                "[agentd] 备份导出中断（客户端会看到不完整的 JSON）：" +
+                    "${failure::class.qualifiedName}：${failure.message}"
+            )
+            runCatching { chunked?.abort() }
+            if (!started) runCatching { reply(socket, output, 500, ERROR_INTERNAL) }
+        }
+    }
+
+    /**
+     * `POST /v1/backup`：请求体**流式落到临时文件**，再交给
+     * [CrudRoutes.importBackupFromFile] 增量解析。
+     *
+     * 临时文件放在 `<data>/.staging/`（与 `media/` 同一文件系统：导入提交时媒体文件可以
+     * 原子 rename 进 `media/`）；无论成功失败都在 finally 里删掉，进程被杀留下的残渣由
+     * `FileStore` 启动时清理。
+     */
+    private fun handleBackupImport(
+        socket: Socket,
+        output: OutputStream,
+        input: InputStream,
+        deadlineNanos: Long,
+        head: RequestHead,
+        services: AgentdServices
+    ) {
+        val store = services.store
+        if (store == null) {
+            reply(socket, output, 503, ERROR_STATE_UNAVAILABLE)
+            return
+        }
+        val stagingDir = store.root.resolve(FileStore.STAGING_DIR)
+        var temp: Path? = null
+        try {
+            Files.createDirectories(stagingDir)
+            temp = Files.createTempFile(stagingDir, "upload-", ".json")
+            val bodyDeadline = System.nanoTime() +
+                TimeUnit.SECONDS.toNanos(BACKUP_IMPORT_READ_TIMEOUT_SECONDS)
+            readBodyToFile(input, output, maxOf(deadlineNanos, bodyDeadline), head, temp)
+            val response = CrudRoutes.importBackupFromFile(store, temp)
+            reply(socket, output, response.status, response.body)
+        } catch (_: RequestTimeoutException) {
+            reply(socket, output, 408, ERROR_TIMEOUT)
+        } catch (_: BadRequestException) {
+            reply(socket, output, 400, ERROR_BAD_REQUEST)
+        } catch (_: IOException) {
+            // 客户端提前断开：没有响应可写，直接让外层关连接。
+        } finally {
+            temp?.let { file -> runCatching { Files.deleteIfExists(file) } }
+            runCatching { Files.deleteIfExists(stagingDir) }
+        }
+    }
+
+    /** 把声明长度的请求体分块写进文件（64 KiB 一段；每段前检查总时限）。 */
+    private fun readBodyToFile(
+        input: InputStream,
+        output: OutputStream,
+        deadlineNanos: Long,
+        head: RequestHead,
+        target: Path
+    ) {
+        val contentLength = head.contentLength ?: throw BadRequestException()
+        if (contentLength == 0L) throw BadRequestException()
+        if (head.headers["expect"]?.equals("100-continue", ignoreCase = true) == true) {
+            output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(StandardCharsets.US_ASCII))
+            output.flush()
+        }
+        Files.newOutputStream(target).use { sink ->
+            val buffer = ByteArray(64 * 1024)
+            var remaining = contentLength
+            while (remaining > 0) {
+                ensureWithinDeadline(deadlineNanos)
+                val want = minOf(remaining, buffer.size.toLong()).toInt()
+                val read = try {
+                    input.read(buffer, 0, want)
+                } catch (_: SocketTimeoutException) {
+                    throw RequestTimeoutException()
+                }
+                if (read < 0) throw BadRequestException() // 客户端提前断开
+                sink.write(buffer, 0, read)
+                remaining -= read
+            }
+        }
+    }
+
+    /** chunked 响应头（HTTP/1.0 客户端不支持 chunked：退化成「关闭连接即结束」）。 */
+    private fun writeChunkedHead(socket: Socket, output: OutputStream, chunked: Boolean) {
+        val head = buildString {
+            append("HTTP/1.1 200 OK\r\n")
+            append("Content-Type: application/json; charset=utf-8\r\n")
+            append("Cache-Control: no-store\r\n")
+            if (chunked) append("Transfer-Encoding: chunked\r\n")
+            append("Connection: close\r\n")
+            append("\r\n")
+        }
+        output.write(head.toByteArray(StandardCharsets.ISO_8859_1))
+        output.flush()
+    }
+
+    /**
+     * chunked 编码的 `OutputStream`：写满 [STREAM_CHUNK_BYTES] 就发一段，
+     * [finish] 发结束段（`0\r\n\r\n`）。
+     *
+     * 只做「分段」这一件事：不做压缩、不做 keep-alive；配合 `Connection: close`，
+     * 即使某些中间层不认 chunked，客户端也能靠 EOF 判断结束。
+     */
+    private class ChunkedOutputStream(
+        private val output: OutputStream,
+        private val chunkSize: Int = STREAM_CHUNK_BYTES
+    ) : OutputStream() {
+
+        private val buffer = ByteArray(chunkSize)
+        private var filled = 0
+        private var finished = false
+
+        override fun write(b: Int) {
+            if (filled == buffer.size) drain()
+            buffer[filled++] = b.toByte()
+        }
+
+        override fun write(bytes: ByteArray, offset: Int, length: Int) {
+            var position = offset
+            var remaining = length
+            while (remaining > 0) {
+                if (filled == buffer.size) drain()
+                val take = minOf(remaining, buffer.size - filled)
+                System.arraycopy(bytes, position, buffer, filled, take)
+                filled += take
+                position += take
+                remaining -= take
+            }
+        }
+
+        override fun flush() {
+            drain()
+            output.flush()
+        }
+
+        /** 正常收尾：发结束段（`0` + 空行）。 */
+        fun finish() {
+            if (finished) return
+            drain()
+            finished = true
+            output.write("0\r\n\r\n".toByteArray(StandardCharsets.ISO_8859_1))
+            output.flush()
+        }
+
+        /** 出错时放弃：不再发结束段，让客户端读到「没收全」。 */
+        fun abort() {
+            finished = true
+        }
+
+        private fun drain() {
+            if (filled == 0 || finished) return
+            output.write(Integer.toHexString(filled).toByteArray(StandardCharsets.ISO_8859_1))
+            output.write("\r\n".toByteArray(StandardCharsets.ISO_8859_1))
+            output.write(buffer, 0, filled)
+            output.write("\r\n".toByteArray(StandardCharsets.ISO_8859_1))
+            filled = 0
         }
     }
 

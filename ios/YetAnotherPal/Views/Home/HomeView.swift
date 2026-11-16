@@ -79,6 +79,8 @@ struct HomeView: View {
             stopDigestPulse()
         }
         .onChange(of: env.currentSettings.activePersonaId) { _ in reload() }
+        // 服务端模式：首次同步 / 增量同步写库后立刻重载（不用等下面那两秒一拍）。
+        .onChange(of: env.serverDataVersion) { _ in reload() }
         .onChange(of: scenePhase) { phase in
             switch phase {
             case .active:

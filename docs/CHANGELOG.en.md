@@ -35,6 +35,25 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
 - For searchability, historical entries below use the current product, package and path names. The only
   retained legacy string is the compatibility format name `myfriend.backup`.
 
+## 0.12.1
+
+Patch release: **automatic two-way synchronisation when switching to a remote server**, **new clients pull their history
+automatically**, **user avatar upload**, and **streamed server backups with bounded memory**.
+
+- **Two-way sync**: on first connection to a server the client decides one of four cases (both empty / server empty →
+  push local / client empty → pull server / both non-empty → merge with server winning conflicts). Personas, presets,
+  memories, settings, sessions and messages (200 per batch) are pushed; a new client walks every block backwards to
+  pull the full history while keeping unread/read state and timestamps. After that, incremental sync every 5 minutes
+  plus write-through.
+- **History import API**: `POST /v1/sessions/{id}/messages/import` (≤200 per batch, idempotent by id, keeps
+  createdAt/readAt/attachments, never calls the LLM, leaves unread untouched).
+- **User avatar**: pick an image → compress (≤512 px/400 KB) → `POST /v1/media?kind=USER_AVATAR` → `userAvatarUri`
+  (server settings whitelist, legacy `myAvatarUri` accepted); rendered with auth and a local fallback; local mode unchanged.
+- **Server backup memory**: export is chunked/streamed (k-way message merge, chunked base64 media, no full JSON tree);
+  import spools the body to a temp file and parses incrementally (media decoded per entry). The test round-trips 10k
+  messages + 50 images over real HTTP under `-Xmx256m`.
+- **Version**: 0.12.0 → 0.12.1, build 18 → 19; schema stays v14, backup v5.
+
 ## 0.12.0
 
 A large release: **the shared decision layer moves to Kotlin Multiplatform (iOS reuses the same Kotlin)**,

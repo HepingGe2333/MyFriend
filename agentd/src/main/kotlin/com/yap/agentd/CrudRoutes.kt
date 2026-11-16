@@ -2,13 +2,19 @@ package com.yap.agentd
 
 import com.yap.agentd.AgentdApi.Response
 import com.yap.agentd.proactive.ActivityState
+import com.yap.agentd.store.BackupJsonException
 import com.yap.agentd.store.BackupValidationException
 import com.yap.agentd.store.FileStore
+import com.yap.agentd.store.ImportMessage
+import com.yap.agentd.store.MediaUrl
 import com.yap.agentd.store.Memory
+import com.yap.agentd.store.MessageRole
+import com.yap.agentd.store.MessageSource
 import com.yap.agentd.store.Persona
 import com.yap.agentd.store.Preset
 import com.yap.agentd.store.PushRegistration
 import com.yap.agentd.store.Session
+import com.yap.agentd.store.StoreCorruptionException
 import com.yap.agentd.store.StoreJson
 import com.yap.agentd.store.StoreMemoryNotFoundException
 import com.yap.agentd.store.StorePersonaNotFoundException
@@ -16,8 +22,12 @@ import com.yap.agentd.store.StorePresetNotFoundException
 import com.yap.agentd.store.UnsupportedBackupVersionException
 import com.yap.app.core.json.JsonParseException
 import com.yap.app.core.json.JsonValue
+import java.io.Reader
+import java.io.StringReader
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * M3–M6 的服务端写路径（`docs/design/server-authoritative.md` §3.6）。
@@ -39,7 +49,19 @@ object CrudRoutes {
     const val BACKUP_PATH = "/v1/backup"
     const val PUSH_REGISTER_PATH = "/v1/push/register"
 
-    /** 这个路径是否归本对象处理（未知子路径也归，好回统一 404）。 */
+    /** 批量历史消息导入路由的后缀；完整路径是 `/v1/sessions/{id}/messages/import`。 */
+    const val MESSAGES_IMPORT_SUFFIX = "/messages/import"
+
+    /**
+     * 批量导入的请求体上限（8 MiB）：200 条 × 一条长消息（含附件 URL）足够用；
+     * 比普通 JSON 路由（1 MiB）宽，比备份导入（256 MiB）窄。
+     */
+    const val MAX_IMPORT_BODY_BYTES = 8 * 1024 * 1024
+
+    /** 一条消息最多几个附件（与发送消息接口一致）。 */
+    const val MAX_IMPORT_ATTACHMENTS = 8
+
+    /** 这条路径是否归本对象处理（未知子路径也归，好回统一 404）。 */
     fun matches(path: String): Boolean =
         path == SESSIONS_PATH ||
             path == PERSONAS_PATH || path.startsWith("$PERSONAS_PATH/") ||
@@ -48,6 +70,10 @@ object CrudRoutes {
             path == SETTINGS_PATH ||
             path == BACKUP_PATH ||
             path == PUSH_REGISTER_PATH
+
+    /** `/v1/sessions/{id}/messages/import` 的形状判断（HTTP 层用它放宽请求体上限）。 */
+    fun isMessageImportPath(path: String): Boolean =
+        path.startsWith("$SESSIONS_PATH/") && path.endsWith(MESSAGES_IMPORT_SUFFIX)
 
     /**
      * 处理非流式 CRUD。校验失败抛 [AgentdApi.ApiFailure]；调用方（[AuthorityRoutes.handle]）
@@ -490,6 +516,17 @@ object CrudRoutes {
             "animationsEnabled", "hapticsEnabled", "agentLoopEnabled", "autoTranslatePersona" -> {
                 if (value !is JsonValue.Bool) throw invalid("设置 $key 必须是 true/false")
             }
+            "userAvatarUri", "myAvatarUri" -> {
+                // 我的头像：`/v1/media/<id>`（或任意客户端能识别的 URL）；null = 清掉。
+                if (value is JsonValue.Null) return
+                val uri = (value as? JsonValue.Str)?.value
+                    ?: throw invalid("设置 $key 必须是字符串或 null")
+                if (uri.isBlank()) throw invalid("设置 $key 不能是空串（要清掉请传 null）")
+                if (uri.length > MAX_USER_AVATAR_URI_CHARS) {
+                    throw invalid("设置 $key 最长 $MAX_USER_AVATAR_URI_CHARS 个字符")
+                }
+            }
+
             "activePersonaId" -> {
                 if (value is JsonValue.Null) return
                 val id = (value as? JsonValue.Str)?.value?.trim()
@@ -503,23 +540,50 @@ object CrudRoutes {
 
     // ------------------------------------------------------------------ 备份
 
-    private fun getBackup(store: FileStore): Response = Response(
-        200,
-        StoreJson.stringify(store.exportBackup(AgentdApi.VERSION, store.serverTime()))
-    )
+    /**
+     * `GET /v1/backup` 的 **handler 直调**路径（单元测试 / 嵌入式调用）。
+     *
+     * HTTP 服务路径由 [AgentdServer] 在 `readBody` 之前接管、直接 chunked 流式写 socket
+     * （`AgentdServer.handleBackupExport`），不会走这里。这里把同一份流式输出收进
+     * `StringBuilder`，只是为了保持「`AuthorityRoutes.handle()` 是纯函数」这条测试友好的约定；
+     * 内存峰值因此和「这份备份有多大」相关 —— 生产路径不会经过它。
+     */
+    private fun getBackup(store: FileStore): Response {
+        val out = StringBuilder()
+        store.writeBackup(AgentdApi.VERSION, store.serverTime(), out)
+        return Response(200, out.toString())
+    }
 
-    private fun postBackup(store: FileStore, body: String?): Response {
-        val request = objectBody(body)
-        val mode = request.requiredString("mode").trim()
-        if (mode != "merge" && mode != "replace") throw invalid("mode 只能是 merge 或 replace")
-        val data = request.fields["data"] as? JsonValue.Obj
-            ?: throw AgentdApi.ApiFailure(400, "missing_field", "缺少字段 data（备份对象）")
+    private fun postBackup(store: FileStore, body: String?): Response = importBackup(store) {
+        if (body.isNullOrBlank()) throw AgentdApi.ApiFailure(400, "empty_body", "请求体不能为空")
+        StringReader(body)
+    }
+
+    /**
+     * `POST /v1/backup` 的 **HTTP 服务路径**：请求体已经被 [AgentdServer] 流式落到临时文件，
+     * 这里用文件 [Reader] 增量解析（内存与备份大小无关）。异常在这里就地翻成统一错误体
+     * （调用方是 `AgentdServer`，不经过 `AuthorityRoutes.handle` 的 catch）。
+     */
+    fun importBackupFromFile(store: FileStore, file: Path): Response = try {
+        importBackup(store) { Files.newBufferedReader(file, StandardCharsets.UTF_8) }
+    } catch (failure: AgentdApi.ApiFailure) {
+        AgentdApi.errorResponse(failure.status, failure.code, failure.message ?: "备份不合法")
+    } catch (unexpected: Exception) {
+        AgentdApi.unexpectedFailureResponse(unexpected)
+    }
+
+    /** 备份导入的公共异常映射（两条入口共用）。 */
+    private inline fun importBackup(store: FileStore, open: () -> Reader): Response {
         val result = try {
-            store.importBackup(mode, data, store.serverTime())
+            open().use { store.importBackupRequest(it) }
         } catch (unsupported: UnsupportedBackupVersionException) {
             throw AgentdApi.ApiFailure(409, "unsupported_backup_version", unsupported.message ?: "备份版本不支持")
         } catch (invalidBackup: BackupValidationException) {
             throw AgentdApi.ApiFailure(400, "invalid_backup", invalidBackup.message ?: "备份内容不合法")
+        } catch (invalidJson: BackupJsonException) {
+            throw AgentdApi.ApiFailure(400, "invalid_json", "请求体不是合法 JSON：${invalidJson.message.orEmpty()}")
+        } catch (corruption: StoreCorruptionException) {
+            throw AgentdApi.ApiFailure(400, "invalid_backup", corruption.message ?: "备份内容不合法")
         }
         return Response(
             200,
@@ -539,6 +603,135 @@ object CrudRoutes {
             )
         )
     }
+
+    // ------------------------------------------------------------------ 批量历史消息导入
+
+    /**
+     * `POST /v1/sessions/{id}/messages/import`：客户端「切到远程」时把本地历史整份推上来。
+     *
+     * 请求体：`{"messages":[{id,role,content,createdAt,readAt?,attachments?,source?,
+     * clientMessageId?,replyTo?}]}`，单批 ≤ [FileStore.MAX_IMPORT_MESSAGES]、body ≤
+     * [MAX_IMPORT_BODY_BYTES]。响应：`{sessionId,imported,skipped,blockRange,messageCount}`。
+     *
+     * 校验顺序：session 存在 → messages 是数组且不超上限 → 逐条字段（id/role/content/
+     * createdAt/readAt/attachments/source）→ 附件媒体存在 → 交给 [FileStore.importMessages]
+     * （幂等 + 原子落块）。**任何一条不合法整批 400，一条都不落库。**
+     */
+    fun importMessages(store: FileStore, sessionId: String, body: String?): Response {
+        requireValidId(sessionId, "sessionId")
+        if (store.session(sessionId) == null) throw notFound("没有这个会话")
+        val request = objectBody(body)
+        val raw = request.fields["messages"]
+            ?: throw AgentdApi.ApiFailure(400, "missing_field", "缺少字段 messages（数组）")
+        if (raw !is JsonValue.Arr) throw invalid("字段 messages 必须是数组")
+        if (raw.items.size > FileStore.MAX_IMPORT_MESSAGES) {
+            throw AgentdApi.ApiFailure(
+                400,
+                "too_many_messages",
+                "单批最多 ${FileStore.MAX_IMPORT_MESSAGES} 条消息，收到 ${raw.items.size} 条"
+            )
+        }
+        val messages = raw.items.mapIndexed { index, item ->
+            val obj = item as? JsonValue.Obj ?: throw invalid("messages 第 ${index + 1} 项不是对象")
+            importMessageFromRequest(store, obj, index)
+        }
+        val result = store.importMessages(sessionId, messages)
+        val range = if (result.firstBlock == null || result.lastBlock == null) {
+            JsonValue.Null
+        } else {
+            StoreJson.obj(
+                "first" to StoreJson.num(result.firstBlock),
+                "last" to StoreJson.num(result.lastBlock)
+            )
+        }
+        return Response(
+            200,
+            StoreJson.stringify(
+                StoreJson.obj(
+                    "sessionId" to StoreJson.str(sessionId),
+                    "imported" to StoreJson.num(result.imported),
+                    "skipped" to StoreJson.num(result.skipped),
+                    "blockRange" to range,
+                    "messageCount" to StoreJson.num(result.messageCount)
+                )
+            )
+        )
+    }
+
+    private fun importMessageFromRequest(store: FileStore, obj: JsonValue.Obj, index: Int): ImportMessage {
+        val where = "messages 第 ${index + 1} 项"
+        val id = (obj.fields["id"] as? JsonValue.Str)?.value
+            ?: throw AgentdApi.ApiFailure(400, "missing_field", "$where 缺少 id（字符串）")
+        val roleRaw = (obj.fields["role"] as? JsonValue.Str)?.value
+            ?: throw AgentdApi.ApiFailure(400, "missing_field", "$where 缺少 role（字符串）")
+        // 大写/小写都接受（客户端历史上两种都出现过），服务端统一存规范大写。
+        val role = roleRaw.trim().uppercase()
+        if (!MessageRole.isValid(role)) throw invalid("$where 的 role 只能是 USER/ASSISTANT/SYSTEM")
+        val content = (obj.fields["content"] as? JsonValue.Str)?.value
+            ?: throw AgentdApi.ApiFailure(400, "missing_field", "$where 缺少 content（字符串）")
+        val createdAt = (obj.fields["createdAt"] as? JsonValue.Num)?.asLong
+            ?: throw AgentdApi.ApiFailure(
+                400,
+                "missing_field",
+                "$where 缺少 createdAt（epoch 毫秒整数）"
+            )
+        if (createdAt < 0) throw invalid("$where 的 createdAt 不能是负数")
+        val readAt = when (val value = obj.fields["readAt"]) {
+            null, JsonValue.Null -> null
+            is JsonValue.Num -> value.asLong
+                ?: throw invalid("$where 的 readAt 必须是整数毫秒时间戳")
+
+            else -> throw invalid("$where 的 readAt 必须是整数毫秒时间戳或 null")
+        }
+        if (readAt != null && readAt < 0) throw invalid("$where 的 readAt 不能是负数")
+        val attachments = when (val value = obj.fields["attachments"]) {
+            null, JsonValue.Null -> emptyList()
+            is JsonValue.Arr -> value.items.map { item ->
+                val mediaId = MediaUrl.idOf((item as? JsonValue.Str)?.value)
+                    ?: throw invalid("$where 的 attachments 里必须是媒体 id 或 /v1/media/<id>")
+                if (store.media(mediaId) == null) {
+                    // 附件不存在是**请求体**里的事（不是 URL 指向的资源），所以是 400 不是 404。
+                    throw AgentdApi.ApiFailure(400, "unknown_media", "$where 的附件不存在或已删除：$mediaId")
+                }
+                MediaUrl.url(mediaId)
+            }
+
+            else -> throw invalid("$where 的 attachments 必须是字符串数组")
+        }
+        if (attachments.size > MAX_IMPORT_ATTACHMENTS) {
+            throw invalid("$where 最多 $MAX_IMPORT_ATTACHMENTS 个附件")
+        }
+        // `source` 只用于来源标注：认得的值原样保留，认不得的按 IMPORT 处理（不因为一个标签拒历史）。
+        val source = when (val value = obj.fields["source"]) {
+            null, JsonValue.Null -> MessageSource.IMPORT
+            is JsonValue.Str -> value.value.trim().uppercase().takeIf { it in IMPORT_SOURCES }
+                ?: MessageSource.IMPORT
+
+            else -> throw invalid("$where 的 source 必须是字符串")
+        }
+        val clientMessageId = obj.optionalString("clientMessageId")?.trim()?.takeIf { it.isNotEmpty() }
+        if (clientMessageId != null && clientMessageId.length > MAX_CLIENT_MESSAGE_ID_CHARS) {
+            throw invalid("$where 的 clientMessageId 最长 $MAX_CLIENT_MESSAGE_ID_CHARS 个字符")
+        }
+        val replyTo = obj.optionalString("replyTo")?.trim()?.takeIf { it.isNotEmpty() }
+        if (replyTo != null && replyTo.length > MAX_CLIENT_MESSAGE_ID_CHARS) {
+            throw invalid("$where 的 replyTo 最长 $MAX_CLIENT_MESSAGE_ID_CHARS 个字符")
+        }
+        return ImportMessage(
+            id = id,
+            role = role,
+            content = content,
+            createdAt = createdAt,
+            readAt = readAt,
+            attachments = attachments,
+            source = source,
+            clientMessageId = clientMessageId,
+            replyTo = replyTo
+        )
+    }
+
+    /** 导入消息 `source` 的合法值（不合法一律按 `IMPORT` 处理，见 [importMessageFromRequest]）。 */
+    private val IMPORT_SOURCES = setOf(MessageSource.CHAT, MessageSource.PROACTIVE, MessageSource.IMPORT)
 
     // ------------------------------------------------------------------ 推送
 
@@ -773,5 +966,7 @@ object CrudRoutes {
     private const val MAX_MEMORY_TAG_CHARS = 64
     private const val MAX_PERSONA_DESCRIPTION_CHARS = 4_000
     private const val MAX_PUSH_TOKEN_CHARS = 4_096
+    private const val MAX_CLIENT_MESSAGE_ID_CHARS = 128
+    private const val MAX_USER_AVATAR_URI_CHARS = 256
     private const val MAX_BUNDLE_ID_CHARS = 256
 }
