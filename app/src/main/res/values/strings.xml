@@ -1632,4 +1632,5 @@
     <string name="error_server_rejected">服务端没有接受这次修改，稍后再试一次</string>
     <string name="error_server_media_too_large">图片太大，压不进服务端的 2MB 上限</string>
     <string name="error_server_media_failed">图片没能传上去，这次没有发送</string>
+    <string name="persona_editor_sleep_time_invalid">作息时间要写成 HH:mm（24:00 表示午夜，例如 24:00–08:00）</string>
 </resources>

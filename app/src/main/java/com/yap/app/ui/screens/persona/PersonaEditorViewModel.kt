@@ -488,6 +488,19 @@ class PersonaEditorViewModel @Inject constructor(
             }
             return
         }
+        // 作息时间：非法格式以前会被静默存成 null（→ 用默认 23:30–08:00），
+        // 用户以为设了 24:00，实际却在 23:30 就睡了。这里显式拦下并提示。
+        if (form.sleepEnabled) {
+            val invalid = listOf(form.sleepAt to R.string.persona_editor_sleep_time_invalid,
+                form.wakeAt to R.string.persona_editor_sleep_time_invalid)
+                .firstOrNull { (text, _) -> text.isNotBlank() && parseClock(text) == null }
+            if (invalid != null) {
+                viewModelScope.launch {
+                    events.send(PersonaEditorEvent.Message(context.getString(invalid.second)))
+                }
+                return
+            }
+        }
         // 可视化编辑器也要校验：问题定位到「哪一段的第几行」，不静默丢条目（规范 §2.3）。
         val worldIssues = form.world.issues()
         if (worldIssues.isNotEmpty()) {
@@ -584,12 +597,16 @@ class PersonaEditorViewModel @Inject constructor(
         super.onCleared()
     }
 
-    private companion object {
+    internal companion object {
         /** 空的睡眠时间 = 不自定义，交给默认 23:30–08:00。 */
         fun parseClock(text: String): Int? {
             val match = Regex("""(\d{1,2})\s*[:：]\s*(\d{1,2})""").find(text.trim()) ?: return null
             val hour = match.groupValues[1].toIntOrNull() ?: return null
             val minute = match.groupValues[2].toIntOrNull() ?: return null
+            // 「24:00」是午夜（= 00:00）。以前这里直接拒掉它，于是 `quietSleepMinutes` 存成
+            // null → SleepPolicy 回退默认 23:30 → 设了「24:00 睡」的人 23:40 就已经在睡，
+            // 表现为「只读不回」。现在明确接受 24:00（仅此一个 24 点整），其余 24 点一律非法。
+            if (hour == 24 && minute == 0) return 0
             if (hour !in 0..23 || minute !in 0..59) return null
             return hour * 60 + minute
         }
