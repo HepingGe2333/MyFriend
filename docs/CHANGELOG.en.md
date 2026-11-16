@@ -23,6 +23,289 @@ Version rules live in [CONTRIBUTING.en.md](../CONTRIBUTING.en.md): during the be
 
 ---
 
+## Project renamed to YetAnotherPal (Yap)
+
+The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
+<https://github.com/HepingGe2333/YetAnotherPal>; old links redirect there on GitHub.
+
+- Android application ID is now `com.yap.app`; the iOS bundle ID is `com.yap.app.ios`.
+- The iOS Swift module is now `YapKit`, and the Xcode project is `YetAnotherPal.xcodeproj`.
+- The backup format string **`myfriend.backup` is unchanged** so historical backups remain readable. The
+  format name is a protocol identifier and is not renamed with the product.
+- For searchability, historical entries below use the current product, package and path names. The only
+  retained legacy string is the compatibility format name `myfriend.backup`.
+
+## 0.12.0
+
+A large release: **the shared decision layer moves to Kotlin Multiplatform (iOS reuses the same Kotlin)**,
+**history is stored in blocks**, **search loses its candidate cap**, **backup v3 carries images and avatars** — plus a
+cleanup of the README's known-limitations list. Version `0.12.0`, build numbers **18**; schema **v11**, backup **v3**.
+(Developed on `dev/0.12.0`; not merged into `main`, no release tag.)
+
+### Shared decision layer: Kotlin Multiplatform
+
+- `agentcore/` moved from `kotlin("jvm")` to `kotlin("multiplatform")`: `jvm()` + `iosX64()` + `iosArm64()` +
+  `iosSimulatorArm64()`, producing the static framework **`AgentCoreKit`**. `commonMain` holds the shared decisions;
+  `jvmMain` keeps only the five files that genuinely need `java.*` (background lock, session generation, file-path guard,
+  bounded read, locale name), and `PlatformTime` is an `expect`/`actual`.
+- `WebUrlPolicy` depended on `java.net.URI`; it was **rewritten as pure string parsing** to enter `commonMain` (all
+  security semantics and 12 contract tests preserved). Little-endian byte handling, calendar arithmetic and the min-heap
+  in `LocalEmbedding`/`VectorMath` were also made platform-neutral.
+- **The iOS app's four agent decisions now execute the same Kotlin code** (`KotlinAgentCoreClient` → `InProcessAgentCore`);
+  the Swift implementation remains only as the macOS `swift test` fallback and as the other half of the parity test.
+  A simulator run showed Kotlin agreeing with all 189 assertions of `spec/agent-core`, and the app logs `agent core: kotlin`.
+- Build: `ios/scripts/build-agentcore-framework.sh` produces `ios/.build/agentcore/AgentCoreKit.xcframework`; the Xcode
+  project gained framework search paths and `-framework AgentCoreKit` (static, Do Not Embed), plus a Run Script that
+  builds it when missing.
+
+### History storage: blocks with two-way paging
+
+- Schema **v11**: `messages.blockIndex` plus
+  `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`, identical on both platforms (iOS has
+  `SchemaParityTests` comparing against Android's exported `11.json`).
+- `BLOCK_SIZE = 200`; writes go through one block-maintenance path (new block when full, anchored insert, boundary
+  recomputation on delete, deleted empty block leaving a numbering gap, no rebalancing), covering send/reply/interrupt/
+  failure/regenerate/edit/delete/clear/delete-session/delete-persona/backup-import/proactive messages.
+- **A page is a block**: the first screen reads only the newest block, scrolling up/down loads one block at a time
+  (looking up the real neighbour when numbering has gaps), and no offset is ever used; unread/receipts/DND still query
+  the full table.
+- The v10→v11 migration backfills with `ROW_NUMBER()/200` and builds the block rows while streaming; both platforms have
+  tests for "no data lost, correct boundaries, idempotent, empty database, orphan cleanup".
+
+### Search: no candidate cap
+
+- The old "`LIKE` pre-filter + 500 candidates" cap is gone. Search walks **block by block**: enumerate the (persona/time
+  filtered) blocks → load one block into memory → rank with `SearchRanking` → page with a **keyset cursor**. Peak memory
+  ≈ one block + one page + frontier, independent of history length.
+- Cases with more than 500 hits are covered: 620 hits paged completely, a hit in the oldest block is never lost, new
+  messages during paging neither duplicate nor reorder; "one query reads exactly one block" is asserted structurally.
+- The cost is documented in the README: every page re-walks the blocks, so longer histories get slower — the direct
+  consequence of "no cap, no offset".
+
+### Backup v3: images and avatars travel with the backup
+
+- New top-level `media[]` (`id/kind/personaId/fileName/mime/bytes/data`, standard base64): persona avatars, the user's
+  own avatar, preset avatars and chat images all travel; `avatarUri` and `attachmentsJson` store bare file names and are
+  rewritten to freshly-named local files on import.
+- Limits: 128 MiB total, 8 MiB per image, JPEG/PNG/WebP only; oversized or corrupt entries are skipped with bilingual
+  warnings; import cap raised to 256 MiB.
+- v1/v2 backups remain readable (no `media` → old warnings); `fixtures/backup/` gained v3 golden samples read both ways.
+- Media is written before the database transaction and rolled back (files deleted) if the transaction fails; file names
+  and directories go through the ownership/traversal guards.
+
+### Documentation and the limitations list
+
+- The README's "known limitations" were re-audited: entries that are **not** limitations (no build artefacts in the repo,
+  token-statistics only, remote mode off by default, no cleartext in release builds, simulator Keychain) moved to the
+  design-stance section; entries this release fixed (search cap, paging cost, images not backed up, iOS second
+  implementation) were removed; genuine limits kept and written precisely (no CI, iOS background scheduling, per-page
+  block rescan, block accumulation while browsing both ways, no rebalancing, backup image limits).
+- `docs/ARCHITECTURE` gained "History storage: blocks" and a rewritten "Search" section and now describes the KMP agent
+  core; `docs/README` indexes `spec/messages-blocks`; `CONTRIBUTING` gained the "build AgentCoreKit before the iOS build"
+  step and its data/backup checklists now say v11 / v3.
+
+### Tests and builds
+
+| Target | Result |
+| --- | --- |
+| Android | **1044 tests / 0 failures** (plus 28 instrumented: v10→v11 migration, block maintenance) |
+| `:agentcore` (KMP jvmTest) | **60 tests / 0 failures** |
+| `:agentd` | **34 tests / 0 failures** |
+| iOS | **1263 tests / 0 failures** (Debug/Release builds, zero Swift warnings) |
+| Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:fatJar`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
+
+---
+
+### 0.12 follow-up 1 (no version bump): CI gates, third-party search providers, schema v12 / backup v4, media compression, UI tests and benchmarks
+
+A large release: **CI gates**, **third-party search APIs for `web_search` (schema v12 / backup v4)**, **media compression
+on import and storage**, **UI behaviour tests on both platforms**, **large-history benchmarks**, **agentd rate limiting
+and TLS deployment notes**, and the iOS Swift second implementation narrowed to "macOS tests only".
+No version bump yet (not approved): both platforms stay at `0.12.0` / build **18**; schema **v12**, backup **v4**. Still on `dev/0.12.0`; `main` is not merged and no tag is created.
+
+### CI (GitHub Actions)
+
+- New `.github/workflows/ci.yml`:
+  - **Linux**: JDK 17 + Gradle, running `:app:testDebugUnitTest`, `:agentcore:test`, `:agentd:test`, `assembleDebug`,
+    `:agentd:build`, `lintDebug`, uploading test and lint reports even on failure;
+  - **macOS**: builds `AgentCoreKit.xcframework` first, then `swift test --disable-sandbox`, then
+    `xcodebuild build-for-testing` (skipping UI tests); caches `~/.gradle`, `~/.konan` and the SwiftPM build directory;
+    `CODE_SIGNING_ALLOWED=NO`;
+  - triggers on `push(main, dev/**)` and `pull_request(main)`, `concurrency` cancels stale runs, plus a `ci-ok` summary
+    job intended as the required check.
+- `CONTRIBUTING` explains what CI runs and how to reproduce it locally; "no CI" is gone from the README limitations.
+
+### `web_search`: third-party search APIs
+
+- New normative `spec/web-search/README.md`: `api_configs.webToolsProvider` (`MESSAGEAPI` / `TAVILY` / `BRAVE` / `SERPER` /
+  `GENERIC`), default base URLs, per-provider request/response shapes, normalised results, `web_fetch` behaviour, errors
+  and limits.
+- Both platforms implement the same override semantics: `DEEPSEEK` keeps the server-side search/fetch; other providers
+  call their own APIs; `web_fetch` is fetched client-side for non-DeepSeek providers (10 s, ≤2 MiB, tag stripping,
+  ≤8000 chars). Missing keys fail loudly, 401/403/429/5xx carry the provider name, raw bodies are truncated into logs,
+  and every URL passes `WebUrlPolicy` before any request.
+- Settings → API config gained a "search service" selector, per-provider base URL placeholders/hints, and a key reusing the
+  existing `webToolsApiKeyCipher` (encrypted locally, never in a backup); `GENERIC` requires a base URL with an optional key.
+- **Schema v12**: `api_configs.webToolsProvider` (default `DEEPSEEK`), migrations and schema-parity tests on both platforms.
+- **Backup v4**: `apiConfigs[].webToolsProvider` (default `DEEPSEEK`, always written), keys still excluded; v1–v3 remain
+  readable; `fixtures/backup/{android,ios}-export-v4.json` generated and read both ways.
+- `harness/server.mjs` gained mock branches for every provider for local integration.
+
+### Media compression (import and storage)
+
+- Backup import and picking share one compressor: avatars ≤512 px / ≤400 KB, chat images ≤1600 px / ≤800 KB, JPEG quality
+  ladder 0.85→0.50, transparent images flattened onto white; corrupt or over-limit images are skipped per item with a
+  warning instead of failing the whole import.
+- Content-addressed de-duplication: file names carry the first 16 hex chars of SHA-256 and identical content is stored
+  once (no new table); avatars keep one file per reference to avoid deleting a shared file when changing a photo.
+- The existing 8 MiB per image / 128 MiB total input gates are unchanged; images from v3 backups still import.
+
+### Tests and benchmarks
+
+- **UI behaviour tests** (new):
+  - Android: six Compose behaviour tests under `app/src/androidTest/.../ui/` (first screen reads one block, load older /
+    newer, jump-to-message highlight, send failure keeps the draft, clear + wipe behaviour), plus `HiltTestRunner`,
+    Compose test dependencies, and a debug-only manifest that no longer registers `BootReceiver` (the install broadcast
+    used to crash the process before Hilt came up);
+  - iOS: six `YetAnotherPalTests/ChatUiBehaviorTests` with the same scope, executed on the simulator (this sandbox uses
+    `simctl spawn xctest` because `xcodebuild test` needs a pty).
+- **Large-history benchmarks**: one per platform (100k-message migration, search pages 1/10/100, backup with 500 images
+  peak memory); numbers and conclusions live in `docs/performance.md`.
+- Drive-by fix: a flaky agentd socket test under parallel builds (wait for EOF → accept timeout once data arrived).
+
+### Platform and security
+
+- **agentd rate limiting**: token bucket per source IP (60/min, burst 30 by default; `--rate-limit` / `--rate-burst` / env,
+  0 disables), 429 + `Retry-After` when exceeded; `/health` gets its own bucket so probes stay usable; rate limiting runs
+  before authentication and before the body is read.
+- **TLS deployment notes**: agentd serves plain HTTP only; the README gives minimal Caddy/Nginx reverse-proxy configs that
+  terminate TLS, explains that `X-Forwarded-For` is deliberately not trusted, and recommends keeping the token on.
+- **iOS Swift second implementation narrowed**: `NativeAgentCoreClient` is fully wrapped in `#if !os(iOS)`; the iOS app
+  now runs Kotlin only (the built binary no longer contains the symbol), Swift remains for macOS `swift test`, and a
+  source guard prevents regressions.
+- **Version guards pinned to exact values**: `versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
+  `MARKETING_VERSION = 0.13.0` (Debug and Release), with one exact assertion and one structural assertion per platform.
+- **Android now matches iOS on "delete all data reseeds personas"**: Android used to keep the "already seeded" marker and
+  left an empty home screen; it now reseeds three personas in the current language
+  (`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`).
+
+### Tests and builds
+
+| Target | Result |
+| --- | --- |
+| Android | **1085 unit tests / 97 classes / 0 failures** (media reference counting +13); instrumented tests compile, device batch deferred |
+| `:agentcore` (KMP jvmTest) | **60 tests / 0 failures** |
+| `:agentd` | **53 tests / 0 failures** |
+| iOS | **1315 tests / 0 failures** (2 benchmark tests skipped by default; Debug/Release, zero Swift warnings) |
+| Builds | `assembleDebug/Release`, `lintDebug`, `:agentd:build`, iOS Debug/Release, `AgentCoreKit.xcframework` all succeed |
+
+---
+
+### 0.12 follow-up 2 (no version bump): provider renamed to MessageAPI, live API checks, media reference counting
+
+- **`DEEPSEEK` → `MESSAGEAPI`**: the provider targets the `/v1/tools/search` + `/v1/tools/fetch` tools API, which any
+  compatible vendor can expose, so it was renamed. **Old values are read, new values are written**: legacy `DEEPSEEK`
+  (any case/whitespace) is normalised on read, and every write stores `MESSAGEAPI`; the DB column default stays
+  `'DEEPSEEK'` because changing it would break already-installed v12 databases.
+- **Live API checks**: `docs/web-search-live-check.md` records real calls against MessageAPI (DeepSeek official) and
+  Tavily (status codes, latency, response shapes, 401 behaviour); Brave/Serper were not reachable from this machine.
+- **Media reference counting** (fixes deleting a shared image after de-duplication): both platforms gained a
+  `MediaReferences` query plus a single `deleteIfUnreferenced` guard; every file deletion now runs
+  "delete DB rows → check references → delete only when zero". No new tables, no schema bump.
+- **Local search write-up**: `docs/local-search.md` documents the framework (plain Kotlin + SQLite block scanning, no
+  FTS or third-party search engine), the capability matrix, the explicit non-goals and the upgrade path.
+
+
+
+### 0.12 follow-up 3 (no version bump): server-authoritative P1 — storage/state/SSE/search/proactive + client transports
+
+The goal is to turn the client into "UI and interaction only" and move state and logic to `agentd`, so iOS/Android can
+keep running without any background process (contract: `docs/design/server-authoritative.md`).
+
+- **Server storage and API**: `--data` file store (atomic writes, single write lock, block maintenance, event cursor,
+  0600 secrets), `GET /v1/state`, `/v1/sessions`, two-way block paging, `POST /v1/sessions/{id}/messages` (SSE, idempotent
+  `clientMessageId`, generation continues and persists after the client disconnects), `GET /v1/events` (long polling).
+- **Server-side search**: `MESSAGEAPI` / `TAVILY` / `SEARXNG` (self-hosted, no key) / `BING` plus
+  `ZHIHU` / `TOUTIAO` / `QUORA` site-scoped sources; `POST /v1/tools/web-search`, `/v1/tools/web-fetch`; keys live on the
+  server (`YAP_AGENTD_SEARCH_*`), never sent by clients.
+- **Server-side proactive**: `ProactiveEngine` (sleep/DND/cooldown/daily cap/probability, following `spec/agent-core`),
+  a timer independent of client connections, `POST /v1/proactive/tick` (debug/test entry point).
+- **Client transports**: Android `data/remote/` and iOS `Net/Server/` with `ServerConfig` (https required, cleartext only
+  for local hosts in debug), `ServerApi`, incremental SSE parsing, cancel-closes-connection and state mappers; **UI not
+  wired yet** (P1b).
+- **Tests**: full batch — Android **1139 / 101 classes / 0 failures** (+54), `:agentcore` 60, `:agentd` **244** (+17 route cases), iOS **1386 / 0 failures** (+71, 2 benchmark tests skipped by default); Debug/Release and lint all pass.
+
+
+### 0.12 follow-up 4 (no version bump): persona guidance — world presets, speech-style learning, activity tool, prompt rewrite
+
+This round upgrades "does the model sound like this person" from a single persona blurb to
+"identity + world + current state + speech style + relationship + boundaries", validated against the DeepSeek official
+API from this machine (contract and live notes: `spec/persona-guidance/README.md`).
+
+- **World preset**: the world/city the persona lives in, era, schedule, relationships and obligations; schema v13
+  (`personas` and `persona_presets` gain `worldJson`), backup v5; the preset editor gained a "world" card
+  (hand-written or AI-expanded).
+- **Speech-style learning**: paste a WeChat/QQ transcript → the LLM summarises `tone` / `phrases` / `habits` / `avoid`
+  (prompt verified to return valid JSON); without an API key or on failure a local heuristic fallback is used.
+  **The raw transcript is never stored, logged or backed up.**
+- **`set_activity` tool**: the persona can declare what it is doing for the next while (not sleep):
+  `kind/activity/minutes/availability`; `BUSY` suppresses proactive messages, shortens replies and states when it is free
+  again; `LIMITED` lowers the probability; it expires automatically.
+- **Prompt rewrite**: `# who you are → # the world you live in → # your state right now → # how you speak →
+  # your relationship → # boundaries`; first person, no narration, no persona summary, no deciding for the user,
+  at most one signature phrase per reply. Both `PromptBuilder`s updated.
+- **Backup v5**: `personas[]` carries world/style/activity, `presets[]` carries world/style; v1–v4 still readable.
+- Leftovers fixed: agentd proactive counters are now persisted (survive restarts, reset across local midnight, concurrent ticks fire once), both platforms serialise "write file + return reference" with "check references + delete file" behind one file lock (media TOCTOU), and Android proactive rules now respect the `BUSY` gate.
+- Tests: full batch — Android **1210 / 111 classes / 0 failures**, `:agentcore` 60, `:agentd` **249**, iOS **1453 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
+
+
+### 0.12 follow-up 5 (no version bump): visual world editor, persona translation, server mode M3/M4 and CRUD
+
+- **Visual world editor**: schedule/relationships are now row-based editors (time pickers, relation dropdowns, intimacy),
+  obligations are list items, and a free-text "other background" (`notes`, ≤1200 chars) captures unstructured world
+  data; the editor is integrated into the persona preset screen (Android preset/persona pages share it; iOS gained a
+  preset list and editor).
+- **Persona prompt localisation**: schema v14 (`personas.translationJson/translationLang`); before opening a chat or
+  generating a proactive message the app asks the LLM to translate the persona and world into the UI language; cache
+  invalidation uses a canonical-JSON SHA-256 shared by both platforms (`hash-cases.json`), `phrases` are never
+  translated; missing key/failure/timeout falls back to the original text and the feature can be turned off.
+- **Single prompt scaffold**: `:agentcore` gained `PersonaPromptScaffold` (byte-identical to
+  `spec/persona-guidance/scaffold.json`); both `PromptBuilder`s use the same Chinese wording with contract tests, plus a
+  new `world_name` line.
+- **Server BUSY gate**: `agentd` personas carry `activityJson`, `POST /v1/personas/{id}/activity`; the proactive engine
+  skips `BUSY`, scales `LIMITED` by 0.35 and recovers after expiry; `/v1/proactive/tick` returns `skipped` reasons;
+  counters and activity are persisted.
+- **Server CRUD (M5 server side)**: session create/mark-read, persona/memory/preset/settings CRUD, backup export/import
+  (v5, no secrets), `/v1/push/register` with a pluggable `PushSender` (Noop by default).
+- **Client server mode (M3/M4)**: both platforms configure server URL/token (Keystore / Keychain), test the connection,
+  sync state incrementally into the local cache (timestamp cursor + event cursor), chat over the server SSE stream
+  (idempotent `clientMessageId`, offline outbox), proactive messages arrive through the event stream and become local
+  notifications, mood/presence come from the server; local mode remains as the offline form.
+- **Tests**: Android **1366 / 126 classes / 0 failures**, `:agentcore` **90**, `:agentd` **329**, iOS **1588 (2 skipped) / 0 failures**; Debug/Release and lint all pass.
+
+
+
+### 0.12 follow-up 6 (no version bump): M5 client writes, media upload, iOS truncation removed, tests completed
+
+- **M5 client**: in server mode, persona/memory/preset/settings/backup writes all go through `/v1/*` and only after the
+  server succeeds is the local cache updated; failures surface explicitly instead of silently falling back to local
+  writes. Local (offline) mode is unchanged.
+- **Media**: `agentd` gained `POST /v1/media` (raw bytes, type/size validation, sha256 de-duplication),
+  `GET /v1/media/{id}` (ETag/304) and `DELETE` (409 while referenced); backup v5 carries media (8 MiB each, 128 MiB
+  total, oversized entries skipped and counted). In server mode both clients **compress before upload** (avatars
+  512 px/400 KB, chat images 1600 px/800 KB) and render through an authenticated media cache; local mode keeps local files.
+- **iOS truncation removed**: world/speech/persona fields are no longer truncated while parsing, storing or hashing
+  (only prompt rendering trims), matching Android; Android also stopped truncating during parsing. Shared
+  `hash-cases.json` and long-text round-trip tests cover it.
+- **M6 push**: kept as "configured by the server deployer" — the server provides token registration and a pluggable
+  `PushSender` (Noop by default); APNs/FCM protocol, certificates and delivery stay out of the repository. Without push,
+  the client falls back to foreground event sync.
+- **Tests completed**: 56 Android instrumented tests on the emulator (v13→v14 migration, UI behaviour, media
+  compression); 16 iOS App-hosted tests (10 Kotlin parity + 6 UI behaviour) run via `simctl spawn xctest`.
+- **Tests**: Android 1412 / 132 classes / 0 failures + 56 instrumented, `:agentcore` 90, `:agentd` 358, iOS 1625
+  (2 skipped) + 16 App-hosted; Debug/Release and lint all pass.
+
+
 ## 0.11.2
 
 A small release that **separates "operating instructions for AI agents" from "documentation for developers"** and cleans
@@ -163,7 +446,7 @@ client/server boundary**, plus the remaining P2 items from the audits. Version `
   lifecycle, vectors, search, backup copy, erasure plan, error model, …). Package names are unchanged. Both `:app` and
   `:agentd` depend on it.
 - `:agentd` no longer uses the `kotlin.srcDir(app/domain)` + 14-`exclude` trick — **the exclusion list is gone**; the
-  JSON parser moved into `:agentcore` too (`com.myfriend.app.core.json`), so there is one copy in the repository.
+  JSON parser moved into `:agentcore` too (`com.yap.app.core.json`), so there is one copy in the repository.
 - Added the `AgentCore` interface (four kinds of decisions), `InProcessAgentCore` (shaping only, delegating to the
   existing pure functions), `AgentCoreProtocol` (path and field-name constants shared by the `agentd` route table and
   both clients) and `AgentCoreCodec` (HTTP encode/decode).
@@ -172,7 +455,7 @@ client/server boundary**, plus the remaining P2 items from the audits. Version `
   and with the flag off the remote client is never constructed (**zero requests**). Wired for sleep decisions,
   `defer_reply`, tool argument clamping and the daily proactive cap (three call sites).
 - **iOS client**: a Kit `AgentCoreClient` protocol with `Native` / `Remote` (URLSession) / `Fallback` implementations,
-  selected by `MYFRIEND_AGENT_CORE` (`native|remote|remote-strict`) or Info.plist, **native by default (zero requests)**;
+  selected by `YAP_AGENT_CORE` (`native|remote|remote-strict`) or Info.plist, **native by default (zero requests)**;
   the same four call sites are wired. On the simulator, `remote-strict` hit all four endpoints with HTTP 200.
 - **No new user-facing settings**; the decision layer still holds no state (sessions, memories and usage stay in the
   client database).
@@ -389,7 +672,7 @@ Version `0.10.0` (a large change: internationalisation plus a cross-platform age
 ### Internationalisation: English UI
 
 - Android: added `app/src/main/res/values-en/strings.xml` (same key set as `values/strings.xml`); `android:localeConfig` declares `zh` / `en`; the language follows the system and there is no in-app switch. Base resources in `values/` are Chinese, and unmatched locales fall back to Chinese.
-- iOS: added `ios/MyFriend/Resources/zh-Hans.lproj/Localizable.strings` and `en.lproj/Localizable.strings`; `CFBundleDevelopmentRegion = zh-Hans`, `CFBundleLocalizations = [zh-Hans, en]`, and both `InfoPlist.strings` localise the local-network permission copy, all selected automatically by `Bundle.main`. There is no in-app switch here either.
+- iOS: added `ios/YetAnotherPal/Resources/zh-Hans.lproj/Localizable.strings` and `en.lproj/Localizable.strings`; `CFBundleDevelopmentRegion = zh-Hans`, `CFBundleLocalizations = [zh-Hans, en]`, and both `InfoPlist.strings` localise the local-network permission copy, all selected automatically by `Bundle.main`. There is no in-app switch here either.
 - Model language: both platforms append a language-directive section to the end of the system prompt, instructing the model to answer in the same language the user writes in. Both provide Chinese and English templates following the UI language (Android: `prompt_language_directive` under `values{,-en}`; iOS: the same key in `Localizable.strings`). The wording is identical; only the placeholder syntax differs (`%1$s` / `%1$@`). Apart from this section, prompt scaffolding, logs and code comments are not translated.
 - Resource guards: Android `StringResourceParityTest` (key sets and placeholders), `ChineseLiteralGuardTest` (no hard-coded Chinese in the UI layer), `LanguageDirectiveTest` (language directive appended to the end of the prompt); iOS `LocalizationResourceTests`, `UIChineseLiteralGuardTests`.
 - String counts: Android `values` / `values-en` hold **876** entries each (856 `<string>` + 20 `<plurals>`), plus 12 `seed.xml` entries per language, a locale-specific `usage_tokens_compact_divisor`, and date/time patterns as resources. iOS holds **765** entries in each `Localizable.strings` (about 637 call sites in the app layer plus 233 kit keys) and one entry per `InfoPlist.strings`.
@@ -398,7 +681,7 @@ Version `0.10.0` (a large change: internationalisation plus a cross-platform age
 ### Agent core contract
 
 - Added `spec/agent-core/cases/*.json`: **94** language-neutral cases (sleep decision 16, `defer_reply` 9, proactive cap 14, heartbeat 17, memory decay 22, tool-argument clamping 16). Each case has `name` / `input` / `expect` and an optional `why`; floating-point assertions carry a `tolerance`.
-- Android test `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt` and iOS test `ios/MyFriendKit/Tests/MyFriendKitTests/Spec/AgentCoreSpecTests.swift` read the **same** JSON files and feed them into each platform's existing domain implementation. Changing behaviour on one side alone turns the other side red.
+- Android test `app/src/test/java/com/yap/app/spec/AgentCoreSpecTest.kt` and iOS test `ios/YapKit/Tests/YapKitTests/Spec/AgentCoreSpecTests.swift` read the **same** JSON files and feed them into each platform's existing domain implementation. Changing behaviour on one side alone turns the other side red.
 
 ### Embedded service skeleton: agentd
 
@@ -427,7 +710,7 @@ Writing the cases revealed ten places where the two implementations quietly disa
 | Target | Command | Result |
 | --- | --- | --- |
 | Android | `./gradlew :app:testDebugUnitTest` | **639 tests / 47 classes / 0 failures** |
-| iOS | `cd ios/MyFriendKit && swift test --disable-sandbox` | **827 tests / 0 failures** |
+| iOS | `cd ios/YapKit && swift test --disable-sandbox` | **827 tests / 0 failures** |
 | agentd | `./gradlew :agentd:test` | **19 tests / 0 failures** |
 | Builds | `:app:assembleDebug`, `xcodebuild … build`, `:agentd:build` | all succeed |
 

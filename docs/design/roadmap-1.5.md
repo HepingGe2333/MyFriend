@@ -45,9 +45,9 @@
 
 | 文件 | 内容 |
 | --- | --- |
-| [`MemoryLifecycle.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/MemoryLifecycle.kt) | 三档状态与阈值（沉底 0.45、归档 0.20、彻底遗忘 0.08 且 180 天没被提起）、每天的衰减与回血、钉住的下限 0.55、单次最多补算 14 天 |
-| [`ImportanceScoring.kt`](../../app/src/main/java/com/myfriend/app/domain/ImportanceScoring.kt) | `SHARED_CRITERIA`（什么值得记 / 不值得记 / 重要度 1–5）；整理器的 system 提示词与 JSON 容错解析；联网打分的提示词与解析 |
-| [`Recall.kt`](../../app/src/main/java/com/myfriend/app/domain/Recall.kt) | 三档 recall（`QUICK` / `NORMAL` / `DEEP`）、排序与中文段落渲染、depth 的宽松解析（数字 / 英文 / 中文别名） |
+| [`MemoryLifecycle.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/MemoryLifecycle.kt) | 三档状态与阈值（沉底 0.45、归档 0.20、彻底遗忘 0.08 且 180 天没被提起）、每天的衰减与回血、钉住的下限 0.55、单次最多补算 14 天 |
+| [`ImportanceScoring.kt`](../../app/src/main/java/com/yap/app/domain/ImportanceScoring.kt) | `SHARED_CRITERIA`（什么值得记 / 不值得记 / 重要度 1–5）；整理器的 system 提示词与 JSON 容错解析；联网打分的提示词与解析 |
+| [`Recall.kt`](../../app/src/main/java/com/yap/app/domain/Recall.kt) | 三档 recall（`QUICK` / `NORMAL` / `DEEP`）、排序与中文段落渲染、depth 的宽松解析（数字 / 英文 / 中文别名） |
 
 关键数字都写成常量并有单测：衰减是**线性简化**（每天掉 4.5% 左右、重要度越高掉得越慢），被用过的会回血，不是玄学曲线。
 
@@ -62,7 +62,7 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 
 ### 3. 每日整理：一次用完即弃的分叉会话
 
-[`MemoryConsolidator.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryConsolidator.kt) 是整理器本体：
+[`MemoryConsolidator.kt`](../../app/src/main/java/com/yap/app/data/repo/MemoryConsolidator.kt) 是整理器本体：
 
 1. 读设置：记忆关着 / 整理关着 → 直接返回 `DISABLED`，不动数据、不写留痕；
 2. 取这个人格最多 300 条记忆，拼一份**一次性请求**：`system` = 整理器提示词，`user` = 编号清单（抽屉 / 重要度 / 被提起次数 / 多久没动 / 状态 / 正文）+ 最近 8 句聊天摘要 + 他最近独自上网看到的 digest。**只有这两条消息**，没有会话、没有历史、没有工具；温度 0.25，输出上限 900 token；
@@ -75,23 +75,23 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 
 ### 4. 调度：每天 4 点，一个周期任务
 
-[`MemoryConsolidationWorker.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryConsolidationWorker.kt)（`@HiltWorker`）：
+[`MemoryConsolidationWorker.kt`](../../app/src/main/java/com/yap/app/data/repo/MemoryConsolidationWorker.kt)（`@HiltWorker`）：
 
 | 关注点 | 取值 |
 | --- | --- |
 | 周期 | 24 小时 + 15 分钟弹性窗口，只在有网时跑 |
 | 首次延迟 | 最近的下一个本地凌晨 4 点，至少 2 小时（刚装完不烧额度） |
-| 周期任务名 | `WORK_NAME` = `myfriend-memory-consolidation` |
-| 手动任务名 | `WORK_NAME_MANUAL` = `myfriend-memory-consolidation-now`（分开，手动的 `REPLACE` 不会把每天那次顶掉） |
+| 周期任务名 | `WORK_NAME` = `yap-memory-consolidation` |
+| 手动任务名 | `WORK_NAME_MANUAL` = `yap-memory-consolidation-now`（分开，手动的 `REPLACE` 不会把每天那次顶掉） |
 | 开关关着 | 空跑一次，返回 `STATUS_DISABLED`，什么都不写 |
 | 出错 | 返回 `STATUS_FAILED` 而不是重试——整理失败不该反复烧额度 |
 | 回传 | `KEY_STATUS / KEY_PERSONAS / KEY_KEPT / KEY_MERGED / KEY_ARCHIVED / KEY_FORGOTTEN` |
 
-入口三个：`schedule(context)`（幂等，排周期）、`enqueueOneTime(context)`（手动一次）、`cancel(context)`（开关关掉时连待跑的手动任务一起撤）。App 启动时在 `MyFriendApplication` 里排一次；设置页开关变化时，打开就 `schedule`，关掉就 `cancel`。
+入口三个：`schedule(context)`（幂等，排周期）、`enqueueOneTime(context)`（手动一次）、`cancel(context)`（开关关掉时连待跑的手动任务一起撤）。App 启动时在 `YetAnotherPalApplication` 里排一次；设置页开关变化时，打开就 `schedule`，关掉就 `cancel`。
 
 ### 5. 回忆：三档深度
 
-工具 `recall(query, depth)`，depth 认数字 1/2/3，也认「随口想想 / 认真回忆 / 翻箱倒柜」。真正的取数在 [`RecallRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/RecallRepository.kt)：
+工具 `recall(query, depth)`，depth 认数字 1/2/3，也认「随口想想 / 认真回忆 / 翻箱倒柜」。真正的取数在 [`RecallRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/RecallRepository.kt)：
 
 | 档位 | 名字 | 能看到 | 还会翻什么 | 字数 / 条数上限 |
 | --- | --- | --- | --- | --- |
@@ -103,7 +103,7 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 
 ### 6. 联网也共用一套判据
 
-[`WebSearchScorer.kt`](../../app/src/main/java/com/myfriend/app/data/repo/WebSearchScorer.kt)：工具看完网页后，把摘要丢进一个**后台**的一次性调用，用 `ImportanceScoring.SHARED_CRITERIA` 判断「值不值得记」，值得（`importance >= 3`）才写成一条记忆，并按 SELF / USER / EVENT 归抽屉。
+[`WebSearchScorer.kt`](../../app/src/main/java/com/yap/app/data/repo/WebSearchScorer.kt)：工具看完网页后，把摘要丢进一个**后台**的一次性调用，用 `ImportanceScoring.SHARED_CRITERIA` 判断「值不值得记」，值得（`importance >= 3`）才写成一条记忆，并按 SELF / USER / EVENT 归抽屉。
 
 打分是后台跑的，不挡搜索结果返回；开关是 `AppSettings.webSearchScoringEnabled`，关掉就完全不问模型。
 
@@ -111,11 +111,11 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 
 | 位置 | 代码 | 做了什么 |
 | --- | --- | --- |
-| 记忆页健康卡片 | [`MemoryScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/memory/MemoryScreen.kt)、[`MemoryViewModel.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/memory/MemoryViewModel.kt) | `tierCounts` 三档数量、`lastConsolidation` 最近留痕、`consolidating` 是否在跑；卡片含「现在整理一次」 |
+| 记忆页健康卡片 | [`MemoryScreen.kt`](../../app/src/main/java/com/yap/app/ui/screens/memory/MemoryScreen.kt)、[`MemoryViewModel.kt`](../../app/src/main/java/com/yap/app/ui/screens/memory/MemoryViewModel.kt) | `tierCounts` 三档数量、`lastConsolidation` 最近留痕、`consolidating` 是否在跑；卡片含「现在整理一次」 |
 | 手动整理的触发与结果 | 同上 | `runConsolidationNow()` → `MemoryConsolidationWorker.enqueueOneTime(context)`；盯 `WorkManager.getWorkInfosForUniqueWorkFlow(WORK_NAME_MANUAL)`，完成时读 `outputData` 拼中文 snackbar |
-| 文案 | [`MemoryHealthText.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/memory/MemoryHealthText.kt) | 「上次整理：昨天 04:10 · …」「整理完了：…」的拼接（纯 Kotlin，单测 9 个） |
+| 文案 | [`MemoryHealthText.kt`](../../app/src/main/java/com/yap/app/ui/screens/memory/MemoryHealthText.kt) | 「上次整理：昨天 04:10 · …」「整理完了：…」的拼接（纯 Kotlin，单测 9 个） |
 | 列表状态标记 | `MemoryScreen.kt` 的 `MemoryCard` | 沉睡 / 归档降对比度 + 行尾小字；归档卡片底部一句说明；pinned 显示「一直记着」 |
-| 设置开关 | [`SettingsScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/settings/SettingsScreen.kt)、[`SettingsViewModel.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/settings/SettingsViewModel.kt) | 「每天整理记忆」落库成功后 `schedule` / `cancel`；「联网时判断重要性」只落库；两者写失败都写回旧值 |
+| 设置开关 | [`SettingsScreen.kt`](../../app/src/main/java/com/yap/app/ui/screens/settings/SettingsScreen.kt)、[`SettingsViewModel.kt`](../../app/src/main/java/com/yap/app/ui/screens/settings/SettingsViewModel.kt) | 「每天整理记忆」落库成功后 `schedule` / `cancel`；「联网时判断重要性」只落库；两者写失败都写回旧值 |
 
 ### 8. 版本
 
@@ -160,16 +160,16 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 
 全量 **233** 个单测通过。与记忆 1.5 直接相关的：
 
-- [`MemoryLifecycleTest.kt`](../../app/src/test/java/com/myfriend/app/domain/MemoryLifecycleTest.kt)（27 个）：三档阈值、钉住的下限、衰减与回血、补算天数上限、180 天 + 极低分量才彻底遗忘、坏数据（负数时间 / NaN 分量 / 越界重要度）不抛异常。
-- [`ImportanceScoringTest.kt`](../../app/src/test/java/com/myfriend/app/domain/ImportanceScoringTest.kt)（24 个）：共用判据的措辞、整理 JSON 的容错解析（缺字段、重复编号、`第3条`、纯文本包着 JSON）、联网打分的解析与「重要度到 3 分才记」。
-- [`RecallTest.kt`](../../app/src/test/java/com/myfriend/app/domain/RecallTest.kt)（21 个）：三档能看到的记忆状态、排序、空结果的人话、depth 的宽松解析（数字 / 英文 / 中文别名 / 越界）。
-- [`MemoryHealthTextTest.kt`](../../app/src/test/java/com/myfriend/app/ui/screens/memory/MemoryHealthTextTest.kt)（9 个，本次新增）：「上次整理：昨天 04:10 · …」的日期边界与计数拼接、「整理完了：…」的四类顺序、全为 0 时的说法、空跑 / 关闭 / 失败 / 任务挂掉各自的那句话。
+- [`MemoryLifecycleTest.kt`](../../app/src/test/java/com/yap/app/domain/MemoryLifecycleTest.kt)（27 个）：三档阈值、钉住的下限、衰减与回血、补算天数上限、180 天 + 极低分量才彻底遗忘、坏数据（负数时间 / NaN 分量 / 越界重要度）不抛异常。
+- [`ImportanceScoringTest.kt`](../../app/src/test/java/com/yap/app/domain/ImportanceScoringTest.kt)（24 个）：共用判据的措辞、整理 JSON 的容错解析（缺字段、重复编号、`第3条`、纯文本包着 JSON）、联网打分的解析与「重要度到 3 分才记」。
+- [`RecallTest.kt`](../../app/src/test/java/com/yap/app/domain/RecallTest.kt)（21 个）：三档能看到的记忆状态、排序、空结果的人话、depth 的宽松解析（数字 / 英文 / 中文别名 / 越界）。
+- [`MemoryHealthTextTest.kt`](../../app/src/test/java/com/yap/app/ui/screens/memory/MemoryHealthTextTest.kt)（9 个，本次新增）：「上次整理：昨天 04:10 · …」的日期边界与计数拼接、「整理完了：…」的四类顺序、全为 0 时的说法、空跑 / 关闭 / 失败 / 任务挂掉各自的那句话。
 
 模拟器上的逐项走查见下一节。
 
 ## 七、模拟器上的真实结果（v1.5.0-debug）
 
-全部在 AVD `MyFriendTest`（API 35）+ 本地参考服务（`harness/server.mjs`）上跑出来的，不是设计推演：
+全部在 AVD `YapTest`（API 35）+ 本地参考服务（`harness/server.mjs`）上跑出来的，不是设计推演：
 
 - **数据库升级**：从 1.4 的 v5 库直接升到 v6，启动无崩溃；4 条旧记忆全部 `ACTIVE` / `strength = 1.0`。
 - **整理真的改了记忆**：点「现在整理一次」→ `memory_consolidations` 新增一行
@@ -194,5 +194,5 @@ Room v5 → **v6**（`MIGRATION_5_6`）：
 ### 顺手补的两处（也是这轮才发现的）
 
 - **手动整理去掉联网约束 + 120 秒超时 + 60 秒排队看门狗**（见「五、取舍」那条）。
-- **App 启动时按开关决定排不排**：原来 `MyFriendApplication` 无条件 `schedule(...)`，关掉开关后仍会空跑一次；
+- **App 启动时按开关决定排不排**：原来 `YetAnotherPalApplication` 无条件 `schedule(...)`，关掉开关后仍会空跑一次；
   现在启动时读 `memoryConsolidationEnabled`，关着就直接 `cancel(...)`，让「关掉」是真的不跑。

@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">MyFriend</string>
+    <string name="app_name">Yap</string>
     <string name="proactive_channel_name">主动唤醒</string>
     <string name="proactive_channel_description">人格按你设定的时间主动发来消息</string>
     <string name="chat_reply_channel_name">他的消息</string>
@@ -34,7 +34,8 @@
     <string name="backup_section_title">带走与接回来</string>
     <string name="backup_intro_title">他不是一份数据，是一个陪你聊过很久的人。</string>
     <string name="backup_intro_body">把他带走，会把人格、你们聊过的每一句、他记得的事、他给自己定的规矩和能带走的设置，一起打包成一份 JSON。换手机、重装 App 之后，用下面的「从备份里接他回来」把他接回原处。</string>
-    <string name="backup_safety_body">备份里有你们的聊天和记忆，放在安全的地方。API Key 不在备份里——接回来以后，在这台手机上的「API 配置」里重新填一次就好。头像图片不随备份走，换手机后重新选一张就好。</string>
+    <string name="backup_safety_body">备份里有你们的聊天和记忆，放在安全的地方。API Key 不在备份里——接回来以后，在这台手机上的「API 配置」里重新填一次就好。头像和聊天图片会跟着备份一起走，换手机后不用再选一次。</string>
+    <string name="backup_media_limits">头像和聊天图片会一起装进备份：单张最多 %1$d MB、全部最多 %2$d MB；超过上限的图片留在原机上，备份文件本身最大 %3$d MB。</string>
     <string name="backup_export_row_title">把他带走</string>
     <string name="backup_export_row_desc">选一个位置，把这份 JSON 存起来</string>
     <string name="backup_import_row_title">从备份里接他回来</string>
@@ -125,7 +126,7 @@
     <string name="api_provider_reserved">预留</string>
     <string name="api_section_connection">连接</string>
     <string name="api_field_name">配置名称</string>
-    <string name="api_field_name_placeholder">例如：DeepSeek 主力</string>
+    <string name="api_field_name_placeholder">例如：主力配置</string>
     <string name="api_field_base_url_hint">兼容 /chat/completions 与 /models 接口；通常包含 /v1。</string>
     <string name="api_field_key_stored_placeholder">已加密保存 · 留空不修改</string>
     <string name="api_key_hide">隐藏密钥</string>
@@ -143,12 +144,25 @@
     <string name="api_section_persona">人格注入</string>
     <string name="api_persona_hint">人格提示词与长期记忆每轮随 system 消息一起发送，不需要额外的同步接口。</string>
     <string name="api_section_web_tools">联网工具</string>
-    <string name="api_web_tools_title">联网（DeepSeek 搜索 / 抓取）</string>
-    <string name="api_web_tools_hint">开启后他可以在需要时自己查资料；按成功请求计费（$0.75 / 千次）。</string>
+    <string name="api_web_tools_title">联网（搜索 / 抓取）</string>
+    <string name="api_web_tools_hint">开启后他可以在需要时自己查资料；费用由所选的搜索服务计。</string>
     <string name="api_field_web_base_url">联网地址</string>
-    <string name="api_field_web_base_url_hint">留空使用 DeepSeek 官方地址</string>
+    <string name="api_field_web_base_url_hint">留空使用该服务的默认地址</string>
+    <string name="api_field_web_base_url_hint_generic">自建服务必填：填完整的搜索接口地址</string>
+    <string name="api_field_web_provider">搜索服务</string>
+    <string name="api_web_provider_messageapi">MessageAPI（兼容厂商）</string>
+    <string name="api_web_provider_tavily">Tavily</string>
+    <string name="api_web_provider_brave">Brave Search</string>
+    <string name="api_web_provider_serper">Serper</string>
+    <string name="api_web_provider_generic">自建服务</string>
+    <string name="api_web_provider_messageapi_hint">MessageAPI 兼容接口（DeepSeek 官方为默认实现）：使用当前 LLM 配置里的地址（自动补 /v1/tools/search）；Key 复用上面的 API Key。</string>
+    <string name="api_web_provider_tavily_hint">默认地址 https://api.tavily.com；Key 在 tavily.com 控制台获取。</string>
+    <string name="api_web_provider_brave_hint">默认地址 https://api.search.brave.com/res/v1；Key 在 Brave Search API 控制台获取。</string>
+    <string name="api_web_provider_serper_hint">默认地址 https://google.serper.dev；Key 在 serper.dev 控制台获取。</string>
+    <string name="api_web_provider_generic_hint">自建服务：地址原样使用（必填）；没有鉴权时 Key 可以留空。</string>
     <string name="api_field_web_key">联网专用 Key</string>
     <string name="api_field_web_key_placeholder">留空则复用上面的 API Key</string>
+    <string name="api_field_web_key_placeholder_optional">自建服务没有鉴权时可留空</string>
     <string name="api_web_key_hide">隐藏联网密钥</string>
     <string name="api_web_key_show">显示联网密钥</string>
     <string name="api_web_key_stored">已加密保存</string>
@@ -229,7 +243,8 @@
     <string name="chat_typing">正在输入</string>
     <string name="chat_latest">最新</string>
     <string name="chat_load_earlier">上滑加载更早的消息</string>
-    <string name="chat_back_to_latest">下面还有更新的消息 · 回到最新</string>
+    <string name="chat_load_newer">下面还有更新的消息 · 点击加载</string>
+    <string name="chat_loading_newer">正在加载更新的消息…</string>
     <string name="chat_loading_earlier">正在加载更早的消息…</string>
     <string name="chat_stopped_status">已停止</string>
     <string name="chat_scroll_to_bottom">回到底部</string>
@@ -392,7 +407,7 @@
     <string name="search_error_title">这次没搜成</string>
     <string name="search_error_desc">读取本地记录时出了点问题。记录还在，重试一次就好。</string>
     <string name="search_retry">重试</string>
-    <string name="search_truncated">命中太多，只显示最近的 %1$d 条。</string>
+    <string name="search_scanned_all_history">已扫描全部历史，共 %1$d 条命中。</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -478,6 +493,7 @@
     <string name="memory_updated">记忆已更新</string>
     <string name="memory_update_failed">更新失败</string>
     <string name="memory_deleted">记忆已删除</string>
+    <string name="memory_delete_failed">删除失败</string>
     <string name="memory_extract_failed">整理失败：%1$s</string>
     <string name="memory_extract_failed_detail">请检查该人格最近会话的 API 配置</string>
     <string name="memory_enqueue_failed">这次没能排上整理任务，稍后再试一次</string>
@@ -789,6 +805,97 @@
     <string name="preset_editor_subtitle">预设是可复用的提示词模板</string>
     <string name="preset_editor_loading">载入中…</string>
     <string name="preset_avatar_initial">预</string>
+    <!-- 0.12 人设引导：世界设定 / 话风 / 当前活动 -->
+    <string name="guidance_world_section">世界设定</string>
+    <string name="guidance_world_hint">他活在什么地方、每天被什么占着。只在与话题相关时带出，不用逐条念。</string>
+    <string name="guidance_world_name_label">世界的名字</string>
+    <string name="guidance_world_name_placeholder">临港新城·云筑建筑事务所</string>
+    <string name="guidance_world_era_label">时代与地点</string>
+    <string name="guidance_world_description_label">处境（100-200 字）</string>
+    <!-- 0.12 可视化世界编辑器（规范 §2.3）：行式列表 + 下拉 + 时间选择器，不再有 JSON 文本框 -->
+    <string name="guidance_world_schedule_title">日程</string>
+    <string name="guidance_world_schedule_hint">他一天里被什么占着。跨午夜的时间会标成「次日」。</string>
+    <string name="guidance_world_day_label">日子</string>
+    <string name="guidance_world_start_label">开始</string>
+    <string name="guidance_world_end_label">结束</string>
+    <string name="guidance_world_next_day">次日</string>
+    <string name="guidance_world_activity_label">在做什么</string>
+    <string name="guidance_world_activity_placeholder">在事务所画图、审图</string>
+    <string name="guidance_world_add_schedule">加一条日程</string>
+    <string name="guidance_world_relationships_title">人际关系</string>
+    <string name="guidance_world_relationships_hint">他身边固定出现的几个人。</string>
+    <string name="guidance_world_relationship_name_label">称呼</string>
+    <string name="guidance_world_relationship_relation_label">关系</string>
+    <string name="guidance_world_relationship_custom">自定义</string>
+    <string name="guidance_world_relationship_custom_label">自己写的关系</string>
+    <string name="guidance_world_relationship_note_label">一句细节</string>
+    <string name="guidance_world_intimacy_label">亲密度</string>
+    <string name="guidance_world_intimacy_none">不填</string>
+    <string name="guidance_world_add_relationship">加一个人</string>
+    <string name="guidance_world_obligations_title">义务</string>
+    <string name="guidance_world_obligations_hint">他必须承担的事、躲不掉的压力。</string>
+    <string name="guidance_world_obligation_label">一条义务</string>
+    <string name="guidance_world_add_obligation">加一条义务</string>
+    <string name="guidance_world_notes_title">其他背景</string>
+    <string name="guidance_world_notes_hint">结构化字段写不下的都写这里：城市气质、行业黑话、家庭旧事、忌讳…</string>
+    <string name="guidance_world_notes_label">自由文本</string>
+    <string name="guidance_world_notes_truncated">超出字数的部分会被截掉</string>
+    <string name="guidance_world_move_up">上移</string>
+    <string name="guidance_world_move_down">下移</string>
+    <string name="guidance_world_delete_row">删除这一行</string>
+    <string name="guidance_world_example_hint">还没填世界。可以先填一个示例（临港新城的建筑师），再改成你自己的。</string>
+    <string name="guidance_world_example_fill">用示例填上</string>
+    <string name="guidance_world_error_schedule_day">日程第 %1$d 行的「日子」不在允许的取值里。</string>
+    <string name="guidance_world_error_schedule_start">日程第 %1$d 行的开始时间要写成 HH:mm。</string>
+    <string name="guidance_world_error_schedule_end">日程第 %1$d 行的结束时间要写成 HH:mm。</string>
+    <string name="guidance_world_error_schedule_activity">日程第 %1$d 行还没写在做什么。</string>
+    <string name="guidance_world_error_relation_name">关系第 %1$d 行还没有称呼或关系。</string>
+    <string name="guidance_world_error_relation_intimacy">关系第 %1$d 行的亲密度要在 1–5 之间。</string>
+    <string name="guidance_world_error_notes">其他背景超过 %1$d 字，请删掉一些。</string>
+    <string name="guidance_world_ai_fill">AI 补全</string>
+    <string name="guidance_world_ai_filling">补全中…</string>
+    <string name="guidance_world_ai_llm">模型补全了世界设定，可以逐项修改。</string>
+    <string name="guidance_world_ai_fallback">这次没生成完整的世界，先按角色名建了一个空世界，可以手填。</string>
+    <string name="guidance_speech_section">话风</string>
+    <string name="guidance_speech_hint">粘贴一段他真实的聊天记录，总结出 tone / 常用语 / 习惯 / 不要的表达。原文不会保存。</string>
+    <string name="guidance_speech_sample_label">聊天记录原文</string>
+    <string name="guidance_speech_sample_placeholder">林深：在忙，晚点说\n林深：你先睡吧，不用等我</string>
+    <string name="guidance_speech_summarize">总结</string>
+    <string name="guidance_speech_summarizing">总结中…</string>
+    <string name="guidance_speech_clear">清空</string>
+    <string name="guidance_speech_source_heuristic">本地粗略总结，可手动修改</string>
+    <string name="guidance_speech_source_llm">模型总结</string>
+    <string name="guidance_speech_tone_label">语气</string>
+    <string name="guidance_speech_habits_label">语言习惯（一行一条）</string>
+    <string name="guidance_speech_avoid_label">不要出现的表达（一行一条）</string>
+    <string name="guidance_speech_list_placeholder">句子很短\n少用感叹号</string>
+    <string name="guidance_speech_phrases_label">常用语（点一下删除）</string>
+    <string name="guidance_speech_phrases_empty">还没有常用语</string>
+    <string name="guidance_speech_phrase_chip">%1$s ×</string>
+    <string name="guidance_speech_phrase_remove_hint">常用语是参考不是模板，一次回复最多带一处。</string>
+    <string name="guidance_speech_phrase_add_label">加一条常用语</string>
+    <string name="guidance_speech_phrase_add">添加</string>
+    <string name="guidance_speech_sample_required">先粘贴一段聊天记录。</string>
+    <string name="guidance_speech_summarize_failed">总结失败，已用本地规则粗略总结。</string>
+    <string name="persona_editor_guidance_section">世界与话风</string>
+    <string name="persona_editor_guidance_hint">可以从预设带入，也可以在这里改；只会影响这个人。</string>
+    <!-- 0.12 人格提示词翻译（spec/persona-translation） -->
+    <string name="persona_editor_translation_section">提示词语言</string>
+    <string name="persona_editor_translation_hint">打开聊天前会按需把人设与世界设定翻译成软件当前语言；失败就用原文。</string>
+    <string name="persona_editor_translation_none">还没有翻译缓存，下次打开聊天时会自动翻译。</string>
+    <string name="persona_editor_translation_done">已翻译成 %1$s</string>
+    <string name="persona_editor_translation_skipped">源语言与界面语言相同，不需要翻译。</string>
+    <string name="persona_editor_translation_failed">翻译失败，正在用原文；可以重试。</string>
+    <string name="persona_editor_translation_ok">已翻译好，下次打开聊天就用新译文。</string>
+    <string name="persona_editor_translation_disabled">设置里关了「自动翻译人设」。</string>
+    <string name="persona_editor_retranslate">重新翻译</string>
+    <string name="persona_editor_translating">翻译中…</string>
+    <string name="persona_editor_activity_section">当前活动</string>
+    <string name="persona_editor_activity_none">没在忙什么</string>
+    <string name="persona_editor_activity_line">%1$s（到 %2$s）</string>
+    <string name="persona_editor_activity_busy">在忙：回复更短更晚，也不会主动开口</string>
+    <string name="persona_editor_activity_limited">在忙但能回：回得慢一点</string>
+    <string name="persona_editor_activity_free">手头有事，但随时能聊</string>
     <string name="preset_editor_name_label">预设名称</string>
     <string name="preset_editor_description_label">简介</string>
     <string name="preset_editor_category_section">分类</string>
@@ -810,6 +917,7 @@
     <string name="preset_duplicated">已复制为新预设</string>
     <string name="preset_duplicate_failed">复制失败</string>
     <string name="preset_deleted">预设已删除</string>
+    <string name="preset_delete_failed">删除失败</string>
     <string name="preset_create_persona_failed">创建人格失败</string>
     <string name="preset_export_error">导出失败</string>
     <string name="preset_import_failed">导入失败</string>
@@ -834,6 +942,10 @@
     </plurals>
     <plurals name="preset_editor_prompt_chars">
         <item quantity="other">%1$d 字符</item>
+    </plurals>
+    <!-- 世界设定「其他背景」的字数提示（规范 §2.1：最多 1200 字） -->
+    <plurals name="guidance_world_notes_counter">
+        <item quantity="other">%1$d/%2$d 字</item>
     </plurals>
 
     <!-- ===== 主动唤醒 / 成长 ===== -->
@@ -977,7 +1089,7 @@
     <!-- ===== 设置 / 关于 ===== -->
 <!-- 设置页标题 -->
     <string name="settings_title">设置</string>
-    <string name="settings_subtitle">让 MyFriend 更像你的地方</string>
+    <string name="settings_subtitle">让 Yap 更像你的地方</string>
     <string name="settings_summary">%1$s · %2$s</string>
     <plurals name="settings_persona_count">
         <item quantity="other">%1$d 个人格</item>
@@ -989,7 +1101,7 @@
     <!-- 外观 -->
     <string name="settings_section_appearance">外观</string>
     <string name="settings_my_avatar">我的头像</string>
-    <string name="settings_my_avatar_desc">聊天里显示在你这边；图片不跟着备份走</string>
+    <string name="settings_my_avatar_desc">聊天里显示在你这边；换手机时也会跟着备份回来（单张最多 8 MB）</string>
     <string name="settings_restore_default">恢复默认</string>
     <string name="settings_theme_mode">主题模式</string>
     <string name="settings_theme_mode_desc">浅色、深色或跟随系统</string>
@@ -1014,6 +1126,10 @@
     <string name="settings_haptics_desc">长按与操作时的轻微振动</string>
 
     <!-- 让他在后台活着 -->
+    <!-- 0.12 人格提示词翻译开关（spec/persona-translation §6，默认开） -->
+    <string name="settings_section_language">语言</string>
+    <string name="settings_auto_translate_persona">自动翻译人设</string>
+    <string name="settings_auto_translate_persona_desc">打开聊天前把人设与世界设定翻译成软件当前语言，失败就用原文。关掉后一直用原文。</string>
     <string name="settings_section_background">让他在后台活着</string>
     <string name="settings_agent_loop">常驻后台</string>
     <string name="settings_agent_loop_desc">关掉他就只在应用打开时存在；开着时他会在后台继续想事情，偶尔主动找你。</string>
@@ -1050,7 +1166,7 @@
     <string name="settings_wipe_title">删除全部本地数据</string>
     <string name="settings_wipe_desc">人格、会话、记忆、预设、主动唤醒规则、API 配置与设置全部移除</string>
     <string name="settings_security_note">API Key 由 Android Keystore 加密保存，不写入日志或崩溃报告。默认只允许 HTTPS；对话记录仅保存在本机。</string>
-    <string name="settings_about_entry">关于 MyFriend</string>
+    <string name="settings_about_entry">关于 Yap</string>
     <string name="settings_selected_cd">已选择</string>
 
     <!-- 设置页的提示与失败 -->
@@ -1184,7 +1300,7 @@
     <string name="error_import_file_too_large">导入文件过大</string>
     <string name="error_backup_empty">这里还没有可以带走的内容</string>
     <string name="error_import_invalid_json">文件不是有效的 JSON</string>
-    <string name="error_import_not_preset_file">这不是 MyFriend 的预设文件</string>
+    <string name="error_import_not_preset_file">这不是 Yap 的预设文件</string>
     <string name="error_import_no_persona_data">未找到可导入的人格数据</string>
     <string name="error_import_no_valid_persona">没有可导入的有效人格</string>
     <string name="error_import_too_many_personas">一次最多导入 200 个人格</string>
@@ -1256,21 +1372,21 @@
     <string name="error_network_chat_queue_busy">刚才那条还没说完，稍等一下再发一次</string>
     <string name="error_network_background_queue_busy">后台任务排队太久，这次先放弃</string>
     <string name="error_network_provider_unavailable">该服务商适配仍在预留中，请选择 OpenAI 兼容</string>
-    <string name="error_web_key_missing">DeepSeek 密钥为空，请先在 API 配置中填写</string>
+    <string name="error_web_key_missing">联网服务的密钥为空，请先在 API 配置中填写</string>
     <string name="error_web_query_missing">搜索关键词不能为空</string>
     <string name="error_web_url_missing">要抓取的网页地址不能为空</string>
-    <string name="error_web_base_missing">DeepSeek 地址不能为空</string>
+    <string name="error_web_base_missing">联网服务的地址不能为空</string>
     <string name="error_web_unparsable">联网服务返回了无法解析的内容</string>
     <string name="error_web_page_unreachable">这个页面抓不到内容</string>
     <string name="error_network_web_url_scheme">只能抓取 http / https 网页</string>
     <string name="error_network_web_url_host">网页地址缺少主机名</string>
     <string name="error_network_web_url_local">不支持抓取本机或内网地址</string>
-    <string name="error_web_status_401">DeepSeek 密钥无效或已过期</string>
-    <string name="error_web_status_402">DeepSeek 账户余额不足</string>
+    <string name="error_web_status_401">联网服务的密钥无效或已过期</string>
+    <string name="error_web_status_402">联网服务的账户余额不足</string>
     <string name="error_web_status_403">抓取被目标站点或安全策略拒绝</string>
     <string name="error_web_status_408">读取超时，稍后再试</string>
     <string name="error_web_status_429">请求太频繁，被限流了（每分钟有 QPS 上限）</string>
-    <string name="error_web_status_5xx">DeepSeek 服务暂时不可用</string>
+    <string name="error_web_status_5xx">联网服务暂时不可用</string>
     <string name="error_web_status_other">请求失败（HTTP %1$d）</string>
 
     <string name="api_connect_success">连接成功</string>
@@ -1339,6 +1455,16 @@
     <plurals name="backup_warn_attachments">
         <item quantity="other">有 %1$d 句话原本带着图片，图片没有跟着备份走，现在只剩文字</item>
     </plurals>
+    <!-- v3：图片二进制开始跟着备份走，超限与坏数据各有一句。 -->
+    <plurals name="backup_media_export_skipped">
+        <item quantity="other">有 %1$d 张图片没有随备份带走（超出上限）</item>
+    </plurals>
+    <plurals name="backup_media_import_skipped">
+        <item quantity="other">有 %1$d 张图片没接回来（文件损坏或格式不支持）</item>
+    </plurals>
+    <plurals name="backup_media_import_over_limit">
+        <item quantity="other">有 %1$d 张图片没有接回来（超出上限）</item>
+    </plurals>
     <plurals name="backup_warn_configs_missing_key">
         <item quantity="other">有 %1$d 个 API 配置还缺 Key（备份里从来不装密钥），去「API 配置」里补一次就好</item>
     </plurals>
@@ -1365,9 +1491,9 @@
     <string name="backup_section_api_config">API 配置</string>
     <string name="backup_fail_empty">这个文件是空的，里面没有他。</string>
     <string name="backup_fail_invalid_json">这个文件读不出来：不是一份有效的备份 JSON。</string>
-    <string name="backup_fail_wrong_format">这不是 MyFriend 的备份文件（format：%1$s）。</string>
-    <string name="backup_fail_newer_format">这份备份来自更新版本的 MyFriend（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
-    <string name="backup_fail_too_large">这个文件太大了（超过 %1$dMB），不像是一份 MyFriend 备份。</string>
+    <string name="backup_fail_wrong_format">这不是 Yap 的备份文件（format：%1$s）。</string>
+    <string name="backup_fail_newer_format">这份备份来自更新版本的 Yap（格式 v%1$d），当前只认到 v%2$d。先升级 App，再把他接回来；旧版本硬读会把记忆读歪。</string>
+    <string name="backup_fail_too_large">这个文件太大了（超过 %1$d MB），不像是一份 Yap 备份。带图片的备份会更大，但正常也不该到这个量级。</string>
     <!-- 0.11.1 审计 P1-2：结构不完整（消息找不到会话 / 会话找不到人格……）的备份整份拒绝。 -->
     <string name="backup_fail_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，写不回来。为了不覆盖你手机上的他，这次导入已取消。</string>
     <string name="backup_warn_incomplete_references">这份备份的结构不完整：有 %1$d 条内容找不到所属的人格或会话，导入会被拒绝</string>
@@ -1419,6 +1545,7 @@
     <string name="tool_trace_update_persona">调整了自己的人设</string>
     <string name="tool_trace_persona_unchanged">想了想，没有改</string>
     <string name="tool_trace_set_quiet_hours">安排了自己的作息</string>
+    <string name="tool_trace_set_activity">在忙一件事</string>
     <string name="tool_trace_set_mood">心情变了</string>
     <string name="tool_trace_recall">回想了一下</string>
     <string name="tool_trace_defer_reply">决定先不回</string>
@@ -1445,6 +1572,11 @@
     <string name="tool_trace_persona_reason">原因：%1$s</string>
     <string name="tool_trace_persona_applied">已生效，改动进了版本历史。</string>
     <string name="tool_trace_quiet_hours">%1$s 睡 · %2$s 起</string>
+    <string name="tool_trace_activity_subtitle">%1$s · 到 %2$s</string>
+    <string name="tool_trace_activity_detail">接下来约 %1$d 分钟，他手头在忙这件事，预计 %2$s 结束。</string>
+    <string name="tool_trace_activity_busy">这段时间不主动开口，回复更短、更晚，会说清楚几点以后再说。</string>
+    <string name="tool_trace_activity_limited">这段时间可以回，但会慢一点、短一点。</string>
+    <string name="tool_trace_activity_free">手头是这件事，但你找他随时能聊。</string>
     <string name="tool_trace_quiet_hours_rest">这段时间他不会主动来打扰。</string>
     <string name="tool_trace_quiet_hours_dnd_on">睡前会开免打扰：睡着时不会被消息叫醒。</string>
     <string name="tool_trace_quiet_hours_dnd_off">睡前不开免打扰：睡着时被连着叫几条会醒。</string>
@@ -1469,4 +1601,33 @@
     <string name="chat_preview_image">图片</string>
     <string name="chat_preview_proactive">主动提议</string>
     <string name="chat_preview_failed">回复失败</string>
+    <!-- 服务端模式（M3/M4）：默认关闭；地址与令牌走加密存储 -->
+    <string name="settings_section_server">服务端</string>
+    <string name="settings_server_title">服务端模式</string>
+    <string name="settings_server_desc">把状态和聊天交给 agentd，本机只做缓存</string>
+    <string name="settings_server_url">服务端地址</string>
+    <string name="settings_server_url_hint">https://…；调试时可填 http://局域网IP:8788</string>
+    <string name="settings_server_token">访问令牌</string>
+    <string name="settings_server_token_hint">留空表示沿用已保存的令牌</string>
+    <string name="settings_server_token_saved">已保存：%1$s</string>
+    <string name="settings_server_token_masked">当前令牌：%1$s</string>
+    <string name="settings_server_clear_token">清除令牌</string>
+    <string name="settings_server_test">测试连接</string>
+    <string name="settings_server_testing">正在连接…</string>
+    <string name="settings_server_test_success">连接成功：%1$s</string>
+    <string name="settings_server_test_failed">连接失败</string>
+    <string name="settings_server_save">保存</string>
+    <string name="settings_server_saved">服务端设置已保存</string>
+    <string name="settings_server_save_failed">服务端设置没保存上（设备的安全存储不可用）</string>
+    <string name="settings_server_off_hint">关闭时一切行为与本地模式相同</string>
+    <string name="settings_server_reject_empty">请填写服务端地址</string>
+    <string name="settings_server_reject_invalid">地址格式不对，需要以 http:// 或 https:// 开头</string>
+    <string name="settings_server_reject_https_only">发布版只允许 https 地址</string>
+    <string name="settings_server_reject_local_only">http 只允许本机或局域网地址</string>
+    <string name="chat_server_reply_pending">回复还没接上，稍后会自动同步</string>
+    <string name="chat_server_action_unsupported">服务端模式下暂不支持这个操作</string>
+    <string name="error_server_unreachable">服务端没连上，这次没有保存</string>
+    <string name="error_server_rejected">服务端没有接受这次修改，稍后再试一次</string>
+    <string name="error_server_media_too_large">图片太大，压不进服务端的 2MB 上限</string>
+    <string name="error_server_media_failed">图片没能传上去，这次没有发送</string>
 </resources>

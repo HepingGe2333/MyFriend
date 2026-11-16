@@ -1,6 +1,6 @@
 # Architecture
 
-> [简体中文](ARCHITECTURE.md) · English
+> [简体中文](ARCHITECTURE.md) · English · Project: YetAnotherPal (Yap)
 >
 > Applies to `0.10.0` (internal beta) · database schema **v10** · backup format **v2**
 >
@@ -32,11 +32,11 @@ flowchart TB
     A_SVC[service/ · foreground service / workers] --> A_REPO
   end
   subgraph iOS
-    I_UI[MyFriend/Views · SwiftUI] --> I_APP[MyFriend/App · composition root]
-    I_APP --> I_SVC[MyFriendKit/Services]
-    I_SVC --> I_STORE[(MyFriendKit/Data · SQLite v10)]
-    I_SVC --> I_NET[MyFriendKit/Net · URLSession SSE]
-    I_SVC --> I_DOMAIN[MyFriendKit/Domain · pure logic]
+    I_UI[YetAnotherPal/Views · SwiftUI] --> I_APP[YetAnotherPal/App · composition root]
+    I_APP --> I_SVC[YapKit/Services]
+    I_SVC --> I_STORE[(YapKit/Data · SQLite v10)]
+    I_SVC --> I_NET[YapKit/Net · URLSession SSE]
+    I_SVC --> I_DOMAIN[YapKit/Domain · pure logic]
   end
   A_DOMAIN -.-|same contract| I_DOMAIN
   A_LOCAL -.-|same tables + same backup| I_STORE
@@ -44,8 +44,8 @@ flowchart TB
 
 | Layer | Android | iOS | Notes |
 | --- | --- | --- | --- |
-| Pure logic | `app/src/main/java/com/myfriend/app/domain/` (32 files, ~9.4k LoC) | `ios/MyFriendKit/Sources/MyFriendKit/Domain/` (18 files, ~6.3k LoC) | heartbeat, mood, memory lifecycle, vector search, `defer_reply`, sleep policy, link detection, backup codec — **no platform APIs** |
-| Persistence | Room (`MyFriendDatabase` v10, schema JSON exported and verified in tests) | hand-written `SQLiteStore`, table/column names identical to Room's `10.json` | the schema is the prerequisite for backup interop |
+| Pure logic | `app/src/main/java/com/yap/app/domain/` (32 files, ~9.4k LoC) | `ios/YapKit/Sources/YapKit/Domain/` (18 files, ~6.3k LoC) | heartbeat, mood, memory lifecycle, vector search, `defer_reply`, sleep policy, link detection, backup codec — **no platform APIs** |
+| Persistence | Room (`YapDatabase` v10, schema JSON exported and verified in tests) | hand-written `SQLiteStore`, table/column names identical to Room's `10.json` | the schema is the prerequisite for backup interop |
 | Network | OkHttp + hand-written SSE parser + concurrency gate | `URLSession` + hand-written SSE parser + the same gate semantics | OpenAI-compatible `/chat/completions` only; native Gemini/Claude adapters are reserved |
 | Orchestration | `data/repo/` (Chat/Agent/Heartbeat/Memory/…) | `Services/` (ChatService/AgentLoop/Heartbeat/…) | decides "does he speak this turn" and "when does he reach out" |
 | Presentation | Compose + ViewModel | SwiftUI + `AppEnvironment` | deliberately restrained, per the product stance |
@@ -75,7 +75,7 @@ sequenceDiagram
     G->>M: POST /chat/completions (stream)
     M-->>S: SSE deltas
     S-->>UI: streamed rendering
-    S->>S: parse tool calls (```myfriend-tool)
+    S->>S: parse tool calls (```yap-tool)
     alt tool call
       S->>DB: run tool (remember / recall / mood / web search)
       S->>G: call the model again with the tool result
@@ -114,8 +114,9 @@ So both sides implement it, held together by three mechanisms:
 tool arguments are clamped. It deliberately excludes persistence — sessions, memories, intents and usage live in the
 client database. That split is what makes sharing *and* serving feasible at the same time.
 
-**Since 0.11.0 the decision layer is a single Kotlin implementation**: `agentcore/` (`:agentcore`, zero third-party
-dependencies, pure JVM).
+**The decision layer is a single Kotlin implementation**: `agentcore/`. Since 0.11.0 it is a standalone module shared by
+`:app` and `agentd`; **since 0.12.0 it is a Kotlin Multiplatform module** (`commonMain` + `jvmMain` + `iosMain`) that also
+produces an iOS static framework, `AgentCoreKit` — so the iOS app executes the same Kotlin decisions.
 
 ```mermaid
 flowchart TB
@@ -131,7 +132,8 @@ flowchart TB
   end
   subgraph ios["iOS client"]
     I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
-    I2[NativeAgentCoreClient]
+    I2["KotlinAgentCoreClient (AgentCoreKit framework)"]
+    I2b["NativeAgentCoreClient (macOS tests only)"]
     I3["RemoteAgentCoreClient (URLSession, env/plist)"]
   end
   subgraph server["agentd (server)"]
@@ -145,6 +147,7 @@ flowchart TB
   A3 --> A1
   A3 <--> S1
   I2 --> I1
+  I2b --> I1
   I3 --> I1
   I3 <--> S1
   S2 --> S1
@@ -155,7 +158,7 @@ flowchart TB
 
 | Shape | Used by | Parity | Offline | Notes |
 | --- | --- | --- | --- | --- |
-| **A in-process** | Android (default), iOS (default) | ✅ one `:agentcore` implementation on Android; iOS is a contract-aligned Swift implementation | ✅ | millisecond pure functions, no round-trip |
+| **A in-process** | Android (default), iOS (default) | ✅ one `:agentcore` implementation (iOS through the `AgentCoreKit` framework) | ✅ | millisecond pure functions, no round-trip |
 | **B embedded service** | Android, optional | ✅ same server code | ✅ | run `agentd` on the same machine/LAN and point Android at it with `-PagentCoreRemote=true` |
 | **C remote service** | both, optional | ✅ | ❌ (falls back to native on failure) | self-hosting / multi-device; off by default, clients fall back and log |
 
@@ -166,19 +169,38 @@ flowchart TB
   runs via `java -jar` or `installDist`, listening on loopback by default.
 - **Clients**: Android's `AgentCoreClient` is an interface in `:app` (in-process / remote, chosen by
   `BuildConfig.AGENT_CORE_REMOTE`, remote failures fall back); iOS's is a Kit protocol (native / remote / fallback,
-  chosen by the `MYFRIEND_AGENT_CORE` environment variable or Info.plist, native by default). **There is no user-facing
+  chosen by the `YAP_AGENT_CORE` environment variable or Info.plist, native by default). **There is no user-facing
   setting.**
 - **Why not KMP**: KMP would let iOS run the same Kotlin, but requires the Kotlin/Native toolchain and framework
   packaging. Establishing the contract, module boundary and client abstraction first is the higher-confidence step;
   KMP remains an option for Stage 2.
 
-## 5.5 Search## 5.5 Search
+## 5.5 History storage: blocks
 
-Chat search is the same semantics implemented twice, pinned by `spec/search/` (16 cases): parameterised `LIKE`
-pre-filtering (user input `%`/`_`/`\` treated literally) plus `ChineseTerms` token recall, then in-memory ranking
-(matched tokens → `relevance` → time → id) over at most 500 candidates. No inverted-index table is deliberate: it would
-have to be maintained on every write path and force a schema bump, while search is a low-frequency action where a
-pre-filter over tens of thousands of messages is millisecond-scale.
+Since `0.12.0` conversation history is stored and read in **blocks** (contract: `spec/messages-blocks/README.md`):
+
+- `BLOCK_SIZE = 200`; `messages.blockIndex` plus `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`,
+  identical in both platforms' schema v11;
+- writes go through one block-maintenance path (append opens a new block at 200, anchored insert lands in the anchor's
+  block, delete recomputes the boundaries, an emptied block is deleted leaving a numbering gap, no rebalancing);
+- **a page is a block**: the first screen reads only the newest block, scrolling up reads the previous block (looking it
+  up in the block table so gaps are skipped) and scrolling down reads the next one; no offset is ever used, and the
+  number of rows read for a page is independent of history length;
+- unread / read receipts / DND still query the full table and are unaffected by the window;
+- backups stay a v2 message stream: blocks are rebuilt in order on import, since block metadata is derived and not
+  part of the backup.
+
+## 5.6 Search
+
+Chat search is identical on both platforms, pinned by `spec/search/` (16 cases); since `0.12.0` there is **no candidate
+cap**:
+
+- enumerate the blocks of the (persona/time-filtered) sessions → load one block at a time into memory → rank with the
+  shared `SearchRanking` (matched terms ↓ → `relevance` ↓ → time ↓ → id ↑) → page with a **keyset cursor**;
+- peak memory ≈ one block + one page + frontier, independent of total history length;
+- the cost: **every page re-walks the blocks** (the direct consequence of "no cap, no offset"), so latency grows
+  linearly with the number of blocks in history. This is deliberate; no inverted-index table was introduced, because
+  keeping it in sync would touch every write path and force another schema bump.
 
 ## 6. Migration path (staged, each step revertible)
 
@@ -194,7 +216,7 @@ Signal for continuing: when the case suite grows to "every behaviour change touc
 ## 7. Data model and versioning
 
 - **Schema v10** — both platforms keep `user_version` in sync; `chat_sessions.personaId` is unique (one session per persona). Migrations are additive; Android verifies the exported Room schema in tests, iOS has matching migration tests.
-- **Backup v2** — `format="myfriend.backup"`, `formatVersion=2`, `apiKeysOmitted=true`; v1 backups remain readable. Image binaries, avatar files and API keys are never included.
+- **Backup v2** — `format="myfriend.backup"`, `formatVersion=2`, `apiKeysOmitted=true`; v1 backups remain readable. Image binaries, avatar files and API keys are never included. The `myfriend.backup` format name is kept for backward compatibility and is deliberately not renamed with the product (now YetAnotherPal / Yap).
 - Versioning rules: [`CONTRIBUTING.md`](../CONTRIBUTING.md). `versionCode` and iOS `CURRENT_PROJECT_VERSION` stay equal and are decoupled from the schema version (schema increments only on table changes).
 
 ## 8. Internationalization
@@ -211,7 +233,7 @@ UI copy follows the system language (Simplified Chinese is the base, English is 
 | i18n resource guard | new in 0.10.0, strengthened in 0.10.2 | key drift, untranslated English (CJK), placeholder reordering, unused keys |
 | Search contract | `spec/search/cases/` | snippet/highlight rules and ranking/filter semantics drifting |
 | Independent audits | `docs/audits/` | concurrency, data integrity, security, contract drift; one per version, every P0/P1 fixed with a test |
-| Migration tests | `MyFriendDatabaseMigrationTest`, `SchemaMigrationTests` | data loss on upgrade |
+| Migration tests | `YapDatabaseMigrationTest`, `SchemaMigrationTests` | data loss on upgrade |
 
 ## 10. Known limitations
 

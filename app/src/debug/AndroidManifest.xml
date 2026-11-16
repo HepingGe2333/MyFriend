@@ -13,6 +13,26 @@
 
     <application
         android:usesCleartextTraffic="true"
-        tools:replace="android:usesCleartextTraffic" />
+        tools:replace="android:usesCleartextTraffic">
+
+        <!--
+          仅 debug 构建：不注册开机 / 覆盖安装接收器。
+
+          仪器化测试的 Application 被换成 Hilt 的测试 Application（见
+          `app/src/androidTest/java/com/yap/app/HiltTestRunner.kt`），它**没有** Hilt 组件；
+          而 `BootReceiver` 是 `@AndroidEntryPoint` 接收器。覆盖安装完成后系统立刻投递
+          `MY_PACKAGE_REPLACED`，接收器在 `HiltAndroidRule` 跑起来之前向测试 Application 要组件，
+          只能抛 `IllegalStateException: The component was not created`，进程随即崩溃，
+          instrumentation 一条测试都起不来（`Starting 0 tests / Process crashed`）。
+
+          为什么写在这份而不是 androidTest 的 manifest：androidTest 的 manifest 只并入**测试 APK**，
+          目标 App 的 manifest 是另一份合并产物，`tools:node="remove"` 在那里删不到任何节点。
+          release 包拿不到这份 debug manifest，行为完全不变；debug 包只是少了
+          「开机 / 更新后自动拉起前台服务」，开发与仪器化测试都不依赖它。
+        -->
+        <receiver
+            android:name=".service.BootReceiver"
+            tools:node="remove" />
+    </application>
 
 </manifest>

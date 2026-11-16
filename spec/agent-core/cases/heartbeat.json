@@ -3,13 +3,13 @@
   "version": "0.10.0",
   "title": "心跳曲线采样（固定输入 → 固定输出）",
   "authority": "android",
-  "authorityNote": "规格见 docs/ROADMAP-1.9.md（心跳不由用户调参）；Android Heartbeat 是权威实现，两端公式与常量必须一致。",
+  "authorityNote": "规格见 docs/design/roadmap-1.9.md（心跳不由用户调参）；Android Heartbeat 是权威实现，两端公式与常量必须一致。",
   "kotlin": {
-    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt",
+    "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/Heartbeat.kt",
     "symbol": "Heartbeat.probability / moodBoost / perBeatProbability / shouldFire / minutesBetween"
   },
   "swift": {
-    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/Heartbeat.swift",
+    "file": "ios/YapKit/Sources/YapKit/Domain/Heartbeat.swift",
     "symbol": "Heartbeat.probability / moodBoost / perBeatProbability / shouldFire / minutesBetween"
   },
   "tolerance": 1e-09,

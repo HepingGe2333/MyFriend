@@ -1,4 +1,4 @@
-# MyFriend 1.2 设计草案：拟人节奏 · 插件式能力 · 可演化人设 · 现实连接
+# YetAnotherPal（Yap） 1.2 设计草案：拟人节奏 · 插件式能力 · 可演化人设 · 现实连接
 
 > **历史设计记录**：本文是当时那一版的行为规格与验收表，保留下来供追溯设计取舍；
 > 当前行为以 [README](../../README.md)、[ARCHITECTURE](../ARCHITECTURE.md) 与代码为准。
@@ -42,7 +42,7 @@
 6. `set_quiet_hours（sleepAt, wakeAt, reason）` — 自己决定作息：到点不主动打扰，睡醒可以主动来说话。
 7. `browse（topics?)` — 空闲时自己看资讯（阶段四）。
 
-协议：优先用 OpenAI 原生 `tools` / `tool_calls`（DeepSeek 支持），模型不支持时回退到 `myfriend-tool` 代码块；单轮最多 3 次工具往返。
+协议：优先用 OpenAI 原生 `tools` / `tool_calls`（DeepSeek 支持），模型不支持时回退到 `yap-tool` 代码块；单轮最多 3 次工具往返。
 
 ## 三、人设卡（结构化、可演化）
 
@@ -84,17 +84,17 @@
 
 | 关注点 | 代码 |
 | --- | --- |
-| 读消息时长 / 重生成 | [`HumanTiming.kt`](../../app/src/main/java/com/myfriend/app/util/HumanTiming.kt) |
-| 工具清单与两种协议 | [`ToolProtocol.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt) |
-| 工具执行（含失败兜底） | [`ToolExecutor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |
-| 工具痕迹（可展开） | [`ToolTrace.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolTrace.kt) |
-| DeepSeek 联网 | [`DeepSeekWebTools.kt`](../../app/src/main/java/com/myfriend/app/network/DeepSeekWebTools.kt) |
-| 人设卡结构 / 渲染 / 补丁 | [`PersonaCard.kt`](../../app/src/main/java/com/myfriend/app/domain/PersonaCard.kt) |
-| 人设卡持久化与待确认补丁 | [`PersonaCardRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/PersonaCardRepository.kt) |
-| 记忆筛查 | [`MemoryScreening.kt`](../../app/src/main/java/com/myfriend/app/domain/MemoryScreening.kt) |
-| 记忆落库 / 回声 / 召回 | [`MemoryRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryRepository.kt) |
-| 作息与主动消息 | [`ProactiveRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt) |
-| 空闲自浏览 | [`IdleBrowsing.kt`](../../app/src/main/java/com/myfriend/app/data/repo/IdleBrowsing.kt) |
+| 读消息时长 / 重生成 | [`HumanTiming.kt`](../../app/src/main/java/com/yap/app/util/HumanTiming.kt) |
+| 工具清单与两种协议 | [`ToolProtocol.kt`](../../app/src/main/java/com/yap/app/domain/ToolProtocol.kt) |
+| 工具执行（含失败兜底） | [`ToolExecutor.kt`](../../app/src/main/java/com/yap/app/data/repo/ToolExecutor.kt) |
+| 工具痕迹（可展开） | [`ToolTrace.kt`](../../app/src/main/java/com/yap/app/domain/ToolTrace.kt) |
+| DeepSeek 联网 | [`DeepSeekWebTools.kt`](../../app/src/main/java/com/yap/app/network/WebSearchClient.kt) |
+| 人设卡结构 / 渲染 / 补丁 | [`PersonaCard.kt`](../../app/src/main/java/com/yap/app/domain/PersonaCard.kt) |
+| 人设卡持久化与待确认补丁 | [`PersonaCardRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/PersonaCardRepository.kt) |
+| 记忆筛查 | [`MemoryScreening.kt`](../../app/src/main/java/com/yap/app/domain/MemoryScreening.kt) |
+| 记忆落库 / 回声 / 召回 | [`MemoryRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/MemoryRepository.kt) |
+| 作息与主动消息 | [`ProactiveRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/ProactiveRepository.kt) |
+| 空闲自浏览 | [`IdleBrowsing.kt`](../../app/src/main/java/com/yap/app/data/repo/IdleBrowsing.kt) |
 
 已知取舍：
 - 联网工具用的是 DeepSeek 官方 `POST /v1/tools/search` 与 `POST /v1/tools/fetch`（按成功调用计费），不额外引入第三方搜索 Key。

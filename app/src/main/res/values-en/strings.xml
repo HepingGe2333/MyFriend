@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">MyFriend</string>
+    <string name="app_name">Yap</string>
     <string name="proactive_channel_name">Waking up on his own</string>
     <string name="proactive_channel_description">Messages he starts at the times you set</string>
     <string name="chat_reply_channel_name">His messages</string>
@@ -37,7 +37,8 @@
     <string name="backup_section_title">Take him with you</string>
     <string name="backup_intro_title">He isn\'t a pile of data. He\'s someone you\'ve talked with for a long time.</string>
     <string name="backup_intro_body">Taking him with you packs his persona, every word you\'ve exchanged, the things he remembers, the rules he set for himself and the settings that can travel, all into one JSON file. After a new phone or a reinstall, use “Bring him back from a backup” below to put him back where he was.</string>
-    <string name="backup_safety_body">The backup holds your conversations and his memories, so keep it somewhere safe. API keys aren\'t in it — once he\'s back, just fill them in again under “API settings” on this phone. Avatar images don\'t travel either; pick one again after switching phones.</string>
+    <string name="backup_safety_body">The backup holds your conversations and his memories, so keep it somewhere safe. API keys aren\'t in it — once he\'s back, just fill them in again under “API settings” on this phone. Avatars and chat pictures travel with the backup too, so you won\'t have to pick them again on a new phone.</string>
+    <string name="backup_media_limits">Avatars and chat pictures are packed into the backup: at most %1$d MB each and %2$d MB in total; anything over that stays on the old phone. The backup file itself can be up to %3$d MB.</string>
     <string name="backup_export_row_title">Take him with you</string>
     <string name="backup_export_row_desc">Pick a place to save this JSON file</string>
     <string name="backup_import_row_title">Bring him back from a backup</string>
@@ -129,7 +130,7 @@
     <string name="api_provider_reserved">Soon</string>
     <string name="api_section_connection">Connection</string>
     <string name="api_field_name">Name</string>
-    <string name="api_field_name_placeholder">e.g. DeepSeek main</string>
+    <string name="api_field_name_placeholder">e.g. Main config</string>
     <string name="api_field_base_url_hint">Works with /chat/completions and /models; the path usually ends with /v1.</string>
     <string name="api_field_key_stored_placeholder">Saved encrypted · leave blank to keep</string>
     <string name="api_key_hide">Hide key</string>
@@ -147,12 +148,25 @@
     <string name="api_section_persona">Persona</string>
     <string name="api_persona_hint">His persona and long-term memory travel with the system message on every turn, so there\'s no separate sync endpoint.</string>
     <string name="api_section_web_tools">Web tools</string>
-    <string name="api_web_tools_title">Web access (DeepSeek search and fetch)</string>
-    <string name="api_web_tools_hint">When this is on, he can look things up himself when he needs to. Billed per successful request ($0.75 per thousand).</string>
+    <string name="api_web_tools_title">Web access (search and fetch)</string>
+    <string name="api_web_tools_hint">When this is on, he can look things up himself when he needs to. Billing is handled by the search service you pick.</string>
     <string name="api_field_web_base_url">Web tools URL</string>
-    <string name="api_field_web_base_url_hint">Leave blank to use DeepSeek\'s official address</string>
+    <string name="api_field_web_base_url_hint">Leave blank to use this service\'s default address</string>
+    <string name="api_field_web_base_url_hint_generic">Required for a self-hosted service: the full search endpoint</string>
+    <string name="api_field_web_provider">Search service</string>
+    <string name="api_web_provider_messageapi">MessageAPI (compatible vendors)</string>
+    <string name="api_web_provider_tavily">Tavily</string>
+    <string name="api_web_provider_brave">Brave Search</string>
+    <string name="api_web_provider_serper">Serper</string>
+    <string name="api_web_provider_generic">Self-hosted</string>
+    <string name="api_web_provider_messageapi_hint">A MessageAPI-compatible tools endpoint (DeepSeek is the default implementation): uses the address from this LLM config (with /v1/tools/search appended); the key is reused from the API Key above.</string>
+    <string name="api_web_provider_tavily_hint">Default address https://api.tavily.com; get a key from the tavily.com console.</string>
+    <string name="api_web_provider_brave_hint">Default address https://api.search.brave.com/res/v1; get a key from the Brave Search API console.</string>
+    <string name="api_web_provider_serper_hint">Default address https://google.serper.dev; get a key from the serper.dev console.</string>
+    <string name="api_web_provider_generic_hint">Self-hosted: the address is used as-is (required); leave the key blank if it has no auth.</string>
     <string name="api_field_web_key">Dedicated web tools key</string>
     <string name="api_field_web_key_placeholder">Leave blank to reuse the API Key above</string>
+    <string name="api_field_web_key_placeholder_optional">Leave blank if the self-hosted service has no auth</string>
     <string name="api_web_key_hide">Hide web tools key</string>
     <string name="api_web_key_show">Show web tools key</string>
     <string name="api_web_key_stored">Saved encrypted</string>
@@ -233,7 +247,8 @@
     <string name="chat_typing">Typing</string>
     <string name="chat_latest">Latest</string>
     <string name="chat_load_earlier">Scroll up to load earlier messages</string>
-    <string name="chat_back_to_latest">Newer messages below · back to latest</string>
+    <string name="chat_load_newer">Newer messages below · tap to load</string>
+    <string name="chat_loading_newer">Loading newer messages…</string>
     <string name="chat_loading_earlier">Loading earlier messages…</string>
     <string name="chat_stopped_status">Stopped</string>
     <string name="chat_scroll_to_bottom">Back to the latest</string>
@@ -396,7 +411,7 @@
     <string name="search_error_title">The search didn\'t finish</string>
     <string name="search_error_desc">Something went wrong reading your local history. Nothing is lost — just try again.</string>
     <string name="search_retry">Try again</string>
-    <string name="search_truncated">Too many matches — showing only the most recent %1$d.</string>
+    <string name="search_scanned_all_history">Searched the whole history — %1$d matches.</string>
 
     <!-- ===== 记忆 ===== -->
 <!-- MemoryScreen: header -->
@@ -482,6 +497,7 @@
     <string name="memory_updated">Memory updated</string>
     <string name="memory_update_failed">"Couldn't update it"</string>
     <string name="memory_deleted">Memory deleted</string>
+    <string name="memory_delete_failed">Couldn\'t delete it</string>
     <string name="memory_extract_failed">"Couldn't sort them out: %1$s"</string>
     <string name="memory_extract_failed_detail">check the API setup for his latest conversation</string>
     <string name="memory_enqueue_failed">"Couldn't get a sort queued this time. Try again in a moment."</string>
@@ -800,6 +816,97 @@
     <string name="preset_editor_subtitle">Presets are reusable persona templates</string>
     <string name="preset_editor_loading">Loading…</string>
     <string name="preset_avatar_initial">P</string>
+    <!-- 0.12 persona guidance: world preset / speech style / current activity -->
+    <string name="guidance_world_section">World</string>
+    <string name="guidance_world_hint">Where he lives and what fills his days. Brought up only when relevant, never recited.</string>
+    <string name="guidance_world_name_label">World name</string>
+    <string name="guidance_world_name_placeholder">Lingang New City · Yunzhu Architects</string>
+    <string name="guidance_world_era_label">Era and place</string>
+    <string name="guidance_world_description_label">Situation (100-200 words)</string>
+    <!-- 0.12 visual world editor (spec §2.3): row lists + dropdowns + time picker, no JSON box -->
+    <string name="guidance_world_schedule_title">Schedule</string>
+    <string name="guidance_world_schedule_hint">What fills his day. Times past midnight are marked as the next day.</string>
+    <string name="guidance_world_day_label">Day</string>
+    <string name="guidance_world_start_label">Start</string>
+    <string name="guidance_world_end_label">End</string>
+    <string name="guidance_world_next_day">Next day</string>
+    <string name="guidance_world_activity_label">Doing what</string>
+    <string name="guidance_world_activity_placeholder">Drawing and reviewing plans at the office</string>
+    <string name="guidance_world_add_schedule">Add a schedule row</string>
+    <string name="guidance_world_relationships_title">People</string>
+    <string name="guidance_world_relationships_hint">The few people who keep showing up around him.</string>
+    <string name="guidance_world_relationship_name_label">Name</string>
+    <string name="guidance_world_relationship_relation_label">Relation</string>
+    <string name="guidance_world_relationship_custom">Custom</string>
+    <string name="guidance_world_relationship_custom_label">Your own relation</string>
+    <string name="guidance_world_relationship_note_label">A detail</string>
+    <string name="guidance_world_intimacy_label">Closeness</string>
+    <string name="guidance_world_intimacy_none">Unset</string>
+    <string name="guidance_world_add_relationship">Add a person</string>
+    <string name="guidance_world_obligations_title">Obligations</string>
+    <string name="guidance_world_obligations_hint">What he has to carry, the pressure he cannot drop.</string>
+    <string name="guidance_world_obligation_label">An obligation</string>
+    <string name="guidance_world_add_obligation">Add an obligation</string>
+    <string name="guidance_world_notes_title">Other background</string>
+    <string name="guidance_world_notes_hint">Anything the structured fields cannot hold: city mood, trade slang, family history, taboos…</string>
+    <string name="guidance_world_notes_label">Free text</string>
+    <string name="guidance_world_notes_truncated">Anything beyond the limit is cut off</string>
+    <string name="guidance_world_move_up">Move up</string>
+    <string name="guidance_world_move_down">Move down</string>
+    <string name="guidance_world_delete_row">Delete this row</string>
+    <string name="guidance_world_example_hint">No world yet. You can start from an example (an architect in Lingang New City) and make it yours.</string>
+    <string name="guidance_world_example_fill">Use the example</string>
+    <string name="guidance_world_error_schedule_day">Schedule row %1$d has a day that is not allowed.</string>
+    <string name="guidance_world_error_schedule_start">Schedule row %1$d needs a start time like HH:mm.</string>
+    <string name="guidance_world_error_schedule_end">Schedule row %1$d needs an end time like HH:mm.</string>
+    <string name="guidance_world_error_schedule_activity">Schedule row %1$d does not say what he is doing.</string>
+    <string name="guidance_world_error_relation_name">Relationship row %1$d has neither a name nor a relation.</string>
+    <string name="guidance_world_error_relation_intimacy">Relationship row %1$d needs closeness between 1 and 5.</string>
+    <string name="guidance_world_error_notes">Other background exceeds %1$d characters; please trim it.</string>
+    <string name="guidance_world_ai_fill">AI fill</string>
+    <string name="guidance_world_ai_filling">Filling…</string>
+    <string name="guidance_world_ai_llm">The world was filled in by the model; edit any field.</string>
+    <string name="guidance_world_ai_fallback">No complete world this time. An empty one was created with the character name; fill it in by hand.</string>
+    <string name="guidance_speech_section">Speech style</string>
+    <string name="guidance_speech_hint">Paste a real chat log to summarize tone, common phrases, habits and things to avoid. The raw text is never saved.</string>
+    <string name="guidance_speech_sample_label">Chat log</string>
+    <string name="guidance_speech_sample_placeholder">Lin: busy, talk later\nLin: go to sleep, don\'t wait for me</string>
+    <string name="guidance_speech_summarize">Summarize</string>
+    <string name="guidance_speech_summarizing">Summarizing…</string>
+    <string name="guidance_speech_clear">Clear</string>
+    <string name="guidance_speech_source_heuristic">Rough local summary; edit freely</string>
+    <string name="guidance_speech_source_llm">Model summary</string>
+    <string name="guidance_speech_tone_label">Tone</string>
+    <string name="guidance_speech_habits_label">Language habits (one per line)</string>
+    <string name="guidance_speech_avoid_label">Things to avoid (one per line)</string>
+    <string name="guidance_speech_list_placeholder">Short sentences\nFew exclamation marks</string>
+    <string name="guidance_speech_phrases_label">Common phrases (tap to remove)</string>
+    <string name="guidance_speech_phrases_empty">No common phrases yet</string>
+    <string name="guidance_speech_phrase_chip">%1$s ×</string>
+    <string name="guidance_speech_phrase_remove_hint">Phrases are references, not templates: at most one per reply.</string>
+    <string name="guidance_speech_phrase_add_label">Add a phrase</string>
+    <string name="guidance_speech_phrase_add">Add</string>
+    <string name="guidance_speech_sample_required">Paste a chat log first.</string>
+    <string name="guidance_speech_summarize_failed">Summarizing failed; a rough local summary was used instead.</string>
+    <string name="persona_editor_guidance_section">World and speech</string>
+    <string name="persona_editor_guidance_hint">Copied from a preset, or edited here; affects only this persona.</string>
+    <!-- 0.12 persona prompt translation (spec/persona-translation) -->
+    <string name="persona_editor_translation_section">Prompt language</string>
+    <string name="persona_editor_translation_hint">Before a chat opens, the persona and world are translated into the app language when needed; the original is used if that fails.</string>
+    <string name="persona_editor_translation_none">No translation cached yet; it will happen automatically the next time the chat opens.</string>
+    <string name="persona_editor_translation_done">Translated into %1$s</string>
+    <string name="persona_editor_translation_skipped">Source and app language already match; no translation needed.</string>
+    <string name="persona_editor_translation_failed">Translation failed; the original is being used. You can retry.</string>
+    <string name="persona_editor_translation_ok">Translated; the next chat will use it.</string>
+    <string name="persona_editor_translation_disabled">"Auto-translate persona" is turned off in settings.</string>
+    <string name="persona_editor_retranslate">Translate again</string>
+    <string name="persona_editor_translating">Translating…</string>
+    <string name="persona_editor_activity_section">Current activity</string>
+    <string name="persona_editor_activity_none">Not busy with anything</string>
+    <string name="persona_editor_activity_line">%1$s (until %2$s)</string>
+    <string name="persona_editor_activity_busy">Busy: shorter, later replies; no proactive messages</string>
+    <string name="persona_editor_activity_limited">Busy but reachable: slower replies</string>
+    <string name="persona_editor_activity_free">Doing something, still reachable</string>
     <string name="preset_editor_name_label">Preset name</string>
     <string name="preset_editor_description_label">Short description</string>
     <string name="preset_editor_category_section">Category</string>
@@ -821,6 +928,7 @@
     <string name="preset_duplicated">Copied as a new preset</string>
     <string name="preset_duplicate_failed">Couldn\'t duplicate it</string>
     <string name="preset_deleted">Preset deleted</string>
+    <string name="preset_delete_failed">Couldn\'t delete it</string>
     <string name="preset_create_persona_failed">Couldn\'t create the persona</string>
     <string name="preset_export_error">Couldn\'t export it</string>
     <string name="preset_import_failed">Couldn\'t import it</string>
@@ -847,6 +955,11 @@
     <plurals name="preset_editor_prompt_chars">
         <item quantity="one">%1$d character</item>
         <item quantity="other">%1$d characters</item>
+    </plurals>
+    <!-- Notes counter for the world editor (spec §2.1: 1200 chars max) -->
+    <plurals name="guidance_world_notes_counter">
+        <item quantity="one">%1$d/%2$d character</item>
+        <item quantity="other">%1$d/%2$d characters</item>
     </plurals>
 
     <!-- ===== 主动唤醒 / 成长 ===== -->
@@ -994,7 +1107,7 @@
     <!-- ===== 设置 / 关于 ===== -->
 <!-- Settings header -->
     <string name="settings_title">Settings</string>
-    <string name="settings_subtitle">Where MyFriend becomes more like yours</string>
+    <string name="settings_subtitle">Where Yap becomes more like yours</string>
     <string name="settings_summary">%1$s · %2$s</string>
     <plurals name="settings_persona_count">
         <item quantity="one">%1$d persona</item>
@@ -1008,7 +1121,7 @@
     <!-- Appearance -->
     <string name="settings_section_appearance">Appearance</string>
     <string name="settings_my_avatar">Your avatar</string>
-    <string name="settings_my_avatar_desc">Shown on your side of the chat; not carried over in a backup</string>
+    <string name="settings_my_avatar_desc">Shown on your side of the chat; it also comes back with your backup on a new phone (up to 8 MB)</string>
     <string name="settings_restore_default">Restore default</string>
     <string name="settings_theme_mode">Theme</string>
     <string name="settings_theme_mode_desc">Light, dark, or follow the system</string>
@@ -1033,6 +1146,10 @@
     <string name="settings_haptics_desc">A light buzz on long presses and actions</string>
 
     <!-- Keeping him alive in the background -->
+    <!-- 0.12 persona translation toggle (spec/persona-translation §6, on by default) -->
+    <string name="settings_section_language">Language</string>
+    <string name="settings_auto_translate_persona">Auto-translate persona</string>
+    <string name="settings_auto_translate_persona_desc">Translate the persona and world into the app language before a chat opens; fall back to the original. Turn off to always use the original.</string>
     <string name="settings_section_background">Keeping him alive in the background</string>
     <string name="settings_agent_loop">Stay in the background</string>
     <string name="settings_agent_loop_desc">When off, he exists only while the app is open. When on, he keeps thinking in the background and sometimes reaches out first.</string>
@@ -1069,7 +1186,7 @@
     <string name="settings_wipe_title">Delete all local data</string>
     <string name="settings_wipe_desc">Every persona, conversation, memory, preset, wake-up rule, API setup, and setting is removed</string>
     <string name="settings_security_note">Your API key is encrypted by Android Keystore and never written to logs or crash reports. Only HTTPS is allowed by default; conversations stay on this phone.</string>
-    <string name="settings_about_entry">About MyFriend</string>
+    <string name="settings_about_entry">About Yap</string>
     <string name="settings_selected_cd">Selected</string>
 
     <!-- Settings toasts and failures -->
@@ -1208,7 +1325,7 @@
     <string name="error_import_file_too_large">That file is too large</string>
     <string name="error_backup_empty">There is nothing to take with you yet</string>
     <string name="error_import_invalid_json">That file isn\'t valid JSON</string>
-    <string name="error_import_not_preset_file">That isn\'t a MyFriend preset file</string>
+    <string name="error_import_not_preset_file">That isn\'t a Yap preset file</string>
     <string name="error_import_no_persona_data">No importable persona data was found</string>
     <string name="error_import_no_valid_persona">None of the personas could be imported</string>
     <string name="error_import_too_many_personas">At most 200 personas per import</string>
@@ -1278,21 +1395,21 @@
     <string name="error_network_chat_queue_busy">The last one is still going; try again in a moment</string>
     <string name="error_network_background_queue_busy">A background task waited too long, so it was dropped</string>
     <string name="error_network_provider_unavailable">That provider is still on the way; choose OpenAI-compatible</string>
-    <string name="error_web_key_missing">The DeepSeek key is empty; fill it in under API settings</string>
+    <string name="error_web_key_missing">The web service key is empty; fill it in under API settings</string>
     <string name="error_web_query_missing">The search query can\'t be empty</string>
     <string name="error_web_url_missing">The page address can\'t be empty</string>
-    <string name="error_web_base_missing">The DeepSeek address can\'t be empty</string>
+    <string name="error_web_base_missing">The web service address can\'t be empty</string>
     <string name="error_web_unparsable">The web service returned something that couldn\'t be read</string>
     <string name="error_web_page_unreachable">That page couldn\'t be fetched</string>
     <string name="error_network_web_url_scheme">Only http / https pages can be fetched</string>
     <string name="error_network_web_url_host">That page address has no host name</string>
     <string name="error_network_web_url_local">Local or private network addresses can\'t be fetched</string>
-    <string name="error_web_status_401">The DeepSeek key is invalid or expired</string>
-    <string name="error_web_status_402">The DeepSeek account is out of credit</string>
+    <string name="error_web_status_401">The web service key is invalid or expired</string>
+    <string name="error_web_status_402">The web service account is out of credit</string>
     <string name="error_web_status_403">The fetch was refused by the site or a security policy</string>
     <string name="error_web_status_408">The read timed out; try again later</string>
     <string name="error_web_status_429">Too many requests; there\'s a QPS limit per minute</string>
-    <string name="error_web_status_5xx">DeepSeek is temporarily unavailable</string>
+    <string name="error_web_status_5xx">The web service is temporarily unavailable</string>
     <string name="error_web_status_other">Request failed (HTTP %1$d)</string>
 
     <string name="api_connect_success">Connected</string>
@@ -1373,6 +1490,19 @@
         <item quantity="one">%1$d message used to have a picture. The picture didn\'t travel with the backup, so only the text is back</item>
         <item quantity="other">%1$d messages used to have pictures. The pictures didn\'t travel with the backup, so only the text is back</item>
     </plurals>
+    <!-- v3: image bytes travel with the backup; one line each for the limit and for bad data. -->
+    <plurals name="backup_media_export_skipped">
+        <item quantity="one">%1$d picture didn\'t travel with the backup (over the size limit)</item>
+        <item quantity="other">%1$d pictures didn\'t travel with the backup (over the size limit)</item>
+    </plurals>
+    <plurals name="backup_media_import_skipped">
+        <item quantity="one">%1$d picture couldn\'t be restored (corrupt or unsupported)</item>
+        <item quantity="other">%1$d pictures couldn\'t be restored (corrupt or unsupported)</item>
+    </plurals>
+    <plurals name="backup_media_import_over_limit">
+        <item quantity="one">%1$d picture wasn\'t restored (over the size limit)</item>
+        <item quantity="other">%1$d pictures weren\'t restored (over the size limit)</item>
+    </plurals>
     <plurals name="backup_warn_configs_missing_key">
         <item quantity="one">%1$d API setup still needs a key (keys never travel in backups); fill it in under API settings</item>
         <item quantity="other">%1$d API setups still need a key (keys never travel in backups); fill them in under API settings</item>
@@ -1402,11 +1532,11 @@
     <string name="backup_section_api_config">API setups</string>
     <string name="backup_fail_empty">This file is empty; he isn\'t in it.</string>
     <string name="backup_fail_invalid_json">This file can\'t be read: it isn\'t a valid backup JSON.</string>
-    <string name="backup_fail_wrong_format">This isn\'t a MyFriend backup (format: %1$s).</string>
-    <string name="backup_fail_too_large">That file is too large (over %1$dMB) to be a MyFriend backup.</string>
+    <string name="backup_fail_wrong_format">This isn\'t a Yap backup (format: %1$s).</string>
+    <string name="backup_fail_too_large">That file is too large (over %1$d MB) to be a Yap backup. Backups with pictures are bigger, but should still stay well below this.</string>
     <string name="backup_fail_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to. The import was cancelled so it doesn\'t overwrite him on this phone.</string>
     <string name="backup_warn_incomplete_references">This backup is structurally incomplete: %1$d item(s) can\'t find the persona or conversation they belong to, so importing it will be refused</string>
-    <string name="backup_fail_newer_format">This backup comes from a newer MyFriend (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
+    <string name="backup_fail_newer_format">This backup comes from a newer Yap (format v%1$d) and this version only reads up to v%2$d. Update the app first; forcing it would garble his memories.</string>
 
     <!-- Import results: personas / presets -->
     <plurals name="persona_import_result_ok">
@@ -1459,6 +1589,7 @@
     <string name="tool_trace_update_persona">Adjusted his profile</string>
     <string name="tool_trace_persona_unchanged">Thought it over, left it unchanged</string>
     <string name="tool_trace_set_quiet_hours">Set his sleep hours</string>
+    <string name="tool_trace_set_activity">Busy with something</string>
     <string name="tool_trace_set_mood">Mood changed</string>
     <string name="tool_trace_recall">Recalled</string>
     <string name="tool_trace_defer_reply">Decided not to reply yet</string>
@@ -1486,6 +1617,11 @@
     <string name="tool_trace_persona_reason">Reason: %1$s</string>
     <string name="tool_trace_persona_applied">Applied — the change is in his version history.</string>
     <string name="tool_trace_quiet_hours">Sleep %1$s · wake %2$s</string>
+    <string name="tool_trace_activity_subtitle">%1$s · until %2$s</string>
+    <string name="tool_trace_activity_detail">For about the next %1$d minutes he is busy with this, expected to end at %2$s.</string>
+    <string name="tool_trace_activity_busy">He won\'t start conversations during this time, and his replies will be shorter and later.</string>
+    <string name="tool_trace_activity_limited">He can reply during this time, but slower and shorter.</string>
+    <string name="tool_trace_activity_free">It is what he is doing, but you can still reach him any time.</string>
     <string name="tool_trace_quiet_hours_rest">He won\'t reach out during these hours.</string>
     <string name="tool_trace_quiet_hours_dnd_on">Do-not-disturb on: messages won\'t wake him.</string>
     <string name="tool_trace_quiet_hours_dnd_off">Do-not-disturb off: a few messages in a row will wake him.</string>
@@ -1515,4 +1651,33 @@
     <string name="chat_preview_image">Photo</string>
     <string name="chat_preview_proactive">Reached out</string>
     <string name="chat_preview_failed">Reply failed</string>
+    <!-- Server mode (M3/M4): off by default; address/token stored encrypted -->
+    <string name="settings_section_server">Server</string>
+    <string name="settings_server_title">Server mode</string>
+    <string name="settings_server_desc">Let agentd own state and chat; this device only caches</string>
+    <string name="settings_server_url">Server address</string>
+    <string name="settings_server_url_hint">https://…; on debug builds http://LAN-IP:8788 also works</string>
+    <string name="settings_server_token">Access token</string>
+    <string name="settings_server_token_hint">Leave blank to keep the saved token</string>
+    <string name="settings_server_token_saved">Saved: %1$s</string>
+    <string name="settings_server_token_masked">Current token: %1$s</string>
+    <string name="settings_server_clear_token">Clear token</string>
+    <string name="settings_server_test">Test connection</string>
+    <string name="settings_server_testing">Connecting…</string>
+    <string name="settings_server_test_success">Connected: %1$s</string>
+    <string name="settings_server_test_failed">Connection failed</string>
+    <string name="settings_server_save">Save</string>
+    <string name="settings_server_saved">Server settings saved</string>
+    <string name="settings_server_save_failed">Could not save server settings (secure storage unavailable)</string>
+    <string name="settings_server_off_hint">While off, everything behaves exactly like local mode</string>
+    <string name="settings_server_reject_empty">Enter a server address</string>
+    <string name="settings_server_reject_invalid">That address is malformed; it must start with http:// or https://</string>
+    <string name="settings_server_reject_https_only">Release builds only allow https addresses</string>
+    <string name="settings_server_reject_local_only">http is only allowed for localhost or LAN addresses</string>
+    <string name="chat_server_reply_pending">The reply did not arrive yet; it will sync shortly</string>
+    <string name="chat_server_action_unsupported">This action is not supported in server mode yet</string>
+    <string name="error_server_unreachable">Couldn\'t reach the server, so this wasn\'t saved</string>
+    <string name="error_server_rejected">The server didn\'t accept this change. Try again in a moment.</string>
+    <string name="error_server_media_too_large">That image is too large for the server\'s 2MB limit</string>
+    <string name="error_server_media_failed">The image couldn\'t be uploaded, so nothing was sent</string>
 </resources>

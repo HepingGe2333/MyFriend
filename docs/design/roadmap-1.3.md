@@ -85,15 +85,15 @@
 
 | 关注点 | 代码 |
 | --- | --- |
-| 自主循环（想一次） | [`AgentLoop.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) |
-| 前台服务 / 总开关 / 开机恢复 | [`AgentLoopService.kt`](../../app/src/main/java/com/myfriend/app/service/AgentLoopService.kt)、[`AgentLoopController.kt`](../../app/src/main/java/com/myfriend/app/service/AgentLoopController.kt)、[`BootReceiver.kt`](../../app/src/main/java/com/myfriend/app/service/BootReceiver.kt) |
-| 兜底 tick | [`AgentTickWorker.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentTickWorker.kt) |
-| 意向与窗口 / 克制 | [`AgentIntentRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentIntentRepository.kt) |
-| 决策协议与提示词 | [`AgentActions.kt`](../../app/src/main/java/com/myfriend/app/domain/AgentActions.kt) |
-| 回复通知 | [`ChatNotifier.kt`](../../app/src/main/java/com/myfriend/app/util/ChatNotifier.kt) |
-| 常驻通知 | [`AgentNotifier.kt`](../../app/src/main/java/com/myfriend/app/util/AgentNotifier.kt) |
-| 前后台判定 | [`AppForegroundTracker.kt`](../../app/src/main/java/com/myfriend/app/util/AppForegroundTracker.kt) |
-| 权限引导 | [`BackgroundKeeper.kt`](../../app/src/main/java/com/myfriend/app/util/BackgroundKeeper.kt) |
+| 自主循环（想一次） | [`AgentLoop.kt`](../../app/src/main/java/com/yap/app/data/repo/AgentLoop.kt) |
+| 前台服务 / 总开关 / 开机恢复 | [`AgentLoopService.kt`](../../app/src/main/java/com/yap/app/service/AgentLoopService.kt)、[`AgentLoopController.kt`](../../app/src/main/java/com/yap/app/service/AgentLoopController.kt)、[`BootReceiver.kt`](../../app/src/main/java/com/yap/app/service/BootReceiver.kt) |
+| 兜底 tick | [`AgentTickWorker.kt`](../../app/src/main/java/com/yap/app/data/repo/AgentTickWorker.kt) |
+| 意向与窗口 / 克制 | [`AgentIntentRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/AgentIntentRepository.kt) |
+| 决策协议与提示词 | [`AgentActions.kt`](../../app/src/main/java/com/yap/app/domain/AgentActions.kt) |
+| 回复通知 | [`ChatNotifier.kt`](../../app/src/main/java/com/yap/app/util/ChatNotifier.kt) |
+| 常驻通知 | [`AgentNotifier.kt`](../../app/src/main/java/com/yap/app/util/AgentNotifier.kt) |
+| 前后台判定 | [`AppForegroundTracker.kt`](../../app/src/main/java/com/yap/app/util/AppForegroundTracker.kt) |
+| 权限引导 | [`BackgroundKeeper.kt`](../../app/src/main/java/com/yap/app/util/BackgroundKeeper.kt) |
 
 已知取舍：
 - 前台服务用 `specialUse` 而不是 `dataSync`：Android 15 对 dataSync 有 6 小时/天硬上限，会把他掐死。

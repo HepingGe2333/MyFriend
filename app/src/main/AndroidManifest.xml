@@ -21,7 +21,7 @@
       「发布版只允许 HTTPS」的明确错误文案（NetworkErrorKind.CleartextDisabled）。
     -->
     <application
-        android:name=".MyFriendApplication"
+        android:name=".YapApplication"
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="false"
@@ -30,7 +30,7 @@
         android:localeConfig="@xml/locales_config"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyFriend"
+        android:theme="@style/Theme.Yap"
         android:usesCleartextTraffic="false">
 
         <activity
@@ -39,7 +39,7 @@
             android:launchMode="singleTop"
             android:screenOrientation="unspecified"
             android:windowSoftInputMode="adjustResize"
-            android:theme="@style/Theme.MyFriend.Splash">
+            android:theme="@style/Theme.Yap.Splash">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />

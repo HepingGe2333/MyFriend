@@ -13,7 +13,7 @@
 		<string>en</string>
 	</array>
 	<key>CFBundleDisplayName</key>
-	<string>MyFriend</string>
+	<string>Yap</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -63,8 +63,8 @@
 	</array>
 	<key>BGTaskSchedulerPermittedIdentifiers</key>
 	<array>
-		<string>com.myfriend.app.ios.refresh</string>
-		<string>com.myfriend.app.ios.processing</string>
+		<string>com.yap.app.ios.refresh</string>
+		<string>com.yap.app.ios.processing</string>
 	</array>
 
 	<!-- ATS（0.10.2 审计 P1-6）：**发布构建不允许全量明文 HTTP**。

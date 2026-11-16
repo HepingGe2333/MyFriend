@@ -1,6 +1,6 @@
 # 架构
 
-> 简体中文 · [English](ARCHITECTURE.en.md)
+> 简体中文 · [English](ARCHITECTURE.en.md) · 项目：YetAnotherPal（Yap）
 >
 > 适用版本：`0.10.0`（内测） · 数据库 schema **v10** · 备份格式 **v2**
 >
@@ -31,11 +31,11 @@ flowchart TB
     A_SVC[service/ · 前台服务 / Worker] --> A_REPO
   end
   subgraph iOS
-    I_UI[MyFriend/Views · SwiftUI] --> I_APP[MyFriend/App · 环境装配]
-    I_APP --> I_SVC[MyFriendKit/Services]
-    I_SVC --> I_STORE[(MyFriendKit/Data · SQLite v10)]
-    I_SVC --> I_NET[MyFriendKit/Net · URLSession SSE]
-    I_SVC --> I_DOMAIN[MyFriendKit/Domain · 纯逻辑]
+    I_UI[YetAnotherPal/Views · SwiftUI] --> I_APP[YetAnotherPal/App · 环境装配]
+    I_APP --> I_SVC[YapKit/Services]
+    I_SVC --> I_STORE[(YapKit/Data · SQLite v10)]
+    I_SVC --> I_NET[YapKit/Net · URLSession SSE]
+    I_SVC --> I_DOMAIN[YapKit/Domain · 纯逻辑]
   end
   A_DOMAIN -.-|同一份契约| I_DOMAIN
   A_LOCAL -.-|同一份表结构 + 同一份备份| I_STORE
@@ -43,8 +43,8 @@ flowchart TB
 
 | 层 | Android | iOS | 说明 |
 | --- | --- | --- | --- |
-| 纯逻辑 | `app/src/main/java/com/myfriend/app/domain/`（32 个文件 ≈ 9.4k 行） | `ios/MyFriendKit/Sources/MyFriendKit/Domain/`（18 个文件 ≈ 6.3k 行） | 心跳、心情、记忆生命周期、向量检索、`defer_reply`、睡眠判定、链接识别、备份编解码……**不依赖平台 API** |
-| 持久化 | Room（`MyFriendDatabase` v10，导出 schema json 并在测试里校验） | 手写 `SQLiteStore`（表名/列名与 Room 导出的 `10.json` 逐字一致） | 表结构是备份互通的前提 |
+| 纯逻辑 | `app/src/main/java/com/yap/app/domain/`（32 个文件 ≈ 9.4k 行） | `ios/YapKit/Sources/YapKit/Domain/`（18 个文件 ≈ 6.3k 行） | 心跳、心情、记忆生命周期、向量检索、`defer_reply`、睡眠判定、链接识别、备份编解码……**不依赖平台 API** |
+| 持久化 | Room（`YapDatabase` v10，导出 schema json 并在测试里校验） | 手写 `SQLiteStore`（表名/列名与 Room 导出的 `10.json` 逐字一致） | 表结构是备份互通的前提 |
 | 网络 | OkHttp + 手写 SSE 解析 + 并发闸 | `URLSession` + 手写 SSE 解析 + 同一个并发闸语义 | 都只支持 OpenAI 兼容 `/chat/completions`，Gemini/Claude 原生适配预留 |
 | 编排 | `data/repo/`（Chat/Agent/Heartbeat/Memory/…） | `Services/`（ChatService/AgentLoop/Heartbeat/…） | 决定「这一轮他说不说话」「什么时候主动」 |
 | 呈现 | Compose + ViewModel | SwiftUI + `AppEnvironment` | 界面按产品立场刻意克制 |
@@ -74,7 +74,7 @@ sequenceDiagram
     G->>M: POST /chat/completions (stream)
     M-->>S: SSE 增量
     S-->>UI: 流式渲染
-    S->>S: 解析工具调用（```myfriend-tool）
+    S->>S: 解析工具调用（```yap-tool）
     alt 工具调用
       S->>DB: 执行工具（写记忆 / 检索 / 改心情 / 联网）
       S->>G: 再次请求模型（结果回灌）
@@ -114,7 +114,9 @@ sequenceDiagram
 「agent 逻辑」在本项目里指**决策**：这一轮回不回、什么时候醒、心跳概率、记忆该不该淡、工具参数怎么夹取。
 它**不包含**持久化——会话、记忆、念头、用量都在客户端数据库里。这个切分让「共享 + 服务化」同时变得可行。
 
-**0.11.0 起决策层只有一份 Kotlin 实现**：`agentcore/`（`:agentcore`，零第三方依赖、纯 JVM）。
+**决策层只有一份 Kotlin 实现**：`agentcore/`。0.11.0 起它是独立模块（`:app` 与 `agentd` 共用）；
+**0.12.0 起它是 Kotlin Multiplatform 模块**（`commonMain` + `jvmMain` + `iosMain`），并产出 iOS 静态
+framework `AgentCoreKit` —— iOS App 的四个 agent 决策因此也执行同一份 Kotlin 代码。
 
 ```mermaid
 flowchart TB
@@ -130,7 +132,8 @@ flowchart TB
   end
   subgraph ios["iOS 客户端"]
     I1[ChatService / ToolExecutor / AgentLoop / Heartbeat]
-    I2[NativeAgentCoreClient]
+    I2["KotlinAgentCoreClient（AgentCoreKit framework）"]
+    I2b["NativeAgentCoreClient（仅 macOS 单测回落）"]
     I3["RemoteAgentCoreClient（URLSession，环境变量/Info.plist）"]
   end
   subgraph server["agentd（服务端）"]
@@ -144,6 +147,7 @@ flowchart TB
   A3 --> A1
   A3 <--> S1
   I2 --> I1
+  I2b --> I1
   I3 --> I1
   I3 <--> S1
   S2 --> S1
@@ -154,7 +158,7 @@ flowchart TB
 
 | 形态 | 谁在用 | 一致性 | 离线 | 说明 |
 | --- | --- | --- | --- | --- |
-| **A 进程内** | Android（默认）、iOS（默认） | ✅ 同一份 `:agentcore` 实现（Android）；iOS 是契约对齐的 Swift 实现 | ✅ | 毫秒级纯函数，没有网络往返 |
+| **A 进程内** | Android（默认）、iOS（默认） | ✅ 同一份 `:agentcore` 实现（iOS 通过 `AgentCoreKit` framework） | ✅ | 毫秒级纯函数，没有网络往返 |
 | **B 内嵌服务** | Android 可选 | ✅ 服务端同一份代码 | ✅ | `agentd` 可运行在同一台机器/同一局域网，Android 通过 `-PagentCoreRemote=true` 指向它 |
 | **C 远程服务** | 两端都可选 | ✅ | ❌（失败自动回退本机） | 自建服务器 / 多设备场景；默认关闭，客户端会回退并记日志 |
 
@@ -164,16 +168,31 @@ flowchart TB
   可 `java -jar` 或 `installDist` 运行，默认只监听回环地址。
 - **客户端**：Android 的 `AgentCoreClient` 是 `:app` 内的接口（进程内 / 远程两实现，`BuildConfig.AGENT_CORE_REMOTE`
   选择、远程失败回退进程内）；iOS 的 `AgentCoreClient` 是 Kit 协议（`Native` / `Remote` / `Fallback` 三实现，
-  `MYFRIEND_AGENT_CORE` 环境变量或 Info.plist 选择、默认 native）。**没有用户可见的设置项**。
+  `YAP_AGENT_CORE` 环境变量或 Info.plist 选择、默认 native）。**没有用户可见的设置项**。
 - **为什么不是 KMP**：KMP 能让 iOS 也跑同一份 Kotlin，但需要 Kotlin/Native 工具链与 framework 打包；
   在引入它之前，先把契约、模块边界与客户端抽象建立起来，收益更确定、风险更小。KMP 仍是 Stage 2 的可选项。
 
-## 5.5 检索## 5.5 检索
+## 5.5 历史存储：区块
 
-聊天检索是**同一个语义在两端的两次实现**，靠 `spec/search/`（16 条用例）钉住：参数化 `LIKE` 粗筛
-（用户输入的 `%`/`_`/`\` 按普通字符处理）+ `ChineseTerms` 词元召回 → 内存精排（命中词元数 → `relevance`
-→ 时间 → id），候选上限 500。不建倒排索引表是刻意取舍：建表要把词元维护铺满每条写路径，并升 schema；
-检索是低频操作，几万条消息的粗筛是毫秒级。
+`0.12.0` 起会话历史按**区块**存储与读取（规范：`spec/messages-blocks/README.md`）：
+
+- `BLOCK_SIZE = 200`；`messages.blockIndex` + `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`
+  两张结构，两端 schema v11 逐字一致；
+- 写入走统一的块维护（追加满 200 开新块、按锚点插入落锚点块、删除重算边界、空块删行留编号空洞、不重平衡）；
+- **分页 = 区块**：首屏只读最新一块，向上读上一块（编号有空洞时按块表找实际的前一块），向下读下一块；
+  一页从不使用 offset，读取行数与历史长度无关；
+- 未读/已读/DND 仍走全表查询，不受窗口影响；
+- 备份仍是 v2 的「消息流」：导入时按顺序重建块，块元数据是派生数据、不进备份。
+
+## 5.6 检索
+
+聊天检索在两端语义一致，靠 `spec/search/`（16 条用例）钉住；`0.12.0` 起**没有候选上限**：
+
+- 枚举（可过滤人格/时间的）会话区块 → 逐块把消息读进内存 → 用共享的 `SearchRanking`
+  （命中词元数 ↓ → `relevance` ↓ → 时间 ↓ → id ↑）精排 → **键集游标**分页；
+- 峰值内存 ≈ 一块 + 一页 + frontier，与历史总长无关；
+- 代价：**每翻一页都会重新走一遍区块**（无上限与无 offset 的直接后果），延迟随历史块数线性增长；
+  这是刻意取舍，没有引入倒排索引表（那要把词元维护铺满每条写路径并升 schema）。
 
 ## 6. 迁移路径（分阶段、每步可回退）
 
@@ -192,7 +211,8 @@ flowchart TB
 - **schema v10**：两端 `user_version` 一致；`chat_sessions.personaId` 上有唯一索引（一人一段会话）。
   迁移只增不减，Android 的 Room 导出 schema 在测试里校验，iOS 侧有对应的迁移测试。
 - **备份 v2**：`format="myfriend.backup"`、`formatVersion=2`、`apiKeysOmitted=true`；v1 备份仍可读。
-  图片二进制、头像文件、API Key **不进备份**。
+  图片二进制、头像文件、API Key **不进备份**。格式名 `myfriend.backup` 为历史兼容保留，产品已更名为
+  YetAnotherPal（Yap），不随品牌改名。
 - 版本规则见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)；`versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等，
   与 schema 版本解耦（schema 只在表结构变化时 +1）。
 
@@ -213,7 +233,7 @@ Android 侧 `values/` + `values-en/`，iOS 侧 `zh-Hans.lproj` + `en.lproj`，�
 | i18n 资源守卫 | 两端资源一致性测试（0.10.0，0.10.2 加强） | key 漂移、英文未翻译（含 CJK）、格式符错位、死键 |
 | 检索契约 | `spec/search/cases/` | 摘要/高亮规则与排序过滤语义漂移 |
 | 独立审计 | `docs/audits/` | 并发、数据完整性、安全、契约漂移；每版一次，P0/P1 必须带测试修复 |
-| 迁移测试 | Android `MyFriendDatabaseMigrationTest`、iOS `SchemaMigrationTests` | 老库升级丢数据 |
+| 迁移测试 | Android `YapDatabaseMigrationTest`、iOS `SchemaMigrationTests` | 老库升级丢数据 |
 
 ## 10. 已知限制
 

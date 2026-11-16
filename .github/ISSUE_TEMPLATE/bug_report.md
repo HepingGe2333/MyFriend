@@ -6,6 +6,8 @@ labels: bug
 assignees: ''
 ---
 
+<!-- YetAnotherPal (Yap) · https://github.com/HepingGe2333/YetAnotherPal -->
+
 **Platform and version**
 - Platform: Android / iOS (and OS version)
 - App version (Settings → About shows it, e.g. `0.11.2`)

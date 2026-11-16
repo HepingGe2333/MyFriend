@@ -1,0 +1,173 @@
+name: CI
+
+# 触发：main / dev 分支的 push，以及发往 main 的 pull request。
+# 同分支的新运行会取消旧运行，避免排队浪费分钟数。
+on:
+  push:
+    branches:
+      - main
+      - 'dev/**'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android (Yap / JDK 17)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # setup-gradle 负责 ~/.gradle 的读取/写回；Gradle 缓存本身按内容寻址，
+      # 依赖变化时 Gradle 会重新解析，不需要手工失效整个缓存。
+      - name: Set up Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      # 与本地命令保持同一组任务名；拆成测试 / 构建 / lint 三段，
+      # 失败时能一眼看出是测试挂了、构建挂了还是 lint 挂了。
+      - name: Unit tests (app, agentcore, agentd)
+        run: ./gradlew :app:testDebugUnitTest :agentcore:test :agentd:test --console=plain
+
+      - name: Build (app + agentd)
+        run: ./gradlew :app:assembleDebug :agentd:build --console=plain
+
+      - name: Lint (app)
+        run: ./gradlew :app:lintDebug --console=plain
+
+      - name: Upload Android reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yap-android-reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/test-results/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
+            app/build/reports/lint-results-debug.xml
+            agentcore/build/reports/tests/
+            agentd/build/reports/tests/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  ios:
+    name: iOS (YapKit / Xcode)
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 不写死 Xcode 版本：直接使用 runner 自带的默认 Xcode，并把路径/版本打进日志。
+      - name: Show Xcode and available simulators
+        run: |
+          sw_vers
+          uname -m
+          xcode-select -p
+          xcodebuild -version
+          xcrun simctl list runtimes
+          xcrun simctl list devices available | sed -n '1,80p'
+
+      # Kotlin/Native 工具链（~/.konan）与 Gradle 缓存都很贵，单独缓存。
+      # key 覆盖 wrapper 版本、Gradle 配置和 agentcore 构建脚本：这些变化时重新拉工具链。
+      - name: Restore Gradle and Kotlin/Native caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ${{ runner.os }}-${{ runner.arch }}-gradle-konan-${{ hashFiles('gradle/wrapper/gradle-wrapper.properties', 'gradle.properties', 'settings.gradle.kts', 'build.gradle.kts', 'app/build.gradle.kts', 'agentcore/build.gradle.kts', 'agentd/build.gradle.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-gradle-konan-
+
+      # SwiftPM 的构建目录（Package.swift 变化时换 key；源码变化由 SwiftPM 自己增量判断）。
+      - name: Restore SwiftPM build cache
+        uses: actions/cache@v4
+        with:
+          path: ios/YapKit/.build
+          key: ${{ runner.os }}-${{ runner.arch }}-swiftpm-${{ hashFiles('ios/YapKit/Package.swift', 'ios/YapKit/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ runner.arch }}-swiftpm-
+
+      # 必须在 Xcode 构建之前：Xcode 工程会链接 AgentCoreKit.xcframework，
+      # 缺失时虽然后备 Run Script 会补建，但那会把失败原因埋进 Xcode 日志。
+      # 显式先把 framework 构建出来，失败点更清楚，也能命中上面的 Kotlin/Native 缓存。
+      - name: Build AgentCoreKit framework
+        run: |
+          set -euo pipefail
+          mkdir -p ios/.build
+          export GRADLE_USER_HOME="$HOME/.gradle"
+          export KONAN_DATA_DIR="$HOME/.konan"
+          export ANDROID_USER_HOME="${ANDROID_USER_HOME:-$HOME/.android}"
+          bash ios/scripts/build-agentcore-framework.sh 2>&1 | tee ios/.build/agentcore-framework.log
+          test -d ios/.build/agentcore/AgentCoreKit.xcframework
+
+      - name: Swift tests (YapKit)
+        run: |
+          set -euo pipefail
+          cd ios/YapKit
+          swift test --disable-sandbox 2>&1 | tee ../.build/swift-test.log
+
+      # build-for-testing 只编译 App 和测试 target，不启动模拟器；这里显式选 iPhone 17 Pro。
+      # 模拟器名称来自 Xcode 自带 runtime；runner 默认 Xcode 变化时可在日志里看到实际 runtime。
+      - name: Build iOS app for testing
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project ios/YetAnotherPal.xcodeproj \
+            -scheme YetAnotherPal \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath ios/.build/DerivedData \
+            -resultBundlePath ios/.build/YetAnotherPal.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            build-for-testing 2>&1 | tee ios/.build/xcodebuild.log
+
+      - name: Upload iOS results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yap-ios-results
+          path: |
+            ios/.build/YetAnotherPal.xcresult
+            ios/.build/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 汇总门禁：两个 platform job 都成功才算通过，方便以后把它设为 required check。
+  ci-ok:
+    name: Yap CI gate
+    if: always()
+    needs:
+      - android
+      - ios
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Both platform jobs succeeded
+        run: |
+          echo "android=${{ needs.android.result }}"
+          echo "ios=${{ needs.ios.result }}"
+          test "${{ needs.android.result }}" = "success"
+          test "${{ needs.ios.result }}" = "success"

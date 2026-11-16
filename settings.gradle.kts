@@ -12,7 +12,7 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "MyFriend"
+rootProject.name = "YetAnotherPal"
 include(":app")
 // 两端共用的 agent 决策核心（纯 Kotlin/JVM、零第三方依赖）。
 // `:app` 与 `:agentd` 都依赖它：decisions 只有一份实现，不再靠 `kotlin.srcDir` + exclude 复用源码。

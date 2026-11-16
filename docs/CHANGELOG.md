@@ -24,6 +24,249 @@
 
 ---
 
+## 项目更名为 YetAnotherPal（Yap）
+
+项目正式更名为 **YetAnotherPal**，缩写 **Yap**。仓库地址改为
+<https://github.com/HepingGe2333/YetAnotherPal>，旧链接会由 GitHub 重定向。
+
+- Android 应用 ID 改为 `com.yap.app`；iOS Bundle ID 改为 `com.yap.app.ios`。
+- iOS Swift 模块改为 `YapKit`，Xcode 工程改为 `YetAnotherPal.xcodeproj`。
+- 备份格式字符串 **`myfriend.backup` 保持不变**，保证历史备份仍可读取；格式名是协议标识，不随品牌更名。
+- 为便于检索，本文历史条目中的产品名、包名、路径与测试 target 已统一为当前命名；唯一保留的旧字符串是兼容格式名
+  `myfriend.backup`。
+
+## 0.12.0
+
+大改动：**共享决策层迁移到 Kotlin Multiplatform（iOS 复用同一份 Kotlin）**、**历史改为区块存储**、
+**检索取消候选上限**、**备份 v3 带走图片与头像**；并清理了 README 里的「已知限制」清单。
+版本 `0.12.0`，两端构建号 **18**；schema **v11**、备份 **v3**。
+（本版在 `dev/0.12.0` 分支上开发，未合并到 `main`，未打发布 tag。）
+
+### 共享决策层：Kotlin Multiplatform
+
+- `agentcore/` 从 `kotlin("jvm")` 改为 `kotlin("multiplatform")`：`jvm()` + `iosX64()` + `iosArm64()` +
+  `iosSimulatorArm64()`，产出静态 framework **`AgentCoreKit`**。`commonMain` 放两端共用的决策，`jvmMain` 只留
+  真正依赖 `java.*` 的 5 个文件（后台锁、会话世代号、文件路径守卫、有界读、语言名），`PlatformTime` 用 expect/actual。
+- `WebUrlPolicy` 原本依赖 `java.net.URI`，为进 `commonMain` **重写为纯字符串解析**（保留全部安全语义与 12 条契约测试）；
+  `LocalEmbedding`/`VectorMath` 的手写小端字节序、日历算术、小顶堆等也都改成平台无关实现。
+- **iOS App 的四个 agent 决策现在执行同一份 Kotlin 代码**（`KotlinAgentCoreClient` → `InProcessAgentCore`）；
+  Swift 实现只保留为 macOS `swift test` 的回落与契约对照。模拟器实跑证明 Kotlin 与 `spec/agent-core` 的
+  189 条断言一致，App 启动日志打印 `agent core: kotlin`。
+- 构建：`ios/scripts/build-agentcore-framework.sh` 生成 `ios/.build/agentcore/AgentCoreKit.xcframework`；
+  Xcode 工程加了 framework 搜索路径与 `-framework AgentCoreKit`（静态、Do Not Embed），并有一个
+  Run Script 在 framework 缺失时自动构建。
+
+### 历史存储：区块 + 双向分页
+
+- schema **v11**：`messages.blockIndex` + `message_blocks(sessionId, blockIndex, first…, last…, messageCount)`，
+  两端逐字一致（iOS 有 `SchemaParityTests` 直接对 Android Room 导出的 `11.json` 做列/索引对照）。
+- `BLOCK_SIZE = 200`；写入走统一的块维护（满块开新块、按锚点插入、删除重算边界、空块删行留编号空洞、不重平衡），
+  覆盖发送/回复/中断/失败/重新生成/编辑/删除/清空/删会话/删人格/备份导入/主动消息。
+- **分页 = 区块**：首屏只读最新一块，向上/向下各加载一块（编号有空洞时按块表找实际相邻块），一页从不使用 offset；
+  未读/已读/DND 仍走全表。
+- 迁移 v10→v11 用 `ROW_NUMBER()/200` 回填并生成块行（流式，不整表读入内存）；两端都有「数据不丢、边界正确、
+  幂等、空库可迁移、孤儿块清理」的迁移测试。
+
+### 检索：无候选上限
+
+- 旧的「`LIKE` 粗筛 + 500 条候选上限」被删除；改为**逐区块扫描**：枚举（可过滤人格/时间的）区块 → 每块读入内存 →
+  `SearchRanking` 精排 → **键集游标**分页。峰值内存 ≈ 一块 + 一页 + frontier，与历史长度无关。
+- 命中 >500 的用例已覆盖：620 条命中可完整翻页、最旧块里的命中不会丢、翻页期间新增消息不重复不乱序；
+  「每次查询只读一块」有结构化断言。
+- 代价写进 README：每翻一页都会重新走一遍区块，历史越长越慢（这是「无上限 + 无 offset」的直接后果）。
+
+### 备份 v3：图片与头像随备份走
+
+- 新增顶层 `media[]`（`id/kind/personaId/fileName/mime/bytes/data`，标准 base64）：人格头像、用户头像、
+  预设头像与聊天图片都随备份走；`avatarUri` 与 `attachmentsJson` 只写裸文件名，导入时写入新 UUID 文件并重写引用。
+- 限额：总量 128 MiB、单张 8 MiB、仅 JPEG/PNG/WebP；超限/坏数据逐条跳过并给出中英告警；导入上限 256 MiB。
+- v1/v2 备份仍可读（没有 `media` 时按旧行为告警）；`fixtures/backup/` 新增 v3 黄金样本并双向互读。
+- 媒体写入在数据库事务之前、事务失败回滚删除新文件；文件名与目录都过归属/穿越守卫。
+
+### 文档与限制清单
+
+- README 的「已知限制」重新核对：删掉**不是限制**的条目（仓库不含产物、只有 token 统计、远程默认关闭、
+  发布包不明文 HTTP、模拟器 Keychain），把它们移到「设计立场」；删掉已被本版修复的条目（检索上限、分页代价、
+  图片不进备份、iOS 第二份实现）；保留并写清真正的限制（无 CI、iOS 后台调度由系统决定、检索逐页重扫、
+  双向浏览累积区块、不重平衡、备份图片限额）。
+- `docs/ARCHITECTURE` 增加「历史存储：区块」与新的「检索」小节、把 agent 核心改为 KMP 四形态；
+  `docs/README` 索引补 `spec/messages-blocks`；`CONTRIBUTING` 增加「先构建 AgentCoreKit 再构建 iOS」的步骤，
+  数据/备份改动清单更新到 v11 / v3。
+
+### 测试与构建
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **1044 条 / 0 失败**（另有 28 条 instrumented：迁移 v10→v11、块维护） |
+| `:agentcore`（KMP jvmTest） | **60 条 / 0 失败** |
+| `:agentd` | **34 条 / 0 失败** |
+| iOS | **1263 条 / 0 失败**（Debug/Release 构建零 Swift 警告） |
+| 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:fatJar`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
+
+---
+
+### 0.12 续 1（未升版本）：CI 门禁、第三方搜索 provider、schema v12 / 备份 v4、媒体压缩、UI 行为测试与大库基准
+
+大改动：**CI 门禁**、**`web_search` 支持第三方搜索 API（schema v12 / 备份 v4）**、**媒体导入与存储压缩**、
+**两端 UI 行为测试**、**大库性能基准**、**agentd 限流与 TLS 部署说明**，并把 iOS 的 Swift 第二实现收窄到「仅 macOS 测试」。
+仍未升版本（用户未批准版本变更）：两端仍是 `0.12.0` / 构建号 **18**；schema **v12**、备份 **v4**。仍在 `dev/0.12.0` 分支迭代，未合并 `main`、未打 tag。
+
+### CI（GitHub Actions）
+
+- 新增 `.github/workflows/ci.yml`：
+  - **Linux**：JDK 17 + Gradle，跑 `:app:testDebugUnitTest`、`:agentcore:test`、`:agentd:test`、`assembleDebug`、
+    `:agentd:build`、`lintDebug`，失败时也上传测试报告与 lint 结果；
+  - **macOS**：先 `ios/scripts/build-agentcore-framework.sh` 生成 `AgentCoreKit.xcframework`，再
+    `swift test --disable-sandbox`，最后 `xcodebuild build-for-testing`（绕过 UI 测试）；缓存 `~/.gradle`、`~/.konan`、
+    SwiftPM 构建目录；`CODE_SIGNING_ALLOWED=NO`；
+  - 触发 `push(main, dev/**)` 与 `pull_request(main)`，`concurrency` 取消旧运行，另有 `ci-ok` 汇总 job 作为 required check。
+- `CONTRIBUTING` 补「CI 会跑什么、本地怎么复现」；README 的「已知限制」里删掉了「没有 CI」。
+
+### `web_search`：第三方搜索 API
+
+- 新增 `spec/web-search/README.md`（规范性）：`api_configs.webToolsProvider`（`MESSAGEAPI` / `TAVILY` / `BRAVE` /
+  `SERPER` / `GENERIC`）、默认 base URL、各 provider 的请求/响应形状、归一化结果、`web_fetch` 行为、错误与限额。
+- 两端实现同一套 override 语义：`DEEPSEEK` 保持原服务端 search/fetch；其余 provider 走各自 API；`web_fetch` 在非
+  DeepSeek 时由客户端抓取（10s、≤2MiB、去标签、≤8000 字）。缺 Key 明确报错，401/403/429/5xx 带 provider 名，
+  原始 body 只截断进日志；所有 URL 发请求前过 `WebUrlPolicy`。
+- 设置页「API 配置」新增「搜索服务」选择、随 provider 变化的地址占位/提示、Key 复用既有 `webToolsApiKeyCipher`
+  （加密本机、不进备份）；GENERIC 必填地址、可选 Key。
+- **schema v12**：`api_configs.webToolsProvider`（默认 `DEEPSEEK`），两端迁移 + 迁移测试 + schema 对照测试。
+- **备份 v4**：`apiConfigs[].webToolsProvider`（默认 `DEEPSEEK`，导出总是写），Key 仍不进备份；v1–v3 可读；
+  `fixtures/backup/{android,ios}-export-v4.json` 生成并双向互读。
+- `harness/server.mjs` 增加各 provider 的 mock 分支，便于本地联调。
+
+### 媒体压缩（导入与存储）
+
+- 备份导入与选图共用同一套压缩：头像长边 ≤512 / ≤400KB，聊天图片长边 ≤1600 / ≤800KB，JPEG 质量阶梯 0.85→0.50，
+  透明图先垫白底；坏图/压不进上限逐条跳过并告警，不让整份导入失败。
+- 内容寻址去重：文件名带 SHA-256 前 16 位，同内容不重复落盘（不新增表）；头像保留「一文一文件」避免换头像误删共享文件。
+- 原有 8 MiB/张、128 MiB 总量输入闸保持；v3 备份里的图片仍可导入。
+
+### 测试与基准
+
+- **两端 UI 行为测试**（新增）：
+  - Android：`app/src/androidTest/.../ui/` 6 条 Compose 行为测试（首屏只读一块、向上/向下加载、跳转定位高亮、
+    发送失败保留草稿、清空与整库删除后的行为），新增 `HiltTestRunner`、Compose UI 测试依赖，debug 变体不再注册
+    `BootReceiver`（避免安装后广播在 Hilt 启动前崩溃）；
+  - iOS：`YetAnotherPalTests/ChatUiBehaviorTests` 6 条（同口径），在模拟器上通过（本沙箱用 `simctl spawn xctest` 运行，
+    `xcodebuild test` 受 pty 限制）。
+- **大库基准**：Android/iOS 各一套 benchmark（10 万条消息迁移、检索第 1/10/100 页、备份 500 图峰值内存），
+  数字与结论见 `docs/performance.md`。
+- 顺带修复：agentd 一条 socket 测试在并行构建下的偶发失败（等 EOF 改为超时即用已收内容）。
+
+### 平台与安全
+
+- **agentd 限流**：按来源 IP 令牌桶（默认 60/分钟、突发 30，可 `--rate-limit` / `--rate-burst` / env 配置，
+  0 = 关闭），超限 429 + `Retry-After`；`/health` 独立桶保证探针可用；限流先于鉴权，超限请求不读 body。
+- **TLS 部署说明**：agentd 只提供明文 HTTP，README 给出 Caddy/Nginx 反代终止 TLS 的最小配置、`X-Forwarded-For`
+  不信任的说明与「不要把 token 关掉」的建议。
+- **iOS Swift 第二实现收窄**：`NativeAgentCoreClient` 整体放进 `#if !os(iOS)`；iOS App 运行时只有 Kotlin
+  （构建产物 `strings` 里已无该符号），Swift 实现只服务 macOS `swift test`；新增源码守卫测试防止回流。
+- **版本号守卫钉回精确值**：`versionCode = 19` / `versionName = 0.13.0` / `CURRENT_PROJECT_VERSION = 19` /
+  `MARKETING_VERSION = 0.13.0`（Debug/Release），Android 与 iOS 各一条精确断言 + 结构断言。
+- **Android 与 iOS 对齐「删除全部数据后重新播种」**：Android 之前会保留「已播种」标记导致空白首页，现在清空后按
+  当前语言重新播种三个人格（`resetAll(preserveSeedMarker = false)` + `seedIfNeeded()`）。
+
+### 测试与构建
+
+| 目标 | 结果 |
+| --- | --- |
+| Android | **1085 条单元测试 / 97 类 / 0 失败**（媒体引用计数 +13）；`instrumented` 已编译，设备批次留待统一运行 |
+| `:agentcore`（KMP jvmTest） | **60 条 / 0 失败** |
+| `:agentd` | **53 条 / 0 失败** |
+| iOS | **1315 条 / 0 失败**（2 条 benchmark 默认跳过；Debug/Release 零 Swift 警告） |
+| 构建 | `assembleDebug/Release`、`lintDebug`、`:agentd:build`、iOS Debug/Release、`AgentCoreKit.xcframework` 全部成功 |
+
+---
+
+### 0.12 续 2（未升版本）：搜索 provider 更名 MessageAPI、真实接口实测、媒体引用计数
+
+- **`DEEPSEEK` → `MESSAGEAPI`**：这个 provider 指向 `/v1/tools/search`、`/v1/tools/fetch` 这套 tools 接口，
+  任何提供同一套接口的厂商都能用，所以改名为 `MESSAGEAPI`（DeepSeek 官方是默认实现）。**读旧值、写新值**：
+  旧库/旧备份里的 `DEEPSEEK`（含大小写、空白）在读取时归一化，写库/写备份一律 `MESSAGEAPI`；
+  数据库列默认值保持 `'DEEPSEEK'`（v12 已装机库不能改，否则 schema 校验失败）。
+- **真实接口实测**：`docs/web-search-live-check.md` 记录 MessageAPI（DeepSeek 官方）与 Tavily 的真网调用
+  （状态码、延迟、返回字段形状、401 行为），Brave/Serper 因网络原因未测。两个 provider 的解析与规范一致。
+- **媒体引用计数**（修「去重后删文件误删共享图」）：两端新增 `MediaReferences` 查询与单点守卫
+  `deleteIfUnreferenced`，所有删文件路径改为「先删数据库行 → 查引用 → 零引用才删文件」：删消息/会话/清空上下文/
+  清空聊天/删人格/删预设/换头像/换用户头像/备份替换导入/清空全部数据/草稿图。不新增表、不升 schema。
+- **本地检索说明**：`docs/local-search.md` 写清本地搜索的框架（纯 Kotlin + SQLite 逐块扫描，无 FTS/无第三方检索库）、
+  能力矩阵与明确边界，以及升级路线。
+
+
+
+### 0.12 续 3（未升版本）：服务端权威 P1 —— 存储/状态/SSE/搜索/主动 + 两端传输层
+
+目标是把客户端变成「只做 UI 与交互」，状态与逻辑上移到 `agentd`，让 iOS/Android 不需要后台进程也能持续运行
+（设计契约：`docs/design/server-authoritative.md`）。
+
+- **服务端存储与 API**：`--data` 文件存储（原子写、单写锁、区块维护、事件游标、secrets 0600）、
+  `GET /v1/state`、`/v1/sessions`、区块双向分页、`POST /v1/sessions/{id}/messages`（SSE，
+  `clientMessageId` 幂等、客户端断开仍生成并落库）、`GET /v1/events`（长轮询）。
+- **服务端搜索**：`MESSAGEAPI` / `TAVILY` / `SEARXNG`（自建，无 key）/ `BING` 与
+  `ZHIHU` / `TOUTIAO` / `QUORA` 站点过滤源；`POST /v1/tools/web-search`、`/v1/tools/web-fetch`；
+  服务端配置 key（`YAP_AGENTD_SEARCH_*`），客户端不传密钥。
+- **服务端主动**：`ProactiveEngine`（睡眠/DND/冷却/每日上限/概率，沿用 `spec/agent-core`）、
+  定时器不依赖客户端连接、`POST /v1/proactive/tick`（调试/测试入口）。
+- **客户端传输层**：Android `data/remote/`、iOS `Net/Server/`，各自的 `ServerConfig`（https 必须、debug 才允许
+  本机明文）、`ServerApi`、增量 SSE 解析、取消即关连接、状态映射器；**尚未接 UI**（P1b）。
+- **测试**：全量批次 —— Android **1139 条 / 101 类 / 0 失败**（+54）、`:agentcore` 60、`:agentd` **244**（+17 路由用例）、iOS **1386 条 / 0 失败**（+71，2 条 benchmark 默认跳过）；两端 Debug/Release 与 lint 全过。
+
+
+### 0.12 续 4（未升版本）：人设引导 —— 世界预设、话风学习、占用时间工具、提示词重排
+
+本轮把「模型像不像这个人」从「一段人设描述」升级成「身份 + 世界 + 此刻状态 + 话风 + 关系 + 边界」，
+并把提示词在本机 DeepSeek 官方 API 上实测过（契约与实测记录：`spec/persona-guidance/README.md`）。
+
+- **世界预设（World Preset）**：角色所处的世界/城市、时代、日程、人际关系、必须承担的事；schema v13
+  （`personas` 与 `persona_presets` 新增 `worldJson`）、备份 v5；预设编辑器新增「世界设定」卡（可手填 + AI 补全）。
+- **话风学习**：粘贴一段微信/QQ 聊天记录 → LLM 总结出 `tone` / `phrases` / `habits` / `avoid`（提示词实测输出合法 JSON）；
+  无 API Key 或失败时走本地兜底（短句频次 + 占位风格），**原文不落库、不进日志、不进备份**。
+- **`set_activity` 工具**：模型可以声明自己接下来一段时间在做什么（非睡眠）：`kind/activity/minutes/availability`，
+  `BUSY` 时主动消息不开口、回复更短、明确说几点后再聊；`LIMITED` 降概率；到期自动失效。
+- **提示词重排**：`# 你是谁 → # 你所在的世界 → # 你此刻的状态 → # 你怎么说话 → # 你们的关系 → # 边界`；
+  强制第一人称、不旁白、不总结人设、不替用户决定、常用语最多自然带一处。两端 `PromptBuilder` 同步。
+- **备份 v5**：`personas[]` 带世界/话风/活动，`presets[]` 带世界/话风；v1–v4 仍可读。
+- 顺带修复上一轮遗留：agentd 主动计数落盘（重启不丢、跨日重置、并发只发一条）、两端媒体删除 TOCTOU（同一把文件锁覆盖「写文件+引用」与「查引用+删文件」）、Android 主动规则也受 `BUSY` 门禁约束。
+- 测试：全量批次 —— Android **1210 条 / 111 类 / 0 失败**、`:agentcore` 60、`:agentd` **249**、iOS **1453 条（2 skip）/ 0 失败**；两端 Debug/Release 与 lint 全过。
+
+
+### 0.12 续 5（未升版本）：世界观可视化、人设翻译、服务端模式 M3/M4 与 CRUD
+
+- **世界观可视化编辑器**：日程/关系改为行式编辑（时间选择器、关系下拉、亲密度），义务逐条，新增「其他背景（notes）」
+  兜底自由文本（≤1200 字）；整合进人格预设界面（Android 预设页/人格页共用；iOS 新增预设列表与编辑页）。
+- **人设提示词本地化**：schema v14（`personas.translationJson/translationLang`），进入聊天/主动生成前按需调用 LLM
+  把人物与世界观翻译成软件语言；缓存按规范化 JSON 的 SHA-256 指纹失效（两端同一算法，共享 `hash-cases.json`），
+  `phrases` 永不翻译；无 Key/失败/超时用原文，设置可关闭。
+- **提示词脚手架唯一来源**：`:agentcore` 新增 `PersonaPromptScaffold`（与 `spec/persona-guidance/scaffold.json`
+  逐字一致），两端 `PromptBuilder` 使用同一套中文措辞并各带契约测试；新增 `world_name` 行。
+- **服务端 BUSY 门禁**：`agentd` 人格支持 `activityJson`，`POST /v1/personas/{id}/activity`，主动引擎 `BUSY` 不开口、
+  `LIMITED` 降概率×0.35、过期恢复；`/v1/proactive/tick` 返回 `skipped` 原因；主动计数/活动均落盘。
+- **服务端 CRUD（M5 服务端部分）**：会话创建/标已读、人格 CRUD、记忆 CRUD、预设、设置、备份导出/导入（v5，不含 secrets）、
+  `/v1/push/register` 与可插拔 `PushSender`（默认 Noop）。
+- **客户端服务端模式（M3/M4）**：两端设置页可配服务端地址/令牌（Android Keystore / iOS Keychain）、测试连接；
+  前台按增量同步状态到本地缓存（双游标：时间戳增量 + 事件游标）、聊天走服务端 SSE（幂等 `clientMessageId`、
+  离线待发队列）、主动消息经事件流落缓存并发本地通知、心情/在场由服务端下发；本地模式保留为离线形态。
+- **测试**：Android **1366 条 / 126 类 / 0 失败**、`:agentcore` **90**、`:agentd` **329**、iOS **1588 条（2 skip）/ 0 失败**；两端 Debug/Release 与 lint 全过。
+
+
+### 0.12 续 6（未升版本）：M5 客户端写路径、媒体上传、取消 iOS 截断、测试补全
+
+- **M5 客户端**：服务端模式下人格/记忆/预设/设置/备份的写路径全部走 `/v1/*`，服务端成功后才更新本地缓存；
+  失败明确提示、不静默回退本地写；本地模式（离线）行为不变。
+- **媒体**：`agentd` 新增 `POST /v1/media`（原始字节、类型/大小校验、sha256 去重）、`GET /v1/media/{id}`（ETag/304）、
+  `DELETE`（被引用 409）；备份 v5 带媒体（8 MiB/张、128 MiB 总量，超限跳过计数）。两端在服务端模式下
+  **先压缩（头像 512/400KB、聊天图 1600/800KB）再上传**，渲染走带鉴权的媒体缓存；本地模式仍存本地文件。
+- **取消 iOS 截断**：世界/话风/人设字段的解析、存储、`sourceHash` 一律保留全文（仅渲染提示词时按上限裁剪），
+  与 Android 一致；Android 同步去掉解析阶段截断。共享 `hash-cases.json` 与长文本往返测试覆盖。
+- **M6 推送**：按约定保留为「服务端部署者自行配置」——服务端提供 token 注册与可插拔 `PushSender`（默认 Noop），
+  APNs/FCM 协议、证书与发送实现不进入仓库；无推送时客户端前台事件同步兜底。
+- **测试补全**：Android instrumented 在模拟器跑通 56 条（含 v13→v14 迁移、UI 行为、媒体压缩）；
+  iOS App-hosted 16 条（10 条 Kotlin 等价性 + 6 条 UI 行为）通过 `simctl spawn xctest` 跑通。
+- **测试**：Android 1412 / 132 类 / 0 失败 + 56 instrumented、`:agentcore` 90、`:agentd` 358、iOS 1625（2 skip）+ 16 App-hosted；
+  两端 Debug/Release 与 lint 全过。
+
 ## 0.11.2
 
 小改动：**把「给 AI 代理用的操作说明」与「给开发者看的项目文档」分开**，并清理文档里混进来的工作区痕迹。
@@ -145,14 +388,14 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
   **40 个纯决策文件**（睡眠判定、`defer_reply`、主动上限、心情、心跳、记忆生命周期、向量、检索、备份文案、
   擦除清单、错误模型…）移进来，**包名不变**。`:app` 与 `:agentd` 都依赖它。
 - `:agentd` 不再用「`kotlin.srcDir(app/domain)` + 14 条 exclude」的临时手段，**排除列表已删除**；
-  JSON 解析器也收进 `:agentcore`（`com.myfriend.app.core.json`），仓库里只有一份。
+  JSON 解析器也收进 `:agentcore`（`com.yap.app.core.json`），仓库里只有一份。
 - 新增 `AgentCore` 接口（4 类决策）与 `InProcessAgentCore`（只做整形、全部委托既有纯函数）、
   `AgentCoreProtocol`（路径与字段名常量，`agentd` 路由表与两端客户端共用）、`AgentCoreCodec`（HTTP 编解码）。
 - **Android 客户端**：`AgentCoreClient`（`InProcess` 默认 / `Remote` 走 OkHttp 调 `agentd`），
   由构建开关 `-PagentCoreRemote=true`（`BuildConfig.AGENT_CORE_REMOTE`）选择；远程失败**自动回退进程内**并记日志，
   开关关闭时**不构造远程客户端、零网络请求**。接线：睡眠判定、`defer_reply`、工具参数夹取、每日主动上限（3 处）。
 - **iOS 客户端**：Kit 里的 `AgentCoreClient` 协议 + `Native` / `Remote`（URLSession）/ `Fallback` 三种实现，
-  由 `MYFRIEND_AGENT_CORE`（`native|remote|remote-strict`）或 Info.plist 选择，**默认 native（零请求）**；
+  由 `YAP_AGENT_CORE`（`native|remote|remote-strict`）或 Info.plist 选择，**默认 native（零请求）**；
   接线同一组 4 处。模拟器实测 `remote-strict` 下 4 个端点全部 HTTP 200。
 - **没有新增任何用户可见设置项**；决策层仍不持有状态（会话/记忆/用量都在客户端数据库）。
 
@@ -343,7 +586,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 - Android：新增 `app/src/main/res/values-en/strings.xml`（与 `values/strings.xml` 键集合一致），
   通过 `android:localeConfig` 声明 `zh` / `en`，语言跟随系统，没有应用内切换；
   基资源 `values/` 为中文，未匹配语言时回落中文。
-- iOS：新增 `ios/MyFriend/Resources/zh-Hans.lproj/Localizable.strings` 与
+- iOS：新增 `ios/YetAnotherPal/Resources/zh-Hans.lproj/Localizable.strings` 与
   `en.lproj/Localizable.strings`，`CFBundleDevelopmentRegion = zh-Hans`、
   `CFBundleLocalizations = [zh-Hans, en]`，两份 `InfoPlist.strings` 本地化本地网络权限说明，
   由 `Bundle.main` 自动选择；同样没有应用内切换。
@@ -363,8 +606,8 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 
 - 新增 `spec/agent-core/cases/*.json`：**94 条**与语言无关的用例（睡眠判定 16、`defer_reply` 9、主动上限 14、
   心跳 17、记忆衰减 22、工具参数夹取 16），每条含 `name` / `input` / `expect` / 可选 `why`；浮点断言带 `tolerance`。
-- Android 测试 `app/src/test/java/com/myfriend/app/spec/AgentCoreSpecTest.kt` 与
-  iOS 测试 `ios/MyFriendKit/Tests/MyFriendKitTests/Spec/AgentCoreSpecTests.swift` 读取**同一批** JSON，
+- Android 测试 `app/src/test/java/com/yap/app/spec/AgentCoreSpecTest.kt` 与
+  iOS 测试 `ios/YapKit/Tests/YapKitTests/Spec/AgentCoreSpecTests.swift` 读取**同一批** JSON，
   分别喂给两端已有的领域实现；任何一端单独改行为，另一端立刻红。
 
 ### 内嵌服务骨架：agentd
@@ -397,7 +640,7 @@ schema 仍 **v10**、备份仍 **v2**。（本版**打 tag 并在 GitHub Release
 | 目标 | 命令 | 结果 |
 | --- | --- | --- |
 | Android | `./gradlew :app:testDebugUnitTest` | **639 条 / 47 个测试类 / 0 失败** |
-| iOS | `cd ios/MyFriendKit && swift test --disable-sandbox` | **827 条 / 0 失败** |
+| iOS | `cd ios/YapKit && swift test --disable-sandbox` | **827 条 / 0 失败** |
 | agentd | `./gradlew :agentd:test` | **19 条 / 0 失败** |
 | 构建 | `:app:assembleDebug`、`xcodebuild … build`、`:agentd:build` | 均成功 |
 ### 文档

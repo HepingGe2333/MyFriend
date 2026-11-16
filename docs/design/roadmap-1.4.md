@@ -68,16 +68,16 @@
 
 ### 4. 模型主动指定心情
 
-- **聊天内**：工具 `set_mood(mood, intensity?, reason?)` 加进 `ToolCatalog`，双协议都支持（原生 `tool_calls` 与 `myfriend-tool` 代码块），`ToolExecutor` 里落库。动作卡片标题「心情变了」、副标题是 `display()`；回灌给模型的话是「对方不知道你记了心情，也不用主动汇报，接着把话说完」。
+- **聊天内**：工具 `set_mood(mood, intensity?, reason?)` 加进 `ToolCatalog`，双协议都支持（原生 `tool_calls` 与 `yap-tool` 代码块），`ToolExecutor` 里落库。动作卡片标题「心情变了」、副标题是 `display()`；回灌给模型的话是「对方不知道你记了心情，也不用主动汇报，接着把话说完」。
 - **后台一个人待着时**：agent 协议新增 `mood` 动作（`AgentAction.Mood`，中文别名「心情 / 情绪」都能解析，强度自动夹到 1..5），`AgentLoop` 执行时直接落库，并在这次思考的 notes 里写「心情变成「有点低落」」。
 
 ### 5. 心情进三处提示词
 
 | 位置 | 代码 | 注入什么 |
 | --- | --- | --- |
-| 聊天（无状态与 Harness 两种模式） | [`ChatRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ChatRepository.kt) | `promptLine()`；到点时把 `reflectionNudge()` 追加在系统提示词末尾「## 心里那句话」 |
-| 主动开口 | [`ProactiveRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ProactiveRepository.kt) | `promptLine()` |
-| 后台自主思考 | [`AgentLoop.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) | `promptLine()`，另有 `mood` 动作可改 |
+| 聊天（无状态与 Harness 两种模式） | [`ChatRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/ChatRepository.kt) | `promptLine()`；到点时把 `reflectionNudge()` 追加在系统提示词末尾「## 心里那句话」 |
+| 主动开口 | [`ProactiveRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/ProactiveRepository.kt) | `promptLine()` |
+| 后台自主思考 | [`AgentLoop.kt`](../../app/src/main/java/com/yap/app/data/repo/AgentLoop.kt) | `promptLine()`，另有 `mood` 动作可改 |
 
 ### 6. 界面
 
@@ -93,15 +93,15 @@
 
 | 关注点 | 代码 |
 | --- | --- |
-| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Mood.kt) |
-| 心情的存取与引导 | [`MoodRepository.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MoodRepository.kt) |
-| 表结构与迁移 | [`Entities.kt`](../../app/src/main/java/com/myfriend/app/data/local/Entities.kt)、[`Daos.kt`](../../app/src/main/java/com/myfriend/app/data/local/Daos.kt)、[`MyFriendDatabase.kt`](../../app/src/main/java/com/myfriend/app/data/local/MyFriendDatabase.kt) |
-| 聊天工具 `set_mood` | [`ToolProtocol.kt`](../../app/src/main/java/com/myfriend/app/domain/ToolProtocol.kt)、[`ToolExecutor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/ToolExecutor.kt) |
-| 后台 `mood` 动作 | [`AgentActions.kt`](../../app/src/main/java/com/myfriend/app/domain/AgentActions.kt)、[`AgentLoop.kt`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt) |
-| 胶囊 / 一行心情 | [`MoodChip.kt`](../../app/src/main/java/com/myfriend/app/ui/components/MoodChip.kt) |
-| 聊天标题栏 | [`ChatViewModel.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatViewModel.kt)、[`ChatScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/chat/ChatScreen.kt) |
-| 主动唤醒页的心情卡片 | [`ProactiveScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/proactive/ProactiveScreen.kt) |
-| 单测 | [`MoodTest.kt`](../../app/src/test/java/com/myfriend/app/domain/MoodTest.kt) |
+| 心情的领域模型 / 词表 / 衰减 / 引导时机 / 提示词措辞 | [`Mood.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/Mood.kt) |
+| 心情的存取与引导 | [`MoodRepository.kt`](../../app/src/main/java/com/yap/app/data/repo/MoodRepository.kt) |
+| 表结构与迁移 | [`Entities.kt`](../../app/src/main/java/com/yap/app/data/local/Entities.kt)、[`Daos.kt`](../../app/src/main/java/com/yap/app/data/local/Daos.kt)、[`YapDatabase.kt`](../../app/src/main/java/com/yap/app/data/local/YapDatabase.kt) |
+| 聊天工具 `set_mood` | [`ToolProtocol.kt`](../../app/src/main/java/com/yap/app/domain/ToolProtocol.kt)、[`ToolExecutor.kt`](../../app/src/main/java/com/yap/app/data/repo/ToolExecutor.kt) |
+| 后台 `mood` 动作 | [`AgentActions.kt`](../../app/src/main/java/com/yap/app/domain/AgentActions.kt)、[`AgentLoop.kt`](../../app/src/main/java/com/yap/app/data/repo/AgentLoop.kt) |
+| 胶囊 / 一行心情 | [`MoodChip.kt`](../../app/src/main/java/com/yap/app/ui/components/MoodChip.kt) |
+| 聊天标题栏 | [`ChatViewModel.kt`](../../app/src/main/java/com/yap/app/ui/screens/chat/ChatViewModel.kt)、[`ChatScreen.kt`](../../app/src/main/java/com/yap/app/ui/screens/chat/ChatScreen.kt) |
+| 主动唤醒页的心情卡片 | [`ProactiveScreen.kt`](../../app/src/main/java/com/yap/app/ui/screens/proactive/ProactiveScreen.kt) |
+| 单测 | [`MoodTest.kt`](../../app/src/test/java/com/yap/app/domain/MoodTest.kt) |
 
 ## 四、验收
 

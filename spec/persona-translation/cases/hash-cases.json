@@ -1,0 +1,213 @@
+{
+  "spec": "persona-translation",
+  "section": "4.1",
+  "note": "sourceHash 的跨端共享用例。expectHash 由 scripts/hash-cases.py 独立算出（不调用 Android/iOS 实现）。Android 的 PersonaTranslationHashCasesTest 与 iOS 的 PersonaTranslationHashCasesTests 读同一份文件并逐条断言。",
+  "canonicalization": "{\"persona\":{8 键},\"speech\":{tone,habits,avoid}|null,\"world\":{worldName,era,description,schedule,relationships,obligations,notes}|null} —— 键递归字典序、紧凑无空白、UTF-8、SHA-256、sha256: 前缀",
+  "cases": [
+    {
+      "name": "persona-only",
+      "description": "只有人设字段：world / speech 都写 null（不省键），数组为空也照写。",
+      "input": {
+        "persona": {
+          "name": "林深",
+          "description": "嘴硬心软的建筑师。",
+          "traits": [
+            "嘴硬心软",
+            "话少"
+          ],
+          "likes": [
+            "夜里散步"
+          ],
+          "behaviors": [
+            "先给事实"
+          ],
+          "backstory": "父亲早年去世。",
+          "quirks": "不太用感叹号。",
+          "systemPrompt": "你叫林深。"
+        },
+        "world": null,
+        "speech": null
+      },
+      "canonical": "{\"persona\":{\"backstory\":\"父亲早年去世。\",\"behaviors\":[\"先给事实\"],\"description\":\"嘴硬心软的建筑师。\",\"likes\":[\"夜里散步\"],\"name\":\"林深\",\"quirks\":\"不太用感叹号。\",\"systemPrompt\":\"你叫林深。\",\"traits\":[\"嘴硬心软\",\"话少\"]},\"speech\":null,\"world\":null}",
+      "expectHash": "sha256:99be2a2520dcdb75c550ebbf836f042175023053cadb5a226192df67795f77ba"
+    },
+    {
+      "name": "persona-world-speech",
+      "description": "人设 + 世界（含 schedule / relationships / obligations / notes）+ 话风；phrases 不参与。",
+      "input": {
+        "persona": {
+          "name": "林深",
+          "description": "嘴硬心软的建筑师。",
+          "traits": [
+            "嘴硬心软",
+            "话少"
+          ],
+          "likes": [
+            "夜里散步"
+          ],
+          "behaviors": [
+            "先给事实"
+          ],
+          "backstory": "父亲早年去世。",
+          "quirks": "不太用感叹号。",
+          "systemPrompt": "你叫林深。"
+        },
+        "world": {
+          "worldName": "临港新城",
+          "era": "当代，中国沿海新一线城市",
+          "description": "事务所竞争激烈，甲方频繁改图；他负责方案/施工图衔接。",
+          "schedule": [
+            {
+              "day": "工作日",
+              "start": "09:00",
+              "end": "18:30",
+              "activity": "在事务所画图"
+            },
+            {
+              "day": "周三",
+              "start": "20:00",
+              "end": "20:30",
+              "activity": "接母亲电话"
+            }
+          ],
+          "relationships": [
+            {
+              "name": "母亲",
+              "relation": "家人",
+              "note": "每周三晚打电话"
+            },
+            {
+              "name": "老周",
+              "relation": "合伙人",
+              "note": "催图直接"
+            }
+          ],
+          "obligations": [
+            "按节点交图",
+            "每周三接母亲电话"
+          ],
+          "notes": "事务所里没人叫他全名，都叫「深哥」。"
+        },
+        "speech": {
+          "tone": "简短直接，偏冷淡",
+          "phrases": [
+            "在忙，晚点说",
+            "你先睡吧"
+          ],
+          "habits": [
+            "句子很短",
+            "少用感叹号"
+          ],
+          "avoid": [
+            "长篇大论",
+            "书面化表达"
+          ]
+        }
+      },
+      "canonical": "{\"persona\":{\"backstory\":\"父亲早年去世。\",\"behaviors\":[\"先给事实\"],\"description\":\"嘴硬心软的建筑师。\",\"likes\":[\"夜里散步\"],\"name\":\"林深\",\"quirks\":\"不太用感叹号。\",\"systemPrompt\":\"你叫林深。\",\"traits\":[\"嘴硬心软\",\"话少\"]},\"speech\":{\"avoid\":[\"长篇大论\",\"书面化表达\"],\"habits\":[\"句子很短\",\"少用感叹号\"],\"tone\":\"简短直接，偏冷淡\"},\"world\":{\"description\":\"事务所竞争激烈，甲方频繁改图；他负责方案/施工图衔接。\",\"era\":\"当代，中国沿海新一线城市\",\"notes\":\"事务所里没人叫他全名，都叫「深哥」。\",\"obligations\":[\"按节点交图\",\"每周三接母亲电话\"],\"relationships\":[{\"name\":\"母亲\",\"note\":\"每周三晚打电话\",\"relation\":\"家人\"},{\"name\":\"老周\",\"note\":\"催图直接\",\"relation\":\"合伙人\"}],\"schedule\":[{\"activity\":\"在事务所画图\",\"day\":\"工作日\",\"end\":\"18:30\",\"start\":\"09:00\"},{\"activity\":\"接母亲电话\",\"day\":\"周三\",\"end\":\"20:30\",\"start\":\"20:00\"}],\"worldName\":\"临港新城\"}}",
+      "expectHash": "sha256:1c828361753cdcce1e6b824ff4457212d8c1514ce0b841fb0f4aefbdc2b4b8e0"
+    },
+    {
+      "name": "empty-world-and-speech",
+      "description": "世界与话风都是空对象（全空）→ 两者都写 null，哈希必须与 persona-only 完全相同。",
+      "input": {
+        "persona": {
+          "name": "林深",
+          "description": "嘴硬心软的建筑师。",
+          "traits": [
+            "嘴硬心软",
+            "话少"
+          ],
+          "likes": [
+            "夜里散步"
+          ],
+          "behaviors": [
+            "先给事实"
+          ],
+          "backstory": "父亲早年去世。",
+          "quirks": "不太用感叹号。",
+          "systemPrompt": "你叫林深。"
+        },
+        "world": {},
+        "speech": {}
+      },
+      "canonical": "{\"persona\":{\"backstory\":\"父亲早年去世。\",\"behaviors\":[\"先给事实\"],\"description\":\"嘴硬心软的建筑师。\",\"likes\":[\"夜里散步\"],\"name\":\"林深\",\"quirks\":\"不太用感叹号。\",\"systemPrompt\":\"你叫林深。\",\"traits\":[\"嘴硬心软\",\"话少\"]},\"speech\":null,\"world\":null}",
+      "expectHash": "sha256:99be2a2520dcdb75c550ebbf836f042175023053cadb5a226192df67795f77ba"
+    },
+    {
+      "name": "world-with-intimacy",
+      "description": "关系里 intimacy 只在非 null 时写：母亲有 4，老周没有这个键。",
+      "input": {
+        "persona": {
+          "name": "林深",
+          "description": "嘴硬心软的建筑师。",
+          "traits": [
+            "嘴硬心软",
+            "话少"
+          ],
+          "likes": [
+            "夜里散步"
+          ],
+          "behaviors": [
+            "先给事实"
+          ],
+          "backstory": "父亲早年去世。",
+          "quirks": "不太用感叹号。",
+          "systemPrompt": "你叫林深。"
+        },
+        "world": {
+          "worldName": "临港新城",
+          "era": "当代",
+          "description": "",
+          "schedule": [],
+          "relationships": [
+            {
+              "name": "母亲",
+              "relation": "家人",
+              "note": "每周三晚打电话",
+              "intimacy": 4
+            },
+            {
+              "name": "老周",
+              "relation": "合伙人",
+              "note": "催图直接"
+            }
+          ],
+          "obligations": [],
+          "notes": ""
+        },
+        "speech": null
+      },
+      "canonical": "{\"persona\":{\"backstory\":\"父亲早年去世。\",\"behaviors\":[\"先给事实\"],\"description\":\"嘴硬心软的建筑师。\",\"likes\":[\"夜里散步\"],\"name\":\"林深\",\"quirks\":\"不太用感叹号。\",\"systemPrompt\":\"你叫林深。\",\"traits\":[\"嘴硬心软\",\"话少\"]},\"speech\":null,\"world\":{\"description\":\"\",\"era\":\"当代\",\"notes\":\"\",\"obligations\":[],\"relationships\":[{\"intimacy\":4,\"name\":\"母亲\",\"note\":\"每周三晚打电话\",\"relation\":\"家人\"},{\"name\":\"老周\",\"note\":\"催图直接\",\"relation\":\"合伙人\"}],\"schedule\":[],\"worldName\":\"临港新城\"}}",
+      "expectHash": "sha256:838a225011838278058294932671a90199b3ebd9d8f7d9dd5b2d70b0913b848f"
+    },
+    {
+      "name": "notes-and-untrimmed-values",
+      "description": "世界只有 worldName 与 notes，其余键照写空值；人设的 name/description/systemPrompt 首尾空白原样进哈希（规范化阶段不 trim；backstory/quirks 两端的实体构造本身会清洗，不放进跨端用例）。",
+      "input": {
+        "persona": {
+          "name": " 林深 ",
+          "description": "嘴硬心软的建筑师，负责方案/施工图。 ",
+          "traits": [],
+          "likes": [],
+          "behaviors": [],
+          "backstory": "在南方长大。",
+          "quirks": "不太用感叹号。",
+          "systemPrompt": "你叫林深。"
+        },
+        "world": {
+          "worldName": "临港新城",
+          "era": "",
+          "description": "",
+          "schedule": [],
+          "relationships": [],
+          "obligations": [],
+          "notes": "事务所里没人叫他全名，都叫「深哥」；门禁在 3/2 号楼。"
+        },
+        "speech": null
+      },
+      "canonical": "{\"persona\":{\"backstory\":\"在南方长大。\",\"behaviors\":[],\"description\":\"嘴硬心软的建筑师，负责方案/施工图。 \",\"likes\":[],\"name\":\" 林深 \",\"quirks\":\"不太用感叹号。\",\"systemPrompt\":\"你叫林深。\",\"traits\":[]},\"speech\":null,\"world\":{\"description\":\"\",\"era\":\"\",\"notes\":\"事务所里没人叫他全名，都叫「深哥」；门禁在 3/2 号楼。\",\"obligations\":[],\"relationships\":[],\"schedule\":[],\"worldName\":\"临港新城\"}}",
+      "expectHash": "sha256:a424c5eb31bce27b84431f8edde743058efd431e02a13fcb699d5456adf5c2b2"
+    }
+  ]
+}

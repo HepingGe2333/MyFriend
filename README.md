@@ -1,30 +1,32 @@
-# MyFriend
+# YetAnotherPal（Yap）
 
 [English](README.en.md) · **简体中文**
 
-MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成长期存在的联系人，而不是一组可调的聊天参数。两端共享同一套数据模型、同一套行为约定和同一份备份文件。
+YetAnotherPal（Yap）是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成长期存在的联系人，而不是一组可调的聊天参数。两端共享同一套数据模型、同一套行为约定和同一份备份文件；应用显示名为 **Yap**。
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](#架构与技术栈)
-[![Tests](https://img.shields.io/badge/tests-970%20Android%20%7C%201187%20iOS%20%7C%2047%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](#构建与测试)
+[![GitHub](https://img.shields.io/badge/GitHub-HepingGe2333%2FYetAnotherPal-181717.svg?logo=github)](https://github.com/HepingGe2333/YetAnotherPal)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/HepingGe2333/YetAnotherPal/blob/main/LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Android%208.0%2B%20%7C%20iOS%2016%2B-lightgrey.svg)](https://github.com/HepingGe2333/YetAnotherPal#架构与技术栈)
+[![Tests](https://img.shields.io/badge/tests-1044%20Android%20%7C%201263%20iOS%20%7C%2060%20agentcore%20%7C%2034%20agentd-brightgreen.svg)](https://github.com/HepingGe2333/YetAnotherPal#构建与测试)
+[![CI](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml/badge.svg)](https://github.com/HepingGe2333/YetAnotherPal/actions/workflows/ci.yml)
 
 ## 项目状态
 
 | 项 | 值 |
 | --- | --- |
-| 版本 | `0.11.2`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
-| 数据库 schema | v10（Android Room `@Database(version = 10)` 与 iOS SQLite `user_version = 10` 对齐） |
-| 备份格式 | v2（`format = "myfriend.backup"`、`formatVersion = 2`；v1 样本只读） |
+| 版本 | `0.13.0`（内测，`0.x` 体系；版本策略与发版流程见 [CONTRIBUTING.md](CONTRIBUTING.md#版本号与发版)） |
+| 数据库 schema | v13（消息按 200 条一块；人格带世界预设/话风/当前活动；两端版本号对齐） |
+| 备份格式 | v5（`format = "myfriend.backup"`、`formatVersion = 5`，图片/头像、搜索 provider、世界预设与话风随备份走；v1–v4 仍可读）。格式名为历史兼容保留，产品名已改为 YetAnotherPal（Yap） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 970 条（`:app:testDebugUnitTest`）、`:agentcore` 47 条、`:agentd` 34 条、iOS 1187 条（`swift test`） |
-| 持续集成 | 暂无；两端测试与构建均由本地命令执行 |
+| 单元测试 | Android 1412 条（132 类）+ 56 条 instrumented、`:agentcore` 90 条、`:agentd` 358 条、iOS 1625 条（`swift test`）+ 16 条 App-hosted |
+| 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
 
 ## 特性概览
 
 | 领域 | 已实现的能力 |
 | --- | --- |
 | 首页 | 联系人列表：头像、名字、最后一条消息、时间、未读数；一人一段会话 |
-| 检索 | 聊天记录全文检索：摘要高亮、按人格与时间过滤、分页、点结果跳回该消息并高亮（两端语义一致，契约在 `spec/search/`） |
+| 检索 | 聊天记录全文检索：摘要高亮、按人格与时间过滤、**逐区块扫描且没有候选上限**、点结果跳回该消息并高亮（两端语义一致，契约在 `spec/search/`） |
 | 聊天 | SSE 流式、停止生成、Markdown / 代码块 / LaTeX、图片消息（每条最多 4 张）、长按菜单（复制 / 编辑重发 / 重新生成 / 删除）、链接识别与内置浏览器 |
 | 已读与沉默 | `messages.readAt` 已读回执；`defer_reply` 允许模型本轮不回，界面只显示「已读」 |
 | 睡眠 | 人格自主睡觉、睡前免打扰（由模型决定）、30 分钟窗口内的唤醒阈值 |
@@ -32,14 +34,14 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 | 头像 | 人格头像与用户头像；采样压缩后存本地，统一渲染，不进备份 |
 | 长期记忆 | 自动抽取、生命周期（ACTIVE / DORMANT / ARCHIVED）、分量衰减、每日整理、`recall` 三档检索、回忆重构 |
 | 检索 | 中文二元组倒排索引 + 本地 384 维哈希嵌入余弦重排（`local-hash-v1`，离线、零依赖） |
-| 长会话 | 最近 24 条逐字保留，更早的内容压成滚动摘要；原文不删 |
+| 长会话 | 历史按 **200 条一块**存储，首屏只读最新一块、向上/向下各加载一块；更早的内容另压成滚动摘要，原文不删 |
 | 主动行为 | 30 秒心跳（先降后升的冲动曲线，三小时封顶）、主动唤醒规则；是否开口由模型决定 |
 | 在线状态 | Presence：平静 / 发呆 / 在写东西等，以及「睡着了 · 08:00 醒」 |
 | 工具 | `think` / `remember` / `recall` / `set_mood` / `set_quiet_hours` / `web_search` / `web_fetch` / `update_persona` / `defer_reply`；两端均有真实执行器 |
 | 模型接入 | 任意 OpenAI 兼容服务：多套配置、Base URL / Key / 模型 / 自定义 Headers、连通性测试、推理参数；Gemini 与 Claude 原生适配已预留 |
 | 用量 | 只统计 token（本月总量、按用途、按人排行）；没有金额、额度或拦截 |
 | 并发 | 全局 LLM 并发闸 3，后台最多占 2 位，聊天保底 1 位 |
-| 备份 | 导出 / 导入（合并 / 替换 / 预览），两端同一 JSON 契约；API Key 永不进备份 |
+| 备份 | 导出 / 导入（合并 / 替换 / 预览），**头像与聊天图片随备份走**（限额内），两端同一 JSON 契约；API Key 永不进备份 |
 | 外观 | 浅色 / 深色 / 跟随系统、主题色、字号、气泡样式、聊天背景、动画与触感开关 |
 | 语言 | 中文（默认）与英文，跟随系统语言；没有应用内语言开关（见 [docs/I18N.md](docs/I18N.md)） |
 
@@ -49,18 +51,25 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 
 项目的大部分取舍来自同一条约束：**界面面对的是一个联系人，不是一台可调参的机器人。** 记忆开关、回复节奏、每日主动次数、月度额度这类旋钮被刻意移除，相关决定交给人格字段与模型（`defer_reply`、睡眠与唤醒阈值、`proactiveLevel` 等）。这条立场写进了 [docs/design/roadmap-1.9.md](docs/design/roadmap-1.9.md) 的规格与删除清单，并在 [CONTRIBUTING.md](CONTRIBUTING.md) 里作为评审约束；架构层面的取舍见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
+几处容易被当成「缺失功能」的取舍：
+
+- **只有 token 统计**：没有金额、额度与拦截；`costMicroUsd` 只在库里留列，界面不展示。
+- **远程决策服务默认关闭**：两端默认在本机算决策（零网络）；需要时可把 `agentd` 跑在自己的机器上，用构建开关/环境变量切过去，失败自动回退本机。
+- **发布包不发明文 HTTP**：Release 构建关闭明文，只允许 HTTPS（iOS 额外放行局域网明文）；调试包不受影响。
+- **模型写的内容不翻译**：界面文案跟随系统语言，但模型写出的话（心情理由、记忆正文、人格简介）保持它当时写下的语言。
+
 ## 架构与技术栈
 
 | 层 | Android | iOS |
 | --- | --- | --- |
 | 语言与 UI | Kotlin 2.0.21、Jetpack Compose（BOM 2024.12.01）、Material 3 | Swift 5.9、SwiftUI（iOS 16.0+） |
-| 依赖注入 / 装配 | Hilt 2.52 | 手写依赖装配（`ios/MyFriend/App`） |
+| 依赖注入 / 装配 | Hilt 2.52 | 手写依赖装配（`ios/YetAnotherPal/App`） |
 | 持久化 | Room 2.6.1（schema v10，导出 `app/schemas/`）、DataStore | 系统 `SQLite3`（表结构对齐 v10）、`UserDefaults` |
 | 后台任务 | WorkManager 2.10、前台服务（`specialUse`）、开机恢复 | `BGAppRefreshTask` / `BGProcessingTask`（系统择机调度） |
 | 网络 | OkHttp 4.12（SSE）、kotlinx.serialization 1.7.3 | `URLSession`（SSE）、`Codable` |
 | 密钥 | Keystore 加密后写入 DataStore | Keychain（模拟器无 entitlement 时回退到调试兜底） |
 | 最低版本 | Android 8.0（`minSdk 26`）、`targetSdk 35`、JDK 17 | iOS 16.0、Xcode 16+ |
-| 测试 | JUnit4 + kotlinx-coroutines-test；迁移测试在 `androidTest` | XCTest（`ios/MyFriendKit` 本地 SPM 包，macOS 上直接跑） |
+| 测试 | JUnit4 + kotlinx-coroutines-test；迁移测试在 `androidTest` | XCTest（`ios/YapKit` 本地 SPM 包，macOS 上直接跑） |
 | Agent 决策 | 共享 `:agentcore`（Kotlin/JVM，唯一实现） | 契约对齐的 Swift 实现；可切换远程 `agentd` |
 
 跨端契约（三处必须一致）：
@@ -77,7 +86,7 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 .
 ├── app/                    Android 应用（Kotlin · Compose · Hilt · Room · WorkManager）
 │   ├── schemas/            Room 导出的历史 schema（迁移测试的依据）
-│   └── src/main/java/com/myfriend/app/
+│   └── src/main/java/com/yap/app/
 │       ├── data/           Room 实体 / DAO / 迁移 / 仓库 / DataStore / Keystore
 │       ├── domain/         纯算法：记忆生命周期、心情、心跳、链接识别、向量、备份编解码…
 │       ├── network/        OpenAI 兼容 SSE（多模态）+ 并发闸 + 用量
@@ -85,9 +94,9 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 │       ├── ui/             components / screens / theme
 │       └── util/           时间、LaTeX、媒体压缩与持久化、通知
 ├── ios/                    iOS 16+ 应用
-│   ├── MyFriendKit/        与 UI 无关的 SPM 包（Domain / Data / Net / Backup / Chat / Services），可 swift test
-│   ├── MyFriend/           SwiftUI 层（App / Views / Resources 本地化资源）
-│   └── MyFriend.xcodeproj  部署目标 16.0，无第三方依赖
+│   ├── YapKit/             与 UI 无关的 SPM 包（Domain / Data / Net / Backup / Chat / Services），可 swift test
+│   ├── YetAnotherPal/      SwiftUI 层（App / Views / Resources 本地化资源）
+│   └── YetAnotherPal.xcodeproj  部署目标 16.0，无第三方依赖
 ├── agentcore/              共享 agent 决策层（纯 Kotlin/JVM，零依赖；:app 与 :agentd 都依赖它）
 ├── agentd/                 独立 agent 核心服务（Kotlin/JVM，HTTP，基于 :agentcore）
 ├── spec/agent-core/cases/  跨端 agent 契约用例（JSON，两端测试共读）
@@ -96,6 +105,15 @@ MyFriend 是一个 Android + iOS 的 AI 陪伴应用：把「人格」建模成�
 ├── docs/                   架构、对齐、更新记录、版本规则、i18n 说明
 └── gradle/                 Gradle Wrapper
 ```
+
+## 获取源码
+
+```bash
+git clone https://github.com/HepingGe2333/YetAnotherPal.git
+cd YetAnotherPal
+```
+
+仓库：<https://github.com/HepingGe2333/YetAnotherPal>。旧仓库地址会由 GitHub 重定向到新地址。
 
 ## 构建与测试
 
@@ -116,18 +134,20 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 **iOS**（Xcode 16+，部署目标 iOS 16.0，零第三方依赖）：
 
 ```bash
-cd ios/MyFriendKit && swift test --disable-sandbox      # 纯逻辑，macOS 上秒级
-cd ios && xcodebuild -project MyFriend.xcodeproj -scheme MyFriend \
+cd ios/YapKit && swift test --disable-sandbox      # 纯逻辑，macOS 上秒级
+cd ios && xcodebuild -project YetAnotherPal.xcodeproj -scheme YetAnotherPal \
   -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 17 Pro' build
 ```
+
+构建产物：Android 在 `app/build/outputs/apk/debug/app-debug.apk`；iOS 在 `ios/.build/DerivedData/Build/Products/Debug-iphonesimulator/YetAnotherPal.app`。`dist/` 里的历史 APK 与 `docs/screenshots/` 下的截图是本地资料，文件名不随品牌改名重写；`dist/` 不进仓库。
 
 **本地联调参考服务**（无需真实 API Key 即可走通全链路）：
 
 ```bash
-node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfriend-reference
+node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 yap-reference
 ```
 
-参考服务认得 `remember` / `recall` / `set_mood` / `web_search` / `myfriend-wake` / `defer_reply` / 记忆抽取 / 记忆整理 / 历史压缩等分支；`[chat]` 日志会打印 `systemChars` 与本轮使用的工具，便于核对人格与记忆是否真的随 `system` 注入。
+参考服务认得 `remember` / `recall` / `set_mood` / `web_search` / `yap-wake` / `defer_reply` / 记忆抽取 / 记忆整理 / 历史压缩等分支；`[chat]` 日志会打印 `systemChars` 与本轮使用的工具，便于核对人格与记忆是否真的随 `system` 注入。
 
 ## 文档
 
@@ -145,25 +165,21 @@ node harness/server.mjs        # http://127.0.0.1:8787/v1 ，模型 ID 填 myfri
 
 ## 已知限制
 
-- **没有 CI**：两端测试、构建与迁移测试都靠本地命令；PR 评审以本地运行结果为准。
-- **检索的候选上限**：排序要在内存里算词元命中，只在最新 500 条候选里排序；命中更多时界面会提示「只显示最近 N 条」。
-- **聊天页分页有代价**：两端首屏只读最近 60 条、上滑再取（未读/已读/DND 仍走全表），
-  把整个历史翻完之后可观察区间等价于全量；检索跳转到很旧的消息会把「目标→最新」整段装进窗口（上限 60 页）。
-- **iOS 后台不保证实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；回到前台时按错过的时间补算。
-- **图片与头像不进备份**：备份只保留路径与元数据，换机后需要重新选择图片。
-- **只有 token 统计**：没有金额、额度与拦截，`costMicroUsd` 仅保留列，不展示。
-- **远程模式默认关闭**：两端默认走本机决策（零网络）；Android 用 `-PagentCoreRemote=true`、iOS 用 `MYFRIEND_AGENT_CORE=remote` 才会连 `agentd`，失败自动回退本机并记日志。
-- **iOS 仍是第二份实现**：`:agentcore` 是 Kotlin/JVM，iOS 不能用它；两端一致靠 `spec/agent-core` 与 `spec/search` 的共享用例 + 字段名 golden 测试保证（KMP 是后续可选项）。
-- **仓库不含产物**：`.gitignore` 排除了 `dist/`、`docs/screenshots/`、APK / IPA 与构建缓存，因此文档中不放截图，也不提供预编译包。
-- **英文仍有几处中文**：工具痕迹标题、数据层错误与 Kit 层可见文案已本地化（含写入时生成的会话标题与预览），
-  但**升级前已落库的中文值**、**模型写出的文本**（心情理由、记忆正文、人格名/简介、自造心情词）与
-  代码注释/日志/提示词脚手架仍是中文（见 [docs/I18N.md](docs/I18N.md)）。
-- **发布包不发明文 HTTP**：Android Release 关闭 `usesCleartextTraffic`，iOS Release 只放行局域网明文；
-  在发布包里把「允许不安全 HTTP」打开去连公网会得到明确错误（调试包不受影响）。
-- **模拟器 Keychain 限制**：未签名模拟器构建没有 Keychain entitlement；明文兜底**只在 `DEBUG && 模拟器`** 生效并写 `debug.log`，真机（含 Release 模拟器）写失败会直接报错，不会降级。
+- **iOS 后台不完全实时**：`BGAppRefreshTask` / `BGProcessingTask` 由系统择机调度，后台心跳与每日整理可能延后；
+  回到前台时按错过的时间补算一次。这是 iOS 平台约束，不是可配置项。
+- **检索每翻一页都会重新走一遍历史区块**：这是「没有候选上限、也不使用 offset」的代价——首屏很快，但历史越长、
+  翻到越后面的页越慢；峰值内存仍然只有「一块 + 一页」。
+- **来回长时间浏览会累积已加载区块**：向上/向下加载的块会留在窗口里（为了让读写区间连续），会话重新打开才回收。
+- **区块不做重平衡**：极端删除后可能出现只有几条消息的块，块编号会出现空洞（分页按块表跳过空洞）。
+- **备份里的图片有上限**：总量 128 MiB、单张 8 MiB，只带 JPEG / PNG / WebP；超出或格式不支持时**跳过并明确告警**，
+  GIF / HEIC / 视频不随备份走。
+- **大库检索有性能上限**：无候选上限的代价是「每翻一页重扫历史区块」，10 万条量级的实测数字与结论见
+  [docs/performance.md](docs/performance.md)。
 
 ## 贡献与许可
 
 提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)（[English](CONTRIBUTING.en.md)）。最低要求：两端单测通过；涉及数据结构时 schema、迁移、迁移测试与 fixtures 同步改；不提交密钥、`local.properties`、`dist/` 或截图。
 
-License：[Apache-2.0](LICENSE) © 2026 Heping Ge。提交贡献即表示同意以同一协议授权。
+License：[Apache-2.0](LICENSE) © 2026 Heping_Ge2333 (hpg2333)。提交贡献即表示同意以同一协议授权。
+
+仓库：[HepingGe2333/YetAnotherPal](https://github.com/HepingGe2333/YetAnotherPal) · 问题：[Issues](https://github.com/HepingGe2333/YetAnotherPal/issues) · 合并请求：[Pull requests](https://github.com/HepingGe2333/YetAnotherPal/pulls)

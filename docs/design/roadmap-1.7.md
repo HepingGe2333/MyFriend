@@ -38,10 +38,10 @@
 
 | 债 | 1.6 的样子 | 1.7 的做法 |
 | --- | --- | --- |
-| 通知 id | `ProactiveNotifier` / `AgentNotifier` / `ChatNotifier` 各算一份 | [`NotificationIds.kt`](../../app/src/main/java/com/myfriend/app/util/NotificationIds.kt) 一处生成：64 位 FNV-1a 折叠进固定区段（会话 `0x0C00_0000`、摘要 `0x0D00_0000`），常驻通知 `0x001F_2E3D` 单独一段 |
+| 通知 id | `ProactiveNotifier` / `AgentNotifier` / `ChatNotifier` 各算一份 | [`NotificationIds.kt`](../../app/src/main/java/com/yap/app/util/NotificationIds.kt) 一处生成：64 位 FNV-1a 折叠进固定区段（会话 `0x0C00_0000`、摘要 `0x0D00_0000`），常驻通知 `0x001F_2E3D` 单独一段 |
 | 预算闸 | 有的调用点直接 `new`，有的走 DI，超支判定两套 | 全部走 [`ApiBudget` `ApiBudget.kt`（Hilt 单例），`ApiCost.budgetVerdict` 是唯一的判定入口 |
 | 字符串 | 界面文案一半硬编码 | 通知、用量、备份、清空数据这些「一句话就是产品」的文案进 [`strings.xml`](../../app/src/main/res/values/strings.xml)（62 条）；长句仍留在 Kotlin 里，因为它们是函数而不是模板 |
-| 迁移防线 | 只有 androidTest 里的迁移测试 | 另加一条 JVM 守卫（[`SchemaVersionTest`](../../app/src/test/java/com/myfriend/app/data/local/SchemaVersionTest.kt)）：DB 版本号、`schemas/` 里的 json、迁移注册三处必须对齐 |
+| 迁移防线 | 只有 androidTest 里的迁移测试 | 另加一条 JVM 守卫（[`SchemaVersionTest`](../../app/src/test/java/com/yap/app/data/local/SchemaVersionTest.kt)）：DB 版本号、`schemas/` 里的 json、迁移注册三处必须对齐 |
 | 向量补建有硬顶 | 补建只读前 500 条（按重要度排序），第 501 条之后永远没有向量；全库「够数」判断会让进程每次启动都重读 500 行正文 | 补建改成「先问还有谁缺向量，再补一批」，循环到问不出东西（`MemoryDao.idsMissingVectors` + `byIds`，一批 64 条、最多 40 轮）；删掉不可靠的算术快路径 |
 | 链接误触 | `getOffsetForPosition` 会把任意一点吸附到最近的字符，点在行尾留白或两行之间也可能「命中链接」 | 命中后再核对触点是否落在该字的包围盒里（±8dp 容差） |
 | 备份格式漏了滚动摘要 | 1.7 新增的 `historySummary` 没进备份契约，换端接回来会突然忘掉聊过的事 | `BackupSession` 增加 `summary` / `summarizedUpTo` / `summaryAt` 三个可空字段（向后兼容）；导入只接受「有正文且压到某一条」的完整组合；Android 与 iOS 共用 `fixtures/backup/*.json` 做双向验证 |
@@ -52,7 +52,7 @@
 
 ### 2. 点得开：链接与内置浏览器
 
-**识别**（[`LinkDetector.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
+**识别**（[`LinkDetector.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/LinkDetector.kt)）是纯函数，只放行 `http` / `https`：
 
 | 形态 | 例子 | 点击区域 |
 | --- | --- | --- |
@@ -62,7 +62,7 @@
 
 几条克制的规则：中文标点（`，。！？`）、成对的右括号、句末的点会被剔出地址；`javascript:` / `file:` / `content:` / `intent:` / `data:` 一律拒绝；`.md`、`.png` 这类看起来像文件名的后缀不点亮；单条地址上限 2048 字符，流式输出截断到一半的地址也能安全处理（多识别一段正文比点错更糟）。
 
-**渲染**（[`MarkdownText.kt`](../../app/src/main/java/com/myfriend/app/ui/components/MarkdownText.kt)）：`buildInline` 在着色之外给链接登记 `LinkAnnotation.Clickable`（tag 就是地址）。点击判定**不用** Compose 自带的那条路，理由写在代码里：
+**渲染**（[`MarkdownText.kt`](../../app/src/main/java/com/yap/app/ui/components/MarkdownText.kt)）：`buildInline` 在着色之外给链接登记 `LinkAnnotation.Clickable`（tag 就是地址）。点击判定**不用** Compose 自带的那条路，理由写在代码里：
 
 - 带链接的 `AnnotatedString` 会让 `Text` 在内部接一层手势，它在 Initial 阶段就把按下事件吃掉；
 - 于是外面气泡的 `combinedClickable` 再也收不到「按在文字上」的长按，而且它会把「按住—松手」一律当成点击——长按叫菜单时浏览器跟着弹出来。
@@ -71,7 +71,7 @@
 
 **长按**：因为上面那层事件被 Text 吃掉了，正文自己补一条长按（`awaitLongPressOrCancellation`），叫出和气泡空白处一样的消息菜单。聊天气泡同时传 `selectable = false`——`SelectionContainer` 在这里只会带来第二套菜单（系统选字工具条），而「复制整条」在消息菜单里、复制代码片段在代码块右上角。
 
-**打开**（[`InAppBrowserScreen.kt`](../../app/src/main/java/com/myfriend/app/ui/screens/browser/InAppBrowserScreen.kt)、路由 `browser?url={url}`）：
+**打开**（[`InAppBrowserScreen.kt`](../../app/src/main/java/com/yap/app/ui/screens/browser/InAppBrowserScreen.kt)、路由 `browser?url={url}`）：
 
 | 关注点 | 行为 |
 | --- | --- |
@@ -85,7 +85,7 @@
 
 ### 3. 环境自知
 
-他自己那一轮的 `system` 提示词由 [`AgentPromptBuilder`](../../app/src/main/java/com/myfriend/app/domain/AgentActions.kt) 拼，1.7 在「处境」里补了四行（[`AgentLoop.buildContext`](../../app/src/main/java/com/myfriend/app/data/repo/AgentLoop.kt)）：
+他自己那一轮的 `system` 提示词由 [`AgentPromptBuilder`](../../app/src/main/java/com/yap/app/domain/AgentActions.kt) 拼，1.7 在「处境」里补了四行（[`AgentLoop.buildContext`](../../app/src/main/java/com/yap/app/data/repo/AgentLoop.kt)）：
 
 ```
 现在：2026-11-14 星期四 03:05（深夜）
@@ -99,7 +99,7 @@
 
 ### 4. 心跳：冲动什么时候来
 
-[`Heartbeat.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HeartbeatController.kt) 负责读库与执行。
+[`Heartbeat.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/Heartbeat.kt) 是纯函数，[`HeartbeatController.kt`](../../app/src/main/java/com/yap/app/data/repo/HeartbeatController.kt) 负责读库与执行。
 
 ```
 p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
@@ -116,7 +116,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 | 心情放大 | 1.15 / 1.35 / 1.55（强度 3/4/5） | 高兴和难过都会让人想找人说说话，平静不放大 |
 | 夹取 | 0.02 ～ 0.90 | 再低留一点念想，再高也不到「一定」 |
 
-**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
+**p(t) 是「这一分钟里他突然想起你」的概率**，而心跳是离散采样：每 30 秒（低电量时 2 分钟）掷一次，所以真正用的是 `1 − (1 − p)^Δ`（[`Heartbeat.perBeatProbability`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/Heartbeat.kt)）。直接用 p 每拍掷，等于一分钟内六成会触发，「先降后升」在采样层面根本不存在；而且 `t < COOL_DOWN_MINUTES`（10 分钟）时干脆不掷——收尾期是真的留白，不是「概率低一点」。
 
 每拍的顺序（先门槛、后掷骰子，省电也省额度）：
 
@@ -135,11 +135,11 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 5. 向量检索
 
-[`LocalEmbedding.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
+[`LocalEmbedding.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/LocalEmbedding.kt)：把一段话压成 **384 维**向量。
 
 它**不是**神经网络 embedding——没有模型文件、不下载任何东西。做法是「字 n-gram 的带符号哈希」：
 
-1. 复用 [`ChineseTerms`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
+1. 复用 [`ChineseTerms`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/ChineseTerms.kt) 的切词结果（中文按字二元组、英文按整词、虚词已删），**查询和记忆必须走同一套词元**，否则会出现「上下文里挑中的记忆，回忆工具却翻不到」；
 2. 相邻二元组拼出字三元组（「项目」+「目压」→「项目压」），不重新扫正文；
 3. 没有语料库统计 DF，就用长度做静态先验：单字 0.8、二元组 1.0、三元组更高；
 4. 亚线性 TF（`1 + ln(1 + w)`），避免长记忆被一个高频词主导；
@@ -147,7 +147,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 所以它捕捉的是**字面近似的语义**：换一种说法只要还共享一部分字（「项目压力大」/「工作上的压力」共享「压力」），向量就会靠近；「我哥」/「家兄」这种一个字都不沾的抓不到。真模型换来的收益在这个场景（几百条几十字的中文短句 + 查询就是用户当下那句话）不值得 50–300MB 的包体和一次下载等待。
 
-[`MemoryVectorIndex.kt`](../../app/src/main/java/com/myfriend/app/data/repo/MemoryVectorIndex.kt) 负责写与查：
+[`MemoryVectorIndex.kt`](../../app/src/main/java/com/yap/app/data/repo/MemoryVectorIndex.kt) 负责写与查：
 
 | 关注点 | 行为 |
 | --- | --- |
@@ -161,7 +161,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 ### 6. 长会话的「滚动记忆」
 
-[`HistoryCompression.kt`](../../agentcore/src/main/kotlin/com/myfriend/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../../app/src/main/java/com/myfriend/app/data/repo/HistoryCompressor.kt) 负责执行。
+[`HistoryCompression.kt`](../../agentcore/src/commonMain/kotlin/com/yap/app/domain/HistoryCompression.kt) 是纯逻辑，[`HistoryCompressor.kt`](../../app/src/main/java/com/yap/app/data/repo/HistoryCompressor.kt) 负责执行。
 
 | 参数 | 值 | 意思 |
 | --- | --- | --- |
@@ -173,7 +173,7 @@ p(t) = FLOOR + (INITIAL − FLOOR)·e^(−t/3.5) + (CEILING − FLOOR)·ramp(t)
 
 它不是「省 token」，是在替他留住「我们聊过什么」：截断等于那段在**他**看来没发生过，所以摘要存回会话（`historySummary` / `historySummarizedUpTo` / `historySummaryAt`），之后拼进 `system` 时是「【更早之前你记得的】……」这样一段第一人称的记忆。**原文一条都不删**，分页、搜索、导出看到的仍是完整记录。调用记 `UsageKind.HISTORY`，照样受月度预算闸。
 
-真机上跑出一条必须记下来的教训：第一次实跑时，模型把一次 `remember` 工具调用（```` ```myfriend-tool ```` 代码块）当成「回忆」写了回来，而当时只校验了长度与标点，于是那段工具调用被当成记忆存了进 `historySummary`——之后每一轮都会把它塞进提示词。修法三层：`cleanSummary` 先把所有 ``` 围起来的块整段删掉（留下前后正文）；`isSummaryAcceptable` 明确拒收任何含代码围栏或 `"name"/"arguments"` 形状的正文；**已经写进库里的脏摘要**由启动时的 `HistoryCompressor.repairStaleSummaries()` 自检清空（连带清掉「压到哪一条」，下次该压的时候重新压一遍）。`HistoryCompressionTest` 补了一条用例钉住它。
+真机上跑出一条必须记下来的教训：第一次实跑时，模型把一次 `remember` 工具调用（```` ```yap-tool ```` 代码块）当成「回忆」写了回来，而当时只校验了长度与标点，于是那段工具调用被当成记忆存了进 `historySummary`——之后每一轮都会把它塞进提示词。修法三层：`cleanSummary` 先把所有 ``` 围起来的块整段删掉（留下前后正文）；`isSummaryAcceptable` 明确拒收任何含代码围栏或 `"name"/"arguments"` 形状的正文；**已经写进库里的脏摘要**由启动时的 `HistoryCompressor.repairStaleSummaries()` 自检清空（连带清掉「压到哪一条」，下次该压的时候重新压一遍）。`HistoryCompressionTest` 补了一条用例钉住它。
 
 顺带的内存工作：向量候选分块扫（见上）、`memory_terms` 与 `memory_vectors` 的孤儿行清理、API 用量只留 90 天。
 

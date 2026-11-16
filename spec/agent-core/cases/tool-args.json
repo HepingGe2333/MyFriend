@@ -3,13 +3,13 @@
   "version": "0.10.0",
   "title": "工具参数夹取（importance 1–5、count 1–12、minutes 5–720）",
   "authority": "android",
-  "authorityNote": "数值边界来自 docs/ROADMAP-1.9.md §四 与两端工具 schema；Android ToolArgClamp 是权威、两端已共用同一组常量。",
+  "authorityNote": "数值边界来自 docs/design/roadmap-1.9.md §四 与两端工具 schema；Android ToolArgClamp 是权威、两端已共用同一组常量。",
   "kotlin": {
-    "file": "agentcore/src/main/kotlin/com/myfriend/app/domain/ToolArgClamp.kt",
+    "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/ToolArgClamp.kt",
     "symbol": "ToolArgClamp.clampImportance / clampCount / clampDeferMinutes"
   },
   "swift": {
-    "file": "ios/MyFriendKit/Sources/MyFriendKit/Domain/ToolArgClamp.swift",
+    "file": "ios/YapKit/Sources/YapKit/Domain/ToolArgClamp.swift",
     "symbol": "ToolArgClamp.clampImportance / clampCount / clampDeferMinutes"
   },
   "inputSpec": {
@@ -274,5 +274,120 @@
         }
       }
     }
-  ]
+  ],
+  "activity": {
+    "contract": "agent-core/tool-args/set_activity",
+    "title": "占用时间工具的 minutes 夹取（15–480）与 availability 枚举",
+    "rules": {
+      "minutes": {
+        "min": 15,
+        "max": 480,
+        "default": 60,
+        "note": "越界夹到边界；非数字用默认值"
+      },
+      "kind": {
+        "values": [
+          "WORK",
+          "COMMUTE",
+          "MEAL",
+          "SOCIAL",
+          "CHORE",
+          "STUDY",
+          "REST",
+          "OTHER"
+        ],
+        "default": "OTHER"
+      },
+      "availability": {
+        "values": [
+          "BUSY",
+          "LIMITED",
+          "FREE"
+        ],
+        "default": "BUSY"
+      }
+    },
+    "cases": [
+      {
+        "input": {
+          "minutes": 0
+        },
+        "expect": {
+          "minutes": 15
+        }
+      },
+      {
+        "input": {
+          "minutes": 10
+        },
+        "expect": {
+          "minutes": 15
+        }
+      },
+      {
+        "input": {
+          "minutes": 90
+        },
+        "expect": {
+          "minutes": 90
+        }
+      },
+      {
+        "input": {
+          "minutes": 600
+        },
+        "expect": {
+          "minutes": 480
+        }
+      },
+      {
+        "input": {
+          "minutes": "abc"
+        },
+        "expect": {
+          "minutes": 60
+        }
+      },
+      {
+        "input": {
+          "kind": "work"
+        },
+        "expect": {
+          "kind": "WORK"
+        }
+      },
+      {
+        "input": {
+          "kind": "SLEEPING"
+        },
+        "expect": {
+          "kind": "OTHER"
+        }
+      },
+      {
+        "input": {
+          "availability": "limited"
+        },
+        "expect": {
+          "availability": "LIMITED"
+        }
+      },
+      {
+        "input": {
+          "availability": "nope"
+        },
+        "expect": {
+          "availability": "BUSY"
+        }
+      }
+    ],
+    "kotlin": {
+      "file": "agentcore/src/commonMain/kotlin/com/yap/app/domain/ToolArgClamp.kt",
+      "symbol": "ToolArgClamp.clampActivityMinutes"
+    },
+    "swift": {
+      "file": "ios/YapKit/Sources/YapKit/Domain/ToolArgClamp.swift",
+      "symbol": "ToolArgClamp.activityMinutes"
+    }
+  }
 }
