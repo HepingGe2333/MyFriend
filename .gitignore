@@ -46,3 +46,6 @@ debug.log
 .DS_Store
 .vscode/
 *.swp
+
+# 宣传物料：本地生成，不进仓库
+/promotion/
