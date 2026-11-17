@@ -787,8 +787,17 @@
 "%d 条主动节奏.one" = "%d reaching-out rule";
 "%d 个预设" = "%d presets";
 "%d 个预设.one" = "%d preset";
+"%d 个表情" = "%d stickers";
+"%d 个表情.one" = "%d sticker";
+"%d 条日记" = "%d notes";
+"%d 条日记.one" = "%d note";
+"日记" = "Diary notes";
 "有 %d 条没接回来" = "%d entries weren't brought back";
 "有 %d 条没接回来.one" = "%d entry wasn't brought back";
+"这个媒体 id 不合法" = "That media id isn't valid";
+"服务端返回的媒体是空的" = "The server returned empty media";
+"这个媒体超过上限（%d MB），没有存到本机" = "That media is over the %d MB limit, so it wasn't saved on this device";
+"媒体没能存到本机" = "The media couldn't be saved on this device";
 "所有聊天与记忆已清空（%@）" = "All chats and memories were cleared (%@)";
 "所有本地数据已删除（%@）" = "All local data was deleted (%@)";
 "会话不存在" = "This conversation no longer exists";
@@ -934,10 +943,14 @@
 "备份里的头像与聊天图片会一起接回来；更早的备份（v2 及以前）里没有图片本体，那些带图片的消息只会剩下文字。" = "Avatars and chat pictures in this backup will come back too. Older backups (v2 and earlier) never carried the image bytes, so those messages keep only their text.";
 "有 %d 张图片没有随备份带走（超出上限）" = "%d pictures weren't included in the backup (over the size limit)";
 "有 %d 张图片没有随备份带走（超出上限）.one" = "%d picture wasn't included in the backup (over the size limit)";
-"有 %d 张图片没接回来（文件损坏或格式不支持）" = "%d pictures couldn't be restored (damaged file or unsupported format)";
-"有 %d 张图片没接回来（文件损坏或格式不支持）.one" = "%d picture couldn't be restored (damaged file or unsupported format)";
-"有 %d 张图片没有接回来（超出上限）" = "%d pictures weren't restored (over the size limit)";
-"有 %d 张图片没有接回来（超出上限）.one" = "%d picture wasn't restored (over the size limit)";
+"有 %d 样附件没接回来（文件损坏或格式不支持）" = "%d attachments couldn't be restored (damaged file or unsupported format)";
+"有 %d 样附件没接回来（文件损坏或格式不支持）.one" = "%d attachment couldn't be restored (damaged file or unsupported format)";
+"有 %d 样附件没有接回来（超出上限）" = "%d attachments weren't restored (over the size limit)";
+"有 %d 样附件没有接回来（超出上限）.one" = "%d attachment wasn't restored (over the size limit)";
+"有 %d 个表情没接回来（备份里没有它的文件）" = "%d stickers weren't restored (the backup had no file for them)";
+"有 %d 个表情没接回来（备份里没有它的文件）.one" = "%d sticker wasn't restored (the backup had no file for it)";
+"有 %d 条日记没接回来（它属于的人不在这次备份里）" = "%d notes weren't restored (their persona isn't in this backup)";
+"有 %d 条日记没接回来（它属于的人不在这次备份里）.one" = "%d note wasn't restored (its persona isn't in this backup)";
 "媒体" = "Media";
 
 // 0.12 web tools: search service selection.

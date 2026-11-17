@@ -161,35 +161,38 @@ class ServerPersonaEvolutionTest {
     // ------------------------------------------------------------------ 1. 服务端模式接受
 
     @Test
-    fun `服务端模式接受 先 POST v1 personas 再写本地并升版本`() = runBlocking {
+    fun `服务端模式接受 调 evolution accept 并把四字段与版本写回本地`() = runBlocking {
         seedServerPersonaMapping()
         store.personas[LOCAL_PERSONA_ID] = persona()
         store.patches[PATCH_ID] = patch()
         server.respondJson(
-            """{"persona":{"id":"$SERVER_PERSONA_ID","name":"林深","createdAt":100,"updatedAt":9999}}"""
+            """{"personaId":"$SERVER_PERSONA_ID","patchId":"$PATCH_ID","changed":true,"version":4,""" +
+                """"persona":{"id":"$SERVER_PERSONA_ID","name":"林深","createdAt":100,"updatedAt":9999,""" +
+                """"version":4,"traits":"[\"慢热\",\"嘴硬心软\"]","likes":"[\"夜里散步\"]",""" +
+                """"behaviors":"[]","quirks":null}}"""
         )
 
         val result = acceptance.accept(PATCH_ID, now = 5_000L)
 
         assertTrue(result.isSuccess)
         val updated = result.getOrThrow()
-        // 写回本地：四个字段合并、version + 1、updatedAt 用服务端时钟。
+        // 写回本地：四个字段来自服务端合并结果、version 用服务端的 4、updatedAt 用服务端时钟。
         assertEquals(4, updated.version)
         assertTrue(updated.traits.contains("嘴硬心软"))
         assertEquals(9_999L, updated.updatedAt)
         assertEquals(4, store.personas.getValue(LOCAL_PERSONA_ID).version)
+        // 服务端不理解的本地字段一个都不能被响应清掉。
+        assertEquals("""{"name":"海边小城"}""", updated.worldJson)
+        assertEquals("用户手写的身份与边界", updated.prompt)
 
-        // 请求：POST /v1/personas，id 用服务端 id，四个字段与其它字段一起发（保留其它字段）。
+        // 请求：POST /v1/personas/{服务端id}/evolution/{patchId}/accept（0.13 的服务端端点）。
         val request = server.requests.single()
         assertEquals("POST", request.method)
-        assertEquals("/v1/personas", request.path)
-        val body = Json.parseToJsonElement(request.body).jsonObject
-        assertEquals(SERVER_PERSONA_ID, body.getValue("id").jsonPrimitive.content)
-        assertEquals(4, body.getValue("version").jsonPrimitive.int)
-        assertTrue(body.getValue("traits").jsonPrimitive.content.contains("嘴硬心软"))
-        assertEquals("用户手写的身份与边界", body.getValue("prompt").jsonPrimitive.content)
-        assertEquals("""{"name":"海边小城"}""", body.getValue("worldJson").jsonPrimitive.content)
-        assertFalse("头像没变就不发，避免把服务端头像清空", body.containsKey("avatarUrl"))
+        assertEquals(
+            "/v1/personas/$SERVER_PERSONA_ID/evolution/$PATCH_ID/accept",
+            request.path
+        )
+        assertEquals("{}", request.body.trim())
 
         // 待审删掉；版本历史记了「变化前 → 变化后」两条。
         assertNull(store.patches[PATCH_ID])
@@ -204,11 +207,15 @@ class ServerPersonaEvolutionTest {
         // bootstrap 之前 / 本地与服务端 id 相同的场景：没有映射时原样用本地 id。
         store.personas[LOCAL_PERSONA_ID] = persona()
         store.patches[PATCH_ID] = patch()
-        server.respondJson("""{"persona":{"id":"$LOCAL_PERSONA_ID","updatedAt":9999}}""")
+        server.respondJson(
+            """{"changed":true,"version":2,"persona":{"id":"$LOCAL_PERSONA_ID","updatedAt":9999}}"""
+        )
 
         assertTrue(acceptance.accept(PATCH_ID, now = 5_000L).isSuccess)
-        val body = Json.parseToJsonElement(server.requests.single().body).jsonObject
-        assertEquals(LOCAL_PERSONA_ID, body.getValue("id").jsonPrimitive.content)
+        assertEquals(
+            "/v1/personas/$LOCAL_PERSONA_ID/evolution/$PATCH_ID/accept",
+            server.requests.single().path
+        )
     }
 
     // ------------------------------------------------------------------ 2. 失败保留待审
@@ -250,12 +257,46 @@ class ServerPersonaEvolutionTest {
     // ------------------------------------------------------------------ 3. 拒绝
 
     @Test
-    fun `拒绝只删待审 不发请求 人格一动不动`() = runBlocking {
+    fun `服务端模式拒绝 调 reject 端点后删本地待审`() = runBlocking {
         seedServerPersonaMapping()
         store.personas[LOCAL_PERSONA_ID] = persona()
         store.patches[PATCH_ID] = patch()
+        server.respondJson(
+            """{"personaId":"$SERVER_PERSONA_ID","patchId":"$PATCH_ID","rejected":true}"""
+        )
 
-        acceptance.reject(PATCH_ID)
+        val result = acceptance.reject(PATCH_ID)
+
+        assertTrue(result.isSuccess)
+        assertNull(store.patches[PATCH_ID])
+        assertEquals(3, store.personas.getValue(LOCAL_PERSONA_ID).version)
+        assertEquals(
+            "/v1/personas/$SERVER_PERSONA_ID/evolution/$PATCH_ID/reject",
+            server.requests.single().path
+        )
+        assertTrue(store.revisions.isEmpty())
+    }
+
+    @Test
+    fun `服务端模式拒绝失败 保留待审并返回 failure`() = runBlocking {
+        seedServerPersonaMapping()
+        store.personas[LOCAL_PERSONA_ID] = persona()
+        store.patches[PATCH_ID] = patch()
+        server.respondJson("""{"error":{"message":"boom","code":"state_unavailable"}}""", status = 503)
+
+        val result = acceptance.reject(PATCH_ID)
+
+        assertTrue(result.isFailure)
+        assertNotNull("拒绝失败时待审项必须留着，界面才能提示重试", store.patches[PATCH_ID])
+    }
+
+    @Test
+    fun `本地模式拒绝只删待审 不发请求 人格一动不动`() = runBlocking {
+        provider.enabled = false
+        store.personas[LOCAL_PERSONA_ID] = persona()
+        store.patches[PATCH_ID] = patch()
+
+        assertTrue(acceptance.reject(PATCH_ID).isSuccess)
 
         assertNull(store.patches[PATCH_ID])
         assertEquals(3, store.personas.getValue(LOCAL_PERSONA_ID).version)

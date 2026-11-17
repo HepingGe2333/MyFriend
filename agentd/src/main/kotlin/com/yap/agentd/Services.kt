@@ -60,7 +60,12 @@ class AgentdServices(
      * LLM 接入（配置解析 + HTTP 客户端）。`null` = 没有接模型：
      * 聊天用注入的 `replyGenerator`（测试/回显）、主动消息用固定文案、进化/情绪端点回 503。
      */
-    val llm: LlmAccess? = null
+    val llm: LlmAccess? = null,
+    /**
+     * 是否允许客户端通过 `POST /v1/llm-config` 推送模型配置（仅本机部署为 true）。
+     * 远程部署必须由部署者用 `--llm-*`/`YAP_LLM_*` 配置，绝不接受客户端推来的 key。
+     */
+    val allowClientLlmConfig: Boolean = false
 ) {
     /** 实际生效的生成器：显式注入 > 有 LLM 时用真实现 > 回显（测试/冒烟）。 */
     val effectiveReplyGenerator: ReplyGenerator = replyGenerator

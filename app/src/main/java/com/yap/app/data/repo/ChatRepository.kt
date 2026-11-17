@@ -252,6 +252,11 @@ class ChatRepository @Inject constructor(
      * 与 [personaEvolution] 共用同一个游标与单飞锁，切模式不会重复评估。
      */
     private val serverEvolution: ServerEvolutionTrigger,
+    /**
+     * 服务端模式的多维情绪判定（0.13）：一轮回复落库后调 `/v1/personas/{id}/mood/evaluate`，
+     * 结果写本地缓存供 UI/离线使用。按 4 条用户消息节流，失败静默。
+     */
+    private val serverMood: ServerMoodEvaluator,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
@@ -473,12 +478,19 @@ class ChatRepository @Inject constructor(
         // 现在按与本地模式完全相同的节流（20 条用户消息 / 24 小时）回顾一次。
         // 只在 done 时触发：流断了但服务端还在生成时没有落库，等下一次发送/同步补上。
         if (result.done) {
+            val roundKey = assistantMessageId.orEmpty().ifBlank { result.clientMessageId }
+            val now = System.currentTimeMillis()
             runCatching {
                 serverEvolution.onReplyDone(
                     personaId = personaId.orEmpty(),
-                    roundKey = assistantMessageId.orEmpty().ifBlank { result.clientMessageId },
-                    now = System.currentTimeMillis()
+                    roundKey = roundKey,
+                    now = now
                 )
+            }
+            // 情绪（0.13）：按 4 条用户消息节流、单飞、失败静默；服务端没配 LLM 时直接跳过。
+            // 与进化同一个时机（回复已落库），但不共用游标：情绪比人格变化频繁得多。
+            runCatching {
+                serverMood.onReplyDone(personaId = personaId.orEmpty(), now = now)
             }
         }
         return result
@@ -506,14 +518,30 @@ class ChatRepository @Inject constructor(
         val current = AttachmentsCodec.decode(existing.attachmentsJson)
         if (current.isEmpty()) return
         val merged = current.map { attachment ->
-            val meta = metaByRef[attachment.uri] ?: return@map attachment
+            // 0.13：附件同步时已经落成本地 `file://`，此时 uri 不再是服务端引用；
+            // 按 `serverMediaId` 再匹配一次，否则语音/视频的 mime/kind/duration 会在这一轮丢掉。
+            val meta = metaByRef[attachment.uri]
+                ?: attachment.serverMediaId
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { id -> metaByRef[com.yap.app.data.remote.ServerMediaRef.PREFIX + id] }
+                ?: return@map attachment
             attachment.copy(
                 mime = meta.mime,
                 kind = meta.canonicalKind,
-                durationMs = meta.durationMs
+                durationMs = meta.durationMs,
+                serverMediaId = attachment.serverMediaId
+                    ?: com.yap.app.data.remote.ServerMediaRef.idOf(meta.uri)
             )
         }
         messageDao.updateAttachments(id, AttachmentsCodec.encode(merged))
+    }
+
+    /** 附件已有服务端身份、且本机没有可读文件时可直接复用的引用（否则 null）。 */
+    private fun existingServerRef(attachment: MessageAttachment): String? {
+        val id = attachment.serverMediaId?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val local = runCatching { MediaStorage.fileOf(attachment.uri) }.getOrNull()
+        if (local != null && local.isFile && local.length() > 0L) return null
+        return com.yap.app.data.remote.ServerMediaRef.PREFIX + id
     }
 
     /**
@@ -530,6 +558,13 @@ class ChatRepository @Inject constructor(
         if (attachments.isEmpty()) return Result.success(emptyList())
         val refs = mutableListOf<String>()
         for (attachment in attachments) {
+            // 0.13：只有 `serverMediaId`、本机没有文件（别的设备发来的/本地文件被清理）时，
+            // 直接把服务端引用放回消息里——服务端已经有这份字节，不必先下载再上传一遍。
+            val existingRef = existingServerRef(attachment)
+            if (existingRef != null) {
+                refs += existingRef
+                continue
+            }
             // 0.13：语音/视频**不压缩、不转码**，按 kind=AUDIO|VIDEO 原样上传。
             if (attachment.isAudioOrVideo) {
                 val uploaded = serverMediaSender.uploadVoiceVideo(listOf(attachment), personaId).getOrElse {

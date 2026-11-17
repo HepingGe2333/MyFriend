@@ -885,6 +885,9 @@ final class ChatViewModel: ObservableObject {
         //（本地模式由 `ChatService` 在落库后触发，这里不做，避免两条路径各烧一次调用）。
         if completedReply, let env, env.serverModeActive, let persona {
             env.triggerPersonaEvolutionForServerReply(sessionId: sessionId, personaId: persona.id)
+            // 0.13 第二阶段：情绪也搬到服务端判（每 4 条用户消息 / 24 小时，节流在 Kit 里）。
+            // 结果写本地缓存，界面/离线提示词/心跳情绪放大都读本地那几列。
+            env.triggerCloudMoodForServerReply(sessionId: sessionId, personaId: persona.id)
         }
         completedReply = false
         // 流结束：消息轮询重新按计划起来（生成中它是停的）。

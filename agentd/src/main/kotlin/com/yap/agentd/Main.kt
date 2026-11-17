@@ -66,7 +66,9 @@ fun main(args: Array<String>) {
     val services = AgentdServices(
         store = store,
         replyGenerator = LlmReplyGenerator(store, llm),
-        llm = llm
+        llm = llm,
+        // 只有本机部署才接受客户端推送的模型配置；远程部署必须用 --llm-*/YAP_LLM_*。
+        allowClientLlmConfig = isLoopbackHost(options.host)
     )
     val server: AgentdServer.StartedServer = try {
         AgentdServer.start(options.host, options.port, options.token, rateLimiter, services)

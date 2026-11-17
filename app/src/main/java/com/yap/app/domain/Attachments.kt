@@ -18,6 +18,11 @@ import kotlinx.serialization.json.Json
  *
  * [durationMs] 只对语音/视频有意义（毫秒）；图片与表情为 `null`。
  * 它是**媒体本身的时长**，不是消息创建时间，也不参与排序。
+ *
+ * [serverMediaId] 是 0.13 新增的「这份字节在服务端的 id」（`/v1/media/<id>` 里的 `<id>`）。
+ * 同步把服务端媒体落到本机之后，[uri] 会改成 `file://` 本地路径，而这里保留服务端 id：
+ * 回推/去重/换设备重新下载都要靠它，不能因为「本机已经有文件」就把服务端身份丢掉。
+ * 本地模式的历史数据没有这个字段，解出来是 `null`（与 0.12 完全兼容）。
  */
 @Serializable
 data class MessageAttachment(
@@ -26,7 +31,8 @@ data class MessageAttachment(
     val width: Int = 0,
     val height: Int = 0,
     val kind: String? = null,
-    val durationMs: Long? = null
+    val durationMs: Long? = null,
+    val serverMediaId: String? = null
 ) {
     /**
      * 图片类 mime。
@@ -108,10 +114,18 @@ object AttachmentsCodec {
                 val normalizedKind = attachment.kind?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
                 val normalizedDuration = attachment.durationMs
                     ?.takeIf { it > 0L }
-                if (normalizedKind == attachment.kind && normalizedDuration == attachment.durationMs) {
+                val normalizedServerId = attachment.serverMediaId?.trim()?.takeIf { it.isNotEmpty() }
+                if (normalizedKind == attachment.kind &&
+                    normalizedDuration == attachment.durationMs &&
+                    normalizedServerId == attachment.serverMediaId
+                ) {
                     attachment
                 } else {
-                    attachment.copy(kind = normalizedKind, durationMs = normalizedDuration)
+                    attachment.copy(
+                        kind = normalizedKind,
+                        durationMs = normalizedDuration,
+                        serverMediaId = normalizedServerId
+                    )
                 }
             }
     }

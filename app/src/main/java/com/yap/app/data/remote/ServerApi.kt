@@ -579,6 +579,69 @@ class ServerApi(
         }
     )
 
+    // ------------------------------------------------------------------ 0.13：云端情绪 / 人格进化 / 配置推送
+
+    /**
+     * `POST /v1/personas/{id}/mood/evaluate`：让**服务端**用自己的模型判定一次多维情绪。
+     *
+     * 与服务端「没配模型也不报错」的约定一致：端点仍回 200，`source` 说明是
+     * `llm` / `decay` / `unchanged`。客户端只在 [ServerMoodEvaluation.mood] 有值时写本地缓存。
+     */
+    suspend fun evaluateMood(personaId: String): ServerMoodEvaluation =
+        postJson(
+            url("v1", "personas", personaId, "mood", "evaluate"),
+            buildJsonObject { }
+        )
+
+    /**
+     * `POST /v1/personas/{id}/evolution/evaluate`：让服务端评估一次人格进化并写服务端待审表。
+     *
+     * 返回体里的 `patch` 是**服务端分配 id** 的补丁（客户端把它缓存到本地待审表，
+     * 接受/拒绝时用这个 id 调服务端端点）。
+     */
+    suspend fun evaluateEvolution(personaId: String): ServerEvolutionEvaluation =
+        postJson(
+            url("v1", "personas", personaId, "evolution", "evaluate"),
+            buildJsonObject { }
+        )
+
+    /** `GET /v1/personas/{id}/evolution/pending`：服务端待审补丁（服务端已顺手清掉过期项）。 */
+    suspend fun pendingEvolution(personaId: String): ServerEvolutionPending =
+        requestJson(
+            requestBuilder(url("v1", "personas", personaId, "evolution", "pending")).get().build()
+        )
+
+    /** `POST /v1/personas/{id}/evolution/{patchId}/accept`：服务端合并四字段 + `version + 1`。 */
+    suspend fun acceptEvolution(personaId: String, patchId: String): ServerEvolutionAcceptance =
+        postJson(
+            url("v1", "personas", personaId, "evolution", patchId, "accept"),
+            buildJsonObject { }
+        )
+
+    /** `POST /v1/personas/{id}/evolution/{patchId}/reject`：只丢补丁，人格不动。 */
+    suspend fun rejectEvolution(personaId: String, patchId: String): ServerEvolutionRejection =
+        postJson(
+            url("v1", "personas", personaId, "evolution", patchId, "reject"),
+            buildJsonObject { }
+        )
+
+    /**
+     * `POST /v1/llm-config`（**仅本机部署**）：把客户端已经配好的模型配置推给服务端。
+     *
+     * 远程部署由服务端回 403 `remote_config_disallowed`；客户端**不重试、不提示**，
+     * 只记一条日志（推送是让本机服务端「不用再配一遍」的便利，不是聊天链路的一部分）。
+     */
+    suspend fun pushLlmConfig(payload: ServerLlmConfigWrite): JsonObject =
+        postJsonObject(
+            url("v1", "llm-config"),
+            buildJsonObject {
+                put("baseUrl", payload.baseUrl)
+                put("model", payload.model)
+                put("apiKey", payload.apiKey)
+                put("provider", payload.provider)
+            }
+        )
+
     // ------------------------------------------------------------------ 内部：请求构造 / 执行 / 解析
 
     private fun requestBuilder(url: HttpUrl): Request.Builder {

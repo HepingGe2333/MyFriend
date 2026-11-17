@@ -114,6 +114,31 @@ class ServerAudioVideoUploaderTest {
     }
 
     @Test
+    fun rejectsAudioOverFiveMinutesBeforeUploading() = runBlocking {
+        val api = FakeApi()
+        val uploader = ServerAudioVideoUploader(api) { byteArrayOf(1) }
+        val result = uploader.upload(
+            listOf(audioAttachment(durationMs = AudioVideoPolicy.AUDIO_MAX_DURATION_MS + 1)),
+            personaId = null
+        )
+        assertTrue(result.isFailure)
+        assertEquals("media_too_long", (result.exceptionOrNull() as ServerApiException).code)
+        assertTrue("超时的语音不该发出去", api.uploads.isEmpty())
+    }
+
+    @Test
+    fun rejectsVideoOverSixtyFourMegabytesBeforeUploading() = runBlocking {
+        val api = FakeApi()
+        val uploader = ServerAudioVideoUploader(api) {
+            ByteArray((AudioVideoPolicy.VIDEO_MAX_BYTES + 1).toInt())
+        }
+        val result = uploader.upload(listOf(videoAttachment()), personaId = null)
+        assertTrue(result.isFailure)
+        assertEquals("media_too_large", (result.exceptionOrNull() as ServerApiException).code)
+        assertTrue(api.uploads.isEmpty())
+    }
+
+    @Test
     fun rejectsUnreadableAttachment() = runBlocking {
         val api = FakeApi()
         val uploader = ServerAudioVideoUploader(api) { null }

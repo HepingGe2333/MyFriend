@@ -67,6 +67,9 @@ public struct ImportSummary: Equatable, Sendable {
     public var warnings: [String]
     public var mode: ImportMode
     public var presets: Int
+    /// v6：接回来的表情数 / 日记便条数。
+    public var stickers: Int
+    public var diaryNotes: Int
 
     public init(
         personas: Int = 0,
@@ -77,7 +80,9 @@ public struct ImportSummary: Equatable, Sendable {
         skipped: Int = 0,
         warnings: [String] = [],
         mode: ImportMode = .merge,
-        presets: Int = 0
+        presets: Int = 0,
+        stickers: Int = 0,
+        diaryNotes: Int = 0
     ) {
         self.personas = personas
         self.memories = memories
@@ -88,6 +93,8 @@ public struct ImportSummary: Equatable, Sendable {
         self.warnings = warnings
         self.mode = mode
         self.presets = presets
+        self.stickers = stickers
+        self.diaryNotes = diaryNotes
     }
 
     /// 「把他接回来了：3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话」。
@@ -108,6 +115,12 @@ public struct ImportSummary: Equatable, Sendable {
         }
         if presets > 0 {
             text += " · " + PluralText.format("%d 个预设", presets)
+        }
+        if stickers > 0 {
+            text += " · " + PluralText.format("%d 个表情", stickers)
+        }
+        if diaryNotes > 0 {
+            text += " · " + PluralText.format("%d 条日记", diaryNotes)
         }
         if skipped > 0 {
             text += "；" + PluralText.format("有 %d 条没接回来", skipped)
@@ -193,6 +206,11 @@ public final class BackupService {
     /// 图片总量 / 单张上限（单测注入小值，不必真的造 128 MiB 数据）。
     private let mediaByteLimit: Int
     private let mediaFileByteLimit: Int
+    /// v6：表情目录（`Application Support/stickers`）。测试注入临时目录。
+    private let stickerDirectory: URL
+    /// v6：语音/视频目录（`Application Support/audio|video`）。测试注入临时目录。
+    private let audioDirectory: URL
+    private let videoDirectory: URL
 
     public init(
         stores: DatabaseStores,
@@ -204,6 +222,9 @@ public final class BackupService {
         exportLimitBytes: Int = BackupService.maxExportBytes,
         mediaByteLimit: Int = BackupService.maxMediaBytes,
         mediaFileByteLimit: Int = BackupService.maxMediaFileBytes,
+        stickerDirectory: URL = StickerStorage.shared.directory,
+        audioDirectory: URL = AudioVideoStore.shared.audioDirectory,
+        videoDirectory: URL = AudioVideoStore.shared.videoDirectory,
         now: @escaping () -> Int64 = { DomainClock.nowMillis }
     ) {
         self.stores = stores
@@ -215,6 +236,9 @@ public final class BackupService {
         self.exportLimitBytes = exportLimitBytes
         self.mediaByteLimit = mediaByteLimit
         self.mediaFileByteLimit = mediaFileByteLimit
+        self.stickerDirectory = stickerDirectory
+        self.audioDirectory = audioDirectory
+        self.videoDirectory = videoDirectory
         self.now = now
     }
 
@@ -256,6 +280,13 @@ public final class BackupService {
                 .prefix(Self.exportIntentsPerPersona))
         }
         let presets = ((try? stores.presets.all(orderBy: "updatedAt DESC")) ?? [])
+        // v6：表情收藏（按时间倒序，与历史面板一致）与他自己的日记便条。
+        let stickers = (try? stores.stickers.allStickers()) ?? []
+        let diaryNotes = personas.flatMap { persona in
+            (try? stores.diaryNotes.fetch(
+                where: "personaId = ?", [.text(persona.id)], orderBy: "createdAt DESC"
+            )) ?? []
+        }
         let currentSettings = settings.load()
 
         // v3：先把「本机真的还引用得到」的图片收集成候选（顺序固定：人格头像 → 我的头像 →
@@ -264,8 +295,12 @@ public final class BackupService {
             personas: personas,
             presets: presets,
             messages: messages,
+            stickers: stickers,
             myAvatarUri: currentSettings.myAvatarUri,
             directory: mediaDirectory,
+            stickerDirectory: stickerDirectory,
+            audioDirectory: audioDirectory,
+            videoDirectory: videoDirectory,
             fileExists: avatarFileExists
         )
         let packed = BackupMediaPacker.pack(
@@ -297,7 +332,7 @@ public final class BackupService {
                 Self.toBackupMessage(
                     message,
                     attachmentsJson: BackupMediaRestorer.portableAttachments(
-                        message.attachmentsJson, allowedNames: packed.chatImageFileNames
+                        message.attachmentsJson, allowedNames: packed.attachmentFileNames
                     )
                 )
             },
@@ -313,6 +348,14 @@ public final class BackupService {
                 .map(Self.toBackupRule),
             agentIntents: intents.map(Self.toBackupIntent),
             memoryConsolidations: consolidations.map(Self.toBackupConsolidation),
+            stickers: stickers.map { sticker in
+                Self.toBackupSticker(
+                    sticker,
+                    fileName: BackupMediaTransfer.localFileName(sticker.file)
+                        .flatMap { packed.stickerFileNames.contains($0) ? $0 : nil }
+                )
+            },
+            diaryNotes: diaryNotes.map(Self.toBackupDiaryNote),
             apiConfigs: ((try? stores.apiConfigs.all(orderBy: "updatedAt DESC")) ?? [])
                 .map(Self.toBackupApiConfig),
             settings: currentSettings.toBackupSettings()
@@ -344,8 +387,12 @@ public final class BackupService {
         personas: [PersonaEntity],
         presets: [PersonaPresetEntity],
         messages: [MessageEntity],
+        stickers: [StickerEntity] = [],
         myAvatarUri: String?,
         directory: URL,
+        stickerDirectory: URL? = nil,
+        audioDirectory: URL? = nil,
+        videoDirectory: URL? = nil,
         fileExists: (String) -> Bool
     ) -> [BackupMediaCandidate] {
         var candidates: [BackupMediaCandidate] = []
@@ -359,6 +406,35 @@ public final class BackupService {
             )
         }
 
+        /// v6：表情 / 语音 / 视频各自的目录里解析「引用 → 真实文件」。
+        ///
+        /// 与图片同一条规矩：只收落在**我们自己的目录**里的普通文件；服务端媒体
+        /// （`/v1/media/<id>`）不是本机文件，跳过（它本来就该由服务端那一份负责）。
+        func appendLocal(
+            _ kind: BackupMediaKind,
+            _ personaId: String?,
+            _ raw: String?,
+            in target: URL?,
+            mime: String?
+        ) {
+            guard let target, let raw else { return }
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, ServerMediaReference.mediaId(from: trimmed) == nil else { return }
+            guard let name = BackupMediaTransfer.localFileName(trimmed) else { return }
+            let candidateURL = target.appendingPathComponent(name, isDirectory: false).standardizedFileURL
+            guard AttachmentLocation.isWithin(target, candidateURL) else { return }
+            guard FileManager.default.fileExists(atPath: candidateURL.path) else { return }
+            let resolvedMime = mime ?? BackupMediaTransfer.mime(forFileName: name)
+            guard let finalMime = resolvedMime,
+                  BackupMediaTransfer.isSupported(mime: finalMime, for: kind) else { return }
+            candidates.append(
+                BackupMediaCandidate(
+                    kind: kind, personaId: personaId, fileName: name,
+                    fileURL: candidateURL, mime: finalMime
+                )
+            )
+        }
+
         // (1) 人格头像。
         for persona in personas {
             append(.personaAvatar, persona.id, persona.avatarUri, BackupAvatarPath.portable(persona.avatarUri))
@@ -369,14 +445,34 @@ public final class BackupService {
         for preset in presets {
             append(.personaAvatar, nil, preset.avatarUri, BackupAvatarPath.portable(preset.avatarUri))
         }
-        // (4) 聊天图片：`attachmentsJson` 里还能解析到本机文件的那些。
+        // (4) 聊天附件：图片 / 表情 / 语音 / 视频。按附件的 `kind`（其次 mime）分派到
+        //     各自的目录，同一个 `attachmentsJson` 里可能混着几种。
         for message in messages {
             for attachment in AttachmentsCodec.decode(message.attachmentsJson) {
-                append(
-                    .chatImage, message.personaId, attachment.uri,
-                    BackupMediaTransfer.portableFileName(attachment.uri)
-                )
+                if attachment.isAudio {
+                    appendLocal(
+                        .audio, message.personaId, attachment.uri, in: audioDirectory,
+                        mime: AudioVideoLimits.canonicalMime(attachment.mime)
+                    )
+                } else if attachment.isVideo {
+                    appendLocal(
+                        .video, message.personaId, attachment.uri, in: videoDirectory,
+                        mime: AudioVideoLimits.canonicalMime(attachment.mime)
+                    )
+                } else if attachment.isSticker {
+                    appendLocal(.sticker, message.personaId, attachment.uri, in: stickerDirectory,
+                                mime: attachment.mime)
+                } else {
+                    append(
+                        .chatImage, message.personaId, attachment.uri,
+                        BackupMediaTransfer.portableFileName(attachment.uri)
+                    )
+                }
             }
+        }
+        // (5) v6 表情收藏：表情可能脱离任何一条消息存在（用户直接收藏的），单独收一遍。
+        for sticker in stickers {
+            appendLocal(.sticker, sticker.personaId, sticker.file, in: stickerDirectory, mime: sticker.mime)
         }
         return candidates
     }
@@ -407,6 +503,11 @@ public final class BackupService {
                 }
             }
         }
+        // v6：表情行的 `file` 就是它的 STICKER 媒体条目。
+        var referencedStickerNames = Set<String>()
+        for sticker in bundle.stickers {
+            if let name = BackupAvatarPath.fileName(sticker.file) { referencedStickerNames.insert(name) }
+        }
         return bundle.media.filter { media in
             switch BackupMediaKind(rawValue: media.kind.trimmingCharacters(in: .whitespacesAndNewlines)) {
             case .userAvatar:
@@ -415,7 +516,11 @@ public final class BackupService {
                 let personaId = media.personaId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 return referencedAvatarNames.contains(media.fileName)
                     || (!personaId.isEmpty && personaIds.contains(personaId))
-            case .chatImage:
+            case .sticker:
+                return referencedStickerNames.contains(media.fileName)
+                    || referencedChatNames.contains(media.fileName)
+            case .chatImage, .audio, .video:
+                // 图片 / 语音 / 视频都只认「某条消息的附件就是它」。
                 return referencedChatNames.contains(media.fileName)
             case nil:
                 // 不认识的 kind：谁也不可能引用它，但仍然交给落盘器去「跳过并计数」——
@@ -549,17 +654,21 @@ public final class BackupService {
         let restoredMedia = BackupMediaRestorer.restore(
             entries: Self.referencedMedia(bundle),
             directory: mediaDirectory,
+            stickerDirectory: stickerDirectory,
+            audioDirectory: audioDirectory,
+            videoDirectory: videoDirectory,
             totalBudget: mediaByteLimit,
             perFileBudget: mediaFileByteLimit
         )
+        // v6：媒体不再只有图片，文案改成「样」——「有 3 张图片没接回来」说不了语音和视频。
         if restoredMedia.invalidCount > 0 {
             warnings.append(PluralText.format(
-                "有 %d 张图片没接回来（文件损坏或格式不支持）", restoredMedia.invalidCount
+                "有 %d 样附件没接回来（文件损坏或格式不支持）", restoredMedia.invalidCount
             ))
         }
         if restoredMedia.overLimitCount > 0 {
             warnings.append(PluralText.format(
-                "有 %d 张图片没有接回来（超出上限）", restoredMedia.overLimitCount
+                "有 %d 样附件没有接回来（超出上限）", restoredMedia.overLimitCount
             ))
         }
 
@@ -665,6 +774,37 @@ public final class BackupService {
             fixed.avatarUri = nil
             return fixed
         }
+        // v6：表情行只有在**文件真的接回来**时才写（`file` 必须是本机当前容器里的路径）。
+        // 表情的 `file` 是绝对路径（与 `stickers.file` 的既有语义一致），不是 `file://`；
+        // 这里写 `path`，界面/发送链路的 `StickerStorage.fileURL(for:)` 两种写法都认。
+        var missingStickers = 0
+        let stickers: [StickerEntity] = bundle.stickers.compactMap { sticker in
+            let name = sticker.file.flatMap { BackupAvatarPath.fileName($0) }
+            let restored = name.flatMap { restoredMedia.stickersByFileName[$0] }
+            if restored == nil { missingStickers += 1 }
+            return Self.toEntity(sticker, file: restored?.fileURL.path, now: now())
+        }
+        if missingStickers > 0 {
+            warnings.append(PluralText.format(
+                "有 %d 个表情没接回来（备份里没有它的文件）", missingStickers
+            ))
+        }
+        // 日记便条只属于**这次备份里真的有的人格**：挂到不存在的人格上就是一条谁都看不到的孤儿。
+        let knownPersonaIds = Set(personas.map(\.id))
+        var orphanNotes = 0
+        let diaryNotes: [DiaryNoteEntity] = bundle.diaryNotes.compactMap { note in
+            guard let entity = Self.toEntity(note) else { return nil }
+            guard knownPersonaIds.contains(entity.personaId) else {
+                orphanNotes += 1
+                return nil
+            }
+            return entity
+        }
+        if orphanNotes > 0 {
+            warnings.append(PluralText.format(
+                "有 %d 条日记没接回来（它属于的人不在这次备份里）", orphanNotes
+            ))
+        }
         let rules = bundle.proactiveRules.map(Self.toEntity)
         let intents = bundle.agentIntents.map(Self.toEntity)
         let consolidations = bundle.memoryConsolidations.map(Self.toEntity)
@@ -680,7 +820,7 @@ public final class BackupService {
         var lostAttachmentMessages = 0
         let messages = bundle.messages.map { message -> MessageEntity in
             let restoredJson = BackupMediaRestorer.restoredAttachments(
-                message.attachmentsJson, chatImagesByFileName: restoredMedia.chatImagesByFileName
+                message.attachmentsJson, restoredByFileName: restoredMedia.attachmentsByFileName
             )
             let hadAttachments = !(message.attachmentsJson ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -713,6 +853,9 @@ public final class BackupService {
             try stores.database.inTransaction {
                 if mode == .replace {
                     // 顺序：先清子表（消息、索引、回声、版本），再清父表。
+                    // v6：表情与日记便条也属于「他」，替换导入要先清干净。
+                    try stores.stickers.deleteAll()
+                    try stores.diaryNotes.deleteAll()
                     try stores.messages.deleteAll()
                     try stores.sessions.deleteAll()
                     try stores.memoryTerms.deleteAll()
@@ -762,6 +905,9 @@ public final class BackupService {
                 for rule in rules { try stores.proactiveRules.upsert(rule) }
                 for intent in intents { try stores.agentIntents.upsert(intent) }
                 for consolidation in consolidations { try stores.memoryConsolidations.upsert(consolidation) }
+                // v6：表情与日记便条。按 id upsert（与其它段同一条「合并」语义）。
+                if !stickers.isEmpty { try stores.stickers.upsert(stickers) }
+                if !diaryNotes.isEmpty { try stores.diaryNotes.upsert(diaryNotes) }
 
                 // API 配置：只覆盖非敏感字段；已存在的配置把本机 Key 留着，新配置 Key 留空等用户填。
                 // 配置本身从不删除。
@@ -867,7 +1013,9 @@ public final class BackupService {
             skipped: skipped,
             warnings: warnings,
             mode: mode,
-            presets: presets.count
+            presets: presets.count,
+            stickers: stickers.count,
+            diaryNotes: diaryNotes.count
         )
     }
 
@@ -1260,6 +1408,61 @@ public final class BackupService {
             id: run.id, personaId: run.personaId, at: run.at, kept: run.kept,
             merged: run.merged, archived: run.archived, forgotten: run.forgotten,
             summary: run.summary, modelName: run.modelName
+        )
+    }
+
+    // MARK: - v6：表情 / 日记便条
+
+    /// 表情 → 备份：`file` 只写裸文件名（关联键），二进制在 `media[]` 里。
+    ///
+    /// `fileName` 为 nil 表示这次没能把文件装进备份：行照写（表情本身还在、元信息还在），
+    /// 只是导入端会拿到一条「没有文件」的表情 —— 明确好过悄悄丢掉用户收藏的整条记录。
+    static func toBackupSticker(_ sticker: StickerEntity, fileName: String?) -> BackupSticker {
+        BackupSticker(
+            id: sticker.id, ownerUserId: sticker.ownerUserId, personaId: sticker.personaId,
+            file: fileName, mime: sticker.mime, width: sticker.width, height: sticker.height,
+            frames: sticker.frames, bytes: sticker.bytes, source: sticker.source,
+            createdBy: sticker.createdBy, createdAt: sticker.createdAt
+        )
+    }
+
+    /// 备份 → 表情实体。`file` 由调用方在媒体落盘之后填（`nil` = 这次没接回文件）。
+    static func toEntity(_ sticker: BackupSticker, file: String?, now at: Int64) -> StickerEntity? {
+        let id = sticker.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return nil }
+        let rawFile = file?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let rawFile, !rawFile.isEmpty {
+            return StickerEntity(
+                id: id, ownerUserId: sticker.ownerUserId, personaId: sticker.personaId,
+                file: rawFile, mime: sticker.mime.isEmpty ? "image/gif" : sticker.mime,
+                width: sticker.width, height: sticker.height, frames: sticker.frames,
+                bytes: sticker.bytes, source: sticker.source, createdBy: sticker.createdBy,
+                createdAt: sticker.createdAt > 0 ? sticker.createdAt : at
+            )
+        }
+        // 没有文件的表情行毫无用处（界面上是一个永远点不开的方块），干脆不写。
+        return nil
+    }
+
+    static func toBackupDiaryNote(_ note: DiaryNoteEntity) -> BackupDiaryNote {
+        BackupDiaryNote(
+            id: note.id, personaId: note.personaId, content: note.content,
+            createdAt: note.createdAt, remindAt: note.remindAt, remindedAt: note.remindedAt,
+            updatedAt: note.updatedAt
+        )
+    }
+
+    static func toEntity(_ note: BackupDiaryNote) -> DiaryNoteEntity? {
+        let id = note.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personaId = note.personaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let content = DiaryLimits.clean(note.content)
+        guard !id.isEmpty, !personaId.isEmpty, let content else { return nil }
+        return DiaryNoteEntity(
+            id: id, personaId: personaId, content: content,
+            createdAt: note.createdAt,
+            remindAt: (note.remindAt ?? 0) > 0 ? note.remindAt : nil,
+            remindedAt: (note.remindedAt ?? 0) > 0 ? note.remindedAt : nil,
+            updatedAt: note.updatedAt
         )
     }
 

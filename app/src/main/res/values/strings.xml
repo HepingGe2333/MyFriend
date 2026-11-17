@@ -1722,6 +1722,7 @@
     <string name="persona_evolution_accepted">记下了，这条已经写进他的人设。</string>
     <string name="persona_evolution_rejected">这条不用了。</string>
     <string name="persona_evolution_accept_failed">没写进去，稍后再试一次。</string>
+    <string name="persona_evolution_reject_failed">没拒绝成，稍后再试一次。</string>
     <string name="persona_evolution_section_note_server">这些是他这几轮聊下来觉得自己的变化。接受后会写进他的人格并同步到服务端，不点头一周后自动丢掉。</string>
     <string name="persona_evolution_accepted_server">记下了，这条已经写进他的人设并同步到服务端。</string>
     <!-- ============================== 0.13 语音 / 视频（spec/audio-video） ============================== -->

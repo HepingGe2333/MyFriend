@@ -97,6 +97,48 @@ public final class MoodRepository {
         return next
     }
 
+    /// 服务端判定结果的落库入口（0.13 云端模式）。
+    ///
+    /// 与 `applyJudgement` 的区别：那边是**本地模型**的输出，要过 `MoodJudgementRules`
+    /// 的校验（范围、单次幅度 ≤2、有没有明显变化）；这边是**服务端已经判定完的结论**，
+    /// 服务端是权威，客户端只负责把它缓存在本机（界面、离线提示词、心跳的情绪放大都读本地）。
+    /// 所以这里只做「夹取到合法范围 + 照抄」，不重算、不再判一次。
+    ///
+    /// - Returns: 落库后的状态；人格已经不在本机时 nil。
+    @discardableResult
+    public func applyServerMood(
+        personaId: String,
+        label: String,
+        intensity: Int,
+        dimensions: MoodDimensions?,
+        reason: String?,
+        now: Int64? = nil
+    ) -> MoodState? {
+        let at = now ?? self.now()
+        guard var persona = (try? stores.personas.byId(personaId)) ?? nil else { return nil }
+        let word = MoodLexicon.normalize(label)
+        guard !word.isEmpty else { return nil }
+        let strength = min(max(intensity, 1), 5)
+        let cleanReason = String(
+            (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
+        )
+        // 三维缺省时按词表推（老服务端不懂三维）：本地缓存至少不会因为「少两列」而报错。
+        let resolved = dimensions ?? MoodDimensions.fromLegacy(label: word, intensity: strength)
+        let next = MoodState(
+            label: word, intensity: strength, reason: cleanReason,
+            updatedAt: at, dimensions: resolved
+        )
+        persona.mood = next.label
+        persona.moodIntensity = next.intensity
+        persona.moodReason = next.reason.isEmpty ? nil : next.reason
+        persona.moodUpdatedAt = at
+        persona.moodValence = resolved.valence
+        persona.moodArousal = resolved.arousal
+        persona.moodDominance = resolved.dominance
+        _ = try? stores.personas.upsert(persona)
+        return next
+    }
+
     /// 判定失败 / 没有可用的 API 配置时，把心情按时间往基准挪一步并落库（规范 §2）。
     ///
     /// 不抛错、不打扰用户：调用方只写一行日志。返回 (当前心情, 这次有没有真的变过)。

@@ -1773,6 +1773,7 @@
     <string name="persona_evolution_accepted">Noted — this is part of his profile now.</string>
     <string name="persona_evolution_rejected">Dropped that one.</string>
     <string name="persona_evolution_accept_failed">Could not apply it — try again in a moment.</string>
+    <string name="persona_evolution_reject_failed">Could not drop it — try again in a moment.</string>
     <string name="persona_evolution_section_note_server">These are the changes he has noticed in himself over your recent conversations. Accepting one updates his profile and syncs it to your server; anything you leave alone is dropped after a week.</string>
     <string name="persona_evolution_accepted_server">Noted — this is part of his profile now and synced to your server.</string>
     <!-- ============================== 0.13 voice / video (spec/audio-video) ============================== -->

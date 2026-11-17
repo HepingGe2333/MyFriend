@@ -2,15 +2,23 @@ package com.yap.app.data.repo
 
 import com.yap.app.data.local.PersonaEntity
 import com.yap.app.data.local.PersonaRevisionEntity
-import com.yap.app.data.remote.ServerPersonaWrite
+import com.yap.app.data.remote.ServerEvolutionAcceptance
 import com.yap.app.data.remote.ServerWriteGateway
+import com.yap.app.data.remote.int
 import com.yap.app.data.remote.long
+import com.yap.app.data.remote.string
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.PersonaEvolution
+import com.yap.app.domain.PersonaProfile
 import com.yap.app.domain.PersonaRevisionReason
 import com.yap.app.network.userError
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -70,9 +78,19 @@ class PersonaEvolutionAcceptance @Inject constructor(
             }
         }
 
-    /** 拒绝一条变化：只丢掉提议，人设一动不动。 */
-    suspend fun reject(patchId: String) {
-        runCatching { store.deletePatch(patchId) }
+    /**
+     * 拒绝一条变化：只丢掉提议，人设一动不动。
+     *
+     * 服务端模式先 `POST /v1/personas/{id}/evolution/{patchId}/reject`，成功才删本地待审；
+     * 失败保留待审并返回 failure（界面提示「没拒绝成」）——用户点了拒绝却还挂在那里，
+     * 比直接消失更让人困惑。本地模式与 0.13 之前完全一致：只删本地。
+     */
+    suspend fun reject(patchId: String): Result<Unit> = runCatching {
+        if (serverWrites.isEnabled()) {
+            val patch = store.patch(patchId) ?: userError(DomainErrorCode.PENDING_PATCH_NOT_FOUND)
+            serverWrites.rejectEvolution(patch.personaId, patchId).getOrThrow()
+        }
+        store.deletePatch(patchId)
     }
 
     /**
@@ -97,14 +115,14 @@ class PersonaEvolutionAcceptance @Inject constructor(
     }
 
     /**
-     * 服务端模式：先让服务端接受，再写本地缓存。
+     * 服务端模式：先让服务端接受（0.13 起改用服务端进化端点），再写本地缓存。
      *
-     * 请求体是**整条人格**（[ServerPersonaWrite.payload]），不是只发四个字段：服务端的
-     * `POST /v1/personas` 按字段合并，发全量既保证「保留其它字段」，也让服务端拿到新的 `version`。
-     * 头像不变就不发 `avatarUrl`（否则一次进化会把服务端头像清空）。
+     * 为什么不再走 `POST /v1/personas`：服务端已经有 `.../evolution/{patchId}/accept`，
+     * 它才是「这条待审补丁」的唯一真相——自己拼一份全量人格发过去，会把服务端别的设备
+     * 刚接受的变化覆盖掉，也可能把 pending 表留在服务端（用户下次又看到同一条）。
      *
-     * 服务端失败时 [ServerWriteGateway.savePersona] 返回 failure，这里 `getOrThrow()` 直接抛出：
-     * 本地一行都不写、待审项留着，界面提示「没写进去」。
+     * 服务端失败（404/410/502/网络）时 `getOrThrow()` 直接抛出：本地一行都不写、待审项留着，
+     * 界面提示「没写进去」——用户点头的变化不能只在本机看起来成功。
      */
     private suspend fun acceptOnServer(
         patchId: String,
@@ -113,19 +131,8 @@ class PersonaEvolutionAcceptance @Inject constructor(
         changes: List<PersonaEvolution.Change>,
         now: Long
     ): PersonaEntity {
-        val serverPersonaId = serverWrites.serverPersonaId(persona.id)
-        val payload = ServerPersonaWrite.payload(
-            persona = updated.copy(id = serverPersonaId),
-            avatarUrl = null,
-            creating = false,
-            includeAvatar = false
-        )
-        val server = serverWrites.savePersona(payload).getOrThrow()
-        // 服务端时钟比本机可信（其它设备/服务端都会按它排序）：能读到时用它覆盖 updatedAt。
-        val applied = server.long("updatedAt")
-            ?.takeIf { it > 0L }
-            ?.let { updated.copy(updatedAt = it) }
-            ?: updated
+        val acceptance = serverWrites.acceptEvolution(persona.id, patchId).getOrThrow()
+        val applied = ServerEvolutionPersonaCache.apply(persona, updated, acceptance)
         store.inTransaction {
             store.insertRevision(revisionOf(persona, now, PersonaRevisionReason.BEFORE_EVOLUTION))
             store.updatePersona(applied)
@@ -150,4 +157,76 @@ class PersonaEvolutionAcceptance @Inject constructor(
             reason = reason,
             createdAt = now
         )
+}
+
+/**
+ * 服务端接受响应 → 本地缓存人格（0.13，纯函数、可单测）。
+ *
+ * 服务端的 `accept` 响应里 `persona` 是**合并后的完整人格**：四字段的值可能是
+ * 「JSON 数组文本」（客户端 Room 列的形状，`PersonaFields.encodeListLike` 保持原形状）
+ * 或 JSON 数组（服务端自己新建的人格）；`version` 是 `version + 1`。
+ *
+ * 只写这五样（四字段 + version，外加服务端时钟的 updatedAt），其余本地字段一律保留：
+ * 服务端不理解心情、翻译缓存、人设卡这些客户端字段，不能拿一份响应把它们清掉。
+ */
+object ServerEvolutionPersonaCache {
+
+    fun apply(
+        local: PersonaEntity,
+        locallyComputed: PersonaEntity,
+        acceptance: ServerEvolutionAcceptance
+    ): PersonaEntity {
+        // 服务端说「没有实际变化」（去重后为空）时，本地也保持原样：不要让一次 no-op 接受
+        // 悄悄把本地缓存里别的设备刚写进去的值覆盖回去。
+        if (!acceptance.changed) return local
+        val persona = acceptance.persona ?: return locallyComputed
+        val version = acceptance.version.takeIf { it > 0 }
+            ?: persona.int("version")?.takeIf { it > 0 }
+            ?: locallyComputed.version
+        // quirks 要区分「服务端明确写了 null（清空设定）」与「响应里根本没这个字段（回退本地）」：
+        // 两者都读成 null，只有 containsKey 能分辨。
+        val quirks = if (persona.containsKey("quirks")) {
+            quirksText(persona["quirks"])
+        } else {
+            locallyComputed.quirks
+        }
+        return local.copy(
+            traits = listText(persona["traits"], PersonaProfile.MAX_TRAITS) ?: locallyComputed.traits,
+            likes = listText(persona["likes"], PersonaProfile.MAX_LIKES) ?: locallyComputed.likes,
+            behaviors = listText(persona["behaviors"], PersonaProfile.MAX_BEHAVIORS) ?: locallyComputed.behaviors,
+            quirks = quirks,
+            version = version,
+            updatedAt = persona.long("updatedAt")?.takeIf { it > 0L } ?: locallyComputed.updatedAt
+        )
+    }
+
+    /** 列表字段：兼容「JSON 数组文本」与「真的数组」两种形状，统一落成 Room 的数组文本。 */
+    private fun listText(element: JsonElement?, max: Int): String? {
+        val values = when (element) {
+            is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.content?.trim()?.takeIf(String::isNotEmpty) }
+            is JsonPrimitive -> {
+                if (!element.isString) return null
+                PersonaProfile.decodeList(element.content)
+            }
+            else -> return null
+        }
+        // 与服务端 `PersonaFields.withCurrent` 的上限一致：超出部分丢掉，已有的不截断。
+        return PersonaProfile.encodeList(PersonaProfile.sanitizeList(values, max))
+    }
+
+    /** quirks：一段自由文本；空串/null 表示清空（`null` 与本地「没有设定」同语义）。 */
+    private fun quirksText(element: JsonElement?): String? = when (element) {
+        null -> null
+        is JsonNull -> null
+        is JsonPrimitive -> if (!element.isString) {
+            null
+        } else {
+            element.content.trim().take(PersonaProfile.MAX_QUIRKS).takeIf { it.isNotEmpty() }
+        }
+        is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.content?.trim()?.takeIf(String::isNotEmpty) }
+            .joinToString("\n")
+            .take(PersonaProfile.MAX_QUIRKS)
+            .takeIf { it.isNotEmpty() }
+        else -> null
+    }
 }

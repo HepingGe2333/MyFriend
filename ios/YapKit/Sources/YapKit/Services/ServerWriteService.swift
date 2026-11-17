@@ -403,6 +403,15 @@ public final class ServerWriteService {
         return mapped
     }
 
+    /// 本机人格 id → 服务端人格 id（首次同步时服务端另发过 id 才有映射；没有就是它自己）。
+    ///
+    /// 0.13 第二阶段的云端情绪/进化端点都在 URL 里带人格 id，装配层需要这个换算。
+    /// 与写路径用的是同一份映射（`server_sync_state` 里的 `personaIdMap`），
+    /// 所以「聊天写到哪个人格」与「情绪判定读哪个人格」一定是同一个人。
+    public func resolvedServerPersonaId(_ localId: String) -> String {
+        mappedServerPersonaId(localId) ?? localId
+    }
+
     private func mappedServerPersonaId(_ localId: String) -> String? {
         mappedId(localId, key: ServerSyncStateStore.Key.personaIdMap)
     }

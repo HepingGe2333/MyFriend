@@ -65,6 +65,7 @@ object AuthorityRoutes {
     fun matches(method: String, rawPath: String): Boolean {
         val path = rawPath.substringBefore('?')
         if (path == STATE_PATH || path == EVENTS_PATH || path == SESSIONS_PATH) return true
+        if (LlmConfigRoutes.matches(path)) return true
         if (path.startsWith("$SESSIONS_PATH/") || path.startsWith("$PERSONAS_PATH/")) return true
         return CrudRoutes.matches(path)
     }
@@ -102,6 +103,8 @@ object AuthorityRoutes {
             val verb = method.uppercase()
             val path = rawPath.substringBefore('?')
             when {
+                LlmConfigRoutes.matches(path) -> LlmConfigRoutes.handle(services, method, body)
+
                 path == STATE_PATH -> {
                     requireGet(verb, STATE_PATH)
                     state(store, rawPath)

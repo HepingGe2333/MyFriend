@@ -137,6 +137,8 @@ class SettingsViewModel @Inject constructor(
     private val userAvatarCoordinator: UserAvatarCoordinator,
     /** 0.13：服务端开关的状态机（同意弹窗 / 历史媒体同步 / 切回本地全量下载）。 */
     private val serverModeSwitch: ServerModeSwitchCoordinator,
+    /** 0.13：连接成功后把本机模型配置推给本机部署的服务端（远程地址会被策略挡掉）。 */
+    private val llmConfigPusher: com.yap.app.data.remote.ServerLlmConfigPusher,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -555,6 +557,9 @@ class SettingsViewModel @Inject constructor(
                 .onSuccess { result ->
                     serverTestMessage.value =
                         context.getString(R.string.settings_server_test_success, result.describe())
+                    // 0.13：「连接成功」也是一次推送时机（开关已打开、地址是回环才真的发）。
+                    // 失败不影响这句「连接成功」——推送是便利，不是连通性判定的一部分。
+                    runCatching { llmConfigPusher.pushIfLocal() }
                 }
                 .onFailure { error ->
                     serverTestMessage.value = ErrorText.of(

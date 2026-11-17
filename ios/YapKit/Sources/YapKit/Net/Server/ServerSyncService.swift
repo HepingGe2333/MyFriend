@@ -171,7 +171,8 @@ public enum ServerSyncMapping {
         record.status = .complete
         record.readAt = server.readAt
         record.attachmentsJson = attachmentsJson(
-            from: server.attachments, mediaMeta: mediaMeta
+            from: server.attachments, mediaMeta: mediaMeta,
+            existing: existing?.attachmentsJson
         ) ?? record.attachmentsJson
         return record
     }
@@ -181,10 +182,16 @@ public enum ServerSyncMapping {
     /// 服务端下发的形状是 `["/v1/media/<id>"]`（契约 §3.6）；本地 `attachmentsJson`
     /// 的 `uri` 就存这个相对路径，渲染时由 `ServerMediaCache` 带 Authorization 取。
     /// `server:<id>` 是 M4 的旧形状，读到也认（`ServerMediaReference` 统一解析）。
+    /// - Parameter existing: 本地这一行**原来**的 `attachmentsJson`（可能已经被
+    ///   `ServerMediaSyncService` 换成了本机文件）。同一个 `serverMediaId` 已经落地成
+    ///   `file://` 的，就**保留本机路径**，不要被服务端的 `/v1/media/<id>` 覆盖回去 ——
+    ///   否则每次同步都会把引用打回远程、渲染退回网络下载（离线时就成了占位图）。
     public static func attachmentsJson(
         from attachments: [String],
-        mediaMeta: ServerMediaMetaStore? = nil
+        mediaMeta: ServerMediaMetaStore? = nil,
+        existing: String? = nil
     ) -> String? {
+        let localized = localizedById(existing)
         let items = attachments.compactMap { raw -> MessageAttachment? in
             // 服务端下发/我们入队时可能给裸 mediaId，也可能给 `/v1/media/<id>`（契约两种都收）；
             // 本地一律存标准相对路径，界面只认这一种。
@@ -197,11 +204,30 @@ public enum ServerSyncMapping {
                 guard !trimmed.contains("/"), !trimmed.contains("\\") else { return nil }
                 id = trimmed
             }
+            // 0.13 第二阶段：这个 mediaId 本机已经有文件了 → 继续用本机文件。
+            if let local = localized[id] { return local }
             // 0.13：语音/视频的 kind/mime/时长在服务端不下发，靠上传时记下的元信息补齐。
-            if let enriched = mediaMeta?.attachment(mediaId: id) { return enriched }
-            return MessageAttachment(uri: ServerMediaReference.uri(id: id))
+            if let enriched = mediaMeta?.attachment(mediaId: id) {
+                var copy = enriched
+                copy.serverMediaId = id
+                return copy
+            }
+            return MessageAttachment(uri: ServerMediaReference.uri(id: id), serverMediaId: id)
         }
         return AttachmentsCodec.encode(items)
+    }
+
+    /// 本地已有附件里「已经落到本机文件」的那些，按 `serverMediaId` 建索引。
+    static func localizedById(_ existing: String?) -> [String: MessageAttachment] {
+        var map: [String: MessageAttachment] = [:]
+        for attachment in AttachmentsCodec.decode(existing) {
+            guard let id = attachment.serverMediaId?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty,
+                !attachment.uri.lowercased().hasPrefix("http"),
+                ServerMediaReference.mediaId(from: attachment.uri) == nil else { continue }
+            map[id] = attachment
+        }
+        return map
     }
 
     /// 会话列表里那一行预览：与本地 `ChatService.refreshPreview` 同一口径

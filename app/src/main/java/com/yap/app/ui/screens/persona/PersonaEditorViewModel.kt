@@ -584,12 +584,30 @@ class PersonaEditorViewModel @Inject constructor(
         }
     }
 
-    /** 拒绝一条待审变化：只丢掉提议，人设一动不动，所以没有失败分支要报。 */
+    /**
+     * 拒绝一条待审变化：只丢掉提议，人设一动不动。
+     *
+     * 服务端模式会先调服务端 `reject`：失败时**保留**这条待审并提示，不能在本机假装已经拒绝
+     * （否则下一次拉服务端待审列表它又回来了，用户会以为按钮没生效）。
+     */
     fun rejectPendingChange(patchId: String) {
         if (patchId.isBlank() || _state.value.pendingBusy) return
         _state.update { it.copy(pendingBusy = true) }
         viewModelScope.launch {
-            personaEvolutionRepository.reject(patchId)
+            val result = personaEvolutionRepository.reject(patchId)
+            if (result.isFailure) {
+                _state.update { it.copy(pendingBusy = false) }
+                events.send(
+                    PersonaEditorEvent.Message(
+                        ErrorText.of(
+                            context,
+                            result.exceptionOrNull(),
+                            R.string.persona_evolution_reject_failed
+                        )
+                    )
+                )
+                return@launch
+            }
             _state.update { state ->
                 state.copy(
                     pendingBusy = false,

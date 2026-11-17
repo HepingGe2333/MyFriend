@@ -200,6 +200,16 @@ struct ServerModeSection: View {
                         .padding(.top, 6)
                 }
 
+                // 本机部署时，手机上的模型配置已经交给服务端（云端情绪/进化要靠它调模型）。
+                // 文案由 Kit 生成（含模型名），所以用 verbatim，不进本地化资源。
+                if let note = env.serverLlmConfigPushMessage {
+                    Text(verbatim: note)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 4)
+                }
+
                 // 首次连上这台服务端时，会在后台把两边记录对齐（人格/记忆/聊天历史）。
                 // 这一步可能跑几十秒，所以把它说清楚、给出进度，而不是让用户等一个黑屏。
                 if let progress = env.serverBootstrapProgress {

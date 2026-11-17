@@ -433,11 +433,34 @@ class BackupMediaTest {
         )
         // 没有对应 media 的附件不写：换机它也回不来。
         assertNull(BackupAttachmentsPortable.portable(attachmentJson, emptySet()))
-        // 非图片 mime + 文件名也认不出扩展名 → 丢掉。
+        // v6：语音/视频/表情也随备份走（mime 与 kind 一起原样保留）。
+        val mediaAttachments = attachmentsJson(
+            listOf(
+                """{"uri":"file:///data/user/0/com.yap.app/files/audio/voice-1.m4a","mime":"audio/m4a","kind":"AUDIO","durationMs":4200}""",
+                """{"uri":"file:///data/user/0/com.yap.app/files/video/video-1.mp4","mime":"video/mp4","kind":"VIDEO","durationMs":9000}""",
+                """{"uri":"file:///data/user/0/com.yap.app/files/stickers/sticker-1.gif","mime":"image/gif","kind":"STICKER"}"""
+            )
+        )
+        val portable = BackupAttachmentsPortable.portable(
+            mediaAttachments,
+            setOf("voice-1.m4a", "video-1.mp4", "sticker-1.gif")
+        ) ?: error("v6 的三类媒体都应该可以跟着备份走")
+        val entries = AttachmentsCodec.decode(portable)
+        assertEquals(listOf("AUDIO", "VIDEO", "STICKER"), entries.map { it.kind })
+        assertEquals(listOf(4200L, 9000L, null), entries.map { it.durationMs })
+        assertTrue("附件只写裸文件名", entries.all { !it.uri.contains("file://") })
+        // 既不认识的 mime 也认不出扩展名 → 丢掉。
         assertNull(
             BackupAttachmentsPortable.portable(
-                attachmentsJson(listOf(attachment(File("clip.mp4"), "video/mp4"))),
-                setOf("clip.mp4")
+                attachmentsJson(
+                    listOf(
+                        attachment(
+                            File("/data/user/0/com.yap.app/files/media/clip.bin"),
+                            "application/octet-stream"
+                        )
+                    )
+                ),
+                setOf("clip.bin")
             )
         )
     }

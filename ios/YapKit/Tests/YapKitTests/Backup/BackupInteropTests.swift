@@ -11,8 +11,10 @@ import XCTest
 /// - `android-export-v3.json`：Android 的 `BackupFixtureTest` 生成（v3，带两张图片的
 ///   base64），这里只读；它可能比 iOS 这一版晚到，所以缺失时跳过而不是红掉；
 /// - `ios-export-v4.json`：v4 的历史样本，只读（证明 v4 仍然能读）。
-/// - `ios-export-v5.json`：由**这个测试**生成（v5，带世界/话风/活动），Android 侧会读它。
-/// - `android-export-v4.json` / `android-export-v5.json`：Android 的样本，只读；缺失时跳过。
+/// - `ios-export-v5.json`：v5 的历史样本，只读（证明 v5 仍然能读）。
+/// - `ios-export-v6.json`：由**这个测试**生成（v6，带表情/语音/视频/日记便条），Android 侧会读它。
+/// - `android-export-v4.json` / `android-export-v5.json` / `android-export-v6.json`：
+///   Android 的样本，只读；缺失时跳过。
 ///
 /// 谁改了备份格式而没改另一端，任何一边的测试都会当场变红。
 final class BackupInteropTests: XCTestCase {
@@ -287,7 +289,8 @@ final class BackupInteropTests: XCTestCase {
             throw XCTSkip("android-export-v5.json 还不存在（Android 端尚未生成 v5 黄金样本）")
         }
         let raw = try String(contentsOf: url, encoding: .utf8)
-        let bundle = try decodeSuccess(raw)
+        // v5 按 v6 读会有一句「格式是 v5，已按 v6 尽力读出来」的警告：允许。
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
 
         XCTAssertEqual(bundle.format, "myfriend.backup")
         XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
@@ -359,7 +362,7 @@ final class BackupInteropTests: XCTestCase {
 
     // MARK: - iOS → Android
 
-    func testIOSExportV5IsWrittenForAndroidFixtureTest() throws {
+    func testIOSExportV6IsWrittenForAndroidFixtureTest() throws {
         let bundle = BackupSamples.iosBundle()
         let json = try BackupCodec.encode(bundle)
 
@@ -368,15 +371,21 @@ final class BackupInteropTests: XCTestCase {
         let decoded = try decodeSuccess(json)
         XCTAssertEqual(decoded, bundle)
         XCTAssertTrue(json.contains("\"format\":\"myfriend.backup\""))
-        XCTAssertTrue(json.contains("\"formatVersion\":\(BackupCodec.formatVersion)"))
+        XCTAssertTrue(json.contains("\"formatVersion\":6"), "v6 的格式版本必须写进文件")
         XCTAssertTrue(json.contains("\"webToolsProvider\":\"TAVILY\""),
                       "v4 导出必须带 provider（样本用的是非默认值，不能靠默认值蒙混）")
         XCTAssertTrue(json.contains("\"apiKeysOmitted\":true"))
         XCTAssertFalse(json.contains("\"apiKey\""))
+        // v6 的三样新东西真的在文件里（不是只在类型里）。
+        XCTAssertTrue(json.contains("\"STICKER\""))
+        XCTAssertTrue(json.contains("\"AUDIO\""))
+        XCTAssertTrue(json.contains("\"diaryNotes\""))
+        XCTAssertTrue(json.contains("durationMs"), "语音时长必须跟着附件走（attachmentsJson 里）")
+        XCTAssertTrue(json.contains("7000"), "语音时长 7 秒要写进 attachmentsJson")
 
         let directory = try fixtureDirectory()
-        // v1–v4 的样本是**只读输入**，绝不重写；v5 只写这一个文件。
-        let target = directory.appendingPathComponent("ios-export-v5.json")
+        // v1–v5 的样本是**只读输入**，绝不重写；v6 只写这一个文件。
+        let target = directory.appendingPathComponent("ios-export-v6.json")
         try json.write(to: target, atomically: true, encoding: .utf8)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
@@ -388,11 +397,72 @@ final class BackupInteropTests: XCTestCase {
         let reloaded = try decodeSuccess(onDisk)
         XCTAssertEqual(reloaded, bundle)
         XCTAssertEqual(reloaded.formatVersion, BackupCodec.formatVersion)
-        XCTAssertEqual(reloaded.media.count, 2, "样本带两张真图")
+        XCTAssertEqual(reloaded.media.count, 5, "样本带两张真图 + 表情 + 语音 + 视频")
+        XCTAssertEqual(reloaded.stickers.count, 1)
+        XCTAssertEqual(reloaded.diaryNotes.count, 2)
         XCTAssertFalse(reloaded.personas.isEmpty)
         XCTAssertFalse(reloaded.sessions.isEmpty)
 
         print("ios fixture written: \(target.path) (\(size) bytes)")
+    }
+
+    // MARK: - iOS v5 样本：仍然能读（只读输入）
+
+    /// v5 样本里没有 `stickers` / `diaryNotes`：读成空数组，不报错、不编内容。
+    func testIOSV5FixtureStillDecodes() throws {
+        let url = try fixtureDirectory().appendingPathComponent("ios-export-v5.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("ios-export-v5.json 不在仓库里")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion, "读进来统一按本机版本记")
+        XCTAssertTrue(bundle.stickers.isEmpty, "v5 没有表情段")
+        XCTAssertTrue(bundle.diaryNotes.isEmpty, "v5 没有日记段")
+        // 世界/话风/活动在 v5 里就有：读得出来。
+        XCTAssertTrue(bundle.personas.contains { $0.worldJson != nil })
+    }
+
+    // MARK: - Android v6 → iOS：表情 / 语音 / 视频 / 日记便条能跨端读
+
+    /// Android 的 v6 样本：`media[]` 的三种新媒体、`stickers[]`、`diaryNotes[]` 都要读得出来。
+    ///
+    /// 两端并行实现，Android 的 v6 样本可能晚到：**缺文件就跳过**（不是静默通过）。
+    func testAndroidV6FixtureDecodesWhenPresent() throws {
+        let url = try fixtureDirectory().appendingPathComponent("android-export-v6.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("android-export-v6.json 还不存在（Android 端尚未生成 v6 黄金样本）")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
+
+        XCTAssertEqual(bundle.format, "myfriend.backup")
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
+        XCTAssertFalse(BackupCodec.containsSecretField(raw), "v6 备份同样不能带密钥")
+
+        // 三种新媒体：至少要出现一次，且 mime/扩展名对得上。
+        let kinds = Set(bundle.media.map { $0.kind.uppercased() })
+        for expected in ["STICKER", "AUDIO", "VIDEO"] {
+            if kinds.contains(expected) {
+                for media in bundle.media where media.kind.uppercased() == expected {
+                    XCTAssertNotNil(
+                        BackupMediaTransfer.mime(forFileName: media.fileName),
+                        "媒体文件名没有可识别的扩展名：\(media.fileName)"
+                    )
+                }
+            }
+        }
+        // 表情行的 `file` 必须是裸文件名（不能是设备绝对路径）。
+        for sticker in bundle.stickers {
+            if let file = sticker.file, !file.isEmpty {
+                XCTAssertFalse(file.contains("/"), "表情的 file 必须是裸文件名：\(file)")
+            }
+        }
+        // 日记便条必须挂在备份里真的有的人格上。
+        let personaIds = Set(bundle.personas.map(\.id))
+        for note in bundle.diaryNotes {
+            XCTAssertTrue(personaIds.contains(note.personaId), "日记挂到了不存在的人格")
+        }
     }
 
     /// 写盘这一步是「给 Android 端用的」，但如果仓库被只读挂载（CI 上偶尔会），

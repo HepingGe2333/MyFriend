@@ -16,12 +16,17 @@ import com.yap.app.domain.UsageKind
 import com.yap.app.network.AiProviderRegistry
 import com.yap.app.network.InferenceParams
 import com.yap.app.network.WireMessage
+import com.yap.app.data.remote.ServerEvolutionPatch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
@@ -68,6 +73,17 @@ class PersonaEvolutionRepository @Inject constructor(
 
         /** 待审补丁的有效期：7 天后自动丢弃（模型看到的「当时」已经不是现在了）。 */
         const val PENDING_TTL_MS: Long = 7 * 24 * 60 * 60 * 1000L
+
+        /**
+         * 服务端待审列表的刷新间隔（0.13）。
+         *
+         * 待审变化由「20 条消息 / 24 小时」触发，不是实时内容；20 秒足够让「刚评估完」
+         * 的补丁在打开人设页时出现，又不会为一张几乎不变的列表持续打请求。
+         */
+        const val SERVER_PENDING_REFRESH_MILLIS: Long = 20_000L
+
+        /** 服务端没给 reason 时的兜底文案（与服务端 `EvolutionRoutes` 的语义一致）。 */
+        const val SERVER_PATCH_REASON: String = "这几轮聊下来，他觉得自己有点变化（需要你点头才会写进人设）。"
 
         /** 评估请求的输出上限与温度：要稳、要短，不要发挥。 */
         private const val MAX_OUTPUT_TOKENS = 900
@@ -188,7 +204,66 @@ class PersonaEvolutionRepository @Inject constructor(
         if (!cursor.shouldEvaluate(userMessages, now)) return null
 
         runCatching { settingsRepository.setEvolutionCursor(personaId, userMessages, now) }
-        return evaluate(persona, sessionId = session.id, now = now)
+        // 0.13：服务端模式下模型与 Key 都在服务端，改调服务端端点（本地模式这一行以下是原路径）。
+        return if (serverWrites.isEnabled()) {
+            evaluateOnServer(persona, session.id, now)
+        } else {
+            evaluate(persona, sessionId = session.id, now = now)
+        }
+    }
+
+    /**
+     * 服务端模式的评估：`POST /v1/personas/{id}/evolution/evaluate`，把返回的补丁缓存进本地待审表。
+     *
+     * 为什么还要本地缓存：待审卡片的字段（patchJson/summary/reason/createdAt）与 UI 的
+     * `PendingChangeUi` 完全同构，缓存一份就能让界面、离线查看、接受时的乐观移除都走同一条路径；
+     * 权威列表仍然来自 [observePending]（服务端 `GET .../pending`）。
+     *
+     * 失败（服务端没配 LLM / 上游错）返回 `written = false`，不抛：聊天主路径不该被打断。
+     */
+    private suspend fun evaluateOnServer(
+        persona: PersonaEntity,
+        sessionId: String?,
+        now: Long
+    ): Evaluation {
+        val result = serverWrites.evaluateEvolution(persona.id).getOrNull()
+            ?: return Evaluation(proposed = 0, written = false)
+        val patch = result.patch ?: return Evaluation(proposed = result.proposed, written = false, summary = result.summary)
+        val cached = cacheServerPatch(persona.id, patch, sessionId, now)
+        val changes = PersonaEvolution.decodePatch(patch.patchJson)
+        return Evaluation(
+            proposed = result.proposed.takeIf { it > 0 } ?: changes.size,
+            written = cached,
+            summary = result.summary.ifBlank { PersonaEvolution.summary(changes) }
+        )
+    }
+
+    /** 服务端补丁 → 本地待审行（id 用服务端 id，接受/拒绝时原样回传）。返回是否写入成功。 */
+    private suspend fun cacheServerPatch(
+        personaId: String,
+        patch: ServerEvolutionPatch,
+        sessionId: String?,
+        now: Long
+    ): Boolean {
+        val id = patch.id.trim()
+        if (id.isEmpty() || patch.patchJson.isBlank()) return false
+        if (!PersonaEvolution.isEvolutionPatch(patch.patchJson)) return false
+        val changes = PersonaEvolution.decodePatch(patch.patchJson)
+        return runCatching {
+            pendingPatchDao.insert(
+                PersonaPendingPatchEntity(
+                    id = id,
+                    personaId = personaId,
+                    sessionId = patch.sessionId ?: sessionId,
+                    patchJson = patch.patchJson,
+                    summary = patch.summary.takeIf { it.isNotBlank() }
+                        ?: PersonaEvolution.summary(changes),
+                    reason = patch.reason.ifBlank { SERVER_PATCH_REASON },
+                    createdAt = patch.createdAt.takeIf { it > 0L } ?: now
+                )
+            )
+            true
+        }.getOrDefault(false)
     }
 
     /** 真的问一次模型并把结果写进待审表（测试里也可以直接调它）。 */
@@ -263,13 +338,50 @@ class PersonaEvolutionRepository @Inject constructor(
 
     // ---------------------------------------------------------------- 待审
 
-    /** 人设页「他最近的变化」：只列进化的补丁（老的人设卡补丁有别的入口）。 */
-    fun observePending(personaId: String): Flow<List<PersonaPendingPatchEntity>> =
-        pendingPatchDao.observeByPersona(personaId).map { patches ->
+    /**
+     * 人设页「他最近的变化」：只列进化的补丁（老的人设卡补丁有别的入口）。
+     *
+     * - **本地模式**：直接订阅 Room（0.13 之前的行为一字未改）；
+     * - **服务端模式**：权威列表来自 `GET /v1/personas/{id}/evolution/pending`。
+     *   首帧立即拉一次，之后每 [SERVER_PENDING_REFRESH_MILLIS] 拉一次（待审列表变化很慢，
+     *   不值得为它开事件流）；拉取失败时退回落本地缓存，界面不会突然「全没了」。
+     */
+    fun observePending(personaId: String): Flow<List<PersonaPendingPatchEntity>> {
+        val local = pendingPatchDao.observeByPersona(personaId).map { patches ->
             patches.filter { PersonaEvolution.isEvolutionPatch(it.patchJson) }
         }
+        if (!serverWrites.isEnabled()) return local
+        return flow {
+            while (currentCoroutineContext().isActive) {
+                emit(pending(personaId))
+                delay(SERVER_PENDING_REFRESH_MILLIS)
+            }
+        }
+    }
 
-    suspend fun pending(personaId: String): List<PersonaPendingPatchEntity> =
+    /**
+     * 读一次待审列表。
+     *
+     * 服务端模式：拉 `GET .../pending` → 把结果同步进本地缓存表（补丁行 + 服务端 id）→ 返回缓存行。
+     * 失败时返回本地缓存（上一次拉到的），而不是空列表——空列表会让用户以为提议被系统吞了。
+     */
+    suspend fun pending(personaId: String): List<PersonaPendingPatchEntity> {
+        if (!serverWrites.isEnabled()) return localPending(personaId)
+        val remote = serverWrites.pendingEvolution(personaId).getOrNull()
+            ?: return localPending(personaId)
+        val patches = remote.patches.filter { it.id.isNotBlank() && PersonaEvolution.isEvolutionPatch(it.patchJson) }
+        runCatching {
+            // 以服务端为准：本地那些已经不在服务端列表里的补丁（被别的设备接受/拒绝、过期）清掉。
+            // 只在拉取成功时做，失败时保留本地缓存。
+            pendingPatchDao.deleteByPersona(personaId)
+            patches.forEach { patch ->
+                cacheServerPatch(personaId, patch, patch.sessionId, System.currentTimeMillis())
+            }
+        }
+        return localPending(personaId)
+    }
+
+    private suspend fun localPending(personaId: String): List<PersonaPendingPatchEntity> =
         runCatching { pendingPatchDao.byPersona(personaId) }.getOrDefault(emptyList())
             .filter { PersonaEvolution.isEvolutionPatch(it.patchJson) }
 
@@ -287,10 +399,13 @@ class PersonaEvolutionRepository @Inject constructor(
     suspend fun accept(patchId: String, now: Long = System.currentTimeMillis()): Result<PersonaEntity> =
         acceptance.accept(patchId, now)
 
-    /** 拒绝一条变化：只丢掉提议，人设一动不动（服务端没有待审表，所以只删本地）。 */
-    suspend fun reject(patchId: String) {
-        acceptance.reject(patchId)
-    }
+    /**
+     * 拒绝一条变化：只丢掉提议，人设一动不动。
+     *
+     * 服务端模式先 `POST .../{patchId}/reject`，成功才删本地缓存；失败保留待审并返回 failure
+     * （界面提示「没拒绝成」），本地模式仍只有「删本地」这一步。
+     */
+    suspend fun reject(patchId: String): Result<Unit> = acceptance.reject(patchId)
 
     /**
      * 7 天过期：把超过有效期的待审变化删掉，返回删掉几条。

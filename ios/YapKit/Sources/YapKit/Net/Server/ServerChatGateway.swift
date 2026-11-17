@@ -346,12 +346,24 @@ public final class ServerChatGateway {
                     message: String(format: String(localized: "这种%@格式还不支持（%@）"), mediaKind.displayName, mime)
                 ))
             }
+            // 先按**文件大小**判一次，再把字节读进内存（0.13 第二阶段）：
+            // 一段 200 MB 的视频读进内存只为发现「超限」，在真机上足够把 App 撑崩；
+            // 而且 `audioVideo.data(for:)` 自己也会对超限文件返回 nil，那时用户看到的
+            // 只会是一句含糊的「读不出来」，而不是「视频超过 64 MB」。
+            if let rejection = AudioVideoLimits.rejection(
+                durationMs: attachment.durationMs,
+                bytes: audioVideo.byteCount(for: attachment),
+                kind: mediaKind
+            ) {
+                return .rejected(ApiException(statusCode: nil, message: rejection))
+            }
             guard let data = audioVideo.data(for: attachment), !data.isEmpty else {
                 return .rejected(ApiException(
                     statusCode: nil,
                     message: String(format: String(localized: "这段%@读不出来，重新录/选一次试试"), mediaKind.displayName)
                 ))
             }
+            // 再按真实字节数复核一次（文件可能在上面两行之间被替换过）。
             if let rejection = AudioVideoLimits.rejection(
                 durationMs: attachment.durationMs, bytes: data.count, kind: mediaKind
             ) {

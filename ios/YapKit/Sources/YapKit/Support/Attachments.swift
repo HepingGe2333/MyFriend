@@ -62,6 +62,15 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
     ///
     /// 与 `kind` 一样只在新版本写、老版本忽略：`durationMs` 为空时一个字节都不写。
     public var durationMs: Int?
+    /// 这份附件在服务端上的媒体 id（0.13 第二阶段）。
+    ///
+    /// 为什么本地已经有文件了还要留它：
+    /// - 重新上传（转发/补发）时可以直接复用服务端那一份，不必再传一遍 64 MB 的视频；
+    /// - 本机文件被清掉（换机、清缓存）时还能凭它重新拉一次；
+    /// - 排查「这张图是哪来的」时不用去猜文件名。
+    ///
+    /// 与 `kind` 同一条兼容规矩：nil 不写进 JSON，老版本读到会当未知字段忽略。
+    public var serverMediaId: String?
 
     public init(
         uri: String,
@@ -69,7 +78,8 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         width: Int = 0,
         height: Int = 0,
         kind: String? = nil,
-        durationMs: Int? = nil
+        durationMs: Int? = nil,
+        serverMediaId: String? = nil
     ) {
         self.uri = uri
         self.mime = mime
@@ -77,6 +87,7 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         self.height = height
         self.kind = kind
         self.durationMs = durationMs
+        self.serverMediaId = serverMediaId
     }
 
     /// 一段语音（AAC 单声道 16 kHz、`.m4a`）。
@@ -149,7 +160,7 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case uri, mime, width, height, kind, durationMs
+        case uri, mime, width, height, kind, durationMs, serverMediaId
     }
 
     /// 手写解码（不用合成实现）：合成实现遇到缺字段会整条失败，
@@ -165,6 +176,9 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         kind = (rawKind?.isEmpty == false) ? rawKind : nil
         let rawDuration = try container.decodeIfPresent(Int.self, forKey: .durationMs) ?? 0
         durationMs = rawDuration > 0 ? rawDuration : nil
+        let rawServerMediaId = try container.decodeIfPresent(String.self, forKey: .serverMediaId)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        serverMediaId = (rawServerMediaId?.isEmpty == false) ? rawServerMediaId : nil
     }
 
     /// 手写编码：与 Android 的 `encodeDefaults = false` 对齐 —— 默认值不写进 JSON。
@@ -177,6 +191,9 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         if height != 0 { try container.encode(height, forKey: .height) }
         if let kind, !kind.isEmpty { try container.encode(kind, forKey: .kind) }
         if let durationMs, durationMs > 0 { try container.encode(durationMs, forKey: .durationMs) }
+        if let serverMediaId, !serverMediaId.isEmpty {
+            try container.encode(serverMediaId, forKey: .serverMediaId)
+        }
     }
 }
 
@@ -275,8 +292,16 @@ public enum AttachmentsCodec {
         // `durationMs`：与宽度/高度同一套宽容语义（缺省/null = 不知道，类型不对 = 坏数据）。
         guard let rawDuration = try? optionalInt(object["durationMs"]) else { return nil }
         let durationMs = rawDuration > 0 ? rawDuration : nil
+        // `serverMediaId`：0.13 第二阶段新增。类型不对算坏数据（与其它字段同一套语义）。
+        var serverMediaId: String?
+        if let raw = object["serverMediaId"], !(raw is NSNull) {
+            guard let value = raw as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            serverMediaId = trimmed.isEmpty ? nil : trimmed
+        }
         return MessageAttachment(
-            uri: uri, mime: mime, width: width, height: height, kind: kind, durationMs: durationMs
+            uri: uri, mime: mime, width: width, height: height, kind: kind,
+            durationMs: durationMs, serverMediaId: serverMediaId
         )
     }
 

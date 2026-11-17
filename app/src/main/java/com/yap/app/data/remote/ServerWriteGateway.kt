@@ -205,6 +205,38 @@ class ServerWriteGateway @Inject constructor(
             warn("server backup import failed: ${error.javaClass.simpleName}")
         }
 
+    // ------------------------------------------------------------------ 0.13：人格进化（服务端端点）
+
+    /**
+     * `POST /v1/personas/{id}/evolution/evaluate`：服务端用自己的模型评估一次。
+     *
+     * 失败（503 没配模型、502 上游错）原样返回 failure：进化是显式动作，仓储层会把
+     * 「这一轮没评估成」静默吞掉，不影响聊天；但不会把失败伪装成「没有提议」。
+     */
+    suspend fun evaluateEvolution(personaId: String): Result<ServerEvolutionEvaluation> =
+        runCatching { requireApi().evaluateEvolution(serverPersonaId(personaId)) }
+            .onFailure { error -> warn("server evolution evaluate failed: ${error.javaClass.simpleName}") }
+
+    /** `GET /v1/personas/{id}/evolution/pending`：服务端待审列表（服务端顺手清过期）。 */
+    suspend fun pendingEvolution(personaId: String): Result<ServerEvolutionPending> =
+        runCatching { requireApi().pendingEvolution(serverPersonaId(personaId)) }
+            .onFailure { error -> warn("server evolution pending failed: ${error.javaClass.simpleName}") }
+
+    /** `POST .../{patchId}/accept`：服务端合并四字段 + `version + 1`，响应里带完整人格。 */
+    suspend fun acceptEvolution(personaId: String, patchId: String): Result<ServerEvolutionAcceptance> =
+        runCatching { requireApi().acceptEvolution(serverPersonaId(personaId), patchId) }
+            .onFailure { error -> warn("server evolution accept failed: ${error.javaClass.simpleName}") }
+
+    /**
+     * `POST .../{patchId}/reject`：只丢补丁。
+     *
+     * 404/410 在这里**不当作成功**：补丁不存在/过期时本地待审项也应该消失，但那是仓储层
+     * 依据错误 code 决定「清掉缓存并提示」还是「保留重试」的事，网关只如实上报。
+     */
+    suspend fun rejectEvolution(personaId: String, patchId: String): Result<ServerEvolutionRejection> =
+        runCatching { requireApi().rejectEvolution(serverPersonaId(personaId), patchId) }
+            .onFailure { error -> warn("server evolution reject failed: ${error.javaClass.simpleName}") }
+
     /** `POST /v1/media`：媒体上传（头像/聊天图共用）。 */
     suspend fun uploadMedia(
         bytes: ByteArray,

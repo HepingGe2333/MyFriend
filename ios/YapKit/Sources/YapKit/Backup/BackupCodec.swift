@@ -111,6 +111,11 @@ public enum BackupCodec {
                                id: { $0.id }, build: BackupProactiveRule.init(json:))
         let intents = decodeList(root, key: "agentIntents", label: String(localized: "念头"), warnings: &warnings,
                                  id: { $0.id }, build: BackupAgentIntent.init(json:))
+        // v6：表情与日记便条。老备份没有这两段 → 空数组（不是「读坏了」）。
+        let stickers = decodeList(root, key: "stickers", label: String(localized: "表情"), warnings: &warnings,
+                                  id: { $0.id }, build: BackupSticker.init(json:))
+        let diaryNotes = decodeList(root, key: "diaryNotes", label: String(localized: "日记"), warnings: &warnings,
+                                    id: { $0.id }, build: BackupDiaryNote.init(json:))
         let consolidations = decodeList(root, key: "memoryConsolidations", label: String(localized: "整理记录"),
                                         warnings: &warnings, id: { $0.id },
                                         build: BackupMemoryConsolidation.init(json:))
@@ -136,6 +141,8 @@ public enum BackupCodec {
             proactiveRules: rules,
             agentIntents: intents,
             memoryConsolidations: consolidations,
+            stickers: stickers,
+            diaryNotes: diaryNotes,
             apiConfigs: configs,
             settings: settings
         )

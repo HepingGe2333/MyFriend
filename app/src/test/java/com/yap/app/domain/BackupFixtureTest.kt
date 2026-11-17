@@ -18,48 +18,50 @@ import org.junit.Test
 import java.io.File
 
 /**
- * 跨端备份的锚点（0.12 / 格式 v5）。
+ * 跨端备份的锚点（0.13 / 格式 v6）。
  *
  * 这份测试做五件事：
- * 1. 生成 `fixtures/backup/android-export-v5.json` —— Android 端导出的黄金样本，iOS 必须能读；
- *    样本里带一张头像 jpeg 与一张聊天 png（base64），跨端要能逐字节解回来；
- *    同时带上 v5 的三个人设引导字段（worldJson / speechStyleJson / activityJson）；
- * 2. 如果仓库里有 `fixtures/backup/ios-export-v5.json`，读回来断言关键字段还在；v4/v3 仍可读；
+ * 1. 生成 `fixtures/backup/android-export-v6.json` —— Android 端导出的黄金样本，iOS 必须能读；
+ *    样本里带一张头像 jpeg、一张聊天 png、一张表情 GIF、一段语音与一段视频（base64），
+ *    跨端要能逐字节解回来；同时带上 v6 的 `stickers[]` / `diaryNotes[]`；
+ * 2. 如果仓库里有 `fixtures/backup/ios-export-v6.json`，读回来断言关键字段还在；v5/v4/v3 仍可读；
  * 3. **v1/v2 样本必须永远能读**：旧备份里的开关、节奏、额度字段被忽略，
  *    没有 `media` 时行为与本轮之前完全一致（图片只剩文字 + warning）；
  * 4. 任何一份样本都不允许带密钥字段 / 设备沙盒路径；
- * 5. v5 的 JSON 结构（provider 字段、引导字段、字段名、大小写、base64 无换行）逐项钉死。
+ * 5. v6 的 JSON 结构（provider 字段、引导字段、stickers/diaryNotes、base64 无换行）逐项钉死。
  *
  * 样本是写进仓库的，不是运行时临时文件：谁改了备份格式而没改另一端，测试立刻红。
+ * 旧的 `android-export-v5.json` 保留不动（旧端读新端、新端读旧端都要有样本）。
  */
 class BackupFixtureTest {
 
     @Test
-    fun `生成 Android 端的 v5 黄金样本`() {
+    fun `生成 Android 端的 v6 黄金样本`() {
         val json = BackupCodec.encode(sampleBundle())
         assertTrue(BackupCodec.decode(json) is BackupDecodeResult.Success)
         assertTrue(!BackupCodec.containsSecretField(json))
-        // 设备路径一个都不许出现：头像与附件都只写裸文件名。
-        listOf("file:///data", "files/avatars", "files/media", "/data/user/0").forEach { marker ->
-            assertTrue("v3 备份里不该出现设备路径 $marker", !json.contains(marker))
-        }
+        // 设备路径一个都不许出现：头像、附件、表情都只写裸文件名。
+        listOf("file:///data", "files/avatars", "files/media", "files/stickers", "files/audio", "files/video", "/data/user/0")
+            .forEach { marker ->
+                assertTrue("v6 备份里不该出现设备路径 $marker", !json.contains(marker))
+            }
 
         val dir = File("../fixtures/backup")
         dir.mkdirs()
-        val target = File(dir, "android-export-v5.json")
+        val target = File(dir, "android-export-v6.json")
         target.writeText(json)
         assertTrue(target.length() > 0)
         println("fixture written: " + target.absolutePath + " (" + target.length() + " bytes)")
     }
 
     @Test
-    fun `v5 样本往返后关键字段与图片字节仍然一致`() {
+    fun `v6 样本往返后关键字段与媒体字节仍然一致`() {
         val original = sampleBundle()
         val decoded = BackupCodec.decode(BackupCodec.encode(original))
         val bundle = (decoded as BackupDecodeResult.Success).bundle
 
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(5, bundle.formatVersion)
+        assertEquals(6, bundle.formatVersion)
 
         val persona = bundle.personas.single()
         assertEquals(listOf("慢热", "嘴硬心软"), persona.traits)
@@ -87,10 +89,13 @@ class BackupFixtureTest {
         assertEquals(persona.id, bundle.sessions.single().personaId)
         assertEquals(1, bundle.messages.count { it.readAt != null })
 
-        // 图片本体：两张都在，且 base64 解出来的字节与声明的 bytes 一致。
-        assertEquals(2, bundle.media.size)
+        // 媒体本体：五种 kind 都在，且 base64 解出来的字节与声明的 bytes 一致。
+        assertEquals(5, bundle.media.size)
         val avatar = bundle.media.single { it.kind == BackupMediaKind.PERSONA_AVATAR }
         val chat = bundle.media.single { it.kind == BackupMediaKind.CHAT_IMAGE }
+        val stickerMedia = bundle.media.single { it.kind == BackupMediaKind.STICKER }
+        val audioMedia = bundle.media.single { it.kind == BackupMediaKind.AUDIO }
+        val videoMedia = bundle.media.single { it.kind == BackupMediaKind.VIDEO }
         assertEquals(persona.id, avatar.personaId)
         assertEquals("avatar-fixture.jpg", avatar.fileName)
         assertEquals("image/jpeg", avatar.mime)
@@ -100,12 +105,46 @@ class BackupFixtureTest {
         assertEquals("image/png", chat.mime)
         assertEquals(PNG_BYTES, chat.bytes)
         assertArrayEquals(pngBytes(), BackupBase64.decode(chat.data))
+        assertEquals("sticker-fixture.gif", stickerMedia.fileName)
+        assertEquals("image/gif", stickerMedia.mime)
+        assertArrayEquals(gifBytes(), BackupBase64.decode(stickerMedia.data))
+        assertEquals("voice-fixture.m4a", audioMedia.fileName)
+        assertEquals("audio/m4a", audioMedia.mime)
+        assertEquals("video-fixture.mp4", videoMedia.fileName)
+        assertEquals("video/mp4", videoMedia.mime)
+
+        // v6：表情行与 media 里的 GIF 一一对应（不重复内联 base64）。
+        val sticker = bundle.stickers.single()
+        assertEquals("sticker-fixture.gif", sticker.fileName)
+        assertEquals("跨端别名 file 也要写出来", "sticker-fixture.gif", sticker.file)
+        assertEquals("sticker-fixture.gif", sticker.portableFileName)
+        assertEquals("image/gif", sticker.mime)
+        assertEquals(1, sticker.frames)
+        assertEquals(persona.id, sticker.personaId)
+        assertEquals("user-fixture", sticker.ownerUserId)
+
+        // v6：日记（含提醒时间）原样往返。
+        val note = bundle.diaryNotes.single()
+        assertEquals("diary-fixture-1", note.id)
+        assertEquals(persona.id, note.personaId)
+        assertEquals("记得周四给妈妈打电话", note.content)
+        assertEquals(1_794_506_400_000L, note.remindAt)
+        assertEquals(1_794_506_500_000L, note.remindedAt)
 
         // 消息附件只写裸文件名（导入时按 media 重建），不写设备路径。
         val attachmentJson = bundle.messages.single { it.id == "msg-1" }.attachmentsJson
             ?: error("msg-1 应当带着附件")
         assertTrue(attachmentJson.contains("\"uri\":\"chat-fixture.png\""))
         assertTrue(!attachmentJson.contains("file://"))
+        // v6：语音/视频/表情的 kind 与时长也要跟着走。
+        val mediaAttachmentJson = bundle.messages.single { it.id == "msg-3" }.attachmentsJson
+            ?: error("msg-3 应当带着语音/视频/表情附件")
+        listOf("voice-fixture.m4a", "video-fixture.mp4", "sticker-fixture.gif").forEach { name ->
+            assertTrue("缺少附件 $name", mediaAttachmentJson.contains("\"uri\":\"$name\""))
+        }
+        assertTrue(mediaAttachmentJson.contains("\"kind\":\"AUDIO\""))
+        assertTrue(mediaAttachmentJson.contains("\"durationMs\":4200"))
+        assertTrue(!mediaAttachmentJson.contains("file://"))
 
         // 设置里不该再出现 1.8 的那批字段。
         val encoded = BackupCodec.encode(bundle)
@@ -119,11 +158,11 @@ class BackupFixtureTest {
     }
 
     /**
-     * v3 的 JSON 结构是跨端契约：字段名/大小写/顺序之外，`bytes` 必须是数字、
+     * v6 的 JSON 结构是跨端契约：字段名/大小写/顺序之外，`bytes` 必须是数字、
      * `data` 必须是标准 base64 且不带换行。
      */
     @Test
-    fun `v5 media 与 provider 的 JSON 结构逐项钉死`() {
+    fun `v6 media 与 stickers diaryNotes 的 JSON 结构逐项钉死`() {
         val json = BackupCodec.encode(sampleBundle())
         // v4：provider 总是写出来（即使默认值），且只写 provider、不写 Key。
         assertTrue("v4 必须写 apiConfigs[].webToolsProvider", json.contains("\"webToolsProvider\":\"TAVILY\""))
@@ -132,15 +171,23 @@ class BackupFixtureTest {
         // 顶层 media 是数组；每条含 7 个字段，名字与大小写与 iOS 完全一致。
         listOf(
             "\"media\":[", "\"id\":", "\"kind\":\"PERSONA_AVATAR\"", "\"kind\":\"CHAT_IMAGE\"",
+            "\"kind\":\"STICKER\"", "\"kind\":\"AUDIO\"", "\"kind\":\"VIDEO\"",
             "\"personaId\":", "\"fileName\":", "\"mime\":", "\"bytes\":", "\"data\":"
         ).forEach { marker -> assertTrue("缺少 $marker", json.contains(marker)) }
+        // v6：表情行与日记板是独立的顶层数组，表情行里只写裸文件名，不再内联一份 base64。
+        assertTrue("缺少 stickers 段", json.contains("\"stickers\":["))
+        assertTrue("缺少 diaryNotes 段", json.contains("\"diaryNotes\":["))
+        listOf(
+            "\"ownerUserId\":", "\"file\":", "\"frames\":", "\"source\":", "\"createdBy\":",
+            "\"remindAt\":", "\"remindedAt\":", "\"updatedAt\":"
+        ).forEach { marker -> assertTrue("缺少 $marker", json.contains(marker)) }
         // 大小写敏感：不接受 snake_case / 小写别名。
-        listOf("\"file_name\"", "\"mime_type\"", "\"kind\":\"chat_image\"").forEach { marker ->
+        listOf("\"file_name\"", "\"mime_type\"", "\"kind\":\"chat_image\"", "\"diary_notes\"").forEach { marker ->
             assertTrue("不该出现 $marker", !json.contains(marker))
         }
         // base64 里不许有换行/空白（JSON 字符串本身用 \n 转义也不行）。
         val dataSegments = Regex("\"data\":\"([^\"]*)\"").findAll(json).map { it.groupValues[1] }.toList()
-        assertEquals(2, dataSegments.size)
+        assertEquals(5, dataSegments.size)
         dataSegments.forEach { data ->
             assertTrue("base64 不该含换行", !data.contains("\\n") && !data.contains("\n"))
             assertTrue("base64 不该含空格", !data.contains(" "))
@@ -150,6 +197,7 @@ class BackupFixtureTest {
         // bytes 是 JSON 数字，不是字符串。
         assertTrue(json.contains("\"bytes\":$JPEG_BYTES"))
         assertTrue(json.contains("\"bytes\":$PNG_BYTES"))
+        assertTrue(json.contains("\"bytes\":$GIF_BYTES"))
 
         // v5：引导字段必须写出来（可空字段只有「有值」时才出现），且字段名与 iOS 一致。
         listOf("\"worldJson\":", "\"speechStyleJson\":", "\"activityJson\":").forEach { marker ->
@@ -169,11 +217,12 @@ class BackupFixtureTest {
                 println("skip: 没有找到 $name")
                 return@forEach
             }
-            val result = BackupCodec.decode(file.readText())
+            val raw = file.readText()
+            val result = BackupCodec.decode(raw)
             val success = result as? BackupDecodeResult.Success
             assertTrue("v4 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
-            assertEquals(5, bundle.formatVersion)
+            assertEquals(6, bundle.formatVersion)
             assertTrue(
                 "读 v4 要留一句格式提醒",
                 success.warnings.any { it is BackupWarning.OlderFormat && it.version == 4 }
@@ -183,7 +232,7 @@ class BackupFixtureTest {
             assertNull("v4 没有话风", persona.speechStyleJson)
             assertNull("v4 没有当前活动", persona.activityJson)
             assertTrue("v4 的其余数据仍然在", persona.name.isNotBlank())
-            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+            assertTrue(!BackupCodec.containsSecretField(raw))
         }
     }
 
@@ -195,12 +244,13 @@ class BackupFixtureTest {
                 println("skip: 没有找到 $name")
                 return@forEach
             }
-            val result = BackupCodec.decode(file.readText())
+            val raw = file.readText()
+            val result = BackupCodec.decode(raw)
             val success = result as? BackupDecodeResult.Success
             assertTrue("v1 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals("读 v1 备份时要按当前格式尽力读出来", 5, bundle.formatVersion)
+            assertEquals("读 v1 备份时要按当前格式尽力读出来", 6, bundle.formatVersion)
             assertTrue(bundle.personas.isNotEmpty())
             assertTrue(bundle.memories.isNotEmpty())
             assertTrue(bundle.sessions.isNotEmpty())
@@ -217,7 +267,7 @@ class BackupFixtureTest {
             // 设置里旧的 1.8 字段被忽略，读出来的仍是合法的可移植设置。
             assertTrue(bundle.settings != null)
             assertTrue(bundle.settings!!.themeMode.isNotBlank())
-            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+            assertTrue(!BackupCodec.containsSecretField(raw))
         }
     }
 
@@ -229,12 +279,13 @@ class BackupFixtureTest {
                 println("skip: 没有找到 $name")
                 return@forEach
             }
-            val result = BackupCodec.decode(file.readText())
+            val raw = file.readText()
+            val result = BackupCodec.decode(raw)
             val success = result as? BackupDecodeResult.Success
             assertTrue("v2 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
             assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-            assertEquals(5, bundle.formatVersion)
+            assertEquals(6, bundle.formatVersion)
             // v2 → v3 会留一句「旧格式尽力读」的提醒。
             assertTrue(
                 "读 v2 要留一句格式提醒",
@@ -242,7 +293,7 @@ class BackupFixtureTest {
             )
             assertTrue(bundle.personas.isNotEmpty())
             assertTrue("v2 没有 media", bundle.media.isEmpty())
-            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+            assertTrue(!BackupCodec.containsSecretField(raw))
         }
     }
 
@@ -258,7 +309,7 @@ class BackupFixtureTest {
         assertTrue("iOS 导出的 v3 备份读不出来：$result", success != null)
         val bundle = success!!.bundle
         assertEquals(BACKUP_FORMAT_NAME, bundle.format)
-        assertEquals(5, bundle.formatVersion)
+        assertEquals(6, bundle.formatVersion)
         assertTrue(bundle.personas.isNotEmpty())
         assertTrue(bundle.sessions.isNotEmpty())
         // 一人一段：同一人格不允许出现两段（备份是接口契约，iOS 也要满足）。
@@ -275,6 +326,122 @@ class BackupFixtureTest {
         assertTrue(!BackupCodec.containsSecretField(file.readText()))
     }
 
+    /**
+     * v5 样本仍可读：它没有 `stickers` / `diaryNotes` 段，也没有新 kind 的 media。
+     * 读出来两段必须是空列表（不是 null、更不是失败）。
+     */
+    @Test
+    fun `v5 样本仍然可读 只是没有 stickers 与 diaryNotes`() {
+        listOf("android-export-v5.json", "ios-export-v5.json").forEach { name ->
+            val file = File("../fixtures/backup/$name")
+            if (!file.exists()) {
+                println("skip: 没有找到 $name")
+                return@forEach
+            }
+            val raw = file.readText()
+            // 并行开发期间 iOS 侧可能把 v5 样本改写成 v6；那不是 v5 样本，跳过而不是误报。
+            val declared = Regex("\"formatVersion\"\\s*:\\s*(\\d+)").find(raw)
+                ?.groupValues?.getOrNull(1)?.toIntOrNull()
+            if (declared != 5) {
+                println("skip: $name 的 formatVersion=$declared，不是 v5 样本")
+                return@forEach
+            }
+            val result = BackupCodec.decode(raw)
+            val success = result as? BackupDecodeResult.Success
+            assertTrue("v5 样本 $name 读不出来：$result", success != null)
+            val bundle = success!!.bundle
+            assertEquals(6, bundle.formatVersion)
+            assertTrue(
+                "读 v5 要留一句格式提醒",
+                success.warnings.any { it is BackupWarning.OlderFormat && it.version == 5 }
+            )
+            assertTrue("v5 没有 stickers 段", bundle.stickers.isEmpty())
+            assertTrue("v5 没有 diaryNotes 段", bundle.diaryNotes.isEmpty())
+            assertTrue("v5 的图片仍然在", bundle.media.isNotEmpty())
+            val oldKinds = setOf(
+                BackupMediaKind.PERSONA_AVATAR,
+                BackupMediaKind.USER_AVATAR,
+                BackupMediaKind.CHAT_IMAGE
+            )
+            assertTrue(
+                "v5 的 media 只应该出现旧的三种 kind：${bundle.media.map { it.kind }.toSet()}",
+                bundle.media.all { it.kind in oldKinds }
+            )
+            assertTrue(!BackupCodec.containsSecretField(raw))
+        }
+    }
+
+    /**
+     * iOS v6 样本可能缺 `stickers` / `diaryNotes`（并行实现、字段还没补齐）：
+     * 必须宽容跳过，不能整份失败。样本不存在时跳过（这轮 Android 先落地）。
+     */
+    @Test
+    fun `iOS 导出的 v6 样本 Android 也接得住`() {
+        val file = File("../fixtures/backup/ios-export-v6.json")
+        if (!file.exists()) {
+            println("skip: 还没有 iOS 导出的 v6 样本（iOS 端并行实现；不存在时跳过）")
+            return
+        }
+        val raw = file.readText()
+        val result = BackupCodec.decode(raw)
+        val success = result as? BackupDecodeResult.Success
+        assertTrue("iOS 导出的 v6 备份读不出来：$result", success != null)
+        val bundle = success!!.bundle
+        assertEquals(BACKUP_FORMAT_NAME, bundle.format)
+        assertEquals(6, bundle.formatVersion)
+        assertTrue(bundle.personas.isNotEmpty())
+        assertTrue(bundle.sessions.isNotEmpty())
+        // 一人一段：同一人格不允许出现两段（备份是接口契约，iOS 也要满足）。
+        val duplicates = bundle.sessions.groupBy { it.personaId }.filterValues { it.size > 1 }
+        assertTrue("iOS 的 v6 备份里同一个人格有多段会话：${duplicates.keys}", duplicates.isEmpty())
+        // 五种 kind 的 base64 必须都能被 Kotlin 解出来，字节数与声明一致。
+        bundle.media.forEach { media ->
+            assertTrue("iOS 的 media 缺少 kind：${media.fileName}", media.kind in BackupMediaKind.all)
+            val bytes = BackupBase64.decode(media.data)
+            assertTrue("iOS 的 media base64 解不出来：${media.fileName}", bytes != null)
+            assertEquals("media.bytes 与 base64 解出的字节数不一致：${media.fileName}", media.bytes, bytes!!.size)
+        }
+        // 缺段不是错误：两段按空列表处理。
+        bundle.stickers.forEach { sticker ->
+            // 跨端：iOS 写 `file`、Android 写 `fileName`，两边都接受。
+            assertTrue(
+                "表情行必须是裸文件名：${sticker.portableFileName}",
+                BackupAvatarPath.isSafeName(sticker.portableFileName)
+            )
+        }
+        assertTrue(!BackupCodec.containsSecretField(raw))
+    }
+
+    /**
+     * v6 的两段是可选内容：整段类型不对、部分行坏掉、字段缺失，都只能丢掉那一段/那几行，
+     * 不能让整份备份失败（iOS 早期样本、手写文件都可能长这样）。
+     */
+    @Test
+    fun `缺失或坏掉的 stickers 与 diaryNotes 段被宽容跳过`() {
+        val raw = """
+            {
+              "format": "myfriend.backup",
+              "formatVersion": 6,
+              "personas": [{"id": "p1", "name": "他"}],
+              "stickers": 5,
+              "diaryNotes": [
+                {"id": "d1", "personaId": "p1", "content": "只有最少字段也该能读"},
+                {"id": "d2", "personaId": "p1", "createdAt": "这不是数字"},
+                {}
+              ]
+            }
+        """.trimIndent()
+        val success = BackupCodec.decode(raw) as? BackupDecodeResult.Success
+            ?: error("缺段/坏条目不应该让整份备份失败")
+        assertTrue("不是数组的 stickers 段按空列表处理", success.bundle.stickers.isEmpty())
+        assertEquals("好的日记行要保留、坏行与空 id 行丢掉", 1, success.bundle.diaryNotes.size)
+        val note = success.bundle.diaryNotes.single()
+        assertEquals("d1", note.id)
+        assertEquals("只有最少字段也该能读", note.content)
+        assertEquals(0L, note.createdAt)
+        assertNull(note.remindAt)
+    }
+
     @Test
     fun `v3 样本仍然可读 且 provider 默认 MESSAGEAPI`() {
         listOf("android-export-v3.json", "ios-export-v3.json").forEach { name ->
@@ -283,11 +450,12 @@ class BackupFixtureTest {
                 println("skip: 没有找到 $name")
                 return@forEach
             }
-            val result = BackupCodec.decode(file.readText())
+            val raw = file.readText()
+            val result = BackupCodec.decode(raw)
             val success = result as? BackupDecodeResult.Success
             assertTrue("v3 样本 $name 读不出来：$result", success != null)
             val bundle = success!!.bundle
-            assertEquals("旧格式按当前格式读出来", 5, bundle.formatVersion)
+            assertEquals("旧格式按当前格式读出来", 6, bundle.formatVersion)
             assertTrue(
                 "读 v3 要留一句格式提醒",
                 success.warnings.any { it is BackupWarning.OlderFormat && it.version == 3 }
@@ -295,7 +463,7 @@ class BackupFixtureTest {
             val config = bundle.apiConfigs.firstOrNull() ?: error("$name 没有 apiConfigs")
             assertEquals("v3 备份缺 provider 时默认 MESSAGEAPI", "MESSAGEAPI", config.webToolsProvider)
             assertTrue("v3 的图片也要还在", bundle.media.isNotEmpty())
-            assertTrue(!BackupCodec.containsSecretField(file.readText()))
+            assertTrue(!BackupCodec.containsSecretField(raw))
         }
     }
 
@@ -340,13 +508,23 @@ class BackupFixtureTest {
 
     private fun jpegBytes(): ByteArray = BackupBase64.decode(JPEG_BASE64)!!
     private fun pngBytes(): ByteArray = BackupBase64.decode(PNG_BASE64)!!
+    private fun gifBytes(): ByteArray = BackupBase64.decode(GIF_BASE64)!!
+
+    /** 语音/视频样本：不需要真的能播放，只要有稳定的字节与容器魔数（跨端逐字节比对用）。 */
+    private fun audioBytes(): ByteArray = ByteArray(AUDIO_BYTES) { index -> (index * 7 + 1).toByte() }.also {
+        "ftypM4A ".toByteArray(Charsets.US_ASCII).copyInto(it, 4)
+    }
+
+    private fun videoBytes(): ByteArray = ByteArray(VIDEO_BYTES) { index -> (index * 11 + 3).toByte() }.also {
+        "ftypisom".toByteArray(Charsets.US_ASCII).copyInto(it, 4)
+    }
 
     private fun sampleBundle(): BackupBundle {
         val personaId = "11111111-1111-1111-1111-111111111111"
         val sessionId = "22222222-2222-2222-2222-222222222222"
         val now = 1_794_500_000_000L
         return BackupBundle(
-            appVersion = "0.12.0",
+            appVersion = "0.13.0",
             exportedAt = now,
             personas = listOf(
                 BackupPersona(
@@ -456,6 +634,22 @@ class BackupFixtureTest {
                     createdAt = now - 7_100_000L,
                     updatedAt = now - 7_100_000L,
                     toolTraceJson = "[\"web_search\"]"
+                ),
+                // v6：一条消息同时带语音/视频/表情，验证 kind 与 durationMs 的跨端契约。
+                BackupMessage(
+                    id = "msg-3",
+                    sessionId = sessionId,
+                    personaId = personaId,
+                    role = "USER",
+                    content = "给你听一段、看一段，还有这个表情。",
+                    status = "COMPLETE",
+                    createdAt = now - 7_000_000L,
+                    updatedAt = now - 7_000_000L,
+                    attachmentsJson = "[" +
+                        "{\"uri\":\"voice-fixture.m4a\",\"mime\":\"audio/m4a\",\"kind\":\"AUDIO\",\"durationMs\":4200}," +
+                        "{\"uri\":\"video-fixture.mp4\",\"mime\":\"video/mp4\",\"kind\":\"VIDEO\",\"durationMs\":9000}," +
+                        "{\"uri\":\"sticker-fixture.gif\",\"mime\":\"image/gif\",\"kind\":\"STICKER\"}" +
+                        "]"
                 )
             ),
             media = listOf(
@@ -476,6 +670,64 @@ class BackupFixtureTest {
                     mime = "image/png",
                     bytes = PNG_BYTES,
                     data = PNG_BASE64
+                ),
+                BackupMedia(
+                    id = "media-sticker-1",
+                    kind = BackupMediaKind.STICKER,
+                    personaId = personaId,
+                    fileName = "sticker-fixture.gif",
+                    mime = "image/gif",
+                    bytes = GIF_BYTES,
+                    data = GIF_BASE64
+                ),
+                BackupMedia(
+                    id = "media-audio-1",
+                    kind = BackupMediaKind.AUDIO,
+                    personaId = personaId,
+                    fileName = "voice-fixture.m4a",
+                    mime = "audio/m4a",
+                    bytes = AUDIO_BYTES,
+                    data = BackupBase64.encode(audioBytes())
+                ),
+                BackupMedia(
+                    id = "media-video-1",
+                    kind = BackupMediaKind.VIDEO,
+                    personaId = personaId,
+                    fileName = "video-fixture.mp4",
+                    mime = "video/mp4",
+                    bytes = VIDEO_BYTES,
+                    data = BackupBase64.encode(videoBytes())
+                )
+            ),
+            // v6：表情行只写裸文件名，字节在 media 里（上面的 STICKER 条目）。
+            stickers = listOf(
+                BackupSticker(
+                    id = "sticker-fixture-1",
+                    ownerUserId = "user-fixture",
+                    personaId = personaId,
+                    fileName = "sticker-fixture.gif",
+                    // iOS 端读 `file`，Android 端读 `fileName`：黄金样本两个都写，跨端才都能取到名字。
+                    file = "sticker-fixture.gif",
+                    mime = "image/gif",
+                    width = 1,
+                    height = 1,
+                    frames = 1,
+                    bytes = GIF_BYTES,
+                    source = "IMPORTED",
+                    createdBy = "USER",
+                    createdAt = now - 6_900_000L
+                )
+            ),
+            // v6：日记（含提醒时间）。
+            diaryNotes = listOf(
+                BackupDiaryNote(
+                    id = "diary-fixture-1",
+                    personaId = personaId,
+                    content = "记得周四给妈妈打电话",
+                    createdAt = now - 6_800_000L,
+                    remindAt = 1_794_506_400_000L,
+                    remindedAt = 1_794_506_500_000L,
+                    updatedAt = now - 6_800_000L
                 )
             ),
             presets = listOf(
@@ -564,5 +816,11 @@ class BackupFixtureTest {
         const val PNG_BASE64 =
             "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGM8URHAwMDAxAAGABNiAZSfXW4zAAAAAElFTkSuQmCC"
         const val PNG_BYTES = 75
+        /** 1×1 的透明 GIF（42 字节）：表情包的主形态是 GIF，跨端要能逐字节解回来。 */
+        const val GIF_BASE64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+        const val GIF_BYTES = 42
+        /** 语音/视频样本只求稳定字节（容器魔数写在 helper 里），不追求真的可播放。 */
+        const val AUDIO_BYTES = 32
+        const val VIDEO_BYTES = 48
     }
 }

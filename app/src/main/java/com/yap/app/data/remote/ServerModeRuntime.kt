@@ -61,7 +61,9 @@ class ServerModeRuntime @Inject constructor(
     private val gateway: ServerChatGateway,
     private val foregroundTracker: AppForegroundTracker,
     private val localStore: ServerLocalStore,
-    private val bootstrap: ServerBootstrapManager
+    private val bootstrap: ServerBootstrapManager,
+    /** 0.13：连接成功后把本机模型配置推给**本机部署**的服务端（远程地址不推，见策略类）。 */
+    private val llmConfig: ServerLlmConfigPusher
 ) {
     /** 上一次看到的服务端地址：换地址＝换服务端，旧游标/队列必须清掉。 */
     private var lastBaseUrl: String? = null
@@ -83,6 +85,9 @@ class ServerModeRuntime @Inject constructor(
                         localStore.resetForNewServer()
                     }
                     lastBaseUrl = baseUrl
+                    // 0.13：连接成功 = 「可以把本机模型配置交给它」的时机。独立协程、不等待：
+                    // 推送失败只记日志（远程部署会 403，这本来就不是错误路径）。
+                    scope.launch { runCatching { llmConfig.pushIfLocal() } }
                     // 0.12.1：这台服务端的第一次连接先把两端数据量对齐（四象限全量搬运），
                     // 已做过就直接返回；失败不阻塞后面的增量同步，下一次前台/启动重试。
                     bootstrap.runIfNeeded(baseUrl)

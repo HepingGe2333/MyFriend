@@ -260,6 +260,41 @@ final class ServerChatMediaTests: XCTestCase {
         )
         XCTAssertNil(ServerSyncMapping.attachmentsJson(from: []))
     }
+
+    /// 已经落地成本机文件的附件**不能**被服务端下发的 `/v1/media/<id>` 覆盖回去。
+    ///
+    /// 否则每次同步都把引用打回远程：离线时界面退回占位图、每滚一屏都要重新下载一遍。
+    /// 判据是 `serverMediaId`（0.13 第二阶段新增的那个字段）。
+    func testLocalizedAttachmentSurvivesResync() throws {
+        let local = "/Users/x/Application Support/attachments/chatImage-m-1-abc.jpg"
+        let before = AttachmentsCodec.encode([
+            MessageAttachment(uri: local, mime: "image/jpeg", width: 2, height: 2,
+                              kind: MessageAttachment.imageKind, serverMediaId: "m-1")
+        ])
+        let json = ServerSyncMapping.attachmentsJson(
+            from: ["/v1/media/m-1"], existing: before
+        )
+        let items = AttachmentsCodec.decode(json)
+        XCTAssertEqual(items.first?.uri, local, "本机路径要保住")
+        XCTAssertEqual(items.first?.serverMediaId, "m-1", "服务端 id 也留着（重新上传/重拉要用）")
+        XCTAssertEqual(items.first?.width, 2)
+
+        // 反过来：服务端来了一个**新**的 mediaId，本机没有对应文件 → 照旧写服务端引用。
+        let newer = ServerSyncMapping.attachmentsJson(
+            from: ["/v1/media/m-2"], existing: before
+        )
+        XCTAssertEqual(AttachmentsCodec.decode(newer).first?.uri, "/v1/media/m-2")
+        XCTAssertEqual(AttachmentsCodec.decode(newer).first?.serverMediaId, "m-2")
+    }
+
+    /// 服务端引用（还没落地）的附件仍然按服务端形状写 —— 老的同步语义一字未变。
+    func testServerReferenceIsKeptWhenNotLocalizedYet() {
+        let before = AttachmentsCodec.encode([
+            MessageAttachment(uri: "/v1/media/m-1", serverMediaId: "m-1")
+        ])
+        let json = ServerSyncMapping.attachmentsJson(from: ["/v1/media/m-1"], existing: before)
+        XCTAssertEqual(AttachmentsCodec.decode(json).first?.uri, "/v1/media/m-1")
+    }
 }
 
 /// 记录调用顺序（preparer 与 uploader 共用）。

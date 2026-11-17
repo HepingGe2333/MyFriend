@@ -80,7 +80,17 @@ data class ServerMood(
     val personaId: String = "",
     val label: String = "",
     val intensity: Int = 0,
-    val updatedAt: Long = 0
+    val updatedAt: Long = 0,
+    /**
+     * 0.13 的多维心情（`spec/mood/README.md`）：服务端 `Mood.toJson` 一直带这三个字段，
+     * 老版本服务端没有时按 0/2/3 读出（与客户端 `MoodDimensions.BASELINE_*` 一致）。
+     *
+     * `/v1/state` 与 `mood.changed` 事件共用这个 DTO，两处都能直接写本地缓存。
+     */
+    val valence: Int = 0,
+    val arousal: Int = 2,
+    val dominance: Int = 3,
+    val reason: String = ""
 )
 
 /** 在场状态：服务端推进，客户端只展示。 */
@@ -275,3 +285,109 @@ data class ServerBackupCounts(
     /** 设置段是否成功写入（不是条数）。 */
     val settings: Boolean = false
 )
+
+// ---------------------------------------------------------------------------
+// 0.13：云端情绪 / 人格进化 / 配置推送
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /v1/personas/{id}/mood/evaluate` 的响应。
+ *
+ * `source` 说明这次结果怎么来的：`llm`（模型判定）、`decay`（失败后按时间衰减）、
+ * `unchanged`（没明显变化）。**失败/服务端没配模型也是 200**，所以客户端不能靠状态码判断
+ * 「有没有真的判定一次」，只能看 [mood] 与 [source]。
+ */
+@Serializable
+data class ServerMoodEvaluation(
+    val personaId: String = "",
+    val changed: Boolean = false,
+    val source: String = "",
+    val mood: ServerMood? = null
+)
+
+/** 服务端待审补丁里的一条变更（只用于展示/诊断，真正回放用 [ServerEvolutionPatch.patchJson]）。 */
+@Serializable
+data class ServerEvolutionChange(
+    val field: String = "",
+    val op: String = "",
+    val value: String = "",
+    val reason: String = ""
+)
+
+/**
+ * 服务端的一条待审进化补丁。
+ *
+ * [patchJson] 是服务端存的原样补丁（`{"changes":[…]}`），客户端会把它缓存进本地待审表；
+ * [summary] 是服务端给的一行摘要，没有时客户端用 [changes] 自己拼。
+ */
+@Serializable
+data class ServerEvolutionPatch(
+    val id: String = "",
+    val personaId: String = "",
+    val sessionId: String? = null,
+    val patchJson: String = "",
+    val summary: String = "",
+    val reason: String = "",
+    val createdAt: Long = 0,
+    val expiresAt: Long = 0,
+    val changes: List<ServerEvolutionChange> = emptyList()
+)
+
+/** `POST /v1/personas/{id}/evolution/evaluate` 的响应；`patch` 在没提议时为 null。 */
+@Serializable
+data class ServerEvolutionEvaluation(
+    val personaId: String = "",
+    val proposed: Int = 0,
+    val alreadyPending: Boolean = false,
+    val summary: String = "",
+    val patch: ServerEvolutionPatch? = null
+)
+
+/** `GET /v1/personas/{id}/evolution/pending` 的响应。 */
+@Serializable
+data class ServerEvolutionPending(
+    val personaId: String = "",
+    val serverTime: Long = 0,
+    val patches: List<ServerEvolutionPatch> = emptyList()
+)
+
+/**
+ * `POST /v1/personas/{id}/evolution/{patchId}/accept` 的响应。
+ *
+ * [persona] 是服务端合并后的**完整人格**（四字段 + `version`），客户端按它刷新本地缓存；
+ * [version] 与 [persona] 里的值一致，取不到时用它兜底。
+ */
+@Serializable
+data class ServerEvolutionAcceptance(
+    val personaId: String = "",
+    val patchId: String = "",
+    val changed: Boolean = false,
+    val version: Int = 0,
+    val applied: List<ServerEvolutionChange> = emptyList(),
+    val persona: JsonObject? = null
+)
+
+/** `POST /v1/personas/{id}/evolution/{patchId}/reject` 的响应。 */
+@Serializable
+data class ServerEvolutionRejection(
+    val personaId: String = "",
+    val patchId: String = "",
+    val rejected: Boolean = false
+)
+
+/**
+ * `POST /v1/llm-config` 的请求体（只有本机部署的服务端接受）。
+ *
+ * 这个类型**故意不实现 `toString()` 脱敏**之外的东西：它只在推送那一瞬间存在，
+ * 不落盘、不写日志。真正保证密钥不外泄的是「只有回环地址才构造它」这条判定
+ * （[ServerLlmConfigPushPolicy]）。
+ */
+data class ServerLlmConfigWrite(
+    val baseUrl: String,
+    val model: String,
+    val apiKey: String,
+    val provider: String
+) {
+    override fun toString(): String =
+        "ServerLlmConfigWrite(baseUrl=$baseUrl, model=$model, provider=$provider, apiKey=<redacted>)"
+}

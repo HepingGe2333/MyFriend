@@ -99,6 +99,11 @@ final class AppEnvironment: ObservableObject {
     /// 服务端下发的心情/在场（M4：这两种东西在服务端模式下是「下发」的，不是本机推导的）。
     @Published private(set) var serverLiveState: ServerLiveState
 
+    /// 当前生效的传输层客户端（地址/令牌一变就整体重建）。
+    ///
+    /// 0.13 第二阶段新增：云端情绪/进化/配置推送都要「同一个客户端」，
+    /// 现造会每次 new 一个 `URLSession`（连接池、Cookie、取消语义各自一份）。
+    private(set) var serverClient: ServerAPIClient?
     private(set) var serverSync: ServerSyncService?
     private(set) var serverEvents: ServerEventService?
     private(set) var serverChat: ServerChatGateway?
@@ -108,6 +113,13 @@ final class AppEnvironment: ObservableObject {
     private(set) var serverBootstrap: ServerBootstrapService?
     /// 我的头像上传（`USER_AVATAR`）。服务端模式没起来时为 nil。
     private(set) var avatarUploader: ServerUserAvatarUploader?
+    /// 服务端媒体的「落地」同步（0.13 第二阶段）：`/v1/media/<id>` → 本机持久目录。
+    /// 服务端模式没起来时为 nil。
+    private(set) var serverMediaSync: ServerMediaSyncService?
+    /// 上一次把本机模型配置推给服务端的结果（只用于日志/设置页的调试信息，不是错误）。
+    private(set) var serverLlmConfigPushMessage: String?
+    /// 媒体落地同步正在跑（避免每次进聊天页都并发一批下载）。
+    private var isMediaSyncRunning = false
     /// 首次同步的进度（设置页显示成一行；跑完/失败后清空）。
     @Published private(set) var serverBootstrapProgress: ServerBootstrapProgress?
     /// 首次同步失败的原因（设置页一条提示；重试成功后清掉）。
@@ -530,9 +542,11 @@ final class AppEnvironment: ObservableObject {
             serverSync = nil
             serverEvents = nil
             serverChat = nil
+            serverClient = nil
             serverWrites = nil
             serverBootstrap = nil
             avatarUploader = nil
+            serverMediaSync = nil
             serverBootstrapProgress = nil
             serverBootstrapError = nil
             stopServerSyncPulse()
@@ -547,9 +561,11 @@ final class AppEnvironment: ObservableObject {
             serverSync = nil
             serverEvents = nil
             serverChat = nil
+            serverClient = nil
             serverWrites = nil
             serverBootstrap = nil
             avatarUploader = nil
+            serverMediaSync = nil
             serverBootstrapProgress = nil
             serverBootstrapError = nil
             stopServerSyncPulse()
@@ -560,6 +576,7 @@ final class AppEnvironment: ObservableObject {
 
         let session = URLSession(configuration: Self.sessionConfiguration())
         let client = ServerAPIClient(config: loaded, session: session)
+        serverClient = client
         // 图片渲染层（`AttachmentThumbnail`）拿不到 AppEnvironment，只能从进程级缓存拿客户端；
         // 配置变了就换掉，关掉服务端模式就置空（不准再往旧地址发请求）。
         ServerMediaCache.shared.configure(client: client)
@@ -597,6 +614,12 @@ final class AppEnvironment: ObservableObject {
             log: { DebugSeeding.log($0) }
         )
         serverChat = chatGateway
+        // 0.13 第二阶段：服务端媒体落地（下载到本机持久目录 + 改库）。失败只计数，不阻断。
+        serverMediaSync = ServerMediaSyncService(
+            downloader: client,
+            stores: stores,
+            log: { DebugSeeding.log($0) }
+        )
         serverWrites = ServerWriteService(
             client: client,
             stores: stores,
@@ -704,6 +727,8 @@ final class AppEnvironment: ObservableObject {
         if !gateway.pendingEntries(sessionId: sessionId).isEmpty {
             _ = await gateway.flushOutbox()
         }
+        // 0.13 第二阶段：这一页里如果有服务端附件，顺手搬成本机文件（后台跑，不阻塞进页面）。
+        scheduleServerMediaSync(sessionId: sessionId)
     }
 
     /// 服务端模式下往前翻一块（聊天页上滑到底）。
@@ -734,6 +759,8 @@ final class AppEnvironment: ObservableObject {
         case .synced(let report):
             if report.sessions > 0 || report.messages > 0 { serverDataVersion &+= 1 }
             DebugSeeding.log("[server] 同步完成：会话 \(report.sessions) / 消息 \(report.messages)")
+            // 同步可能有新消息带附件：让落地同步也跑一拍（正在跑就跳过）。
+            if report.messages > 0 { scheduleServerMediaSync() }
         case .failed(let message, let attempts):
             DebugSeeding.log("[server] 同步失败（\(attempts) 次）：\(message)")
         case .skipped(let reason):
@@ -769,6 +796,10 @@ final class AppEnvironment: ObservableObject {
     /// 4. 最后补发队列（离线时排队的消息）。
     func activateServerMode() async {
         guard serverModeActive else { return }
+        // 0) 本机部署的服务端要靠这份配置去调模型（云端情绪/进化端点都在服务端跑）：
+        //    先推，再谈同步 —— 否则「首次进云端模式」时服务端还没有模型可用。
+        //    远程服务器一律不推（`isLoopback`），失败只记日志。
+        await pushLocalModelConfigIfNeeded()
         await runServerBootstrapIfNeeded()
         await quickServerSync(minIntervalMillis: 20_000)
         if let gateway = serverChat, gateway.isActive {
@@ -776,6 +807,66 @@ final class AppEnvironment: ObservableObject {
         }
         startServerEvents()
         startServerSyncPulse()
+        // 媒体落地：把服务端下发的头像/图片/表情/语音/视频搬成本机文件（不阻塞界面）。
+        scheduleServerMediaSync()
+    }
+
+    // MARK: - 本机模型配置推送（0.13 第二阶段）
+
+    /// 连上服务端之后，如果它就跑在本机上，把手机上的模型配置推过去（远程不发，失败只记日志）。
+    func pushLocalModelConfigIfNeeded() async {
+        guard serverModeActive,
+              let client = serverAPIClientForPush(),
+              ServerLlmConfigPusher.shouldPush(config: client.config) else {
+            serverLlmConfigPushMessage = nil
+            return
+        }
+        let resolved = Self.resolveConfig(stores: stores, settings: settings, apiKeys: apiKeys)
+        let pusher = ServerLlmConfigPusher(
+            client: client,
+            apiConfig: resolved?.config,
+            apiKey: resolved?.apiKey,
+            log: { DebugSeeding.log($0) }
+        )
+        let outcome = await pusher.pushIfNeeded()
+        // 只有「真的推上去了」才在界面上留一行；跳过与失败都只进日志
+        //（远程服务器不推是规矩，不是问题；失败也不该让用户以为连接坏了）。
+        serverLlmConfigPushMessage = outcome.didPush ? outcome.message : nil
+    }
+
+    /// 当前连接（没起来时为 nil）：配置推送 / 云端情绪 / 云端进化共用同一个客户端。
+    private func serverAPIClientForPush() -> ServerAPIClient? {
+        guard serverModeActive, let client = serverClient, client.config.isUsable else { return nil }
+        return client
+    }
+
+    // MARK: - 服务端媒体落地（0.13 第二阶段）
+
+    /// 后台跑一轮媒体落地同步。重复调用是安全的：正在跑就跳过这一轮。
+    func scheduleServerMediaSync(sessionId: String? = nil) {
+        guard serverModeActive, let sync = serverMediaSync, !isMediaSyncRunning else { return }
+        isMediaSyncRunning = true
+        Task { [weak self] in
+            let report = await sync.syncMessageAttachments(sessionId: sessionId)
+            if report.messagesUpdated > 0 {
+                await MainActor.run {
+                    // 附件引用变了（`/v1/media/<id>` → `file://`）：让界面重载一次气泡。
+                    self?.serverDataVersion &+= 1
+                }
+            }
+            await MainActor.run { self?.isMediaSyncRunning = false }
+        }
+    }
+
+    /// 一次把消息附件、头像、表情都搬一遍（首次连上服务端 / 设置页「整理」时用）。
+    func runServerMediaSyncNow() async {
+        guard serverModeActive, let sync = serverMediaSync, !isMediaSyncRunning else { return }
+        isMediaSyncRunning = true
+        defer { isMediaSyncRunning = false }
+        let report = await sync.syncAll()
+        if report.downloaded > 0 || report.avatarsUpdated > 0 || report.stickersUpdated > 0 {
+            serverDataVersion &+= 1
+        }
     }
 
     // MARK: - 首次全量同步（0.12.1）
@@ -1396,37 +1487,55 @@ final class AppEnvironment: ObservableObject {
     /// 拍死一份会拿着旧客户端往后端发请求。单飞闸在 `personaEvolution` 里
     /// （与本地模式共用），所以现造也不会多评估一次。
     func cloudPersonaEvolution() -> CloudPersonaEvolution? {
-        guard serverModeActive, let writes = serverWrites else { return nil }
+        guard serverModeActive, let client = serverAPIClientForPush() else { return nil }
+        let writes = serverWrites
         return CloudPersonaEvolution(
+            client: client,
             evolution: personaEvolution,
-            writes: writes,
             stores: stores,
+            serverPersonaId: { [weak writes] localId in
+                writes?.resolvedServerPersonaId(localId) ?? localId
+            },
             log: { DebugSeeding.log($0) }
         )
     }
 
-    /// 云端模式：一轮助手回复**落库之后**，按与本地模式同一节流考虑跑一次进化评估。
+    /// 云端模式下的情绪判定编排（0.13 第二阶段）。
+    ///
+    /// 与进化同一条理由：现造而不是存属性 —— `serverConfig` 一变，旧客户端就指错了地方。
+    func cloudMood() -> CloudMoodJudgement? {
+        guard serverModeActive, let client = serverAPIClientForPush() else { return nil }
+        let writes = serverWrites
+        return CloudMoodJudgement(
+            client: client,
+            stores: stores,
+            mood: moodRepository,
+            serverPersonaId: { [weak writes] localId in
+                writes?.resolvedServerPersonaId(localId) ?? localId
+            },
+            log: { DebugSeeding.log($0) }
+        )
+    }
+
+    /// 云端模式：一轮助手回复**落库之后**，按与本地模式同一节流请服务端评估一次人格进化。
     ///
     /// 与抽记忆/压摘要同一套规矩：不挡回复（起 Task）、失败只写日志、绝不抛给界面。
-    /// 本地模式不调这里——它由 `ChatService` 落库后触发（同一份游标、同一道单飞闸）。
+    /// 第二阶段起评估在**服务端**做（不需要本机 API 配置），所以这里不再要求有模型配置；
+    /// 服务端没配时它回 503，我们只留一行日志（云端功能自己会退化成「不做」）。
     func triggerPersonaEvolutionForServerReply(sessionId: String, personaId: String) {
         let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let cloud = cloudPersonaEvolution() else { return }
-        guard let session = (try? stores.sessions.byId(trimmed)) ?? nil else { return }
-        guard let resolved = backgroundConfig(session) else {
-            // 云端模式也可以完全没有本机 API 配置（聊天全在服务端）：评估是**本机**的
-            // 额外模型调用，没有配置就不跑，但一定要留一行日志，不静默。
-            DebugSeeding.log("[evolution] 没有可用的本机 API 配置，云端模式这次不评估")
-            return
-        }
-        Task {
-            await cloud.evaluateIfNeeded(
-                personaId: personaId,
-                sessionId: trimmed,
-                config: resolved.config,
-                model: resolved.model
-            )
-        }
+        Task { await cloud.evaluateIfNeeded(personaId: personaId) }
+    }
+
+    /// 云端模式：一轮助手回复落库之后按 4 条节流请服务端判一次情绪，结果写本地缓存。
+    ///
+    /// 情绪是「给界面与离线提示词用」的缓存，所以失败什么都不影响（`CloudMoodJudgement`
+    /// 自己已经把失败吞掉并写日志）。
+    func triggerCloudMoodForServerReply(sessionId: String, personaId: String) {
+        let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let cloud = cloudMood() else { return }
+        Task { await cloud.evaluateIfNeeded(personaId: personaId) }
     }
 
     /// 手动记一条记忆：服务端生成 id 后再写本地缓存（本地模式仍是原来的同步写入）。

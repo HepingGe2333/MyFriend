@@ -47,7 +47,18 @@ public let backupFormatName: String = "myfriend.backup"
 /// - `presets[]` 增加 `worldJson` / `speechStyleJson`（都可空）。
 /// 三段都是「总结后的设定」，**不含原始聊天记录**（§3.3：原文不进备份）。
 /// v1–v4 备份继续能读（缺字段 → nil → 该人格没有世界/话风，行为与旧版本完全一致）。
-public let backupFormatVersion: Int = 5
+///
+/// v6（0.13，schema v15）：把 0.13 的三样新东西也带走，换机之后他还是「会发表情、
+/// 会说话、会给自己记便条」的那个人。
+/// - `media[].kind` 多三个取值：`STICKER` / `AUDIO` / `VIDEO`（媒体总数与预算不变：
+///   单份 8 MiB、全部 128 MiB，超限的跳过并计数）；
+/// - 顶层新增 `stickers[]`：表情收藏（`file` 写**裸文件名**，与 `media` 里的 STICKER 关联）；
+/// - 顶层新增 `diaryNotes[]`：他自己的日记便条（含提醒时间；提醒是否已处理也带走，
+///   免得换机之后同一条提醒又弹一次）；
+/// - `messages.attachmentsJson[]` 的 `kind` / `durationMs` 一起带走（语音/视频的时长
+///   在服务端不下发，丢了就永远显示 `--:--`）。
+/// v1–v5 备份继续能读：缺 `stickers` / `diaryNotes` → 空数组（= 他没有表情和便条）。
+public let backupFormatVersion: Int = 6
 
 // MARK: - 顶层
 
@@ -73,6 +84,13 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
     public var agentIntents: [BackupAgentIntent]
     /// 他整理过记忆的留痕，用来保留「他最近整理过记忆」这条历史。
     public var memoryConsolidations: [BackupMemoryConsolidation]
+    /// v6：表情收藏。老备份没有这一段 → 空数组（= 他没有表情）。
+    ///
+    /// 图片二进制在 `media[]`（`kind=STICKER`），这里只留一行元数据 + 裸文件名；
+    /// 分开的理由与头像/聊天图同一条：引用与二进制各自能被单独跳过而不互相拖垮。
+    public var stickers: [BackupSticker]
+    /// v6：他自己的日记便条（含提醒）。老备份没有这一段 → 空数组。
+    public var diaryNotes: [BackupDiaryNote]
     public var apiConfigs: [BackupApiConfig]
     /// 可移植的设置。为 nil 表示这份备份里没有设置这一段（老版本或手写的备份）：
     /// 接回来时设置页保持原样，绝不拿一份「没有设置的备份」把用户现在的偏好清成默认值。
@@ -93,6 +111,8 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         proactiveRules: [BackupProactiveRule] = [],
         agentIntents: [BackupAgentIntent] = [],
         memoryConsolidations: [BackupMemoryConsolidation] = [],
+        stickers: [BackupSticker] = [],
+        diaryNotes: [BackupDiaryNote] = [],
         apiConfigs: [BackupApiConfig] = [],
         settings: BackupSettings? = nil
     ) {
@@ -110,6 +130,8 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         self.proactiveRules = proactiveRules
         self.agentIntents = agentIntents
         self.memoryConsolidations = memoryConsolidations
+        self.stickers = stickers
+        self.diaryNotes = diaryNotes
         self.apiConfigs = apiConfigs
         self.settings = settings
     }
@@ -120,7 +142,10 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         // `media` 紧跟在 `messages` 后面只为读起来顺：JSON 键顺序对两端都不重要。
         case media
         case presets
-        case proactiveRules, agentIntents, memoryConsolidations, apiConfigs, settings
+        case proactiveRules, agentIntents, memoryConsolidations
+        // v6：表情与日记便条。老版本读到会当未知字段忽略（不影响人格/记忆/聊天）。
+        case stickers, diaryNotes
+        case apiConfigs, settings
     }
 }
 
@@ -507,7 +532,8 @@ public struct BackupMessage: Equatable, Sendable, Encodable {
 /// - `bytes` 是 `data` 解出来的**原始**字节数（JSON 数字）；`data` 是标准 base64、带 padding、不换行。
 public struct BackupMedia: Equatable, Sendable, Codable {
     public var id: String
-    /// `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`。见类型注释：故意保留为 String。
+    /// `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`（v3）+
+    /// `STICKER` / `AUDIO` / `VIDEO`（v6）。见类型注释：故意保留为 String。
     public var kind: String
     public var personaId: String?
     public var fileName: String
@@ -535,6 +561,167 @@ public struct BackupMedia: Equatable, Sendable, Codable {
 
     enum CodingKeys: String, CodingKey {
         case id, kind, personaId, fileName, mime, bytes, data
+    }
+}
+
+/// 一张表情（v6，表 `stickers`）。
+///
+/// `file` 写的是**裸文件名**（`sticker-<hash>-<uuid>.gif`），二进制在同名 `media[]`
+/// 条目的 `kind=STICKER` 里。换机后相对路径一定要重写，所以绝不能把设备绝对路径带出去。
+public struct BackupSticker: Equatable, Sendable, Encodable {
+    public var id: String
+    /// 服务端模式下的用户 id；本地模式为 nil。
+    public var ownerUserId: String?
+    /// 模型做的表情挂在某个人格名下；用户导入的为 nil。
+    public var personaId: String?
+    /// 裸文件名（与 `media[].fileName` 关联）；空 = 这份备份里的表情没有二进制。
+    ///
+    /// 跨端字段名：iOS 历史上叫 `file`，Android 的 `BackupSticker` 叫 `fileName`。
+    /// **导出时两个都写**（同一个值），读取时两个都认（`fileName` 优先，与 Android 一致）——
+    /// 这样任一端生成的 v6 备份另一端都能接住，也不用为改名做一次格式迁移。
+    public var file: String?
+    public var mime: String
+    public var width: Int
+    public var height: Int
+    public var frames: Int
+    public var bytes: Int
+    /// `StickerSource` / `StickerCreator` 的原始值（字符串：新版本加枚举值时老版本不炸）。
+    public var source: String
+    public var createdBy: String
+    public var createdAt: Int64
+
+    public init(
+        id: String = "",
+        ownerUserId: String? = nil,
+        personaId: String? = nil,
+        file: String? = nil,
+        mime: String = "image/gif",
+        width: Int = 0,
+        height: Int = 0,
+        frames: Int = 1,
+        bytes: Int = 0,
+        source: String = "IMPORTED",
+        createdBy: String = "USER",
+        createdAt: Int64 = 0
+    ) {
+        self.id = id
+        self.ownerUserId = ownerUserId
+        self.personaId = personaId
+        self.file = file
+        self.mime = mime
+        self.width = max(0, width)
+        self.height = max(0, height)
+        self.frames = max(1, frames)
+        self.bytes = max(0, bytes)
+        self.source = source
+        self.createdBy = createdBy
+        self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, ownerUserId, personaId, file, fileName, mime, width, height
+        case frames, bytes, source, createdBy, createdAt
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(ownerUserId, forKey: .ownerUserId)
+        try container.encodeIfPresent(personaId, forKey: .personaId)
+        // 两个字段写同一个值：iOS 读 `file`、Android 读 `fileName`（见属性注释）。
+        try container.encodeIfPresent(file, forKey: .file)
+        try container.encodeIfPresent(file, forKey: .fileName)
+        try container.encode(mime, forKey: .mime)
+        if width != 0 { try container.encode(width, forKey: .width) }
+        if height != 0 { try container.encode(height, forKey: .height) }
+        try container.encode(frames, forKey: .frames)
+        if bytes != 0 { try container.encode(bytes, forKey: .bytes) }
+        try container.encode(source, forKey: .source)
+        try container.encode(createdBy, forKey: .createdBy)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
+
+    init(json: [String: JSONValue]) throws {
+        // 跨端契约只能加不能改：iOS 写 `file`、Android 写 `fileName`（两端导出时都写）。
+        // 读的时候两个都认，优先 `fileName`（与 Android 的 `portableFileName` 同序）。
+        let portableFile = try json.optionalText("fileName")
+            ?? json.optionalText("file")
+        self.init(
+            id: try json.text("id"),
+            ownerUserId: try json.optionalText("ownerUserId"),
+            personaId: try json.optionalText("personaId"),
+            file: portableFile,
+            mime: try json.text("mime", "image/gif"),
+            width: try json.int("width"),
+            height: try json.int("height"),
+            frames: try json.int("frames", 1),
+            bytes: try json.int("bytes"),
+            source: try json.text("source", "IMPORTED"),
+            createdBy: try json.text("createdBy", "USER"),
+            createdAt: try json.int64("createdAt")
+        )
+    }
+}
+
+/// 一条日记便条（v6，表 `diary_notes`）。
+///
+/// 这是**他自己的备忘录**（`spec/diary/README.md`）：换机之后他希望「明天记得问他到家没」
+/// 还在，所以内容、时间、提醒都带走。`remindedAt` 也带走 —— 否则同一条提醒会在新机器上
+/// 再弹一次，用户会觉得「这件事怎么又问了一遍」。
+public struct BackupDiaryNote: Equatable, Sendable, Encodable {
+    public var id: String
+    public var personaId: String
+    public var content: String
+    public var createdAt: Int64
+    /// 什么时候提醒他（毫秒）；nil = 不提醒。
+    public var remindAt: Int64?
+    /// 这条提醒已经处理过的时间；nil = 还没处理。
+    public var remindedAt: Int64?
+    public var updatedAt: Int64
+
+    public init(
+        id: String = "",
+        personaId: String = "",
+        content: String = "",
+        createdAt: Int64 = 0,
+        remindAt: Int64? = nil,
+        remindedAt: Int64? = nil,
+        updatedAt: Int64 = 0
+    ) {
+        self.id = id
+        self.personaId = personaId
+        self.content = content
+        self.createdAt = createdAt
+        self.remindAt = remindAt
+        self.remindedAt = remindedAt
+        self.updatedAt = updatedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, personaId, content, createdAt, remindAt, remindedAt, updatedAt
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(personaId, forKey: .personaId)
+        try container.encode(content, forKey: .content)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encodeIfPresent(remindAt, forKey: .remindAt)
+        try container.encodeIfPresent(remindedAt, forKey: .remindedAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+    }
+
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            id: try json.text("id"),
+            personaId: try json.text("personaId"),
+            content: try json.text("content"),
+            createdAt: try json.int64("createdAt"),
+            remindAt: try json.optionalInt64("remindAt"),
+            remindedAt: try json.optionalInt64("remindedAt"),
+            updatedAt: try json.int64("updatedAt")
+        )
     }
 }
 
@@ -1160,6 +1347,9 @@ public struct BackupPreview: Equatable, Sendable {
     public var rules: Int
     public var presets: Int
     public var apiConfigs: Int
+    /// v6：表情 / 日记便条的数量（预览里给一行，用户才知道这次带走了什么）。
+    public var stickers: Int
+    public var diaryNotes: Int
     public var exportedAt: Int64
     public var appVersion: String
 
@@ -1171,6 +1361,8 @@ public struct BackupPreview: Equatable, Sendable {
         rules: Int = 0,
         presets: Int = 0,
         apiConfigs: Int = 0,
+        stickers: Int = 0,
+        diaryNotes: Int = 0,
         exportedAt: Int64 = 0,
         appVersion: String = ""
     ) {
@@ -1181,6 +1373,8 @@ public struct BackupPreview: Equatable, Sendable {
         self.rules = rules
         self.presets = presets
         self.apiConfigs = apiConfigs
+        self.stickers = stickers
+        self.diaryNotes = diaryNotes
         self.exportedAt = exportedAt
         self.appVersion = appVersion
     }
@@ -1199,6 +1393,8 @@ public struct BackupPreview: Equatable, Sendable {
             PluralText.format("%d 句话", messages)
         ]
         if rules > 0 { parts.append(PluralText.format("%d 条主动节奏", rules)) }
+        if stickers > 0 { parts.append(PluralText.format("%d 个表情", stickers)) }
+        if diaryNotes > 0 { parts.append(PluralText.format("%d 条日记", diaryNotes)) }
         return PluralText.list(parts)
     }
 
@@ -1218,6 +1414,8 @@ public struct BackupPreview: Equatable, Sendable {
             rules: bundle.proactiveRules.count,
             presets: bundle.presets.count,
             apiConfigs: bundle.apiConfigs.count,
+            stickers: bundle.stickers.count,
+            diaryNotes: bundle.diaryNotes.count,
             exportedAt: bundle.exportedAt,
             appVersion: bundle.appVersion
         )

@@ -210,6 +210,37 @@ final class ServerChatGatewayAudioVideoTests: XCTestCase {
         XCTAssertTrue(ServerURLProtocolStub.recordedRequests.isEmpty)
     }
 
+    /// 超过 64 MiB 的视频：**明确**告诉用户「视频超过 64 MB」，并且一个字节都不上传。
+    ///
+    /// 用稀疏文件造体积（`truncate`），不真的占 64 MiB 磁盘/内存：这条测的是
+    /// 「先看文件大小再谈读字节」这个顺序，而不是传输本身。
+    func testOversizedVideoIsRejectedByFileSizeBeforeReadingBytes() async throws {
+        let oversized = mediaRoot.appendingPathComponent("huge-\(UUID().uuidString).mp4")
+        XCTAssertTrue(FileManager.default.createFile(atPath: oversized.path, contents: nil))
+        let handle = try FileHandle(forWritingTo: oversized)
+        try handle.truncate(atOffset: UInt64(AudioVideoLimits.videoMaxBytes + 1))
+        try handle.close()
+        // 直接把「已经落在视频目录里」的附件交给发送链路（跳过 importVideo 的预校验，
+        // 模拟「文件在选完之后被换成了超大文件」这条真实路径）。
+        let videoDirectory = audioVideo.videoDirectory
+        let target = videoDirectory.appendingPathComponent(oversized.lastPathComponent)
+        try FileManager.default.moveItem(at: oversized, to: target)
+        let attachment = MessageAttachment.video(
+            uri: target.absoluteString, durationMs: 10_000
+        )
+
+        let fileUploader = FakeFileUploader()
+        let gateway = gateway(fileUploader: fileUploader)
+        guard case .rejected(let error) = await gateway.sendCheckedWithMedia(
+            sessionId: sessionId, text: "", attachments: [attachment]
+        ) else {
+            return XCTFail("超大视频应当在入队之前被拒")
+        }
+        XCTAssertEqual((error as? ApiException)?.message, "视频超过 64 MB", "要说清楚是体积超了，而不是「读不出来」")
+        XCTAssertTrue(fileUploader.uploads.isEmpty)
+        XCTAssertTrue(ServerURLProtocolStub.recordedRequests.isEmpty)
+    }
+
     private final class FakePreparer: ServerChatMediaPreparing {
         let bytes: Data
         init(bytes: Data) { self.bytes = bytes }

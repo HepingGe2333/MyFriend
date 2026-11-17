@@ -488,11 +488,13 @@ object AppModule {
     fun provideServerModeSwitchCoordinator(
         mode: ServerModeControl,
         localStore: ServerLocalStore,
-        bootstrap: ServerBootstrapManager
+        bootstrap: ServerBootstrapManager,
+        llmConfig: com.yap.app.data.remote.ServerLlmConfigPusher
     ): ServerModeSwitchCoordinator = ServerModeSwitchCoordinator(
         mode = mode,
         store = localStore,
-        runner = bootstrap
+        runner = bootstrap,
+        llmConfig = llmConfig
     )
 
     @Provides

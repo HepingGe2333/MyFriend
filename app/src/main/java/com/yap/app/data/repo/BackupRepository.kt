@@ -6,11 +6,13 @@ import com.yap.app.data.local.AgentIntentDao
 import com.yap.app.data.local.ApiConfigDao
 import com.yap.app.data.local.ChatSessionDao
 import com.yap.app.data.local.ChatSessionEntity
+import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryDao
 import com.yap.app.data.local.MemoryTermDao
 import com.yap.app.data.local.MemoryTermEntity
 import com.yap.app.data.local.MessageDao
+import com.yap.app.data.local.StickerDao
 import com.yap.app.data.local.YapDatabase
 import com.yap.app.data.local.PersonaDao
 import com.yap.app.data.local.PersonaPresetDao
@@ -37,12 +39,14 @@ import com.yap.app.domain.AttachmentsCodec
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.ChineseTerms
 import com.yap.app.domain.DataEraser
+import com.yap.app.domain.MediaOwnership
 import com.yap.app.domain.SessionGenerationRegistry
 import com.yap.app.domain.backupFileName
 import com.yap.app.domain.mergeInto
 import com.yap.app.domain.toAppSettings
 import com.yap.app.domain.toBackupApiConfig
 import com.yap.app.domain.toBackupConsolidation
+import com.yap.app.domain.toBackupDiaryNote
 import com.yap.app.domain.toBackupIntent
 import com.yap.app.domain.toBackupMemory
 import com.yap.app.domain.toBackupMessage
@@ -51,6 +55,7 @@ import com.yap.app.domain.toBackupPreset
 import com.yap.app.domain.toBackupRule
 import com.yap.app.domain.toBackupSession
 import com.yap.app.domain.toBackupSettings
+import com.yap.app.domain.toBackupSticker
 import com.yap.app.domain.toEntity
 import com.yap.app.network.userError
 import com.yap.app.util.MediaStorage
@@ -87,7 +92,11 @@ data class ImportSummary(
     /** v3 媒体（头像/聊天图片）单独一组提醒：张数 + 原因，文案在 UI 层拼。 */
     val mediaWarnings: List<BackupMediaWarning> = emptyList(),
     val mode: ImportMode = ImportMode.MERGE,
-    val presets: Int = 0
+    val presets: Int = 0,
+    /** v6：接回来的表情行数（只统计真的落库、且文件已还原的行）。 */
+    val stickers: Int = 0,
+    /** v6：接回来的日记条数。 */
+    val diaryNotes: Int = 0
 )
 
 /**
@@ -141,6 +150,9 @@ class BackupRepository @Inject constructor(
     private val presetDao: PersonaPresetDao,
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
+    /** v6：表情行与日记行要跟着备份走（表情的字节在 media 里，这里只带元数据）。 */
+    private val stickerDao: StickerDao,
+    private val diaryNoteDao: DiaryNoteDao,
     /** 块元数据的唯一写入入口：导入之后按消息顺序重建（备份格式仍是 v2，不含块）。 */
     private val blockWriter: MessageBlockWriter,
     private val memoryDao: MemoryDao,
@@ -214,9 +226,13 @@ class BackupRepository @Inject constructor(
         val presets = presetDao.getAll()
         val settings = settingsRepository.settings.first()
 
-        // ---- v3：把图片二进制一起装进 media ----------------------------------
+        // ---- v3/v6：把媒体二进制一起装进 media ----------------------------------
+        // 头像/聊天图/表情/语音/视频都只收「本机真的引用得到、且落在自己目录里」的文件。
         val avatarDir = MediaStorage.avatarDirectory(appContext)
         val mediaDir = MediaStorage.mediaDirectory(appContext)
+        val stickerDir = MediaStorage.stickerDirectory(appContext)
+        val audioDir = MediaStorage.audioDirectory(appContext)
+        val videoDir = MediaStorage.videoDirectory(appContext)
         val candidates = mutableListOf<BackupMediaCandidate>()
         fun addCandidate(kind: String, personaId: String?, uri: String?, directory: java.io.File) {
             // 只读「属于我们自己的、真实存在的」文件：头像/附件路径来自数据库，属于
@@ -224,6 +240,8 @@ class BackupRepository @Inject constructor(
             val file = MediaStorage.ownedFile(uri, directory) ?: return
             if (!BackupAvatarPath.isSafeName(file.name)) return
             val mime = BackupMediaFormats.mimeOfFile(file.name) ?: return
+            // kind-aware：头像/聊天图只收图片，表情只收图片（含 GIF），音频/视频只收各自容器。
+            if (!BackupMediaFormats.supports(kind, mime)) return
             candidates += BackupMediaCandidate(kind, personaId, file.name, file, mime)
         }
         personas.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, it.id, it.avatarUri, avatarDir) }
@@ -231,14 +249,37 @@ class BackupRepository @Inject constructor(
         presets.forEach { addCandidate(BackupMediaKind.PERSONA_AVATAR, null, it.avatarUri, avatarDir) }
         messages.forEach { message ->
             AttachmentsCodec.decode(message.attachmentsJson).forEach { attachment ->
-                addCandidate(BackupMediaKind.CHAT_IMAGE, message.personaId, attachment.uri, mediaDir)
+                when {
+                    attachment.isSticker -> addCandidate(BackupMediaKind.STICKER, message.personaId, attachment.uri, stickerDir)
+                    attachment.isAudio -> addCandidate(BackupMediaKind.AUDIO, message.personaId, attachment.uri, audioDir)
+                    attachment.isVideo -> addCandidate(BackupMediaKind.VIDEO, message.personaId, attachment.uri, videoDir)
+                    attachment.isChatImage -> addCandidate(BackupMediaKind.CHAT_IMAGE, message.personaId, attachment.uri, mediaDir)
+                }
             }
         }
+        // v6：表情行也要带走——消息里的表情附件引用同一个文件，但「我的表情」列表靠这张表。
+        val stickerRows = runCatching { stickerDao.observeAll().first() }.getOrDefault(emptyList())
+        stickerRows.forEach { sticker ->
+            // 服务端模式的表情行是 `/v1/media/<id>`（没有本机字节），portable 会返回 null → 不导。
+            val name = BackupAvatarPath.portable(sticker.file) ?: return@forEach
+            val file = MediaStorage.ownedFile(sticker.file, stickerDir) ?: return@forEach
+            if (name != file.name) return@forEach
+            addCandidate(BackupMediaKind.STICKER, sticker.personaId, sticker.file, stickerDir)
+        }
         val packed = BackupMediaPacker.pack(candidates)
-        val chatImageNames = packed.media
-            .filter { it.kind == BackupMediaKind.CHAT_IMAGE }
-            .map { it.fileName }
-            .toSet()
+        // 消息附件只写「这次真的装进 media」的裸文件名；五种 kind 都算，否则语音/视频会掉。
+        val mediaFileNames = packed.media.map { it.fileName }.toSet()
+        // 只有字节真的在 media 里的表情行才导：没有文件的元数据换台手机也用不了。
+        val stickers = stickerRows.mapNotNull { sticker ->
+            val name = BackupAvatarPath.portable(sticker.file) ?: return@mapNotNull null
+            if (name !in mediaFileNames) return@mapNotNull null
+            sticker.toBackupSticker(name)
+        }
+
+        // v6：日记板（他的备忘 + 提醒时间）。按人格取全量，不截断——那是他自己写下的东西。
+        val diaryNotes = personas.flatMap { persona ->
+            runCatching { diaryNoteDao.allForPersona(persona.id) }.getOrDefault(emptyList())
+        }
 
         val bundle = BackupBundle(
             formatVersion = BACKUP_FORMAT_VERSION,
@@ -247,8 +288,10 @@ class BackupRepository @Inject constructor(
             personas = personas.map { it.toBackupPersona() },
             memories = memories.map { it.toBackupMemory() },
             sessions = sessions.map { it.toBackupSession() },
-            messages = messages.map { it.toBackupMessage(chatImageNames) },
+            messages = messages.map { it.toBackupMessage(mediaFileNames) },
             media = packed.media,
+            stickers = stickers,
+            diaryNotes = diaryNotes.map { it.toBackupDiaryNote() },
             presets = presets.map { it.toBackupPreset() },
             proactiveRules = proactiveRuleDao.observeAll().first().map { it.toBackupRule() },
             agentIntents = intents.map { it.toBackupIntent() },
@@ -423,11 +466,14 @@ class BackupRepository @Inject constructor(
             warnings += BackupWarning.ExtraSessions(bundle.sessions.size - latestSessions.size)
         }
 
-        // ---- v3：先把 media 落盘，再落库引用 ---------------------------------
+        // ---- v3/v6：先把媒体落盘，再落库引用 --------------------------------
         // 顺序是刻意的：库里出现的每个 file:// 地址都必须已经指向一个真实文件。
         // 写失败/坏数据的条目跳过并计数；导入结束后若落库失败，会把这次写的文件回滚删掉。
         val avatarDir = MediaStorage.avatarDirectory(appContext)
         val mediaDir = MediaStorage.mediaDirectory(appContext)
+        val stickerDir = MediaStorage.stickerDirectory(appContext)
+        val audioDir = MediaStorage.audioDirectory(appContext)
+        val videoDir = MediaStorage.videoDirectory(appContext)
         val referencedAvatarNames = buildSet {
             bundle.personas.forEach { BackupAvatarPath.fileName(it.avatarUri)?.let { name -> add(name) } }
             bundle.presets.forEach { BackupAvatarPath.fileName(it.avatarUri)?.let { name -> add(name) } }
@@ -443,7 +489,13 @@ class BackupRepository @Inject constructor(
                 }
             }
         }
-        // 只恢复「这次备份里真的会被引用到」的媒体：没被任何头像/消息引用的条目写下去
+        // v6：表情行的 file 在备份里是裸文件名；只有被表情行引用的 STICKER 才值得落盘。
+        val referencedStickerNames = buildSet {
+            bundle.stickers.forEach { sticker ->
+                BackupAvatarPath.fileName(sticker.portableFileName)?.let { name -> add(name) }
+            }
+        }
+        // 只恢复「这次备份里真的会被引用到」的媒体：没被任何头像/消息/表情引用的条目写下去
         // 也只是孤儿文件（还会给恶意备份一个白占 128 MiB 的机会）。
         val restorableMedia = bundle.media.filter { media ->
             when (media.kind) {
@@ -454,6 +506,11 @@ class BackupRepository @Inject constructor(
                         (mediaPersonaId.isNotEmpty() && mediaPersonaId in personaIds)
                 }
                 BackupMediaKind.CHAT_IMAGE -> media.fileName in referencedChatNames
+                // 表情可能只被消息附件引用（iOS v6 备份的 stickers 段可能还没写）：两种引用都算。
+                BackupMediaKind.STICKER ->
+                    media.fileName in referencedStickerNames || media.fileName in referencedChatNames
+                // 语音/视频一定挂在消息附件上（没有别的表引用它们）。
+                BackupMediaKind.AUDIO, BackupMediaKind.VIDEO -> media.fileName in referencedChatNames
                 else -> false
             }
         }
@@ -461,11 +518,20 @@ class BackupRepository @Inject constructor(
             entries = restorableMedia,
             avatarDir = avatarDir,
             chatDir = mediaDir,
+            stickerDir = stickerDir,
+            audioDir = audioDir,
+            videoDir = videoDir,
             // 导入压缩：头像长边 512 / 聊天图 1600、JPEG 85、透明垫白底，输出字节有上限（0.12）。
+            // v6 的表情/语音/视频不会进压缩器（BackupMediaKind.isCompressible 只认头像与聊天图）。
             compressor = { bytes, mime, kind -> MediaStorage.compressBackupImage(bytes, mime, kind) }
         )
         val mediaWarnings = restoredMedia.warnings.toMutableList()
         val restoredChatFileNames = restoredMedia.chatImagesByFileName.values.map { it.file.name }.toSet()
+        val restoredVoiceVideoNames = buildSet {
+            restoredMedia.audioByFileName.values.forEach { add(it.file.name) }
+            restoredMedia.videoByFileName.values.forEach { add(it.file.name) }
+        }
+        val restoredStickerFiles = restoredMedia.stickersByFileName.values.map { it.file }.toSet()
 
         // 备份里的头像只有文件名（安全 P2-5）：v3 用 media 里的同名条目恢复成新的本机文件；
         // v1/v2 没有 media，仍按「本机 files/avatars 里有没有同名文件」处理。
@@ -496,6 +562,37 @@ class BackupRepository @Inject constructor(
         val intents = bundle.agentIntents.map { it.toEntity() }
         val consolidations = bundle.memoryConsolidations.map { it.toEntity() }
 
+        // v6 表情行：文件没还原出来的行不插（绝不写空路径/坏路径），计数进 skipped。
+        // personaId 指向本次备份里不存在的人格时降级成「不属于某个人格」——表情是用户自己的，
+        // 不该因为一个孤儿引用整行丢掉，也不该在库里留一个指向不存在人格的悬空 id。
+        var skippedStickers = 0
+        val stickers = bundle.stickers.mapNotNull { backup ->
+            val name = BackupAvatarPath.fileName(backup.portableFileName) ?: run {
+                skippedStickers++
+                return@mapNotNull null
+            }
+            val restored = restoredMedia.stickersByFileName[name] ?: run {
+                skippedStickers++
+                return@mapNotNull null
+            }
+            val bytes = backup.bytes.takeIf { it > 0 } ?: restored.file.length().toInt()
+            backup.copy(
+                bytes = bytes,
+                personaId = backup.personaId?.takeIf { it in personaIds }
+            ).toEntity(restored.uri)
+        }
+
+        // v6 日记行：只接回「所属人格真的在这份备份里」的条目（孤儿引用静默跳过，不整份拒绝）。
+        var skippedDiaryNotes = 0
+        val diaryNotes = bundle.diaryNotes.mapNotNull { note ->
+            if (note.personaId !in personaIds) {
+                skippedDiaryNotes++
+                return@mapNotNull null
+            }
+            note.toEntity()
+        }
+        skipped += skippedStickers + skippedDiaryNotes
+
         // 合并模式下，如果本机已经有这个人的会话，就把备份里的那段落回本机那一段（保留本机 sessionId），
         // 否则唯一索引会让 REPLACE 把本机会话整行删掉，本机消息就成了孤儿。
         val localSessions = if (mode == ImportMode.MERGE) sessionDao.getAll() else emptyList()
@@ -515,12 +612,13 @@ class BackupRepository @Inject constructor(
         }
 
         // 消息得有个能落脚的会话：按上面的映射改 sessionId，落不进去的跳过并计数。
-        // 附件：v3 用 media 里的 CHAT_IMAGE 重建成本机新路径；v1/v2 没有 media，仍然只剩文字。
+        // 附件：v3 用 media 重建本机新路径；v6 的语音/视频/表情也走同一张 byFileName 表；
+        // v1/v2 没有 media，仍然只剩文字。
         var messagesWithDroppedAttachments = 0
         val messages = bundle.messages.map { message ->
             val restoredAttachments = BackupAttachmentsPortable.restore(
                 message.attachmentsJson,
-                restoredMedia.chatImagesByFileName
+                restoredMedia.byFileName
             )
             if (!message.attachmentsJson.isNullOrBlank() && restoredAttachments.dropped > 0) {
                 messagesWithDroppedAttachments++
@@ -573,6 +671,9 @@ class BackupRepository @Inject constructor(
             }
         }
 
+        // 事务提交后统计「真的插进去的表情行数」：StickerDao.insert 是 IGNORE，撞 id 不算。
+        var insertedStickerCount = 0
+
         try {
             database.withTransaction {
                 if (mode == ImportMode.REPLACE) {
@@ -584,10 +685,23 @@ class BackupRepository @Inject constructor(
                     // 不再嵌套开事务（清空 + 写回必须同属一个原子操作）。
                     // 它只删表、只收集待删文件；文件清理在事务提交之后才做（审计 P1-4）。
                     dataEraser.replaceForBackupInsideTransaction(keepAvatarUris)
+                    // v6：表情与日记不在 ErasurePlan（那份清单在 :agentcore，本轮不改范围）。
+                    // 日记会跟着 PERSONAS 分支被 RoomErasureStore 顺手清掉；表情表没有任何
+                    // 清空路径，所以必须在这里显式清——**先清空、再插还原的行**，
+                    // 顺序反了会把刚接回来的表情删掉。
+                    stickerDao.deleteAll()
+                    diaryNoteDao.deleteAll()
                 }
 
                 personaDao.insertAll(personas)
                 presetDao.insertAll(presets)
+                var insertedStickers = 0
+                stickers.forEach { sticker ->
+                    // StickerDao.insert 是 IGNORE：合并模式下撞 id 的旧行保持原样，不重复计数。
+                    if (stickerDao.insert(sticker) != -1L) insertedStickers++
+                }
+                insertedStickerCount = insertedStickers
+                diaryNotes.forEach { diaryNoteDao.insert(it) }
                 memoryDao.insertAll(memories)
                 // 记忆的倒排索引要跟着一起建：否则接回来以后按关键词想不起事，只剩 LIKE 兜底。
                 memories.forEach { memory ->
@@ -649,6 +763,21 @@ class BackupRepository @Inject constructor(
                 // 只按 keep 删会把它删掉（人格「接回来了却没有脸」）。旧图没有引用才回收。
                 mediaJanitor.clearUnreferencedAvatars(keepAvatarUris)
                 mediaJanitor.clearChatImagesExcept(restoredChatFileNames)
+                // v6：旧语音/视频也回收（数据库行已删，引用守卫只留这次还 referenced 的新文件）。
+                mediaJanitor.clearVoiceVideoExcept(restoredVoiceVideoNames)
+            }
+            // v6：表情文件不在 DataEraser 的清理清单里，也没有「按目录+引用」的公共 API。
+            // 事务提交后按「这次真的还原出来的文件」保留，其余属于 files/stickers 的普通文件删掉。
+            // 先删行、再删文件；新表情已在库里被引用，且被 keep 集合显式保住。
+            runCatching {
+                val keepPaths = restoredStickerFiles.map { it.absolutePath }.toSet()
+                stickerDir.listFiles()?.forEach { file ->
+                    if (!file.isFile) return@forEach
+                    if (file.absolutePath in keepPaths) return@forEach
+                    if (!BackupAvatarPath.isSafeName(file.name)) return@forEach
+                    if (!MediaOwnership.isWithin(file, listOf(stickerDir))) return@forEach
+                    runCatching { file.delete() }
+                }
             }
         }
 
@@ -684,7 +813,9 @@ class BackupRepository @Inject constructor(
             warnings = warnings.toList(),
             mediaWarnings = mediaWarnings.toList(),
             mode = mode,
-            presets = presets.size
+            presets = presets.size,
+            stickers = insertedStickerCount,
+            diaryNotes = diaryNotes.size
         )
     }
 

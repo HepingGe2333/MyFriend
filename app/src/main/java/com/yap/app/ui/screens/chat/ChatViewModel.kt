@@ -32,6 +32,8 @@ import com.yap.app.data.repo.ProactiveScheduler
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PersonaTranslationCoordinator
 import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.MediaRejection
+import com.yap.app.domain.MediaSendGuard
 import com.yap.app.domain.MessageAttachment
 import com.yap.app.domain.StickerSource
 import com.yap.app.domain.ReadReceipt
@@ -750,6 +752,37 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 发送前的音视频校验：只查**本机真的有文件**的附件。
+     *
+     * 服务端引用（换过服务端/别的设备发来的）此时本机没有文件，尺寸与时长只能由上传/下载
+     * 链路拿真实字节判断——那一条链路上传前也会再校验（[com.yap.app.data.remote.ServerAudioVideoUploader]）。
+     */
+    private fun mediaSendBlock(attachments: List<MessageAttachment>): MediaSendGuard.Rejection? {
+        val candidates = attachments.filter { it.isAudioOrVideo }.mapNotNull { attachment ->
+            val kind = attachment.mediaKind ?: return@mapNotNull null
+            val file = MediaStorage.voiceVideoFile(context, attachment.uri) ?: return@mapNotNull null
+            val duration = attachment.durationMs?.takeIf { it > 0L }
+                ?: VideoFramesExtractor.durationMs(file)
+            MediaSendGuard.Candidate(kind = kind, sizeBytes = file.length(), durationMs = duration)
+        }
+        return MediaSendGuard.firstRejection(candidates)
+    }
+
+    /** 超限/文件坏掉时的明确提示（文案与选片失败共用同一批资源）。 */
+    private fun rejectionText(rejection: MediaSendGuard.Rejection): Int = when {
+        MediaSendGuard.isUnreadable(rejection.reason) -> R.string.media_error_unreadable
+        rejection.candidate.isAudio && rejection.reason == MediaRejection.TOO_LARGE ->
+            R.string.media_error_audio_too_large
+
+        rejection.candidate.isAudio && rejection.reason == MediaRejection.TOO_LONG ->
+            R.string.media_error_audio_too_long
+
+        rejection.reason == MediaRejection.TOO_LARGE -> R.string.media_error_video_too_large
+        rejection.reason == MediaRejection.TOO_LONG -> R.string.media_error_video_too_long
+        else -> R.string.media_error_unreadable
+    }
+
     /** 气泡播放用：把一条语音/视频附件解析成本机可播放文件（服务端引用先缓存）。 */
     suspend fun playableFile(attachment: MessageAttachment): File? =
         audioVideoRepository.localFile(attachment)
@@ -882,6 +915,12 @@ class ChatViewModel @Inject constructor(
         val text = ephemeral.value.draft
         val images = ephemeral.value.images
         if ((text.isBlank() && images.isEmpty()) || ephemeral.value.isGenerating || operationInFlight) return
+        // 0.13：发送前用**现有元数据**再核一次语音/视频上限（选片时查过一次，但文件可能被替换）。
+        // 超限就明确提示、不发送；服务端上传前还会再挡一次（`ServerAudioVideoUploader`）。
+        mediaSendBlock(images)?.let { rejection ->
+            ephemeral.update { it.copy(snackbar = context.getString(rejectionText(rejection))) }
+            return
+        }
         val current = uiState.value
         // 服务端模式不需要本地 API 配置：模型与密钥都在服务端。
         if (!chatRepository.isServerMode() && current.config == null) {

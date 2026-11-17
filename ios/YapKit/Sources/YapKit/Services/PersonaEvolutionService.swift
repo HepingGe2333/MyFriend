@@ -201,6 +201,15 @@ public final class PersonaEvolutionService {
         return inFlight.count
     }
 
+    /// 把「已经评估过」记进游标（云端模式用：评估在服务端做，节奏仍然由本机的游标决定）。
+    ///
+    /// 与本地模式同一条语义：不管成功与否都推进，否则一次失败会让下一条用户消息
+    /// 再烧一次模型调用。`userMessageCount` 记的是**此刻**的条数，所以「再 20 条」是
+    /// 相对这次评估算的。
+    public func markEvaluated(personaId: String, at moment: Int64? = nil) {
+        advanceCursor(personaId: personaId, at: moment ?? now())
+    }
+
     private func advanceCursor(personaId: String, at: Int64) {
         cursors.save(
             PersonaEvolutionCursor(

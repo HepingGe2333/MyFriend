@@ -640,23 +640,66 @@ public enum BackupMediaKind: String, CaseIterable, Sendable {
     case personaAvatar = "PERSONA_AVATAR"
     case userAvatar = "USER_AVATAR"
     case chatImage = "CHAT_IMAGE"
+    // MARK: v6（0.13）：表情 / 语音 / 视频也一起带走
+    //
+    // 与 Android `BackupCodec` 的 `MediaKind` 逐字对应。老版本（v1–v5）读到这三个 kind
+    // 会当成「不认识的 kind」跳过并计数 —— 这正是 v6 的兼容方式：旧 App 接新备份只会
+    // 少三样附件，人格、记忆、聊天一句不丢。
+    case sticker = "STICKER"
+    case audio = "AUDIO"
+    case video = "VIDEO"
 
     /// 落盘文件名前缀：头像 `avatar-`、聊天图 `chatImage-`（与 `MediaKind.rawValue` 同源，
     /// `MediaStorage.deleteAllChatImages` 就是按这个前缀清图的）。
+    ///
+    /// v6 的三类沿用各自目录里的既有前缀（`sticker-` / `audio-` / `video-`）：这样
+    /// 导入后文件名与本地选图/录音产生的文件长得一样，清理逻辑不必区分「备份来的」。
     public var fileNamePrefix: String {
         switch self {
         case .personaAvatar, .userAvatar: return MediaKind.avatar.rawValue + "-"
         case .chatImage: return MediaKind.chatImage.rawValue + "-"
+        case .sticker: return "sticker-"
+        case .audio: return AudioVideoLimits.Kind.audio.fileNamePrefix
+        case .video: return AudioVideoLimits.Kind.video.fileNamePrefix
         }
     }
 
-    /// 备份里的类型 → 压缩策略（头像 512、聊天图 1600）。
-    public var mediaKind: MediaKind {
+    /// 备份里的类型 → 图片压缩策略（头像 512、聊天图 1600）。
+    ///
+    /// v6 的三类返回 nil：表情必须保留 GIF 动图（重压会把它压成一张静态 JPEG），
+    /// 语音/视频规格里明确「不转码」。它们走「原样写盘」那条路。
+    public var imageKind: MediaKind? {
         switch self {
         case .personaAvatar, .userAvatar: return .avatar
         case .chatImage: return .chatImage
+        case .sticker, .audio, .video: return nil
         }
     }
+
+    /// 落到哪个本机目录。
+    ///
+    /// 图片（头像/聊天图）→ `attachments`；表情 → `stickers`；语音/视频 → `audio` / `video`。
+    /// 目录本身就是「这条媒体属于谁」的一部分：播放器要的是带扩展名的真实文件，
+    /// 渲染层也按目录决定去哪取（`MediaStorage` / `StickerStorage` / `AudioVideoStore`）。
+    public var directoryRole: BackupMediaDirectory {
+        switch self {
+        case .personaAvatar, .userAvatar, .chatImage: return .attachments
+        case .sticker: return .stickers
+        case .audio: return .audio
+        case .video: return .video
+        }
+    }
+
+    /// 兼容旧代码：图片类返回对应策略，非图片返回 `.chatImage`（调用方应先看 `imageKind`）。
+    var legacyImageKind: MediaKind { imageKind ?? .chatImage }
+}
+
+/// 备份媒体落在哪个本机目录（导入时按它选目录）。
+public enum BackupMediaDirectory: String, Sendable {
+    case attachments
+    case stickers
+    case audio
+    case video
 }
 
 /// v3 备份里媒体的硬上限（两端同一组数字，改了就是格式变更）。
@@ -685,8 +728,31 @@ public enum BackupMediaLimits {
     /// `media[].fileName` 最长多少字节（只用来挡垃圾，比我们自己写的名字宽松得多）。
     public static let maxFileNameBytes = 200
 
-    /// 只支持这三种图片格式。别的一律跳过并计数：解码器不认识它们，带过去也是坏图。
-    public static let supportedMimes: Set<String> = ["image/jpeg", "image/png", "image/webp"]
+    /// 图片类（头像 / 聊天图）支持的三种格式。别的一律跳过并计数：解码器不认识它们。
+    public static let imageMimes: Set<String> = ["image/jpeg", "image/png", "image/webp"]
+    /// 表情只收 GIF（表情本来就是 GIF；其它格式到了表情目录也渲染不出来）。
+    public static let stickerMimes: Set<String> = ["image/gif"]
+    /// 语音（与 `AttachmentsCodec.allowedMimes` / agentd `MediaMime` 同一组值）。
+    public static let audioMimes: Set<String> = ["audio/m4a", "audio/mp4", "audio/mpeg"]
+    /// 视频（不转码，什么容器就记什么）。
+    public static let videoMimes: Set<String> = ["video/mp4", "video/quicktime"]
+
+    /// v3 起就有的名字：图片三种格式。v6 起表示「全部媒体格式的并集」，
+    /// 供「不知道 kind 时先粗判一下」的地方用（既有的 `isSupported(mime:)` 依赖它）。
+    public static let supportedMimes: Set<String> = imageMimes
+        .union(stickerMimes)
+        .union(audioMimes)
+        .union(videoMimes)
+
+    /// 某个 kind 认哪些 mime（导入/导出两侧共用一张表）。
+    public static func supportedMimes(for kind: BackupMediaKind) -> Set<String> {
+        switch kind {
+        case .personaAvatar, .userAvatar, .chatImage: return imageMimes
+        case .sticker: return stickerMimes
+        case .audio: return audioMimes
+        case .video: return videoMimes
+        }
+    }
 
     /// 单张 base64 文本的长度上限（含 padding）：再长就不可能落在单张预算里。
     public static func maxBase64Chars(perFileBytes: Int = maxFileBytes) -> Int {
@@ -707,12 +773,23 @@ public enum BackupMediaTransfer {
         )
     }
 
-    /// MIME → 落盘扩展名（只认支持的那三种）。
+    public static func isSupported(mime: String, for kind: BackupMediaKind) -> Bool {
+        BackupMediaLimits.supportedMimes(for: kind).contains(
+            mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        )
+    }
+
+    /// MIME → 落盘扩展名。v6 起包含 GIF / 语音 / 视频（视频原样保留容器）。
     public static func fileExtension(forMime mime: String) -> String? {
         switch mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "image/jpeg": return "jpg"
         case "image/png": return "png"
         case "image/webp": return "webp"
+        case "image/gif": return "gif"
+        case "audio/m4a", "audio/mp4": return "m4a"
+        case "audio/mpeg": return "mp3"
+        case "video/mp4": return "mp4"
+        case "video/quicktime": return "mov"
         default: return nil
         }
     }
@@ -723,6 +800,11 @@ public enum BackupMediaTransfer {
         case "jpg", "jpeg": return "image/jpeg"
         case "png": return "image/png"
         case "webp": return "image/webp"
+        case "gif": return "image/gif"
+        case "m4a": return "audio/m4a"
+        case "mp3": return "audio/mpeg"
+        case "mp4": return "video/mp4"
+        case "mov": return "video/quicktime"
         default: return nil
         }
     }
@@ -748,6 +830,15 @@ public enum BackupMediaTransfer {
         if name.contains("/") || name.contains("\\") { return false }
         if name.contains("..") { return false }
         return true
+    }
+
+    /// 导出用：把**本机**引用收成裸文件名。
+    ///
+    /// 与 `portableFileName` 的区别只有一条：接受绝对路径（表情/语音/视频那一列存的是
+    /// 「本机文件路径」，不一定是 `file://` URL）。服务端媒体由调用方先挡掉。
+    public static func localFileName(_ raw: String?) -> String? {
+        guard let name = BackupAvatarPath.fileName(raw) else { return nil }
+        return isSafeFileName(name) ? name : nil
     }
 
     /// 导出用：把本机 `file:` 路径收成裸文件名（聊天图片用这个；头像用 `BackupAvatarPath.portable`）。
@@ -861,15 +952,31 @@ public enum BackupMediaPacker {
 
     public struct Result: Equatable, Sendable {
         public var media: [BackupMedia]
-        /// 因为上限没有随备份带走的张数（导出后要如实告诉用户）。
+        /// 因为上限没有随备份带走的**份数**（导出后要如实告诉用户）。
         public var skippedByLimit: Int
         /// 这次真的装进 `media` 的聊天图片源文件名：导出侧重写 `attachmentsJson` 只认它们。
         public var chatImageFileNames: Set<String>
+        /// v6：消息附件的全部源文件名（图片 + 表情 + 语音 + 视频）。
+        ///
+        /// 与 `chatImageFileNames` 并存而不是替换：老调用点（备份 fixture 测试、
+        /// 只关心图片的断言）继续用前一个；`BackupService` 用这个把
+        /// `attachmentsJson` 里四类附件一起降成裸文件名。
+        public var attachmentFileNames: Set<String>
+        /// v6：表情文件的源文件名（`stickers[].file` 的重写只认它们）。
+        public var stickerFileNames: Set<String>
 
-        public init(media: [BackupMedia] = [], skippedByLimit: Int = 0, chatImageFileNames: Set<String> = []) {
+        public init(
+            media: [BackupMedia] = [],
+            skippedByLimit: Int = 0,
+            chatImageFileNames: Set<String> = [],
+            attachmentFileNames: Set<String> = [],
+            stickerFileNames: Set<String> = []
+        ) {
             self.media = media
             self.skippedByLimit = skippedByLimit
             self.chatImageFileNames = chatImageFileNames
+            self.attachmentFileNames = attachmentFileNames
+            self.stickerFileNames = stickerFileNames
         }
     }
 
@@ -892,13 +999,15 @@ public enum BackupMediaPacker {
 
         var media: [BackupMedia] = []
         var chatImageFileNames = Set<String>()
+        var attachmentFileNames = Set<String>()
+        var stickerFileNames = Set<String>()
         var total = 0
         var skipped = 0
 
         for (position, candidate) in unique.enumerated() {
             guard fileManager.fileExists(atPath: candidate.fileURL.path) else { continue }
             guard BackupMediaTransfer.isSafeFileName(candidate.fileName) else { continue }
-            guard BackupMediaTransfer.isSupported(mime: candidate.mime) else { continue }
+            guard BackupMediaTransfer.isSupported(mime: candidate.mime, for: candidate.kind) else { continue }
             let size = (try? candidate.fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
             guard size > 0 else { continue }
             if size > perFileBudget {
@@ -923,9 +1032,26 @@ public enum BackupMediaPacker {
                     data: BackupMediaTransfer.encode(data)
                 )
             )
-            if candidate.kind == .chatImage { chatImageFileNames.insert(candidate.fileName) }
+            switch candidate.kind {
+            case .chatImage:
+                chatImageFileNames.insert(candidate.fileName)
+                attachmentFileNames.insert(candidate.fileName)
+            case .sticker:
+                stickerFileNames.insert(candidate.fileName)
+                attachmentFileNames.insert(candidate.fileName)
+            case .audio, .video:
+                attachmentFileNames.insert(candidate.fileName)
+            case .personaAvatar, .userAvatar:
+                break
+            }
         }
-        return Result(media: media, skippedByLimit: skipped, chatImageFileNames: chatImageFileNames)
+        return Result(
+            media: media,
+            skippedByLimit: skipped,
+            chatImageFileNames: chatImageFileNames,
+            attachmentFileNames: attachmentFileNames,
+            stickerFileNames: stickerFileNames
+        )
     }
 }
 
@@ -954,6 +1080,10 @@ public struct BackupMediaRestoreResult: Equatable, Sendable {
     public var avatarsByPersonaId: [String: RestoredBackupMedia] = [:]
     public var chatImagesByFileName: [String: RestoredBackupMedia] = [:]
     public var userAvatar: RestoredBackupMedia?
+    /// v6：表情 / 语音 / 视频，键是备份里的裸文件名（表情行 `file` / 附件 `uri` 的关联键）。
+    public var stickersByFileName: [String: RestoredBackupMedia] = [:]
+    public var audioByFileName: [String: RestoredBackupMedia] = [:]
+    public var videoByFileName: [String: RestoredBackupMedia] = [:]
     /// 坏 base64 / 不支持的 mime / 文件名不安全 / 字节数对不上 / 写入失败 / 重复条目。
     public var invalidCount: Int = 0
     /// 声明的字节数、解出来的字节数、或累计总量超出上限。
@@ -961,19 +1091,38 @@ public struct BackupMediaRestoreResult: Equatable, Sendable {
     public var writtenFiles: [URL] = []
 
     public init() {}
+
+    /// 全部「消息附件」的关联表：v6 一条消息可能带图片、表情、语音或视频。
+    public var attachmentsByFileName: [String: RestoredBackupMedia] {
+        var map = chatImagesByFileName
+        for (key, value) in stickersByFileName { map[key] = value }
+        for (key, value) in audioByFileName { map[key] = value }
+        for (key, value) in videoByFileName { map[key] = value }
+        return map
+    }
+
+    /// 备份里写到的、但没有落盘成功的条目数（导入后给用户一句「有几样没接回来」）。
+    public var missingCount: Int { invalidCount + overLimitCount }
 }
 
-/// 导入时的媒体落盘：把 `media[].data` 解码、写进本机附件目录、返回关联表。
+/// 导入时的媒体落盘：把 `media[].data` 解码、写进本机对应目录、返回关联表。
 ///
 /// 安全边界（与 Android `BackupMediaRestorer` 一致）：
 /// - 备份里的 `fileName` **只做关联键**，不参与拼路径；落盘名一律是新 UUID；
 /// - 目标路径必须过 `AttachmentLocation.isWithin` 目录归属守卫；
-/// - 坏数据只跳过并计数，绝不抛异常（导入必须成功，哪怕每一张图都是坏的）。
+/// - 坏数据只跳过并计数，绝不抛异常（导入必须成功，哪怕每一份媒体都是坏的）。
+///
+/// v6 的目录分流：图片（头像/聊天图）→ `directory`（`Application Support/attachments`），
+/// 表情 → `stickerDirectory`，语音/视频 → `audioDirectory` / `videoDirectory`。
+/// 只有图片会重压；表情保留 GIF 动图、音视频不转码（规格要求）。
 public enum BackupMediaRestorer {
 
     public static func restore(
         entries: [BackupMedia],
         directory: URL,
+        stickerDirectory: URL? = nil,
+        audioDirectory: URL? = nil,
+        videoDirectory: URL? = nil,
         totalBudget: Int = BackupMediaLimits.effectiveTotalBytes(),
         perFileBudget: Int = BackupMediaLimits.maxFileBytes,
         fileManager: FileManager = .default,
@@ -998,6 +1147,7 @@ public enum BackupMediaRestorer {
             }
             let mime = entry.mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard BackupMediaTransfer.isSupported(mime: mime),
+                  BackupMediaTransfer.isSupported(mime: mime, for: kind),
                   BackupMediaTransfer.fileExtension(forMime: mime) != nil else {
                 result.invalidCount += 1
                 continue
@@ -1026,57 +1176,40 @@ public enum BackupMediaRestorer {
                 result.overLimitCount += 1
                 continue
             }
-            total += data.count
-
-            // 落盘前压缩：头像长边 ≤512、聊天图 ≤1600，JPEG 0.85、透明垫白底，
-            // 体积上限沿用选图路径的 400KB / 800KB。解不出来的图算坏图（跳过并计数）。
-            guard let recompressed = ImageCompressor.compressedJPEG(
-                data: data, kind: kind.mediaKind
-            ) else {
+            let targetDirectory = targetDirectory(for: kind, attachments: directory,
+                                            stickers: stickerDirectory,
+                                            audio: audioDirectory,
+                                            video: videoDirectory)
+            // 目录没给（老调用点只关心图片）：这一条算坏数据，不猜路径。
+            guard let targetDirectory else {
                 result.invalidCount += 1
                 continue
             }
-            // 大库基准的发现：对本来就更小的低质量 JPEG，重编码反而变大（301KB→547KB）。
-            // 只在「原图本来就是 JPEG（无透明通道）、尺寸已满足长边上限、字节已在上限内、
-            // 重编码确实更大」时保留原图。PNG/WebP 一律重压：它们可能带 alpha，必须垫白底；
-            // 保留原图也不能破坏「导入统一成 JPEG + 透明垫白」这条契约。
-            let originalSize = ImageThumbnailDecoder.pixelSize(data: data)
-            let originalFitsLongEdge = originalSize.map {
-                max($0.width, $0.height) <= ImageEncodingPolicy.longEdge(for: kind.mediaKind)
-            } ?? false
-            let keepOriginal = ImageThumbnailDecoder.isJPEG(data: data)
-                && originalFitsLongEdge
-                && data.count <= ImageEncodingPolicy.byteLimit(for: kind.mediaKind)
-                && recompressed.count >= data.count
-            let payload = keepOriginal ? data : recompressed
-            let payloadMime = "image/jpeg"
-            let compressed = payload
-            let contentHash = ImageContentHash.shortPrefix(compressed)
+            total += data.count
 
-            // 去重（不新增表）：压缩后字节相同 = 同一张图，目录里已有就直接复用那个文件。
-            // 文件名里的 SHA-256 前缀就是「有没有这张图」的唯一索引。
-            let target: URL
-            if let existing = MediaFileNaming.existingFile(
-                kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
-            ) {
-                target = existing
+            let stored: (url: URL, mime: String)?
+            if let imageKind = kind.imageKind {
+                stored = restoreImage(
+                    data: data, kind: kind, imageKind: imageKind,
+                    in: targetDirectory, fileManager: fileManager, newUUID: newUUID,
+                    writtenFiles: &result.writtenFiles
+                )
             } else {
-                guard let newName = BackupMediaTransfer.newFileName(
-                    kind: kind, mime: payloadMime, contentHash: contentHash, uuid: newUUID()
-                ),
-                      let written = BackupMediaTransfer.write(
-                          compressed, as: newName, in: directory, fileManager: fileManager
-                      ) else {
-                    result.invalidCount += 1
-                    continue
-                }
-                result.writtenFiles.append(written)
-                target = written
+                // 表情 / 语音 / 视频：**原样写盘**（GIF 动图重压会变静图，音视频规格要求不转码）。
+                stored = restoreRaw(
+                    data: data, kind: kind, mime: mime,
+                    in: targetDirectory, fileManager: fileManager, newUUID: newUUID,
+                    writtenFiles: &result.writtenFiles
+                )
+            }
+            guard let stored else {
+                result.invalidCount += 1
+                continue
             }
             writtenKeys.insert(key)
             let restored = RestoredBackupMedia(
-                kind: kind, fileName: fileName, fileURL: target,
-                uri: target.absoluteString, mime: "image/jpeg"
+                kind: kind, fileName: fileName, fileURL: stored.url,
+                uri: stored.url.absoluteString, mime: stored.mime
             )
             switch kind {
             case .personaAvatar:
@@ -1085,15 +1218,115 @@ public enum BackupMediaRestorer {
                 if !personaId.isEmpty { result.avatarsByPersonaId[personaId] = restored }
             case .userAvatar: result.userAvatar = restored
             case .chatImage: result.chatImagesByFileName[fileName] = restored
+            case .sticker: result.stickersByFileName[fileName] = restored
+            case .audio: result.audioByFileName[fileName] = restored
+            case .video: result.videoByFileName[fileName] = restored
             }
         }
         return result
     }
 
-    /// `messages.attachmentsJson` 在 v3 里的两条转换。
+    /// kind → 落盘目录。图片类在没有 `stickers/audio/video` 参数时也能工作（v3 的老调用点）。
+    static func targetDirectory(
+        for kind: BackupMediaKind,
+        attachments: URL,
+        stickers: URL?,
+        audio: URL?,
+        video: URL?
+    ) -> URL? {
+        switch kind.directoryRole {
+        case .attachments: return attachments
+        case .stickers: return stickers
+        case .audio: return audio
+        case .video: return video
+        }
+    }
+
+    /// 图片：重压成 JPEG（长边 ≤512/≤1600、透明垫白底），按内容哈希去重。
+    private static func restoreImage(
+        data: Data,
+        kind: BackupMediaKind,
+        imageKind: MediaKind,
+        in directory: URL,
+        fileManager: FileManager,
+        newUUID: () -> UUID,
+        writtenFiles: inout [URL]
+    ) -> (url: URL, mime: String)? {
+        // 落盘前压缩：头像长边 ≤512、聊天图 ≤1600，JPEG 0.85、透明垫白底，
+        // 体积上限沿用选图路径的 400KB / 800KB。解不出来的图算坏图（跳过并计数）。
+        guard let recompressed = ImageCompressor.compressedJPEG(data: data, kind: imageKind) else {
+            return nil
+        }
+        // 大库基准的发现：对本来就更小的低质量 JPEG，重编码反而变大（301KB→547KB）。
+        // 只在「原图本来就是 JPEG（无透明通道）、尺寸已满足长边上限、字节已在上限内、
+        // 重编码确实更大」时保留原图。PNG/WebP 一律重压：它们可能带 alpha，必须垫白底；
+        // 保留原图也不能破坏「导入统一成 JPEG + 透明垫白」这条契约。
+        let originalSize = ImageThumbnailDecoder.pixelSize(data: data)
+        let originalFitsLongEdge = originalSize.map {
+            max($0.width, $0.height) <= ImageEncodingPolicy.longEdge(for: imageKind)
+        } ?? false
+        let keepOriginal = ImageThumbnailDecoder.isJPEG(data: data)
+            && originalFitsLongEdge
+            && data.count <= ImageEncodingPolicy.byteLimit(for: imageKind)
+            && recompressed.count >= data.count
+        let payload = keepOriginal ? data : recompressed
+        let compressed = payload
+        let contentHash = ImageContentHash.shortPrefix(compressed)
+
+        // 去重（不新增表）：压缩后字节相同 = 同一张图，目录里已有就直接复用那个文件。
+        // 文件名里的 SHA-256 前缀就是「有没有这张图」的唯一索引。
+        if let existing = MediaFileNaming.existingFile(
+            kind: kind, contentHash: contentHash, in: directory, fileManager: fileManager
+        ) {
+            return (existing, "image/jpeg")
+        }
+        guard let newName = BackupMediaTransfer.newFileName(
+            kind: kind, mime: "image/jpeg", contentHash: contentHash, uuid: newUUID()
+        ),
+              let written = BackupMediaTransfer.write(
+                  compressed, as: newName, in: directory, fileManager: fileManager
+              ) else {
+            return nil
+        }
+        writtenFiles.append(written)
+        return (written, "image/jpeg")
+    }
+
+    /// 表情 / 语音 / 视频：原样写盘，按内容哈希去重（重复导入同一份备份不会翻倍占空间）。
+    private static func restoreRaw(
+        data: Data,
+        kind: BackupMediaKind,
+        mime: String,
+        in directory: URL,
+        fileManager: FileManager,
+        newUUID: () -> UUID,
+        writtenFiles: inout [URL]
+    ) -> (url: URL, mime: String)? {
+        let contentHash = ImageContentHash.shortPrefix(data)
+        if let existing = MediaFileNaming.existingFile(
+            prefix: "\(kind.fileNamePrefix)\(contentHash)-", in: directory, fileManager: fileManager
+        ) {
+            return (existing, mime)
+        }
+        guard let newName = BackupMediaTransfer.newFileName(
+            kind: kind, mime: mime, contentHash: contentHash, uuid: newUUID()
+        ),
+              let written = BackupMediaTransfer.write(
+                  data, as: newName, in: directory, fileManager: fileManager
+              ) else {
+            return nil
+        }
+        writtenFiles.append(written)
+        return (written, mime)
+    }
+
+    /// `messages.attachmentsJson` 在 v3/v6 里的两条转换。
     ///
     /// 导出：把每条的 `uri` 从设备路径换成**裸文件名**（换机后路径必然失效；裸名用来在
-    /// `media` 里找到同一张图）。文件不存在 / 名字不安全 / 格式不支持的附件直接丢掉。
+    /// `media` 里找到同一份媒体）。文件不存在 / 名字不安全 / 格式不支持的附件直接丢掉。
+    ///
+    /// v6 起 `kind` 与 `durationMs` 也要跟着走：语音/视频的时长在服务端不下发，
+    /// 备份里丢掉它就只剩一个解不出时长的文件（气泡上永远是 `--:--`）。
     public static func portableAttachments(
         _ raw: String?,
         allowedNames: Set<String>
@@ -1107,37 +1340,67 @@ public enum BackupMediaRestorer {
             // mime 可能是历史遗留的怪值：按文件名再认一次，认不出就不带（导入端也解不了）。
             guard BackupMediaTransfer.isSupported(mime: attachment.mime)
                 || BackupMediaTransfer.mime(forFileName: name) != nil else { continue }
+            let mime = BackupMediaTransfer.isSupported(mime: attachment.mime)
+                ? attachment.mime
+                : (BackupMediaTransfer.mime(forFileName: name) ?? attachment.mime)
             portable.append(
-                MessageAttachment(uri: name, mime: attachment.mime,
-                                  width: attachment.width, height: attachment.height)
+                MessageAttachment(
+                    uri: name, mime: mime,
+                    width: attachment.width, height: attachment.height,
+                    kind: attachment.normalizedKind, durationMs: attachment.durationMs
+                )
             )
         }
         return AttachmentsCodec.encode(portable)
     }
 
-    /// 导入：按 `media` 里的 CHAT_IMAGE 重建本机路径；找不到的附件丢掉（v1/v2 的老行为）。
+    /// 导入：按 `media` 重建本机路径；找不到的附件丢掉（v1/v2 的老行为）。
     ///
+    /// - Parameters:
+    ///   - restored: v6 的关联表（图片/表情/语音/视频一起）。老调用点仍可用
+    ///     `chatImagesByFileName` 那个重载。
     /// - Returns: 新的 `attachmentsJson`；null 表示这条消息没有（可用的）附件了。
     public static func restoredAttachments(
         _ raw: String?,
         chatImagesByFileName: [String: RestoredBackupMedia]
     ) -> String? {
+        restoredAttachments(raw, restoredByFileName: chatImagesByFileName)
+    }
+
+    public static func restoredAttachments(
+        _ raw: String?,
+        restoredByFileName: [String: RestoredBackupMedia]
+    ) -> String? {
         let attachments = AttachmentsCodec.decode(raw)
         guard !attachments.isEmpty else { return nil }
         var rebuilt: [MessageAttachment] = []
         for attachment in attachments {
-            // v3 的附件 uri 是裸文件名；v1/v2 里的设备路径一律不认（换机后本来也指不到文件）。
+            // v3/v6 的附件 uri 是裸文件名；v1/v2 里的设备路径一律不认（换机后本来也指不到文件）。
             let bare = attachment.uri.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !bare.isEmpty, !bare.contains("/"), !bare.contains("\\"), !bare.contains("..") else {
                 continue
             }
-            guard let media = chatImagesByFileName[bare] else { continue }
+            guard let media = restoredByFileName[bare] else { continue }
             rebuilt.append(
-                MessageAttachment(uri: media.uri, mime: media.mime,
-                                  width: attachment.width, height: attachment.height)
+                MessageAttachment(
+                    uri: media.uri, mime: media.mime,
+                    width: attachment.width, height: attachment.height,
+                    kind: attachment.normalizedKind ?? kindHint(for: media.kind),
+                    durationMs: attachment.durationMs
+                )
             )
         }
         return AttachmentsCodec.encode(rebuilt)
+    }
+
+    /// 媒体种类 → 附件 `kind` 的提示值（老备份没写 `kind` 时补上，界面才画得对）。
+    static func kindHint(for kind: BackupMediaKind) -> String? {
+        switch kind {
+        case .personaAvatar, .userAvatar, .chatImage: return MessageAttachment.imageKind
+        case .sticker: return MessageAttachment.stickerKind
+        case .audio: return MessageAttachment.audioKind
+        case .video: return MessageAttachment.videoKind
+        }
     }
 }
 

@@ -60,6 +60,18 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
 - **Tool capability section unified** across platforms (same generated format).
 - **Persona evolution works in cloud mode**: server-mode replies also evaluate every 20 messages/24 h; accepting posts
   `/v1/personas` and updates the local cache.
+- **Server media resources are downloaded**: when syncing `/v1/media/<id>` the clients download bytes into the
+  persistent per-kind local directories (images/avatars/stickers/audio/video), rewrite attachments to local paths and
+  keep `serverMediaId`; idempotent, failures counted and left as placeholders; rendering/playback uses local files.
+- **Cloud mood and persona evolution**: server-mode replies call `/v1/personas/{id}/mood/evaluate` (every 4 messages) and
+  `evolution/evaluate`, `pending`, `accept|reject`; acceptance writes the server's response into the local cache and is
+  skipped silently when the server has no LLM.
+- **A local server uses the client's model config**: clients push their own config to a loopback server via
+  `POST /v1/llm-config`; remote servers return 403 and must be configured by the deployer with `--llm-*` / `YAP_LLM_*`.
+- **Full backup v6**: media (images/avatars/stickers/audio/video) plus `stickers[]` and `diaryNotes[]`, restoring files
+  and rows; v1–v5 remain readable; 8 MiB per file and 128 MiB total with skipped counts.
+- **Video/audio upload limits**: duration and size are checked before sending/uploading (video ≤2 min/64 MiB,
+  audio ≤5 min/8 MiB); over-limit items are rejected without uploading.
 - **Still missing**: backups do not carry sticker/audio/video binaries or diary notes; `listen/watch` in server mode must be
   executed by agentd (clients support upload and local-mode tools this round).
 - Tests: Android 1568 / 153 classes, iOS 1753 (2 skipped), agentd 392, agentcore 90; both platforms build.

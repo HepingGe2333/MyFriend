@@ -5,6 +5,7 @@ import com.yap.app.data.local.AgentIntentKind
 import com.yap.app.data.local.AgentIntentStatus
 import com.yap.app.data.local.ApiConfigEntity
 import com.yap.app.data.local.ChatSessionEntity
+import com.yap.app.data.local.DiaryNoteEntity
 import com.yap.app.data.local.MemoryCategory
 import com.yap.app.data.local.MemoryConsolidationEntity
 import com.yap.app.data.local.MemoryEntity
@@ -17,6 +18,7 @@ import com.yap.app.data.local.ProactiveKind
 import com.yap.app.data.local.ProactiveRuleEntity
 import com.yap.app.data.local.ProactiveSource
 import com.yap.app.data.local.ProviderType
+import com.yap.app.data.local.StickerEntity
 import com.yap.app.data.prefs.AppSettings
 import com.yap.app.data.prefs.BubbleStyle
 import com.yap.app.data.prefs.ThemeMode
@@ -52,19 +54,29 @@ import java.util.Locale
  *    坏条目跳过并记一条中文警告；版本比本机高时明确拒绝，而不是半懂不懂地写库。
  *
  * v4（0.12）在 v3 的媒体之上加了 `apiConfigs[].webToolsProvider`（搜索后端，默认 MESSAGEAPI）；
+ * v5 加了人格引导（世界预设 / 话风 / 当前活动）；v6（0.13）把媒体扩到
+ * 表情（GIF）/语音/视频，并新增顶层 `stickers[]` 与 `diaryNotes[]`：
+ *
+ * - `media[].kind` 增加 `STICKER` / `AUDIO` / `VIDEO`；表情的字节复用 `media[]`
+ *   （`kind=STICKER`、`fileName` 与 `stickers[].fileName` 对应），**不重复内联 base64**；
+ * - `stickers[]` 一行一个表情（id/归属/元数据/来源），表情文件本身在 `media[]` 里；
+ * - `diaryNotes[]` 是他的日记板（提醒时间也一起带走）。
+ *
  * v3 的媒体规则不变：头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
- * 每条是一张图（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）+ 标准 base64。
+ * 每条是一份媒体 + 标准 base64。
  * `personas.avatarUri` / `presets.avatarUri` 仍写裸文件名，`messages.attachmentsJson`
  * 也只写裸文件名（绝不写设备路径）；导入时用 `media[].fileName` 把引用接回**新的**本机文件。
- * 上限（[BackupMediaLimits]）：单张 8 MiB、总量 128 MiB；超出的图片不带走并记 warning。
+ * 上限（[BackupMediaLimits]）：单份 8 MiB、总量 128 MiB；超出的媒体不带走并记 warning。
+ * 兼容：v1–v5 没有 `stickers` / `diaryNotes` 段，读出来是空列表；没有新 kind 的 `media`
+ * 照旧按图片处理；iOS v6 备份缺段或某些字段缺失时按默认值宽容跳过，不让整份失败。
  *
  * 结构上的取舍：
  * - `agentTicks` / `apiUsage` / `personaRevisions` 不导：那是过程流水，不是「他」；
  * - 设置只导能带走的（外观、常驻后台、正在聊的人）；1.9 起节奏、记忆开关、额度都从产品里删了；
  *   聊天背景图片是设备上的路径，不导；
- * - 孤儿图片文件不导：只收集本机当前还引用得到的头像与聊天图片。
+ * - 孤儿媒体文件不导：只收集本机当前还引用得到的头像、聊天附件与表情行。
  */
-const val BACKUP_FORMAT_VERSION: Int = 5
+const val BACKUP_FORMAT_VERSION: Int = 6
 
 /**
  * 写在文件里的格式标记：拿错文件时能早点说「这不是他的备份」。
@@ -92,10 +104,21 @@ data class BackupBundle(
     val sessions: List<BackupSession> = emptyList(),
     val messages: List<BackupMessage> = emptyList(),
     /**
-     * 图片二进制（v3）。没有图片时是空数组，不是 null：老版本读新备份会当成未知字段忽略，
-     * 新版本读老备份则拿到空列表，行为与 v2 完全一致。
+     * 图片来源（v3）。
+     *
+     * v6 起媒体不再只有图片：[kind] 可能是 [BackupMediaKind.STICKER] / [BackupMediaKind.AUDIO] /
+     * [BackupMediaKind.VIDEO]；语义与上限见 `BackupMedia.kt` 的文档。
      */
     val media: List<BackupMedia> = emptyList(),
+    /**
+     * 表情包（v6）。一行一个表情，表情文件本体在 [media] 里（`kind=STICKER`，
+     * `fileName` 与这里的 `fileName` 对应）。
+     *
+     * v1–v5 没有这一段，读出来是空列表；iOS v6 备份也可能没有——空列表不是错误。
+     */
+    val stickers: List<BackupSticker> = emptyList(),
+    /** 他的日记板（v6）。v1–v5 / 缺段的 iOS 备份读出来是空列表。 */
+    val diaryNotes: List<BackupDiaryNote> = emptyList(),
     val presets: List<BackupPreset> = emptyList(),
     val proactiveRules: List<BackupProactiveRule> = emptyList(),
     /** 他「想在某个时间段找你」的念头；过期就作废，属于可选内容。 */
@@ -266,7 +289,10 @@ data class BackupMessage(
 @Serializable
 data class BackupMedia(
     val id: String = "",
-    /** `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`（大小写敏感）。 */
+    /**
+     * `PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`（v3）与
+     * `STICKER` / `AUDIO` / `VIDEO`（v6）。大小写敏感。
+     */
     val kind: String = "",
     val personaId: String? = null,
     /** 裸文件名（不含目录、不含 scheme）。 */
@@ -275,6 +301,54 @@ data class BackupMedia(
     val bytes: Int = 0,
     /** 标准 base64（带 padding、不换行）。 */
     val data: String = ""
+)
+
+/**
+ * 一行表情包（v6，对应 `StickerEntity`）。
+ *
+ * [fileName] 是裸文件名，和 [BackupMedia] 里 `kind=STICKER` 的 `fileName` 一一对应；
+ * 文件字节只内联一次（在 `media[]` 里），这里只带元数据。
+ * 字段全部有默认值：iOS 端早期 v6 样本可能缺某些列，读出来按默认值处理，不让整份失败。
+ */
+@Serializable
+data class BackupSticker(
+    val id: String = "",
+    val ownerUserId: String? = null,
+    val personaId: String? = null,
+    /** 裸文件名（不含目录、不含 scheme）。 */
+    val fileName: String = "",
+    /**
+     * Android 早期 v6 草案 / iOS v6 使用的同义字段（`BackupSticker.file`）。
+     *
+     * 跨端契约只能加不能改：iOS 的 `stickers[]` 行写的是 `file`，Android 写 `fileName`。
+     * 读取时统一用 [portableFileName]（两个字段取非空的那个），导出时两个都写，
+     * 这样任何一端生成的 v6 备份另一端都接得住。
+     */
+    val file: String = "",
+    val mime: String = "image/gif",
+    val width: Int = 0,
+    val height: Int = 0,
+    val frames: Int = 1,
+    val bytes: Int = 0,
+    val source: String = "IMPORTED",
+    val createdBy: String = "USER",
+    val createdAt: Long = 0L
+) {
+    /** 跨端归一后的裸文件名（`fileName` 优先，缺失时退回 iOS 的 `file`）。 */
+    val portableFileName: String
+        get() = fileName.trim().ifBlank { file.trim() }
+}
+
+/** 一条日记（v6，对应 `DiaryNoteEntity`）。提醒时间 `remindAt` / `remindedAt` 可空。 */
+@Serializable
+data class BackupDiaryNote(
+    val id: String = "",
+    val personaId: String = "",
+    val content: String = "",
+    val createdAt: Long = 0L,
+    val remindAt: Long? = null,
+    val remindedAt: Long? = null,
+    val updatedAt: Long = 0L
 )
 
 @Serializable
@@ -565,6 +639,11 @@ object BackupCodec {
 
         val mediaWarnings = mutableListOf<BackupMediaWarning>()
         val media = decodeMedia(root, mediaWarnings)
+        // v6 的两段是「加了更好」的可选内容：缺失、不是数组、坏条目都只丢掉，不让整份失败。
+        // 这两段没有对应的 BackupSection 枚举（清单在 :agentcore），所以坏条目静默跳过，
+        // 不硬塞一个错误的段名去误导用户。
+        val stickers = decodeOptionalList(root, "stickers", BackupSticker.serializer()) { it.id }
+        val diaryNotes = decodeOptionalList(root, "diaryNotes", BackupDiaryNote.serializer()) { it.id }
 
         val settings = root["settings"]?.takeIf { it !is JsonNull }?.let { element ->
             runCatching { readJson.decodeFromJsonElement(BackupSettings.serializer(), element) }
@@ -585,6 +664,8 @@ object BackupCodec {
             sessions = sessions,
             messages = messages,
             media = media,
+            stickers = stickers,
+            diaryNotes = diaryNotes,
             presets = presets,
             proactiveRules = rules,
             agentIntents = intents,
@@ -630,6 +711,33 @@ object BackupCodec {
             kept
         }
         return decoded
+    }
+
+    /**
+     * v6 可选段（`stickers` / `diaryNotes`）的宽容解码。
+     *
+     * 与 [decodeList] 的区别只有一条：**没有 [BackupSection] 可报**。这两段是「加了更好」的
+     * 新内容（老端不认识、iOS 可能还没写），所以缺失/不是数组/坏条目都按「这一段没有」
+     * 处理：静默跳过，绝不让整份备份失败。没有 id 的行顺手丢掉（落库/关联都需要 id）。
+     */
+    private fun <T> decodeOptionalList(
+        root: JsonObject,
+        key: String,
+        serializer: KSerializer<T>,
+        idOf: (T) -> String
+    ): List<T> {
+        val element = root[key] ?: return emptyList()
+        if (element is JsonNull) return emptyList()
+        val array = element as? JsonArray ?: return emptyList()
+        if (array.isEmpty()) return emptyList()
+        val decoded: List<T> = runCatching {
+            readJson.decodeFromJsonElement(ListSerializer(serializer), array)
+        }.getOrElse {
+            array.mapNotNull { item ->
+                runCatching { readJson.decodeFromJsonElement(serializer, item) }.getOrNull()
+            }
+        }
+        return decoded.filter { idOf(it).isNotBlank() }
     }
 
     /**
@@ -866,11 +974,12 @@ fun BackupSession.toEntity(): ChatSessionEntity = ChatSessionEntity(
 /**
  * 消息 → 备份。
  *
- * [chatImageFileNames] 是这次真的装进 `media` 的聊天图片文件名集合：只有它们会被写进
- * `attachmentsJson`（裸文件名）。没有对应媒体的附件直接不写——换台手机它也恢复不出来。
+ * [mediaFileNames] 是这次真的装进 `media` 的所有媒体文件名集合（头像之外的五种 kind 都算）：
+ * 只有它们会被写进 `attachmentsJson`（裸文件名）。没有对应媒体的附件直接不写——
+ * 换台手机它也恢复不出来。v6 起语音/视频/表情同样走这里，`kind` 与 `durationMs` 原样保留。
  */
 fun MessageEntity.toBackupMessage(
-    chatImageFileNames: Set<String> = emptySet()
+    mediaFileNames: Set<String> = emptySet()
 ): BackupMessage = BackupMessage(
     id = id,
     sessionId = sessionId,
@@ -883,7 +992,7 @@ fun MessageEntity.toBackupMessage(
     errorMessage = errorMessage,
     model = model,
     edited = edited,
-    attachmentsJson = BackupAttachmentsPortable.portable(attachmentsJson, chatImageFileNames),
+    attachmentsJson = BackupAttachmentsPortable.portable(attachmentsJson, mediaFileNames),
     toolTraceJson = toolTraceJson,
     readAt = readAt
 )
@@ -939,6 +1048,78 @@ fun BackupPreset.toEntity(): PersonaPresetEntity = PersonaPresetEntity(
     updatedAt = updatedAt,
     worldJson = worldJson,
     speechStyleJson = speechStyleJson
+)
+
+/**
+ * 表情行 → 备份（v6）。
+ *
+ * [fileName] 由调用方给：导出时必须用「真的装进 `media` 的那个裸文件名」，
+ * 而不是 `StickerEntity.file` 的绝对路径（那是设备路径，换机无意义，也不该写进备份）。
+ * 文件取不出安全裸名时返回 null，由调用方跳过这一行（不导出没有字节的行）。
+ */
+fun StickerEntity.toBackupSticker(fileName: String? = null): BackupSticker? {
+    val name = (fileName ?: BackupAvatarPath.portable(file))?.takeIf { BackupAvatarPath.isSafeName(it) }
+        ?: return null
+    return BackupSticker(
+        id = id,
+        ownerUserId = ownerUserId,
+        personaId = personaId,
+        fileName = name,
+        // 同时写 iOS 读的别名：另一端按 `file` 取名字时不会拿到空串。
+        file = name,
+        mime = mime.ifBlank { BackupMediaFormats.GIF },
+        width = width.coerceAtLeast(0),
+        height = height.coerceAtLeast(0),
+        frames = frames.coerceAtLeast(1),
+        bytes = bytes.coerceAtLeast(0),
+        source = source.ifBlank { "IMPORTED" },
+        createdBy = createdBy.ifBlank { "USER" },
+        createdAt = createdAt
+    )
+}
+
+/**
+ * 备份表情 → 本机行（v6）。
+ *
+ * [fileUri] 必须是 `BackupMediaRestorer` 刚写出来的本机 `file://` 路径：
+ * 没有还原出文件的表情行不该被插入（否则库里会有一行指向不存在的文件，
+ * 列表页每次都会尝试加载一个坏路径）。调用方负责先过滤。
+ */
+fun BackupSticker.toEntity(fileUri: String): StickerEntity = StickerEntity(
+    id = id,
+    ownerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() },
+    personaId = personaId?.trim()?.takeIf { it.isNotEmpty() },
+    file = fileUri,
+    mime = mime.trim().lowercase().ifBlank { BackupMediaFormats.GIF },
+    width = width.coerceAtLeast(0),
+    height = height.coerceAtLeast(0),
+    frames = frames.coerceAtLeast(1),
+    bytes = bytes.coerceAtLeast(0),
+    source = source.trim().uppercase(Locale.ROOT).ifBlank { "IMPORTED" },
+    createdBy = createdBy.trim().uppercase(Locale.ROOT).ifBlank { "USER" },
+    createdAt = createdAt
+)
+
+/** 日记 → 备份（v6）：提醒时间也带走，换台手机到点还会提醒。 */
+fun DiaryNoteEntity.toBackupDiaryNote(): BackupDiaryNote = BackupDiaryNote(
+    id = id,
+    personaId = personaId,
+    content = content,
+    createdAt = createdAt,
+    remindAt = remindAt,
+    remindedAt = remindedAt,
+    updatedAt = updatedAt
+)
+
+/** 备份日记 → 本机行（v6）。人格不存在时由调用方先过滤，这里不做跨表猜测。 */
+fun BackupDiaryNote.toEntity(): DiaryNoteEntity = DiaryNoteEntity(
+    id = id,
+    personaId = personaId,
+    content = content,
+    createdAt = createdAt,
+    remindAt = remindAt,
+    remindedAt = remindedAt,
+    updatedAt = updatedAt.takeIf { it > 0L } ?: createdAt
 )
 
 fun ProactiveRuleEntity.toBackupRule(): BackupProactiveRule = BackupProactiveRule(

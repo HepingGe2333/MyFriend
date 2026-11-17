@@ -121,7 +121,14 @@ sealed interface ServerToggleAction {
 class ServerModeSwitchCoordinator(
     private val mode: ServerModeControl,
     private val store: ServerLocalStore,
-    private val runner: ServerBootstrapRunner
+    private val runner: ServerBootstrapRunner,
+    /**
+     * 0.13：开启成功后把本机模型配置推给本机服务端（远程地址会被策略直接挡掉）。
+     *
+     * 默认 null：纯 JVM 单测只关心开关状态机，不需要为此构造一个推送器；
+     * 生产装配（`AppModule`）一定会传。
+     */
+    private val llmConfig: ServerLlmConfigPusher? = null
 ) {
 
     private val _status = MutableStateFlow(ServerSyncStatus())
@@ -196,6 +203,9 @@ class ServerModeSwitchCoordinator(
         )
         try {
             val outcome = runner.runBootstrap(baseUrl)
+            // 0.13：开启成功（bootstrap 跑完、开关已经打开）后推一次模型配置。
+            // 不是回环地址、或本机没有可用配置时什么都不做；失败只记日志，不影响同步结果。
+            runCatching { llmConfig?.pushIfLocal() }
             val effective = if (outcome.skipped) runner.latestOutcome(baseUrl) ?: outcome else outcome
             _status.value = if (effective.success) {
                 ServerSyncStatus(

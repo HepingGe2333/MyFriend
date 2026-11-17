@@ -591,7 +591,7 @@ struct PersonaEditorScreen: View {
                     let result = try await cloud.approve(patchId: patch.id)
                     applyAccepted(result.persona, applied: result.applied)
                 } else {
-                    try cloud.reject(patchId: patch.id)
+                    try await cloud.reject(patchId: patch.id)
                 }
             } catch {
                 banner = MFAlert(
@@ -643,6 +643,18 @@ struct PersonaEditorScreen: View {
     private func reloadPendingChanges() {
         if let personaId {
             pendingChanges = env.personaEvolution.pending(personaId: personaId)
+        }
+    }
+
+    /// 云端模式：先把服务端那份待审列表拉下来覆盖本地缓存，再重读（服务端是权威）。
+    ///
+    /// 为什么要这一步：待审补丁可能在**另一台设备**上被接受/拒绝，也可能已经 7 天过期。
+    /// 不拉一次的话，这个页面会给人看一堆点不动的旧按钮。
+    private func refreshPendingFromServerIfNeeded() {
+        guard env.serverModeActive, let personaId, let cloud = env.cloudPersonaEvolution() else { return }
+        Task { @MainActor in
+            _ = await cloud.refreshPending(personaId: personaId)
+            reloadPendingChanges()
         }
     }
 
@@ -1384,6 +1396,8 @@ struct PersonaEditorScreen: View {
         promptExpanded = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isNew == false
         // 人格进化：读取待确认的变化（7 天过期的顺手清掉）。
         pendingChanges = env.personaEvolution.pending(personaId: persona.id)
+        // 云端模式：服务端是待审补丁的权威，打开页面时拉一次覆盖本地缓存。
+        refreshPendingFromServerIfNeeded()
     }
 
     /// 什么都可以空着（0.13 真机反馈第一批）：名字空 → 保存成「未命名」，
