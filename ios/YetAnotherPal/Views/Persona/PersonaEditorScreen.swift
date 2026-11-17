@@ -507,10 +507,12 @@ struct PersonaEditorScreen: View {
     /// - 接受才写回人格并 `version+1`；拒绝只丢掉这条提议；
     /// - 7 天没人管会自动过期（读取时清理），不会堆成永远没人点的死按钮。
     ///
-    /// 服务端模式下不显示：人格的权威副本在服务端，本地直接改会被下一次同步覆盖。
+    /// **两种模式都显示**（0.13 补齐云端）：本地模式的接受写本机人格；服务端模式下
+    /// 接受要先 `POST /v1/personas`（`CloudPersonaEvolution`），服务端成功之后才回填
+    /// 本地缓存并 `version+1`，失败时这一条留在原地（可以再点一次）。
     @ViewBuilder
     private var recentChangesCard: some View {
-        if !pendingChanges.isEmpty && !env.serverModeActive {
+        if !pendingChanges.isEmpty {
             MFCard {
                 HStack(alignment: .firstTextBaseline) {
                     Text(L("他最近的变化"))
@@ -524,7 +526,9 @@ struct PersonaEditorScreen: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                MFNote(text: L("这些是他自己在对话里提出的小变化。接受才会写进他的人格，拒绝就丢掉；7 天不管会自动过期。"))
+                MFNote(text: env.serverModeActive
+                    ? L("这些是他自己在对话里提出的小变化。接受后会先同步到他的云端档案；拒绝就丢掉；7 天不管会自动过期。")
+                    : L("这些是他自己在对话里提出的小变化。接受才会写进他的人格，拒绝就丢掉；7 天不管会自动过期。"))
                 ForEach(pendingChanges, id: \.id) { patch in
                     MFRowDivider(leadingInset: 0)
                     VStack(alignment: .leading, spacing: 6) {
@@ -556,29 +560,55 @@ struct PersonaEditorScreen: View {
 
     /// 接受 / 拒绝一条待确认的变化。
     ///
+    /// 两种模式走两条写路径，**界面上的结果是一样的**：
+    /// - 本地模式：直接写本机人格（`PersonaEvolutionService.approve`）；
+    /// - 服务端模式：先 `POST /v1/personas`（`CloudPersonaEvolution`），服务端成功之后
+    ///   才回填本地缓存并 `version+1`；失败时这一条**留在原地**，用户可以再点一次。
+    ///
     /// 接受之后要**同步本地表单状态**：这个页面的 `traits/likes/behaviors/quirks` 是打开时
     /// 读的一份快照，不同步的话，用户接着点「保存」会拿旧值把刚接受的变化盖回去。
     private func decide(_ patch: PersonaPendingPatchEntity, accept: Bool) {
+        guard !pendingBusy else { return }
         pendingBusy = true
-        defer { pendingBusy = false }
+        guard env.serverModeActive else {
+            defer { pendingBusy = false }
+            decideLocally(patch, accept: accept)
+            return
+        }
+        guard let cloud = env.cloudPersonaEvolution() else {
+            pendingBusy = false
+            banner = MFAlert(
+                title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                message: L("云端连接还没准备好，稍后再试。")
+            )
+            return
+        }
+        // 云端要等一次网络往返：期间按钮保持禁用（`pendingBusy`），避免连点两条。
+        Task { @MainActor in
+            defer { pendingBusy = false }
+            do {
+                if accept {
+                    let result = try await cloud.approve(patchId: patch.id)
+                    applyAccepted(result.persona, applied: result.applied)
+                } else {
+                    try cloud.reject(patchId: patch.id)
+                }
+            } catch {
+                banner = MFAlert(
+                    title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                    message: error.localizedDescription
+                )
+            }
+            reloadPendingChanges()
+        }
+    }
+
+    /// 本地模式：同步写库（与 0.13 之前的实现逐字一致）。
+    private func decideLocally(_ patch: PersonaPendingPatchEntity, accept: Bool) {
         do {
             if accept {
                 let result = try env.personaEvolution.approve(patchId: patch.id)
-                if result.applied > 0 {
-                    traits = result.persona.traits
-                    likes = result.persona.likes
-                    behaviors = result.persona.behaviors
-                    quirks = result.persona.quirks ?? ""
-                    banner = MFAlert(
-                        title: L("已经写进他的人格"),
-                        message: Lf("现在是他第 %d 版。", result.persona.version)
-                    )
-                } else {
-                    banner = MFAlert(
-                        title: L("这条已经不成立了"),
-                        message: L("他的人格里本来就是这样，已经把这条提议丢掉了。")
-                    )
-                }
+                applyAccepted(result.persona, applied: result.applied)
             } else {
                 try env.personaEvolution.reject(patchId: patch.id)
             }
@@ -588,6 +618,29 @@ struct PersonaEditorScreen: View {
                 message: error.localizedDescription
             )
         }
+        reloadPendingChanges()
+    }
+
+    /// 接受成功后的统一收尾：同步表单快照 + 告诉用户「第几版了」。
+    private func applyAccepted(_ persona: PersonaEntity, applied: Int) {
+        guard applied > 0 else {
+            banner = MFAlert(
+                title: L("这条已经不成立了"),
+                message: L("他的人格里本来就是这样，已经把这条提议丢掉了。")
+            )
+            return
+        }
+        traits = persona.traits
+        likes = persona.likes
+        behaviors = persona.behaviors
+        quirks = persona.quirks ?? ""
+        banner = MFAlert(
+            title: L("已经写进他的人格"),
+            message: Lf("现在是他第 %d 版。", persona.version)
+        )
+    }
+
+    private func reloadPendingChanges() {
         if let personaId {
             pendingChanges = env.personaEvolution.pending(personaId: personaId)
         }

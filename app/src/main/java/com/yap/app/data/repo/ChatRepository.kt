@@ -25,6 +25,11 @@ import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.domain.NotificationDeepLink
 import com.yap.app.domain.AttachmentsCodec
 import com.yap.app.domain.ApiDefaults
+import com.yap.app.domain.AudioVideoKind
+import com.yap.app.domain.AudioVideoText
+import com.yap.app.domain.CurrentMedia
+import com.yap.app.domain.MediaErrorTokens
+import com.yap.app.domain.VideoFramePlan
 import com.yap.app.domain.ChatNotificationPolicy
 import com.yap.app.domain.DataEraser
 import com.yap.app.domain.ExportJsonStream
@@ -40,6 +45,7 @@ import com.yap.app.domain.InterruptedReply
 import com.yap.app.domain.MessageOrder
 import com.yap.app.domain.MoodRecovery
 import com.yap.app.domain.MessageAttachment
+import com.yap.app.domain.StickerPromptBlock
 import com.yap.app.domain.MoodBehavior
 import com.yap.app.domain.MoodPrompt
 import com.yap.app.domain.OpenSessionTracker
@@ -74,6 +80,7 @@ import com.yap.app.network.toUserError
 import com.yap.app.network.userError
 import com.yap.app.network.AiProviderRegistry
 import com.yap.app.network.StreamEvent
+import com.yap.app.network.WireAudio
 import com.yap.app.network.WireMessage
 import com.yap.app.network.inferenceParams
 import com.yap.app.util.ChatNotifier
@@ -234,6 +241,11 @@ class ChatRepository @Inject constructor(
     private val historyCompressor: HistoryCompressor,
     /** 人格进化评估（每 20 条用户消息或 24 小时一次，结果只进待审表）。 */
     private val personaEvolution: PersonaEvolutionRepository,
+    /**
+     * 服务端模式的人格进化触发：一轮助手回复 `done` / 落库之后按同一套节流评估一次。
+     * 与 [personaEvolution] 共用同一个游标与单飞锁，切模式不会重复评估。
+     */
+    private val serverEvolution: ServerEvolutionTrigger,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
@@ -250,6 +262,10 @@ class ChatRepository @Inject constructor(
     private val serverChat: com.yap.app.data.remote.ServerChatGateway,
     /** 服务端模式的图片上传（M5）：先压缩再上传，附件里落 `/v1/media/<id>`。 */
     private val serverMediaSender: com.yap.app.data.remote.ServerChatMediaSender,
+    /** 表情包（0.13）：导入/收藏/发送，以及服务端模式下的 `kind=STICKER` 上传。 */
+    private val stickerRepository: com.yap.app.data.repo.StickerRepository,
+    /** 语音/视频（0.13）：这一轮的媒体要真的以多模态 parts 发给模型。 */
+    private val audioVideoRepository: AudioVideoRepository,
     private val json: Json
 ) {
     /**
@@ -356,6 +372,27 @@ class ChatRepository @Inject constructor(
         }
 
     /**
+     * 用户点选一张表情直接发出去（`spec/stickers/README.md`「点选即发送，不进入文字草稿」）。
+     *
+     * 本地模式：写一条 `attachmentsJson = [{kind=STICKER, mime=image/gif}]` 的用户消息；
+     * 服务端模式：先把 GIF 以 `kind=STICKER` 传到 `/v1/media`，消息里落服务端媒体引用
+     * （本地 `file://` 路径绝不发给服务端）。
+     *
+     * 失败时把原因原样返回，界面只提示一句「表情没发出去」——表情不是文字，不该往草稿里塞东西。
+     */
+    suspend fun sendUserSticker(sessionId: String, stickerId: String): Result<Unit> = runCatching {
+        val sticker = stickerRepository.get(stickerId)
+            ?: userError(DomainErrorCode.MESSAGE_EMPTY)
+        val attachment = stickerRepository.attachmentOf(sticker)
+        if (isServerMode()) {
+            val result = sendServerMessage(sessionId, "", listOf(attachment))
+            if (!result.accepted) throw (result.error ?: userError(DomainErrorCode.TOOL_FAILED))
+            return@runCatching
+        }
+        sendUserMessage(sessionId, "", listOf(attachment)).getOrThrow()
+    }
+
+    /**
      * 服务端模式发送（SSE）。UI 只消费 [onEvent]，消息落库由 gateway/sink 完成。
      *
      * M5 起图片**先压缩、再上传**，然后把 `/v1/media/<id>` 放进 `attachments`：
@@ -371,8 +408,8 @@ class ChatRepository @Inject constructor(
         onEvent: (com.yap.app.data.remote.ServerSendEvent) -> Unit = {}
     ): com.yap.app.data.remote.ServerSendResult {
         val content = text.trim()
-        val images = attachments.filter { it.isImage }.take(MAX_IMAGES_PER_MESSAGE)
-        if (content.isEmpty() && images.isEmpty()) {
+        val media = selectAttachments(attachments)
+        if (content.isEmpty() && media.isEmpty()) {
             return com.yap.app.data.remote.ServerSendResult(
                 accepted = false,
                 done = false,
@@ -387,20 +424,153 @@ class ChatRepository @Inject constructor(
             )
         }
         val personaId = runCatching { sessionDao.getById(sessionId)?.personaId }.getOrNull()
-        val mediaRefs = serverMediaSender.uploadChatImages(images, personaId).getOrElse { error ->
+        // 表情与普通图片走**两条**上传通道：表情已经是压好的 GIF（kind=STICKER，不再重编码），
+        // 聊天图片要先压成 JPEG（kind=CHAT_IMAGE）。顺序按原附件顺序拼回去，消息里不会错位。
+        val mediaRefs = uploadServerAttachments(media, personaId).getOrElse { error ->
             return com.yap.app.data.remote.ServerSendResult(
                 accepted = false,
                 done = false,
                 error = error
             )
         }
-        return serverChat.send(
+        // 服务端只回附件引用（/v1/media/<id>），不带 mime/kind/duration；语音/视频的这部分
+        // 元数据只有客户端知道。等用户消息落库后补写一次，否则服务端模式里「语音」会渲染成图片。
+        var serverUserMessageId: String? = null
+        var assistantMessageId: String? = null
+        val result = serverChat.send(
             sessionId = sessionId,
             content = content.ifEmpty { IMAGE_ONLY_CONTENT },
             attachments = mediaRefs,
-            onEvent = onEvent
+            onEvent = { event ->
+                when (event) {
+                    is com.yap.app.data.remote.ServerSendEvent.Accepted ->
+                        serverUserMessageId = event.userMessageId
+
+                    is com.yap.app.data.remote.ServerSendEvent.Done ->
+                        assistantMessageId = event.assistantMessageId
+
+                    else -> Unit
+                }
+                onEvent(event)
+            }
         )
+        if (result.accepted) {
+            runCatching {
+                patchServerAttachments(
+                    messageId = serverUserMessageId,
+                    mediaRefs = mediaRefs,
+                    local = media
+                )
+            }
+        }
+        // 人格进化（0.13）：服务端这一轮回复已经落进 Room（gateway 在 done 之后拉过一次当前块），
+        // 现在按与本地模式完全相同的节流（20 条用户消息 / 24 小时）回顾一次。
+        // 只在 done 时触发：流断了但服务端还在生成时没有落库，等下一次发送/同步补上。
+        if (result.done) {
+            runCatching {
+                serverEvolution.onReplyDone(
+                    personaId = personaId.orEmpty(),
+                    roundKey = assistantMessageId.orEmpty().ifBlank { result.clientMessageId },
+                    now = System.currentTimeMillis()
+                )
+            }
+        }
+        return result
     }
+
+    /**
+     * 服务端模式：把「引用 + 本地元数据」写回刚同步下来的用户消息。
+     *
+     * 只补语音/视频/表情这几类**靠 mime 认不出来**的附件；普通图片的默认 mime 已经够用。
+     * 任何一步失败都只是「这条消息的媒体类型丢了」，不该让已经发出去的消息变成失败。
+     */
+    private suspend fun patchServerAttachments(
+        messageId: String?,
+        mediaRefs: List<String>,
+        local: List<MessageAttachment>
+    ) {
+        val id = messageId?.takeIf { it.isNotBlank() } ?: return
+        if (mediaRefs.isEmpty() || local.isEmpty()) return
+        val metaByRef = mutableMapOf<String, MessageAttachment>()
+        local.forEachIndexed { index, attachment ->
+            mediaRefs.getOrNull(index)?.let { ref -> metaByRef[ref] = attachment }
+        }
+        if (metaByRef.isEmpty()) return
+        val existing = messageDao.getById(id) ?: return
+        val current = AttachmentsCodec.decode(existing.attachmentsJson)
+        if (current.isEmpty()) return
+        val merged = current.map { attachment ->
+            val meta = metaByRef[attachment.uri] ?: return@map attachment
+            attachment.copy(
+                mime = meta.mime,
+                kind = meta.canonicalKind,
+                durationMs = meta.durationMs
+            )
+        }
+        messageDao.updateAttachments(id, AttachmentsCodec.encode(merged))
+    }
+
+    /**
+     * 服务端模式的附件上传：按原顺序逐张上传，表情走 `kind=STICKER`、图片走 `kind=CHAT_IMAGE`。
+     *
+     * 逐张上传（而不是「先批量图片、再批量表情」）是为了**保住顺序**：一条消息里
+     * 「一张图 + 一张表情」的先后在气泡里看得见，拼错顺序不会报错，只会让人以为发错了。
+     * 服务端对同内容媒体本来就做去重，多一次请求的代价可以接受。
+     */
+    private suspend fun uploadServerAttachments(
+        attachments: List<MessageAttachment>,
+        personaId: String?
+    ): Result<List<String>> {
+        if (attachments.isEmpty()) return Result.success(emptyList())
+        val refs = mutableListOf<String>()
+        for (attachment in attachments) {
+            // 0.13：语音/视频**不压缩、不转码**，按 kind=AUDIO|VIDEO 原样上传。
+            if (attachment.isAudioOrVideo) {
+                val uploaded = serverMediaSender.uploadVoiceVideo(listOf(attachment), personaId).getOrElse {
+                    return Result.failure(it)
+                }
+                refs += uploaded
+            } else if (attachment.isSticker) {
+                val api = serverMode.api() ?: return Result.failure(
+                    com.yap.app.data.remote.ServerApiException("server mode is not available", code = "server_unavailable")
+                )
+                val uploader = com.yap.app.data.remote.ServerStickerUploader(
+                    api = api,
+                    readBytes = { uri ->
+                        com.yap.app.data.remote.StickerFileReader.read(uri, MediaStorage.stickerDirectory(appContext))
+                    }
+                )
+                val uploaded = uploader.uploadStickers(listOf(attachment), personaId).getOrElse {
+                    return Result.failure(it)
+                }
+                refs += uploaded
+            } else {
+                val uploaded = serverMediaSender.uploadChatImages(listOf(attachment), personaId).getOrElse {
+                    return Result.failure(it)
+                }
+                refs += uploaded
+            }
+        }
+        return Result.success(refs)
+    }
+
+    /** 「没有文字的消息」在列表/标题里显示什么：表情/语音/视频/图片各说一句。 */
+    private fun attachmentPreview(attachments: List<MessageAttachment>): String = when {
+        attachments.any { it.isSticker } -> appContext.getString(R.string.chat_preview_sticker)
+        attachments.any { it.isAudio } -> appContext.getString(R.string.chat_preview_audio)
+        attachments.any { it.isVideo } -> appContext.getString(R.string.chat_preview_video)
+        attachments.isNotEmpty() -> appContext.getString(R.string.chat_preview_image)
+        else -> ""
+    }
+
+    /**
+     * 一条消息实际要带的附件：图片最多 [MAX_IMAGES_PER_MESSAGE] 张，语音与视频各最多一段。
+     *
+     * 顺序保持用户选择的顺序（气泡里「先语音后视频」看得见）；多出来的直接丢掉，
+     * 对应 UI 的选择上限（聊天图片 4 张、语音和视频各一次）。
+     */
+    private fun selectAttachments(attachments: List<MessageAttachment>): List<MessageAttachment> =
+        com.yap.app.domain.AttachmentSelection.select(attachments, MAX_IMAGES_PER_MESSAGE)
 
     /** 服务端模式打开会话：拉最新一块写进 Room（之后的窗口逻辑仍走本地块表）。 */
     suspend fun openServerSession(sessionId: String): Result<Unit> =
@@ -485,8 +655,10 @@ class ChatRepository @Inject constructor(
         attachments: List<MessageAttachment> = emptyList()
     ): Result<Unit> = runCatching {
         val content = text.trim()
-        val images = attachments.filter { it.isImage }.take(MAX_IMAGES_PER_MESSAGE)
-        if (content.isBlank() && images.isEmpty()) userError(DomainErrorCode.MESSAGE_EMPTY)
+        // 0.13：图片、语音、视频都能作为「没有正文的一条消息」发出去；一条消息最多带
+        // 一段语音 + 一条视频（再多没有意义，只会把请求撑大）。
+        val media = selectAttachments(attachments)
+        if (content.isBlank() && media.isEmpty()) userError(DomainErrorCode.MESSAGE_EMPTY)
         if (content.length > 32_000) userError(DomainErrorCode.MESSAGE_TOO_LONG)
         val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
         if (session.apiConfigId == null) userError(DomainErrorCode.API_CONFIG_REQUIRED)
@@ -505,16 +677,16 @@ class ChatRepository @Inject constructor(
             errorMessage = null,
             model = null,
             edited = false,
-            attachmentsJson = AttachmentsCodec.encode(images)
+            attachmentsJson = AttachmentsCodec.encode(media)
         )
         database.withTransaction {
             // 写入统一走块维护（规范 §2 Append）：落进最后一块，满了才开新块。
             blockWriter.append(message)
             // 消息预览同样是落库数据：图片这类「没有文字的消息」用资源生成，不写死中文。
             val preview = content.replace('\n', ' ').trim().take(90)
-                .ifBlank { if (images.isNotEmpty()) appContext.getString(R.string.chat_preview_image) else "" }
+                .ifBlank { attachmentPreview(media) }
             val title = if (isFirstUserMessage) {
-                autoTitle(content.ifBlank { appContext.getString(R.string.chat_preview_image) })
+                autoTitle(content.ifBlank { attachmentPreview(media) })
             } else {
                 session.title
             }
@@ -565,6 +737,12 @@ class ChatRepository @Inject constructor(
         val config = resolved.config
         // 只读最近 N 条：长会话不再每次把整段历史读进内存（更早的部分已经收成摘要了）。
         val recentHistory = messageDao.recentBySession(sessionId, CONTEXT_RECENT_LIMIT)
+        // 这一轮带的语音/视频：只在这一轮真的发出去（历史里不重复 base64）。
+        // 记录「当前在飞的模态」，是为了 provider 4xx 时能给一句准确的话（听不了/看不了）。
+        var mediaKindInFlight: AudioVideoKind? = recentHistory
+            .firstOrNull { it.role == MessageRole.USER }
+            ?.let { AttachmentsCodec.decode(it.attachmentsJson) }
+            ?.firstNotNullOfOrNull { it.mediaKind }
         if (recentHistory.none { it.role == MessageRole.USER }) {
             emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.NOTHING_TO_REPLY), null))
             return@flow
@@ -618,6 +796,8 @@ class ChatRepository @Inject constructor(
         val adapter = registry.adapterFor(config.provider)
         emit(GenerationEvent.Started)
         val traces = mutableListOf<ToolTraceItem>()
+        // `sticker` 工具的 send 会把表情挂在工具执行结果上：这些附件属于**本轮这条助手消息**。
+        val toolAttachments = mutableListOf<MessageAttachment>()
         var completed = false
         var shownText = ""
         try {
@@ -677,6 +857,7 @@ class ChatRepository @Inject constructor(
                             sessionId = sessionId
                         )
                         traces += execution.trace
+                        toolAttachments += execution.attachments
                         if (call.name.trim().equals(ToolCatalog.DEFER_REPLY, ignoreCase = true)) deferred = true
                         execution.result
                     }
@@ -690,11 +871,32 @@ class ChatRepository @Inject constructor(
                 shownText = ""
                 emit(GenerationEvent.Delta(""))
                 emit(GenerationEvent.ToolCall(traces.toList()))
+                // 工具结果里可能带多模态内容（listen 的语音 / watch 的帧）：只在这一轮回灌。
+                val toolMedia = results.mapNotNull { it.media }.filterNot { it.isEmpty }
+                val toolImages = toolMedia.flatMap { it.images }
+                val toolAudios = toolMedia.flatMap { it.audios }
+                    .map { clip -> WireAudio(base64 = clip.base64, format = clip.format) }
+                val toolCaptions = toolMedia.mapNotNull { it.caption.takeIf { caption -> caption.isNotBlank() } }
+                if (mediaKindInFlight == null) {
+                    mediaKindInFlight = when {
+                        toolAudios.isNotEmpty() -> AudioVideoKind.AUDIO
+                        toolImages.isNotEmpty() -> AudioVideoKind.VIDEO
+                        else -> null
+                    }
+                }
                 conversation += WireMessage("assistant", buffer.toString().trim())
                 conversation += WireMessage(
-                    "user",
-                    ToolProtocol.renderResultsForModel(results) +
-                        "\n\n（以上是你自己刚做完的事，对方看不见细节。现在接着把话说完，别重复，也别提工具。）"
+                    role = "user",
+                    content = buildString {
+                        append(ToolProtocol.renderResultsForModel(results))
+                        if (toolCaptions.isNotEmpty()) {
+                            append('\n')
+                            append(toolCaptions.joinToString("\n"))
+                        }
+                        append("\n\n（以上是你自己刚做完的事，对方看不见细节。现在接着把话说完，别重复，也别提工具。）")
+                    },
+                    images = toolImages,
+                    audios = toolAudios
                 )
             }
             if (deferred) {
@@ -708,7 +910,9 @@ class ChatRepository @Inject constructor(
             }
             val rawFinalText = finalBody.trim()
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
-            if (finalText.isBlank() && proposal == null) {
+            // 只发了一张表情、没写正文是合法的一轮（「点选即发送」另一种形态）：
+            // 有附件就不算空流，否则会把刚发出去的表情一起丢掉。
+            if (finalText.isBlank() && proposal == null && toolAttachments.isEmpty()) {
                 throw ApiException(NetworkErrorKind.EmptyStream)
             }
             val saved = withContext(NonCancellable) {
@@ -728,13 +932,20 @@ class ChatRepository @Inject constructor(
                     errorMessage = null,
                     model = session.model.ifBlank { config.model },
                     edited = false,
+                    attachmentsJson = AttachmentsCodec.encode(toolAttachments.take(MAX_IMAGES_PER_MESSAGE)),
                     toolTraceJson = ToolTraceCodec.encode(traces)
                 )
                 database.withTransaction {
                     // 同上：助手回复也走统一追加规则，块边界不会因为「另一条路径」而错位。
                     blockWriter.append(assistant)
                     val preview = finalText.replace('\n', ' ').trim().take(100)
-                        .ifBlank { appContext.getString(R.string.chat_preview_proactive) }
+                        .ifBlank {
+                            if (toolAttachments.isNotEmpty()) {
+                                attachmentPreview(toolAttachments)
+                            } else {
+                                appContext.getString(R.string.chat_preview_proactive)
+                            }
+                        }
                     val fresh = sessionDao.getById(sessionId)
                     if (fresh != null) {
                         sessionDao.update(
@@ -805,12 +1016,16 @@ class ChatRepository @Inject constructor(
         } catch (error: Exception) {
             if (!completed) {
                 val userFacing = error.toUserError()
+                // 这一轮带了语音/视频、provider 回 4xx：明确说「这个模型听不了/看不了」，
+                // 不伪造转写、也不把它落到「未知错误」。
+                val storedError = mediaFailureToken(error, mediaKindInFlight)
+                    ?: UserErrorTokens.encode(userFacing)
                 val saved = withContext(NonCancellable) {
                     saveFailed(
                         sessionId = sessionId,
                         personaId = persona.id,
                         partial = shownText,
-                        errorText = UserErrorTokens.encode(userFacing),
+                        errorText = storedError,
                         model = session.model.ifBlank { config.model },
                         toolTraceJson = ToolTraceCodec.encode(traces),
                         generation = generation
@@ -1366,6 +1581,9 @@ class ChatRepository @Inject constructor(
         // 文件清理（删聊天图）在 IO 上做：`ErasureFiles` 是非挂起接口，那里的引用查询会阻塞
         // 调用线程（见 `AndroidErasureFiles`），不能让它阻塞主线程。
         withContext(Dispatchers.IO) { dataEraser.clearChatsAndMemories() }
+        // 0.13：语音/视频文件不在 `DataEraser` 的清单里（那是 agentcore 的跨端契约），
+        // 在这里按同一套引用守卫收尾，否则「清空聊天」之后语音还留在沙盒里。
+        runCatching { mediaJanitor.clearVoiceVideoExcept(emptySet()) }
         // 审计 P2-2（0.11.1）：与 wipeAllData 对齐——表都删了，还挂着的通知与被认为
         // 「仍开着」的会话都要收掉，否则点旧通知会跳进一个不存在的会话、未读判定也拿旧值比较。
         openSessionTracker.clearAll()
@@ -1381,6 +1599,9 @@ class ChatRepository @Inject constructor(
     suspend fun wipeAllData() {
         // 整棵媒体目录的删除是阻塞文件 IO；与其他删除路径一样挪到 IO 上。
         withContext(Dispatchers.IO) { dataEraser.wipeAllData() }
+        // 表情行与表情文件不归 `DataEraser` 管（那张表在 `agentcore` 的清单里不存在，而且
+        // 文件目录也不在 `MediaStorage.ownedRoots` 里），所以在这里显式清一遍。
+        runCatching { stickerRepository.wipeAll() }
         openSessionTracker.clearAll()
         // 「删除全部数据」之后不该还挂着任何一条他的通知（审计 P2-14：以前 cancel 只支持单会话）。
         runCatching { chatNotifier.cancelAll(appContext) }
@@ -1455,12 +1676,51 @@ class ChatRepository @Inject constructor(
         // 只带着最近两条消息里的图片（审计 P2-9）：先按「数量预算」挑消息，再逐张解码，
         // 别为裁掉的消息解一遍。真正的双重限制（条数 / 单图尺寸 / 总字符预算）在
         // ImageContextBudget 里，纯逻辑单测钉住了上界。
+        val latestUser = visible.lastOrNull { it.role == MessageRole.USER }
+        // 附件只解一次：同一轮里预览、图片预算、占位正文都要用它。
+        val attachmentsByMessage = visible.associate { it.id to AttachmentsCodec.decode(it.attachmentsJson) }
         val imageOwners = ImageContextBudget.ownersWithImages(
             visible.map {
                 ImageContextBudget.Candidate(
                     messageId = it.id,
                     isUser = it.role == MessageRole.USER,
-                    hasImages = !it.attachmentsJson.isNullOrBlank()
+                    hasImages = attachmentsByMessage[it.id].orEmpty().any { attachment ->
+                        attachment.isChatImage || attachment.isSticker
+                    }
+                )
+            }
+        )
+        // 0.13：这一轮（最新一条用户消息）带的语音/视频要真的以多模态 parts 发出去。
+        // 只发「当轮」：历史里同样的附件只留一句占位正文，base64 绝不重复（否则聊两句就把请求撑爆）。
+        val roundMedia = audioVideoRepository.mediaInMessage(latestUser)
+        var roundAudios: List<WireAudio> = emptyList()
+        val roundFrames = mutableListOf<String>()
+        var roundCaption: String? = null
+        roundMedia.forEach { media ->
+            when (media.kind) {
+                AudioVideoKind.AUDIO -> audioVideoRepository.audioClip(media)?.let { clip ->
+                    // 超过 8 MiB 的语音读不出来（见 MediaPayload.audioPart）：宁可这一轮听不到，
+                    // 也不把一段 10MB 的 base64 硬塞给 provider。
+                    roundAudios = listOf(WireAudio(base64 = clip.base64, format = clip.format))
+                }
+                AudioVideoKind.VIDEO -> {
+                    val frames = audioVideoRepository.videoFrames(media)
+                    if (frames.isNotEmpty()) {
+                        roundFrames += frames
+                        val duration = audioVideoRepository.videoDurationMs(media)
+                            ?: media.attachment.durationMs
+                        roundCaption = VideoFramePlan.caption(frames.size, duration ?: 0L)
+                    }
+                }
+            }
+        }
+        val currentMediaBlock = AudioVideoText.currentBlock(
+            roundMedia.map { media ->
+                CurrentMedia(
+                    mediaId = audioVideoRepository.mediaIdOf(media),
+                    kind = media.kind,
+                    durationMs = media.attachment.durationMs,
+                    mime = media.attachment.mime
                 )
             }
         )
@@ -1472,11 +1732,17 @@ class ChatRepository @Inject constructor(
                 it.status != MessageStatus.ERROR
         }.map { message ->
             val outgoing = message.role == MessageRole.USER
+            val messageAttachments = attachmentsByMessage[message.id].orEmpty()
+            val audio = messageAttachments.firstOrNull { it.isAudio }
+            val video = messageAttachments.firstOrNull { it.isVideo }
+            val isRound = outgoing && message.id == latestUser?.id
             val images = if (outgoing && message.id in imageOwners) {
                 buildList {
-                    val attachments = AttachmentsCodec.decode(message.attachmentsJson)
+                    // 语音/视频不进图片预算：它们的体积由 8 MiB / 8 帧单独管。
+                    val visuals = messageAttachments
+                        .filter { it.isChatImage || it.isSticker }
                         .take(ImageContextBudget.imagesForMessage(Int.MAX_VALUE))
-                    for (attachment in attachments) {
+                    for (attachment in visuals) {
                         // 发送前按目标尺寸重编码（长边 ≤1024、单张 ≤320KB），并且守住整体预算。
                         val dataUrl = MediaStorage.toContextDataUrl(attachment) ?: continue
                         if (!ImageContextBudget.acceptsEncoded(usedImageChars, dataUrl)) continue
@@ -1487,10 +1753,31 @@ class ChatRepository @Inject constructor(
             } else {
                 emptyList()
             }
+            val baseContent = message.content.ifBlank {
+                when {
+                    // 只有语音/视频的消息：告诉模型这条消息里带着什么（历史里也一样，
+                    // 让他在很久以后还能认出「那天你发过一段语音」）。
+                    audio != null -> AudioVideoText.audioPlaceholder(audio.durationMs)
+                    video != null -> AudioVideoText.videoPlaceholder(video.durationMs)
+                    images.isNotEmpty() -> "（发来一张图片）"
+                    // 0.13：表情消息常常没有正文（点选即发送）。模型读历史时要能认出「他/我发了一张表情」，
+                    // 否则那条消息在上下文里就是个空气泡。
+                    messageAttachments.any { it.isSticker } ->
+                        if (outgoing) "（对方发来一张表情）" else "（你发了一张表情）"
+                    else -> ""
+                }
+            }
+            // 「视频：N 帧，时长 X 秒」写进正文，模型才知道自己看的是抽样画面。
+            val content = if (isRound && roundCaption != null) {
+                "$baseContent\n$roundCaption"
+            } else {
+                baseContent
+            }
             WireMessage(
                 role = if (outgoing) "user" else "assistant",
-                content = message.content.ifBlank { if (images.isNotEmpty()) "（发来一张图片）" else "" },
-                images = images
+                content = content,
+                images = images + if (isRound) roundFrames.toList() else emptyList(),
+                audios = if (isRound) roundAudios else emptyList()
             )
         }
         val trimmed = trimHistory(history)
@@ -1512,6 +1799,10 @@ class ChatRepository @Inject constructor(
             Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
         }.getOrDefault(12 * 60)
         val asleep = runCatching { personaCardRepository.isAsleep(persona, minuteOfDay) }.getOrDefault(false)
+        // 表情清单：最近 20 张，只给 id 与「动图/静态」，不给文件路径（模型不需要、也不该看到本机路径）。
+        val stickerPromptBlock = runCatching {
+            StickerPromptBlock.build(stickerRepository.recent(20).map { it.toRecord() })
+        }.getOrDefault("")
         val system = PromptBuilder.system(
             PromptBuilder.Inputs(
                 name = persona.name,
@@ -1535,7 +1826,11 @@ class ChatRepository @Inject constructor(
                 capabilitiesSection = ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled),
                 variableBlocks = listOfNotNull(
                     memoryRepository.formatForPrompt(memories).takeIf { memories.isNotEmpty() },
+                    // 这一轮带语音/视频：给模型 mediaId 与类型，它才知道可以 listen/watch。
+                    currentMediaBlock.takeIf { it.isNotBlank() },
                     memoryOfEarlier.takeIf { it.isNotBlank() },
+                    // 「我的表情」：`sticker` 工具的 send 只认 id，模型必须看得到有哪些 id 可用。
+                    stickerPromptBlock.takeIf { it.isNotBlank() },
                     "---\n" + ProactiveProtocol.CAPABILITY_PROMPT,
                     moodNudge.takeIf { it.isNotBlank() }
                 ),
@@ -1557,6 +1852,27 @@ class ChatRepository @Inject constructor(
      * 拿到的是他自己视角的说法，直接拼进 system 不会像在讲别人。
      * 拿不到或者没内容就当没有这一行——状态不该成为聊天里的一个障碍。
      */
+    /**
+     * 「这个模型听不了语音 / 看不了视频」的落库令牌。
+     *
+     * 只认「这一轮真的带了媒体」+「provider 回 4xx」这两个条件：
+     * - 400 / 415 / 422：绝大多数 OpenAI 兼容网关在收到不认识的 content part 时给这三个码；
+     * - 413：请求太大（8 MiB 音频的 base64 会更大），说法不同；
+     * - 其它（401/403/404/429/5xx）与媒体能力无关，按原错误显示。
+     *
+     * 返回 null 表示「不是媒体能力问题」，调用方回落成普通的错误令牌。
+     */
+    private fun mediaFailureToken(error: Throwable, kind: AudioVideoKind?): String? {
+        val media = kind ?: return null
+        val api = error as? ApiException ?: return null
+        val status = (api.kind as? NetworkErrorKind.Http)?.status ?: return null
+        return when (status) {
+            413 -> MediaErrorTokens.encodeTooLarge(media)
+            400, 415, 422 -> MediaErrorTokens.encode(media)
+            else -> null
+        }
+    }
+
     private suspend fun presenceLine(personaId: String): String = runCatching {
         // 这一段现在并进 PromptBuilder 的「你此刻的状态」，只返回正文，不再自己带标题。
         presenceRepository.current(personaId).detail.trim()

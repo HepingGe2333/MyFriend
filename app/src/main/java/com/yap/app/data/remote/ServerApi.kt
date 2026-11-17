@@ -403,8 +403,8 @@ class ServerApi(
      * `POST /v1/media?mime=&kind=&personaId=`：**原始字节**请求体，不是 multipart。
      *
      * 客户端上传前已经把图片压成 JPEG（聊天图 ≤800 KB、头像 ≤400 KB），服务端仍按
-     * [ServerMediaLimits.MAX_UPLOAD_BYTES]（2 MiB）兜底：压缩器是可替换实现，不能只信它。
-     * 超限在这里就失败，不把 3 MB 的 body 发出去再等服务端 413。
+     * [ServerMediaLimits.maxUploadBytes]（图片 2 MiB / 音频 8 MiB / 视频 64 MiB）兜底：
+     * 压缩器是可替换实现，不能只信它。超限在这里就失败，不把超大 body 发出去再等服务端 413。
      */
     override suspend fun uploadMedia(
         bytes: ByteArray,
@@ -415,9 +415,10 @@ class ServerApi(
         if (bytes.isEmpty()) {
             throw ServerApiException("media body is empty", code = "media_empty")
         }
-        if (bytes.size > ServerMediaLimits.MAX_UPLOAD_BYTES) {
+        val limit = ServerMediaLimits.maxUploadBytes(kind)
+        if (bytes.size > limit) {
             throw ServerApiException(
-                "media body exceeds the ${ServerMediaLimits.MAX_UPLOAD_BYTES} byte upload limit",
+                "media body exceeds the $limit byte upload limit",
                 code = "media_too_large"
             )
         }
@@ -452,8 +453,15 @@ class ServerApi(
         return media.copy(url = media.url.ifBlank { ServerMediaRef.canonical(media.id).orEmpty() })
     }
 
-    /** `GET /v1/media/{id}`：下载原始字节（备份/缓存导出用；渲染走 Coil 的磁盘缓存）。 */
-    suspend fun downloadMedia(mediaRef: String): ByteArray {
+    /**
+     * `GET /v1/media/{id}`：下载原始字节（备份/缓存导出/音视频播放用；图片渲染走 Coil 的磁盘缓存）。
+     *
+     * @param maxBytes 下载上限：图片默认 2 MiB；语音/视频播放缓存传 8 / 64 MiB（0.13）
+     */
+    suspend fun downloadMedia(
+        mediaRef: String,
+        maxBytes: Int = ServerMediaLimits.MAX_DOWNLOAD_BYTES
+    ): ByteArray {
         val id = ServerMediaRef.idOf(mediaRef)
             ?: throw ServerApiException("not a media reference", code = "invalid_argument")
         val request = requestBuilder(url("v1", "media", id)).get().build()
@@ -462,7 +470,7 @@ class ServerApi(
             val body = response.body
                 ?: throw ServerApiException("server returned an empty media body", code = "invalid_response")
             val declared = body.contentLength()
-            if (declared > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+            if (declared > maxBytes) {
                 throw ServerApiException("media exceeds the download limit", code = "response_too_large")
             }
             val output = ByteArrayOutputStream()
@@ -473,7 +481,7 @@ class ServerApi(
                     val read = input.read(chunk)
                     if (read < 0) break
                     total += read
-                    if (total > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+                    if (total > maxBytes) {
                         throw ServerApiException("media exceeds the download limit", code = "response_too_large")
                     }
                     output.write(chunk, 0, read)

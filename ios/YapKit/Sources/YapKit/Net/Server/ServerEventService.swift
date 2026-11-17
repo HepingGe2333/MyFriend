@@ -100,6 +100,8 @@ public actor ServerEventService {
     private let client: ServerAPIClient
     private let stores: DatabaseStores
     private let state: ServerSyncStateStore
+    /// 服务端媒体 id → 附件元信息（0.13：语音/视频同步回来要知道自己是什么）。
+    private let mediaMeta: ServerMediaMetaStore
     /// 服务端会话 id ⇄ 本地会话 id（事件里带的是服务端的 id）。
     private let sessions: ServerSessionResolver
     private let notifier: ServerEventNotifying
@@ -132,6 +134,7 @@ public actor ServerEventService {
         self.client = client
         self.stores = stores
         self.state = state ?? ServerSyncStateStore(database: stores.database)
+        self.mediaMeta = ServerMediaMetaStore(database: stores.database)
         self.sessions = ServerSessionResolver(stores: stores)
         self.notifier = notifier
         self.isSessionOpen = isSessionOpen
@@ -182,7 +185,8 @@ public actor ServerEventService {
                             ?? ""
                         let existing = (try? stores.messages.byId(message.id)) ?? nil
                         var record = ServerSyncMapping.message(
-                            from: message, existing: existing, personaId: personaId, now: at
+                            from: message, existing: existing, personaId: personaId, now: at,
+                            mediaMeta: mediaMeta
                         )
                         record.sessionId = localSessionId
                         try stores.messages.upsert(record)

@@ -29,6 +29,8 @@
 | [spec/messages-blocks/](../spec/messages-blocks/README.md) | 历史按 200 条一块存储、区块分页与「无候选上限」检索的存储/遍历契约 |
 | [spec/context-time/](../spec/context-time/README.md) | 每轮注入当前时间（格式/时区/不缓存） |
 | [spec/api-defaults/](../spec/api-defaults/README.md) | 模型 API 默认参数（温度 0.75 / 1M 上下文 / 16K 输出） |
+| [spec/audio-video/](../spec/audio-video/README.md) | 语音/视频消息与 `listen`/`watch` 多模态契约 |
+| [spec/sync-consent/](../spec/sync-consent/README.md) | 切换云端时的同步同意、历史媒体上传与切回本地全量下载 |
 | [spec/diary/](../spec/diary/README.md) | 日记板工具与定时提醒契约 |
 | [spec/stickers/](../spec/stickers/README.md) | 表情包格式、压缩、导入与模型工具契约 |
 | [design/persona-evolution.md](design/persona-evolution.md) | 人格进化机制与工具能力段设计 |

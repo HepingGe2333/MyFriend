@@ -1,6 +1,5 @@
 package com.yap.app.data.repo
 
-import androidx.room.withTransaction
 import com.yap.app.data.local.ChatSessionDao
 import com.yap.app.data.local.MessageDao
 import com.yap.app.data.local.MessageRole
@@ -8,19 +7,15 @@ import com.yap.app.data.local.PersonaDao
 import com.yap.app.data.local.PersonaEntity
 import com.yap.app.data.local.PersonaPendingPatchDao
 import com.yap.app.data.local.PersonaPendingPatchEntity
-import com.yap.app.data.local.PersonaRevisionEntity
-import com.yap.app.data.local.PersonaRevisionDao
-import com.yap.app.data.local.YapDatabase
 import com.yap.app.data.prefs.SettingsRepository
-import com.yap.app.domain.DomainErrorCode
+import com.yap.app.data.remote.ServerWriteGateway
 import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaProfile
-import com.yap.app.domain.PersonaRevisionReason
+import com.yap.app.domain.ResolvedApiConfig
 import com.yap.app.domain.UsageKind
 import com.yap.app.network.AiProviderRegistry
 import com.yap.app.network.InferenceParams
 import com.yap.app.network.WireMessage
-import com.yap.app.network.userError
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,8 +23,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
@@ -57,12 +50,14 @@ class PersonaEvolutionRepository @Inject constructor(
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
     private val pendingPatchDao: PersonaPendingPatchDao,
-    private val revisionDao: PersonaRevisionDao,
     private val apiConfigRepository: ApiConfigRepository,
     private val registry: AiProviderRegistry,
     private val settingsRepository: SettingsRepository,
-    private val database: YapDatabase
-) {
+    /** 服务端模式判断 + 接受时要 `POST /v1/personas`；本地模式下完全用不到。 */
+    private val serverWrites: ServerWriteGateway,
+    /** 接受 / 拒绝一条待审变化（本地写回 or 服务端写回）。 */
+    private val acceptance: PersonaEvolutionAcceptance
+) : PersonaEvolutionTrigger {
 
     companion object {
         /** 每多少条用户消息评估一次。 */
@@ -142,16 +137,17 @@ class PersonaEvolutionRepository @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inFlight = AtomicBoolean(false)
-    private val acceptLock = Mutex()
 
     // ---------------------------------------------------------------- 触发
 
     /**
-     * 发完一条用户消息后调它：条件到了就异步评估一次，**不等**（聊天不能被它拖慢）。
+     * 一条用户消息发完（本地模式）或一轮助手回复落库（服务端模式）后调它：
+     * 条件到了就异步评估一次，**不等**（聊天不能被它拖慢）。
      *
      * 同一时刻只允许一轮评估：`inFlight` 挡住并发，否则连发两条消息会打出两次模型请求。
+     * 两种模式的触发点都走这一个方法、读同一份游标，所以「切模式」不会重复评估。
      */
-    fun ensureAsync(personaId: String, now: Long = System.currentTimeMillis()) {
+    override fun ensureAsync(personaId: String, now: Long) {
         if (personaId.isBlank()) return
         if (!inFlight.compareAndSet(false, true)) return
         scope.launch {
@@ -181,11 +177,15 @@ class PersonaEvolutionRepository @Inject constructor(
         val session = runCatching { sessionDao.getByPersona(personaId) }.getOrDefault(emptyList())
             .firstOrNull() ?: return null
         val userMessages = runCatching { messageDao.countUserMessages(session.id) }.getOrDefault(0)
+        // 本地模式与服务端模式共用的游标：谁先评估，另一方接着算，不会因为切模式再来一次。
         val samePersona = settings.evolutionPersonaId == personaId
-        val cursor = if (samePersona) settings.evolutionUserMessageCount else 0
-        val lastRunAt = if (samePersona) settings.evolutionLastRunAt else 0L
+        val cursor = EvolutionCursor(
+            personaId = if (samePersona) personaId else null,
+            userMessages = if (samePersona) settings.evolutionUserMessageCount else 0,
+            lastRunAt = if (samePersona) settings.evolutionLastRunAt else 0L
+        ).forPersona(personaId)
 
-        if (!shouldEvaluate(userMessages, cursor, lastRunAt, now)) return null
+        if (!cursor.shouldEvaluate(userMessages, now)) return null
 
         runCatching { settingsRepository.setEvolutionCursor(personaId, userMessages, now) }
         return evaluate(persona, sessionId = session.id, now = now)
@@ -193,10 +193,7 @@ class PersonaEvolutionRepository @Inject constructor(
 
     /** 真的问一次模型并把结果写进待审表（测试里也可以直接调它）。 */
     suspend fun evaluate(persona: PersonaEntity, sessionId: String?, now: Long): Evaluation {
-        val configId = persona.defaultApiConfigId ?: sessionId?.let { id ->
-            runCatching { sessionDao.getById(id)?.apiConfigId }.getOrNull()
-        } ?: return Evaluation(proposed = 0, written = false)
-        val resolved = runCatching { apiConfigRepository.resolve(configId) }.getOrNull()
+        val resolved = resolveApiConfig(persona, sessionId)
             ?: return Evaluation(proposed = 0, written = false)
         val current = currentOf(persona)
         val recent = recentSummary(sessionId, now)
@@ -261,6 +258,9 @@ class PersonaEvolutionRepository @Inject constructor(
         return id
     }
 
+    /** 现在是不是服务端模式：人设页据此决定「接受」的文案（实际写路径在 [acceptance] 里）。 */
+    fun isServerMode(): Boolean = serverWrites.isEnabled()
+
     // ---------------------------------------------------------------- 待审
 
     /** 人设页「他最近的变化」：只列进化的补丁（老的人设卡补丁有别的入口）。 */
@@ -278,69 +278,18 @@ class PersonaEvolutionRepository @Inject constructor(
         PersonaEvolution.decodePatch(patch.patchJson)
 
     /**
-     * 接受一条变化：写回人格的四个字段并 `version + 1`，同时记一条版本历史。
+     * 接受一条变化：本地模式写回人格的四个字段并 `version + 1`；服务端模式先 `POST /v1/personas`。
      *
      * 只改 `traits/likes/behaviors/quirks` 四个列——名字、描述、提示词、世界、关系一律不碰。
      * 没有真正变化时（去重后为空）不升版本，但仍然把补丁删掉（它已经被处理过了）。
+     * 服务端写入失败时本地一行都不写、补丁保留，调用方（人设页）据此提示「没写进去」。
      */
     suspend fun accept(patchId: String, now: Long = System.currentTimeMillis()): Result<PersonaEntity> =
-        acceptLock.withLock {
-            runCatching {
-                val patch = pendingPatchDao.getById(patchId)
-                    ?: userError(DomainErrorCode.PENDING_PATCH_NOT_FOUND)
-                val persona = personaDao.getById(patch.personaId)
-                    ?: userError(DomainErrorCode.PERSONA_NOT_FOUND)
-                val changes = PersonaEvolution.decodePatch(patch.patchJson)
-                if (!PersonaEvolution.isEvolutionPatch(patch.patchJson) || changes.isEmpty()) {
-                    userError(DomainErrorCode.MODEL_UNPARSABLE)
-                }
-                val updated = applyTo(persona, changes, now)
-                if (updated == null) {
-                    // 变化已经被别处写进去了（或与现有值完全重复）：只清掉这条待审，不升版本。
-                    pendingPatchDao.deleteById(patchId)
-                    return@runCatching persona
-                }
-                database.withTransaction {
-                    revisionDao.insert(
-                        PersonaRevisionEntity(
-                            id = UUID.randomUUID().toString(),
-                            personaId = persona.id,
-                            version = persona.version,
-                            name = persona.name,
-                            description = persona.description,
-                            avatarUri = persona.avatarUri,
-                            avatarSeed = persona.avatarSeed,
-                            prompt = persona.prompt,
-                            category = persona.category,
-                            reason = PersonaRevisionReason.BEFORE_EVOLUTION,
-                            createdAt = now
-                        )
-                    )
-                    personaDao.update(updated)
-                    revisionDao.insert(
-                        PersonaRevisionEntity(
-                            id = UUID.randomUUID().toString(),
-                            personaId = updated.id,
-                            version = updated.version,
-                            name = updated.name,
-                            description = updated.description,
-                            avatarUri = updated.avatarUri,
-                            avatarSeed = updated.avatarSeed,
-                            prompt = updated.prompt,
-                            category = updated.category,
-                            reason = PersonaRevisionReason.evolved(PersonaEvolution.summary(changes)),
-                            createdAt = now
-                        )
-                    )
-                    pendingPatchDao.deleteById(patchId)
-                }
-                updated
-            }
-        }
+        acceptance.accept(patchId, now)
 
-    /** 拒绝一条变化：只丢掉提议，人设一动不动。 */
+    /** 拒绝一条变化：只丢掉提议，人设一动不动（服务端没有待审表，所以只删本地）。 */
     suspend fun reject(patchId: String) {
-        runCatching { pendingPatchDao.deleteById(patchId) }
+        acceptance.reject(patchId)
     }
 
     /**
@@ -357,6 +306,39 @@ class PersonaEvolutionRepository @Inject constructor(
         expired.forEach { runCatching { pendingPatchDao.deleteById(it) } }
         return expired.size
     }
+
+    /**
+     * 评估用哪个 provider 配置。
+     *
+     * 顺序：人格绑定的 → 会话绑定的 →（**仅服务端模式**）本机第一个可用配置。
+     *
+     * 为什么服务端模式要兜底：服务端没有「让客户端调一次模型」的接口，评估只能复用本机已有的
+     * provider 客户端；而服务端模式的人格/会话 id 是从服务端带下来的，本机不一定真有那条配置
+     * （bootstrap 另一个设备的人格时尤其如此）。解析失败就继续试下一个，而不是让「本机有 key
+     * 却永远不评估」。本地模式仍然只认人格/会话绑定的配置，行为与 0.13 之前一致。
+     * 一个都解析不出来时返回 null，这一轮安静跳过（聊天不受影响）。
+     */
+    private suspend fun resolveApiConfig(
+        persona: PersonaEntity,
+        sessionId: String?
+    ): ResolvedApiConfig? {
+        val sessionConfigId = sessionId?.let { id ->
+            runCatching { sessionDao.getById(id)?.apiConfigId }.getOrNull()
+        }
+        val candidates = buildList {
+            persona.defaultApiConfigId?.let(::add)
+            sessionConfigId?.let(::add)
+            if (serverWrites.isEnabled()) firstLocalConfigId()?.let(::add)
+        }
+        for (configId in candidates.distinct()) {
+            runCatching { apiConfigRepository.resolve(configId) }.getOrNull()?.let { return it }
+        }
+        return null
+    }
+
+    /** 本机第一个 API 配置（服务端模式的评估兜底；没有任何配置时 null）。 */
+    private suspend fun firstLocalConfigId(): String? =
+        runCatching { apiConfigRepository.getAll().firstOrNull()?.id }.getOrNull()
 
     // ---------------------------------------------------------------- 映射
 
@@ -388,4 +370,33 @@ class PersonaEvolutionRepository @Inject constructor(
         if (lines.isEmpty()) return ""
         return lines.joinToString("\n")
     }
+}
+
+/**
+ * 人格进化的**共享游标**：上次评估到第几条用户消息、上次评估发生在什么时候。
+ *
+ * 本地模式与服务端模式读写的是同一份（`SettingsRepository` 里的三个 evolution 键），
+ * 所以「本地刚聊满 20 条评估过一次 → 切到服务端 → 下一条回复完成」不会重复评估：
+ * 服务端那一次看到的是同一个 `userMessages` 与同一个游标。
+ *
+ * 游标属于别的人格时按「从没评估过」算（换人之后不该拿上一个人的进度）。
+ * 纯数据 + 纯函数，没有 Room/DataStore，`ServerPersonaEvolutionTest` 直接驱动它钉住边界。
+ */
+data class EvolutionCursor(
+    val personaId: String? = null,
+    val userMessages: Int = 0,
+    val lastRunAt: Long = 0L
+) {
+
+    /** 把游标归到 [personaId]：同一个人原样返回，换了人就清零。 */
+    fun forPersona(personaId: String): EvolutionCursor =
+        if (this.personaId == personaId) this else EvolutionCursor(personaId = personaId)
+
+    /** 这一轮要不要评估（规则本身仍在 [PersonaEvolutionRepository.shouldEvaluate]）。 */
+    fun shouldEvaluate(userMessages: Int, now: Long): Boolean =
+        PersonaEvolutionRepository.shouldEvaluate(userMessages, this.userMessages, lastRunAt, now)
+
+    /** 评估之后推进游标（调用模型**之前**推进：失败也算这一轮过去了）。 */
+    fun advanced(userMessages: Int, now: Long): EvolutionCursor =
+        copy(userMessages = userMessages, lastRunAt = now)
 }

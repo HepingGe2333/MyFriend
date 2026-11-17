@@ -1,5 +1,8 @@
 package com.yap.app.data.remote
 
+import com.yap.app.domain.AudioVideoKind
+import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.MediaRejection
 import com.yap.app.domain.MessageAttachment
 import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -38,13 +41,29 @@ object ServerMediaKinds {
     const val CHAT_IMAGE = "CHAT_IMAGE"
     const val PERSONA_AVATAR = "PERSONA_AVATAR"
     const val USER_AVATAR = "USER_AVATAR"
+
+    /** 0.13：历史媒体迁移要带上表情/语音/视频（服务端白名单逐字一致）。 */
+    const val STICKER = "STICKER"
+    const val AUDIO = "AUDIO"
+    const val VIDEO = "VIDEO"
 }
 
-/** 上传/下载的字节硬上限（契约：单张 2 MiB）。 */
+/** 上传/下载的字节硬上限（契约：图片单张 2 MiB；音频 8 MiB、视频 64 MiB）。 */
 object ServerMediaLimits {
     const val MAX_UPLOAD_BYTES: Int = 2 * 1024 * 1024
 
-    /** 下载同样按 2 MiB 挡：服务端不会存超过这个体积的媒体。 */
+    /** 0.13：语音/视频放宽（与 `agentd` 的 `MediaRoutes.maxBytes` 同一套值）。 */
+    const val MAX_AUDIO_BYTES: Int = 8 * 1024 * 1024
+    const val MAX_VIDEO_BYTES: Int = 64 * 1024 * 1024
+
+    /** 按用途取上传上限：图片/头像/表情 2 MiB，音频 8 MiB，视频 64 MiB。 */
+    fun maxUploadBytes(kind: String): Int = when (kind) {
+        ServerMediaKinds.AUDIO -> MAX_AUDIO_BYTES
+        ServerMediaKinds.VIDEO -> MAX_VIDEO_BYTES
+        else -> MAX_UPLOAD_BYTES
+    }
+
+    /** 下载暂按图片上限挡：全量下载只搬 `/v1/media/<id>` 引用，不取音频/视频字节。 */
     const val MAX_DOWNLOAD_BYTES: Int = 2 * 1024 * 1024
 }
 
@@ -123,6 +142,68 @@ class ServerChatMediaUploader(
                 personaId = personaId
             )
             // 服务端可能只回 id、也可能回 `/v1/media/<id>` 或绝对 URL；统一落成规范形态。
+            ServerMediaRef.canonical(media.url)
+                ?: ServerMediaRef.canonical(media.id)
+                ?: throw ServerApiException(
+                    "server returned a media entry without a usable id",
+                    code = "invalid_response"
+                )
+        }
+    }
+}
+
+/**
+ * 语音 / 视频的上传编排（0.13，纯 JVM：API 与读文件都注入）。
+ *
+ * 与图片不同，音视频**不压缩、不转码**：`spec/audio-video/README.md` 明确「不做转码」。
+ * 所以这里的顺序是「读字节 → 按 8 / 64 MiB 与时长上限再挡一次 → `POST /v1/media?kind=AUDIO|VIDEO`」。
+ * 上传前再挡一次是必须的：读文件与压缩器都是外部实现，不能只信调用方。
+ *
+ * 任何一项失败整条消息失败（不返回半截附件）：一条「语音 + 视频」的消息只传上去一半，
+ * 用户看到的是「少了一段」而没有任何解释。
+ */
+class ServerAudioVideoUploader(
+    private val api: ServerMediaApi,
+    private val readBytes: suspend (MessageAttachment) -> ByteArray?
+) {
+
+    /** 逐项上传（保持原顺序），返回服务端引用 `/v1/media/<id>`。 */
+    suspend fun upload(
+        attachments: List<MessageAttachment>,
+        personaId: String?
+    ): Result<List<String>> = runCatching {
+        attachments.filter { it.isAudioOrVideo }.map { attachment ->
+            val kind = if (attachment.isAudio) AudioVideoKind.AUDIO else AudioVideoKind.VIDEO
+            val bytes = readBytes(attachment) ?: throw ServerApiException(
+                "audio/video attachment is not readable",
+                code = "media_read_failed"
+            )
+            val rejection = when (kind) {
+                AudioVideoKind.AUDIO ->
+                    AudioVideoPolicy.checkAudio(bytes.size.toLong(), attachment.durationMs)
+                AudioVideoKind.VIDEO ->
+                    AudioVideoPolicy.checkVideo(bytes.size.toLong(), attachment.durationMs)
+            }
+            if (rejection != null) {
+                throw ServerApiException(
+                    when (rejection) {
+                        MediaRejection.TOO_LARGE -> "media_too_large"
+                        MediaRejection.TOO_LONG -> "media_too_long"
+                        else -> "media_empty"
+                    },
+                    code = when (rejection) {
+                        MediaRejection.TOO_LARGE -> "media_too_large"
+                        MediaRejection.TOO_LONG -> "media_too_long"
+                        else -> "media_empty"
+                    }
+                )
+            }
+            val media = api.uploadMedia(
+                bytes = bytes,
+                mime = attachment.mime,
+                kind = if (kind == AudioVideoKind.AUDIO) ServerMediaKinds.AUDIO else ServerMediaKinds.VIDEO,
+                personaId = personaId
+            )
             ServerMediaRef.canonical(media.url)
                 ?: ServerMediaRef.canonical(media.id)
                 ?: throw ServerApiException(

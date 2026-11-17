@@ -456,6 +456,46 @@ final class ChatServiceTests: XCTestCase {
 
     // MARK: - 工具轮
 
+    /// 0.13 表情包：`sticker.send` 已经落了一条助手消息，模型不再写正文时，
+    /// 这一轮应当正常结束（而不是被「他查完了东西，怕是走神了」当成失败）。
+    func testStickerSendRoundWithoutFinalTextCompletesWithStickerMessage() async throws {
+        try seedReadySession()
+        let produced = MessageEntity(
+            id: "sticker-msg-1", sessionId: sessionId, personaId: personaId, role: .assistant,
+            content: "", createdAt: 999, updatedAt: 999, status: .complete,
+            attachmentsJson: AttachmentsCodec.encode([
+                MessageAttachment(uri: "file:///s.gif", mime: "image/gif",
+                                  kind: MessageAttachment.stickerKind)
+            ])
+        )
+        try stores.messages.upsert(produced)
+        let delta = """
+        ```yap-tool
+        {"name":"sticker","arguments":{"action":"send","stickerId":"s-1"}}
+        ```
+        """
+        StubURLProtocol.enqueue(
+            .sse(textDeltas: [delta]),
+            // 第二轮只吐一个空白：流里有字（客户端不会判「没有返回任何文字」），
+            // 但 trim 之后正文为空 —— 正是「模型只发了个表情、不再说话」的形状。
+            .sse(textDeltas: [" "])
+        )
+        tools.resultFor = { invocation in
+            ToolResult(
+                invocation: invocation, ok: true, summary: "表情",
+                contentForModel: "已经把表情发出去了。",
+                traceTitle: "已发送表情", producedMessageId: produced.id
+            )
+        }
+
+        let events = try await collect(service.send(sessionId: sessionId, text: "发个表情"))
+        let done = try XCTUnwrap(doneEvent(events))
+        XCTAssertEqual(done.message.id, produced.id, "这一轮的产物就是那条表情消息")
+        XCTAssertEqual(done.toolTraces.map(\.title), ["已发送表情"])
+        // 用户一条 + 表情一条；不再多写一条空助手消息。
+        XCTAssertEqual(try stores.messages.count(sessionId: sessionId), 2)
+    }
+
     func testToolRoundEmitsEventsAndFeedsResultBack() async throws {
         try seedReadySession()
         let first = """

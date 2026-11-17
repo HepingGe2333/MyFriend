@@ -208,7 +208,7 @@ public extension ServerConfig {
     /// - `https`：任意主机都允许；
     /// - `http`：必须同时满足「当前构建允许明文」（DEBUG）与「主机是本机/局域网」；
     /// - 其他协议、带账号密码、带 query/fragment 的地址一律拒绝。
-    static func validatedURL(
+    public static func validatedURL(
         _ raw: String,
         buildAllowsInsecureHTTP: Bool = buildAllowsInsecureHTTP
     ) throws -> URL {
@@ -241,6 +241,20 @@ public extension ServerConfig {
             }
         }
         return normalizedBaseURL(url)
+    }
+
+    /// 把用户输入的地址规范成「同一台服务端只有一种写法」。
+    ///
+    /// 用途：`server_sync_consent:<url>` 这类**按地址做键**的簿记。
+    /// 不合法（空 / 协议不对 / Release 里的明文 http / 带账号密码）→ nil：
+    /// 这类地址本身就不该被保存，更不该被记住「用户同意过」。
+    public static func normalizedBaseURLText(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              let url = try? validatedURL(trimmed) else {
+            return nil
+        }
+        return normalizedBaseURL(url).absoluteString
     }
 
     /// 这个主机是不是「本机 / 局域网」。

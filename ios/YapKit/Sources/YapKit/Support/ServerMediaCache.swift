@@ -121,6 +121,39 @@ public final class ServerMediaCache {
         return image
     }
 
+    /// 取服务端媒体并落成一个**带扩展名的本地文件**（语音/视频播放器要的是文件 URL）。
+    ///
+    /// 为什么不能直接把 `<id>.img` 给 `AVPlayer`：AVFoundation 主要按扩展名/文件头判断容器，
+    /// 无扩展名的文件在部分系统版本上会直接 `cannotOpen`。这里按 mime 补 `.m4a/.mp4/.mov`，
+    /// 仍然放在 Caches 下（清缓存只是下次重新下载，不丢数据）。
+    public func playableFileURL(for uri: String, mime: String) async throws -> URL {
+        guard let mediaId = ServerMediaReference.mediaId(from: uri) else {
+            throw ServerAPIError(
+                code: ServerAPIError.Code.invalidArgument,
+                message: "这不是服务端媒体"
+            )
+        }
+        let safeId = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !safeId.isEmpty, !safeId.contains("/"), !safeId.contains(".."), !safeId.contains("\\") else {
+            throw ServerAPIError(code: ServerAPIError.Code.invalidArgument, message: "媒体 id 不合法")
+        }
+        let fileExtension = AudioVideoLimits.fileExtension(forMime: mime) ?? "mp4"
+        let playbackDirectory = directory.appendingPathComponent("playback", isDirectory: true)
+        let target = playbackDirectory
+            .appendingPathComponent("\(safeId).\(fileExtension)", isDirectory: false)
+        if let existing = try? target.resourceValues(forKeys: [.fileSizeKey]),
+           (existing.fileSize ?? 0) > 0 {
+            return target
+        }
+        let data = try await data(for: uri)
+        guard !data.isEmpty else {
+            throw ServerAPIError(code: ServerAPIError.Code.invalidResponse, message: "服务端媒体是空的")
+        }
+        try fileManager.createDirectory(at: playbackDirectory, withIntermediateDirectories: true)
+        try data.write(to: target, options: .atomic)
+        return target
+    }
+
     /// 本地有没有这张图（不再请求网络；`AttachmentThumbnail` 的「已缓存」判断用）。
     public func hasCachedData(for uri: String) -> Bool {
         guard let mediaId = ServerMediaReference.mediaId(from: uri) else { return false }

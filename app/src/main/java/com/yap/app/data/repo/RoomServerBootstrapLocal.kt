@@ -17,9 +17,11 @@ import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.data.remote.ServerBootstrapCounts
 import com.yap.app.data.remote.ServerBootstrapLocal
 import com.yap.app.data.remote.ServerLocalStore
+import com.yap.app.data.remote.ServerMediaRef
 import com.yap.app.data.remote.ServerMessagePage
 import com.yap.app.data.remote.ServerStateSink
 import com.yap.app.data.remote.StateSnapshot
+import com.yap.app.domain.AttachmentsCodec
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonObject
 import javax.inject.Inject
@@ -126,6 +128,21 @@ class RoomServerBootstrapLocal @Inject constructor(
     override suspend fun applyUserAvatar(serverRef: String?, localRef: String?) {
         settingsRepository.setUserAvatar(serverRef, localRef)
     }
+
+    /**
+     * 历史媒体迁移的进度分母：本地附件里「还是本地文件」的条数。
+     *
+     * 已经是 `/v1/media/<id>` 的附件不需要再上传，不能算进分母，否则进度条永远差一截。
+     * 这里只解析窄列 JSON，不把整条消息读进内存；孤儿会话的附件也会被算进来
+     * （宁可分母略大，也不为它再扫一遍会话映射）。
+     */
+    override suspend fun attachmentTotal(): Int =
+        messageDao.allAttachmentJson().sumOf { json ->
+            AttachmentsCodec.decode(json).count { !ServerMediaRef.isMediaRef(it.uri) }
+        }
+
+    override suspend fun messageCount(localSessionId: String): Int =
+        if (localSessionId.isBlank()) -1 else messageDao.countInSession(localSessionId)
 
     override suspend fun setSyncCursors(stateCursor: Long, eventCursor: Long) {
         if (eventCursor > 0L) localStore.setCursor(eventCursor)

@@ -1567,6 +1567,44 @@
     <string name="tool_trace_diary_empty_detail">日记本上还没有东西。</string>
     <string name="tool_trace_unknown">动作</string>
 
+    <!-- 表情包（spec/stickers）：工具 sticker 的痕迹与聊天里的表情界面 -->
+    <string name="tool_trace_sticker">表情</string>
+    <string name="tool_trace_sticker_send">发了一张表情</string>
+    <string name="tool_trace_sticker_make">做了一张表情</string>
+    <string name="tool_trace_sticker_save">收藏了一张表情</string>
+    <string name="tool_trace_sticker_static">%1$d×%2$d · 静态 · %3$d KB</string>
+    <string name="tool_trace_sticker_animated">%1$d×%2$d · %3$d 帧 · %4$d KB</string>
+    <string name="tool_trace_sticker_detail">表情已经存进「我的表情」。</string>
+    <string name="tool_trace_sticker_sent_detail">这张表情已经作为一条消息发出去了。</string>
+    <string name="tool_trace_sticker_made_detail">做好了，已经存进「我的表情」，想发可以再发一次。</string>
+    <string name="tool_trace_sticker_saved_detail">对方的这张已经收进「我的表情」。</string>
+    <string name="tool_trace_sticker_failed_missing_action">没有说要做什么（send / make / save）</string>
+    <string name="tool_trace_sticker_failed_unknown_action">不认识这个动作</string>
+    <string name="tool_trace_sticker_failed_not_found">找不到这张表情</string>
+    <string name="tool_trace_sticker_failed_message_not_found">找不到那条消息</string>
+    <string name="tool_trace_sticker_failed_no_sticker">那条消息里没有表情</string>
+    <string name="tool_trace_sticker_failed_empty_make">没给素材（链接 / 底图 / 叠图 / 文字）</string>
+    <string name="tool_trace_sticker_failed_bad_url">这个链接不能下载</string>
+    <string name="tool_trace_sticker_failed_download">图片没下载下来</string>
+    <string name="tool_trace_sticker_failed_unreadable">这张图读不出来</string>
+    <string name="tool_trace_sticker_failed_too_big">压不进表情包的大小上限</string>
+    <string name="tool_trace_sticker_failed_save">保存失败</string>
+
+    <!-- 表情包：输入栏、历史面板、气泡 -->
+    <string name="chat_send_sticker">发送表情</string>
+    <string name="chat_sticker_panel_title">我的表情</string>
+    <string name="chat_sticker_panel_recent">最近</string>
+    <string name="chat_sticker_panel_all">全部</string>
+    <string name="chat_sticker_panel_empty">还没有表情。点右上角导入图片或 GIF，长按聊天里的表情也能收藏。</string>
+    <string name="chat_sticker_panel_import">导入表情</string>
+    <string name="chat_sticker_panel_import_failed">这张图没能做成表情</string>
+    <string name="chat_sticker_message">表情消息</string>
+    <string name="chat_sticker_save">添加到我的表情</string>
+    <string name="chat_sticker_saved">已添加到我的表情</string>
+    <string name="chat_sticker_save_failed">没能添加这张表情</string>
+    <string name="chat_sticker_sending_failed">表情没发出去</string>
+    <string name="chat_preview_sticker">表情</string>
+
     <string name="tool_trace_think_detail_placeholder">（没有写具体问题，就是想清楚再答）</string>
     <string name="tool_trace_search_no_result">没有搜到结果</string>
     <string name="tool_trace_recall_empty">翻了翻，没想起什么</string>
@@ -1647,6 +1685,27 @@
     <string name="settings_server_bootstrap_merging">正在合并两端数据：%1$d 条消息</string>
     <string name="settings_server_bootstrap_done">数据已对齐（%1$d 条消息）</string>
     <string name="settings_server_bootstrap_failed">数据对齐没完成，会在下次连接时重试</string>
+    <!-- 0.13 切换云端：同意弹窗、历史媒体逐项上传、切回本地全量下载 -->
+    <string name="settings_server_consent_title">把对话交给云端处理？</string>
+    <string name="settings_server_consent_body">会把你本机的历史会话、人格、记忆与图片/语音/视频上传到该服务端。选「只同步之后的新内容」则历史留在本机；也可以取消。</string>
+    <string name="settings_server_consent_full">同意并同步</string>
+    <string name="settings_server_consent_new_only">只同步之后的新内容</string>
+    <string name="settings_server_consent_cancel">取消</string>
+    <string name="settings_server_sync_starting">正在同步到服务端…</string>
+    <string name="settings_server_media_starting">正在检查历史媒体…</string>
+    <string name="settings_server_media_progress">正在上传历史媒体：第 %1$d/%2$d 项（成功 %3$d · 失败 %4$d）</string>
+    <string name="settings_server_cancel_sync">取消同步</string>
+    <string name="settings_server_sync_done">已同步到服务端：%1$d 条消息</string>
+    <string name="settings_server_sync_done_media">已同步到服务端：%1$d 条消息，%2$d 个历史媒体没上传成功</string>
+    <string name="settings_server_sync_new_only">已开启服务端模式：历史不会上传，之后的新消息会走服务端</string>
+    <string name="settings_server_sync_already">这台服务端之前已经同步过</string>
+    <string name="settings_server_sync_failed">同步没完成，服务端模式先开着，会在下次连接时重试</string>
+    <string name="settings_server_sync_cancelled">已取消同步，服务端模式没有开启</string>
+    <string name="settings_server_downloading">正在从服务端取回全部数据：%1$d 条消息</string>
+    <string name="settings_server_download_done">已下载 %1$d 条消息，服务端模式已关闭</string>
+    <string name="settings_server_download_failed">本机没凑齐服务端的全部消息，服务端模式保持开启（本地 %1$d 条 / 服务端 %2$d 条）</string>
+    <string name="settings_server_download_unavailable">没能连上服务端，服务端模式保持开启，稍后再试</string>
+    <string name="settings_server_download_cancelled">已取消下载，服务端模式保持开启</string>
     <string name="chat_server_reply_pending">回复还没接上，稍后会自动同步</string>
     <string name="chat_server_action_unsupported">服务端模式下暂不支持这个操作</string>
     <string name="error_server_unreachable">服务端没连上，这次没有保存</string>
@@ -1666,4 +1725,42 @@
     <string name="persona_evolution_accepted">记下了，这条已经写进他的人设。</string>
     <string name="persona_evolution_rejected">这条不用了。</string>
     <string name="persona_evolution_accept_failed">没写进去，稍后再试一次。</string>
+    <string name="persona_evolution_section_note_server">这些是他这几轮聊下来觉得自己的变化。接受后会写进他的人格并同步到服务端，不点头一周后自动丢掉。</string>
+    <string name="persona_evolution_accepted_server">记下了，这条已经写进他的人设并同步到服务端。</string>
+    <!-- ============================== 0.13 语音 / 视频（spec/audio-video） ============================== -->
+    <string name="media_error_audio_too_large">这段语音超过 8 MB，发不出去</string>
+    <string name="media_error_audio_too_long">语音最长 5 分钟，这一段没发出去</string>
+    <string name="media_error_video_too_large">这段视频超过 64 MB，剪短一点再发吧</string>
+    <string name="media_error_video_too_long">视频最长 2 分钟，这条超了</string>
+    <string name="media_error_video_format">这个视频格式不支持，换成 mp4 或 mov 试试</string>
+
+    <string name="chat_preview_audio">语音</string>
+    <string name="chat_preview_video">视频</string>
+    <string name="chat_send_voice">发语音（按住说话）</string>
+    <string name="chat_send_video">发视频</string>
+    <string name="chat_voice_message">语音消息</string>
+    <string name="chat_video_message">视频消息</string>
+    <string name="chat_voice_play">播放语音</string>
+    <string name="chat_voice_pause">暂停语音</string>
+    <string name="chat_video_play">播放视频</string>
+    <string name="chat_video_close">关闭视频</string>
+    <string name="chat_voice_recording">录音中 %1$s · 松开发送</string>
+    <string name="chat_voice_record_failed">这次没录上，再试一次</string>
+    <string name="chat_voice_permission_denied">没有麦克风权限，发不了语音</string>
+    <string name="chat_video_too_long">视频最长 2 分钟</string>
+    <string name="chat_video_pick_failed">这段视频读不出来</string>
+
+    <string name="tool_trace_listen">听语音</string>
+    <string name="tool_trace_watch">看视频</string>
+    <string name="tool_trace_listen_detail">听了一遍这段语音（%1$d 秒），声音已经交给他了。</string>
+    <string name="tool_trace_watch_detail">看了 %1$d 帧画面。</string>
+    <string name="tool_trace_media_none_audio">这段聊天里没有语音</string>
+    <string name="tool_trace_media_none_video">这段聊天里没有视频</string>
+    <string name="tool_trace_media_unreadable_audio">这段语音打不开</string>
+    <string name="tool_trace_media_unreadable_video">这段视频打不开</string>
+
+    <string name="error_media_audio_unsupported">这个模型听不了语音</string>
+    <string name="error_media_video_unsupported">这个模型看不了视频</string>
+    <string name="error_media_audio_too_large">这段语音太大，模型收不下</string>
+    <string name="error_media_video_too_large">这段视频太大，模型收不下</string>
 </resources>

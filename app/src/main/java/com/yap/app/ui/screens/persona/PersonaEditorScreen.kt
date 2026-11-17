@@ -334,6 +334,8 @@ fun PersonaEditorScreen(
                     PersonaEvolutionSection(
                         changes = state.pendingChanges,
                         busy = state.pendingBusy,
+                        // 服务端模式也显示：接受会先写服务端再写本机缓存（0.13）。
+                        serverMode = state.serverMode,
                         onAccept = viewModel::acceptPendingChange,
                         onReject = viewModel::rejectPendingChange
                     )
@@ -1595,6 +1597,7 @@ private const val EVOLUTION_REMOVE_SYMBOL = "\u2212"
 private fun PersonaEvolutionSection(
     changes: List<PendingChangeUi>,
     busy: Boolean,
+    serverMode: Boolean,
     onAccept: (String) -> Unit,
     onReject: (String) -> Unit
 ) {
@@ -1628,7 +1631,10 @@ private fun PersonaEvolutionSection(
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                stringResource(R.string.persona_evolution_section_note),
+                stringResource(
+                    if (serverMode) R.string.persona_evolution_section_note_server
+                    else R.string.persona_evolution_section_note
+                ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

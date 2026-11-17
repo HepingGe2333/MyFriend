@@ -27,8 +27,11 @@ object MediaKind {
     const val CHAT_IMAGE = "CHAT_IMAGE"
     const val PERSONA_AVATAR = "PERSONA_AVATAR"
     const val USER_AVATAR = "USER_AVATAR"
+    const val STICKER = "STICKER"
+    const val AUDIO = "AUDIO"
+    const val VIDEO = "VIDEO"
 
-    val ALL: List<String> = listOf(CHAT_IMAGE, PERSONA_AVATAR, USER_AVATAR)
+    val ALL: List<String> = listOf(CHAT_IMAGE, PERSONA_AVATAR, USER_AVATAR, STICKER, AUDIO, VIDEO)
 
     fun isValid(value: String): Boolean = value in ALL
 }
@@ -43,8 +46,14 @@ object MediaMime {
     const val JPEG = "image/jpeg"
     const val PNG = "image/png"
     const val WEBP = "image/webp"
+    const val GIF = "image/gif"
+    const val M4A = "audio/m4a"
+    const val AUDIO_MP4 = "audio/mp4"
+    const val MPEG = "audio/mpeg"
+    const val VIDEO_MP4 = "video/mp4"
+    const val QUICKTIME = "video/quicktime"
 
-    val ALL: List<String> = listOf(JPEG, PNG, WEBP)
+    val ALL: List<String> = listOf(JPEG, PNG, WEBP, GIF, M4A, AUDIO_MP4, MPEG, VIDEO_MP4, QUICKTIME)
 
     fun isValid(value: String): Boolean = value in ALL
 
@@ -57,6 +66,12 @@ object MediaMime {
         JPEG -> "jpg"
         PNG -> "png"
         WEBP -> "webp"
+        GIF -> "gif"
+        M4A -> "m4a"
+        AUDIO_MP4 -> "m4a"
+        MPEG -> "mp3"
+        VIDEO_MP4 -> "mp4"
+        QUICKTIME -> "mov"
         else -> null
     }
 }

@@ -26,9 +26,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryTermEntity::class,
         MemoryVersionEntity::class,
         MemoryVectorEntity::class,
-        DiaryNoteEntity::class
+        DiaryNoteEntity::class,
+        StickerEntity::class
     ],
-    version = 15,
+    version = 16,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -54,12 +55,54 @@ abstract class YapDatabase : RoomDatabase() {
     abstract fun memoryVersionDao(): MemoryVersionDao
     abstract fun memoryVectorDao(): MemoryVectorDao
     abstract fun diaryNoteDao(): DiaryNoteDao
+    abstract fun stickerDao(): StickerDao
 
     /** 媒体文件引用计数（0.12 去重收尾）：纯查询，不新增表，也不动 schema。 */
     abstract fun mediaReferenceDao(): MediaReferenceDao
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v16：表情包（`spec/stickers/README.md` / `SCHEMA.md`）。
+         *
+         * 只新建一张表 + 两条索引，不动任何既有表与既有一行数据：老库升级后 `stickers` 是空的
+         * =「他还没有表情」，聊天、记忆、人格、日记一条都不受影响。
+         *
+         * 幂等：`CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`，
+         * 迁移测试与将来的修复脚本可以重复调用（重复执行不报错、也不清数据）。
+         *
+         * 列名/顺序/可空/默认值必须与 `SCHEMA.md` 逐字一致（两端靠它对齐）。
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `stickers` (
+                        `id` TEXT NOT NULL,
+                        `ownerUserId` TEXT,
+                        `personaId` TEXT,
+                        `file` TEXT NOT NULL,
+                        `mime` TEXT NOT NULL,
+                        `width` INTEGER NOT NULL DEFAULT 0,
+                        `height` INTEGER NOT NULL DEFAULT 0,
+                        `frames` INTEGER NOT NULL DEFAULT 1,
+                        `bytes` INTEGER NOT NULL DEFAULT 0,
+                        `source` TEXT NOT NULL,
+                        `createdBy` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_stickers_createdAt` ON `stickers` (`createdAt`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_stickers_personaId` ON `stickers` (`personaId`)"
+                )
+            }
+        }
 
         /**
          * v15：日记板（`spec/diary/README.md`）。

@@ -61,6 +61,9 @@ final class AppEnvironment: ObservableObject {
     let toolExecutor: ToolExecutor
     /// 主动唤醒规则落库（回复里的 `yap-wake` 提案）。
     let proactiveRules: ProactiveRuleService
+    /// 表情包（0.13）：导入 / 制作 / 发送 / 收藏。本地模式落 `Application Support/stickers`，
+    /// 服务端模式上传成 `/v1/media/<id>`（`kind=STICKER`）。
+    let stickers: StickerService
     /// 历史压缩（滚动摘要）的落库编排。
     let historyCompression: HistoryCompressionService
     /// 人格进化（0.13）：人格页「他最近的变化」读它、接受/拒绝也调它
@@ -68,6 +71,11 @@ final class AppEnvironment: ObservableObject {
     let personaEvolution: PersonaEvolutionService
     /// 回复落库之后那两件后台事（抽记忆 / 压摘要）。
     let chatBackground: ChatBackgroundService
+    /// 后台调用用的模型配置（会话上填的模型优先，其次当前生效的 API 配置）。
+    ///
+    /// 抽记忆 / 压摘要 / 人格进化三条后台链路共用同一个解析：它们都是「用一次额外的
+    /// 模型调用从对话里提炼东西」，配置口径必须一致，否则换个入口就换个模型。
+    private let backgroundConfig: (ChatSessionEntity) -> CompressionConfig?
 
     /// 设置变了要通知界面重绘；View 用 `@EnvironmentObject` 读它。
     @Published private(set) var currentSettings: AppSettings
@@ -80,6 +88,8 @@ final class AppEnvironment: ObservableObject {
 
     /// 服务端模式的设置来源（令牌在 Keychain，开关/地址在 UserDefaults）。
     let serverCredentials: ServerCredentialStore
+    /// 「切换云端时的同步同意」记录（按 baseURL，值 FULL / NEW_ONLY）。
+    let serverConsent: ServerSyncConsentStore
     /// 当前生效的服务端配置（设置页改完会重建）。
     @Published private(set) var serverConfig: ServerConfig
     /// 服务端模式是不是真的可用（开关 + 合法地址）。界面用它决定走哪条链路。
@@ -320,6 +330,36 @@ final class AppEnvironment: ObservableObject {
         )
         // 服务端模式下的活动上报：init 里不能捕获 self，用局部转发变量在装配完成后赋值。
         let box = envBox
+        // 表情包（0.13）：服务端模式的「上传 / 下载」闭包在装配时注入。
+        // Kit 层不知道现在是不是服务端模式，所以这里每次调用都重新问一次 `env`（模式可切换）。
+        let stickerService = StickerService(
+            stores: fallbackStores,
+            session: URLSession(configuration: Self.sessionConfiguration()),
+            serverUploader: { data, personaId in
+                guard let env = box.env else { throw StickerError.writeFailed }
+                let config = await MainActor.run { env.serverModeActive ? env.serverConfig : nil }
+                guard let config else {
+                    // 不是服务端模式却走到了上传：说明装配层/调用点判断错了，明确失败。
+                    throw StickerError.writeFailed
+                }
+                let api = ServerAPIClient(
+                    config: config, session: URLSession(configuration: AppEnvironment.sessionConfiguration())
+                )
+                let media = try await api.uploadSticker(bytes: data, personaId: personaId)
+                return media.url
+            },
+            serverDownloader: { uri in
+                guard let env = box.env else { throw StickerError.unreadableImage }
+                let config = await MainActor.run { env.serverModeActive ? env.serverConfig : nil }
+                guard let config else { throw StickerError.unreadableImage }
+                let api = ServerAPIClient(
+                    config: config, session: URLSession(configuration: AppEnvironment.sessionConfiguration())
+                )
+                return try await api.mediaData(uri: uri)
+            },
+            log: { DebugSeeding.log($0) }
+        )
+        self.stickers = stickerService
         let toolExecutor = ToolExecutor(
             stores: fallbackStores,
             apiKeys: apiKeys,
@@ -328,6 +368,7 @@ final class AppEnvironment: ObservableObject {
             mood: moodRepository,
             personaCards: personaCards,
             intents: intents,
+            stickers: stickerService,
             webTools: webTools,
             scorer: webSearchScorer,
             agentCore: agentCore,
@@ -359,6 +400,7 @@ final class AppEnvironment: ObservableObject {
         self.historyCompression = historyCompression
         self.personaEvolution = personaEvolution
         self.chatBackground = chatBackground
+        self.backgroundConfig = resolveCompressionConfig
 
         let backup = BackupService(
             stores: fallbackStores,
@@ -373,7 +415,10 @@ final class AppEnvironment: ObservableObject {
             stores: fallbackStores,
             settings: settings,
             apiKeys: apiKeys,
-            media: .shared
+            media: .shared,
+            stickerStorage: .shared,
+            // 0.13：语音/视频目录也随「清空聊天 / 删除全部数据」一起清。
+            audioVideo: .shared
         )
 
         self.chat = ChatService(
@@ -408,6 +453,7 @@ final class AppEnvironment: ObservableObject {
         //（它要在 init 完全结束之后才碰 self，见那边的注释）。
         let serverCredentials = ServerCredentialStore(keychain: ResilientKeychain())
         self.serverCredentials = serverCredentials
+        self.serverConsent = ServerSyncConsentStore(database: fallbackStores.database)
         let loadedServerConfig = (try? ServerConfig.loadForApp(credentials: serverCredentials))
             ?? ServerConfig(baseURL: nil, token: nil, enabled: false)
         self.serverConfig = loadedServerConfig
@@ -544,6 +590,26 @@ final class AppEnvironment: ObservableObject {
         )
         // 我的头像：压缩（复用选图产物）→ `POST /v1/media?kind=USER_AVATAR` → 写设置。
         avatarUploader = ServerUserAvatarUploader(uploader: client)
+        // 历史媒体逐项上传（「同意并同步」时跑）：逐项进度转成设置页那一行。
+        // 只捕获弱引用 self：actor 里不该持有整棵依赖图。
+        let historyMedia = ServerHistoryMediaUploader(
+            uploader: client,
+            stores: stores,
+            baseURL: client.config.baseURL,
+            log: { DebugSeeding.log($0) },
+            progress: { [weak self] item in
+                Task { @MainActor in
+                    self?.serverBootstrapProgress = ServerBootstrapProgress(
+                        stage: .pushing,
+                        mode: .push,
+                        completed: item.completed,
+                        total: item.total,
+                        detail: item.detail,
+                        at: DomainClock.nowMillis
+                    )
+                }
+            }
+        )
         // 首次全量同步：每个 baseURL 一次；进度回调切回主线程发布给设置页。
         // 这里只捕获「弱引用 self」，不把整棵依赖图塞进 actor。
         serverBootstrap = ServerBootstrapService(
@@ -552,6 +618,7 @@ final class AppEnvironment: ObservableObject {
             settings: settings,
             memories: memoryRepository,
             avatarUploader: avatarUploader,
+            mediaUploader: historyMedia,
             log: { DebugSeeding.log($0) },
             progress: { [weak self] progress in
                 Task { @MainActor in
@@ -709,7 +776,12 @@ final class AppEnvironment: ObservableObject {
         isBootstrapping = true
         defer { isBootstrapping = false }
         serverBootstrapError = nil
-        let outcome = await bootstrap.bootstrap(force: force)
+        // 同意方式按 baseURL 从簿记里读：没有记录（0.12 升级上来的用户）按「只同步新内容」，
+        // 绝不在没有点头的情况下把历史与媒体传上去。
+        let consent = ServerSyncConsentGate.activationConsent(
+            stored: serverConsent.decision(forBaseURL: serverConfig.baseURL)
+        )
+        let outcome = await bootstrap.bootstrap(force: force, consent: consent)
         switch outcome {
         case .completed(let report):
             serverBootstrapProgress = nil
@@ -729,8 +801,202 @@ final class AppEnvironment: ObservableObject {
         case .skipped(let reason):
             serverBootstrapProgress = nil
             DebugSeeding.log("[server] 首次同步跳过：\(reason)")
+        case .cancelled:
+            serverBootstrapProgress = nil
+            serverBootstrapError = nil
+            DebugSeeding.log("[server] 首次同步被取消：仍按当前模式使用")
         }
         return outcome
+    }
+
+    // MARK: - 切换云端：同意 / 全量下载（0.13）
+
+    /// 一次「拨到云端」的结果（设置页据此决定开关停在哪儿）。
+    enum ServerActivationOutcome: Equatable {
+        /// 同步完成并已切到服务端模式。
+        case activated(ServerBootstrapReport)
+        /// 用户取消了进度：**不切换模式**（已上传的媒体保留在服务端）。
+        case cancelled
+        /// 失败：保持本地模式，把原因显示出来。
+        case failed(message: String)
+    }
+
+    /// 一次「拨回本地」的结果。
+    enum ServerDeactivationOutcome: Equatable {
+        /// 全量下载 + 条数校验通过，已经关闭服务端模式。
+        case disabled(ServerRestoreReport)
+        /// 下载/校验失败：**保持服务端模式**（否则会永久缺一段历史）。
+        case failed(message: String)
+    }
+
+    /// 设置页拨开关前的判定：要不要弹同意弹窗。
+    func serverSyncConsentPlan(baseURLText: String) -> ServerSyncConsentPlan {
+        ServerSyncConsentGate.plan(
+            baseURLText: baseURLText,
+            stored: serverConsent.decision(forBaseURLText: baseURLText)
+        )
+    }
+
+    /// 已经在同一台服务端上同意过（设置页据此显示「不必再问」）。
+    func recordedServerConsent(baseURLText: String) -> ServerSyncConsentDecision? {
+        serverConsent.decision(forBaseURLText: baseURLText)
+    }
+
+    /// 记下用户在弹窗上的选择（取消不落记录：下次还会问）。
+    func recordServerConsent(
+        _ choice: ServerSyncConsentChoice,
+        baseURLText: String
+    ) -> ServerSyncConsentResolution {
+        let resolution = ServerSyncConsentGate.resolve(choice, baseURLText: baseURLText)
+        if case .proceed(let url, let decision) = resolution {
+            do {
+                try serverConsent.record(decision, forBaseURLText: url)
+            } catch {
+                DebugSeeding.log("[server] 同意记录写入失败（这次照样同步）：\(error.localizedDescription)")
+            }
+        }
+        return resolution
+    }
+
+    /// 「同意并同步」/「只同步之后的新内容」：先把这次同步跑完，成功才切模式。
+    ///
+    /// 为什么不能像老路径那样「先切模式，再在后台 bootstrap」：
+    /// 规范要求**取消不切换模式**。先切模式的话，用户一取消，界面已经进了服务端模式
+    /// （聊天走服务端、本机缓存还没补齐），那是他最不想要的状态。
+    ///
+    /// - Parameters:
+    ///   - baseURLText: 设置页里的地址；不合法时直接返回失败，不写任何东西。
+    ///   - token: 新令牌（nil = 沿用 Keychain 里已保存的那个）。
+    ///   - consent: 用户选择的同意方式（决定要不要搬历史与媒体）。
+    func enableServerModeWithConsent(
+        baseURLText: String,
+        token: String?,
+        consent: ServerSyncConsentDecision
+    ) async -> ServerActivationOutcome {
+        let url: URL
+        do {
+            url = try ServerConfig.validatedURL(baseURLText)
+        } catch {
+            return .failed(message: error.localizedDescription)
+        }
+        // 地址与令牌先落盘（失败时用户不用重填），但**开关先保持关闭**。
+        serverCredentials.setBaseURLText(url.absoluteString)
+        do {
+            try serverCredentials.setToken(token)
+        } catch {
+            return .failed(message: error.localizedDescription)
+        }
+        serverCredentials.setModeEnabled(false)
+        applyServerConfig()
+
+        // 用一份显式「可用」的配置造临时服务：开关还没打开，但这次同步要真的发请求。
+        let config = ServerConfig(baseURL: url, token: token, enabled: true)
+        let client = ServerAPIClient(
+            config: config,
+            session: URLSession(configuration: Self.sessionConfiguration())
+        )
+        let media = ServerHistoryMediaUploader(
+            uploader: client,
+            stores: stores,
+            baseURL: url,
+            log: { DebugSeeding.log($0) },
+            progress: { [weak self] item in
+                Task { @MainActor in
+                    self?.serverBootstrapProgress = ServerBootstrapProgress(
+                        stage: .pushing,
+                        mode: .push,
+                        completed: item.completed,
+                        total: item.total,
+                        detail: item.detail,
+                        at: DomainClock.nowMillis
+                    )
+                }
+            }
+        )
+        let bootstrap = ServerBootstrapService(
+            client: client,
+            stores: stores,
+            settings: settings,
+            memories: memoryRepository,
+            avatarUploader: ServerUserAvatarUploader(uploader: client),
+            mediaUploader: media,
+            log: { DebugSeeding.log($0) },
+            progress: { [weak self] progress in
+                Task { @MainActor in self?.serverBootstrapProgress = progress }
+            }
+        )
+        let outcome = await bootstrap.bootstrap(force: true, consent: consent)
+        serverBootstrapProgress = nil
+
+        switch outcome {
+        case .completed(let report):
+            serverBootstrapError = nil
+            serverCredentials.setModeEnabled(true)
+            applyServerConfig()
+            reloadSettings()
+            ensureEveryPersonaHasSession()
+            bindMissingApiConfigs()
+            serverDataVersion &+= 1
+            await activateServerMode()
+            DebugSeeding.log("[server] 已切到服务端模式（\(consent.rawValue)）：\(report.describe)")
+            return .activated(report)
+        case .cancelled:
+            // 取消：已上传的媒体留在服务端，但本机仍是本地模式（上传器已还原本地引用）。
+            serverBootstrapError = nil
+            DebugSeeding.log("[server] 同步被取消，仍用本地模式")
+            return .cancelled
+        case .failed(let message, _):
+            serverBootstrapError = message
+            DebugSeeding.log("[server] 切换失败，仍用本地模式：\(message)")
+            return .failed(message: message)
+        case .skipped(let reason):
+            serverBootstrapError = reason
+            return .failed(message: reason)
+        }
+    }
+
+    /// 拨回本地：先全量下载 + 校验，通过才关闭服务端模式。
+    ///
+    /// 失败时**什么都不关**（`Task` 里已经拉回来的数据保留在本地缓存，下次再试会更快）。
+    func disableServerModeDownloadingAll() async -> ServerDeactivationOutcome {
+        guard serverModeActive else {
+            // 本来就没开（开关显示与实际不一致时）：直接把开关落成关，没有数据要下载。
+            serverCredentials.setModeEnabled(false)
+            applyServerConfig()
+            return .disabled(ServerRestoreReport())
+        }
+        guard let bootstrap = serverBootstrap else {
+            // 理论上不会发生（服务端模式可用就一定造了 bootstrap）；保守地保持原状。
+            return .failed(message: L("当前没有连着服务端"))
+        }
+        serverBootstrapError = nil
+        let outcome = await bootstrap.downloadAll()
+        serverBootstrapProgress = nil
+        switch outcome {
+        case .completed(let report):
+            serverCredentials.setModeEnabled(false)
+            applyServerConfig()
+            stopServerEvents()
+            stopServerSyncPulse()
+            reloadSettings()
+            ensureEveryPersonaHasSession()
+            bindMissingApiConfigs()
+            serverDataVersion &+= 1
+            serverBootstrapError = nil
+            DebugSeeding.log("[server] 全量下载通过校验，已切回本地：\(report.describe)")
+            return .disabled(report)
+        case .failed(let message, _):
+            // 保持服务端模式：客户端不能在没有完整数据的情况下关掉最后一条同步通道。
+            // 只把原因交给设置页的 result（不写 serverBootstrapError：那里的「再试一次」
+            // 是重跑 bootstrap，不是重跑全量下载，会误导用户）。
+            serverDataVersion &+= 1
+            DebugSeeding.log("[server] 全量下载失败，仍保持服务端模式：\(message)")
+            return .failed(message: message)
+        case .skipped(let reason):
+            return .failed(message: reason)
+        case .cancelled:
+            return .failed(message: L("已取消，仍用本机模式"))
+        }
     }
 
     /// 设置页「重新同步一次」：清掉完成标记重跑（幂等，不会造出第二份）。
@@ -1100,6 +1366,47 @@ final class AppEnvironment: ObservableObject {
             activePersonaId: currentSettings.activePersonaId
         )
         finishPersonaDeletion(persona, outcome: outcome)
+    }
+
+    // MARK: - 人格进化在云端模式（0.13）
+
+    /// 云端模式下的进化编排（接受/拒绝 + 评估触发）。
+    ///
+    /// 为什么每次现造、不存成属性：`serverWrites` 会随服务端地址/令牌改动整体重建，
+    /// 拍死一份会拿着旧客户端往后端发请求。单飞闸在 `personaEvolution` 里
+    /// （与本地模式共用），所以现造也不会多评估一次。
+    func cloudPersonaEvolution() -> CloudPersonaEvolution? {
+        guard serverModeActive, let writes = serverWrites else { return nil }
+        return CloudPersonaEvolution(
+            evolution: personaEvolution,
+            writes: writes,
+            stores: stores,
+            log: { DebugSeeding.log($0) }
+        )
+    }
+
+    /// 云端模式：一轮助手回复**落库之后**，按与本地模式同一节流考虑跑一次进化评估。
+    ///
+    /// 与抽记忆/压摘要同一套规矩：不挡回复（起 Task）、失败只写日志、绝不抛给界面。
+    /// 本地模式不调这里——它由 `ChatService` 落库后触发（同一份游标、同一道单飞闸）。
+    func triggerPersonaEvolutionForServerReply(sessionId: String, personaId: String) {
+        let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let cloud = cloudPersonaEvolution() else { return }
+        guard let session = (try? stores.sessions.byId(trimmed)) ?? nil else { return }
+        guard let resolved = backgroundConfig(session) else {
+            // 云端模式也可以完全没有本机 API 配置（聊天全在服务端）：评估是**本机**的
+            // 额外模型调用，没有配置就不跑，但一定要留一行日志，不静默。
+            DebugSeeding.log("[evolution] 没有可用的本机 API 配置，云端模式这次不评估")
+            return
+        }
+        Task {
+            await cloud.evaluateIfNeeded(
+                personaId: personaId,
+                sessionId: trimmed,
+                config: resolved.config,
+                model: resolved.model
+            )
+        }
     }
 
     /// 手动记一条记忆：服务端生成 id 后再写本地缓存（本地模式仍是原来的同步写入）。

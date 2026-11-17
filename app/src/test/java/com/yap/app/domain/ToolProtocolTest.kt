@@ -171,13 +171,13 @@ class ToolProtocolTest {
         val prompt = ToolCatalog.capabilityPrompt()
 
         assertTrue(prompt.isNotBlank())
-        assertTrue("提示词是「段」而不是手册：≤ 2600 字，实际 ${prompt.length}", prompt.length <= 2600)
+        assertTrue("提示词是「段」而不是手册：≤ 3200 字，实际 ${prompt.length}", prompt.length <= 3200)
         assertTrue(prompt.contains(ToolProtocol.BLOCK_LANGUAGE))
         assertTrue(prompt.contains(ToolCatalog.THINK))
         // 新增的回忆工具必须出现在提示词里，否则模型根本不会想到它
         assertTrue(prompt.contains(ToolCatalog.RECALL))
         ToolCatalog.all.forEach { spec ->
-            assertTrue("提示词应提到 ${spec.name}", prompt.contains("${spec.name}："))
+            assertTrue("提示词应提到 ${spec.name}", prompt.contains(spec.name))
         }
     }
 
@@ -338,7 +338,7 @@ class ToolProtocolTest {
 
     @Test
     fun catalogExposesSpecsByName() {
-        assertEquals(11, ToolCatalog.all.size)
+        assertEquals(14, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))

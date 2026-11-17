@@ -48,7 +48,20 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
 - **Persona evolution**: every 20 user messages or 24h the model may propose ≤3 changes (only
   traits/likes/behaviors/quirks, confidence ≥0.6, de-duplicated) into a "recent changes" review list; accepted changes
   are applied with version+1, proposals expire after 7 days.
-- **Not implemented yet**: stickers (contract/design only) and audio/video modality (reference design only).
+- **Stickers**: importing images/GIF/WebP/APNG compresses them to GIF (≤512 KB, 320 px long edge, ≤20 fps, ≤60 frames,
+  ≤6 s); a dedicated picker + history panel (recent 30/all), tap to send, long-press to save. The model `sticker` tool can
+  send / make (download, base+text, base+overlay, position) / save, uploaded through `/v1/media?kind=STICKER` in server mode.
+- **Voice and video**: hold to record (AAC 16 kHz, ≤5 min, ≤8 MB) or pick a video (≤2 min/64 MB, no transcode); attachments
+  gain AUDIO/VIDEO kinds and duration, with playable bubbles. The model actually hears audio via multimodal `input_audio`
+  and sees video keyframes, plus new `listen(audioId?)` / `watch(videoId?)` tools; unsupported models fail explicitly.
+- **Consent when switching to the cloud**: a dialog (sync everything / only new content / cancel); agreeing uploads
+  historical media item by item with progress, failures and cancellation; declining keeps local mode. Switching back to
+  local performs a full download with count verification and stays in cloud mode on failure.
+- **Tool capability section unified** across platforms (same generated format).
+- **Persona evolution works in cloud mode**: server-mode replies also evaluate every 20 messages/24 h; accepting posts
+  `/v1/personas` and updates the local cache.
+- **Still missing**: backups do not carry sticker/audio/video binaries or diary notes; `listen/watch` in server mode must be
+  executed by agentd (clients support upload and local-mode tools this round).
 - Tests: Android 1568 / 153 classes, iOS 1753 (2 skipped), agentd 392, agentcore 90; both platforms build.
 
 ## 0.12.1

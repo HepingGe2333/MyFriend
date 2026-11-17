@@ -23,7 +23,6 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     private let evolution: PersonaEvolutionService?
     private let lock = NSLock()
     private var extracting: Set<String> = []
-    private var evolving: Set<String> = []
 
     public init(
         stores: DatabaseStores,
@@ -78,17 +77,22 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     ///
     /// 先问服务「到节奏了吗」（每 20 条用户消息 / 24 小时），没到就什么都不做——
     /// 这条路径每次回复都会走一遍，所以判定必须在开 Task 之前做。
+    ///
+    /// 单飞名额在 `PersonaEvolutionService` 里抢：云端模式
+    /// （`CloudPersonaEvolution`）走的是同一个服务对象、同一道闸，
+    /// 所以两条触发路径同时命中、或者刚切完模式，都不会评估两次。
     public func personaEvolutionNeeded(sessionId: String, personaId: String) {
         guard let evolution else { return }
         let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSession.isEmpty else { return }
         guard evolution.shouldEvaluate(personaId: personaId) else { return }
-        guard enterEvolution(personaId) else { return }
+        guard evolution.beginEvaluation(personaId: personaId) else { return }
         let stores = self.stores
         let resolve = self.resolveConfig
         let log = self.log
-        Task { [weak self] in
-            defer { self?.leaveEvolution(personaId) }
+        Task {
+            // 不管成功/失败都要还名额（评估失败也一样，别把这个人格永久卡在「正在评估」）。
+            defer { evolution.endEvaluation(personaId: personaId) }
             guard let session = (try? stores.sessions.byId(trimmedSession)) ?? nil else { return }
             guard let resolved = resolve(session) else {
                 log("[evolution] 还没有可用的 API 配置，这次不评估")
@@ -107,20 +111,6 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
                 log("[evolution] 评估失败：\(error.localizedDescription)")
             }
         }
-    }
-
-    private func enterEvolution(_ personaId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        if evolving.contains(personaId) { return false }
-        evolving.insert(personaId)
-        return true
-    }
-
-    private func leaveEvolution(_ personaId: String) {
-        lock.lock()
-        evolving.remove(personaId)
-        lock.unlock()
     }
 
     private func enter(_ sessionId: String) -> Bool {

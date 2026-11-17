@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.annotation.StringRes
 import com.yap.app.R
 import com.yap.app.domain.DomainErrorCode
+import com.yap.app.domain.MediaErrorCode
+import com.yap.app.domain.MediaErrorTokens
 import com.yap.app.domain.NetworkErrorKind
 import com.yap.app.domain.UserError
 import com.yap.app.domain.UserErrorTokens
@@ -81,9 +83,26 @@ object ErrorText {
     fun stored(context: Context, raw: String?): String? {
         val text = raw?.trim().orEmpty()
         if (text.isEmpty()) return null
+        // 0.13：语音/视频在 provider 侧被拒（「这个模型听不了语音」）也是一条落库令牌。
+        MediaErrorTokens.decode(text)?.let { return mediaText(context, it) }
         val decoded = UserErrorTokens.decode(text) ?: return text
         return of(context, decoded)
     }
+
+    /**
+     * 媒体输入在 provider 侧失败的四种说法。
+     *
+     * 措辞刻意直白：用户需要知道「不是他不想听，是这个模型听不了」，
+     * 而不是一句笼统的「请求失败」。
+     */
+    fun mediaText(context: Context, code: MediaErrorCode): String = context.getString(
+        when (code) {
+            MediaErrorCode.UNSUPPORTED_AUDIO -> R.string.error_media_audio_unsupported
+            MediaErrorCode.UNSUPPORTED_VIDEO -> R.string.error_media_video_unsupported
+            MediaErrorCode.AUDIO_TOO_LARGE -> R.string.error_media_audio_too_large
+            MediaErrorCode.VIDEO_TOO_LARGE -> R.string.error_media_video_too_large
+        }
+    )
 
     /** 连接测试成功时的说法（失败走 [of]）。 */
     fun connectionSuccess(context: Context, modelCount: Int): String =

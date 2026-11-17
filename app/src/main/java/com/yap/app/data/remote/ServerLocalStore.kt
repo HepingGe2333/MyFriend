@@ -132,6 +132,17 @@ interface ServerLocalStore {
     suspend fun markBootstrapDone(baseUrl: String) = Unit
 
     /**
+     * 这台服务端的「切换同意」状态（0.13：`server_sync_consent:<baseUrl>` = FULL | NEW_ONLY）。
+     *
+     * 按地址分键：换服务端必须重新询问（用户同意的是「把历史交给这台机器」）；
+     * 换回同一台地址时沿用上次的选择，不再重复弹窗。
+     */
+    suspend fun syncConsent(baseUrl: String): ServerSyncConsent? = null
+
+    /** 记录同意（用户点了「同意并同步」/「只同步之后的新内容」）。 */
+    suspend fun setSyncConsent(baseUrl: String, consent: ServerSyncConsent) = Unit
+
+    /**
      * 清掉某台服务端的 bootstrap 标记（「删除全部数据」/主动断开时用）。
      *
      * 普通换地址**不**调用它：换回旧地址时上次已经搬过，应该继续靠增量同步；
@@ -311,6 +322,17 @@ class DataStoreServerLocalStore @Inject constructor(
         context.serverStateDataStore.edit { prefs -> prefs.remove(key) }
     }
 
+    override suspend fun syncConsent(baseUrl: String): ServerSyncConsent? {
+        val key = consentKey(baseUrl) ?: return null
+        val raw = context.serverStateDataStore.data.first()[key] ?: return null
+        return ServerSyncConsent.parse(raw)
+    }
+
+    override suspend fun setSyncConsent(baseUrl: String, consent: ServerSyncConsent) {
+        val key = consentKey(baseUrl) ?: return
+        context.serverStateDataStore.edit { prefs -> prefs[key] = consent.storedValue }
+    }
+
     override suspend fun resetForNewServer() {
         context.serverStateDataStore.edit { prefs ->
             prefs.remove(Keys.cursor)
@@ -333,6 +355,13 @@ class DataStoreServerLocalStore @Inject constructor(
         val clean = baseUrl.trim().trimEnd('/')
         if (clean.isEmpty()) return null
         return stringPreferencesKey("$BOOTSTRAP_KEY_PREFIX$clean")
+    }
+
+    /** 同意键：`server_sync_consent:<归一化 baseUrl>`（规格逐字要求的前缀）。 */
+    private fun consentKey(baseUrl: String): Preferences.Key<String>? {
+        val clean = baseUrl.trim().trimEnd('/')
+        if (clean.isEmpty()) return null
+        return stringPreferencesKey("$CONSENT_KEY_PREFIX$clean")
     }
 
     private fun decode(raw: String?): List<PendingServerMessage> {
@@ -368,6 +397,9 @@ class DataStoreServerLocalStore @Inject constructor(
     private companion object {
         /** bootstrap 标记的键前缀（后接归一化 baseUrl）。 */
         const val BOOTSTRAP_KEY_PREFIX = "server_bootstrap_done:"
+
+        /** 切换同意的键前缀（后接归一化 baseUrl）：`server_sync_consent:<url>`。 */
+        const val CONSENT_KEY_PREFIX = "server_sync_consent:"
 
         /** 标记值；DataStore 只存字符串，值本身不重要，但只要键存在就代表完成。 */
         const val BOOTSTRAP_DONE_VALUE = "1"

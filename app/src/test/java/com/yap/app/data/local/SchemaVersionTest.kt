@@ -375,6 +375,97 @@ class SchemaVersionTest {
         }
     }
 
+
+    /**
+     * v16：表情包（`spec/stickers/SCHEMA.md`）。
+     *
+     * 规范把列名/顺序/可空/默认值/索引名都写死了（两端逐字一致），所以这里逐项钉住：
+     * 少一个索引不会让功能坏掉，只会让「最近 30 个」退化成全表扫描；而列的可空性写错，
+     * 老库升级时要么崩、要么让「没有归属」变成空串。
+     */
+    @Test
+    fun `v16 的 schema 里表情表的列与索引与规范逐字一致`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "16.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+        val stickers = entities.firstOrNull { it["tableName"]!!.jsonPrimitive.content == "stickers" }
+            ?: error("v16 的 schema 里没有 stickers 表")
+
+        val fields = stickers["fields"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(
+            "stickers 的列名与顺序必须与 SCHEMA.md 完全一致",
+            listOf(
+                "id", "ownerUserId", "personaId", "file", "mime", "width", "height",
+                "frames", "bytes", "source", "createdBy", "createdAt"
+            ),
+            fields.map { it["columnName"]!!.jsonPrimitive.content }
+        )
+
+        val byName = fields.associateBy { it["columnName"]!!.jsonPrimitive.content }
+        fun field(name: String) = byName[name] ?: error("stickers 缺少列 $name")
+        assertEquals("id 必须是主键 TEXT NOT NULL", "TEXT", field("id")["affinity"]!!.jsonPrimitive.content)
+        assertEquals(true, field("id")["notNull"]!!.jsonPrimitive.boolean)
+        listOf("file", "mime", "source", "createdBy", "createdAt").forEach { column ->
+            assertEquals("$column 必须 NOT NULL", true, field(column)["notNull"]!!.jsonPrimitive.boolean)
+        }
+        listOf("ownerUserId", "personaId").forEach { column ->
+            assertEquals("$column 必须可空（不属于任何人/人格时是 NULL）", false, field(column)["notNull"]!!.jsonPrimitive.boolean)
+        }
+        assertEquals(
+            "width 默认值必须是 0",
+            "0",
+            field("width")["defaultValue"]!!.jsonPrimitive.content
+        )
+        assertEquals("height 默认值必须是 0", "0", field("height")["defaultValue"]!!.jsonPrimitive.content)
+        assertEquals("frames 默认值必须是 1（静态图也是单帧）", "1", field("frames")["defaultValue"]!!.jsonPrimitive.content)
+        assertEquals("bytes 默认值必须是 0", "0", field("bytes")["defaultValue"]!!.jsonPrimitive.content)
+
+        val primaryKey = stickers["primaryKey"]!!.jsonObject["columnNames"]!!.jsonArray.map { it.jsonPrimitive.content }
+        assertEquals("主键必须是 id", listOf("id"), primaryKey)
+
+        val indices = stickers["indices"]!!.jsonArray.map { it.jsonObject["name"]!!.jsonPrimitive.content }
+        assertEquals(
+            "两条索引的名字必须与规范逐字一致（两端对齐）",
+            listOf("index_stickers_createdAt", "index_stickers_personaId"),
+            indices
+        )
+    }
+
+    @Test
+    fun `MIGRATION_15_16 幂等 只建表与索引 且注册进了 Room`() {
+        val text = databaseSource.readText()
+        val start = text.indexOf("MIGRATION_15_16 = object : Migration(15, 16)")
+        assertTrue("没找到 MIGRATION_15_16 的声明", start >= 0)
+        val docComment = text.indexOf("/**", start)
+        val end = if (docComment > start) docComment else minOf(text.length, start + 2400)
+        val block = text.substring(start, end)
+
+        assertTrue("建表必须用 CREATE TABLE IF NOT EXISTS（幂等）", block.contains("CREATE TABLE IF NOT EXISTS `stickers`"))
+        assertTrue(
+            "索引必须用 CREATE INDEX IF NOT EXISTS",
+            block.contains("CREATE INDEX IF NOT EXISTS `index_stickers_createdAt`") &&
+                block.contains("CREATE INDEX IF NOT EXISTS `index_stickers_personaId`")
+        )
+        listOf(
+            "`id` TEXT NOT NULL",
+            "`ownerUserId` TEXT",
+            "`personaId` TEXT",
+            "`file` TEXT NOT NULL",
+            "`mime` TEXT NOT NULL",
+            "`width` INTEGER NOT NULL DEFAULT 0",
+            "`height` INTEGER NOT NULL DEFAULT 0",
+            "`frames` INTEGER NOT NULL DEFAULT 1",
+            "`bytes` INTEGER NOT NULL DEFAULT 0",
+            "`source` TEXT NOT NULL",
+            "`createdBy` TEXT NOT NULL",
+            "`createdAt` INTEGER NOT NULL"
+        ).forEach { column ->
+            assertTrue("迁移里的列必须与规范一致：$column", block.contains(column))
+        }
+        assertFalse("这次只新建表，不许 ALTER/DROP 任何既有表", block.contains("ALTER TABLE") || block.contains("DROP TABLE"))
+        assertTrue("MIGRATION_15_16 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_15_16"))
+        assertTrue("v16 的 schema json 必须导出", File(schemaDir, "16.json").isFile)
+    }
+
     // ---------------------------------------------------------------- 解析源码
 
     private data class DeclaredMigration(val from: Int, val to: Int)

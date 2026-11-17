@@ -122,6 +122,137 @@ public protocol ServerMediaUploading: AnyObject {
     func uploadMedia(bytes: Data, mime: String, kind: String, personaId: String?) async throws -> ServerMedia
 }
 
+/// 能上传**任意媒体文件**（图片/表情/音频/视频）的东西。
+///
+/// 与 `ServerMediaUploading` 分开的理由：后者只服务「聊天图片 / 头像」两条既有链路
+///（只收 JPEG/PNG/WebP、单文件 ≤2 MiB），行为被既有测试钉死了；历史媒体上传要按
+/// `kind` 区分上限（图片 2 MiB、音频 8 MiB、视频 64 MiB，见 agentd `MediaRoutes`），
+/// 还要接受 `image/gif` / `audio/*` / `video/*`。新增一条协议而不是改旧协议，
+/// 老的调用点与测试注入的假实现都不受影响。
+public protocol ServerMediaFileUploading: AnyObject {
+    func uploadMediaFile(
+        bytes: Data,
+        mime: String,
+        kind: String,
+        personaId: String?
+    ) async throws -> ServerMedia
+}
+
+/// 历史媒体上传会用到的服务端用途（与 agentd 的 `MediaKind` 逐字对应）。
+public enum ServerMediaFileKind: String, CaseIterable, Sendable {
+    case chatImage = "CHAT_IMAGE"
+    case personaAvatar = "PERSONA_AVATAR"
+    case userAvatar = "USER_AVATAR"
+    case sticker = "STICKER"
+    case audio = "AUDIO"
+    case video = "VIDEO"
+
+    /// 单文件上限（原始字节）：与 agentd `MediaRoutes.maxBytes(kind)` 一致。
+    public var maxBytes: Int {
+        switch self {
+        case .audio: return 8 * 1024 * 1024
+        case .video: return 64 * 1024 * 1024
+        default: return 2 * 1024 * 1024
+        }
+    }
+
+    /// 这个用途允许的 MIME（与 agentd `MediaMime.ALL` 的对应关系一致）。
+    public var allowedMimes: Set<String> {
+        switch self {
+        case .chatImage, .personaAvatar, .userAvatar, .sticker:
+            return ["image/jpeg", "image/png", "image/webp", "image/gif"]
+        case .audio:
+            return ["audio/m4a", "audio/mp4", "audio/mpeg"]
+        case .video:
+            return ["video/mp4", "video/quicktime"]
+        }
+    }
+}
+
+// MARK: - 服务端媒体的元信息（kind / mime / 时长）
+
+/// 服务端媒体 id → 附件元信息。
+///
+/// 背景（0.13 音视频）：服务端消息只下发 `["/v1/media/<id>"]`，不带 kind/mime。
+/// 图片靠 mime 默认值还能显示，但一段语音/视频回到客户端就变成了「坏图」——
+/// 所以上传时把本机已知的元信息（kind、mime、时长、宽高）记一行，
+/// 同步/缓存时按 mediaId 补齐。存在 `server_sync_state`，不新增表。
+public final class ServerMediaMetaStore {
+
+    /// 一个媒体 id 的元信息（JSON 落库）。
+    public struct Meta: Codable, Equatable, Sendable {
+        public var kind: String
+        public var mime: String
+        public var durationMs: Int?
+        public var width: Int
+        public var height: Int
+
+        public init(kind: String, mime: String, durationMs: Int? = nil, width: Int = 0, height: Int = 0) {
+            self.kind = kind
+            self.mime = mime
+            self.durationMs = durationMs
+            self.width = width
+            self.height = height
+        }
+    }
+
+    private let state: ServerSyncStateStore
+    private let now: () -> Int64
+
+    public init(state: ServerSyncStateStore, now: @escaping () -> Int64 = { DomainClock.nowMillis }) {
+        self.state = state
+        self.now = now
+    }
+
+    public convenience init(
+        database: SQLiteDatabase,
+        now: @escaping () -> Int64 = { DomainClock.nowMillis }
+    ) {
+        self.init(state: ServerSyncStateStore(database: database), now: now)
+    }
+
+    /// 上传成功后记一行（失败只忽略：元信息丢了最多是气泡退化，不该让发送失败）。
+    public func record(_ attachment: MessageAttachment, mediaId: String) {
+        let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        let kind = attachment.normalizedKind
+            ?? AttachmentsCodec.kind(forMime: attachment.mime)
+            ?? MessageAttachment.imageKind
+        let meta = Meta(
+            kind: kind,
+            mime: attachment.mime,
+            durationMs: attachment.durationMs,
+            width: attachment.width,
+            height: attachment.height
+        )
+        guard let data = try? JSONEncoder().encode(meta),
+              let json = String(data: data, encoding: .utf8) else { return }
+        try? state.set(json, for: ServerSyncStateStore.Key.mediaMeta(id), at: now())
+    }
+
+    public func meta(mediaId: String) -> Meta? {
+        let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty,
+              let json = state.string(ServerSyncStateStore.Key.mediaMeta(id)),
+              let data = json.data(using: .utf8),
+              let meta = try? JSONDecoder().decode(Meta.self, from: data) else { return nil }
+        return meta
+    }
+
+    /// 把一个「只有 id」的附件补全成带 kind/mime/时长的本地附件。
+    public func attachment(mediaId: String) -> MessageAttachment? {
+        guard let meta = meta(mediaId: mediaId) else { return nil }
+        return MessageAttachment(
+            uri: ServerMediaReference.uri(id: mediaId),
+            mime: meta.mime.isEmpty ? MessageAttachment.defaultMime : meta.mime,
+            width: meta.width,
+            height: meta.height,
+            kind: meta.kind.isEmpty ? nil : meta.kind,
+            durationMs: meta.durationMs
+        )
+    }
+}
+
 // MARK: - 客户端方法
 
 public extension ServerAPIClient {
@@ -181,6 +312,21 @@ public extension ServerAPIClient {
         request.setValue(trimmedMime, forHTTPHeaderField: "Content-Type")
         request.httpBody = bytes
         return try await send(request, as: ServerMedia.self)
+    }
+
+    /// 上传一张表情（`POST /v1/media?kind=STICKER&mime=image/gif`），返回 `/v1/media/<id>`。
+    ///
+    /// 为什么单独开一个方法而不是让调用方拼 kind：表情的 kind/mime 是**协议**的一部分
+    ///（agentd 按 kind 判 2 MiB 上限、按 mime 落 `.gif` 扩展名），散在调用点迟早写错。
+    /// 走 `uploadMediaFile`（0.13 的通用媒体上传）：它按 kind 校验 MIME 与上限，
+    /// 表情与图片/音频/视频共用同一套服务端契约。
+    func uploadSticker(bytes: Data, personaId: String? = nil) async throws -> ServerMedia {
+        try await uploadMediaFile(
+            bytes: bytes,
+            mime: "image/gif",
+            kind: ServerMediaFileKind.sticker.rawValue,
+            personaId: personaId
+        )
     }
 
     /// 下载一张图片的原始字节（渲染用；带 Authorization）。
@@ -259,4 +405,73 @@ public extension ServerAPIClient {
     }
 }
 
+// MARK: - 任意媒体文件上传（图片 / 表情 / 音频 / 视频）
+
+public extension ServerAPIClient {
+
+    /// 大文件上传的资源超时：64 MiB 视频在慢网络上 30 秒传不完。
+    static let mediaFileUploadTimeout: TimeInterval = 300
+
+    /// 上传一份**任意媒体**（历史媒体搬家用）。
+    ///
+    /// 与 `uploadMedia` 的区别只有「接受哪些 MIME / 上限多大」，请求形状完全一致
+    /// （`POST /media?kind=&mime=` + 原始字节 + `Content-Type`）。校验全部在本地做：
+    /// 一个注定 413/415 的请求不发出去（历史里有几千条消息时这很关键）。
+    ///
+    /// - Parameters:
+    ///   - bytes: 原始字节（图片已在调用方压好，音频/视频不转码）。
+    ///   - mime: 必须与 `kind.allowedMimes` 一致。
+    ///   - kind: `ServerMediaFileKind.rawValue`。
+    ///   - personaId: 可选，给了就必须是服务端认识的人格。
+    func uploadMediaFile(
+        bytes: Data,
+        mime: String,
+        kind: String,
+        personaId: String? = nil
+    ) async throws -> ServerMedia {
+        guard !bytes.isEmpty else {
+            throw ServerAPIError(code: ServerAPIError.Code.invalidArgument, message: "这个媒体文件是空的")
+        }
+        let trimmedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let fileKind = ServerMediaFileKind(rawValue: trimmedKind) else {
+            throw ServerAPIError(
+                code: ServerAPIError.Code.invalidArgument,
+                message: "服务端不认识这种媒体用途（\(trimmedKind)）"
+            )
+        }
+        let trimmedMime = mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard fileKind.allowedMimes.contains(trimmedMime) else {
+            throw ServerAPIError(
+                code: ServerAPIError.Code.invalidArgument,
+                message: "服务端不收这种媒体格式（\(trimmedMime)）"
+            )
+        }
+        guard bytes.count <= fileKind.maxBytes else {
+            throw ServerAPIError(
+                code: ServerAPIError.Code.invalidArgument,
+                message: "这个媒体文件超过上限（\(fileKind.maxBytes / 1024) KB）"
+            )
+        }
+        var query = [
+            URLQueryItem(name: "kind", value: fileKind.rawValue),
+            URLQueryItem(name: "mime", value: trimmedMime)
+        ]
+        if let personaId = personaId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !personaId.isEmpty {
+            query.append(URLQueryItem(name: "personaId", value: personaId))
+        }
+        var request = try makeRequest(
+            path: "/media",
+            query: query,
+            method: "POST",
+            accept: "application/json",
+            timeout: Self.mediaFileUploadTimeout
+        )
+        request.setValue(trimmedMime, forHTTPHeaderField: "Content-Type")
+        request.httpBody = bytes
+        return try await send(request, as: ServerMedia.self)
+    }
+}
+
 extension ServerAPIClient: ServerMediaUploading {}
+extension ServerAPIClient: ServerMediaFileUploading {}

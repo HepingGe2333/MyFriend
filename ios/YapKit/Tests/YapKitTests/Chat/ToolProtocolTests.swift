@@ -281,11 +281,14 @@ final class ToolProtocolTests: XCTestCase {
         // 1.9 多了一个 `defer_reply`：模型可以用它说「这一轮先不回」（§四）。
         // 0.12 多了一个 `set_activity`：模型可以声明「我接下来这段时间在做什么」（人设引导 §4）。
         // 0.13 多了一个 `diary`：他自己的日记板（`spec/diary/README.md`）。
-        XCTAssertEqual(ToolCatalog.all.count, 11)
+        // 0.13 表情包再多一个 `sticker`：发/做/收藏表情（`spec/stickers/README.md`）。
+        // 0.13 音视频再多 `listen` / `watch`：真的听一段语音、看几帧视频画面
+        //（`spec/audio-video/README.md`；不是转写、不是猜）。
+        XCTAssertEqual(ToolCatalog.all.count, 14)
         XCTAssertEqual(ToolCatalog.all.map(\.name), [
             "think", "web_search", "web_fetch", "remember",
             "update_persona", "set_quiet_hours", "set_activity", "set_mood", "recall",
-            "defer_reply", "diary"
+            "defer_reply", "diary", "sticker", "listen", "watch"
         ])
         XCTAssertNotNil(ToolCatalog.byName(" recall "))
         XCTAssertNil(ToolCatalog.byName("nope"))
@@ -298,7 +301,7 @@ final class ToolProtocolTests: XCTestCase {
         // OpenAI tools 数组形状
         let json = ToolCatalog.toOpenAiToolsJson()
         let array = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
-        XCTAssertEqual(array?.count, 11)
+        XCTAssertEqual(array?.count, 14)
         XCTAssertEqual(array?.first?["type"] as? String, "function")
         let function = array?.first?["function"] as? [String: Any]
         XCTAssertEqual(function?["name"] as? String, "think")

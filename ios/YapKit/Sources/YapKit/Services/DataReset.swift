@@ -163,19 +163,27 @@ public final class DataReset {
     /// View —— 而备份页那条路径忘了调，于是「删除全部本地数据」之后图片与头像文件还留在
     /// `Application Support/attachments/` 里。收进这里，两个入口只调 `DataReset` 就不会再漏。
     private let media: MediaStorage?
+    /// 表情文件目录（「删除全部数据」时一起清；`nil` = 测试没注入，只清库行）。
+    private let stickerStorage: StickerStorage?
+    /// 语音/视频目录（0.13）：删聊天/删全部数据时一起清（否则几十 MB 的录音永远留在沙盒里）。
+    private let audioVideo: AudioVideoStore?
 
     public init(
         stores: DatabaseStores,
         settings: SettingsProviding,
         vectorIndex: MemoryVectorIndex? = nil,
         apiKeys: ApiKeyStore? = nil,
-        media: MediaStorage? = nil
+        media: MediaStorage? = nil,
+        stickerStorage: StickerStorage? = nil,
+        audioVideo: AudioVideoStore? = nil
     ) {
         self.stores = stores
         self.settings = settings
         self.vectorIndex = vectorIndex ?? MemoryVectorIndex(stores: stores)
         self.apiKeys = apiKeys
         self.media = media
+        self.stickerStorage = stickerStorage
+        self.audioVideo = audioVideo
     }
 
     /// 媒体引用查询（不新增表）：删文件前必须问「还有没有别的记录引用它」。
@@ -188,6 +196,8 @@ public final class DataReset {
     /// 必须先删消息行（调用方已删），再逐个查引用：聊天图按内容哈希去重，可能与头像共用文件。
     private func clearChatMedia() {
         media?.deleteAllChatImages(references: mediaReferences())
+        // 语音/视频没有「引用计数」这一层（文件名带 UUID、不做内容去重），删聊天就整目录清掉。
+        audioVideo?.deleteAll()
     }
 
     /// 「删除全部本地数据」时要清的图片（聊天图 + 头像）。
@@ -196,6 +206,7 @@ public final class DataReset {
     /// 会被当成仍有引用而留下。调用顺序在 `clearAll()` 里固定：库行 → 设置 → 媒体。
     private func clearAllMedia() {
         media?.deleteAll(references: mediaReferences())
+        audioVideo?.deleteAll()
     }
 
     // MARK: - 清空聊天与记忆（保留人格与 API 配置）
@@ -275,6 +286,8 @@ public final class DataReset {
             // 它们跟着「全部数据」一起清：留着只会是没人能再看到的孤儿行。
             attempt("diary_notes") { try stores.diaryNotes.deleteAll() }
             attempt("persona_pending_patches") { try stores.personaPendingPatches.deleteAll() }
+            // 2.7) 表情包（用户自己的收藏）：库行与文件都跟着「全部数据」一起清。
+            attempt("stickers") { try stores.stickers.deleteAll() }
             // 3) 人格与配置
             attempt("personas") { try stores.personas.deleteAll() }
             attempt("api_configs") { try stores.apiConfigs.deleteAll() }
@@ -297,6 +310,9 @@ public final class DataReset {
         } else {
             settings.save(AppSettings())
         }
+        // 表情文件与聊天附件分开：表情目录里只有表情，整目录清空即可（先清库行再做，
+        // 与 `clearAllMedia` 的「先库后文件」同一顺序）。
+        stickerStorage?.deleteAll()
         // 库行与设置都清完，才逐个文件查引用：零引用的删掉，仍被引用的留着。
         clearAllMedia()
         vectorIndex.resetEnsured()

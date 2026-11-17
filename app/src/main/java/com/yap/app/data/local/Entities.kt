@@ -598,3 +598,39 @@ data class DiaryNoteEntity(
     val remindedAt: Long? = null,
     val updatedAt: Long
 )
+
+/**
+ * 一张表情包（`spec/stickers/SCHEMA.md`，schema v16）。
+ *
+ * 与聊天附件的关系：消息里的 `attachmentsJson` 只存 `{uri, mime, kind=STICKER}`，
+ * 表情本身的元数据（帧数、字节、来源、谁做的）在这张表里——同一条消息里的图片不需要这些，
+ * 而表情需要「最近 30 个 / 全部 / 我的收藏」这类列表，所以它值得一张表。
+ *
+ * 字段语义：
+ * - [file]：本机 `file://` 路径（`files/stickers/<id>.gif`）或服务端模式的 `/v1/media/<id>`；
+ * - [mime]：永远是 `image/gif`（静态图也存成单帧 GIF：渲染/上传只有一条路径）；
+ * - [frames]、[bytes]：落库时算好，列表页不必解码就知道「是不是动图、多大」；
+ * - [source] / [createdBy]：`IMPORTED | MODEL_MADE | FROM_USER_MESSAGE | WEB` 与 `USER | MODEL`，
+ *   与规范逐字一致，两端靠字符串对齐（不写枚举列，避免迁移时改值）；
+ * - [ownerUserId]、[personaId]：谁收藏的、属于哪个人格（可空 = 不属于某个人格）。
+ */
+@Entity(
+    tableName = "stickers",
+    indices = [Index(value = ["createdAt"]), Index(value = ["personaId"])]
+)
+data class StickerEntity(
+    @PrimaryKey val id: String,
+    val ownerUserId: String? = null,
+    val personaId: String? = null,
+    val file: String,
+    val mime: String = "image/gif",
+    // 这四个默认值是 `spec/stickers/SCHEMA.md` 里写死的 DDL 默认值：Room 的 schema 校验会比对
+    // 「实体声明的默认值」与「数据库里的默认值」，不写 @ColumnInfo 就会升级即崩。
+    @ColumnInfo(defaultValue = "0") val width: Int = 0,
+    @ColumnInfo(defaultValue = "0") val height: Int = 0,
+    @ColumnInfo(defaultValue = "1") val frames: Int = 1,
+    @ColumnInfo(defaultValue = "0") val bytes: Int = 0,
+    val source: String = "IMPORTED",
+    val createdBy: String = "USER",
+    val createdAt: Long
+)

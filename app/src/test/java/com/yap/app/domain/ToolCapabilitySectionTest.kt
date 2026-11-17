@@ -22,7 +22,7 @@ class ToolCapabilitySectionTest {
     private fun namesIn(section: String): List<String> = section.lineSequence()
         .map { it.trim() }
         .filter { it.startsWith("- ") && it.contains("：") }
-        .map { it.removePrefix("- ").substringBefore("：").trim() }
+        .map { it.removePrefix("- ").substringBefore("：").trim().substringBefore("(").trim() }
         .filter { it.isNotBlank() }
         .toList()
 
@@ -104,11 +104,24 @@ class ToolCapabilitySectionTest {
     }
 
     @Test
-    fun `不提不存在的能力 也不写表情贴纸这类没有注册的东西口语清单除外`() {
+    fun `不提不存在的能力`() {
         // 这一条防的是「提示词里提到一个注册表里没有的工具」——模型会调用它然后每次都失败。
         val section = ToolCatalog.capabilityPrompt()
-        listOf("sticker", "persona_patch", "diary_notes", "set_presence").forEach { fabricated ->
+        listOf("persona_patch", "diary_notes", "set_presence").forEach { fabricated ->
             assertFalse("段里不该出现未注册的工具名：$fabricated", namesIn(section).contains(fabricated))
+        }
+    }
+
+    /**
+     * `sticker` 是 0.13 新注册的真工具（`spec/stickers/README.md`），
+     * 所以它必须在段里出现、且说明要能区分「发」「做」「收藏」三件事。
+     */
+    @Test
+    fun `sticker 注册了也进了你能做什么段`() {
+        val spec = ToolCatalog.byName(ToolCatalog.STICKER) ?: error("没有注册 sticker")
+        assertTrue("能力段里要有 sticker", namesIn(ToolCatalog.capabilityPrompt()).contains(ToolCatalog.STICKER))
+        listOf("send", "make", "save").forEach { action ->
+            assertTrue("描述里要写清 $action：${spec.description}", spec.description.contains(action))
         }
     }
 
@@ -133,7 +146,7 @@ class ToolCapabilitySectionTest {
     /** 某个工具那一行 + 它下面的「· 区别」行（最多两行，够断言了）。 */
     private fun contractOf(section: String, tool: String): String {
         val lines = section.lines()
-        val index = lines.indexOfFirst { it.trimStart().startsWith("- $tool：") }
+        val index = lines.indexOfFirst { it.trimStart().startsWith("- $tool(") || it.trimStart().startsWith("- $tool：") }
         assertTrue("段里缺少工具 $tool", index >= 0)
         return lines.drop(index).take(2).joinToString("\n")
     }

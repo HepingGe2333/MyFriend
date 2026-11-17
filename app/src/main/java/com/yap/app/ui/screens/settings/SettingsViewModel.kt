@@ -30,12 +30,20 @@ import com.yap.app.data.remote.ServerBootstrapManager
 import com.yap.app.data.remote.ServerBootstrapPhase
 import com.yap.app.data.remote.ServerBootstrapProgress
 import com.yap.app.data.remote.ServerLocalStore
+import com.yap.app.data.remote.ServerModeSwitchCoordinator
+import com.yap.app.data.remote.ServerSyncConsent
+import com.yap.app.data.remote.ServerSyncFailure
+import com.yap.app.data.remote.ServerSyncPhase
+import com.yap.app.data.remote.ServerSyncStatus
+import com.yap.app.data.remote.ServerToggleAction
 import com.yap.app.data.remote.UserAvatarCoordinator
 import com.yap.app.domain.BackupDecodeResult
 import com.yap.app.domain.BackupPreview
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,7 +75,13 @@ data class ServerSettingsUiState(
     /** 保存/清除失败时的提示。 */
     val error: String? = null,
     /** 0.12.1 一次性数据对齐（bootstrap）的一行状态；没有可显示的内容时为 null。 */
-    val bootstrapStatus: String? = null
+    val bootstrapStatus: String? = null,
+    /** 0.13：本地 → 远程的切换正在等用户回答「把对话交给云端处理？」。 */
+    val consentPrompt: Boolean = false,
+    /** 0.13：同步/下载进行中的一行进度（历史媒体逐项上传也在这里）。 */
+    val syncStatus: String? = null,
+    /** 0.13：同步/下载进行中（界面显示「取消同步」）。 */
+    val syncRunning: Boolean = false
 )
 
 data class SettingsUiState(
@@ -121,6 +135,8 @@ class SettingsViewModel @Inject constructor(
     private val serverBootstrap: ServerBootstrapManager,
     /** 0.12.1：头像「压缩→上传→写设置→镜像」链路。 */
     private val userAvatarCoordinator: UserAvatarCoordinator,
+    /** 0.13：服务端开关的状态机（同意弹窗 / 历史媒体同步 / 切回本地全量下载）。 */
+    private val serverModeSwitch: ServerModeSwitchCoordinator,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -142,18 +158,25 @@ class SettingsViewModel @Inject constructor(
     private val serverTestMessage = MutableStateFlow<String?>(null)
     private val serverError = MutableStateFlow<String?>(null)
 
+    /** bootstrap 进度 + 开关状态机的阶段：一个给进度行，一个给弹窗/取消按钮。 */
+    private val serverSyncUi: Flow<Pair<ServerBootstrapProgress, ServerSyncStatus>> = combine(
+        serverBootstrap.progress,
+        serverModeSwitch.status
+    ) { progress, status -> progress to status }
+
     private val serverState: Flow<ServerSettingsUiState> = combine(
         serverModeRepository.state,
         serverTesting,
         serverTestMessage,
         serverError,
-        serverBootstrap.progress
-    ) { state, testing, testMessage, error, bootstrap ->
+        serverSyncUi
+    ) { state, testing, testMessage, error, sync ->
         state.toUiState(
             testing = testing,
             testMessage = testMessage,
             error = error,
-            bootstrapStatus = bootstrapMessage(bootstrap)
+            bootstrap = sync.first,
+            sync = sync.second
         )
     }
 
@@ -407,13 +430,101 @@ class SettingsViewModel @Inject constructor(
         }
     }
 
-    /** 打开/关闭服务端模式：先落盘，失败时界面靠 [serverState] 回滚。 */
+    /**
+     * 打开/关闭服务端模式（0.13）。
+     *
+     * - 本地 → 远程：先问 [ServerModeSwitchCoordinator.requestToggle]；没有同意记录就弹窗，
+     *   开关**保持关闭**等用户回答；有记录（同一台地址同意过）才直接开启并同步；
+     * - 远程 → 本地：先全量下载 + 条数校验，成功才真正关闭（失败/取消保持开启）。
+     */
     fun setServerEnabled(enabled: Boolean) {
         viewModelScope.launch {
-            serverModeRepository.setEnabled(enabled)
-                .onFailure { serverError.value = context.getString(R.string.settings_server_save_failed) }
+            when (val action = serverModeSwitch.requestToggle(enabled)) {
+                is ServerToggleAction.NeedsConsent -> Unit
+                is ServerToggleAction.Enable -> startServerSwitch { serverModeSwitch.enableWith(action.consent) }
+                ServerToggleAction.Disable -> startServerSwitch { serverModeSwitch.disable() }
+                ServerToggleAction.Ignore -> Unit
+            }
         }
     }
+
+    /** 弹窗里选了「同意并同步」/「只同步之后的新内容」。 */
+    fun chooseServerSyncConsent(consent: ServerSyncConsent) {
+        viewModelScope.launch {
+            if (!serverModeSwitch.status.value.consentRequired) return@launch
+            startServerSwitch { serverModeSwitch.enableWith(consent) }
+        }
+    }
+
+    /** 弹窗取消（或点外面）：不记同意、开关保持关闭。 */
+    fun dismissServerSyncConsent() {
+        serverModeSwitch.dismissConsent()
+    }
+
+    /** 取消正在跑的同步/下载：取消后不切换模式（已上传的媒体保留）。 */
+    fun cancelServerSync() {
+        serverSyncJob?.cancel()
+    }
+
+    private fun startServerSwitch(block: suspend () -> ServerSyncStatus) {
+        serverSyncJob?.cancel()
+        serverSyncJob = viewModelScope.launch {
+            try {
+                val status = block()
+                message.value = serverSyncResultMessage(status)
+            } catch (cancelled: CancellationException) {
+                message.value = context.getString(
+                    if (serverModeSwitch.status.value.phase == ServerSyncPhase.CANCELLED &&
+                        serverModeSwitch.status.value.failure == ServerSyncFailure.DOWNLOAD_INCOMPLETE
+                    ) {
+                        R.string.settings_server_download_cancelled
+                    } else {
+                        R.string.settings_server_sync_cancelled
+                    }
+                )
+                throw cancelled
+            }
+        }
+    }
+
+    /** 结果 → 一句中文/英文（失败与取消都要说清楚「模式有没有变」）。 */
+    private fun serverSyncResultMessage(status: ServerSyncStatus): String? = when (status.phase) {
+        ServerSyncPhase.COMPLETED -> when {
+            status.consent == ServerSyncConsent.NEW_ONLY ->
+                context.getString(R.string.settings_server_sync_new_only)
+            status.skipped -> context.getString(R.string.settings_server_sync_already)
+            status.mediaFailed > 0 -> context.getString(
+                R.string.settings_server_sync_done_media,
+                status.messages,
+                status.mediaFailed
+            )
+            else -> context.getString(R.string.settings_server_sync_done, status.messages)
+        }
+        ServerSyncPhase.DOWNLOADED ->
+            context.getString(R.string.settings_server_download_done, status.downloadedMessages)
+        ServerSyncPhase.FAILED -> when (status.failure) {
+            ServerSyncFailure.SAVE_FAILED -> context.getString(R.string.settings_server_save_failed)
+            ServerSyncFailure.DOWNLOAD_UNAVAILABLE ->
+                context.getString(R.string.settings_server_download_unavailable)
+            ServerSyncFailure.DOWNLOAD_INCOMPLETE -> context.getString(
+                R.string.settings_server_download_failed,
+                status.localMessages,
+                status.serverMessages
+            )
+            else -> context.getString(R.string.settings_server_sync_failed)
+        }
+        ServerSyncPhase.CANCELLED -> context.getString(
+            if (status.failure == ServerSyncFailure.DOWNLOAD_INCOMPLETE) {
+                R.string.settings_server_download_cancelled
+            } else {
+                R.string.settings_server_sync_cancelled
+            }
+        )
+        else -> null
+    }
+
+    /** 0.13：正在跑的那次切换（取消按钮 / 防止两轮并发）。 */
+    private var serverSyncJob: Job? = null
 
     /** 清除已保存令牌（地址/开关保留）。 */
     fun clearServerToken() {
@@ -471,7 +582,8 @@ class SettingsViewModel @Inject constructor(
         testing: Boolean,
         testMessage: String?,
         error: String?,
-        bootstrapStatus: String?
+        bootstrap: ServerBootstrapProgress,
+        sync: ServerSyncStatus
     ): ServerSettingsUiState = ServerSettingsUiState(
         url = credentials.cleanUrl,
         enabled = credentials.enabled,
@@ -482,9 +594,40 @@ class SettingsViewModel @Inject constructor(
         testing = testing,
         testMessage = testMessage,
         error = error,
-        // 关掉服务端模式后这一行没有意义（数据对齐是服务端模式的状态）。
-        bootstrapStatus = bootstrapStatus?.takeIf { credentials.enabled }
+        // 关掉服务端模式后这一行没有意义；切换进行中时由 syncStatus 统一显示（避免两行重复）。
+        bootstrapStatus = bootstrapMessage(bootstrap)?.takeIf { credentials.enabled && !sync.running },
+        consentPrompt = sync.consentRequired,
+        syncStatus = serverSyncProgressMessage(bootstrap, sync),
+        syncRunning = sync.running
     )
+
+    /** 同步/下载进行中的一行字（历史媒体逐项进度也走这里）。 */
+    private fun serverSyncProgressMessage(
+        progress: ServerBootstrapProgress,
+        status: ServerSyncStatus
+    ): String? {
+        if (status.consentRequired) return null
+        return when {
+            progress.phase == ServerBootstrapPhase.DOWNLOADING ||
+                status.phase == ServerSyncPhase.DOWNLOADING ->
+                context.getString(R.string.settings_server_downloading, progress.messages)
+            progress.phase == ServerBootstrapPhase.UPLOADING_MEDIA ->
+                if (progress.mediaTotal > 0) {
+                    context.getString(
+                        R.string.settings_server_media_progress,
+                        progress.mediaProcessed,
+                        progress.mediaTotal,
+                        progress.mediaUploaded,
+                        progress.mediaFailed
+                    )
+                } else {
+                    context.getString(R.string.settings_server_media_starting)
+                }
+            status.phase == ServerSyncPhase.SYNCING && progress.phase == ServerBootstrapPhase.IDLE ->
+                context.getString(R.string.settings_server_sync_starting)
+            else -> bootstrapMessage(progress)
+        }
+    }
 
     /** bootstrap 阶段 → 一行中文/英文（文案在资源里，数据层不出现面向用户的句子）。 */
     private fun bootstrapMessage(progress: ServerBootstrapProgress): String? = when (progress.phase) {
@@ -494,6 +637,20 @@ class SettingsViewModel @Inject constructor(
             context.getString(R.string.settings_server_bootstrap_inspecting)
         ServerBootstrapPhase.PUSHING ->
             context.getString(R.string.settings_server_bootstrap_pushing, progress.messages)
+        ServerBootstrapPhase.UPLOADING_MEDIA ->
+            if (progress.mediaTotal > 0) {
+                context.getString(
+                    R.string.settings_server_media_progress,
+                    progress.mediaProcessed,
+                    progress.mediaTotal,
+                    progress.mediaUploaded,
+                    progress.mediaFailed
+                )
+            } else {
+                context.getString(R.string.settings_server_media_starting)
+            }
+        ServerBootstrapPhase.DOWNLOADING ->
+            context.getString(R.string.settings_server_downloading, progress.messages)
         ServerBootstrapPhase.PULLING ->
             context.getString(R.string.settings_server_bootstrap_pulling, progress.messages)
         ServerBootstrapPhase.MERGING ->

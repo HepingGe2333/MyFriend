@@ -198,6 +198,14 @@ public final class ChatService {
     /// 附件文件（沙盒里的图片）：把历史里最近几张图读成 data URL 交给多模态报文。
     /// 默认用 App 的 `Application Support/attachments`；单测可以换成临时目录。
     private let media: MediaStorage
+    /// 语音/视频文件（`Application Support/audio|video`）：校验与读取原始字节。
+    /// 单测可以换成临时目录。
+    private let audioVideo: AudioVideoStore
+    /// 把当轮附件变成多模态片段（音频 base64 / 视频关键帧）。
+    ///
+    /// 抽象成协议是为了单测不必真的解一段视频：生产用 `LocalMediaPartsBuilder`，
+    /// 测试注入假实现断言「模型收到了哪些 parts」。
+    private let mediaParts: MediaPartsBuilding
     /// agent 决策层（0.11.0）：睡眠判定与 `defer_reply` 计划走它。
     /// 默认本机实现（零网络）；App 装配时按 `AgentCoreClientFactory` 的选择结果注入。
     private let agentCore: any AgentCoreClient
@@ -228,6 +236,8 @@ public final class ChatService {
         log: ((String) -> Void)? = nil,
         languageDirective: (() -> String?)? = nil,
         media: MediaStorage = .shared,
+        audioVideo: AudioVideoStore = .shared,
+        mediaParts: (any MediaPartsBuilding)? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         translationLanguage: (() -> String)? = nil,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
@@ -247,6 +257,8 @@ public final class ChatService {
         self.log = log
         self.languageDirective = languageDirective
         self.media = media
+        self.audioVideo = audioVideo
+        self.mediaParts = mediaParts ?? LocalMediaPartsBuilder(store: audioVideo)
         self.agentCore = agentCore
         self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
         self.now = now
@@ -404,9 +416,17 @@ public final class ChatService {
         attachments: [MessageAttachment] = []
     ) throws {
         let content = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // 与 Android 一致：正文可以为空，只要至少有图。
+        // 与 Android 一致：正文可以为空，只要至少有一张图/一段语音/一段视频。
         let images = attachments.filter { $0.isImage }.prefix(AttachmentsCodec.maxImagesPerMessage)
-        guard !content.isEmpty || !images.isEmpty else {
+        let audios = Array(attachments.filter { $0.isAudio }.prefix(AttachmentsCodec.maxAudioPerMessage))
+        let videos = Array(attachments.filter { $0.isVideo }.prefix(AttachmentsCodec.maxVideoPerMessage))
+        // 语音/视频的时长与体积在**落库之前**校验：超限的附件不该先变成一条发不出去的消息，
+        // 让用户点一次发送才看到「太长」。
+        for attachment in audios + videos {
+            try validatePlayableAttachment(attachment)
+        }
+        let keptAttachments = Array(images) + audios + videos
+        guard !content.isEmpty || !keptAttachments.isEmpty else {
             throw ApiException(statusCode: nil, message: String(localized: "消息不能为空"))
         }
         guard content.count <= Self.maxMessageLength else {
@@ -437,12 +457,17 @@ public final class ChatService {
             status: .complete,
             model: nil,
             edited: false,
-            attachmentsJson: AttachmentsCodec.encode(Array(images))
+            attachmentsJson: AttachmentsCodec.encode(keptAttachments)
         )
-        // 首页那一行预览：只有图的时候写「图片」，与 Android 的 `ifBlank { "图片" }` 一致。
+        // 首页那一行预览：只有附件的时候写「图片 / 语音 / 视频」（与 Android 的 `ifBlank` 同义）。
         let flattened = content.replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = flattened.isEmpty ? String(localized: "图片") : flattened
+        let fallbackPreview: String = {
+            if !audios.isEmpty { return String(localized: "语音") }
+            if !videos.isEmpty { return String(localized: "视频") }
+            return String(localized: "图片")
+        }()
+        let preview = flattened.isEmpty ? fallbackPreview : flattened
         try stores.database.inTransaction {
             try stores.messages.upsert(message)
             // 在事务里**重读**一次会话：上面那次读是为了校验（配置、人格），而这两条语句之间
@@ -454,10 +479,33 @@ public final class ChatService {
             updated.unreadCount = 0
             updated.updatedAt = timestamp
             if isFirstUserMessage {
-                updated.title = Self.autoTitle(content.isEmpty ? String(localized: "图片") : content)
+                updated.title = Self.autoTitle(content.isEmpty ? fallbackPreview : content)
             }
             _ = persona
             try stores.sessions.upsert(updated)
+        }
+    }
+
+    /// 语音/视频附件的落库前校验：格式、时长、体积（服务端媒体不读本地文件）。
+    ///
+    /// `byteCount == 0` 有两种可能：文件已经不在本机（换机/清缓存），或者这是
+    /// `/v1/media/<id>` 的服务端引用（字节在服务端）。后者不该在这里被拒。
+    private func validatePlayableAttachment(_ attachment: MessageAttachment) throws {
+        if ServerMediaReference.mediaId(from: attachment.uri) != nil {
+            guard AttachmentsCodec.isAllowedMime(AudioVideoLimits.canonicalMime(attachment.mime)) else {
+                throw ApiException(
+                    statusCode: nil,
+                    message: String(format: String(localized: "不支持这种附件格式（%@）"), attachment.mime)
+                )
+            }
+            return
+        }
+        let bytes = audioVideo.byteCount(for: attachment)
+        if let rejection = MediaAttachmentValidation.rejection(attachment: attachment, byteCount: bytes) {
+            throw ApiException(statusCode: nil, message: rejection)
+        }
+        guard bytes > 0 else {
+            throw ApiException(statusCode: nil, message: String(localized: "这个文件读不出来，重新录/选一次试试"))
         }
     }
 
@@ -489,6 +537,11 @@ public final class ChatService {
     ) async {
         var shownText = ""
         var traces: [ToolTraceItem] = []
+        /// 这一轮是不是真的把音频/视频交给了模型（4xx 时要据此给出「听不了/看不了」的明确报错）。
+        var sentAudio = false
+        var sentVideo = false
+        /// 这一轮工具里「已经替他说了一条消息」的那条（表情包的 `sticker.send`）。
+        var producedMessage: MessageEntity?
         var completed = false
         var personaId = ""
         var model = ""
@@ -564,11 +617,29 @@ public final class ChatService {
             _ = try? stores.messages.markUserMessagesRead(sessionId: sessionId, at: now())
 
             let mediaStorage = media
+            // 0.13 音视频：只有**当轮那一条**消息会把原始媒体交给模型。
+            //
+            // 历史里的语音/视频只留一行说明（`PromptBuilder.history` 会补「这条消息是一段语音…」）：
+            // 每次都重发 base64 等于拿几 MB 的旧音频去烧上下文，而那些内容模型早就听过了。
+            let currentUserMessage = recent.last(where: { $0.role == .user })
+            var currentMediaParts: [String: MediaWireParts] = [:]
+            if let currentUserMessage {
+                let playable = AttachmentsCodec.decode(currentUserMessage.attachmentsJson)
+                    .filter { $0.isPlayableMedia }
+                if !playable.isEmpty,
+                   let parts = await mediaParts.parts(for: playable), !parts.isEmpty {
+                    currentMediaParts[currentUserMessage.id] = parts
+                    sentAudio = !parts.audio.isEmpty
+                    sentVideo = !parts.images.isEmpty
+                }
+            }
             let history = PromptBuilder.history(
                 messages: recent,
                 summarizedUpTo: session.historySummarizedUpTo,
                 // 只有最近两条带图消息会真的把图交给模型（见 `AttachmentsCodec`）。
-                imageResolver: { attachment in mediaStorage.dataURL(for: attachment) }
+                imageResolver: { attachment in mediaStorage.dataURL(for: attachment) },
+                // 当轮那一条的语音/视频（历史里不重复发 base64）。
+                mediaParts: currentMediaParts
             )
             // 用最近一句对方说的话当检索线索，挑「此刻最相关」的记忆。
             // 1.9 起记忆**内置开启**：没有开关可关（§一）。
@@ -644,15 +715,23 @@ public final class ChatService {
                     kind: UsageKind.chat,
                     usageContext: UsageContext(personaId: persona.id, sessionId: sessionId)
                 )
-                for try await delta in stream {
-                    if Task.isCancelled { throw CancellationError() }
-                    buffer += delta
-                    // 只把「还没写到的工具块」之前的部分推到界面，协议块永不示人。
-                    let visible = ToolProtocol.visiblePrefix(buffer)
-                    if visible != shownText {
-                        shownText = visible
-                        continuation.yield(.delta(visible))
+                do {
+                    for try await delta in stream {
+                        if Task.isCancelled { throw CancellationError() }
+                        buffer += delta
+                        // 只把「还没写到的工具块」之前的部分推到界面，协议块永不示人。
+                        let visible = ToolProtocol.visiblePrefix(buffer)
+                        if visible != shownText {
+                            shownText = visible
+                            continuation.yield(.delta(visible))
+                        }
                     }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    // 这一轮真的带了音频/视频时，provider 的 4xx 翻译成「这个模型听不了语音」
+                    // 这种能看懂的错，而不是「请求被服务拒绝（400）」。不伪造转写、不静默降级。
+                    throw MediaModality.map(error: error, hadAudio: sentAudio, hadVideo: sentVideo)
                 }
                 if Task.isCancelled { throw CancellationError() }
 
@@ -714,6 +793,10 @@ public final class ChatService {
                     }
                     executed.insert(fingerprint)
                     let result = await tools.run(call, persona: persona, sessionId: sessionId)
+                    if let producedId = result.producedMessageId,
+                       let produced = (try? stores.messages.byId(producedId)) ?? nil {
+                        producedMessage = produced
+                    }
                     let trace = ToolTraceItem.from(result)
                     traces.append(trace)
                     continuation.yield(.toolStarted(ToolTraceItem(
@@ -725,11 +808,25 @@ public final class ChatService {
                 // 过程话不算数：先把气泡里的临时文字清干净，等最后那一轮的真话。
                 shownText = ""
                 continuation.yield(.delta(""))
+                // `listen` / `watch` 的结果不只是文字：音频片段与视频关键帧要真的进这一条消息，
+                // 否则模型只能看到「我听了一遍…」这句自己都没底的说明。
+                var toolMedia = MediaWireParts()
+                for result in results {
+                    guard let parts = result.mediaParts, !parts.isEmpty else { continue }
+                    toolMedia = toolMedia + parts
+                    if result.invocation.name == ToolCatalog.listen, !parts.audio.isEmpty {
+                        sentAudio = true
+                    }
+                    if result.invocation.name == ToolCatalog.watch, !parts.images.isEmpty {
+                        sentVideo = true
+                    }
+                }
                 conversation.append(WireMessage(role: "assistant", content: buffer.trimmingCharacters(in: .whitespacesAndNewlines)))
-                conversation.append(WireMessage(
+                conversation.append(MultimodalPayload.wireMessage(
                     role: "user",
                     content: ToolProtocol.renderResultsForModel(results)
-                        + "\n\n（以上是你自己刚做完的事，对方看不见细节。现在接着把话说完，别重复，也别提工具。）"
+                        + "\n\n（以上是你自己刚做完的事，对方看不见细节。现在接着把话说完，别重复，也别提工具。）",
+                    parts: toolMedia.isEmpty ? nil : toolMedia
                 ))
             }
 
@@ -739,6 +836,20 @@ public final class ChatService {
             let finalText = extracted.body
             let proposal = extracted.proposal
             let proposalJson = extracted.payloadJson
+            if finalText.isEmpty, proposalJson == nil, let producedMessage {
+                // 这一轮已经用工具发出去了一条消息（表情包的 `sticker.send`）：模型不再写正文
+                // 是正常用法，不是「走神」。直接把那条消息当成这一轮的产物结束掉，
+                // 不要再落一条空助手消息，也不要把「他查完了东西」的错给用户看。
+                completed = true
+                continuation.yield(.done(ChatCompletion(
+                    message: producedMessage,
+                    toolTraces: traces,
+                    pendingMemory: false,
+                    proactiveProposalJson: nil
+                )))
+                continuation.finish()
+                return
+            }
             if finalText.isEmpty && proposalJson == nil {
                 throw ApiException(
                     statusCode: nil,

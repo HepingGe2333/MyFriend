@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import YapKit
 
-/// 数据层：建库、15 张表、v8、每个实体写读一遍、按 persona 查询、事务回滚。
+/// 数据层：建库、16 张表、v8、每个实体写读一遍、按 persona 查询、事务回滚。
 ///
 /// 这里用真实的临时文件库（不是 `:memory:`）：WAL、`user_version`、关闭再打开这些行为
 /// 只有在文件库上才看得出差别 —— 而它们正是「App 重启后数据还在」的前提。
@@ -28,13 +28,14 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV15() throws {
-        XCTAssertEqual(Schema.version, 15,
-                       "v15 = 日记板 + 人格进化的待确认变化（0.13）")
-        XCTAssertEqual(Schema.tables.count, 15, "15 张记录型表（0.13 加了 diary_notes / persona_pending_patches）")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV16() throws {
+        XCTAssertEqual(Schema.version, 16,
+                       "v16 = 表情包（spec/stickers/SCHEMA.md）")
+        XCTAssertEqual(Schema.tables.count, 16,
+                       "16 张记录型表（v15 的日记板/待确认变化 + v16 的 stickers）")
         XCTAssertEqual(Schema.supplementaryTables.count, 4, "四张服务层用表（两张 1.8 遗留 + 两张服务端模式）")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
-        XCTAssertEqual(Schema.allTables.count, 20, "15 + 4 + message_blocks")
+        XCTAssertEqual(Schema.allTables.count, 21, "16 + 4 + message_blocks")
 
         let names = try stores.database.tableNames()
         for table in Schema.allTables {
@@ -44,6 +45,7 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertTrue(names.contains("message_blocks"), "v11 必须建 message_blocks")
         XCTAssertTrue(names.contains(Schema.diaryNotesTable), "v15 必须建 diary_notes")
         XCTAssertTrue(names.contains(Schema.personaPendingPatchesTable), "v15 必须建 persona_pending_patches")
+        XCTAssertTrue(names.contains(Schema.stickersTable), "v16 必须建 stickers")
         XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
@@ -66,7 +68,8 @@ final class SQLiteStoreTests: XCTestCase {
             (AgentIntentEntity.tableName, AgentIntentEntity.columns),
             (ApiUsageEntity.tableName, ApiUsageEntity.columns),
             (DiaryNoteEntity.tableName, DiaryNoteEntity.columns),
-            (PersonaPendingPatchEntity.tableName, PersonaPendingPatchEntity.columns)
+            (PersonaPendingPatchEntity.tableName, PersonaPendingPatchEntity.columns),
+            (StickerEntity.tableName, StickerEntity.columns)
         ]
         XCTAssertEqual(Set(mappings.map(\.0)), Set(Schema.tables + Schema.derivedTables))
 

@@ -44,6 +44,8 @@ final class BootstrapFakeServer {
         var createdAt: Int64 = 1
         var updatedAt: Int64 = 1
         var unread: Int = 0
+        /// 测试用：故意让服务端声称更多/更少的消息（校验失败路径）。
+        var messageCountOverride: Int64?
     }
 
     struct Message {
@@ -88,6 +90,12 @@ final class BootstrapFakeServer {
     var memories: [String: [[String: Any]]] = [:]
     var settings: [String: Any] = [:]
     var uploadedMedia: [(id: String, kind: String, bytes: Int)] = []
+    /// 已经上传过的媒体 id（`validateAttachments` 打开时 import 会检查引用存在）。
+    var knownMediaIds: Set<String> = []
+    /// import 时是否校验附件引用（模拟 agentd 的 `unknown_media`）。
+    var validateAttachments = false
+    /// 接下来多少次 `GET /v1/state` 返回 500（测全量下载失败路径）。
+    var failStateTimes = 0
 
     /// 服务端游标（任何写都让它前进）。
     var cursor: Int64 = 100
@@ -187,6 +195,28 @@ final class BootstrapFakeServer {
         return message.id
     }
 
+    /// 追加一条带附件的消息（历史媒体/媒体引用校验用）。
+    @discardableResult
+    func seedMessage(
+        sessionId: String,
+        id: String,
+        content: String,
+        createdAt: Int64,
+        role: String = "USER",
+        attachments: [String] = []
+    ) -> String {
+        let message = Message(
+            id: id,
+            sessionId: sessionId,
+            role: role,
+            content: content,
+            createdAt: createdAt,
+            attachments: attachments
+        )
+        record(message, sessionId: sessionId)
+        return message.id
+    }
+
     private func record(_ message: Message, sessionId: String) {
         messages[sessionId, default: []].append(message)
         cursor += 1
@@ -224,7 +254,11 @@ final class BootstrapFakeServer {
     /// 把假服务端接到 `ServerRouteStub` 上（每个测试 `ServerRouteStub.reset()` 之后调一次）。
     func registerRoutes() {
         ServerRouteStub.route(method: "GET", prefix: "/v1/state") { [unowned self] request in
-            .json(self.stateJSON(since: Int64(request.query["since"] ?? "0") ?? 0))
+            if self.failStateTimes > 0 {
+                self.failStateTimes -= 1
+                return .error("服务端临时故障", code: "internal", status: 500)
+            }
+            return .json(self.stateJSON(since: Int64(request.query["since"] ?? "0") ?? 0))
         }
 
         ServerRouteStub.route(method: "GET", prefix: "/v1/settings") { [unowned self] _ in
@@ -307,7 +341,7 @@ final class BootstrapFakeServer {
                 "lastMessageAt": lastMessageAt.map { $0 as Any } ?? NSNull(),
                 "lastBlockIndex": lastBlock ?? -1,
                 "unread": session.unread,
-                "messageCount": messages[session.id]?.count ?? 0
+                "messageCount": session.messageCountOverride ?? Int64(messages[session.id]?.count ?? 0)
             ]
         }
         return [
@@ -486,7 +520,7 @@ final class BootstrapFakeServer {
     }
 
     private static func sessionJSON(_ session: Session, messages: [Message]) -> [String: Any] {
-        let count = messages.count
+        let count = Int(session.messageCountOverride ?? Int64(messages.count))
         let lastBlock = count == 0 ? -1 : (count - 1) / blockSize
         return [
             "id": session.id,
@@ -527,6 +561,14 @@ final class BootstrapFakeServer {
             let attachments = object["attachments"] as? [String] ?? []
             if rejectUnknownMedia, !attachments.isEmpty {
                 return .error("附件不存在", code: "unknown_media", status: 400)
+            }
+            if validateAttachments {
+                for raw in attachments {
+                    guard let id = ServerMediaReference.mediaId(from: raw),
+                          knownMediaIds.contains(id) else {
+                        return .error("附件不存在：\(raw)", code: "unknown_media", status: 400)
+                    }
+                }
             }
             validated.append((
                 id: id,
@@ -586,13 +628,15 @@ final class BootstrapFakeServer {
             return .error("上传失败", code: "storage_failed", status: 500)
         }
         let kind = request.query["kind"] ?? "CHAT_IMAGE"
+        let mime = request.headers["content-type"] ?? request.query["mime"] ?? "image/jpeg"
         let id = "media-\(nextId)"
         nextId += 1
         uploadedMedia.append((id: id, kind: kind, bytes: request.body.count))
+        knownMediaIds.insert(id)
         return .json([
             "id": id,
             "kind": kind,
-            "mime": "image/jpeg",
+            "mime": mime,
             "bytes": request.body.count,
             "sha256": String(repeating: "a", count: 64),
             "url": "/v1/media/\(id)"

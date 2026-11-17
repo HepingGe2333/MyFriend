@@ -1,6 +1,6 @@
 import Foundation
 
-/// SQLite 建表语句：表名与列名逐字对齐 Android Room v12
+/// SQLite 建表语句：表名与列名逐字对齐 Android Room 导出的最新 schema（当前 v16）
 /// （`spec/messages-blocks/README.md` 的 `messages.blockIndex` + `message_blocks`）。
 ///
 /// 为什么不直接用 `Entities.kt` 的 data class 生成：SQLite 的列顺序、`NOT NULL`、
@@ -8,10 +8,11 @@ import Foundation
 /// 也让 iOS 这边的库结构和 Android 的导出文件可以直接 diff。
 ///
 /// 几点与 Room 的对齐说明：
-/// - `user_version = 12`：Room 用 version 表达 schema 演进，iOS 用同一个数字，
-///   这样「这份库是 v12」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
+/// - `user_version` 与 Room 的 version 相同（当前 v16）：Room 用 version 表达 schema 演进，iOS 用同一个数字，
+///   这样「这份库是第几版」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
 ///   + `message_blocks`，见 `spec/messages-blocks/README.md`；v12 = 联网工具可以选
-///   第三方搜索服务：`api_configs.webToolsProvider`，见 `spec/web-search/README.md`）。
+///   第三方搜索服务：`api_configs.webToolsProvider`，见 `spec/web-search/README.md`；
+///   v16 = 表情包 `stickers`，见 `spec/stickers/SCHEMA.md`）。
 /// - 不建 `room_master_table`：那是 Room 用来校验 identityHash 的内部表，
 ///   iOS 不读 Room 的迁移历史；真正需要互通的是**备份 JSON**，不是数据库文件。
 /// - 布尔一律 `INTEGER NOT NULL`（0/1），枚举一律 `TEXT`（存 Kotlin 枚举名），
@@ -31,7 +32,9 @@ public enum Schema {
     /// 0.13 = v15：`diary_notes`（日记板，`spec/diary/README.md`）与
     /// `persona_pending_patches`（人格进化的待确认变化，`docs/design/persona-evolution.md`）。
     /// 两张都是**新表**（不改已有列），所以 14→15 是「建表 + 建索引」，没有数据回填。
-    public static let version: Int32 = 15
+    /// 0.13（表情包）= v16：`stickers`（`spec/stickers/SCHEMA.md`）。同样只有新表 + 索引，
+    /// 15→16 没有数据回填；两端列名/顺序/可空/索引名逐字一致。
+    public static let version: Int32 = 16
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -55,7 +58,9 @@ public enum Schema {
         "api_usage",
         // 0.13 的两张新表（记录型：都有实体 + 仓储 + 备份/界面读写）。
         "diary_notes",
-        "persona_pending_patches"
+        "persona_pending_patches",
+        // v16：表情包（`spec/stickers/SCHEMA.md`）。
+        "stickers"
     ]
 
     /// 一人一段会话的唯一索引名（迁移与测试都按这个名字找它）。
@@ -110,9 +115,10 @@ public enum Schema {
     /// 各自可断言 —— 两者混在一起会让「一张表一个实体」这条约定失效。
     public static let derivedTables: [String] = [messageBlocksTable]
 
-    /// 完整表清单（15 张记录型 + 4 张服务层用表 + 1 张派生表 = 20）。
+    /// 完整表清单（16 张记录型 + 4 张服务层用表 + 1 张派生表 = 21）。
     ///
-    /// 0.13 起记录型从 13 张变成 15 张（`diary_notes` / `persona_pending_patches`）。
+    /// 0.13 起记录型从 13 张变成 15 张（`diary_notes` / `persona_pending_patches`），
+    /// v16 再加一张 `stickers`。
     public static let allTables: [String] = tables + supplementaryTables + derivedTables
 
     /// `message_blocks` 的建表语句。
@@ -591,6 +597,9 @@ public enum Schema {
     + diaryNotesIndexStatements
     + [personaPendingPatchesDDL]
     + personaPendingPatchesIndexStatements
+    // v16：表情包（`spec/stickers/SCHEMA.md`）。
+    + [stickersDDL]
+    + stickersIndexStatements
 
     // MARK: - v15 的两张新表
 
@@ -648,6 +657,48 @@ public enum Schema {
         "CREATE INDEX IF NOT EXISTS index_persona_pending_patches_createdAt ON persona_pending_patches (createdAt)"
     ]
 
+    // MARK: - v16 的表情包
+
+    /// 表情包表名（`spec/stickers/SCHEMA.md`）。
+    public static let stickersTable = "stickers"
+
+    /// `stickers` 的建表语句（迁移与 `createStatements` 用同一份 DDL）。
+    ///
+    /// 逐字照 `spec/stickers/SCHEMA.md`：`id` 是 `NOT NULL PRIMARY KEY`（与其它表
+    /// 末尾写 `PRIMARY KEY (id)` 的形状不同，但 PRAGMA 结果一致），`mime` 恒为 `image/gif`，
+    /// `width/height/frames/bytes` 都有默认值（静态图就是 `frames = 1`）。
+    public static let stickersDDL = """
+        CREATE TABLE IF NOT EXISTS stickers (
+            id TEXT NOT NULL PRIMARY KEY,
+            ownerUserId TEXT,
+            personaId TEXT,
+            file TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            frames INTEGER NOT NULL DEFAULT 1,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL,
+            createdBy TEXT NOT NULL,
+            createdAt INTEGER NOT NULL
+        )
+        """
+
+    /// 表情索引（与 SCHEMA.md 逐字一致）：
+    /// - `createdAt` 覆盖历史面板的「最近 30 / 全部」；
+    /// - `personaId` 覆盖「这个人格做过哪些表情」。
+    /// 规格给 `stickers` 写明 DEFAULT 的列（见 `stickersDDL`）。
+    ///
+    /// 单独列出来是给 `SchemaParityTests` 用的：Android 的 16.json 目前没有这些默认值
+    /// （Room 需要 `@ColumnInfo(defaultValue = …)` 才导出），对齐测试要能区分
+    /// 「iOS 自己多写了一个默认值」（红）与「规格要求、Android 还没补」（记录在案）。
+    public static let stickersSpecDeclaredDefaults: Set<String> = ["width", "height", "frames", "bytes"]
+
+    public static let stickersIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_stickers_createdAt ON stickers (createdAt)",
+        "CREATE INDEX IF NOT EXISTS index_stickers_personaId ON stickers (personaId)"
+    ]
+
     /// 建库入口：App 首次启动、以及测试里建临时库都走这里。
     ///
     /// 幂等（全部 `IF NOT EXISTS`），所以每次启动都可以无脑调用；
@@ -674,10 +725,10 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10/v11/v12 → v15
+    // MARK: - v8/v9/v10/v11/v12 → v16
 
-    /// 老库升到 v15：补列（v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、
-    /// 清 Harness 列、一人一段、补默认配置、建块表并回填块号、建 v15 的两张新表。
+    /// 老库升到 v16：补列（v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、
+    /// 清 Harness 列、一人一段、补默认配置、建块表并回填块号、建 v15 的两张新表、建 v16 的表情表。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
     /// 迁移必须和建表在同一个事务里，否则「库是半新半旧」的状态比升级失败更糟。
@@ -737,6 +788,17 @@ public enum Schema {
         // 放在这里是为了让升级路径在迁移阶段就与目标 schema 一致（`createStatements`
         // 之后还会幂等地再跑一遍）。
         try ensureV15Tables(database)
+        // v16：表情包。15→16 同样只有「建表 + 建索引」；幂等（IF NOT EXISTS），
+        // 所以新库、老库、重复打开都走同一条路径。
+        try ensureV16Tables(database)
+    }
+
+    /// v16 的表情表（幂等）。`createStatements` 里也包含它，两处用的是同一份常量。
+    static func ensureV16Tables(_ database: SQLiteDatabase) throws {
+        try database.execute(stickersDDL)
+        for statement in stickersIndexStatements {
+            try database.execute(statement)
+        }
     }
 
     /// v15 的两张新表（幂等）。`createStatements` 里也包含它们，两处用的是同一份常量。

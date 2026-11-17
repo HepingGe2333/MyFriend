@@ -308,6 +308,15 @@ interface MessageDao {
     suspend fun setBlockIndex(id: String, blockIndex: Int)
 
     /**
+     * 只改附件 JSON（0.13 服务端模式）。
+     *
+     * 服务端消息只回附件 id，不带 mime/kind/duration；上传方知道这些元数据，
+     * 在消息落库后补写一次，否则「语音」在服务端模式里会渲染成一张加载不出来的图片。
+     */
+    @Query("UPDATE messages SET attachmentsJson = :json WHERE id = :id")
+    suspend fun updateAttachments(id: String, json: String?)
+
+    /**
      * 把一段稳定序区间整体改成同一块（导入/重建时用：一块一条 UPDATE，而不是一条消息一条）。
      *
      * 区间两端都是**闭区间**，用 `(createdAt, id)` 双列比较，和排序键完全一致，
@@ -358,6 +367,14 @@ interface MessageDao {
      */
     @Query("SELECT COUNT(*) FROM messages")
     suspend fun countAll(): Int
+
+    /**
+     * 0.13 历史媒体迁移的进度分母：只取「带附件」消息的 `attachmentsJson` 窄列。
+     *
+     * 不物化整行消息：几十万条纯文本消息不会进内存，返回的只是附件 JSON 片段。
+     */
+    @Query("SELECT attachmentsJson FROM messages WHERE attachmentsJson IS NOT NULL AND attachmentsJson != ''")
+    suspend fun allAttachmentJson(): List<String>
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
@@ -1041,4 +1058,56 @@ interface DiaryNoteDao {
 
     @Query("DELETE FROM diary_notes")
     suspend fun deleteAll()
+}
+
+/**
+ * 表情包的读写口（`spec/stickers/SCHEMA.md`）。
+ *
+ * 列表只有两种口径，和 `spec/stickers/README.md` 的「最近 30 个 + 全部」一一对应：
+ * 「最近」按 `createdAt` 倒序，`createdAt` 相同时用 `id` 兜底（同一毫秒导入两张不会跳序）；
+ * 「全部」同序但不限量。`personaId` 只作为「属于哪个人格」的弱归属，不参与过滤——
+ * 用户换人格时自己的表情不该消失。
+ */
+@Dao
+interface StickerDao {
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    fun observeRecent(limit: Int): kotlinx.coroutines.flow.Flow<List<StickerEntity>>
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC")
+    fun observeAll(): kotlinx.coroutines.flow.Flow<List<StickerEntity>>
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<StickerEntity>
+
+    @Query("SELECT * FROM stickers WHERE id = :id")
+    suspend fun getById(id: String): StickerEntity?
+
+    /** 同一个文件是否已经有表情行（「收藏」要复用同一份文件，不能存成两份）。 */
+    @Query("SELECT * FROM stickers WHERE file = :file LIMIT 1")
+    suspend fun findByFile(file: String): StickerEntity?
+
+    @Query("SELECT COUNT(*) FROM stickers")
+    suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM stickers WHERE personaId = :personaId")
+    suspend fun countForPersona(personaId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(sticker: StickerEntity): Long
+
+    @Query("UPDATE stickers SET personaId = :personaId WHERE id = :id")
+    suspend fun setPersona(id: String, personaId: String?)
+
+    @Query("DELETE FROM stickers WHERE id = :id")
+    suspend fun delete(id: String): Int
+
+    @Query("DELETE FROM stickers WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM stickers")
+    suspend fun deleteAll()
+
+    @Query("SELECT file FROM stickers")
+    suspend fun allFiles(): List<String>
 }

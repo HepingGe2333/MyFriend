@@ -45,6 +45,10 @@ public final class PersonaEvolutionService {
     private let now: () -> Int64
     private let log: (String) -> Void
 
+    /// 单飞闸的状态：哪个本机人格正在评估。
+    private let flightLock = NSLock()
+    private var inFlight: Set<String> = []
+
     public init(
         stores: DatabaseStores,
         completion: CompletionClient,
@@ -166,6 +170,37 @@ public final class PersonaEvolutionService {
         }
     }
 
+    // MARK: - 单飞（本地模式与云端模式共用）
+
+    /// 抢「这个人格正在评估」的名额：抢到才允许真的调模型。
+    ///
+    /// 为什么闸放在这里而不是各个调用点：触发有两条路——本地模式
+    /// （`ChatBackgroundService`，回复由 `ChatService` 落库）与云端模式
+    /// （`CloudPersonaEvolution`，回复由 `ServerChatGateway` 落库）。两条路
+    /// 共用同一个 `PersonaEvolutionService` 实例，也就共用这一道闸：
+    /// 切模式、两条路同时命中，都不会变成两次模型调用。
+    public func beginEvaluation(personaId: String) -> Bool {
+        flightLock.lock()
+        defer { flightLock.unlock() }
+        if inFlight.contains(personaId) { return false }
+        inFlight.insert(personaId)
+        return true
+    }
+
+    /// 还名额（必须与 `beginEvaluation` 成对调用，失败路径也要还）。
+    public func endEvaluation(personaId: String) {
+        flightLock.lock()
+        inFlight.remove(personaId)
+        flightLock.unlock()
+    }
+
+    /// 正在评估的人格数（测试用来确认名额已还回去）。
+    public var inFlightCount: Int {
+        flightLock.lock()
+        defer { flightLock.unlock() }
+        return inFlight.count
+    }
+
     private func advanceCursor(personaId: String, at: Int64) {
         cursors.save(
             PersonaEvolutionCursor(
@@ -204,6 +239,27 @@ public final class PersonaEvolutionService {
     ///   比如人格里已经有这个值了 —— 那也不算失败，条目照样删掉）。
     @discardableResult
     public func approve(patchId: String, at nowAt: Int64? = nil) throws -> (persona: PersonaEntity, applied: Int) {
+        try commit(planApproval(patchId: patchId, at: nowAt))
+    }
+
+    /// 「接受」的第一半：算出接受之后的人格，**不写库**。
+    ///
+    /// 为什么拆成两半：云端模式（`CloudPersonaEvolution`）下面格的权威副本在服务端，
+    /// 必须先把它推上去、服务端成功之后才允许写本地缓存；本地模式把两半连着调，
+    /// 行为与以前逐字一致（`approve` 就是这两步）。
+    public struct ApprovalPlan {
+        /// 被接受的那条待确认变化。
+        public var patch: PersonaPendingPatchEntity
+        /// 接受前的人格（`applied == 0` 时与 `updated` 相同）。
+        public var persona: PersonaEntity
+        /// 接受后的人格：四个字段已合并、`version+1`、`updatedAt` 已更新。
+        public var updated: PersonaEntity
+        /// 实际生效的条数（0 = 人格里本来就是这样）。
+        public var applied: Int
+    }
+
+    /// @throws PersonaEvolutionError.patchNotFound / .personaNotFound
+    public func planApproval(patchId: String, at nowAt: Int64? = nil) throws -> ApprovalPlan {
         guard let patch = (try? stores.personaPendingPatches.byId(patchId)) ?? nil else {
             throw PersonaEvolutionError.patchNotFound
         }
@@ -215,11 +271,20 @@ public final class PersonaEvolutionService {
         let (updated, applied) = PersonaEvolution.apply(
             changes, to: persona, now: nowAt ?? now()
         )
-        if applied > 0 {
-            try stores.personas.upsert(updated)
+        return ApprovalPlan(patch: patch, persona: persona, updated: updated, applied: applied)
+    }
+
+    /// 「接受」的第二半（本地模式）：写回人格、删掉待确认条目。
+    ///
+    /// 云端模式不用它——那边在服务端成功之后，会写「服务端回执 + 刚接受的四字段」
+    /// （见 `CloudPersonaEvolution.promote`）。
+    @discardableResult
+    public func commit(_ plan: ApprovalPlan) throws -> (persona: PersonaEntity, applied: Int) {
+        if plan.applied > 0 {
+            try stores.personas.upsert(plan.updated)
         }
-        try stores.personaPendingPatches.remove(id: patchId)
-        return (updated, applied)
+        try stores.personaPendingPatches.remove(id: plan.patch.id)
+        return (plan.updated, plan.applied)
     }
 
     /// 用户点了「拒绝」：只丢掉这条提议，人格一个字都不动。

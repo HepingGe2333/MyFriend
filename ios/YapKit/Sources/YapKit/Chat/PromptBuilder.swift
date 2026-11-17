@@ -389,10 +389,19 @@ public enum PromptBuilder {
     /// 但**只带最近 `AttachmentsCodec.maxImageMessagesInContext` 条带图的消息**——
     /// base64 会让请求体膨胀 4/3，把整段历史里的图全带上等于把上下文预算烧在旧图上。
     /// 文件已经被清掉（换机、从备份接回）时 `imageResolver` 返回 nil，这条就只剩那句「发来一张图片」。
+    ///
+    /// 语音/视频（0.13）：**历史只带一句说明，不带二进制**。
+    /// - 每条带语音/视频的消息都会在正文后面补一行「这条消息是一段语音，时长 12 秒；
+    ///   媒体 id：…；想听就用 listen」——模型因此知道「这条消息不是文字」，
+    ///   也知道要用哪个 id 去听/看；
+    /// - 真正的 `input_audio`（base64）与视频关键帧只给**当轮那一条**消息
+    ///   （`mediaParts` 里按消息 id 给）：历史里的语音如果再发一遍，一次请求会被
+    ///   几段几十 MB 的 base64 撑爆，而它们早就被模型听过了。
     public static func history(
         messages: [MessageEntity],
         summarizedUpTo: Int64?,
-        imageResolver: ((MessageAttachment) -> String?)? = nil
+        imageResolver: ((MessageAttachment) -> String?)? = nil,
+        mediaParts: [String: MediaWireParts] = [:]
     ) -> [WireMessage] {
         let cutoff = summarizedUpTo.flatMap { $0 > 0 ? $0 : nil }
         // 先筛出「真的要发给模型的那几条」，再定哪几条的图值得带上（与 Android 的
@@ -421,19 +430,51 @@ public enum PromptBuilder {
         var result: [WireMessage] = []
         for message in visible {
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let decoded = AttachmentsCodec.decode(message.attachmentsJson)
 
             var images: [String] = []
             if let imageResolver, imageOwnerIds.contains(message.id) {
-                images = AttachmentsCodec.decode(message.attachmentsJson)
+                images = decoded
                     .filter { $0.isImage }
                     .prefix(AttachmentsCodec.maxImagesPerMessage)
                     .compactMap { imageResolver($0) }
             }
 
+            // 这条消息带的是语音/视频吗：正文后面补一行说明（历史里**只有这一行**）。
+            var text = message.content
+            for attachment in decoded where attachment.isPlayableMedia {
+                let line = attachment.mediaContextLine
+                guard !line.isEmpty else { continue }
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? line
+                    : text + "\n" + line
+            }
+
+            // 只有当轮那一条消息会真的带上二进制（音频/base64、视频关键帧）。
+            let parts = mediaParts[message.id]
+            var audio: [WireAudioPart] = []
+            if let parts {
+                audio = parts.audio
+                images.append(contentsOf: parts.images)
+                let note = parts.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !note.isEmpty {
+                    text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? note
+                        : text + "\n" + note
+                }
+            }
+
+            // 正文为空时补一句「（发来一张图片）」：模型至少知道发生过这件事。
+            // 语音/视频消息的正文里已经有 `mediaContextLine`，不会走到这里。
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                text = "（发来一张图片）"
+            }
+
             result.append(WireMessage(
                 role: message.role == .user ? "user" : "assistant",
-                content: content.isEmpty ? "（发来一张图片）" : message.content,
-                images: images
+                content: text,
+                images: images,
+                audio: audio
             ))
         }
         return result

@@ -67,6 +67,9 @@ object ToolCatalog {
     const val RECALL = "recall"
     const val DEFER_REPLY = "defer_reply"
     const val DIARY = "diary"
+    const val STICKER = "sticker"
+    const val LISTEN = "listen"
+    const val WATCH = "watch"
 
     /** 给模型看的一句话能力说明（中文，含该用/不该用的边界）。 */
     private const val THINK_DESCRIPTION =
@@ -130,6 +133,73 @@ object ToolCatalog {
             "想看看自己记过什么时用 list；记错了、过期了想撕掉时用 remove。" +
             "它记的是**你自己**的事，不是关于对方的记忆（那是 remember）；" +
             "要「过一会儿提醒我」就写 remindInMinutes，或者写 remindAt（毫秒时间戳）；到点会变成你心里的一个念头。"
+
+    /**
+     * `sticker`：表情包（`spec/stickers/README.md`）。
+     *
+     * 三个动作一句话说清各自的边界：`send` 发已有的（只认 id）、`make` 现做一张（下载/叠字/叠图）、
+     * `save` 把对方发来的收进自己的收藏。这段文字是模型唯一会读到的说明，
+     * 「你可以做什么」段里那一行也来自这里（工具清单只有一处真源）。
+     */
+    private const val STICKER_DESCRIPTION =
+        "表情包：想发一张表情时用 send（stickerId 取「我的表情」里的 id，或用刚做好的那张）；" +
+            "想现做一张时用 make（给 url 下载、或用 baseStickerId 拿已有表情当底，再用 text 叠字、" +
+            "overlayStickerId 叠图，位置可指定）；对方发来一张好图想留着时用 save（fromMessageId）。" +
+            "id 只能用「我的表情」里真实存在的，别自己编；做不出来的图就老实说做不了，不要假装发过。"
+
+    private const val STICKER_CONTRAST =
+        "它管的是「图」，不是文字：想说话直接说，不要为了热闹而发；" +
+            "下载只能从公开的 http/https 图片链接，别去抓版权素材站，也别把别人的图说成是你画的。"
+
+    private const val STICKER_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "action": {"type": "string", "enum": ["send", "make", "save"], "description": "send 发一张已有的表情；make 现做一张；save 收藏对方发来的表情"},
+            "stickerId": {"type": "string", "description": "send 必填：要发的表情 id（来自「我的表情」或 make 的结果）"},
+            "url": {"type": "string", "description": "make：要下载的公开图片链接（http/https）"},
+            "baseStickerId": {"type": "string", "description": "make：拿哪张已有表情当底图"},
+            "overlayStickerId": {"type": "string", "description": "make：叠上去的另一张表情"},
+            "text": {"type": "string", "description": "make：叠在画面上的字，越短越好（一行以内）"},
+            "position": {"type": "string", "enum": ["TOP", "CENTER", "BOTTOM"], "description": "文字/叠图放在哪，默认 CENTER"},
+            "fromMessageId": {"type": "string", "description": "save 必填：要收藏的那条消息 id（对方发的表情消息）"}
+          },
+          "required": ["action"]
+        }
+    """
+
+    /**
+     * `listen`：真的把对方发来的语音听一遍（`spec/audio-video/README.md`「模型侧」）。
+     *
+     * 必须写清楚「不是转写」：支持音频的模型拿到的就是声音本身；不支持的模型由聊天层
+     * 明确报「这个模型听不了语音」，这里不能承诺任何「我会转成文字」的能力。
+     */
+    private const val LISTEN_DESCRIPTION =
+        "对方发来语音时调用：你会真的听到那段声音（不是转写）。audioId 不填就听这段聊天最近一条语音，也可以填那一轮的 mediaId。"
+    private const val WATCH_DESCRIPTION =
+        "对方发来视频时调用：你会看到画面（自动抽最多 8 帧）。videoId 不填就看这段聊天最近一条视频，也可以填那一轮的 mediaId。"
+    private const val LISTEN_CONTRAST =
+        "听不到就说听不到，不要编一段「转写」；模型不支持语音时会明确报错。"
+    private const val WATCH_CONTRAST =
+        "你看到的是抽样出来的几个画面，不是完整视频；没看清的地方不要假装看过。"
+
+    private const val LISTEN_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "audioId": {"type": "string", "description": "要听哪一段的 mediaId；不填就听这段聊天最近一条语音"}
+          }
+        }
+    """
+
+    private const val WATCH_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "videoId": {"type": "string", "description": "要看哪一段的 mediaId；不填就看这段聊天最近一条视频"}
+          }
+        }
+    """
 
     private const val THINK_PARAMETERS = """
         {
@@ -276,7 +346,10 @@ object ToolCatalog {
         ToolSpec(SET_MOOD, SET_MOOD_DESCRIPTION, SET_MOOD_PARAMETERS.trimIndent()),
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
         ToolSpec(DEFER_REPLY, DEFER_REPLY_DESCRIPTION, DEFER_REPLY_PARAMETERS.trimIndent()),
-        ToolSpec(DIARY, DIARY_DESCRIPTION, DIARY_PARAMETERS.trimIndent(), DIARY_CONTRAST)
+        ToolSpec(DIARY, DIARY_DESCRIPTION, DIARY_PARAMETERS.trimIndent(), DIARY_CONTRAST),
+        ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
+        ToolSpec(LISTEN, LISTEN_DESCRIPTION, LISTEN_PARAMETERS.trimIndent(), LISTEN_CONTRAST),
+        ToolSpec(WATCH, WATCH_DESCRIPTION, WATCH_PARAMETERS.trimIndent(), WATCH_CONTRAST)
     )
 
     fun byName(name: String): ToolSpec? = all.firstOrNull { it.name == name.trim() }
@@ -309,12 +382,27 @@ object ToolCatalog {
      * @param webEnabled 没配联网时把那两个工具摘掉，并补一句「你现在没有联网能力」——
      *        与其勾引它去查，不如让它老实承认不确定。
      */
+    /** `name(必填, 可选?)`：参数提示由 schema 推出，不另写一份，与 iOS 同格式。 */
+    fun signature(spec: ToolSpec): String {
+        val parsed = runCatching { toolJson.parseToJsonElement(spec.parametersJson) as? JsonObject }.getOrNull()
+            ?: return spec.name
+        val props = parsed["properties"] as? JsonObject ?: return spec.name
+        val required = (parsed["required"] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+            ?.toSet().orEmpty()
+        val keys = props.keys.toList()
+        if (keys.isEmpty()) return spec.name
+        val req = keys.filter { it in required }
+        val opt = keys.filter { it !in required }
+        val inside = (req + opt.map { "$it?" }).joinToString(", ")
+        return "${spec.name}($inside)"
+    }
+
     fun capabilityPrompt(webEnabled: Boolean = true): String = buildString {
         appendLine("# 你能做什么")
         appendLine("下面这些是你自己的手。需要的时候直接调用，别为了显得勤快而用；用不上就不要调用。")
         all.filter { webEnabled || it.name !in WEB_TOOLS }.forEach { spec ->
-            appendLine("- ${spec.name}：${spec.description}")
-            if (spec.contrast.isNotBlank()) appendLine("  · ${spec.contrast}")
+            appendLine("- ${signature(spec)}：${spec.description}")
+            if (spec.contrast.isNotBlank()) appendLine("  · 区别：${spec.contrast}")
         }
         if (!webEnabled) {
             appendLine("（你现在没有联网能力：涉及实时信息时老实说自己不确定，不要编。）")
@@ -398,7 +486,13 @@ data class ToolResult(
     val ok: Boolean,
     val summary: String,              // 回灌给模型的摘要（中文），如「翻了翻记忆 · 2 条」
     val contentForModel: String,      // 回灌给模型的文本（已裁剪，≤ 4000 字）
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    /**
+     * 0.13：这次工具结果要**真的交给模型**的多模态内容（`listen` 的语音、`watch` 的帧）。
+     *
+     * 只在这一轮回灌时编码进请求；不写库、不进历史（历史里只留一句「（发来一段语音）」）。
+     */
+    val media: ToolMedia? = null
 )
 
 object ToolProtocol {
@@ -577,6 +671,9 @@ object ToolProtocol {
         }
         ToolCatalog.SET_ACTIVITY -> invocation.argument("activity")?.take(80)?.let { "在忙：$it" }
         ToolCatalog.DIARY -> diaryArgumentHint(invocation)
+        ToolCatalog.STICKER -> stickerArgumentHint(invocation)
+        ToolCatalog.LISTEN -> invocation.argument("audioId")?.take(80)?.let { "听：$it" } ?: "听：最近一条语音"
+        ToolCatalog.WATCH -> invocation.argument("videoId")?.take(80)?.let { "看：$it" } ?: "看：最近一条视频"
         else -> null
     }
 
@@ -588,6 +685,27 @@ object ToolProtocol {
         "list" -> "翻：最近 ${invocation.intArgument("limit", 0).takeIf { it > 0 } ?: 20} 条"
         "remove" -> invocation.argument("noteId")?.take(80)?.let { "撕掉：#$it" }
         else -> null
+    }
+
+    /** 表情包的三件事各自回显一句，让模型知道这条结果是它哪次调用。 */
+    private fun stickerArgumentHint(invocation: ToolInvocation): String? = when (
+        invocation.argument("action")?.trim()?.lowercase()
+    ) {
+        "send" -> invocation.argument("stickerId")?.take(80)?.let { "发：$it" }
+        "save" -> invocation.argument("fromMessageId")?.take(80)?.let { "收藏：#$it" }
+        else -> {
+            val text = invocation.argument("text")?.take(40)
+            val url = invocation.argument("url")?.take(80)
+            val base = invocation.argument("baseStickerId")?.take(80)
+            val overlay = invocation.argument("overlayStickerId")?.take(80)
+            when {
+                !text.isNullOrBlank() -> "做：叠字「$text」"
+                !url.isNullOrBlank() -> "做：下载 $url"
+                !base.isNullOrBlank() -> "做：以 $base 为底"
+                !overlay.isNullOrBlank() -> "做：叠 $overlay"
+                else -> null
+            }
+        }
     }
 
     /** 回灌内容为空时用错误原因或摘要兜底，保证模型一定能拿到一句可读的话。 */

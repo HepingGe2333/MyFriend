@@ -49,6 +49,12 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     DIARY_ADD(R.string.tool_trace_diary_add),
     DIARY_LIST(R.string.tool_trace_diary_list),
     DIARY_REMOVE(R.string.tool_trace_diary_remove),
+    STICKER(R.string.tool_trace_sticker),
+    STICKER_SEND(R.string.tool_trace_sticker_send),
+    STICKER_MAKE(R.string.tool_trace_sticker_make),
+    STICKER_SAVE(R.string.tool_trace_sticker_save),
+    LISTEN(R.string.tool_trace_listen),
+    WATCH(R.string.tool_trace_watch),
     UNKNOWN(R.string.tool_trace_unknown);
 
     companion object {
@@ -65,12 +71,68 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.RECALL -> RECALL
             ToolCatalog.DEFER_REPLY -> DEFER_REPLY
             ToolCatalog.DIARY -> DIARY
+            ToolCatalog.STICKER -> STICKER
+            ToolCatalog.LISTEN -> LISTEN
+            ToolCatalog.WATCH -> WATCH
             else -> UNKNOWN
         }
     }
 }
 
 object ToolTraceText {
+
+    // ------------------------------------------------------------ 表情包（spec/stickers）
+
+    /** 表情动作对应的标题：`send` / `make` / `save` 各自一句，认不出动作就用「表情」这一个词。 */
+    fun stickerTitle(context: Context, action: String?): String = context.getString(
+        when (action?.trim()?.lowercase()) {
+            "send" -> R.string.tool_trace_sticker_send
+            "make" -> R.string.tool_trace_sticker_make
+            "save" -> R.string.tool_trace_sticker_save
+            else -> R.string.tool_trace_sticker
+        }
+    )
+
+    /**
+     * 表情副标题：「320×240 · 12 帧 · 46 KB」/「320×240 · 静态 · 8 KB」。
+     *
+     * 两条文案的参数个数不同（静态那条不该出现帧数），所以这里分开调用——
+     * 用一条 `%4$d` 跳号的字符串会被 lint 判 `StringFormatCount`，运行时也容易传错位。
+     */
+    fun stickerSubtitle(context: Context, width: Int, height: Int, frames: Int, bytes: Int): String =
+        if (frames > 1) {
+            context.getString(R.string.tool_trace_sticker_animated, width, height, frames, bytes / 1024)
+        } else {
+            context.getString(R.string.tool_trace_sticker_static, width, height, bytes / 1024)
+        }
+
+    /** 展开正文：一句话说明这张表情现在在哪（发出去了 / 收进收藏了 / 已经做好了）。 */
+    fun stickerDetail(context: Context, action: String?): String = context.getString(
+        when (action?.trim()?.lowercase()) {
+            "send" -> R.string.tool_trace_sticker_sent_detail
+            "save" -> R.string.tool_trace_sticker_saved_detail
+            "make" -> R.string.tool_trace_sticker_made_detail
+            else -> R.string.tool_trace_sticker_detail
+        }
+    )
+
+    /** 失败原因：枚举 → 资源（界面按当前语言显示，老数据原样保留）。 */
+    fun stickerFailure(context: Context, reason: com.yap.app.domain.StickerToolFailure): String =
+        context.getString(
+            when (reason) {
+                com.yap.app.domain.StickerToolFailure.MISSING_ACTION -> R.string.tool_trace_sticker_failed_missing_action
+                com.yap.app.domain.StickerToolFailure.UNKNOWN_ACTION -> R.string.tool_trace_sticker_failed_unknown_action
+                com.yap.app.domain.StickerToolFailure.STICKER_NOT_FOUND -> R.string.tool_trace_sticker_failed_not_found
+                com.yap.app.domain.StickerToolFailure.MESSAGE_NOT_FOUND -> R.string.tool_trace_sticker_failed_message_not_found
+                com.yap.app.domain.StickerToolFailure.NO_STICKER_IN_MESSAGE -> R.string.tool_trace_sticker_failed_no_sticker
+                com.yap.app.domain.StickerToolFailure.EMPTY_MAKE -> R.string.tool_trace_sticker_failed_empty_make
+                com.yap.app.domain.StickerToolFailure.BAD_URL -> R.string.tool_trace_sticker_failed_bad_url
+                com.yap.app.domain.StickerToolFailure.DOWNLOAD_FAILED -> R.string.tool_trace_sticker_failed_download
+                com.yap.app.domain.StickerToolFailure.IMAGE_UNREADABLE -> R.string.tool_trace_sticker_failed_unreadable
+                com.yap.app.domain.StickerToolFailure.CANNOT_COMPRESS -> R.string.tool_trace_sticker_failed_too_big
+                com.yap.app.domain.StickerToolFailure.SAVE_FAILED -> R.string.tool_trace_sticker_failed_save
+            }
+        )
 
     // ------------------------------------------------------------ 标题
 

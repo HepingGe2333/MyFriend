@@ -1633,6 +1633,8 @@ public struct DatabaseStores {
     public let diaryNotes: DiaryNoteStore
     /// 0.13 人格进化的待确认变化（`docs/design/persona-evolution.md`）。
     public let personaPendingPatches: PersonaPendingPatchStore
+    /// v16 表情包（`spec/stickers/SCHEMA.md`）。
+    public let stickers: StickerStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -1652,6 +1654,7 @@ public struct DatabaseStores {
         self.apiUsage = ApiUsageStore(database: database)
         self.diaryNotes = DiaryNoteStore(database: database)
         self.personaPendingPatches = PersonaPendingPatchStore(database: database)
+        self.stickers = StickerStore(database: database)
     }
 
     /// 建库 + 装好所有仓储（App 启动走这一条）。

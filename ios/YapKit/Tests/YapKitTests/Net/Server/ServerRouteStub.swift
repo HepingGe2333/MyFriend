@@ -19,6 +19,8 @@ final class ServerRouteStub: URLProtocol {
         var query: [String: String]
         var body: Data
         var authorization: String?
+        /// 请求头（键已小写）：媒体上传要断言 `Content-Type`。
+        var headers: [String: String] = [:]
 
         var queryString: String { query.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "&") }
 
@@ -140,7 +142,12 @@ final class ServerRouteStub: URLProtocol {
             path: url.path,
             query: query,
             body: body,
-            authorization: request.value(forHTTPHeaderField: "Authorization")
+            authorization: request.value(forHTTPHeaderField: "Authorization"),
+            headers: Dictionary(
+                uniqueKeysWithValues: (request.allHTTPHeaderFields ?? [:]).map {
+                    ($0.key.lowercased(), $0.value)
+                }
+            )
         )
 
         let reply = Self.respond(to: captured)

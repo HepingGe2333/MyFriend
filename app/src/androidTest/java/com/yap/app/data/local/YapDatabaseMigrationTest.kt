@@ -227,13 +227,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query("SELECT title FROM chat_sessions WHERE id = ?", arrayOf("session-1")).use { cursor ->
                 assertTrue("Room 打开后旧会话应该还在", cursor.moveToFirst())
                 assertEquals("旧会话", cursor.getString(0))
@@ -357,13 +359,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是当前版本", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query("SELECT COUNT(*) FROM personas", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals(2, cursor.getInt(0))
@@ -643,13 +647,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 14", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query("SELECT name, worldJson FROM personas WHERE id = 'persona-1'", emptyArray()).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("林深", cursor.getString(0))
@@ -818,13 +824,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 14", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query(
                 "SELECT name, worldJson, translationJson, translationLang FROM personas WHERE id = 'persona-1'",
                 emptyArray()
@@ -887,7 +895,9 @@ class YapDatabaseMigrationTest {
             YapDatabase.MIGRATION_10_11,
             YapDatabase.MIGRATION_11_12,
             YapDatabase.MIGRATION_12_13,
-            YapDatabase.MIGRATION_13_14
+            YapDatabase.MIGRATION_13_14,
+            YapDatabase.MIGRATION_14_15,
+            YapDatabase.MIGRATION_15_16
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -1058,13 +1068,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 14", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query("SELECT COUNT(*) FROM messages", emptyArray()).use { cursor ->
                 cursor.moveToFirst()
                 assertEquals("Room 打开后消息一条不少", 450, cursor.getInt(0))
@@ -1151,13 +1163,15 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_10_11,
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
-                YapDatabase.MIGRATION_13_14
+                YapDatabase.MIGRATION_13_14,
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             .allowMainThreadQueries()
             .build()
         try {
             val opened = room.openHelper.writableDatabase
-            assertEquals("Room 打开后 user_version 应该是 14", 14, opened.version)
+            assertEquals("Room 打开后 user_version 应该是当前版本", currentDatabaseVersion(), opened.version)
             room.query("SELECT webToolsProvider FROM api_configs WHERE id = 'config-1'", emptyArray()).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 // Room 的 schema 校验要求列默认值仍是 'DEEPSEEK'；代码层归一化成 MESSAGEAPI。
@@ -1372,6 +1386,91 @@ class YapDatabaseMigrationTest {
         assertTrue(db.hasIndex("index_diary_notes_remindAt"))
     }
 
+
+    // ---------- v15 → v16：表情包 ----------
+
+    /**
+     * v16 只新建 `stickers` 表 + 两条索引，不动任何既有表。这条用例证明：
+     * 旧数据一个字都没少、表情表真的建出来了（列与索引都在）、升级后是空的（= 他还没有表情）。
+     */
+    @Test
+    fun migrate15To16_建出表情表且旧数据不丢() {
+        val db = createLegacyDatabase(version = 15, ddl = MINIMAL_V15_SCHEMA)
+        db.execSQL("INSERT INTO `personas` (`id`, `name`) VALUES ('persona-1', '小满')")
+        db.execSQL("INSERT INTO `memories` (`id`, `content`) VALUES ('memory-1', '她妹妹在南方读大学')")
+
+        YapDatabase.MIGRATION_15_16.migrate(db)
+
+        // 1. 旧数据都在，且内容没被改写。
+        assertEquals("迁移不许丢人格", 1, db.count("personas"))
+        db.query("SELECT name FROM personas WHERE id = ?", arrayOf("persona-1")).use { cursor ->
+            assertTrue("迁移把人格弄丢了", cursor.moveToFirst())
+            assertEquals("小满", cursor.getString(0))
+        }
+        assertEquals("迁移不许丢记忆", 1, db.count("memories"))
+
+        // 2. 表与索引都在，列集合与实体一致。
+        assertTrue("v16 应该建出 stickers 表", db.hasTable("stickers"))
+        assertEquals(
+            setOf(
+                "id", "ownerUserId", "personaId", "file", "mime", "width", "height",
+                "frames", "bytes", "source", "createdBy", "createdAt"
+            ),
+            db.columnNames("stickers")
+        )
+        assertTrue("createdAt 索引（最近 30 个靠它）", db.hasIndex("index_stickers_createdAt"))
+        assertTrue("personaId 索引", db.hasIndex("index_stickers_personaId"))
+
+        // 3. 新表是空的：老用户升级后 = 「他还没有表情」，不是一堆看不懂的历史。
+        assertEquals(0, db.count("stickers"))
+
+        // 4. 迁移后的表能真的写进去（默认值与可空列都对）。
+        db.execSQL(
+            """
+            INSERT INTO `stickers` (`id`, `file`, `mime`, `source`, `createdBy`, `createdAt`)
+            VALUES ('s1', 'file:///data/user/0/pkg/files/stickers/s1.gif', 'image/gif', 'IMPORTED', 'USER', 1700000000000)
+            """.trimIndent()
+        )
+        db.query("SELECT width, height, frames, bytes, ownerUserId, personaId FROM stickers WHERE id = ?", arrayOf("s1"))
+            .use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals("width 默认 0", 0, cursor.getInt(0))
+                assertEquals("height 默认 0", 0, cursor.getInt(1))
+                assertEquals("frames 默认 1", 1, cursor.getInt(2))
+                assertEquals("bytes 默认 0", 0, cursor.getInt(3))
+                assertTrue("ownerUserId 可空", cursor.isNull(4))
+                assertTrue("personaId 可空", cursor.isNull(5))
+            }
+    }
+
+    /** 空库（刚装好就升到 15 的极端情况）也必须能升到 16，不能因为「没有旧数据」而失败。 */
+    @Test
+    fun migrate15To16_空库也能升级() {
+        val db = createLegacyDatabase(version = 15, ddl = emptyList())
+        YapDatabase.MIGRATION_15_16.migrate(db)
+        assertTrue(db.hasTable("stickers"))
+        assertEquals(0, db.count("stickers"))
+    }
+
+    /** 幂等：修复脚本/测试会重复调用同一个迁移，第二次不能报错，也不能把已有表情清掉。 */
+    @Test
+    fun migrate15To16_重复执行安全() {
+        val db = createLegacyDatabase(version = 15, ddl = MINIMAL_V15_SCHEMA)
+        YapDatabase.MIGRATION_15_16.migrate(db)
+        db.execSQL(
+            """
+            INSERT INTO `stickers` (`id`, `file`, `mime`, `source`, `createdBy`, `createdAt`)
+            VALUES ('s1', 'file:///tmp/s1.gif', 'image/gif', 'MODEL_MADE', 'MODEL', 1700000000000)
+            """.trimIndent()
+        )
+
+        YapDatabase.MIGRATION_15_16.migrate(db)
+
+        assertEquals("重复执行不能清数据", 1, db.count("stickers"))
+        assertTrue(db.hasTable("stickers"))
+        assertTrue(db.hasIndex("index_stickers_personaId"))
+    }
+
     // ---------- 造旧库 ----------
 
     /**
@@ -1496,6 +1595,17 @@ class YapDatabaseMigrationTest {
          * 用最小 DDL 而不是抄一整份 v14 schema：抄错了反而会让用例自己先崩。
          */
         val MINIMAL_V14_SCHEMA = listOf(
+            "CREATE TABLE IF NOT EXISTS `personas` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `content` TEXT NOT NULL, PRIMARY KEY(`id`))"
+        )
+
+        /**
+         * v15 旧库的最小表结构。
+         *
+         * `MIGRATION_15_16` 只新建一张表、不碰任何既有列，所以证明「旧数据不丢」只需要
+         * 一张「有用户内容」的表 + 一张「容易被误删」的表。
+         */
+        val MINIMAL_V15_SCHEMA = listOf(
             "CREATE TABLE IF NOT EXISTS `personas` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, PRIMARY KEY(`id`))",
             "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `content` TEXT NOT NULL, PRIMARY KEY(`id`))"
         )

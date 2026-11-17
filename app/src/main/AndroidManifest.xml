@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 0.13：语音消息（按住说话）。只在用户按住语音按钮时用到麦克风。 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- 常驻后台：前台服务 + 开机后自动恢复 + 绕过电池优化（引导用户手动允许） -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <!-- 用 specialUse 而不是 dataSync：Android 15 对 dataSync 有 6 小时/天的硬上限，那会把他掐死 -->

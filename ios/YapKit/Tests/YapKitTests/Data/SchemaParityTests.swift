@@ -74,9 +74,12 @@ final class SchemaParityTests: XCTestCase {
 
     func testCurrentVersionTablesMatchAndroidRoomExport() throws {
         let entities = try roomEntities()
-        for table in ["messages", Schema.messageBlocksTable] {
+        for table in ["messages", Schema.messageBlocksTable, Schema.stickersTable] {
             let entity = try XCTUnwrap(entities[table], "Android v\(Schema.version) 里没有这张表：\(table)")
-            try assertColumns(table: table, match: entity)
+            let specDefaults = table == Schema.stickersTable
+                ? Schema.stickersSpecDeclaredDefaults
+                : []
+            try assertColumns(table: table, match: entity, specDeclaredDefaults: specDefaults)
             try assertIndices(table: table, match: entity)
             try assertPrimaryKey(table: table, match: entity)
         }
@@ -159,6 +162,55 @@ final class SchemaParityTests: XCTestCase {
         }
     }
 
+    /// v16 的表情表：列名/顺序/可空/主键/索引名都与 Android 的 16.json 逐字一致。
+    ///
+    /// Android 还没导出 v16 时整条跳过（与上面几条同一个口径）。`ownerUserId` / `personaId`
+    /// 必须可空：本地模式没有 owner，用户导入的表情也不属于某个人格。
+    func testStickerTableMatchesAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        let entity = try XCTUnwrap(
+            entities[Schema.stickersTable], "Android v\(Schema.version) 里没有 stickers"
+        )
+        try assertColumns(
+            table: Schema.stickersTable, match: entity,
+            specDeclaredDefaults: Schema.stickersSpecDeclaredDefaults
+        )
+        try assertPrimaryKey(table: Schema.stickersTable, match: entity)
+        try assertIndices(table: Schema.stickersTable, match: entity)
+
+        // 规格（`spec/stickers/SCHEMA.md`）给这四列写了 DEFAULT；iOS 的建表语句照它写。
+        // Android 的 16.json 目前是 NOT NULL 无默认值（Room 要显式
+        // `@ColumnInfo(defaultValue = "…")` 才导出），所以这里单独钉住 iOS 侧的值：
+        // 「两端列名/顺序/可空/索引名逐字一致」成立，**默认值这一项两端还没对齐**，
+        // 已在交付报告里记为待 Android 侧补 defaultValue 后重新导出 16.json。
+        let expectedDefaults: [String: String] = ["width": "0", "height": "0", "frames": "1", "bytes": "0"]
+        let statement = try temp.stores.database.prepare("PRAGMA table_info(\(Schema.stickersTable))")
+        var actualDefaults: [String: String] = [:]
+        while try statement.step() {
+            let row = SQLiteRow(statement: statement)
+            if let defaultValue = try row.optionalText("dflt_value") {
+                actualDefaults[try row.text("name")] = defaultValue
+            }
+        }
+        for (column, value) in expectedDefaults {
+            XCTAssertEqual(actualDefaults[column], value, "stickers.\(column) 的默认值要照 SCHEMA.md 写")
+        }
+
+        let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])
+        let byName = Dictionary(uniqueKeysWithValues: fields.compactMap { field -> (String, [String: Any])? in
+            guard let name = field["columnName"] as? String else { return nil }
+            return (name, field)
+        })
+        for column in ["ownerUserId", "personaId"] {
+            XCTAssertEqual(byName[column]?["notNull"] as? Bool ?? true, false,
+                           "stickers.\(column) 必须可空")
+        }
+        for column in ["file", "mime", "source", "createdBy", "createdAt"] {
+            XCTAssertEqual(byName[column]?["notNull"] as? Bool ?? false, true,
+                           "stickers.\(column) 必须 NOT NULL")
+        }
+    }
+
     private func columnNames(table: String) throws -> [String] {
         let statement = try temp.stores.database.prepare("PRAGMA table_info(\(table))")
         var names: [String] = []
@@ -169,7 +221,13 @@ final class SchemaParityTests: XCTestCase {
     }
 
     /// 列名、顺序、affinity、`NOT NULL`、默认值都要一模一样。
-    private func assertColumns(table: String, match entity: [String: Any]) throws {
+    /// - Parameter specDeclaredDefaults: 规格里写了 DEFAULT、但 Android 导出里没有默认值的列。
+    ///   只对 `stickers` 用（见 `testStickerTableMatchesAndroidRoomExport` 的说明）。
+    private func assertColumns(
+        table: String,
+        match entity: [String: Any],
+        specDeclaredDefaults: Set<String> = []
+    ) throws {
         let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])
         let expectedNames = fields.compactMap { $0["columnName"] as? String }
         XCTAssertFalse(expectedNames.isEmpty, "\(table)：Android schema 里没有列")
@@ -199,6 +257,9 @@ final class SchemaParityTests: XCTestCase {
             let expectedDefault = field["defaultValue"] as? String
             if let expectedDefault {
                 XCTAssertEqual(column.defaultValue, expectedDefault, "\(table).\(name)：默认值不一致")
+            } else if specDeclaredDefaults.contains(name) {
+                // 规格写了默认值、Android 导出没写：不把它当「iOS 多写」，由上面
+                // `testStickerTableMatchesAndroidRoomExport` 单独钉住 iOS 侧的值。
             } else {
                 XCTAssertNil(column.defaultValue, "\(table).\(name)：iOS 多了一个默认值")
             }

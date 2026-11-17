@@ -44,6 +44,17 @@ public final class ToolExecutor: ToolRunning {
     private let personaCards: PersonaCardRepository
     private let intents: AgentIntentSupport
     private let echoes: MemoryEchoStoring
+    /// 表情包（`spec/stickers/README.md`）：发 / 做 / 收藏。
+    ///
+    /// 为什么默认值按 `stores` 现造一个：工具执行器在 Kit 里，不依赖 App 的装配；
+    /// 服务端模式需要「上传/下载」闭包，由装配层注入一个配置好的实例（见 `AppEnvironment`）。
+    private let stickers: StickerService
+    /// 语音/视频（0.13 `listen` / `watch`）：读本机媒体 + 抽视频关键帧。
+    ///
+    /// 与 `MediaStorage` 分开注入：单测用临时目录 + 假抽帧器，
+    /// 不必真的录一段音、解一段视频。
+    private let audioVideo: AudioVideoStore
+    private let videoFrames: VideoFrameExtracting
     private let webTools: WebToolsClient
     /// 搜完顺手判断「值不值得记」；没接（或没配置）就是「只搜不记」，搜索本身不受影响。
     private let scorer: WebSearchScoring?
@@ -71,6 +82,9 @@ public final class ToolExecutor: ToolRunning {
         personaCards: PersonaCardRepository,
         intents: AgentIntentSupport,
         echoes: MemoryEchoStoring? = nil,
+        stickers: StickerService? = nil,
+        audioVideo: AudioVideoStore = .shared,
+        videoFrames: VideoFrameExtracting = AVVideoFrameExtractor(),
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
@@ -86,6 +100,9 @@ public final class ToolExecutor: ToolRunning {
         self.personaCards = personaCards
         self.intents = intents
         self.echoes = echoes ?? MemoryEchoStore(database: stores.database)
+        self.stickers = stickers ?? StickerService(stores: stores)
+        self.audioVideo = audioVideo
+        self.videoFrames = videoFrames
         self.webTools = webTools
         self.scorer = scorer
         self.agentCore = agentCore
@@ -126,6 +143,12 @@ public final class ToolExecutor: ToolRunning {
             return diary(invocation, persona: persona, now: at)
         case "think":
             return think(invocation)
+        case "sticker":
+            return await sticker(invocation, persona: persona, sessionId: sessionId)
+        case "listen":
+            return await listen(invocation, sessionId: sessionId)
+        case "watch":
+            return await watch(invocation, sessionId: sessionId)
         default:
             // 不认识就明确说，不假装做过：模型要能知道这条路走不通。
             return failure(invocation, String(format: String(localized: "不认识这个工具：%@"), name))
@@ -895,6 +918,128 @@ public final class ToolExecutor: ToolRunning {
         )
     }
 
+    // MARK: - 表情包（`spec/stickers/README.md`）
+
+    /// 表情的三种动作。与日记板一样「一次只做一件事」，但三种动作的必填项完全不同：
+    /// - `send`：`stickerId`（发出去会**立刻多一条助手消息**）；
+    /// - `make`：`url` / `baseStickerId` / `text` / `overlayStickerId` 任意组合
+    ///   （做好只入库，不自动发）；
+    /// - `save`：`fromMessageId`（把用户/模型发过的表情收进收藏）。
+    ///
+    /// 失败一律给一句人话（id 不对、链接被拒、压不成 GIF、消息里没有表情……），不静默。
+    private func sticker(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String
+    ) async -> ToolResult {
+        let rawAction = (invocation.argument("action") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch rawAction {
+        case "send":
+            return stickerSend(invocation, persona: persona, sessionId: sessionId)
+        case "make":
+            return await stickerMake(invocation, persona: persona)
+        case "save":
+            return await stickerSave(invocation)
+        default:
+            return failure(invocation, String(localized: "表情只支持 send / make / save 三个动作"))
+        }
+    }
+
+    private func stickerSend(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String
+    ) -> ToolResult {
+        let stickerId = (invocation.argument("stickerId") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stickerId.isEmpty {
+            return failure(invocation, String(localized: "没有说要发哪个表情（需要 stickerId）"))
+        }
+        do {
+            let message = try stickers.send(
+                stickerId: stickerId, personaId: persona.id, sessionId: sessionId
+            )
+            let sticker = try? stores.stickers.byId(stickerId)
+            var result = success(
+                invocation,
+                title: String(localized: "已发送表情"),
+                subtitle: sticker?.displaySummary ?? String(localized: "表情"),
+                detail: String(format: String(localized: "表情 id：%@"), stickerId)
+                    + (sticker.map { "\n" + $0.displaySummary } ?? ""),
+                modelText: "已经把表情发出去了（消息 id：\(message.id)）。"
+                    + "它就是一句话，不用再用文字解释这个表情；想接着说别的就正常说。"
+            )
+            // 告诉 `ChatService`：这一轮已经有一条助手消息了，别再因为「没写正文」判失败。
+            result.producedMessageId = message.id
+            return result
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没发成"))
+        } catch {
+            log("[tool] sticker send 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没发成"))
+        }
+    }
+
+    private func stickerMake(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity
+    ) async -> ToolResult {
+        do {
+            let sticker = try await stickers.makeSticker(
+                url: invocation.argument("url"),
+                baseStickerId: invocation.argument("baseStickerId"),
+                text: invocation.argument("text"),
+                overlayStickerId: invocation.argument("overlayStickerId"),
+                position: invocation.argument("position"),
+                personaId: persona.id
+            )
+            return success(
+                invocation,
+                title: String(localized: "做好了表情"),
+                subtitle: sticker.displaySummary,
+                detail: String(format: String(localized: "新表情 id：%@"), sticker.id)
+                    + "\n" + sticker.displaySummary,
+                modelText: "做好了（id=\(sticker.id)，\(sticker.displaySummary)）。"
+                    + "它已经存进你的表情库；要发出去就用 sticker 的 send 动作，别忘了只有发了对方才看得到。"
+            )
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没做成"))
+        } catch {
+            log("[tool] sticker make 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没做成"))
+        }
+    }
+
+    private func stickerSave(_ invocation: ToolInvocation) async -> ToolResult {
+        let messageId = (invocation.argument("fromMessageId") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if messageId.isEmpty {
+            return failure(invocation, String(localized: "没有说是哪条消息里的表情（需要 fromMessageId）"))
+        }
+        do {
+            let result = try await stickers.save(fromMessageId: messageId)
+            let title = result.alreadySaved
+                ? String(localized: "已经在收藏里了")
+                : String(localized: "已收藏表情")
+            return success(
+                invocation,
+                title: title,
+                subtitle: result.sticker.displaySummary,
+                detail: String(format: String(localized: "表情 id：%@"), result.sticker.id)
+                    + "\n" + result.sticker.displaySummary,
+                modelText: result.alreadySaved
+                    ? "这个表情早就在你的收藏里了（id=\(result.sticker.id)），不用再收一次。"
+                    : "已收藏（id=\(result.sticker.id)）。以后想发就用这个 id；收藏本身不会发消息。"
+            )
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没收成"))
+        } catch {
+            log("[tool] sticker save 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没收成"))
+        }
+    }
+
     /// 读一个可能写成数字、字符串或浮点的整型参数（模型经常把 1794500000000 写成字符串）。
     static func int64Argument(_ invocation: ToolInvocation, _ name: String) -> Int64? {
         guard let object = argumentsObject(invocation.argumentsJson) else { return nil }
@@ -903,6 +1048,135 @@ public final class ToolExecutor: ToolRunning {
             return Int64(text.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return nil
+    }
+
+    // MARK: - 听语音 / 看视频（0.13，`spec/audio-video/README.md`）
+
+    /// 一段可播放媒体在聊天记录里的位置（工具回灌时要说清「是哪一条消息里的」）。
+    private struct FoundMedia {
+        var messageId: String
+        var attachment: MessageAttachment
+    }
+
+    /// 在工作里找最近的一段语音/视频（不看历史远端，只看本机缓存最近 50 条）。
+    ///
+    /// - Parameter requestedId: 模型给的 `audioId` / `videoId`；空 = 取最近那一段。
+    /// - 匹配方式：`mediaRefId`（服务端 id 或本地文件名主干）或 `uri` 后缀；
+    ///   模型有时会把整条 `file://` 路径抄回来，所以两种都认。
+    private func findRecentMedia(
+        sessionId: String,
+        wantAudio: Bool,
+        requestedId: String?
+    ) -> FoundMedia? {
+        let requested = requestedId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let recent = (try? stores.messages.recent(
+            sessionId: sessionId, limit: Self.listenScanLimit
+        )) ?? []
+        for message in recent.reversed() {
+            for attachment in AttachmentsCodec.decode(message.attachmentsJson) {
+                guard wantAudio ? attachment.isAudio : attachment.isVideo else { continue }
+                if requested.isEmpty {
+                    return FoundMedia(messageId: message.id, attachment: attachment)
+                }
+                let id = attachment.mediaRefId ?? ""
+                if id == requested || attachment.uri == requested
+                    || attachment.uri.hasSuffix("/" + requested) {
+                    return FoundMedia(messageId: message.id, attachment: attachment)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// `listen`：把这段语音**真的**交给模型听一遍（`input_audio`），不是转写。
+    ///
+    /// 失败要给一句人话：没语音、id 找不到、文件已不在本机、格式不支持。
+    /// 绝不能回「我听到了…」——模型没收到音频时那样说就是伪造。
+    private func listen(_ invocation: ToolInvocation, sessionId: String) async -> ToolResult {
+        let requested = invocation.argument("audioId")
+        guard let found = findRecentMedia(sessionId: sessionId, wantAudio: true, requestedId: requested)
+        else {
+            let message = (requested?.isEmpty == false)
+                ? String(localized: "没找到这段语音（id 可能不对）")
+                : String(localized: "这里还没有语音可以听")
+            return failure(invocation, message)
+        }
+        let attachment = found.attachment
+        guard let data = audioVideo.data(for: attachment) else {
+            return failure(invocation, String(localized: "这段语音已经不在本机了，听不到"))
+        }
+        guard let format = WireAudioPart.format(forMime: attachment.mime) else {
+            return failure(
+                invocation,
+                String(format: String(localized: "这种语音格式还不支持（%@）"), attachment.mime)
+            )
+        }
+        let durationText = attachment.durationText
+        let parts = MediaWireParts(audio: [
+            WireAudioPart(base64: data.base64EncodedString(), format: format)
+        ])
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: durationText.isEmpty ? String(localized: "听了一遍") : durationText,
+            contentForModel: "我听了一遍这段语音（时长 \(durationText)，\(Self.byteText(data.count))）。"
+                + "声音本身已经作为音频片段交给你了：按你真正听到的内容回答，"
+                + "不要把它当成文字转写，也不要假装听到了不存在的话；没听清就直说。",
+            traceTitle: String(localized: "听了一遍"),
+            traceDetail: String(format: String(localized: "语音 %@ · %@"), durationText, Self.byteText(data.count)),
+            mediaParts: parts
+        )
+    }
+
+    /// `watch`：抽 ≤8 帧关键画面交给模型（多张 `image_url`），并说明「N 帧 / 时长」。
+    private func watch(_ invocation: ToolInvocation, sessionId: String) async -> ToolResult {
+        let requested = invocation.argument("videoId")
+        guard let found = findRecentMedia(sessionId: sessionId, wantAudio: false, requestedId: requested)
+        else {
+            let message = (requested?.isEmpty == false)
+                ? String(localized: "没找到这段视频（id 可能不对）")
+                : String(localized: "这里还没有视频可以看")
+            return failure(invocation, message)
+        }
+        let attachment = found.attachment
+        guard let url = audioVideo.fileURL(for: attachment) else {
+            return failure(invocation, String(localized: "这段视频已经不在本机了，看不了"))
+        }
+        let count = VideoFramePolicy.frameCount(durationSeconds: attachment.durationSeconds)
+        let rawFrames = await videoFrames.frames(
+            of: url, count: count, maxPixel: VideoFramePolicy.maxPixel
+        )
+        let frames = VideoFramePolicy.budgeted(rawFrames)
+        guard !frames.isEmpty else {
+            return failure(invocation, String(localized: "这段视频的画面读不出来"))
+        }
+        let duration = attachment.durationSeconds
+            ?? VideoFramePolicy.estimatedDuration(frames.count)
+        let note = VideoFramePolicy.note(frameCount: frames.count, durationSeconds: duration)
+        let images = frames.map { "data:image/jpeg;base64,\($0.base64EncodedString())" }
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: note,
+            contentForModel: "我看了这段视频的 \(frames.count) 帧（\(note)）。"
+                + "画面已经作为图片交给你了：按你看到的回答，"
+                + "没看到的部分（前后被剪掉、画面外、声音）就说不知道，不要编。",
+            traceTitle: String(localized: "看了几帧"),
+            traceDetail: note,
+            // 帧数/时长已经写在 `contentForModel` 里（回灌时会一起交给模型），
+            // 这里不再重复一段 note，免得同一句「视频：N 帧」在请求里出现两遍。
+            mediaParts: MediaWireParts(images: images)
+        )
+    }
+
+    /// 工具扫描最近几条消息找媒体（一屏的聊天量足够：语音/视频都是「刚发来的」）。
+    static let listenScanLimit = 50
+
+    static func byteText(_ bytes: Int) -> String {
+        if bytes >= 1024 * 1024 {
+            return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+        }
+        return String(format: "%d KB", max(1, bytes / 1024))
     }
 
     // MARK: - 先不回

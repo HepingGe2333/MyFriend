@@ -17,6 +17,7 @@ import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryEchoDao
 import com.yap.app.data.local.MediaReferenceDao
 import com.yap.app.data.local.DiaryNoteDao
+import com.yap.app.data.local.StickerDao
 import com.yap.app.data.local.MessageBlockDao
 import com.yap.app.data.local.MessageDao
 import com.yap.app.data.local.AgentIntentDao
@@ -44,14 +45,23 @@ import com.yap.app.data.repo.RoomServerBootstrapLocal
 import com.yap.app.data.repo.RoomServerChatSink
 import com.yap.app.data.repo.RoomServerEventSink
 import com.yap.app.data.repo.RoomServerStateSink
+import com.yap.app.data.repo.PersonaEvolutionRepository
+import com.yap.app.data.repo.PersonaEvolutionStore
+import com.yap.app.data.repo.PersonaEvolutionTrigger
+import com.yap.app.data.repo.RoomPersonaEvolutionStore
 import com.yap.app.data.remote.CredentialBackend
 import com.yap.app.data.remote.DataStoreServerLocalStore
 import com.yap.app.data.remote.DataStoreServerPresenceStore
 import com.yap.app.data.remote.ServerApiBootstrapRemote
 import com.yap.app.data.remote.ServerApiRemote
+import com.yap.app.data.remote.RepositoryServerModeControl
 import com.yap.app.data.remote.ServerBootstrapLocal
 import com.yap.app.data.remote.ServerBootstrapManager
 import com.yap.app.data.remote.ServerBootstrapRemote
+import com.yap.app.data.remote.ServerHistoryMediaSender
+import com.yap.app.data.remote.ServerModeControl
+import com.yap.app.data.remote.ServerModeSwitchCoordinator
+import com.yap.app.data.remote.ServerSyncConsent
 import com.yap.app.data.remote.ServerChatGateway
 import com.yap.app.data.remote.ServerChatMediaSender
 import com.yap.app.data.remote.ServerChatSink
@@ -116,7 +126,8 @@ object AppModule {
                 YapDatabase.MIGRATION_11_12,
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
-                YapDatabase.MIGRATION_14_15
+                YapDatabase.MIGRATION_14_15,
+                YapDatabase.MIGRATION_15_16
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -141,6 +152,18 @@ object AppModule {
     @Provides fun memoryVectorDao(db: YapDatabase): MemoryVectorDao = db.memoryVectorDao()
     @Provides fun personaPendingPatchDao(db: YapDatabase): PersonaPendingPatchDao = db.personaPendingPatchDao()
     @Provides fun diaryNoteDao(db: YapDatabase): DiaryNoteDao = db.diaryNoteDao()
+    @Provides fun stickerDao(db: YapDatabase): StickerDao = db.stickerDao()
+
+    /**
+     * 表情包的「下载一张公开图片」端口（`sticker` 工具的 `make`）。
+     *
+     * 接口在 `data/remote`、实现是 [com.yap.app.data.remote.HttpStickerDownloader]（OkHttp + `WebUrlPolicy`）。
+     * 抽接口是为了纯 JVM 单测能注入假下载器，生产装配只有这一份实现。
+     */
+    @Provides
+    @Singleton
+    fun provideStickerUrlDownloader(impl: com.yap.app.data.remote.HttpStickerDownloader):
+        com.yap.app.data.remote.StickerUrlDownloader = impl
 
     @Provides fun mediaReferenceDao(db: YapDatabase): MediaReferenceDao = db.mediaReferenceDao()
 
@@ -429,17 +452,46 @@ object AppModule {
         local: ServerBootstrapLocal,
         remote: ServerBootstrapRemote,
         localStore: ServerLocalStore,
-        mediaSender: ServerChatMediaSender
+        mediaSender: ServerChatMediaSender,
+        historyMedia: ServerHistoryMediaSender
     ): ServerBootstrapManager = ServerBootstrapManager(
         local = local,
         remote = remote,
         store = localStore,
+        // 0.13：没有同意记录（或旧版本遗留配置）一律按「只同步之后的新内容」处理，
+        // 任何自动路径都不能替用户把历史传上云。
+        consentFor = { baseUrl ->
+            localStore.syncConsent(baseUrl) ?: ServerSyncConsent.NEW_ONLY
+        },
+        historyMedia = historyMedia,
         uploadAvatar = { uri, personaId ->
             mediaSender.uploadPersonaAvatar(uri, personaId).getOrThrow()
         },
         uploadUserAvatar = { uri ->
             mediaSender.uploadUserAvatar(uri).getOrThrow()
         }
+    )
+
+    /**
+     * 0.13 服务端开关的状态机（同意弹窗 / 历史媒体同步 / 切回本地全量下载与条数校验）。
+     *
+     * 三个依赖都可替换：仓库只提供「开关 + 地址」，本地存储记同意，runner 复用同一轮 bootstrap。
+     */
+    @Provides
+    @Singleton
+    fun provideServerModeControl(mode: com.yap.app.data.remote.ServerModeRepository): ServerModeControl =
+        RepositoryServerModeControl(mode)
+
+    @Provides
+    @Singleton
+    fun provideServerModeSwitchCoordinator(
+        mode: ServerModeControl,
+        localStore: ServerLocalStore,
+        bootstrap: ServerBootstrapManager
+    ): ServerModeSwitchCoordinator = ServerModeSwitchCoordinator(
+        mode = mode,
+        store = localStore,
+        runner = bootstrap
     )
 
     @Provides
@@ -450,4 +502,24 @@ object AppModule {
         sink: ServerEventSink,
         notifier: ServerEventNotifier
     ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier)
+
+    /**
+     * 人格进化「接受 / 拒绝」的本地读写端口（0.13）。
+     *
+     * 抽接口只为纯 JVM 单测：真实实现是 Room，测试用内存假实现钉住
+     * 「服务端失败时待审项还在」「本地模式行为不变」。
+     */
+    @Provides
+    @Singleton
+    fun providePersonaEvolutionStore(impl: RoomPersonaEvolutionStore): PersonaEvolutionStore = impl
+
+    /**
+     * 本地模式与服务端模式共用的「触发一轮进化评估」入口。
+     *
+     * 两种模式的触发点（发完用户消息 / 回复 done）都拿它，实现是同一个仓库实例，
+     * 因此共享同一个游标与单飞锁——切换模式不会重复评估。
+     */
+    @Provides
+    @Singleton
+    fun providePersonaEvolutionTrigger(repo: PersonaEvolutionRepository): PersonaEvolutionTrigger = repo
 }

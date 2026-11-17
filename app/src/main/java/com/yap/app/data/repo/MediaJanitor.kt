@@ -46,6 +46,17 @@ class MediaJanitor @Inject constructor(
         return MediaStorage.deleteIfUnreferenced(context, value) { names -> references.referencedNames(names) }
     }
 
+    /**
+     * 清空聊天时删语音/视频（`files/audio`、`files/video`），[keepFileNames] 里的是这次要留下的。
+     *
+     * 与 [clearChatImagesExcept] 同一套引用守卫、不同目录：语音/视频不归 `DataEraser` 管
+     * （那是 `agentcore` 的清单），所以由清空聊天这条路径显式调用。
+     */
+    suspend fun clearVoiceVideoExcept(keepFileNames: Set<String> = emptySet()): Int =
+        MediaStorage.clearVoiceVideoExceptIfUnreferenced(context, keepFileNames) { names ->
+            references.referencedNames(names)
+        }
+
     /** 批量删文件；还有引用就留着。 */
     suspend fun deleteFilesIfUnreferenced(uris: List<String>): Int {
         if (uris.isEmpty()) return 0

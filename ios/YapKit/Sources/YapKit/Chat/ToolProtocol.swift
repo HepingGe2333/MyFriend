@@ -61,6 +61,15 @@ public enum ToolCatalog {
     /// 它不是「记住对方的事」（那是 `remember`），而是**他自己的备忘录**：
     /// 内容只有他自己看得见，可以挂一个定时提醒（到点变成念头）。
     public static let diary = "diary"
+    /// 0.13：表情包（`spec/stickers/README.md`）：发一个、做一个、收藏一个。
+    public static let sticker = "sticker"
+    /// 0.13：听一段语音（`spec/audio-video/README.md`）。
+    ///
+    /// 它**不是**「转写」：客户端把音频原始字节作为多模态输入交给模型，
+    /// 模型听到的是声音本身（语气、停顿、环境音），而不是一段 ASR 文本。
+    public static let listen = "listen"
+    /// 0.13：看一段视频（抽 ≤8 张关键帧交给模型）。
+    public static let watch = "watch"
 
     private static let thinkDescription = "需要认真想清楚、比较几种可能、或者信息不足时调用；日常闲聊不要调用，也不要为了显得深刻而调用。"
     private static let webSearchDescription = "需要最新事实、新闻、价格、版本号、你不确定的信息时调用；纯聊天、或你本来就知道的常识不要调用。"
@@ -85,6 +94,21 @@ public enum ToolCatalog {
         "它是**你自己的备忘录**（对方看不见内容），和 remember（记住对方的事）不是一回事。" +
         "可以挂一个定时提醒：到点你会自己想起这条，再决定要不要主动开口。" +
         "内容最多 2000 字，一次只做一件事（add / list / remove）。"
+    /// 表情包（`spec/stickers/README.md`）：三种动作写清各自的必填项与后果，
+    /// 免得模型把「做一个」当成「发一个」（做了不一定会发出去）。
+    private static let stickerDescription = "用表情说话：send 把已有表情发出去，make 做一个新表情，save 把消息里的表情收进你的收藏；" +
+        "表情是压缩过的 GIF（≤320 px、≤60 帧、≤6 秒、≤512 KB），只能发库里有的 id。" +
+        "make 可以下载公开图片（http/https，≤8 MB）、用已有表情当底、叠字或叠另一张表情；" +
+        "做好了不会自动发出去，想发还得再调 send。一次只做一个动作（send / make / save）。"
+
+    /// 语音与视频：写清「这是真的听到/看到，不是转写」，以及「不要假装听过」。
+    /// 这两句直接决定模型会不会把「对方发了语音」敷衍成一句「嗯嗯知道啦」。
+    private static let listenDescription = "对方发来语音、你想知道那段声音里到底说了什么、语气怎么样时调用；" +
+        "你听到的是声音本身（不是文字转写），听完按你听到的回答。不填 audioId 就听最近那一段语音；" +
+        "没有语音可听时会明确告诉你，别假装听过。"
+    private static let watchDescription = "对方发来视频、你想知道画面里发生了什么时调用；" +
+        "你会看到几帧关键画面（不是整段视频），看不到的地方老实说不确定。" +
+        "不填 videoId 就看最近那一段视频；没有视频可看时会明确告诉你，别假装看过。"
     private static let thinkParameters = """
     {
       "type": "object",
@@ -213,6 +237,42 @@ public enum ToolCatalog {
     }
     """
 
+    private static let stickerParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["send", "make", "save"], "description": "send 发一个已有表情，make 做一个新表情，save 把消息里的表情收进收藏"},
+        "stickerId": {"type": "string", "description": "send 必填：要发的表情 id（收藏/聊天里出现过的那个）"},
+        "url": {"type": "string", "description": "make：要下载的公开图片链接（http/https）"},
+        "baseStickerId": {"type": "string", "description": "make：用哪个已有表情当底；不填就用内置空白底"},
+        "text": {"type": "string", "description": "make：叠在表情上的文字（最多 80 字）"},
+        "overlayStickerId": {"type": "string", "description": "make：再叠上另一张表情"},
+        "position": {"type": "string", "enum": ["TOP", "CENTER", "BOTTOM"], "description": "文字/叠图放哪：TOP 上、CENTER 中、BOTTOM 下（默认 BOTTOM）"},
+        "fromMessageId": {"type": "string", "description": "save 必填：哪条消息里的表情（消息 id）"}
+      },
+      "required": ["action"]
+    }
+    """
+
+    /// `listen` / `watch` 的参数形状：媒体 id 可选（不填就取最近一段）。
+    private static let listenParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "audioId": {"type": "string", "description": "要听哪一段语音的媒体 id；不填就听最近那一段"}
+      }
+    }
+    """
+
+    private static let watchParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "videoId": {"type": "string", "description": "要看哪一段视频的媒体 id；不填就看最近那一段"}
+      }
+    }
+    """
+
     // MARK: - 副作用（「# 你能做什么」段由这些句子生成）
 
     /// 一句话写清「调用之后世界会变什么」。
@@ -230,6 +290,9 @@ public enum ToolCatalog {
     private static let recallSideEffect = "只翻你自己的记忆与旧聊天，不改任何东西；翻不到就是翻不到。"
     private static let deferReplySideEffect = "这一轮不会发出任何消息（对方只看到「已读」），过一会儿你再决定要不要开口。"
     private static let diarySideEffect = "写/删你自己那份日记板（对方看不到内容）；挂的定时提醒到点会变成你自己的念头。"
+    private static let stickerSideEffect = "send 会真的发出一条表情消息（对方立刻看到）；make 只生成一个新表情（存进你的表情库，不会自动发）；save 只把消息里的表情收进收藏，不发消息。"
+    private static let listenSideEffect = "只把那段语音的原始声音交给模型听一遍，不改库、不发消息；听到什么就是什么，没有转写文本。"
+    private static let watchSideEffect = "只把那段视频的几帧画面交给模型看，不改库、不发消息；看不到的部分不要编。"
 
     public static let all: [ToolSpec] = [
         ToolSpec(name: think, description: thinkDescription, parametersJson: thinkParameters,
@@ -253,7 +316,13 @@ public enum ToolCatalog {
         ToolSpec(name: deferReply, description: deferReplyDescription,
                  parametersJson: deferReplyParameters, sideEffect: deferReplySideEffect),
         ToolSpec(name: diary, description: diaryDescription, parametersJson: diaryParameters,
-                 sideEffect: diarySideEffect)
+                 sideEffect: diarySideEffect),
+        ToolSpec(name: sticker, description: stickerDescription, parametersJson: stickerParameters,
+                 sideEffect: stickerSideEffect),
+        ToolSpec(name: listen, description: listenDescription, parametersJson: listenParameters,
+                 sideEffect: listenSideEffect),
+        ToolSpec(name: watch, description: watchDescription, parametersJson: watchParameters,
+                 sideEffect: watchSideEffect)
     ]
 
     public static func byName(_ name: String) -> ToolSpec? {
@@ -328,7 +397,8 @@ public enum ToolCatalog {
             "你只能通过下面这些工具做事；工具做不到的事就说做不到，失败也照实说，不要假装做过。"
         ]
         for spec in enabled(webEnabled: webEnabled) {
-            lines.append("- " + signature(spec) + "：" + spec.description + "（副作用：" + spec.sideEffect + "）")
+            lines.append("- " + signature(spec) + "：" + spec.description)
+            if !spec.sideEffect.isEmpty { lines.append("  · 区别：" + spec.sideEffect) }
         }
         if !webEnabled {
             lines.append("- 你现在没有联网能力。涉及实时信息时，老实说自己不确定，别编。")
@@ -438,6 +508,20 @@ public struct ToolResult: Equatable, Sendable {
     public var traceTitle: String?
     /// 痕迹展开后的正文；不给就用 `contentForModel`（与 Android 的 `detail` 对应）。
     public var traceDetail: String?
+    /// 这个工具**已经替这一轮发了一条消息**时，它的 id（0.13 表情包的 `sticker.send`）。
+    ///
+    /// 为什么需要它：`sticker.send` 的产物本身就是一条助手消息，模型很可能不再写正文；
+    /// `ChatService` 原先「没有文字 = 走神了」的判定会把这一轮当成失败。有了这个 id，
+    /// 聊天服务就能把「表情已经发出去了」当成正常完成（见 `ChatService.generate`）。
+    /// 其它工具都是 nil（它们不直接产生消息）。
+    public var producedMessageId: String?
+    /// 这次工具调用要**额外交给模型的多模态内容**（0.13 的 `listen` / `watch`）。
+    ///
+    /// 为什么不能只用 `contentForModel`：`listen` 要让模型真的听到声音（`input_audio`），
+    /// `watch` 要让模型真的看到画面（多张 `image_url`）。`contentForModel` 里那句
+    /// 「我听了一遍…」只是**附带说明**，如果只有它，模型就只能靠编。
+    /// `ChatService` 会把这里的内容拼进回灌的那条消息里。
+    public var mediaParts: MediaWireParts?
 
     public init(
         invocation: ToolInvocation,
@@ -446,7 +530,9 @@ public struct ToolResult: Equatable, Sendable {
         contentForModel: String,
         errorMessage: String? = nil,
         traceTitle: String? = nil,
-        traceDetail: String? = nil
+        traceDetail: String? = nil,
+        producedMessageId: String? = nil,
+        mediaParts: MediaWireParts? = nil
     ) {
         self.invocation = invocation
         self.ok = ok
@@ -455,6 +541,8 @@ public struct ToolResult: Equatable, Sendable {
         self.errorMessage = errorMessage
         self.traceTitle = traceTitle
         self.traceDetail = traceDetail
+        self.producedMessageId = producedMessageId
+        self.mediaParts = mediaParts
     }
 }
 
@@ -641,6 +729,12 @@ public enum ToolProtocol {
         // 0.13 日记板：默认是「写日记」，翻/删由 `ToolResult.traceTitle` 按动作覆盖成
         // 「翻日记」「删了日记」（`spec/diary/README.md`：痕迹标题「写日记」「翻日记」）。
         case ToolCatalog.diary: return String(localized: "写日记")
+        // 表情：默认「表情」，具体动作由 `ToolResult.traceTitle` 覆盖成
+        // 「已发送表情」/「做好了表情」/「已收藏表情」。
+        case ToolCatalog.sticker: return String(localized: "表情")
+        // 0.13 音视频：听/看不是「工具调用」的黑箱，界面上就是一句「听了一遍」。
+        case ToolCatalog.listen: return String(localized: "听了一遍")
+        case ToolCatalog.watch: return String(localized: "看了几帧")
         default:
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? String(localized: "动作") : trimmed
@@ -727,6 +821,31 @@ public enum ToolProtocol {
             default:
                 let content = invocation.argument("content") ?? ""
                 return content.isEmpty ? nil : "写下：\(String(content.prefix(80)))"
+            }
+        case ToolCatalog.listen:
+            let audioId = invocation.argument("audioId") ?? ""
+            return audioId.isEmpty ? "听最近那段语音" : "听语音：\(String(audioId.prefix(40)))"
+        case ToolCatalog.watch:
+            let videoId = invocation.argument("videoId") ?? ""
+            return videoId.isEmpty ? "看最近那段视频" : "看视频：\(String(videoId.prefix(40)))"
+        case ToolCatalog.sticker:
+            let action = (invocation.argument("action") ?? "").lowercased()
+            switch action {
+            case "send":
+                let stickerId = invocation.argument("stickerId") ?? ""
+                return stickerId.isEmpty ? "要发一个表情" : "发表情：\(String(stickerId.prefix(40)))"
+            case "make":
+                var parts: [String] = []
+                if let url = invocation.argument("url"), !url.isEmpty { parts.append("下载 \(String(url.prefix(80)))") }
+                if let base = invocation.argument("baseStickerId"), !base.isEmpty { parts.append("底图 \(String(base.prefix(24)))") }
+                if let text = invocation.argument("text"), !text.isEmpty { parts.append("叠字「\(String(text.prefix(30)))」") }
+                if let overlay = invocation.argument("overlayStickerId"), !overlay.isEmpty { parts.append("叠图 \(String(overlay.prefix(24)))") }
+                return parts.isEmpty ? "做一个表情" : parts.joined(separator: " · ")
+            case "save":
+                let messageId = invocation.argument("fromMessageId") ?? ""
+                return messageId.isEmpty ? "收藏一个表情" : "收藏消息 \(String(messageId.prefix(40))) 里的表情"
+            default:
+                return nil
             }
         default:
             return nil

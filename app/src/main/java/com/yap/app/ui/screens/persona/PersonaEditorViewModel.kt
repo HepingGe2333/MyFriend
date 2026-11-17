@@ -156,7 +156,12 @@ data class PersonaEditorUiState(
     /** 当前人格待审的进化变化，按补丁创建时间倒序；空列表时整块不显示。 */
     val pendingChanges: List<PendingChangeUi> = emptyList(),
     /** 正在接受 / 拒绝某一条：期间所有按钮禁用，避免连点打两次写库。 */
-    val pendingBusy: Boolean = false
+    val pendingBusy: Boolean = false,
+    /**
+     * 当前是不是服务端模式（0.13）：只影响文案与「接受」实际走的写路径。
+     * 本地模式写本机；服务端模式先 `POST /v1/personas`，成功后再写本机缓存。
+     */
+    val serverMode: Boolean = false
 ) {
     val isDirty: Boolean get() = form != initialForm || card != initialCard
     val boundConfig: ApiConfigEntity? get() = configs.firstOrNull { it.id == form.defaultApiConfigId }
@@ -180,7 +185,13 @@ class PersonaEditorViewModel @Inject constructor(
     private val personaEvolutionRepository: PersonaEvolutionRepository
 ) : ViewModel() {
     private val personaId: String? = savedStateHandle.get<String>("personaId")?.takeIf { it.isNotBlank() }
-    private val _state = MutableStateFlow(PersonaEditorUiState(personaId = personaId, isNew = personaId == null))
+    private val _state = MutableStateFlow(
+        PersonaEditorUiState(
+            personaId = personaId,
+            isNew = personaId == null,
+            serverMode = personaEvolutionRepository.isServerMode()
+        )
+    )
     val state: StateFlow<PersonaEditorUiState> = _state.asStateFlow()
     private val events = Channel<PersonaEditorEvent>(Channel.BUFFERED)
     val eventFlow = events.receiveAsFlow()
@@ -561,7 +572,14 @@ class PersonaEditorViewModel @Inject constructor(
                     pendingChanges = state.pendingChanges.filterNot { it.patchId == patchId }
                 )
             }
-            events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_evolution_accepted)))
+            events.send(
+                PersonaEditorEvent.Message(
+                    context.getString(
+                        if (_state.value.serverMode) R.string.persona_evolution_accepted_server
+                        else R.string.persona_evolution_accepted
+                    )
+                )
+            )
         }
     }
 

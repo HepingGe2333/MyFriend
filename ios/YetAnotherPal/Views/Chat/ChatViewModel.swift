@@ -113,6 +113,12 @@ final class ChatViewModel: ObservableObject {
     private var stopFallback: Task<Void, Never>?
     /// 定位高亮的淡出计时器。
     private var highlightTask: Task<Void, Never>?
+    /// 这一轮是不是真的**收到过 `done`**（助手消息已落库）。
+    ///
+    /// 只给云端模式下的人格进化触发用：`finishGeneration()` 在「他这一轮没说话」
+    /// （`.noReply`）、用户点停止、网络失败时也会走到，那些都不算「一轮回复完成」，
+    /// 不该顺手评估一次人格。本地模式不看它（`ChatService` 落库后自己触发）。
+    private var completedReply = false
 
     // MARK: - 进 / 出页面
 
@@ -572,34 +578,63 @@ final class ChatViewModel: ObservableObject {
         return !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !pendingAttachments.isEmpty
     }
 
-    // MARK: - 附件（图片）
+    // MARK: - 附件（图片 / 语音 / 视频）
 
-    /// 加进待发送的图片；超过上限的部分直接丢掉（界面只让选 4 张，这里是兜底）。
+    /// 加进待发送的附件；超过上限的部分直接丢掉（界面已经限过一次，这里是兜底）。
+    ///
+    /// 上限与 `AttachmentsCodec` 同一组：图片 4 张、语音 1 段、视频 1 段。
+    /// 语音/视频合起来算「一段媒体」——一次发两段语音对方也不知道先听哪条。
     func addAttachments(_ attachments: [MessageAttachment]) {
-        let images = attachments.filter { $0.isImage }
-        guard !images.isEmpty else { return }
-        let room = max(0, AttachmentsCodec.maxImagesPerMessage - pendingAttachments.count)
-        pendingAttachments.append(contentsOf: images.prefix(room))
+        var images = attachments.filter { $0.isImage }
+        var audio = attachments.filter { $0.isAudio }
+        var video = attachments.filter { $0.isVideo }
+        let room = max(0, AttachmentsCodec.maxImagesPerMessage - pendingAttachments.filter { $0.isImage }.count)
+        images = Array(images.prefix(room))
+        if pendingAttachments.contains(where: { $0.isPlayableMedia }) {
+            audio = []
+            video = []
+        }
+        var kept = images
+        if let first = audio.first { kept.append(first) }
+        if let first = video.first { kept.append(first) }
+        guard !kept.isEmpty else { return }
+        pendingAttachments.append(contentsOf: kept)
+    }
+
+    /// 已经选了几张图（`PhotosPicker` 的可选上限要扣掉它）。
+    var pendingImageCount: Int {
+        pendingAttachments.filter { $0.isImage }.count
+    }
+
+    /// 已经选了一段语音/视频没有（有的话「按住说话 / 选视频」按钮先别开）。
+    var hasPendingPlayableMedia: Bool {
+        pendingAttachments.contains { $0.isPlayableMedia }
     }
 
     func removeAttachment(at index: Int) {
         guard pendingAttachments.indices.contains(index) else { return }
         let attachment = pendingAttachments.remove(at: index)
-        // 用户撤掉的那张不该留在沙盒里当垃圾 —— 但如果选图命中了已有文件的去重
-        // （另一条消息/头像用同一张图），它其实还有引用，不能删。
-        guard let env else { return }
-        MediaStorage.shared.deleteIfUnreferenced(
-            attachment,
-            references: MediaReferences(stores: env.stores, settings: env.settings)
-        )
+        discard(attachment)
     }
 
     func clearPendingAttachments() {
         let attachments = pendingAttachments
         pendingAttachments.removeAll()
+        for attachment in attachments { discard(attachment) }
+    }
+
+    /// 撤掉/放弃一个待发送附件时清文件。
+    ///
+    /// 图片：走引用计数（同一张图可能还被别的消息/头像用着）；
+    /// 语音/视频：文件名带 UUID、不做内容去重，直接删自己目录里的那一份。
+    private func discard(_ attachment: MessageAttachment) {
         guard let env else { return }
+        if attachment.isPlayableMedia {
+            AudioVideoStore.shared.deleteIfOwned(attachment)
+            return
+        }
         MediaStorage.shared.deleteIfUnreferenced(
-            attachments,
+            attachment,
             references: MediaReferences(stores: env.stores, settings: env.settings)
         )
     }
@@ -674,6 +709,69 @@ final class ChatViewModel: ObservableObject {
         sendFailure = nil
     }
 
+    // MARK: - 表情（0.13）
+
+    /// 发送一个表情（历史面板点选 / 长按收藏后点发送）。
+    ///
+    /// 与普通发送的区别只有两点：
+    /// 1. **不带文字**：表情自己就是一句话（`ChatService` 允许正文为空的图片消息）；
+    /// 2. 不清空草稿与已选图片：用户可能正写到一半，点个表情只是插一句。
+    ///
+    /// 服务端模式要先上传 GIF 拿 `/v1/media/<id>`（`StickerService.prepareForSending`）：
+    /// 服务端的聊天媒体链路只认已上传的 mediaId，而且它会把本地文件重压成 JPEG ——
+    /// 那样表情就不动了，所以这一步必须走表情自己的上传（`kind=STICKER`）。
+    func sendSticker(_ sticker: StickerEntity) {
+        guard let env, !isGenerating, !isPreparingAttachments else { return }
+        guard env.serverModeActive || env.resolvedChatConfig() != nil else {
+            hasApiConfig = false
+            showToast(L("先去设置里配一个 API"))
+            return
+        }
+        isPreparingAttachments = true
+        let targetSessionId = sessionId
+        Task { @MainActor in
+            do {
+                let personaId = (try? env.stores.sessions.byId(targetSessionId))??.personaId
+                let attachment = try await env.stickers.prepareForSending(
+                    sticker, personaId: personaId
+                )
+                let outcome = await env.sendCheckedWithMedia(
+                    sessionId: targetSessionId, text: "", attachments: [attachment]
+                )
+                isPreparingAttachments = false
+                switch outcome {
+                case .started(let stream):
+                    sendFailure = nil
+                    reloadMessages(preservingLoadedRange: true)
+                    consume(stream)
+                case .rejected(let error):
+                    let message = Self.describe(error)
+                    sendFailure = message
+                    showToast(message)
+                }
+            } catch {
+                isPreparingAttachments = false
+                let message = (error as? LocalizedError)?.errorDescription ?? L("表情没发出去")
+                showToast(message.isEmpty ? L("表情没发出去") : message)
+            }
+        }
+    }
+
+    /// 长按气泡「添加到我的表情」：把这条消息里的表情收进收藏（同一文件，不重新编码）。
+    func saveSticker(from message: MessageEntity) {
+        guard let env else { return }
+        Task { @MainActor in
+            do {
+                let result = try await env.stickers.save(fromMessageId: message.id)
+                showToast(result.alreadySaved ? L("这个表情已经在收藏里了") : L("已添加到我的表情"))
+            } catch {
+                let text = (error as? LocalizedError)?.errorDescription ?? L("没能保存这个表情")
+                showToast(text.isEmpty ? L("没能保存这个表情") : text)
+            }
+        }
+    }
+
+
     /// 重新生成：`ChatService` 会删掉最后一条助手消息再跑一轮。
     func regenerate() {
         guard let env, !isGenerating else { return }
@@ -725,6 +823,7 @@ final class ChatViewModel: ObservableObject {
         lastNoReply = nil
         streamingText = ""
         streamingTraces = []
+        completedReply = false
         stopFallback?.cancel()
         stopFallback = nil
 
@@ -762,6 +861,8 @@ final class ChatViewModel: ObservableObject {
             // 落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
             // 0.12 续 7：他这一轮说了话 → 上一轮的「他睡着了」提示立刻作废。
             lastNoReply = nil
+            // 云端模式的人格进化只认「真的完成了一轮回复」（停止/失败/没说话都不算）。
+            completedReply = true
         case .noReply(let reason):
             // 他这一轮没说话：没有助手消息要落库，界面只重读一次消息（用户气泡会显示「已读」）。
             lastNoReply = reason
@@ -780,6 +881,12 @@ final class ChatViewModel: ObservableObject {
         stopFallback = nil
         reloadMessages(preservingLoadedRange: true)
         refreshContext()
+        // 云端模式：这一轮助手回复已经落库，按与本地模式同一节流考虑跑一次人格进化
+        //（本地模式由 `ChatService` 在落库后触发，这里不做，避免两条路径各烧一次调用）。
+        if completedReply, let env, env.serverModeActive, let persona {
+            env.triggerPersonaEvolutionForServerReply(sessionId: sessionId, personaId: persona.id)
+        }
+        completedReply = false
         // 流结束：消息轮询重新按计划起来（生成中它是停的）。
         restartPulses()
     }

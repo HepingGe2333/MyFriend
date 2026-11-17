@@ -29,14 +29,22 @@ object MediaRoutes {
 
     const val PATH = "/v1/media"
 
-    /** 单文件上限（原始字节）。客户端已压到 ≤800 KB；服务端仍拒绝超过 2 MiB 的文件。 */
+    /** 单文件上限（原始字节）：图片/表情 2 MiB、音频 8 MiB、视频 64 MiB（按 kind 区分）。 */
     const val MAX_UPLOAD_BYTES = 2 * 1024 * 1024
+    const val MAX_AUDIO_BYTES = 8 * 1024 * 1024
+    const val MAX_VIDEO_BYTES = 64 * 1024 * 1024
+
+    fun maxBytes(kind: String): Int = when (kind) {
+        com.yap.agentd.store.MediaKind.AUDIO -> MAX_AUDIO_BYTES
+        com.yap.agentd.store.MediaKind.VIDEO -> MAX_VIDEO_BYTES
+        else -> MAX_UPLOAD_BYTES
+    }
 
     /**
      * 本路由的请求体上限：文件上限 2 MiB 的两倍，给「HTTP 层先读进内存、handler 再按文件大小拒绝」
      * 留出判定空间；其它路由保持 [AgentdApi.MAX_BODY_BYTES]。
      */
-    const val MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024
+    const val MAX_REQUEST_BODY_BYTES = 66 * 1024 * 1024
 
     /** 内容不会变（id 由内容 sha256 去重），可以放心长缓存。 */
     const val CACHE_CONTROL = "private, max-age=31536000, immutable"
@@ -180,7 +188,7 @@ object MediaRoutes {
             }
         }
         if (body.isEmpty()) throw AgentdApi.ApiFailure(400, "empty_body", "请求体不能为空（要发原始图片字节）")
-        if (body.size > MAX_UPLOAD_BYTES) {
+        if (body.size > maxBytes(kind)) {
             throw AgentdApi.ApiFailure(
                 413,
                 "content_too_large",

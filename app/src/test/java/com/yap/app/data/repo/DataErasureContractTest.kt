@@ -482,7 +482,10 @@ class DataErasureContractTest {
             // 0.13（schema v15）：日记板挂在人格下面。`ErasableTable` 在 :agentcore（跨端共享），
             // 本轮 Android 端不允许改那个模块，所以它走「跟着父表 personas 一起删」的同一条路：
             // 整库清空 / 删一个人 / 备份替换都会经过 PERSONAS 分支，下面单独断言了这行代码存在。
-            "diary_notes" to "他写的备忘：在 RoomErasureStore 的 PERSONAS 分支跟着人格一起删除"
+            "diary_notes" to "他写的备忘：在 RoomErasureStore 的 PERSONAS 分支跟着人格一起删除",
+            // 0.13（schema v16）：表情包。同样不能进 `ErasableTable`（:agentcore 本轮不许改），
+            // 「删除全部数据」时由 `ChatRepository.wipeAllData` 显式清行 + 清文件。
+            "stickers" to "收藏的表情：在 ChatRepository.wipeAllData 里清行与文件"
         )
         val missing = entities.filter { it !in known && it !in derived }
         assertEquals(

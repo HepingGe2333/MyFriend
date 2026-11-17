@@ -9,10 +9,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /** 同步要用的三个服务端读接口；抽接口让 `ServerSyncManager` 能纯 JVM 测。 */
@@ -285,7 +282,10 @@ object ServerMergePlan {
             edited = local?.edited ?: false,
             // 媒体文件本身还没同步（M3 只做文本缓存）：保留 id，界面加载失败时显示占位，
             // 而不是把「他发过一张图」这件事悄悄丢掉。
-            attachmentsJson = attachmentsJson(server.attachments) ?: local?.attachmentsJson,
+            // 服务端只回 `/v1/media/<id>`；语音/视频的 mime、kind、durationMs 只有本机知道。
+            // 已有本机行时按顺序把元数据带过去，否则「语音」在同步之后会变成一张加载不出来的图片。
+            attachmentsJson = attachmentsJson(server.attachments, local?.attachmentsJson)
+                ?: local?.attachmentsJson,
             toolTraceJson = local?.toolTraceJson,
             readAt = server.readAt ?: local?.readAt,
             blockIndex = server.blockIndex.coerceAtLeast(0)
@@ -302,11 +302,24 @@ object ServerMergePlan {
         }
     }
 
-    private fun attachmentsJson(attachments: List<String>): String? {
+    /**
+     * 服务端附件列表 → 本机 `attachmentsJson`。
+     *
+     * 顺序对应：[localJson] 里同下标的语音/视频/表情把 mime、kind、durationMs 带过来；
+     * 普通图片不需要（默认 `image/jpeg` 就够渲染）。数量对不上时只补前缀，越界的一律当普通附件。
+     */
+    private fun attachmentsJson(attachments: List<String>, localJson: String?): String? {
         if (attachments.isEmpty()) return null
-        return JsonArray(
-            attachments.map { id -> buildJsonObject { put("uri", JsonPrimitive(id)) } }
-        ).toString()
+        val localAttachments = com.yap.app.domain.AttachmentsCodec.decode(localJson)
+        val merged = attachments.mapIndexed { index, id ->
+            val local = localAttachments.getOrNull(index)
+            if (local != null && (local.isAudioOrVideo || local.isSticker)) {
+                local.copy(uri = id)
+            } else {
+                com.yap.app.domain.MessageAttachment(uri = id)
+            }
+        }
+        return com.yap.app.domain.AttachmentsCodec.encode(merged)
     }
 
     /**
