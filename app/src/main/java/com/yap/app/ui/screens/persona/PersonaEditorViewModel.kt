@@ -32,6 +32,7 @@ import com.yap.app.domain.SpeechStyleCodec
 import com.yap.app.domain.WorldEditorState
 import com.yap.app.domain.WorldPresetCodec
 import com.yap.app.domain.PersonaDraft
+import com.yap.app.domain.PersonaDraftDefaults
 import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaPromptLocalization
 import com.yap.app.domain.PersonaTranslationCodec
@@ -633,18 +634,17 @@ class PersonaEditorViewModel @Inject constructor(
         val current = _state.value
         if (current.saving) return
         val form = current.form
-        if (form.name.isBlank()) {
-            viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_name_required)))
-            }
-            return
-        }
-        if (form.prompt.isBlank()) {
-            viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_prompt_required)))
-            }
-            return
-        }
+        // 0.13：名字和提示词不再是保存闸门（真机反馈「一项没填就保存不了」）。
+        // 名字空 → 本地化默认名；提示词空 → 用名字 + 简介生成一句。规则在 domain 里，
+        // 与仓储层共用；这里先算出来，是为了让「保存后能正常聊天」不依赖调用方记得兜底。
+        val name = PersonaDraftDefaults.name(form.name, context.getString(R.string.draft_default_name))
+        val prompt = PersonaDraftDefaults.prompt(
+            rawPrompt = form.prompt,
+            name = form.name,
+            description = form.description,
+            separator = context.getString(R.string.draft_default_prompt_separator),
+            fallback = context.getString(R.string.draft_default_prompt)
+        )
         // 作息时间：非法格式以前会被静默存成 null（→ 用默认 23:30–08:00），
         // 用户以为设了 24:00，实际却在 23:30 就睡了。这里显式拦下并提示。
         if (form.sleepEnabled) {
@@ -671,11 +671,11 @@ class PersonaEditorViewModel @Inject constructor(
             val result = personaRepository.save(
                 PersonaDraft(
                     id = personaId,
-                    name = form.name,
+                    name = name,
                     description = form.description,
                     avatarUri = form.avatarUri,
                     avatarSeed = form.avatarSeed,
-                    prompt = form.prompt,
+                    prompt = prompt,
                     category = form.category,
                     defaultApiConfigId = form.defaultApiConfigId,
                     modelOverride = form.modelOverride.ifBlank { null },

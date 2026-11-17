@@ -127,7 +127,8 @@ object AppModule {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，

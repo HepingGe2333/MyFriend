@@ -1,5 +1,11 @@
 package com.yap.agentd
 
+import com.yap.agentd.llm.LlmAccess
+import com.yap.agentd.llm.LlmClient
+import com.yap.agentd.llm.LlmConfigResolver
+import com.yap.agentd.llm.LlmException
+import com.yap.agentd.llm.LlmReplyGenerator
+import com.yap.agentd.llm.ServerLlmConfig
 import com.yap.agentd.store.FileStore
 import java.nio.file.Path
 
@@ -45,7 +51,23 @@ fun main(args: Array<String>) {
         System.err.println("（目录里有不认识的版本/坏文件时不会静默重建；换一个空目录或用 --data 指定别的目录）")
         kotlin.system.exitProcess(1)
     }
-    val services = AgentdServices(store)
+    // LLM 配置的优先级见 `LlmConfigResolver`：本机部署用客户端推送的 api_configs.json + secrets.json；
+    // 远程部署只用服务端自己的 --llm-* / YAP_LLM_*，**不读客户端配置**。
+    val llmResolver = LlmConfigResolver(
+        store = store,
+        loopback = isLoopbackHost(options.host),
+        server = ServerLlmConfig(
+            baseUrl = options.llmBaseUrl,
+            apiKey = options.llmKey,
+            model = options.llmModel
+        )
+    )
+    val llm = LlmAccess(client = LlmClient(), resolver = llmResolver)
+    val services = AgentdServices(
+        store = store,
+        replyGenerator = LlmReplyGenerator(store, llm),
+        llm = llm
+    )
     val server: AgentdServer.StartedServer = try {
         AgentdServer.start(options.host, options.port, options.token, rateLimiter, services)
     } catch (failure: Exception) {
@@ -53,8 +75,12 @@ fun main(args: Array<String>) {
         System.err.println("（端口被占用？换一个 --port 试试）")
         kotlin.system.exitProcess(1)
     }
+    // 主动心跳：与任何客户端连接无关，服务端自己每 60 秒判定一次（§3.4）。
+    // 掷中后由 LLM 写一句正文再落库，并发 `message.created` 事件（客户端前台/下次同步能收到）。
+    services.proactiveTicker?.start()
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            services.proactiveTicker?.stop()
             server.stop(0)
             println("yap-agentd 已停止")
         }
@@ -63,6 +89,11 @@ fun main(args: Array<String>) {
     println(
         "  数据目录：$dataDir" +
             if (store.seeded) "（新目录，已播种 3 个人格 + 1 个示例会话）" else "（已存在，按已有数据启动）"
+    )
+    printLlmNotice(llmResolver)
+    println(
+        "  主动心跳：" +
+            if (services.proactiveTicker?.isRunning == true) "已启动（60 秒一拍，LLM 生成正文）" else "未启用（没有状态存储）"
     )
     printSecurityNotice(options)
     if (rateLimiter.enabled) {
@@ -77,7 +108,7 @@ fun main(args: Array<String>) {
     println("  GET  /v1/state?since=&personaId=")
     println("  GET  /v1/sessions")
     println("  GET  /v1/sessions/{id}/messages?beforeBlock=&afterBlock=")
-    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta → done）")
+    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta → done；真调 LLM 流式生成）")
     println("  POST /v1/sessions/{id}/messages/import   （批量历史导入，≤200 条/批，≤8 MiB）")
     println("  GET  /v1/events?since=&timeoutSeconds=")
     println("  GET  /v1/backup                    （v5 备份，chunked 流式）")
@@ -85,6 +116,9 @@ fun main(args: Array<String>) {
     println("  POST /v1/media?kind=&mime=&personaId=   （原始图片字节，≤2 MiB）")
     println("  GET  /v1/media/{id}                     （原始字节 + ETag/304）")
     println("  DELETE /v1/media/{id}?force=1")
+    println("  POST /v1/proactive/tick           （立即跑一次主动判定；生产由服务端心跳驱动）")
+    println("  POST /v1/personas/{id}/evolution/evaluate|pending|{patchId}/accept|reject")
+    println("  POST /v1/personas/{id}/mood/evaluate")
     println("  POST /v1/core/sleep-decision")
     println("  POST /v1/core/defer-plan")
     println("  POST /v1/core/proactive-cap")
@@ -124,6 +158,10 @@ internal data class Options(
     val token: String? = null,
     val rateLimitPerMinute: Int = RateLimiter.DEFAULT_PER_MINUTE,
     val rateBurst: Int = RateLimiter.DEFAULT_BURST,
+    /** 服务端自己的 LLM 配置（远程部署唯一入口；本机部署是客户端配置缺失时的回落）。 */
+    val llmBaseUrl: String? = null,
+    val llmKey: String? = null,
+    val llmModel: String? = null,
     val help: Boolean = false
 )
 
@@ -144,6 +182,9 @@ internal fun parseOptions(
     var token: String? = null
     var rateLimit: Int? = null
     var rateBurst: Int? = null
+    var llmBaseUrl: String? = null
+    var llmKey: String? = null
+    var llmModel: String? = null
     var index = 0
     while (index < args.size) {
         val arg = args[index]
@@ -219,6 +260,42 @@ internal fun parseOptions(
                 index += 1
             }
 
+            arg == "--llm-base-url" -> {
+                llmBaseUrl = args.getOrNull(index + 1)?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-base-url 后面要跟一个 OpenAI 兼容地址，例如 https://api.deepseek.com/v1")
+                index += 2
+            }
+
+            arg.startsWith("--llm-base-url=") -> {
+                llmBaseUrl = arg.substringAfter("--llm-base-url=").trim().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-base-url= 后面要跟一个地址")
+                index += 1
+            }
+
+            arg == "--llm-key" -> {
+                llmKey = args.getOrNull(index + 1)?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-key 后面要跟一个 API key（或用环境变量 YAP_LLM_KEY）")
+                index += 2
+            }
+
+            arg.startsWith("--llm-key=") -> {
+                llmKey = arg.substringAfter("--llm-key=").trim().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-key= 后面要跟一个 API key")
+                index += 1
+            }
+
+            arg == "--llm-model" -> {
+                llmModel = args.getOrNull(index + 1)?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-model 后面要跟模型名，例如 deepseek-chat")
+                index += 2
+            }
+
+            arg.startsWith("--llm-model=") -> {
+                llmModel = arg.substringAfter("--llm-model=").trim().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--llm-model= 后面要跟模型名")
+                index += 1
+            }
+
             else -> throw IllegalArgumentException("不认识的参数：$arg（用 --help 看用法）")
         }
     }
@@ -231,6 +308,10 @@ internal fun parseOptions(
     if (dataDir == null) {
         dataDir = env[ENV_DATA]?.trim()?.takeIf { it.isNotEmpty() }
     }
+    // LLM：命令行 > 环境变量（YAP_LLM_*） > 没有（本机模式还能用客户端推送的配置）。
+    if (llmBaseUrl == null) llmBaseUrl = env[LlmConfigResolver.ENV_LLM_BASE_URL]?.trim()?.takeIf { it.isNotEmpty() }
+    if (llmKey == null) llmKey = env[LlmConfigResolver.ENV_LLM_KEY]?.trim()?.takeIf { it.isNotEmpty() }
+    if (llmModel == null) llmModel = env[LlmConfigResolver.ENV_LLM_MODEL]?.trim()?.takeIf { it.isNotEmpty() }
     val envRateLimit = envInt(env, ENV_RATE_LIMIT)
     val envRateBurst = envInt(env, ENV_RATE_BURST)
     val perMinute = rateLimit ?: envRateLimit ?: RateLimiter.DEFAULT_PER_MINUTE
@@ -253,6 +334,9 @@ internal fun parseOptions(
         token = token,
         rateLimitPerMinute = perMinute,
         rateBurst = burst,
+        llmBaseUrl = llmBaseUrl,
+        llmKey = llmKey,
+        llmModel = llmModel,
         help = help
     )
 }
@@ -274,6 +358,28 @@ private fun isLoopbackHost(host: String): Boolean {
     val value = host.trim().lowercase()
     if (value == "localhost" || value == "127.0.0.1" || value == "::1" || value == "[::1]") return true
     return value.startsWith("127.")
+}
+
+/** 启动时打印一份脱敏的 LLM 配置来源（key 只说有没有），配置不完整只警告不退出。 */
+private fun printLlmNotice(resolver: LlmConfigResolver) {
+    val config = try {
+        resolver.resolveOrNull()
+    } catch (failure: LlmException) {
+        System.err.println("  注意：LLM 配置不完整——${failure.userMessage()}")
+        return
+    }
+    if (config == null) {
+        println(
+            "  LLM：未配置" +
+                if (resolver.isLoopbackDeployment) {
+                    "（本机部署：等客户端推送 API 配置，或用 --llm-base-url/--llm-key/--llm-model）"
+                } else {
+                    "（远程部署：不会读取客户端配置，请用 --llm-* 或 YAP_LLM_*）"
+                }
+        )
+        return
+    }
+    println("  LLM：${config.redacted()}")
 }
 
 private fun printSecurityNotice(options: Options) {
@@ -305,6 +411,7 @@ private fun printUsage() {
         用法：
           agentd [--host 127.0.0.1] [--port 8788] [--data ./agentd-data]
                  [--token <共享密钥>] [--rate-limit 60] [--rate-burst 30]
+                 [--llm-base-url <地址>] [--llm-key <API key>] [--llm-model <模型名>]
 
         选项：
           --host <地址>            监听地址，默认 127.0.0.1（只给本机/同进程用）
@@ -318,6 +425,11 @@ private fun printUsage() {
                                    （环境变量 YAP_AGENTD_RATE_LIMIT）
           --rate-burst <n>         突发容量（空闲时可以攒下的令牌数），默认 30，至少 1
                                    （环境变量 YAP_AGENTD_RATE_BURST）
+          --llm-base-url <地址>    OpenAI 兼容根地址，例如 https://api.deepseek.com/v1
+                                   （环境变量 YAP_LLM_BASE_URL）。本机部署（监听 127.0.0.1）优先用
+                                   客户端推送的 api_configs.json + secrets.json；远程部署只用这里的配置。
+          --llm-key <API key>      API key（环境变量 YAP_LLM_KEY）；本机网关可以不给
+          --llm-model <模型名>     模型名，例如 deepseek-chat（环境变量 YAP_LLM_MODEL）
           --help, -h               打印这段说明
 
         接口：
@@ -325,7 +437,12 @@ private fun printUsage() {
           GET  /v1/state?since=&personaId=  全量/增量状态快照（personas/sessions/messages/心情/在场）
           GET  /v1/sessions                 会话列表（lastMessageAt / unread / lastBlockIndex）
           GET  /v1/sessions/{id}/messages   一页一块的消息分页（beforeBlock 前翻 / afterBlock 后翻）
-          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta → done（clientMessageId 幂等）
+          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta → done（真调 LLM 流式）
+          POST /v1/proactive/tick            立即跑一次主动判定（生产由服务端心跳驱动）
+          POST /v1/personas/{id}/evolution/evaluate   人格进化评估 → 待审补丁
+          GET  /v1/personas/{id}/evolution/pending    待审补丁
+          POST /v1/personas/{id}/evolution/{patchId}/accept|reject
+          POST /v1/personas/{id}/mood/evaluate        用最近对话判定多维情绪
           GET  /v1/events?since=            增量事件长轮询（最多 25s）
           POST /v1/core/sleep-decision      睡眠/免打扰/唤醒阈值判定
           POST /v1/core/defer-plan          defer_reply 时间计划

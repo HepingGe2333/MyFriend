@@ -338,7 +338,8 @@ class ToolProtocolTest {
 
     @Test
     fun catalogExposesSpecsByName() {
-        assertEquals(14, ToolCatalog.all.size)
+        // 0.13：多了 stay_silent（已读不回，spec/mood §4）。
+        assertEquals(15, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))

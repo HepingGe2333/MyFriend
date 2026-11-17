@@ -118,6 +118,9 @@ class FileStore(
         const val MEMORIES_FILE = "memories.json"
         const val PRESETS_FILE = "presets.json"
         const val PUSH_TOKENS_FILE = "push_tokens.json"
+
+        /** 0.13：人格进化待审补丁（`POST /v1/personas/{id}/evolution/evaluate` 的产物）。 */
+        const val PENDING_PATCHES_FILE = "pending_patches.json"
         const val MEDIA_METADATA_FILE = "media.json"
         const val EVENTS_FILE = "events.jsonl"
 
@@ -233,6 +236,8 @@ class FileStore(
     private val proactiveStates = LinkedHashMap<String, ProactiveState>()
     private val memories = LinkedHashMap<String, Memory>()
     private val presets = LinkedHashMap<String, Preset>()
+    /** 人格进化待审补丁（`pending_patches.json`）；`accept`/`reject` 后从内存与磁盘一起删。 */
+    private val pendingPatches = LinkedHashMap<String, PendingPatch>()
     /** key = `platform|token`，保证「同一 token 重复注册」幂等。 */
     private val pushTokens = LinkedHashMap<String, PushRegistration>()
 
@@ -448,6 +453,10 @@ class FileStore(
         presence.remove(personaId)
         proactiveStates.remove(personaId)
         memories.entries.removeAll { it.value.personaId == personaId }
+        // 待审的进化补丁跟着人格一起消失（否则会留下一条永远无法 accept 的孤儿）。
+        val doomedPatches = pendingPatches.values.filter { it.personaId == personaId }.map { it.id }
+        for (id in doomedPatches) pendingPatches.remove(id)
+        if (doomedPatches.isNotEmpty()) persistPendingPatchesLocked()
 
         persistPersonasLocked()
         persistSessionsLocked()
@@ -471,6 +480,62 @@ class FileStore(
      * 写路径也只接受白名单（见 [mergeSettings]）。
      */
     fun publicSettings(): JsonValue.Obj = lock.withLock { publicSettingsLocked() }
+
+    // ================================================================== 写：人格进化待审补丁
+
+    /**
+     * 某个人格的待审补丁（按 `createdAt` 倒序），**顺手清掉已过期的**。
+     *
+     * 过期清理放在读取路径而不是定时任务：服务端只有一个进程，没有后台 GC；
+     * 读取时判断既简单又不会让「过期补丁一直挂着」。
+     *
+     * @param now 判定时刻（默认服务端时钟）
+     */
+    fun pendingPatches(personaId: String, now: Long = serverTime()): List<PendingPatch> = lock.withLock {
+        dropExpiredPatchesLocked(personaId, now)
+        pendingPatches.values
+            .filter { it.personaId == personaId }
+            .sortedWith(compareByDescending<PendingPatch> { it.createdAt }.thenBy { it.id })
+    }
+
+    fun pendingPatch(patchId: String): PendingPatch? = lock.withLock { pendingPatches[patchId] }
+
+    /**
+     * 落一条待审补丁；**同一人格里 `patchJson` 完全相同**的已存在时不重复堆，
+     * 直接返回已有那条（客户端 `pendingEvolutionPatch` 的同一条规则）。
+     */
+    fun putPendingPatch(patch: PendingPatch): PendingPatch = lock.withLock {
+        val existing = pendingPatches.values.firstOrNull {
+            it.personaId == patch.personaId && it.patchJson == patch.patchJson
+        }
+        if (existing != null) return@withLock existing
+        pendingPatches[patch.id] = patch
+        persistPendingPatchesLocked()
+        patch
+    }
+
+    fun deletePendingPatch(patchId: String): Boolean = lock.withLock {
+        if (pendingPatches.remove(patchId) == null) {
+            false
+        } else {
+            persistPendingPatchesLocked()
+            true
+        }
+    }
+
+    /** 删掉这个人格已过期的补丁，返回删掉几条（路由/测试可直接调）。 */
+    fun dropExpiredPendingPatches(personaId: String, now: Long = serverTime()): Int = lock.withLock {
+        dropExpiredPatchesLocked(personaId, now)
+    }
+
+    private fun dropExpiredPatchesLocked(personaId: String, now: Long): Int {
+        val doomed = pendingPatches.values
+            .filter { it.personaId == personaId && it.expiresAt in 1..now }
+            .map { it.id }
+        for (id in doomed) pendingPatches.remove(id)
+        if (doomed.isNotEmpty()) persistPendingPatchesLocked()
+        return doomed.size
+    }
 
     // ================================================================== 读：记忆 / 预设 / push
 
@@ -1335,14 +1400,52 @@ class FileStore(
 
     // ================================================================== 写：心情 / 在场 / 用量 / 配置
 
-    /** 改心情；值真的变了才落盘并发 `mood.changed` 事件。 */
-    fun setMood(personaId: String, label: String, intensity: Int): Mood = lock.withLock {
+    /**
+     * 改心情（多维：`spec/mood/README.md` §1）。
+     *
+     * 只给 label/intensity 的旧调用方保持兼容：三个维度不传时按迁移规则补
+     * （valence 由 label、arousal 由 intensity、dominance=3）。值真的变了才落盘并发
+     * `mood.changed` 事件（事件 payload 里就是完整的 [Mood.toJson]，客户端能直接拿到多维值）。
+     */
+    fun setMood(
+        personaId: String,
+        label: String,
+        intensity: Int,
+        valence: Int? = null,
+        arousal: Int? = null,
+        dominance: Int? = null,
+        reason: String? = null
+    ): Mood = lock.withLock {
         requirePersonaLocked(personaId)
-        val clamped = intensity.coerceIn(0, 5)
+        val clampedIntensity = intensity.coerceIn(0, 5)
+        val clampedValence = (valence ?: Mood.defaultValence(label)).coerceIn(-2, 2)
+        val clampedArousal = (arousal ?: Mood.defaultArousal(clampedIntensity)).coerceIn(0, 5)
+        val clampedDominance = (dominance ?: Mood.defaultDominance()).coerceIn(0, 5)
         val previous = moods[personaId]
-        if (previous != null && previous.label == label && previous.intensity == clamped) return@withLock previous
+        val newReason = (reason ?: previous?.takeIf { it.label == label }?.reason).orEmpty()
+            .trim()
+            .take(Mood.MAX_REASON_CHARS)
+        if (previous != null &&
+            previous.label == label &&
+            previous.intensity == clampedIntensity &&
+            previous.valence == clampedValence &&
+            previous.arousal == clampedArousal &&
+            previous.dominance == clampedDominance &&
+            previous.reason == newReason
+        ) {
+            return@withLock previous
+        }
         val now = nextTimestampLocked()
-        val mood = Mood(personaId, label, clamped, now)
+        val mood = Mood(
+            personaId = personaId,
+            label = label,
+            intensity = clampedIntensity,
+            updatedAt = now,
+            valence = clampedValence,
+            arousal = clampedArousal,
+            dominance = clampedDominance,
+            reason = newReason
+        )
         moods[personaId] = mood
         persistMoodsLocked()
         appendEventLocked(
@@ -2539,6 +2642,10 @@ class FileStore(
             val preset = Preset.fromJson(obj, where)
             presets[preset.id] = preset
         }
+        loadOptionalObjectList(root.resolve(PENDING_PATCHES_FILE), "patches") { obj, where ->
+            val patch = PendingPatch.fromJson(obj, where)
+            pendingPatches[patch.id] = patch
+        }
         loadOptionalObjectList(root.resolve(MEDIA_METADATA_FILE), "media") { obj, where ->
             val item = MediaItem.fromJson(obj, where)
             media[item.id] = item
@@ -2933,6 +3040,15 @@ class FileStore(
     private fun persistPushTokensLocked() = writeJsonLocked(
         root.resolve(PUSH_TOKENS_FILE),
         StoreJson.obj("tokens" to StoreJson.arr(pushTokens.values.map { it.toJson() }))
+    )
+
+    private fun persistPendingPatchesLocked() = writeJsonLocked(
+        root.resolve(PENDING_PATCHES_FILE),
+        StoreJson.obj(
+            "patches" to StoreJson.arr(
+                pendingPatches.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
     )
 
     private fun persistMediaLocked() = writeJsonLocked(

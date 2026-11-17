@@ -87,6 +87,9 @@ Options:
 | `--token <secret>` | — | Optional shared token. When set, **every** request (including `/health`) must send `Authorization: Bearer <secret>`; anything else gets `401`. Can also be supplied as the `YAP_AGENTD_TOKEN` environment variable so it does not show up in `ps`. |
 | `--rate-limit <n>` | `60` | Per-source requests per minute. `0` turns rate limiting **off**. Also `YAP_AGENTD_RATE_LIMIT`. |
 | `--rate-burst <n>` | `30` | Token-bucket capacity (how many idle requests may burst). Must be ≥ 1. Also `YAP_AGENTD_RATE_BURST`. |
+| `--llm-base-url <url>` | — | OpenAI-compatible root, e.g. `https://api.deepseek.com/v1`. **Remote** deployments (`--host` is not loopback) read *only* these server-side values; **loopback** deployments prefer the client-pushed `api_configs.json` + `secrets.json` and fall back to this. Also `YAP_LLM_BASE_URL`. |
+| `--llm-key <key>` | — | API key for the server-side config (optional: local gateways often need none). Also `YAP_LLM_KEY`. Never logged, never part of a response. |
+| `--llm-model <name>` | — | Model name, e.g. `deepseek-chat`. Required when a server-side config is supplied. Also `YAP_LLM_MODEL`. |
 | `--help` / `-h` | — | Usage. |
 
 Flags win over environment variables, which win over the defaults (so a container can pin the
@@ -919,13 +922,15 @@ Provider configuration is **server-side only**:
   `tools/fetch`) and goes through the same `WebUrlPolicy` as the clients: http(s) only, no loopback /
   private hosts / userinfo.
 - `proactive/tick` reads personas, sessions, the latest `lastMessageAt` and mood from the data
-  directory, then runs the same `ProactiveEngine` as the timer. A fired decision persists one
-  `role=ASSISTANT, source=PROACTIVE` message into that persona's most recently active session and
-  emits the usual `message.created` event. The same `now` only fires once (in-process `lastTickAt`
-  dedupe); the route answers `503 store_disabled` when the server was started without `--data`.
+  directory, then runs the same `ProactiveEngine` as the timer. A fired decision asks the model for
+  one opener (`LlmProactiveTextSource`), persists it as `role=ASSISTANT, source=PROACTIVE` in that
+  persona's most recently active session and emits the usual `message.created` event. If the model
+  call fails the tick is reported as `generation_failed` and **nothing is written** (no template
+  fallback). The same `now` only fires once (in-process `lastTickAt` dedupe); the route answers
+  `503 store_disabled` when the server was started without `--data`.
 
 
-Trimmed responses (0.12.0, `EchoReplyGenerator`):
+Trimmed responses (0.12.0; `mood` gained `valence`/`arousal`/`dominance`/`reason` in 0.13):
 
 ```json
 {"serverTime":1700000000000,
@@ -933,7 +938,8 @@ Trimmed responses (0.12.0, `EchoReplyGenerator`):
  "sessions":[{"id":"seed-session-linshen","personaId":"seed-linshen","title":"和林深的对话",
               "lastMessageAt":null,"unread":0,"lastBlockIndex":-1}],
  "messages":[],
- "mood":{"personaId":"seed-linshen","label":"平静","intensity":2,"updatedAt":1000},
+ "mood":{"personaId":"seed-linshen","label":"平静","intensity":2,"updatedAt":1000,
+         "valence":0,"arousal":2,"dominance":3,"reason":""},
  "presence":{"personaId":"seed-linshen","kind":"IDLE","detail":"在家，安静地待着","updatedAt":1000},
  "serverCursor":0,
  "hasMoreMessages":false}
@@ -1048,9 +1054,8 @@ Honest list; most of these are deliberate scope cuts, not oversights.
 - **No push protocol, no background scheduler wiring.** `PushSender` is an interface and
   `NoopPushSender` is the default; APNs/FCM credentials, HTTP/2 clients and retry policy are
   deployment-side. Tokens are stored, but a proactive message is only pushed if a real sender was
-  injected; without one, clients catch up on the next foreground sync. The proactive timer itself is
-  still the existing debug tick path (`POST /v1/proactive/tick` / in-process scheduler), not a new
-  daemon.
+  injected; without one, clients catch up on the next foreground sync. The proactive timer runs as a
+  daemon thread inside `agentd` (started by `Main`), so it stops when the process stops.
 - **Media validation is Content-Type only.** The server does not decode or sniff image bytes: a
   client with a valid token can upload arbitrary bytes labelled `image/jpeg`. Keep the token on and
   the service behind a reverse proxy; magic-byte checks / re-encoding are a later hardening step.
@@ -1077,24 +1082,44 @@ Honest list; most of these are deliberate scope cuts, not oversights.
   will still use correspondingly more heap. Export no longer holds the store lock for its whole
   duration, so a concurrent append/delete can be reflected "as of a slightly fuzzy instant"
   (still valid JSON; the alternative was blocking chat for the whole transfer).
-- **No LLM and no prompts.** `EchoReplyGenerator` echoes the user text plus one fixed Chinese
-  sentence and estimates tokens by character count. The server neither accepts prompts from clients
-  nor stores them; prompt construction is the next phase's job. `secrets.json` (0600, best-effort on
-  non-POSIX file systems) is the only place an API key may live and it is never part of a response.
+- **LLM is wired, but only for text.** `LlmReplyGenerator` (chat), `LlmProactiveTextSource`
+  (proactive openers), `EvolutionService` and `MoodService` call the model for real; the prompt is
+  built on the server and clients still never send prompts. **The tool loop is not implemented**
+  (`web_search` / `remember` / `defer_reply` / `stay_silent` only exist as separate endpoints/tools),
+  so the model cannot act, only talk, and the prompt says so. Every generated reply costs tokens —
+  a proactive tick that fires, an evolution evaluate and a mood evaluate each make one completion
+  call; there is no budget gate on the server yet. `secrets.json` (0600, best-effort on non-POSIX
+  file systems) is the only place an API key may live and it is never part of a response; keys are
+  redacted from logs (`LlmConfig.redacted`).
+- **The client-push path for `api_configs.json` / `secrets.json` is still missing.** The resolver
+  reads them for loopback deployments, but no HTTP route writes them yet (backups and the settings
+  whitelist deliberately exclude keys). Until that endpoint / local bridge exists, a loopback
+  deployment must either place the files itself or use `--llm-*`.
+- **Mood auto-evaluation is not scheduled.** `POST /v1/personas/{id}/mood/evaluate` works and the
+  "every 4 user messages / 24 h" rule is implemented and tested, but nothing calls it automatically
+  after a chat turn yet (cost/queue decision). Same for persona evolution: the client has to call
+  `evaluate` (the server does not run a 20-message trigger).
+- **Evolution patches are a small JSON file, not a table.** `pending_patches.json` is rewritten under
+  the same process-wide lock; it is fine for a handful of patches per persona, but it is not a
+  queue and there is no history of accepted/rejected patches (accepted ones only bump
+  `personas.json`'s `version` and the four fields).
+- **Prompt budget is count-based.** Chat sends at most the last 40 messages; history trimming by
+  tokens/characters (`spec/api-defaults`' 1M context is only an upper bound) is not implemented.
+  Very long messages are sent as-is (the message itself is capped at 65 536 chars on write).
 - **Search credentials are environment config, not a settings API.** `YAP_AGENTD_SEARCH_*` is
   read through `AgentdServices.env` (production: `System.getenv`) on every request, but a JVM cannot
   change its own environment, so rotating the key or the default provider needs a restart. There is
   also no per-persona search configuration yet: the whole server shares one provider/base/key. The
   search/fetch paths are only verified against local fake HTTP servers in CI — no real provider or
   web page is contacted by the tests.
-- **`proactive/tick` is a debug entry point, not the production scheduler.** A server timer is the
-  next phase; the HTTP route is what the tests and `curl` use. De-duplication of the same `now` and
-  the "just fired" overlay are **in-process** (`ProactiveTicker` → `ProactiveScheduler`), so they do
-  not survive a restart and are not shared between processes (running two processes on one data
-  directory is unsupported anyway). Today's proactive count and last-fired timestamp **are**
-  persisted in `proactive_state.json` (0.12.0); the remaining in-process pieces are only the
-  same-`now` dedupe and the "just fired" overlay. A production timer still needs to be wired to
-  `ProactiveTicker`; the HTTP route is the current debug/test entry point.
+- **The proactive timer is now started by `Main` (0.13).** A single daemon tick every 60 s drives
+  `ProactiveTicker`; `POST /v1/proactive/tick` remains a debug/test entry point. De-duplication of
+  the same `now` and the "just fired" overlay are still **in-process**
+  (`ProactiveTicker` → `ProactiveScheduler`), so they do not survive a restart and are not shared
+  between processes (two processes on one data directory are unsupported anyway). Today's count and
+  last-fired timestamp are persisted in `proactive_state.json`; a tick whose LLM generation fails is
+  skipped (`generation_failed`) and retried on a later tick. The timer thread blocks for the length
+  of the model call, so a slow provider delays the next tick (single-threaded scheduler).
 - **Still plain HTTP.** The token/rate-limit docs above apply unchanged; TLS belongs to the reverse
   proxy.
 
@@ -1127,12 +1152,12 @@ backup media round-trip / 8 MiB skip count / corrupt-sha rejection / replace cle
 restart persistence and 8 concurrent same-content uploads (one file). `MediaServerTest` (4) is the
 real-socket half: binary upload/download over HTTP, 304 revalidation, token enforcement on media
 routes, and the 4 MiB media vs 1 MiB other-route declared-body limits. The whole `:agentd:test`
-suite is now **392 tests** (0.12.0's 358 + 34 for batch import and streaming backup). `ChatSseTest` (10) covers event order, tool forwarding,
+suite is now **473 tests** (0.12.1's 392 + 81 for the 0.13 LLM/proactive/evolution/mood work). `ChatSseTest` (10) covers event order, tool forwarding,
 sequential and concurrent idempotency, orphan-reply completion, a dead sink, attachment persistence
 and validation-before-stream. `AuthorityServerTest` (6) is the real-socket half: SSE over HTTP, a
 client that disconnects mid-stream still gets a persisted reply, token/rate limit on the new routes,
-long poll over HTTP and JSON errors before a stream starts. `MainOptionsTest` grew to 11 with the
-`--data` precedence/validation cases. `ToolsRoutesTest` (17) covers the three new routes: provider /
+long poll over HTTP and JSON errors before a stream starts. `MainOptionsTest` grew to 13 with the
+`--data` and `--llm-*`/`YAP_LLM_*` precedence/validation cases. `ToolsRoutesTest` (17) covers the three new routes: provider /
 base / key resolution (`MESSAGEAPI` default, `SEARXNG` base override, request `baseUrl` ignored for
 every other provider, client `apiKey` ignored), result normalisation, the 400/401/429/502 error
 mapping, "the key never appears in a response or a log", tag-stripped fetch + `URL_REJECTED`, and
@@ -1145,7 +1170,164 @@ concurrent updates of one persona (no lost fields), and restart persistence. `Ba
 covers v5 export contents/no secrets, replace/merge semantics, export→import→export equality,
 version-6 → 409, reference validation before any write, and restart. `PushRoutesTest` (8) covers
 registration/idempotency/unregistration/persistence, the `PushSender` invocation after a proactive
-message, no-token silence, and a throwing sender that must not break the tick.
+message, no-token silence, and a throwing sender that must not break the tick. The 0.13 batch adds
+`LlmConfigResolverTest` (12: loopback uses the client config + secret, newest config wins, loopback
+falls back to `--llm-*`, remote never reads the client config, missing/incomplete configs,
+`YAP_LLM_*`, endpoint normalisation, key redaction), `LlmClientTest` (12: real chunked SSE deltas,
+request body `temperature=0.75`/`max_tokens=16384`/`stream=true`/`Authorization`, comment/event
+lines, usage estimation, plain-JSON fallback, 401/429/stream-error/empty-stream/network/invalid-URL
+mapping), `LlmReplyGeneratorTest` (5: streamed deltas persisted verbatim, no config →
+`llm_not_configured` with no assistant row, 401, partial-then-error persistence, history roles),
+`ChatPromptBuilderTest` (7: normative section order incl. `# 你的心情` between state and voice,
+world/speech/profile/card rendering, busy activity, multi-dimensional mood without self-report,
+history/attachment note, proactive instruction), `ProactiveLlmTest` (8: model-written proactive text
++ `message.created` event, prompt content, LLM failure → `generation_failed` with nothing written,
+no-config no-request, scheduler start/stop, tick route `messageId`, whitespace source, persona state
+passed through), `PersonaEvolutionRulesTest` (8), `EvolutionRoutesTest` (11: evaluate/pending/accept
+/version+1/reject/404/410/dedup/field-shape), `MoodRulesTest` (9: parse/clamp/±2 limit/noticeable/
+decay/prompt/trigger/legacy migration) and `MoodServiceTest` (7: stored dimensions + `mood.changed`,
+±2 clamp, no-change no-write, decay and upstream-failure fallbacks, route/state output, 404/405).
+
+## LLM, proactive messages, persona evolution and mood (0.13)
+
+0.13 turns `agentd` from "an HTTP skeleton with an echo generator" into the part that actually
+generates: chat replies, proactive openers, persona-evolution proposals and multi-dimensional mood.
+Everything still happens on the server — the client renders the SSE stream and reads state; it does
+not send prompts and does not hold the key.
+
+### Which LLM config the server uses
+
+| Deployment (`--host`) | Where the config comes from | Client-pushed config |
+| --- | --- | --- |
+| **loopback**: `127.0.0.1`, `localhost`, `::1`, `127.*` | `api_configs.json` + `secrets.json` in the `--data` directory (newest usable config first); if there is none, the server-side `--llm-*` / `YAP_LLM_*` | **used** |
+| **remote**: `0.0.0.0`, a LAN address, … | only `--llm-base-url` / `--llm-key` / `--llm-model` (or `YAP_LLM_*`) | **never read** |
+
+Why the asymmetry: on a loopback deployment the client and the server are the same person's machine,
+so reusing the config the desktop/mobile client already has avoids typing the key twice. A remote
+deployment belongs to an operator; letting a client decide "which URL the server posts to, with
+which key" would be SSRF plus key exfiltration, so `LlmConfigResolver` does not even look at
+`api_configs.json` in that mode.
+
+A "usable" config has a non-blank `baseUrl` and `model`; the key may be absent (Ollama/one-api
+gateways). `baseUrl` is the OpenAI-compatible root (`.../v1`); a value that already ends with
+`/chat/completions` is accepted as-is. An explicit server-side config that is missing `baseUrl` or
+`model` fails with `llm_invalid_config` instead of being silently ignored.
+
+**Known gap:** there is no HTTP route yet that *writes* `api_configs.json` / `secrets.json` from a
+client (the CRUD settings whitelist deliberately refuses keys, and backups never contain them). The
+store API (`FileStore.putApiConfig` / `setApiKey`) and the resolver are ready; the client-facing
+push endpoint / local-file bridge is still to be wired (see "What this service does not do yet").
+
+### Chat: real streaming (`LlmReplyGenerator`)
+
+- `LlmClient` uses the JDK `java.net.http.HttpClient` (no third-party dependency) and POSTs to
+  `{baseUrl}/chat/completions` with `stream: true`, `stream_options.include_usage: true`,
+  `temperature: 0.75` and `max_tokens: 16384` (`spec/api-defaults/README.md`), plus
+  `Authorization: Bearer <key>` when a key exists.
+- SSE `data:` frames are parsed as they arrive and forwarded as `delta` events; `[DONE]` ends the
+  stream; usage from the final (`choices: []`) frame is recorded. A gateway that ignores
+  `stream=true` and returns a plain completion is accepted as a single `delta`. A stream with no
+  text at all is `llm_empty_reply`, never a fake empty success.
+- `LlmReplyGenerator` builds the system prompt from **server** state only:
+  `:agentcore` `PersonaPromptScaffold` supplies the normative Chinese sections and their order
+  (`身份 → 世界 → 此刻 → 心情 → 话风 → 关系 → 你能做什么 → 边界`); the server adds the persona
+  profile (`traits` / `likes` / `behaviors` / `quirks`), `worldJson`, `speechStyleJson`, the
+  persona card (`age` / `role` / `relation` / `address` / `bond`), the current activity
+  (`activityJson`) and the multi-dimensional mood. History is the last 40 messages; a message with
+  attachments gets a "(you cannot see the image content)" note instead of pretending to see it.
+  The 0.75/16 384 defaults are for chat; the background calls intentionally override them
+  (evolution evaluation 0.3/900, mood judgement 0.3/400, proactive opener 300 tokens) because they
+  ask for one short JSON object / one sentence. The 1M context window is only an upper bound: chat
+  keeps at most 40 messages and drops the oldest if the rough token estimate would exceed it.
+- Failures are SSE `event: error` with stable codes: `llm_not_configured`, `llm_invalid_config`,
+  `llm_unauthorized` (401/403), `llm_rate_limited` (429), `llm_upstream_error`, `llm_network_error`,
+  `llm_timeout`, `llm_empty_reply`, `llm_invalid_response`. There is **no Echo fallback**: without a
+  config the stream is `accepted` then `error`, and no assistant message is persisted. Text that was
+  already streamed before an upstream failure **is** persisted (and then `error` is sent) — the same
+  "generation survives a client disconnect" path as before.
+- **Tool loop is explicitly not done.** The `# 你能做什么` section is an honest empty list ("you have
+  no tools, no internet, don't pretend you checked"). Adding the tool loop (`web_search`,
+  `remember`, `defer_reply`, `stay_silent`) is the next step; the section is generated in one place
+  so switching to a tool registry is a local change (`ChatPromptBuilder.CAPABILITIES`).
+
+### Proactive messages (`ProactiveScheduler` + LLM)
+
+`Main` now starts the existing `ProactiveScheduler` (one tick every 60 s, daemon thread) against
+`ProactiveTicker`/`StoreProactiveSource`/`StoreProactiveSink`; the HTTP `POST /v1/proactive/tick`
+remains the debug/test entry point. When a tick fires:
+
+1. `LlmProactiveTextSource` asks the model for **one line** using the persona prompt, the
+   multi-dimensional mood, the current activity, the last 20 messages and a "you want to reach out"
+   instruction ("no 在吗, one sentence, no narration");
+2. the text is persisted through `FileStore.appendProactiveMessageIfAllowed` as
+   `role=ASSISTANT, source=PROACTIVE` (the daily cap and cooldown are re-checked inside the store
+   lock, so two concurrent ticks cannot both write);
+3. a `message.created` event is appended to `events.jsonl`, so `GET /v1/events` delivers the
+   proactive message to a foreground client.
+
+If the model fails or returns nothing, the tick is recorded as `generation_failed`: **nothing is
+persisted and no fixed template is sent** — a generic "忽然想起你" line is worse than staying quiet.
+Today's counter / last-fired timestamp are stored in `proactive_state.json` (since 0.12.0).
+
+### Persona evolution (server-side)
+
+| Method | Path | Meaning |
+| --- | --- | --- |
+| `POST` | `/v1/personas/{id}/evolution/evaluate` | recent 12 messages + persona + current mood → model JSON → `sanitize` → `pending_patches.json` |
+| `GET` | `/v1/personas/{id}/evolution/pending` | pending patches (expired ones are pruned on read) |
+| `POST` | `/v1/personas/{id}/evolution/{patchId}/accept` | merge the four fields + `version + 1`, write `personas.json`, delete the patch |
+| `POST` | `/v1/personas/{id}/evolution/{patchId}/reject` | delete the patch, persona untouched |
+
+Rules are the same as the client's (`PersonaEvolutionRules`): only `traits` / `likes` /
+`behaviors` / `quirks`; at most 3 changes per evaluation (≤2 add, ≤1 remove); confidence ≥ 0.6;
+value ≤ 40 chars; no duplicate adds / no removing values that do not exist; empty patch is best.
+Patches expire after **7 days** (`410 patch_expired` and the row is deleted).
+`pending_patches.json` is server-side review state and is **not part of a v5 backup** (backups carry
+personas/sessions/messages/memories/presets/settings/media; an unaccepted proposal is disposable). Unknown patch → 404
+`patch_not_found`; a missing LLM config on an explicit evaluate is `503 llm_not_configured` (not a
+silent "no changes"). `accept` keeps the client's field shape: a string column stays
+`"[\"…\"]"`, an actual JSON array stays an array. Nothing outside the four fields is touched
+(name/description/world are the user's).
+
+### Multi-dimensional mood
+
+`moods.json` now carries `valence` (-2..2), `arousal` (0..5), `dominance` (0..5) and `reason`
+alongside `label` / `intensity` (`spec/mood/README.md` §1). Old files without them are migrated on
+read (valence from the label via `MoodLexicon`, arousal from intensity, dominance = 3). The fields
+appear in `GET /v1/state` and in `mood.changed` payloads (unknown fields are ignored by the
+existing clients), and the chat prompt injects the `# 你的心情` block with all dimensions plus 1–2
+behaviour hints ("don't state the numbers, don't say 我的情绪是…").
+
+`POST /v1/personas/{id}/mood/evaluate` asks the model with "previous mood + last 8 messages" and
+applies the rules: ranges are clamped, a single change is limited to **±2 per dimension**, and a
+patch with no noticeable change is **not written**. Failure or no config falls back to decay — one
+step per hour toward `0 / 2 / 3` — and still answers `200` with `"source": "decay"` (the spec asks
+for a quiet fallback, not an error). `"source"` is `llm` / `decay` / `unchanged`.
+
+**Not wired yet:** the automatic "every 4 user messages / 24 h" trigger. The pure rule
+(`MoodService.shouldEvaluate`, tested) is ready, but calling the model after every chat message
+costs money and needs a background queue decision.
+
+### curl examples
+
+```bash
+# chat: real streamed generation (delta frames come from the model)
+curl -N -X POST http://127.0.0.1:8788/v1/sessions/seed-session-linshen/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"clientMessageId":"demo-llm-1","content":"你在干嘛呢？"}'
+
+# proactive heartbeat (debug): fires one evaluation now; the body of the message comes from the model
+curl -s -X POST http://127.0.0.1:8788/v1/proactive/tick -d '{}'
+
+# persona evolution: evaluate, list, accept / reject
+curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/evolution/evaluate
+curl -s http://127.0.0.1:8788/v1/personas/seed-linshen/evolution/pending
+curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/evolution/<patchId>/accept
+curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/evolution/<patchId>/reject
+
+# mood: judge from the recent conversation (falls back to decay without a config)
+curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/mood/evaluate
+```
 
 ## Errors
 
@@ -1229,8 +1411,11 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   automatically, or store "thoughts" — and media is not decoded/re-encoded. Earlier versions only
   exposed deterministic pure functions; see
   [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
-- No LLM calls: `POST /v1/sessions/{id}/messages` streams, but the reply comes from the injectable
-  `EchoReplyGenerator` (no prompting, no model call, no tool loop yet).
+- **LLM calls since 0.13 (text only).** `POST /v1/sessions/{id}/messages` streams a real model
+  answer (`LlmReplyGenerator`), proactive ticks write a model-generated opener, and
+  evolution/mood endpoints call the model for one JSON object. There is still **no tool loop**, no
+  client-supplied prompts, and no automatic (timer-driven) evolution/mood evaluation; see
+  [LLM, proactive messages, persona evolution and mood](#llm-proactive-messages-persona-evolution-and-mood-013).
 - Android does not start it as an embedded service; remote mode is a development build switch.
   iOS does not call this service by default either: its in-process decisions run the same Kotlin
   `:agentcore` code, and remote mode (also a build/launch switch) points at this service. The old
@@ -1305,7 +1490,7 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
   `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 392 tests in total in 0.12.1 (358 in 0.12.0) — the authoritative-mode suites above plus the
+`:agentd:test` is 473 tests in total after 0.13 (392 in 0.12.1) — the authoritative-mode suites above plus the
 `search/` (52) and `proactive/` (68) suites added in the same release. The 43 new tests for
 M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`; the 28
 media tests (M5 upload/download) are `MediaApiTest` and `MediaServerTest`.

@@ -66,6 +66,7 @@ object ToolCatalog {
     const val SET_MOOD = "set_mood"
     const val RECALL = "recall"
     const val DEFER_REPLY = "defer_reply"
+    const val STAY_SILENT = "stay_silent"
     const val DIARY = "diary"
     const val STICKER = "sticker"
     const val LISTEN = "listen"
@@ -121,6 +122,22 @@ object ToolCatalog {
     private const val DEFER_REPLY_DESCRIPTION =
         "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
             "调用后这一轮不会发出任何消息，对方只会看到「已读」。不想回就别硬回，别用它来敷衍正在着急的人。"
+
+    /**
+     * `stay_silent`：这一轮只「已读」不回（`spec/mood/README.md` §4）。
+     *
+     * 与 [DEFER_REPLY_DESCRIPTION] 必须写清区别：一个是「过会儿再回、会留念头」，
+     * 一个是「这轮不回、什么都不留」。使用条件（累/在忙/对方只是随口一句/不想说话）
+     * 与禁区（不用于逃避重要话题、不连续用）都写在描述里——这是模型唯一会读到的说明。
+     */
+    private const val STAY_SILENT_DESCRIPTION =
+        "这一轮你只想「已读」、不想回时调用（累了、在忙、对方只是随口一句、不想说话）。" +
+            "调用后这一轮不产生任何消息，也不留念头——对方只看到「已读」。" +
+            "不要用它逃避重要或着急的话题，也别连续两轮都用；对方在等答案就回一句短的。"
+
+    private const val STAY_SILENT_CONTRAST =
+        "和 defer_reply 的区别：defer_reply 是「过一会儿再回」（会留下一个到点会想起的念头），" +
+            "stay_silent 是「这一轮不回」（什么都不留）。连续使用超过 2 轮会被强制要求回一句。"
 
     /**
      * `diary`：他自己的**备忘录**，不是「关于对方的记忆」。
@@ -303,6 +320,21 @@ object ToolCatalog {
         }
     """
 
+    /**
+     * `stay_silent` 的参数：**没有必填项**。
+     *
+     * 规范给的形状是「无参数或 reason 可选」；保留一个空 object schema 而不是 null，
+     * 是为了让原生 function calling 的网关也接受它（有些网关会拒绝 parameters=null）。
+     */
+    private const val STAY_SILENT_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "reason": {"type": "string", "description": "为什么这一轮不想说话，一句话，只给自己看；可以不写"}
+          }
+        }
+    """
+
     private const val DIARY_PARAMETERS = """
         {
           "type": "object",
@@ -346,6 +378,9 @@ object ToolCatalog {
         ToolSpec(SET_MOOD, SET_MOOD_DESCRIPTION, SET_MOOD_PARAMETERS.trimIndent()),
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
         ToolSpec(DEFER_REPLY, DEFER_REPLY_DESCRIPTION, DEFER_REPLY_PARAMETERS.trimIndent()),
+        ToolSpec(
+            STAY_SILENT, STAY_SILENT_DESCRIPTION, STAY_SILENT_PARAMETERS.trimIndent(), STAY_SILENT_CONTRAST
+        ),
         ToolSpec(DIARY, DIARY_DESCRIPTION, DIARY_PARAMETERS.trimIndent(), DIARY_CONTRAST),
         ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
         ToolSpec(LISTEN, LISTEN_DESCRIPTION, LISTEN_PARAMETERS.trimIndent(), LISTEN_CONTRAST),
@@ -659,6 +694,7 @@ object ToolProtocol {
         ToolCatalog.REMEMBER -> invocation.argument("content")?.take(120)?.let { "内容：$it" }
         ToolCatalog.RECALL -> invocation.argument("query")?.take(120)?.let { "想找：$it" }
         ToolCatalog.DEFER_REPLY -> invocation.argument("reason")?.take(80)?.let { "原因：$it" }
+        ToolCatalog.STAY_SILENT -> invocation.argument("reason")?.take(80)?.let { "原因：$it" }
         ToolCatalog.UPDATE_PERSONA -> invocation.argument("reason")?.take(120)?.let { "原因：$it" }
         ToolCatalog.SET_QUIET_HOURS -> {
             val sleepAt = invocation.argument("sleep_at")

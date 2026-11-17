@@ -119,7 +119,15 @@ enum class SilentReason {
     DND,
 
     /** 他自己决定过会儿再说（`defer_reply`）：与睡眠无关，不显示任何提示。 */
-    DEFERRED
+    DEFERRED,
+
+    /**
+     * 这一轮只「已读」不回（`stay_silent`）。
+     *
+     * 与 [DEFERRED] 的区别：defer 是「过一会儿再回」（会留下念头），这里是「这轮不回」（什么都不留）。
+     * 界面同样**不显示任何提示**、不出现占位气泡；用户消息自己因为 readAt 非空显示「已读」。
+     */
+    STAY_SILENT
 }
 
 data class EvolutionProposal(

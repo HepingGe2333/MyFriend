@@ -52,7 +52,10 @@ import com.yap.app.network.toUserError
 import com.yap.app.domain.WebToolsProviders
 import com.yap.app.network.WebSearchClient
 import com.yap.app.network.WebSearchHit
+import com.yap.app.data.prefs.SettingsRepository
+import com.yap.app.domain.StaySilent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.time.ZoneId
 import java.util.UUID
@@ -104,7 +107,9 @@ class ToolExecutor @Inject constructor(
     private val audioVideoRepository: AudioVideoRepository,
     private val database: com.yap.app.data.local.YapDatabase,
     /** 服务端模式的写路径：活动上报失败只记日志，本地照常（M3）。 */
-    private val serverWrite: com.yap.app.data.remote.ServerWriteGateway
+    private val serverWrite: com.yap.app.data.remote.ServerWriteGateway,
+    /** 「已读不回」的连续轮数存在设置里（内部状态）：`stay_silent` 要读、要写、要清。 */
+    private val settingsRepository: SettingsRepository
 ) {
 
     suspend fun execute(
@@ -126,6 +131,7 @@ class ToolExecutor @Inject constructor(
             "recall" -> recall(invocation, persona, now)
             "diary" -> diary(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
+            "stay_silent" -> staySilent(invocation, persona, sessionId, now)
             "sticker" -> sticker(invocation, persona)
             "listen" -> listen(invocation, sessionId)
             "watch" -> watch(invocation, sessionId)
@@ -823,6 +829,65 @@ class ToolExecutor @Inject constructor(
             modelText = modelText
         )
     }
+
+    // ---------------------------------------------------------------- 已读不回
+
+    /**
+     * 这一轮只「已读」不回（`spec/mood/README.md` §4）。
+     *
+     * 与 [deferReply] 的区别是**什么都不留**：不写念头、不排窗口，只把用户消息标成已读。
+     * 连续轮数存在设置里（内部状态），第 3 轮直接拒绝：返回一个「未成功」的结果并要求模型
+     * 这一轮说一句——比让它一直沉默更符合人在真实关系里的分寸。
+     *
+     * 真正的「不落 assistant 消息」由 ChatRepository 保证：它看到这个工具成功就直接结束这一轮，
+     * 界面只会因为 readAt 非空显示「已读」，不会出现任何占位气泡。
+     */
+    private suspend fun staySilent(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Long
+    ): ToolExecution {
+        val reason = invocation.argument("reason")?.trim()?.take(60).orEmpty()
+        val settings = runCatching { settingsRepository.settings.first() }.getOrNull()
+        // 换人格时不算「连续」：上一个人格的两轮沉默不该让这个人格被强制开口。
+        val previous = if (settings?.staySilentPersonaId == persona.id) settings.staySilentStreak else 0
+        if (!StaySilent.allowed(previous)) {
+            return ToolExecution(
+                result = ToolResult(
+                    invocation = invocation,
+                    // ok=false：ChatRepository 据此知道「这一轮并没有真的静默」，会继续让模型说话。
+                    ok = false,
+                    summary = "不能再不回了",
+                    contentForModel = StaySilent.deniedModelText(),
+                    errorMessage = null
+                ),
+                // 不给用户看任何「动作卡片」：被拒绝的沉默不是一个发生过的动作。
+                trace = silentTrace(invocation)
+            )
+        }
+        // 他确实看过了，只是选择不回；「已读」是唯一该出现的反应（免打扰/睡眠不在这里判定）。
+        runCatching { messageDao.markUserMessagesRead(sessionId, now) }
+        runCatching { settingsRepository.setStaySilentStreak(persona.id, StaySilent.nextStreak(previous)) }
+        return ToolExecution(
+            result = ToolResult(
+                invocation = invocation,
+                ok = true,
+                summary = StaySilent.summary(reason),
+                contentForModel = StaySilent.allowedModelText(reason)
+            ),
+            trace = silentTrace(invocation)
+        )
+    }
+
+    /** `stay_silent` 的痕迹：没有用户可见标题（这一轮本来就不该有任何气泡/卡片）。 */
+    private fun silentTrace(invocation: ToolInvocation): ToolTraceItem = ToolTraceItem(
+        name = invocation.name,
+        title = "",
+        subtitle = null,
+        detail = "",
+        ok = true
+    )
 
     // ---------------------------------------------------------------- 先不回
 

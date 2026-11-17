@@ -21,6 +21,8 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     private let log: (String) -> Void
     /// 人格进化（0.13）。可选：没装进化服务时这条链路安静跳过。
     private let evolution: PersonaEvolutionService?
+    /// 自动情绪判定（0.13 schema v17）。同样可选。
+    private let moodJudgement: MoodJudgementService?
     private let lock = NSLock()
     private var extracting: Set<String> = []
 
@@ -30,6 +32,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         compression: HistoryCompressionService,
         resolveConfig: @escaping (ChatSessionEntity) -> CompressionConfig?,
         evolution: PersonaEvolutionService? = nil,
+        moodJudgement: MoodJudgementService? = nil,
         log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
@@ -37,6 +40,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         self.compression = compression
         self.resolveConfig = resolveConfig
         self.evolution = evolution
+        self.moodJudgement = moodJudgement
         self.log = log
     }
 
@@ -109,6 +113,49 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
                 log("[evolution] \(outcome.message)（人格 \(personaId)）")
             case .failure(let error):
                 log("[evolution] 评估失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    /// 自动情绪判定（`spec/mood/README.md` §2）。
+    ///
+    /// 触发节奏由服务判定（每 4 条用户消息 / 24 小时），没到就什么都不做 ——
+    /// 这条路径每次回复都会走一遍，所以判定必须在开 Task 之前做。
+    ///
+    /// 三种失败都不报错、不打扰用户：没装服务（安静跳过）、没配 API（按时间衰减）、
+    /// 模型输出坏 JSON（服务内部按时间衰减并写日志）。
+    public func moodJudgementNeeded(sessionId: String, personaId: String) {
+        guard let moodJudgement else { return }
+        let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedSession.isEmpty else { return }
+        guard moodJudgement.shouldJudge(personaId: personaId) else { return }
+        guard moodJudgement.beginJudgement(personaId: personaId) else { return }
+        let stores = self.stores
+        let resolve = self.resolveConfig
+        let log = self.log
+        Task {
+            // 不管成功/失败都要还名额（判定失败也一样，别把这个人格永久卡在「正在判定」）。
+            defer { moodJudgement.endJudgement(personaId: personaId) }
+            guard let session = (try? stores.sessions.byId(trimmedSession)) ?? nil else { return }
+            guard let resolved = resolve(session) else {
+                log("[mood] 还没有可用的 API 配置，这次不判定（心情按时间衰减）")
+                moodJudgement.decay(personaId: personaId)
+                return
+            }
+            let result = await moodJudgement.judge(
+                personaId: personaId,
+                sessionId: trimmedSession,
+                config: resolved.config,
+                model: resolved.model
+            )
+            switch result {
+            case .success(let outcome):
+                log("[mood] \(outcome.message)（人格 \(personaId)）")
+            case .failure(let error):
+                // 判定服务内部已把失败变成「按时间衰减」，走到这里说明人格/库出了别的问题：
+                // 仍然只写日志，不让一次后台调用影响聊天。
+                log("[mood] 判定失败：\(error.localizedDescription)")
+                moodJudgement.decay(personaId: personaId)
             }
         }
     }

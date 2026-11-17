@@ -163,7 +163,10 @@ extension PersonaEntity: SQLiteRecord {
         // v13 的人设引导：世界预设 / 话风 / 当前活动（JSON 文本，可空）。
         "worldJson", "speechStyleJson", "activityJson",
         // v14 的翻译缓存：人设/世界/话风翻成界面语言后的快照（JSON 文本，可空）。
-        "translationJson", "translationLang"
+        "translationJson", "translationLang",
+        // v17 的多维心情（可空 = 还没自动判定过，见 `MoodState.dimensions`）。
+        // 顺序跟建表语句一致：追加在表尾（Android 17.json 也是这么排的）。
+        "moodValence", "moodArousal", "moodDominance"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -182,7 +185,8 @@ extension PersonaEntity: SQLiteRecord {
             .int(proactiveLevel), .int(memoryRetention), .int(extractionEvery),
             .bool(sleepEnabled), .int(wakeThreshold), .bool(dndOnSleep),
             .optionalText(worldJson), .optionalText(speechStyleJson), .optionalText(activityJson),
-            .optionalText(translationJson), .optionalText(translationLang)
+            .optionalText(translationJson), .optionalText(translationLang),
+            .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance)
         ]
     }
 
@@ -209,6 +213,10 @@ extension PersonaEntity: SQLiteRecord {
             moodReason: try row.optionalText("moodReason"),
             moodUpdatedAt: try row.optionalInt64("moodUpdatedAt"),
             moodNudgedAt: try row.optionalInt64("moodNudgedAt"),
+            // v17：老库没有这三列时 `optionalInt` 给 nil（= 没判过），不回填默认值。
+            moodValence: try row.optionalInt("moodValence"),
+            moodArousal: try row.optionalInt("moodArousal"),
+            moodDominance: try row.optionalInt("moodDominance"),
             traits: PersonaTags.decode(try row.optionalText("traits")),
             likes: PersonaTags.decode(try row.optionalText("likes")),
             behaviors: PersonaTags.decode(try row.optionalText("behaviors")),

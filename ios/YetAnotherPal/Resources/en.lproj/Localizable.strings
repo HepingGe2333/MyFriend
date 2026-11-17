@@ -258,10 +258,10 @@
 "新联系人" = "New person";
 "编辑联系人" = "Edit person";
 "名字" = "Name";
-"他会怎么称呼自己。" = "What he calls himself.";
+"他会怎么称呼自己。留空也行，会先叫「未命名」。" = "What he calls himself. Can be blank — he will be called “Untitled” first.";
 "比如：林深" = "e.g. Rowan";
 "一句话介绍" = "One-line description";
-"给别人看的一句话，也能帮他记住自己是谁。" = "One line others can see, and a reminder to him of who he is.";
+"给别人看的一句话，也能帮他记住自己是谁。可以留空。" = "One line others can see, and a reminder to him of who he is. Can be blank.";
 "比如：一个温柔而安静的朋友" = "e.g. a gentle, quiet friend";
 "他" = "Him";
 "头像" = "Avatar";
@@ -343,7 +343,7 @@
 "睡前免打扰：关着（他自己选的）。睡着时连着发几条能把他叫醒。" = "Do not disturb while asleep: off (his choice). A few messages in a row will wake him.";
 "现在：%@ 睡 → %@ 醒" = "Now: sleeps at %@ → wakes at %@";
 "提示词全文（高级）" = "Full instructions (advanced)";
-"上面那些字段会被拼成小节，接在这一段后面。" = "The fields above are assembled into sections and appended to this passage.";
+"可以留空：会按上面的名字和一句话介绍生成一段；上面也没填就用默认人设。" = "Can be blank: it will be generated from the name and one-line intro above; if both are empty, a default persona is used.";
 "他是谁、怎么说话、什么不做。原文会完整保存。" = "Who he is, how he speaks, what he won't do. Your text is saved exactly as written.";
 "%d 字" = "%d characters";
 "%d 字.one" = "%d character";
@@ -469,6 +469,7 @@
 "测试连接" = "Test connection";
 "测试只会请求 /models，不会真的说一句话，也不花钱。" = "The test only requests /models. It doesn't say anything and it doesn't cost anything.";
 "删除这个配置" = "Delete this config";
+"未命名" = "Untitled";
 "未命名配置" = "Untitled config";
 "没能清掉" = "Couldn't clear it";
 "先填一个 API Key，再测。" = "Enter an API Key first, then test.";
@@ -1050,8 +1051,8 @@
 "加一条" = "Add one";
 "加一行日程" = "Add a schedule row";
 "只删这份设定；已经应用过的人格不会被改回去。" = "Only this setup is deleted; personas it was applied to stay as they are.";
-"只是给你自己看的，例如「临港建筑师」。" = "Just for you, e.g. “Lingang architect”.";
-"可以留空：应用后再在人格里写。人设卡等其他字段沿用目标人格的。" = "Can be blank: write it in the persona later. Other fields (like the persona card) stay as the target's.";
+"只是给你自己看的，例如「临港建筑师」。留空也行。" = "Just for you, e.g. “Lingang architect”. Can be blank.";
+"可以留空：会用名字和一句话介绍生成一段；两样都空就用默认人设。人设卡等其他字段沿用目标人格的。" = "Can be blank: it will be generated from the name and one-line intro; if both are empty, a default persona is used. Other fields (like the persona card) stay as the target's.";
 "在做什么，例如「在事务所画图」" = "What he is doing, e.g. “drawing at the studio”";
 "复制成新人格" = "Copy as a new persona";
 "已有 %@ 的翻译缓存。" = "A %@ translation is cached.";
@@ -1081,7 +1082,7 @@
 "示例：临港新城·云筑建筑事务所" = "Example: Lingang New City · Yunzhu Studio";
 "称呼，例如「母亲」" = "Name, e.g. “Mother”";
 "结构化字段写不下的都可以放这里：城市气质、行业黑话、家庭旧事、忌讳……最多 %d 字。" = "Anything the structured fields can't hold: the city's mood, trade slang, family history, things to avoid… up to %d characters.";
-"给别人看的一句话，也会成为人格的介绍。" = "One line others can see; it also becomes the persona's description.";
+"给别人看的一句话，也会成为人格的介绍。可以留空。" = "One line others can see; it also becomes the persona's description. Can be blank.";
 "编辑预设" = "Edit preset";
 "翻译失败，可重试；现在仍然用原文。" = "Translation failed — you can retry; the original is still in use.";
 "自动翻译人设" = "Auto-translate persona";
@@ -1284,3 +1285,17 @@
 "这里还没有语音可以听" = "There's no voice message to listen to here yet";
 "（这条消息是一段%@，时长 %@ 秒；媒体 id：%@。想听/看就用 %@，别猜内容。）" = "(This message is a %@, %@ seconds long; media id: %@. Use %@ if you want to hear or see it — don't guess the content.)";
 "没有麦克风权限，去系统设置里允许一下" = "No microphone permission — allow it in System Settings";
+
+// 0.13：`stay_silent` 与主动对话诊断（Kit 的 String(localized:)）
+"不能连续沉默超过两轮" = "Can't stay silent more than two turns in a row";
+"今天说够了" = "Already reached today's limit";
+"他这次一直没说话，再发一条试试" = "He didn't say anything this time — try sending another message";
+"刚想过一回" = "Just thought about it a moment ago";
+"刚聊完，先安静一会儿" = "Just finished talking — quiet for a moment";
+"可以主动" = "Can reach out";
+"在忙" = "Busy";
+"在睡觉" = "Asleep";
+"常驻循环关着" = "Background loop is off";
+"这一轮得说句话" = "Has to say something this turn";
+"这轮先不回" = "Staying quiet this turn";
+"这轮没说话" = "Said nothing this turn";

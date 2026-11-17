@@ -711,8 +711,6 @@
 
     <!-- PersonaEditorViewModel -->
     <string name="persona_editor_persona_missing">人格不存在</string>
-    <string name="persona_editor_name_required">请填写人格名称</string>
-    <string name="persona_editor_prompt_required">请写下人格提示词，或从历史版本恢复</string>
     <string name="persona_editor_save_failed">保存失败</string>
     <string name="persona_editor_card_save_failed">人格已保存，但人格卡写入失败：%1$s</string>
     <string name="persona_editor_unknown_error">未知错误</string>
@@ -925,7 +923,6 @@
     <string name="preset_import_failed">导入失败</string>
     <string name="preset_editor_not_found">预设不存在，可能已被删除</string>
     <string name="preset_editor_name_required">请填写预设名称</string>
-    <string name="preset_editor_prompt_required">预设需要包含人格提示词</string>
     <string name="preset_editor_save_failed">保存失败</string>
 
     <!-- ui/components: Common.kt / Avatar.kt / MarkdownText.kt -->
@@ -1763,4 +1760,11 @@
     <string name="error_media_video_unsupported">这个模型看不了视频</string>
     <string name="error_media_audio_too_large">这段语音太大，模型收不下</string>
     <string name="error_media_video_too_large">这段视频太大，模型收不下</string>
+
+    <!-- 0.13 可空保存：名字/提示词留空时的本地化兜底（人格/预设编辑页与仓储层共用；默认名仍是「未命名」） -->
+    <string name="draft_default_name">未命名</string>
+    <string name="draft_default_prompt_separator">：</string>
+    <string name="draft_default_prompt">你是用户身边的一位朋友，用自然、真诚的语气陪他聊天，记得他告诉过你的事。</string>
+    <!-- 0.13 已读不回（spec/mood §4）：只在这条工具调用成功时可能进痕迹；正常情况不产生任何气泡 -->
+    <string name="tool_trace_stay_silent">只读不回</string>
 </resources>

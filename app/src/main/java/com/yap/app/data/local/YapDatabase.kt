@@ -29,7 +29,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         DiaryNoteEntity::class,
         StickerEntity::class
     ],
-    version = 16,
+    version = 17,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -62,6 +62,81 @@ abstract class YapDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v17：多维情绪（`spec/mood/README.md` §1）。
+         *
+         * 给 `personas` 加三列可空 `INTEGER`：
+         * - `moodValence`（-2..2 愉快度）；
+         * - `moodArousal`（0..5 唤醒度）；
+         * - `moodDominance`（0..5 掌控感）。
+         *
+         * 然后按规范「旧数据迁移」把已有的标签/强度折算进来：valence 由 label 映射
+         * （累/烦→-1、平静→0、开心→1），arousal 由 intensity 推，dominance=3。
+         *
+         * 为什么不把映射写成一条 SQL `CASE`：心情词表在 `MoodLexicon` 里，SQL 再抄一份
+         * 就等于有两个真源，以后加词一定会漂。这里直接调 `MoodDimensions.fromLegacy`
+         * （与运行时读路径同一个函数），SQL 只负责「把算好的三个数写回这一行」。
+         *
+         * 只补 `moodValence IS NULL` 且 `mood IS NOT NULL` 的行：
+         * - 空心情没有可映射的东西，保持 NULL（读路径会给基准值）；
+         * - 重复执行时已经没有 NULL 行可补，天然幂等。
+         *
+         * 列本身仍然可空：将来换词表/判定的维度是 NULL 时才代表「还没算过」，
+         * 不能用一个看起来有值的 0 冒充「他很平静」。
+         *
+         * 幂等：先查 `PRAGMA table_info`，列已经在就跳过；回填只针对 NULL 行。
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                // 防御：极老/被修复脚本动过的库可能连 personas 都没有。没有表就没有旧心情要保，
+                // 交给 Room 按 v17 的实体建表即可；这里硬 ALTER 只会让升级当场崩。
+                if (personaColumns.isEmpty()) return
+                if ("moodValence" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodValence` INTEGER")
+                }
+                if ("moodArousal" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodArousal` INTEGER")
+                }
+                if ("moodDominance" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodDominance` INTEGER")
+                }
+                backfillMoodDimensions(db)
+            }
+        }
+
+        /**
+         * v17 的旧数据回填：把 `(mood, moodIntensity)` 折算成三个维度写回。
+         *
+         * 先读完再写（不在打开的游标上执行 UPDATE）：人格数量很少（几十条），
+         * 用一次列表换「不同 SQLite 版本上的游标行为一致」是值得的。
+         */
+        private fun backfillMoodDimensions(db: SupportSQLiteDatabase) {
+            val rows = mutableListOf<Triple<String, String?, Int?>>()
+            db.query(
+                "SELECT `id`, `mood`, `moodIntensity` FROM `personas` " +
+                    "WHERE `mood` IS NOT NULL AND `mood` != '' AND `moodValence` IS NULL"
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    rows += Triple(
+                        cursor.getString(0),
+                        if (cursor.isNull(1)) null else cursor.getString(1),
+                        if (cursor.isNull(2)) null else cursor.getInt(2)
+                    )
+                }
+            }
+            rows.forEach { (id, mood, intensity) ->
+                val reading = com.yap.app.domain.MoodDimensions.fromLegacy(
+                    label = mood.orEmpty(),
+                    intensity = intensity ?: 2
+                )
+                db.execSQL(
+                    "UPDATE `personas` SET `moodValence` = ?, `moodArousal` = ?, `moodDominance` = ? WHERE `id` = ?",
+                    arrayOf<Any>(reading.valence, reading.arousal, reading.dominance, id)
+                )
+            }
+        }
 
         /**
          * v16：表情包（`spec/stickers/README.md` / `SCHEMA.md`）。

@@ -45,6 +45,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     SET_MOOD(R.string.tool_trace_set_mood),
     RECALL(R.string.tool_trace_recall),
     DEFER_REPLY(R.string.tool_trace_defer_reply),
+    STAY_SILENT(R.string.tool_trace_stay_silent),
     DIARY(R.string.tool_trace_diary),
     DIARY_ADD(R.string.tool_trace_diary_add),
     DIARY_LIST(R.string.tool_trace_diary_list),
@@ -70,6 +71,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.SET_MOOD -> SET_MOOD
             ToolCatalog.RECALL -> RECALL
             ToolCatalog.DEFER_REPLY -> DEFER_REPLY
+            ToolCatalog.STAY_SILENT -> STAY_SILENT
             ToolCatalog.DIARY -> DIARY
             ToolCatalog.STICKER -> STICKER
             ToolCatalog.LISTEN -> LISTEN

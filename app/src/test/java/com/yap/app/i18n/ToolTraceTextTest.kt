@@ -39,6 +39,8 @@ class ToolTraceTextTest {
         ToolTraceTitle.SET_MOOD to ("心情变了" to "Mood changed"),
         ToolTraceTitle.RECALL to ("回想了一下" to "Recalled"),
         ToolTraceTitle.DEFER_REPLY to ("决定先不回" to "Decided not to reply yet"),
+        // 0.13：已读不回（spec/mood §4）。它和 defer 是两件事：一个过会儿再回，一个这轮不回。
+        ToolTraceTitle.STAY_SILENT to ("只读不回" to "Read, no reply"),
         ToolTraceTitle.DIARY to ("日记" to "Diary"),
         ToolTraceTitle.DIARY_ADD to ("写日记" to "Wrote a note"),
         ToolTraceTitle.DIARY_LIST to ("翻日记" to "Flipped through the diary"),

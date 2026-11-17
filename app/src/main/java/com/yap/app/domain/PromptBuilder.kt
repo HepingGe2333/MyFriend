@@ -151,6 +151,13 @@ object PromptBuilder {
         val zone: ZoneId = ZoneId.systemDefault(),
         /** `MoodPrompt.line(...)` 的原文：标题会被剥掉，正文拆成「心情 + 强度」并进「你此刻的状态」。 */
         val moodBlock: String = "",
+        /**
+         * 多维心情（schema v17，`spec/mood/README.md` §3）。
+         *
+         * 有它就用「心情 + 强度 + 三个维度 + 行为提示」的多维段；没有（老调用方、人格卡预览）
+         * 才退回 [moodBlock] 的单行渲染。两者都不会同时出现，免得提示词里写两遍心情。
+         */
+        val moodDetail: MoodReading? = null,
         /** 现在是不是他平时的睡觉时间（安静时段）。 */
         val asleep: Boolean = false,
         /** 额外状态（presence / 今天话多话少），一行一句，并进状态段。 */
@@ -212,6 +219,7 @@ object PromptBuilder {
     /** 完整系统提示词：五段人设 + 可变部分 + 语言指令 + 边界。 */
     fun system(input: Inputs): String = buildString {
         append(base(input))
+        append("\n\n").append(antiAiSection())
         input.variableBlocks.map { it.trim() }.filter { it.isNotBlank() }.forEach {
             append("\n\n").append(it)
         }
@@ -234,6 +242,31 @@ object PromptBuilder {
         }
         return sections.joinToString("\n\n").trim()
     }
+
+    /** 「别像 AI」段的标题（规范 §5；不在 `scaffold.json` 里，所以单独一段）。 */
+    const val SECTION_ANTI_AI = "# 别像 AI"
+
+    /**
+     * 反 AI 味约束（`spec/mood/README.md` §5）。
+     *
+     * 为什么单独一段而不是并进「你怎么说话」：话风是**用户/模型学来的数据**（句子短、少感叹号），
+     * 这一段是**产品级的行为禁忌**（不要每句反问、不要总结对方、不要列点、不要总安慰、可以沉默、
+     * 不重复口头禅），对所有人生效、也不该被用户填的话风覆盖。放在边界之前、人设之后，
+     * 顺序上仍然「越靠前越强」，同时不改变脚手架六段的既有位置。
+     */
+    fun antiAiSection(): String = buildString {
+        append(SECTION_ANTI_AI)
+        ANTI_AI_RULES.forEach { append("\n- ").append(it) }
+    }
+
+    private val ANTI_AI_RULES = listOf(
+        "不要每句话都反问；不需要每轮都把话题抛回去。",
+        "不要总结对方说的话，也不要说「所以你的意思是…」。",
+        "不要列点、不要「首先/其次/最后」，不要写成一段说明书。",
+        "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
+        "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
+        "不主动给建议、清单或心理分析；不知道就说不知道。"
+    )
 
     /**
      * §1.1 / §1.2 的边界：放在整份提示词最后，约束最容易被忘掉的那几件事。
@@ -298,7 +331,13 @@ object PromptBuilder {
         val parts = buildList {
             clockLine(input.now, input.zone)?.let { add(it) }
             add(activityForPrompt(input.activity, input.now, input.zone))
-            addAll(moodLines(input.moodBlock))
+            val moodDetail = input.moodDetail
+            if (moodDetail != null) {
+                // 多维心情段（规范 §3）：标题由「你此刻的状态」承担，这里只加正文行。
+                addAll(MoodDimensions.promptLines(moodDetail))
+            } else {
+                addAll(moodLines(input.moodBlock))
+            }
             if (input.asleep) add(ASLEEP_SENTENCE)
             val extra = stripHeading(input.extraStatus)
             if (extra.isNotBlank()) add(extra)

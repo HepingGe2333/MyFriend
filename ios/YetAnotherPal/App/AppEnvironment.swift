@@ -69,6 +69,8 @@ final class AppEnvironment: ObservableObject {
     /// 人格进化（0.13）：人格页「他最近的变化」读它、接受/拒绝也调它
     ///（`docs/design/persona-evolution.md` §2）。
     let personaEvolution: PersonaEvolutionService
+    /// 自动情绪判定（schema v17，`spec/mood/README.md` §2）。
+    let moodJudgement: MoodJudgementService
     /// 回复落库之后那两件后台事（抽记忆 / 压摘要）。
     let chatBackground: ChatBackgroundService
     /// 后台调用用的模型配置（会话上填的模型优先，其次当前生效的 API 配置）。
@@ -294,7 +296,10 @@ final class AppEnvironment: ObservableObject {
             },
             // 低电量模式下把前台账拍放宽到 2 分钟（`ForegroundPulse.intervalMillis` 与
             // 概率换算用的是同一个数）：省电优先，但也别让「他」彻底不说话。
-            isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled }
+            isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+            // 每一拍的结论都进日志：真机上「他从不主动」全靠这一行定位
+            //（`ProactiveDiagnosis` 给出七道闸里到底哪一道关着）。
+            log: { DebugSeeding.log($0) }
         )
         self.heartbeat = heartbeat
 
@@ -385,12 +390,22 @@ final class AppEnvironment: ObservableObject {
             completion: completion,
             log: { DebugSeeding.log($0) }
         )
+        // 自动情绪判定（0.13 schema v17）：每 4 条用户消息 / 24 小时判一次心情，
+        // 结果写 `personas.mood*` 三列并在下一轮提示词里生效。
+        let moodJudgement = MoodJudgementService(
+            stores: fallbackStores,
+            completion: completion,
+            mood: moodRepository,
+            log: { DebugSeeding.log($0) }
+        )
+        self.moodJudgement = moodJudgement
         let chatBackground = ChatBackgroundService(
             stores: fallbackStores,
             extraction: extraction,
             compression: historyCompression,
             resolveConfig: resolveCompressionConfig,
             evolution: personaEvolution,
+            moodJudgement: moodJudgement,
             log: { DebugSeeding.log($0) }
         )
         self.webTools = webTools
@@ -1153,10 +1168,14 @@ final class AppEnvironment: ObservableObject {
             }
             // 乐观地把界面切到新值：请求还在路上时开关不该弹回去；失败会改回 previous。
             currentSettings = next
+            refreshProactivePulse()
             return
         }
         settings.save(next)
         currentSettings = next
+        // 「常驻循环」这类开关刚被打开时，前台心跳可能还没起来（冷启动时没有 API 配置 /
+        // 没有人格，`startForegroundPulse` 会直接放弃）。这里重新评估一次，幂等。
+        refreshProactivePulse()
     }
 
     // MARK: - API 配置
@@ -1265,6 +1284,7 @@ final class AppEnvironment: ObservableObject {
     /// 从磁盘重新读一遍设置（清空数据、导入备份之后用：这两件事会让设置整体变掉）。
     func reloadSettings() {
         currentSettings = settings.load()
+        refreshProactivePulse()
     }
 
     // MARK: - 会话与 API 配置的绑定
@@ -1645,13 +1665,31 @@ final class AppEnvironment: ObservableObject {
     /// 当前一拍的间隔（低电量 2 分钟 / 平时 30 秒）。日志与界面用。
     var foregroundPulseIntervalMillis: Int64 { heartbeat.checkIntervalMillis() }
 
+    /// 主动对话此刻被哪道闸挡着（`ProactiveDiagnosis`，只读）。
+    ///
+    /// 设置页 / 调试面板用它回答「他为什么不主动找我」；`runBackgroundTick` 在
+    /// 「没有 API 配置」时也会把它写进日志，免得用户只看到一句「这次不想事情」。
+    func proactiveDiagnosis() -> ProactiveDiagnosis {
+        heartbeat.explain()
+    }
+
+    /// API 配置 / 人格 / 设置在运行中变了之后，重新评估前台心跳该不该跑。
+    ///
+    /// 真机 bug（0.13 第一批）：冷启动时还没有 API 配置，`startForegroundPulse()` 直接放弃；
+    /// 用户在设置里加完配置后什么都没重新触发它 —— 于是「主动消息」要等到 App 被杀掉重开、
+    /// 或切一次后台再回来才开始工作。现在每个「能让条件成立」的写路径都调这里（幂等）。
+    func refreshProactivePulse() {
+        guard isForeground else { return }
+        startForegroundPulse()
+    }
+
     /// 跑一次「想一下」：到点的主动规则变成念头 → 心跳掷一次 → 该说话就写消息（通知在 `AgentLoop` 回调里）。
     ///
     /// - Returns: 这次有没有真的动过（BGTask 的 `success` 用它）。
     @discardableResult
     func runBackgroundTick() async -> Bool {
         guard resolvedChatConfig() != nil else {
-            DebugSeeding.log("[bg] 还没有 API 配置，这次不想事情")
+            DebugSeeding.log("[bg] 还没有 API 配置，这次不想事情 · \(proactiveDiagnosis().logLine())")
             return false
         }
         let now = DomainClock.nowMillis

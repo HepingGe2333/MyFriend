@@ -139,6 +139,8 @@ public final class ToolExecutor: ToolRunning {
             return recall(invocation, persona: persona, now: at)
         case "defer_reply":
             return await deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
+        case "stay_silent":
+            return staySilent(invocation, persona: persona)
         case "diary":
             return diary(invocation, persona: persona, now: at)
         case "think":
@@ -1177,6 +1179,29 @@ public final class ToolExecutor: ToolRunning {
             return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
         }
         return String(format: "%d KB", max(1, bytes / 1024))
+    }
+
+    // MARK: - 这一轮不回（stay_silent）
+
+    /// 「这一轮就不回」（`spec/mood/README.md` §4）：不落消息、不留念头、只标已读。
+    ///
+    /// 真正的拦截在 `ChatService`（拿到 `stay_silent` 就直接结束这一轮）；这里实现一份是为了
+    /// 让「任何一处调它」语义一致，也为了让工具注册表与执行器保持一一对应
+    ///（`ToolExecutorTests` 守着「清单里的每个工具都有人认识」）。
+    ///
+    /// 这里**什么都不写库**：连续沉默的计数在 `ChatRhythmService` 里（本机 UserDefaults），
+    /// 不在工具层。
+    private func staySilent(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        let reason = StaySilent.cleanReason(invocation.argument("reason"))
+        _ = persona
+        _ = reason
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: String(localized: "这轮先不回"),
+            contentForModel: "这一轮你选择只看一眼、不回话。不再产生任何消息，也不用解释。",
+            traceTitle: String(localized: "这轮没说话")
+        )
     }
 
     // MARK: - 先不回

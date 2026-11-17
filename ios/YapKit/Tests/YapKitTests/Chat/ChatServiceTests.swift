@@ -345,7 +345,7 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertTrue(personaIndex.lowerBound < capabilityIndex.lowerBound, "人格必须在能力说明之前")
     }
 
-    /// 心情：由 `MoodRepository` 读出来（顺手让时间冲淡），渲染成 `## 你现在的心情` 那一段。
+    /// 心情：由 `MoodRepository` 读出来（顺手让时间冲淡），渲染成 `# 你的心情` 那一段。
     func testMoodLineComesFromMoodRepository() async throws {
         try seedReadySession()
         var persona = try XCTUnwrap(try stores.personas.byId(personaId))
@@ -358,9 +358,11 @@ final class ChatServiceTests: XCTestCase {
         _ = try await collect(service.send(sessionId: sessionId, text: "今天真好看"))
 
         let system = try systemPrompt()
-        XCTAssertTrue(system.contains("## 你现在的心情"))
+        XCTAssertTrue(system.contains(MoodPrompt.sectionTitle), "多维心情段（spec/mood/README.md §3）")
         XCTAssertTrue(system.contains("心情：雀跃（强度 4/5）。"))
-        XCTAssertTrue(system.contains("原因：他夸我了"))
+        XCTAssertTrue(system.contains("愉快度"))
+        XCTAssertTrue(system.contains("掌控感"))
+        XCTAssertTrue(system.contains("他夸我了"), "来由（reason）只给模型自己看")
     }
 
     /// 记忆块：有记忆时进 system，标题是 `## 你记得的事`（与 Android 逐字一致）。

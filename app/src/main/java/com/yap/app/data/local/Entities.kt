@@ -113,7 +113,24 @@ data class PersonaEntity(
      */
     val translationJson: String? = null,
     /** 上面那份缓存对应的语言（BCP-47：`zh` / `en` …）；为空表示没有缓存。 */
-    val translationLang: String? = null
+    val translationLang: String? = null,
+
+    // ---- 0.13 多维情绪（schema v17，`spec/mood/README.md` §1） ------------------
+    /**
+     * 愉快度：-2 很不悦 … 0 平静 … 2 很愉快。
+     *
+     * 与 `mood`（标签）、`moodIntensity`（强度）是同一份情绪的三个视角：标签给人看，
+     * 三个维度给模型看——「累」和「烦」都可能强度 3，但唤醒度与掌控感完全不同，
+     * 语气应该不一样。可空是为了让 v16 的老库升级后读出来是 NULL（由代码按旧标签映射），
+     * 而不是被塞一个「看起来有值、其实是猜的」数字。
+     */
+    val moodValence: Int? = null,
+
+    /** 唤醒度：0 很低（困/没劲）… 5 很高（激动）。 */
+    val moodArousal: Int? = null,
+
+    /** 掌控感：0 被压住 … 3 一般 … 5 很有把握。 */
+    val moodDominance: Int? = null
 )
 
 @Entity(

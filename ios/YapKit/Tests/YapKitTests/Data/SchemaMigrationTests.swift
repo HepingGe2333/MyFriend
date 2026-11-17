@@ -781,7 +781,7 @@ final class SchemaMigrationTests: XCTestCase {
 
         let reopened = try DatabaseStores.open(path: databasePath)
         XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
-        XCTAssertEqual(Schema.version, 16, "当前 schema 是 v16（表情包）")
+        XCTAssertEqual(Schema.version, 17, "当前 schema 是 v17（多维心情三列）")
         XCTAssertTrue(try reopened.database.hasTable(Schema.diaryNotesTable), "v15 要建 diary_notes")
         XCTAssertTrue(try reopened.database.hasTable(Schema.personaPendingPatchesTable),
                       "v15 要建 persona_pending_patches")

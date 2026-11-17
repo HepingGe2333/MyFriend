@@ -61,6 +61,28 @@ interface PersonaDao {
     @Query("UPDATE personas SET mood = :mood, moodIntensity = :intensity, moodReason = :reason, moodUpdatedAt = :now WHERE id = :id")
     suspend fun setMood(id: String, mood: String?, intensity: Int?, reason: String?, now: Long)
 
+    /**
+     * 多维心情写入（schema v17）：标签 / 强度 / 三观维度一起落库。
+     *
+     * 单独一条而不是改 [setMood] 的签名：老调用方（服务端同步、唤醒恢复）只知道标签与强度，
+     * 它们不该被逼着猜维度；需要写维度的路径（`set_mood`、自动判定）走这一条。
+     */
+    @Query(
+        "UPDATE personas SET mood = :mood, moodIntensity = :intensity, moodReason = :reason, " +
+            "moodValence = :valence, moodArousal = :arousal, moodDominance = :dominance, " +
+            "moodUpdatedAt = :now WHERE id = :id"
+    )
+    suspend fun setMoodVector(
+        id: String,
+        mood: String?,
+        intensity: Int?,
+        reason: String?,
+        valence: Int?,
+        arousal: Int?,
+        dominance: Int?,
+        now: Long
+    )
+
     /** 睡觉前要不要开免打扰：由模型的 dnd / quiet_hours 动作写，用户没有入口。 */
     @Query("UPDATE personas SET dndOnSleep = :enabled, updatedAt = :now WHERE id = :id")
     suspend fun setDndOnSleep(id: String, enabled: Boolean, now: Long)
@@ -78,9 +100,19 @@ interface PersonaDao {
     @Query("UPDATE personas SET sleepEnabled = 0 WHERE id IN (:ids)")
     suspend fun disableSleepFor(ids: List<String>): Int
 
-    /** 心情随时间淡下去，只改词和强度。 */
-    @Query("UPDATE personas SET mood = :mood, moodIntensity = :intensity WHERE id = :id")
-    suspend fun fadeMood(id: String, mood: String?, intensity: Int?)
+    /** 心情随时间淡下去：词、强度与三个维度一起衰减（维度由 v17 起才有）。 */
+    @Query(
+        "UPDATE personas SET mood = :mood, moodIntensity = :intensity, " +
+            "moodValence = :valence, moodArousal = :arousal, moodDominance = :dominance WHERE id = :id"
+    )
+    suspend fun fadeMood(
+        id: String,
+        mood: String?,
+        intensity: Int?,
+        valence: Int?,
+        arousal: Int?,
+        dominance: Int?
+    )
 
     @Query("DELETE FROM personas")
     suspend fun deleteAll()

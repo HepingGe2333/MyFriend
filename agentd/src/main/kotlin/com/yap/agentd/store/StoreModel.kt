@@ -551,26 +551,70 @@ data class BlockMeta(
 
 // ---------------------------------------------------------------------- 心情 / 在场
 
+/**
+ * 多维心情（`spec/mood/README.md` §1，schema v17）。
+ *
+ * 四格一起表达「一个词 + 三个维度」：
+ * - [label] 给人看的短词（累/平静/烦/开心…）；
+ * - [valence] 愉快度 -2..2（负=不悦，正=愉快）；
+ * - [arousal] 唤醒度 0..5（0=低能量/困，5=激动）；
+ * - [dominance] 掌控感 0..5（0=被压住，5=掌控）；
+ * - [intensity] 强度 1..5（既有列）；
+ * - [reason] 为什么（模型内部/调试用，不直接展示）。
+ *
+ * 旧数据只有 `label/intensity`：读盘时按规范 §1 的迁移规则补维度
+ * （valence 由 label 映射，arousal 由 intensity 推，dominance=3）。`moods.json` 不升版本。
+ */
 data class Mood(
     val personaId: String,
     val label: String,
     val intensity: Int,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val valence: Int = 0,
+    val arousal: Int = 2,
+    val dominance: Int = 3,
+    val reason: String = ""
 ) {
     fun toJson(): JsonValue.Obj = obj(
         "personaId" to str(personaId),
         "label" to str(label),
         "intensity" to num(intensity),
-        "updatedAt" to num(updatedAt)
+        "updatedAt" to num(updatedAt),
+        // 0.13 可加字段：老数据目录没有它们，读的时候按迁移规则补齐。
+        "valence" to num(valence),
+        "arousal" to num(arousal),
+        "dominance" to num(dominance),
+        "reason" to str(reason)
     )
 
     companion object {
-        fun fromJson(value: JsonValue.Obj, where: String): Mood = Mood(
-            personaId = value.reqString("personaId", where),
-            label = value.reqString("label", where),
-            intensity = value.optInt("intensity", where) ?: 0,
-            updatedAt = value.reqLong("updatedAt", where)
-        )
+        /** 心情原因的字符上限（只进提示词/调试，不给人看长文）。 */
+        const val MAX_REASON_CHARS = 200
+
+        /** 旧数据迁移：label → valence（累/烦 → -1，平静 → 0，开心 → 1……由词表给出）。 */
+        fun defaultValence(label: String): Int =
+            com.yap.app.domain.MoodLexicon.classify(label).valence.coerceIn(-2, 2)
+
+        /** 旧数据迁移：arousal 由 intensity 推（强度越高越"有劲"，区间 0..5）。 */
+        fun defaultArousal(intensity: Int): Int = intensity.coerceIn(0, 5)
+
+        /** 旧数据迁移：dominance 默认 3（中间值，不猜）。 */
+        fun defaultDominance(): Int = 3
+
+        fun fromJson(value: JsonValue.Obj, where: String): Mood {
+            val label = value.reqString("label", where)
+            val intensity = value.optInt("intensity", where) ?: 0
+            return Mood(
+                personaId = value.reqString("personaId", where),
+                label = label,
+                intensity = intensity,
+                updatedAt = value.reqLong("updatedAt", where),
+                valence = value.optInt("valence", where) ?: defaultValence(label),
+                arousal = value.optInt("arousal", where) ?: defaultArousal(intensity),
+                dominance = value.optInt("dominance", where) ?: defaultDominance(),
+                reason = value.optString("reason", where).orEmpty()
+            )
+        }
     }
 }
 
@@ -738,3 +782,51 @@ class StoreMemoryNotFoundException(val memoryId: String) :
 /** 预设不存在（路由翻成 404）。 */
 class StorePresetNotFoundException(val presetId: String) :
     NoSuchElementException("没有这个预设：$presetId")
+
+// ---------------------------------------------------------------------- pending_patches.json
+
+/**
+ * 一条**待审**的人格进化补丁（`spec`/客户端 `persona_pending_patches` 的服务端对应物）。
+ *
+ * 服务端不自动改人格：模型给出的变化先落这里，用户/客户端调 accept 才写进 `personas.json`，
+ * reject 就丢掉。字段形状与客户端一致（`patchJson` 是 `{"changes":[…]}` 的文本），
+ * 多出来的 [expiresAt] 是服务端为了「7 天后自动丢弃」显式算好的（不靠读的时候再猜 TTL）。
+ *
+ * @param sessionId 评估时读的会话（诊断用；会话删了也不影响补丁本身）
+ * @param summary 给人看的一行（例如「性格 +嘴硬心软」）
+ * @param reason 为什么要改（固定中文，不参与规则）
+ */
+data class PendingPatch(
+    val id: String,
+    val personaId: String,
+    val sessionId: String?,
+    val patchJson: String,
+    val summary: String,
+    val reason: String,
+    val createdAt: Long,
+    val expiresAt: Long
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "id" to str(id),
+        "personaId" to str(personaId),
+        "sessionId" to nullableStr(sessionId),
+        "patchJson" to str(patchJson),
+        "summary" to str(summary),
+        "reason" to str(reason),
+        "createdAt" to num(createdAt),
+        "expiresAt" to num(expiresAt)
+    )
+
+    companion object {
+        fun fromJson(value: JsonValue.Obj, where: String): PendingPatch = PendingPatch(
+            id = value.reqString("id", where),
+            personaId = value.reqString("personaId", where),
+            sessionId = value.optString("sessionId", where),
+            patchJson = value.reqString("patchJson", where),
+            summary = value.optString("summary", where).orEmpty(),
+            reason = value.optString("reason", where).orEmpty(),
+            createdAt = value.reqLong("createdAt", where),
+            expiresAt = value.optLong("expiresAt", where) ?: value.reqLong("createdAt", where)
+        )
+    }
+}

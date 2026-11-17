@@ -29,6 +29,9 @@ public enum ChatNoReplyReason: Equatable, Sendable {
     case sleepingWaiting(wakeAt: String)
     /// 模型用 `defer_reply` 说「现在不想说话」：过 `minutes` 分钟再决定开不开口。
     case deferred(minutes: Int, reason: String)
+    /// 模型用 `stay_silent` 说「这一轮就不回」：不落消息、不留念头，只标已读
+    ///（`spec/mood/README.md` §4）。
+    case stayedSilent
 
     /// 界面要不要在他没回的时候显示「已读」。
     public var showsRead: Bool {
@@ -141,11 +144,16 @@ public protocol ChatBackgroundTasks: AnyObject {
     /// 这一轮聊完了：考虑跑一次人格进化评估（每 20 条用户消息或 24 小时，
     /// 见 `docs/design/persona-evolution.md`）。默认什么都不做，老调用点不用改。
     func personaEvolutionNeeded(sessionId: String, personaId: String)
+    /// 这一轮聊完了：考虑跑一次**自动情绪判定**（每 4 条用户消息或 24 小时，
+    /// 见 `spec/mood/README.md` §2）。默认什么都不做，老调用点不用改。
+    func moodJudgementNeeded(sessionId: String, personaId: String)
 }
 
 public extension ChatBackgroundTasks {
     /// 默认实现：没接进化评估时，回复绝不会因此变慢或失败。
     func personaEvolutionNeeded(sessionId: String, personaId: String) {}
+    /// 默认实现：没接情绪判定时，回复绝不会因此变慢或失败。
+    func moodJudgementNeeded(sessionId: String, personaId: String) {}
 }
 
 /// 默认空实现：功能没接上时，回复绝不会因此变慢或失败。
@@ -737,6 +745,64 @@ public final class ChatService {
 
                 let (body, calls) = ToolProtocol.extract(buffer)
 
+                // `stay_silent`（`spec/mood/README.md` §4）：这一轮他只标已读、不产生消息。
+                //
+                // 与 `defer_reply` 一样必须在执行其它工具之前拦下来：决定了不回，就不该再顺手
+                // 记一笔、查一次网页，更不该把半句话落成消息。区别只有一处：
+                // **不落念头**（`defer_reply` 会留一个到点的 `agent_intents`）。
+                //
+                // 连续上限（≤2 轮）也在这里守：第 3 轮再调用时**不认**这次沉默，
+                // 而是把「这轮得说句话」回灌给模型，让它继续生成——沉默是态度，不是掉线。
+                if let silent = calls.first(where: {
+                    $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.staySilent
+                }) {
+                    let silentAt = now()
+                    let allowed = rhythm?.canStaySilent(personaId: persona.id, now: silentAt) ?? true
+                    if allowed {
+                        rhythm?.handleStayedSilent(
+                            personaId: persona.id, sessionId: sessionId, at: silentAt
+                        )
+                        if let log {
+                            let reason = StaySilent.cleanReason(silent.argument("reason"))
+                            log("[chat] stay_silent：这一轮只标已读"
+                                + (reason.isEmpty ? "" : "（\(reason)）"))
+                        }
+                        continuation.yield(.noReply(.stayedSilent))
+                        continuation.finish()
+                        return
+                    }
+                    // 已经连着沉默两轮：这次不认，逼他说一句（哪怕很短）。
+                    round += 1
+                    if round > Self.maxToolRounds {
+                        // 他还是坚持不说：按「模型没有返回任何文字」走失败流，
+                        // 至少让用户可以重试，而不是静默地把这一轮吞掉。
+                        throw ApiException(
+                            statusCode: nil,
+                            message: String(localized: "他这次一直没说话，再发一条试试")
+                        )
+                    }
+                    let refusal = ToolResult(
+                        invocation: silent,
+                        ok: false,
+                        summary: String(localized: "这一轮得说句话"),
+                        contentForModel: "你刚刚已经连着两轮只标已读、没有说话了。这一轮必须说点什么，"
+                            + "哪怕只有两三个字（「嗯」「在」「累」都行），别再用 stay_silent。",
+                        errorMessage: String(localized: "不能连续沉默超过两轮")
+                    )
+                    shownText = ""
+                    continuation.yield(.delta(""))
+                    conversation.append(WireMessage(
+                        role: "assistant",
+                        content: buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+                    ))
+                    conversation.append(MultimodalPayload.wireMessage(
+                        role: "user",
+                        content: ToolProtocol.renderResultsForModel([refusal]),
+                        parts: nil
+                    ))
+                    continue
+                }
+
                 // `defer_reply`（§四）：这一轮他选择不说话。
                 //
                 // 必须在执行其它工具之前拦下来：他要是已经决定不回，就不该再顺手记一笔、
@@ -841,6 +907,8 @@ public final class ChatService {
                 // 是正常用法，不是「走神」。直接把那条消息当成这一轮的产物结束掉，
                 // 不要再落一条空助手消息，也不要把「他查完了东西」的错给用户看。
                 completed = true
+                // 他其实说过了（用表情）：连续沉默清零。
+                rhythm?.handleReplied(personaId: persona.id, at: now())
                 continuation.yield(.done(ChatCompletion(
                     message: producedMessage,
                     toolTraces: traces,
@@ -900,6 +968,11 @@ public final class ChatService {
             // 人格进化（0.13）：节奏判定在服务里（每 20 条用户消息 / 24 小时），
             // 这里只负责「聊完这一轮，看看要不要评估」——不挡回复、失败只写日志。
             background.personaEvolutionNeeded(sessionId: sessionId, personaId: persona.id)
+            // 自动情绪判定（0.13 schema v17）：每 4 条用户消息 / 24 小时一次，
+            // 结果写库并在下一轮提示词里生效（`spec/mood/README.md` §2）。
+            background.moodJudgementNeeded(sessionId: sessionId, personaId: persona.id)
+            // 他说了话：连续沉默清零（`stay_silent` 的「连续 ≤2 轮」）。
+            rhythm?.handleReplied(personaId: persona.id, at: timestamp)
 
             continuation.yield(.done(ChatCompletion(
                 message: saved,

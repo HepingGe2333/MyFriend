@@ -28,9 +28,9 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV16() throws {
-        XCTAssertEqual(Schema.version, 16,
-                       "v16 = 表情包（spec/stickers/SCHEMA.md）")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV17() throws {
+        XCTAssertEqual(Schema.version, 17,
+                       "v17 = 多维心情三列（spec/mood/README.md）")
         XCTAssertEqual(Schema.tables.count, 16,
                        "16 张记录型表（v15 的日记板/待确认变化 + v16 的 stickers）")
         XCTAssertEqual(Schema.supplementaryTables.count, 4, "四张服务层用表（两张 1.8 遗留 + 两张服务端模式）")

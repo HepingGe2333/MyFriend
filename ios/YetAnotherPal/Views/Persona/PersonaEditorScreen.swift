@@ -131,7 +131,7 @@ struct PersonaEditorScreen: View {
 
             MFRowDivider(leadingInset: 0)
 
-            FieldCaption(L("名字"), hint: L("他会怎么称呼自己。"))
+            FieldCaption(L("名字"), hint: L("他会怎么称呼自己。留空也行，会先叫「未命名」。"))
             TextField(L("比如：林深"), text: $name)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -139,7 +139,7 @@ struct PersonaEditorScreen: View {
                 .background(fieldBackground)
                 .padding(.bottom, 14)
 
-            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也能帮他记住自己是谁。"))
+            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也能帮他记住自己是谁。可以留空。"))
             TextField(L("比如：一个温柔而安静的朋友"), text: $summary)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -1140,7 +1140,7 @@ struct PersonaEditorScreen: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("提示词全文（高级）"))
                             .font(.system(.body, design: .serif))
-                        Text(L("上面那些字段会被拼成小节，接在这一段后面。"))
+                        Text(L("可以留空：会按上面的名字和一句话介绍生成一段；上面也没填就用默认人设。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1386,8 +1386,11 @@ struct PersonaEditorScreen: View {
         pendingChanges = env.personaEvolution.pending(personaId: persona.id)
     }
 
-    /// 只要求名字：其余字段都可以空着（§三「老数据不填也能用」）。
-    private var canSave: Bool { !trimmedName.isEmpty }
+    /// 什么都可以空着（0.13 真机反馈第一批）：名字空 → 保存成「未命名」，
+    /// 提示词空 → 由名字 + 一句话介绍生成，两样都空就用系统默认人设文本。
+    ///
+    /// 以前这里要求名字非空才让点保存，用户只是想先建一个人、回头再写，却被表单挡住。
+    private var canSave: Bool { true }
 
     private func save() {
         Task { @MainActor in await saveAsync() }
@@ -1397,17 +1400,24 @@ struct PersonaEditorScreen: View {
     private func saveAsync() async {
         let now = DomainClock.nowMillis
         let existing: PersonaEntity? = personaId.flatMap { try? env.stores.personas.byId($0) } ?? nil
+        // 空字段的兜底（`PersonaDraft`，Kit 里的纯函数，编辑页与提示词渲染共用同一套规则）：
+        // 名字空 → 本地化的「未命名」；提示词空 → 由名字 + 介绍生成，两样都空用系统默认。
+        let resolvedName = PersonaDraft.resolvedName(trimmedName, fallback: L("未命名"))
+        let resolvedDescription = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPrompt = PersonaDraft.resolvedPrompt(
+            prompt, name: trimmedName, description: resolvedDescription
+        )
         var entity = existing ?? PersonaEntity(
             id: UUID().uuidString,
-            name: trimmedName,
+            name: resolvedName,
             createdAt: now,
             updatedAt: now
         )
-        let promptChanged = entity.prompt != prompt
-        entity.name = trimmedName
-        entity.description = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptChanged = entity.prompt != resolvedPrompt
+        entity.name = resolvedName
+        entity.description = resolvedDescription
         entity.avatarUri = avatarUri
-        entity.prompt = prompt
+        entity.prompt = resolvedPrompt
         entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1441,7 +1451,7 @@ struct PersonaEditorScreen: View {
         entity.updatedAt = now
         if existing == nil {
             entity.version = max(entity.version, 1)
-            entity.avatarSeed = Self.avatarSeed(for: trimmedName)
+            entity.avatarSeed = Self.avatarSeed(for: resolvedName)
         } else if promptChanged {
             // 提示词变了才算新的一版；只改性格或作息不该把版本号顶上去。
             entity.version = max(entity.version, 1) + 1
@@ -1457,7 +1467,7 @@ struct PersonaEditorScreen: View {
                 var finalCard = card
                 // 卡里没填名字时用上面填的人格名——否则系统提示里的稳定策略会退化成通用兜底。
                 if finalCard.identity.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    finalCard.identity.name = trimmedName
+                    finalCard.identity.name = resolvedName
                 }
                 // 走 saveCardFields：它会在落库前按卡片上限收敛（去空项、夹强度、截长度），
                 // 并把 prompt 重写成卡的镜像。卡没变化时它什么也不写。

@@ -190,7 +190,11 @@ class StickerWiringContractTest {
     @Test
     fun `schema v16 的表与迁移都在`() {
         val database = source("src/main/java/com/yap/app/data/local/YapDatabase.kt")
-        assertTrue("版本要升到 16", database.contains("version = 16,"))
+        // v16 是表情包那一版；之后还会升（v17 多维情绪），这里只要求「至少已经是 16」。
+        assertTrue(
+            "版本至少要是 16",
+            Regex("""version = (1[6-9]|[2-9]\d),""").containsMatchIn(database)
+        )
         assertTrue("要有 MIGRATION_15_16", database.contains("MIGRATION_15_16 = object : Migration(15, 16)"))
         assertTrue("实体要注册进数据库", database.contains("StickerEntity::class"))
         assertTrue("DAO 要暴露出来", database.contains("abstract fun stickerDao(): StickerDao"))

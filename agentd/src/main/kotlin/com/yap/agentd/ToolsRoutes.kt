@@ -10,6 +10,7 @@ import com.yap.agentd.proactive.ProactiveDecision
 import com.yap.agentd.proactive.ProactiveEngine
 import com.yap.agentd.proactive.ProactiveScheduler
 import com.yap.agentd.proactive.ProactiveSink
+import com.yap.agentd.proactive.ProactiveTextSource
 import com.yap.agentd.proactive.ProactiveSource
 import com.yap.agentd.proactive.ProactiveTarget
 import com.yap.agentd.search.Providers
@@ -330,12 +331,25 @@ internal class ProactiveTicker(
     private val store: FileStore,
     private val clock: Clock = Clock.systemDefaultZone(),
     private val roll: () -> Double = { Random.nextDouble() },
-    private val pushSender: PushSender = NoopPushSender
+    private val pushSender: PushSender = NoopPushSender,
+    /**
+     * 正文来源：生产是 `llm/LlmProactiveTextSource`（真调模型）；默认 [ProactiveTextSource.DEFAULT]
+     * 只给测试/冒烟用。返回空串表示这一拍不开口（不落固定文案）。
+     */
+    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT
 ) {
 
     private val lock = Any()
-    private val fired = ArrayList<FiredProactive>()
-    private val engine = ProactiveEngine(clock = clock, roll = roll)
+
+    /**
+     * 手动 tick 收集「这一拍落了哪些消息」。
+     *
+     * 定时器（[start]）与 HTTP 调试 tick 可能同时跑：定时器那一拍不该把结果塞进某个请求的响应里，
+     * 所以收集器放在 ThreadLocal —— 同一个线程里的 [tickWithDecisions] 才收，定时器线程不收。
+     */
+    private val collected = ThreadLocal<MutableList<FiredProactive>?>()
+
+    private val engine = ProactiveEngine(clock = clock, roll = roll, texts = texts)
     private val scheduler = ProactiveScheduler(
         engine = engine,
         source = ProactiveSource { now -> targets(now) },
@@ -353,10 +367,29 @@ internal class ProactiveTicker(
      * 所以「先 tick 一次拿 fired、再 tick 一次拿原因」这种写法在这里不存在（第二次会是空的）。
      */
     fun tickWithDecisions(now: Long): ProactiveTickOutcome = synchronized(lock) {
-        fired.clear()
-        val tick = scheduler.tick(now)
-        ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
+        val fired = ArrayList<FiredProactive>()
+        collected.set(fired)
+        try {
+            val tick = scheduler.tick(now)
+            ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
+        } finally {
+            collected.remove()
+        }
     }
+
+    /**
+     * 启动服务端主动心跳（`Main` 在启动时调用，60 秒一拍）。
+     *
+     * 幂等：重复调用不会起两个线程池。定时器与客户端连接无关——这是「客户端没有后台进程也能主动」
+     * 的前提（`docs/design/server-authoritative.md` §3.4）。
+     */
+    fun start() = scheduler.start()
+
+    /** 停掉心跳（`Main` 的 shutdown hook；已在跑的这一拍会自然结束）。 */
+    fun stop() = scheduler.stop()
+
+    /** 心跳是不是在跑（`Main` 启动日志/测试用）。 */
+    val isRunning: Boolean get() = scheduler.isRunning
 
     /** 只有「有人格的会话」才参与判定：没有会话就没有落库的地方，不掷骰子。 */
     private fun targets(now: Long): List<ProactiveTarget> = store.personas().mapNotNull { persona ->
@@ -412,11 +445,13 @@ internal class ProactiveTicker(
             dailyCap = decision.dailyCap,
             minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong()
         ) ?: return
-        fired += FiredProactive(
-            personaId = decision.targetPersonaId,
-            sessionId = session.id,
-            messageId = message.id,
-            reason = decision.reason.code
+        collected.get()?.add(
+            FiredProactive(
+                personaId = decision.targetPersonaId,
+                sessionId = session.id,
+                messageId = message.id,
+                reason = decision.reason.code
+            )
         )
         // M6：消息已经落库后才调用适配器；失败只记日志，绝不回滚消息或影响 tick 响应。
         val tokens = store.pushTokens()

@@ -721,8 +721,6 @@
 
     <!-- PersonaEditorViewModel -->
     <string name="persona_editor_persona_missing">That persona doesn\'t exist</string>
-    <string name="persona_editor_name_required">Give the persona a name</string>
-    <string name="persona_editor_prompt_required">Write his text, or restore a previous version</string>
     <string name="persona_editor_save_failed">Couldn\'t save</string>
     <string name="persona_editor_card_save_failed">Persona saved, but the persona card couldn\'t be written: %1$s</string>
     <string name="persona_editor_unknown_error">Unknown error</string>
@@ -936,7 +934,6 @@
     <string name="preset_import_failed">Couldn\'t import it</string>
     <string name="preset_editor_not_found">This preset is gone. It may have been deleted.</string>
     <string name="preset_editor_name_required">Give the preset a name first</string>
-    <string name="preset_editor_prompt_required">A preset needs its persona text first</string>
     <string name="preset_editor_save_failed">Couldn\'t save it</string>
 
     <!-- ui/components: Common.kt / Avatar.kt / MarkdownText.kt -->
@@ -1814,4 +1811,12 @@
     <string name="error_media_video_unsupported">This model cannot see video</string>
     <string name="error_media_audio_too_large">This voice message is too large for the model</string>
     <string name="error_media_video_too_large">This video is too large for the model</string>
+
+    <!-- 0.13 optional-save fallbacks: localized name / prompt used when the user leaves them blank.
+         The quotes around ": " are Android's way to preserve the trailing space. -->
+    <string name="draft_default_name">Unnamed</string>
+    <string name="draft_default_prompt_separator">": "</string>
+    <string name="draft_default_prompt">You are a friend the user talks to. Speak naturally and warmly, and remember what he tells you.</string>
+    <!-- 0.13 stay silent (spec/mood §4): only ever shown in an expanded trace; normally no bubble at all -->
+    <string name="tool_trace_stay_silent">Read, no reply</string>
 </resources>

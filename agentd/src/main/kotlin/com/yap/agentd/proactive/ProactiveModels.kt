@@ -158,7 +158,15 @@ enum class ProactiveReason(val code: String, val message: String) {
     DAILY_CAP("daily_cap", "今天主动的次数用完了"),
 
     /** 掷了骰子，没中（绝大多数拍都属于这一类）。 */
-    NOT_THIS_TICK("not_this_tick", "这一拍没掷中")
+    NOT_THIS_TICK("not_this_tick", "这一拍没掷中"),
+
+    /**
+     * 掷中了，但正文没生成出来（LLM 失败/无配置/空回复）。
+     *
+     * 服务端接 LLM 之后新增：**绝不回落到固定文案假装成功**——主动消息的真实感全部来自内容，
+     * 发一句模板话比不发更伤人设。这一拍不落库、不发事件，下一拍再试。
+     */
+    GENERATION_FAILED("generation_failed", "这一拍想开口，但没能生成出正文")
 }
 
 /**
@@ -204,14 +212,18 @@ data class ProactiveDecision(
  * 主动消息正文的来源。
  *
  * 为什么做成可注入：引擎只负责「该不该开口、什么时候开口」，开口说的话要按人格 + 上下文写，
- * 那是 LLM 的活（主线接编排层时注入）。默认实现给一句克制的中文，保证「不接 LLM 也能跑通链路」，
- * 也让测试可以断言 pending 的形状而不依赖模型。
+ * 那是 LLM 的活。生产实现在 `llm/LlmProactiveTextSource.kt`（0.13），走真正的模型流式生成。
+ *
+ * **返回空串 = 这一拍不开口**：没有 LLM 配置/调用失败时实现方返回空串，引擎记为
+ * [ProactiveReason.GENERATION_FAILED] 并且**不回落到固定文案**（发模板话比不发更伤人设）。
+ *
+ * 仍然保留 [DEFAULT]，但只用于「没有接 LLM 的测试与冒烟」：它是一句固定中文，不是产品行为。
  */
 fun interface ProactiveTextSource {
     fun compose(persona: PersonaState, now: Long): String
 
     companion object {
-        /** 兜底文案：没有人格/模型时也不至于发空消息。 */
+        /** 兜底文案：只给测试/冒烟用（生产由 LLM 生成，见类注释）。 */
         val DEFAULT: ProactiveTextSource = ProactiveTextSource { _, _ ->
             "忽然想起你，想问问你现在在做什么。"
         }

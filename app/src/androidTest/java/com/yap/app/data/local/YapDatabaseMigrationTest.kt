@@ -897,7 +897,8 @@ class YapDatabaseMigrationTest {
             YapDatabase.MIGRATION_12_13,
             YapDatabase.MIGRATION_13_14,
             YapDatabase.MIGRATION_14_15,
-            YapDatabase.MIGRATION_15_16
+            YapDatabase.MIGRATION_15_16,
+            YapDatabase.MIGRATION_16_17
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -1471,6 +1472,120 @@ class YapDatabaseMigrationTest {
         assertTrue(db.hasIndex("index_stickers_personaId"))
     }
 
+    // ---------- v16 → v17：多维情绪 ----------
+
+    /**
+     * v17 只给 `personas` 加三列可空 INTEGER，不动任何既有列与既有数据。
+     *
+     * 这条用例证明：旧人格的名字/心情标签还在、三列真的加出来了、旧行读出来是 NULL
+     * （= 「还没算过维度」，由读取路径按 label/intensity 折算），而不是被迁移塞一个假默认值。
+     */
+    @Test
+    fun migrate16To17_加出多维情绪列且旧心情不丢() {
+        val db = legacyV16Database()
+        db.execSQL(
+            "INSERT INTO `personas` (`id`, `name`, `mood`, `moodIntensity`, `moodReason`) " +
+                "VALUES ('persona-1', '小满', '有点累', 4, '今天加班')"
+        )
+
+        YapDatabase.MIGRATION_16_17.migrate(db)
+
+        val columns = db.columnNames("personas")
+        listOf("moodValence", "moodArousal", "moodDominance").forEach { column ->
+            assertTrue("v17 应该给 personas 加上 $column，实际列为 $columns", column in columns)
+        }
+
+        db.query(
+            "SELECT name, mood, moodIntensity, moodReason, moodValence, moodArousal, moodDominance FROM personas WHERE id = ?",
+            arrayOf("persona-1")
+        ).use { cursor ->
+            assertTrue("迁移把人格弄丢了", cursor.moveToFirst())
+            assertEquals("小满", cursor.getString(0))
+            assertEquals("旧心情标签不能被迁移改写", "有点累", cursor.getString(1))
+            assertEquals("旧强度不能被迁移改写", 4, cursor.getInt(2))
+            assertEquals("旧原因不能被迁移改写", "今天加班", cursor.getString(3))
+            // 规范 §1「旧数据迁移」：累/烦→-1、arousal 由 intensity 推、dominance=3。
+            assertEquals("累的 valence 应该映射成 -1", -1, cursor.getInt(4))
+            assertEquals("arousal 由强度推出（intensity 4 → 4）", 4, cursor.getInt(5))
+            assertEquals("dominance 固定为 3", 3, cursor.getInt(6))
+        }
+    }
+
+    /**
+     * 没有心情标签的行保持 NULL：没有可映射的东西，不该被塞成「他很平静」。
+     * 读路径（`MoodDimensions.fromLegacy`）会给基准值，但库里保留「还没算过」的事实。
+     */
+    @Test
+    fun migrate16To17_没有心情的人格三列保持NULL() {
+        val db = legacyV16Database()
+        db.execSQL("INSERT INTO `personas` (`id`, `name`) VALUES ('p-empty', '还没有心情')")
+
+        YapDatabase.MIGRATION_16_17.migrate(db)
+
+        db.query("SELECT moodValence, moodArousal, moodDominance FROM personas WHERE id = ?", arrayOf("p-empty"))
+            .use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertTrue(cursor.isNull(0))
+                assertTrue(cursor.isNull(1))
+                assertTrue(cursor.isNull(2))
+            }
+    }
+
+    /**
+     * 空库（没有 personas 表）也必须能「跑过」迁移而不崩。
+     *
+     * 真实升级路径里 v16 一定有 personas 表；但修复脚本/极端旧库可能没有。
+     * 这时迁移应当是一个安全的 no-op（交给 Room 按 v17 实体建表），而不是 ALTER 一个不存在的表。
+     */
+    @Test
+    fun migrate16To17_空库也能升级() {
+        val db = createLegacyDatabase(version = 16, ddl = emptyList())
+        YapDatabase.MIGRATION_16_17.migrate(db)
+        assertFalse("没有旧表时迁移什么都不该做", db.hasTable("personas"))
+    }
+
+    /** 幂等：修复脚本/测试会重复调用同一个迁移，第二次不能报错，也不能把已有维度清掉。 */
+    @Test
+    fun migrate16To17_重复执行安全() {
+        val db = legacyV16Database()
+        YapDatabase.MIGRATION_16_17.migrate(db)
+        db.execSQL(
+            "INSERT INTO `personas` (`id`, `name`, `mood`, `moodValence`, `moodArousal`, `moodDominance`) " +
+                "VALUES ('p1', '小满', '有点累', -1, 4, 2)"
+        )
+
+        YapDatabase.MIGRATION_16_17.migrate(db)
+
+        db.query("SELECT moodValence, moodArousal, moodDominance FROM personas WHERE id = ?", arrayOf("p1"))
+            .use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(-1, cursor.getInt(0))
+                assertEquals(4, cursor.getInt(1))
+                assertEquals(2, cursor.getInt(2))
+            }
+        // 回填只针对 NULL：已经算过的行（包括上面这条手工写入的）不能被第二次迁移覆盖。
+        db.execSQL(
+            "UPDATE personas SET moodValence = 1, moodArousal = 3, moodDominance = 4 WHERE id = 'p1'"
+        )
+        YapDatabase.MIGRATION_16_17.migrate(db)
+        db.query("SELECT moodValence, moodArousal, moodDominance FROM personas WHERE id = 'p1'")
+            .use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(1, cursor.getInt(0))
+                assertEquals(3, cursor.getInt(1))
+                assertEquals(4, cursor.getInt(2))
+            }
+    }
+
+    /**
+     * 造一个 v16 的旧库：personas 有完整的旧心情列（没有三个新维度），外加一张记忆表。
+     *
+     * 用最小 DDL 而不是抄一整份 v16 schema：`MIGRATION_16_17` 只 ADD COLUMN，
+     * 只要旧列都在，就足以证明「升级后旧心情还在」。
+     */
+    private fun legacyV16Database(): SupportSQLiteDatabase =
+        createLegacyDatabase(version = 16, ddl = MINIMAL_V16_SCHEMA)
+
     // ---------- 造旧库 ----------
 
     /**
@@ -1607,6 +1722,27 @@ class YapDatabaseMigrationTest {
          */
         val MINIMAL_V15_SCHEMA = listOf(
             "CREATE TABLE IF NOT EXISTS `personas` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, PRIMARY KEY(`id`))",
+            "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `content` TEXT NOT NULL, PRIMARY KEY(`id`))"
+        )
+
+        /**
+         * v16 旧库的最小表结构：`MIGRATION_16_17` 只给 `personas` 加三列可空 INTEGER。
+         *
+         * 这里刻意带上 v16 已有的心情四列（`mood` / `moodIntensity` / `moodReason` / `moodUpdatedAt`），
+         * 才能证明升级之后「他昨晚的心情」一个字都没少。
+         */
+        val MINIMAL_V16_SCHEMA = listOf(
+            """
+            CREATE TABLE IF NOT EXISTS `personas` (
+                `id` TEXT NOT NULL,
+                `name` TEXT NOT NULL,
+                `mood` TEXT,
+                `moodIntensity` INTEGER,
+                `moodReason` TEXT,
+                `moodUpdatedAt` INTEGER,
+                PRIMARY KEY(`id`)
+            )
+            """.trimIndent(),
             "CREATE TABLE IF NOT EXISTS `memories` (`id` TEXT NOT NULL, `content` TEXT NOT NULL, PRIMARY KEY(`id`))"
         )
 

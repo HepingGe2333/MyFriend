@@ -85,6 +85,10 @@ public final class HeartbeatController {
     private let now: () -> Int64
     private let roll: () -> Double
     private let isLowPower: () -> Bool
+    /// 每一拍的结论写进日志（真机排查「他为什么不主动」时唯一的线索）。
+    ///
+    /// 默认空实现：测试与老调用点不用改；App 层接上 `DebugSeeding.log`。
+    private let log: (String) -> Void
     /// agent 决策层（0.11.0）：每日主动上限的**基础值**走它（心情修正仍在本机）。
     private let agentCore: any AgentCoreClient
     private let lock = NSLock()
@@ -110,7 +114,8 @@ public final class HeartbeatController {
         tickRunner: @escaping (Int64) async -> AgentLoop.Outcome?,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
-        isLowPower: @escaping () -> Bool = { false }
+        isLowPower: @escaping () -> Bool = { false },
+        log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
         self.settings = settings
@@ -122,12 +127,23 @@ public final class HeartbeatController {
         self.now = now
         self.roll = roll
         self.isLowPower = isLowPower
+        self.log = log
     }
 
     /// 一次「心跳」：轻到可以每半分钟跑一回；只有掷中的时候才会花时间。
     ///
     /// **并发调用只会真的跑一次**：另一次立刻返回「上一拍还没跑完」（不留副作用）。
+    ///
+    /// 每一次的结论都会写一行日志（`log`）：真机上「他从不主动」几乎都是某一拍被某道闸
+    /// 挡掉了，而以前这件事完全不可见。日志形如：`[heartbeat] 没动 · 刚聊完，先安静一会儿`。
     public func beat(now: Int64? = nil, roll: Double? = nil) async -> Beat {
+        let beat = await beatInternal(now: now, roll: roll)
+        log("[heartbeat] \(beat.fired ? "起心动念" : "没动")"
+            + (beat.why.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " · \(beat.why)"))
+        return beat
+    }
+
+    private func beatInternal(now: Int64? = nil, roll: Double? = nil) async -> Beat {
         guard beginBeat() else { return Beat(why: "上一拍还没跑完") }
         defer { endBeat() }
         let at = now ?? self.now()
@@ -191,7 +207,11 @@ public final class HeartbeatController {
         if !Heartbeat.shouldFire(probability: perBeat, roll: dice) { return Beat(why: "") }
 
         // 中了才算这些账：没中就不花查询去确认「今天说够了没」「额度还剩多少」。
-        if let lastTick = ticks.lastTickAt(), at - lastTick < Self.firstTickGapMillis {
+        // 0.13 修复：「刚想过」以前看的是**所有人格里最近的一次** tick。
+        // 换人格之后新人格会被上一个人格的思考记录挡住 5 分钟（真机上表现为「换人之后他不说话」）。
+        // 现在只看这个人的最近一次：两个实现（SQLite / 内存）都支持按人格查。
+        if let lastTick = ticks.latest(personaId: persona.id)?.at,
+           at - lastTick < Self.firstTickGapMillis {
             return Beat(why: "刚想过，再等等")
         }
         // 每天最多主动几次，现在由人格的 `proactiveLevel` 决定（§一、§三）。
@@ -237,6 +257,79 @@ public final class HeartbeatController {
             acted: outcome?.acted ?? false,
             summary: outcome?.summary ?? "",
             why: outcome == nil ? "这一轮没想成" : ""
+        )
+    }
+
+    // MARK: - 诊断（他为什么不主动）
+
+    /// 现在挡在「主动开口」前面的是哪道闸（`ProactiveDiagnosis`）。
+    ///
+    /// 只读、不改任何状态（不推进时钟、不掷骰子、不写库），所以设置页可以随手调。
+    /// 判定顺序与 `beatInternal` 一致：任何一处顺序变了，诊断就会说谎 —— 两条路径共用同一组常量。
+    public func explain(now: Int64? = nil) -> ProactiveDiagnosis {
+        let at = now ?? self.now()
+        let settings = settings.load()
+        let persona = pickPersona(settings.activePersonaId)
+        let personaId = persona?.id ?? ""
+        let spoken = persona.map { intents.spokenToday(personaId: $0.id, now: at) } ?? 0
+        let cap = persona?.proactiveDailyCap ?? 0
+
+        func diagnosis(_ gate: ProactiveDiagnosis.Gate, _ detail: String,
+                       minutes: Double = 0, cooldownLeft: Double = 0,
+                       activity: String? = nil) -> ProactiveDiagnosis {
+            ProactiveDiagnosis(
+                gate: gate, detail: detail,
+                minutesSinceInteraction: minutes,
+                cooldownMinutesLeft: cooldownLeft,
+                spokenToday: spoken, dailyCap: cap, activity: activity
+            )
+        }
+
+        guard settings.agentLoopEnabled else {
+            return diagnosis(.loopDisabled, "设置里关掉了「让他常驻后台继续活着」")
+        }
+        guard let persona else {
+            return diagnosis(.noPersona, "还没有可以对话的人格")
+        }
+        let minute = ServiceTime.minuteOfDay(at)
+        if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
+            let wake = PersonaSleep.minutesUntilWake(persona, minuteOfDay: minute)
+            return diagnosis(.asleep, "作息窗口里：大约 \(wake) 分钟后醒")
+        }
+        let activity = PersonaActivity.decode(persona.activityJson, now: at)
+        if case .skip = PersonaActivity.proactiveGate(activity, now: at) {
+            return diagnosis(.busy, "在忙：\(activity?.activity ?? "")", activity: activity?.activity)
+        }
+        let snapshot = snapshotFor(persona: persona, settings: settings, now: at)
+        let minutes = Heartbeat.minutesBetween(lastResetAt: snapshot.resetAt, now: at)
+        if minutes < Heartbeat.COOL_DOWN_MINUTES {
+            return diagnosis(
+                .coolingDown,
+                "距上次互动 \(Int(minutes)) 分钟，冷却 \(Int(Heartbeat.COOL_DOWN_MINUTES)) 分钟",
+                minutes: minutes,
+                cooldownLeft: Heartbeat.COOL_DOWN_MINUTES - minutes,
+                activity: activity?.activity
+            )
+        }
+        if let lastTick = ticks.latest(personaId: personaId)?.at,
+           at - lastTick < Self.firstTickGapMillis {
+            let wait = (Self.firstTickGapMillis - (at - lastTick)) / 60_000
+            return diagnosis(.tooSoonAfterTick, "刚想过，再过 \(wait) 分钟才可能再想", minutes: minutes)
+        }
+        if spoken >= cap {
+            return diagnosis(.dailyCapReached, "今天已经开口 \(spoken) 次（上限 \(cap)）", minutes: minutes)
+        }
+        let perMinute = Heartbeat.probability(
+            minutesSinceReset: minutes,
+            mood: snapshot.mood,
+            now: at,
+            hourOfDay: ServiceTime.hourOfDay(at)
+        ) * ProactiveLevel.heartbeatWeight(persona.proactiveLevel)
+        return diagnosis(
+            .ready,
+            "每分钟冲动概率约 \(Int((perMinute * 100).rounded()))%，今天 \(spoken)/\(cap)",
+            minutes: minutes,
+            activity: activity?.activity
         )
     }
 

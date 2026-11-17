@@ -34,7 +34,11 @@ public enum Schema {
     /// 两张都是**新表**（不改已有列），所以 14→15 是「建表 + 建索引」，没有数据回填。
     /// 0.13（表情包）= v16：`stickers`（`spec/stickers/SCHEMA.md`）。同样只有新表 + 索引，
     /// 15→16 没有数据回填；两端列名/顺序/可空/索引名逐字一致。
-    public static let version: Int32 = 16
+    /// 0.13（多维情绪）= v17：`personas.moodValence` / `moodArousal` / `moodDominance`
+    ///（`spec/mood/README.md` §1）。规范里的 `moodLabel` 就是**已有的 `mood` 列**
+    ///（两端都不改名，改名只会让老数据回填变成一次高风险重建），所以 16→17 只有三列加法 +
+    /// 旧数据映射（只有 label/intensity 时按词表推三维）。
+    public static let version: Int32 = 17
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -203,6 +207,21 @@ public enum Schema {
         ("speechStyleJson", "TEXT")
     ]
 
+    /// v17 给 `personas` 加的三列：多维心情（`spec/mood/README.md` §1）。
+    ///
+    /// 三列都可空：`null` = 还没自动判定过（老数据、或者模型只写过 `set_mood` 的 label）。
+    /// 可空是**语义**而不是偷懒：它让「判过、结论是 0/2/3」与「没判过、要退回词表」区分得开
+    ///（见 `MoodState.dimensions`）。
+    ///
+    /// 范围：`moodValence` -2..2、`moodArousal` 0..5、`moodDominance` 0..5。
+    /// 数据库不写 CHECK：范围夹取在 `MoodDimensions` 里（纯函数、可测），
+    /// 而加 CHECK 会让老库迁移多一次整表重建 —— 不值得。
+    public static let personaMoodDimensionColumns: [(name: String, ddl: String)] = [
+        ("moodValence", "INTEGER"),
+        ("moodArousal", "INTEGER"),
+        ("moodDominance", "INTEGER")
+    ]
+
     /// 1.9 给 `chat_sessions` 加的列（会话级覆盖，空 = 继承人格）。
     public static let sessionOverrideColumns: [(name: String, ddl: String)] = [
         ("memoryRetentionOverride", "INTEGER"),
@@ -250,6 +269,11 @@ public enum Schema {
             activityJson TEXT,
             translationJson TEXT,
             translationLang TEXT,
+            -- v17 的三维心情：与 Android 的 17.json 一样**追加在表尾**。
+            -- ADD COLUMN 只能加在末尾，所以新库与升级过的库列序也一致。
+            moodValence INTEGER,
+            moodArousal INTEGER,
+            moodDominance INTEGER,
             PRIMARY KEY (id)
         )
         """,
@@ -751,6 +775,10 @@ public enum Schema {
         for column in personaTranslationColumns {
             try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
         }
+        // v17：多维心情三列（可空 = 还没自动判定过）。
+        for column in personaMoodDimensionColumns {
+            try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
         for column in presetGuidanceColumns {
             try addColumnIfMissing(database, table: "persona_presets",
                                    column: column.name, type: column.ddl)
@@ -791,6 +819,54 @@ public enum Schema {
         // v16：表情包。15→16 同样只有「建表 + 建索引」；幂等（IF NOT EXISTS），
         // 所以新库、老库、重复打开都走同一条路径。
         try ensureV16Tables(database)
+        // v17：旧心情（只有 label + intensity）映射到三维；只回填「还没判过」的行。
+        try backfillMoodDimensions(database)
+    }
+
+    /// 16 → 17 的旧数据映射（`spec/mood/README.md` §1）：
+    /// valence 由 label 推（累/烦 → -1，平静 → 0，开心 → 1），arousal 由 intensity 推，
+    /// dominance = 3。
+    ///
+    /// 只写 `moodValence IS NULL` 的行：判定过的心情（三列都有值）不会被升级覆盖；
+    /// 没有心情的行保持 NULL（= 从来没判过，读取时退回词表）。幂等，重复打开也安全。
+    static func backfillMoodDimensions(_ database: SQLiteDatabase) throws {
+        guard database.hasTable("personas") else { return }
+        for column in personaMoodDimensionColumns {
+            guard columnExists(database, table: "personas", column: column.name) else { return }
+        }
+        struct Row {
+            let id: String
+            let label: String
+            let intensity: Int
+        }
+        var rows: [Row] = []
+        let select = try database.prepare("""
+            SELECT id, mood, COALESCE(moodIntensity, 2)
+            FROM personas
+            WHERE mood IS NOT NULL AND mood <> '' AND moodValence IS NULL
+            """)
+        while try select.step() {
+            rows.append(Row(
+                id: select.text(at: 0) ?? "",
+                label: select.text(at: 1) ?? "",
+                intensity: Int(select.int64(at: 2))
+            ))
+        }
+        guard !rows.isEmpty else { return }
+        let update = try database.prepare("""
+            UPDATE personas SET moodValence = ?, moodArousal = ?, moodDominance = ?
+            WHERE id = ? AND moodValence IS NULL
+            """)
+        for row in rows {
+            guard !row.id.isEmpty else { continue }
+            let dimensions = MoodDimensions.fromLegacy(label: row.label, intensity: row.intensity)
+            update.reset()
+            try update.bind(.int(dimensions.valence), at: 1)
+            try update.bind(.int(dimensions.arousal), at: 2)
+            try update.bind(.int(dimensions.dominance), at: 3)
+            try update.bind(.text(row.id), at: 4)
+            _ = try update.step()
+        }
     }
 
     /// v16 的表情表（幂等）。`createStatements` 里也包含它，两处用的是同一份常量。

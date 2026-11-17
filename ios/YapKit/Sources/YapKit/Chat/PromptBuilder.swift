@@ -44,6 +44,10 @@ public struct SystemPromptInput {
     public var relationshipBlock: String
     /// 「# 边界」那一段：可以覆盖，默认是 `PromptBuilder.boundarySection`。
     public var boundaryBlock: String
+    /// 「# 别像个 AI」那一段（`spec/mood/README.md` §5 的反 AI 味约束）。
+    ///
+    /// 默认就是 `AntiAIPrompt.text()`；传空串 = 这一轮不加（只有测试会这么用）。
+    public var antiAIPrompt: String
     /// 记忆块（Android: `memoryRepository.formatForPrompt(memories)`），空串表示这次没挑到记忆。
     public var memoriesBlock: String
     /// 会话滚动摘要块（`HistoryCompression.memoryBlock(session.historySummary, …)`）。
@@ -75,6 +79,7 @@ public struct SystemPromptInput {
         speechStyleBlock: String = "",
         relationshipBlock: String = "",
         boundaryBlock: String = PromptBuilder.defaultBoundary,
+        antiAIPrompt: String = AntiAIPrompt.text(),
         memoriesBlock: String = "",
         earlierMemoryBlock: String = "",
         moodBlock: String = "",
@@ -92,6 +97,7 @@ public struct SystemPromptInput {
         self.speechStyleBlock = speechStyleBlock
         self.relationshipBlock = relationshipBlock
         self.boundaryBlock = boundaryBlock
+        self.antiAIPrompt = antiAIPrompt
         self.memoriesBlock = memoriesBlock
         self.earlierMemoryBlock = earlierMemoryBlock
         self.moodBlock = moodBlock
@@ -179,6 +185,9 @@ public enum PromptBuilder {
         text += input.proactiveCapability
         text += "\n\n"
         text += input.toolsCapability
+        // 反 AI 味（`spec/mood/README.md` §5）：与 `# 边界` 一样是**规则**，
+        // 放在边界**之前**（与 Android 的拼接顺序一致：能力段 → 反 AI → 可变块 → 边界）。
+        text += antiAIBlock(input.antiAIPrompt)
         text += boundaryBlock(input.boundaryBlock)
         text += input.moodNudgeBlock
         text += languageSection(input.languageDirective)
@@ -315,6 +324,12 @@ public enum PromptBuilder {
         return trimmed.isEmpty ? "" : "\n\n" + trimmed
     }
 
+    /// 把「# 别像个 AI」那一段拼进 system；传空串 = 整节不出现。
+    public static func antiAIBlock(_ custom: String) -> String {
+        let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : "\n\n" + trimmed
+    }
+
     // MARK: - 人格小节（1.9）
 
     /// 把人格的自由文本提示词 + 五个结构化字段拼成「# 你是谁」下的一段。
@@ -339,12 +354,13 @@ public enum PromptBuilder {
         let name = persona.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = persona.description.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // 0.13：空提示词不再等于「没有身份」（真机反馈：只填了名字/什么都没填的人，
+        // 系统提示里连 `# 你是谁` 都没有，模型于是自称助手）。
+        // 非空时保留原文；空时由名字 + 介绍生成，两样都空就用系统默认人设文本。
         if !prompt.isEmpty {
             lines.append(prompt)
-        } else if !name.isEmpty {
-            var lead = "你叫\(name)。"
-            if !description.isEmpty { lead += description }
-            lines.append(lead)
+        } else {
+            lines.append(PersonaDraft.generatedPrompt(name: name, description: description))
         }
 
         func appendSection(_ title: String, _ rawContent: String) {

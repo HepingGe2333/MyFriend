@@ -466,6 +466,102 @@ class SchemaVersionTest {
         assertTrue("v16 的 schema json 必须导出", File(schemaDir, "16.json").isFile)
     }
 
+    /**
+     * v17：多维情绪（`spec/mood/README.md` §1）。
+     *
+     * 三列必须都是可空 `INTEGER`、没有 DEFAULT：老库升级后读出来是 NULL =
+     * 「还没算过维度」，由 `MoodDimensions.fromLegacy` 现场按 label/intensity 折算。
+     * 写成 `NOT NULL DEFAULT 0` 会让每一行都变成「愉快度 0」，看起来有值、其实是错的。
+     */
+    @Test
+    fun `v17 的 schema 里多维情绪三列都在且可空`() {
+        val schema = Json.parseToJsonElement(File(schemaDir, "17.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+        val personas = entities.first { it["tableName"]!!.jsonPrimitive.content == "personas" }
+        val fields = personas["fields"]!!.jsonArray.map { it.jsonObject }.associateBy {
+            it["columnName"]!!.jsonPrimitive.content
+        }
+
+        listOf("moodValence", "moodArousal", "moodDominance").forEach { column ->
+            val field = fields[column] ?: error("v17 的 personas 里没有 $column")
+            assertEquals("$column 必须是 INTEGER", "INTEGER", field["affinity"]!!.jsonPrimitive.content)
+            assertEquals("$column 必须可空（老库升级后是 NULL）", false, field["notNull"]!!.jsonPrimitive.boolean)
+            assertNull("$column 不能有默认值，否则「还没算过」会变成一个假数字", field["defaultValue"])
+        }
+
+        // 既有的心情四列一个都不能少：label/intensity/reason/updatedAt 仍然是真源。
+        listOf("mood", "moodIntensity", "moodReason", "moodUpdatedAt", "moodNudgedAt").forEach { column ->
+            assertTrue("v17 的 personas 里丢了旧心情列 $column", fields.containsKey(column))
+        }
+    }
+
+    @Test
+    fun `MIGRATION_16_17 幂等 加可空列并回填旧心情 且注册进了 Room`() {
+        val text = databaseSource.readText()
+        val start = text.indexOf("MIGRATION_16_17 = object : Migration(16, 17)")
+        assertTrue("没找到 MIGRATION_16_17 的声明", start >= 0)
+        val docComment = text.indexOf("/**", start)
+        val end = if (docComment > start) docComment else minOf(text.length, start + 1600)
+        val block = text.substring(start, end)
+
+        listOf(
+            "ALTER TABLE `personas` ADD COLUMN `moodValence` INTEGER",
+            "ALTER TABLE `personas` ADD COLUMN `moodArousal` INTEGER",
+            "ALTER TABLE `personas` ADD COLUMN `moodDominance` INTEGER"
+        ).forEach { ddl -> assertTrue("DDL 必须与规范一致：$ddl", block.contains(ddl)) }
+        assertFalse("只允许加可空列，DDL 里不许出现 NOT NULL", block.contains("NOT NULL"))
+        assertFalse("只允许加可空列，DDL 里不许出现 DEFAULT", block.contains("DEFAULT"))
+        assertTrue(
+            "加列前要先查 PRAGMA table_info（复用 columns(db, \"personas\")）",
+            block.contains("columns(db, \"personas\")")
+        )
+        assertTrue("MIGRATION_16_17 必须注册进 AppModule", addMigrationsBlock().contains("MIGRATION_16_17"))
+        assertTrue("v17 的 schema json 必须导出", File(schemaDir, "17.json").isFile)
+
+        // 旧数据映射（规范 §1）：必须复用 domain 的折算函数，不能在 SQL 里再抄一份心情词表
+        // （两份词表迟早会漂，而漂了不会有任何报错）。回填只针对「有标签且三列还是 NULL」的行。
+        assertTrue(
+            "旧数据映射必须调用 MoodDimensions.fromLegacy",
+            text.contains("MoodDimensions.fromLegacy")
+        )
+        assertTrue("回填只处理「有心情标签 + 还没算过维度」的行", text.contains("`moodValence` IS NULL"))
+        assertTrue("回填要写回三列", text.contains("SET `moodValence` = ?, `moodArousal` = ?, `moodDominance` = ?"))
+    }
+
+    /**
+     * parity：实体、迁移、导出的 schema 三处必须说同一件事。
+     *
+     * 之前出现过「实体加了列、迁移忘了写」与「迁移写了、schema 没导出」两种漂移，
+     * 表现分别是升级即崩与 review 看不出版本变化。这里把三份并排比一次。
+     */
+    @Test
+    fun `多维情绪的实体 迁移 与 schema 三处对齐`() {
+        val entitySource = File(databaseSource.parentFile, "Entities.kt").readText()
+        val migrationSource = databaseSource.readText()
+        val schema = Json.parseToJsonElement(File(schemaDir, "17.json").readText()).jsonObject
+        val entities = schema["database"]!!.jsonObject["entities"]!!.jsonArray.map { it.jsonObject }
+        val personas = entities.first { it["tableName"]!!.jsonPrimitive.content == "personas" }
+        val schemaColumns = personas["fields"]!!.jsonArray.map {
+            it.jsonObject["columnName"]!!.jsonPrimitive.content
+        }.toSet()
+
+        listOf("moodValence", "moodArousal", "moodDominance").forEach { column ->
+            assertTrue(
+                "实体里声明了 $column，但导出的 v17 schema 里没有它（忘了编译导出？）",
+                column in schemaColumns
+            )
+            assertTrue(
+                "实体里缺 $column（Entity 是迁移与 schema 的入口）",
+                Regex("""val\s+$column\s*:\s*Int\?""").containsMatchIn(entitySource)
+            )
+            assertTrue(
+                "迁移里缺 $column 的 ADD COLUMN",
+                migrationSource.contains("ADD COLUMN `$column` INTEGER")
+            )
+        }
+    }
+
+
     // ---------------------------------------------------------------- 解析源码
 
     private data class DeclaredMigration(val from: Int, val to: Int)

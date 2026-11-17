@@ -167,6 +167,15 @@ class ChatService(
                 if (event is SseEvent.Delta) builder.append(event.text)
                 sink.emit(event)
             }
+        } catch (failure: com.yap.agentd.llm.LlmException) {
+            // 0.13：LLM 失败/无配置是**可预期的错误**，必须给出明确 code（而不是笼统的
+            // generation_failed），也绝不退回 Echo 假装成功。已经生成的部分仍然落库。
+            failed = true
+            System.err.println(
+                "[agentd] 回复生成失败（${failure.code}，已生成的部分仍会落库）：${failure.userMessage()}" +
+                    (failure.detail?.let { "｜detail=$it" } ?: "")
+            )
+            sink.emit(SseEvent.Error(failure.code, failure.userMessage()))
         } catch (failure: Exception) {
             failed = true
             System.err.println(

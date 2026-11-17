@@ -136,6 +136,52 @@ final class SchemaParityTests: XCTestCase {
         }
     }
 
+    /// v17 的多维心情三列：`personas.moodValence` / `moodArousal` / `moodDominance`
+    /// 与 Android 的 `17.json` 逐字一致（`spec/mood/README.md` §1）。
+    ///
+    /// 这里故意**只比列名与 affinity（INTEGER）**，不比可空性与默认值：
+    /// - iOS 侧选择「可空」（null = 还没自动判定过，读取时退回词表推断）；
+    /// - Android 侧可能选择「NOT NULL DEFAULT 0 + 迁移回填」。
+    /// 两种都能表达同一件事，强行对齐只会让其中一端为了过测试改数据形状。
+    /// 列名与类型是**数据契约**（备份/服务端要互通），可空性是各自实现的细节。
+    func testMoodDimensionColumnsMatchAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        let entity = try XCTUnwrap(
+            entities["personas"], "Android v\(Schema.version) 里没有 personas"
+        )
+        let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])
+        let byName = Dictionary(
+            uniqueKeysWithValues: fields.compactMap { field -> (String, [String: Any])? in
+                guard let name = field["columnName"] as? String else { return nil }
+                return (name, field)
+            }
+        )
+        let iosColumns = try columnNames(table: "personas")
+        for column in Schema.personaMoodDimensionColumns {
+            let field = try XCTUnwrap(
+                byName[column.name],
+                "Android v\(Schema.version) 的 personas 缺列：\(column.name)"
+            )
+            XCTAssertEqual(
+                field["affinity"] as? String, "INTEGER",
+                "personas.\(column.name) 两端类型必须一致（0/±2/±5 的整数维度）"
+            )
+            XCTAssertTrue(iosColumns.contains(column.name), "iOS 缺列：personas.\(column.name)")
+            XCTAssertEqual(
+                field["notNull"] as? Bool ?? false, false,
+                "personas.\(column.name) 两端都可空（null = 还没判定过）"
+            )
+        }
+        // 列序也要一致：Android 追加在表尾（ADD COLUMN 只能加在末尾），
+        // iOS 的新库 DDL 与升级路径也必须落到同样的位置，否则两份库 diff 起来会差三行。
+        let expectedTail = Schema.personaMoodDimensionColumns.map(\.name)
+        let androidNames = fields.compactMap { $0["columnName"] as? String }
+        XCTAssertEqual(Array(androidNames.suffix(expectedTail.count)), expectedTail,
+                       "Android 17.json 里三维心情应在表尾")
+        XCTAssertEqual(Array(iosColumns.suffix(expectedTail.count)), expectedTail,
+                       "iOS 建表语句里三维心情也应在表尾")
+    }
+
     /// v15 的两张新表：`diary_notes`（`spec/diary/README.md`）与
     /// `persona_pending_patches`（`docs/design/persona-evolution.md`）。
     ///

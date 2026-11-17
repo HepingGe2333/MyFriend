@@ -242,6 +242,12 @@ class ChatRepository @Inject constructor(
     /** 人格进化评估（每 20 条用户消息或 24 小时一次，结果只进待审表）。 */
     private val personaEvolution: PersonaEvolutionRepository,
     /**
+     * 自动情绪判定（每 4 条用户消息或 24 小时一次，`spec/mood/README.md` §2）。
+     *
+     * 异步、不 await：判定再慢也晚不了一毫秒回话，失败按时间衰减、用户看不到。
+     */
+    private val moodJudgement: MoodJudgementCoordinator,
+    /**
      * 服务端模式的人格进化触发：一轮助手回复 `done` / 落库之后按同一套节流评估一次。
      * 与 [personaEvolution] 共用同一个游标与单飞锁，切模式不会重复评估。
      */
@@ -703,6 +709,9 @@ class ChatRepository @Inject constructor(
         // 人格进化：条件到了（20 条用户消息 / 隔了 24 小时）就在后台回顾一次，
         // 结果只写进「待审的变化」，不会直接改他的人设，也不会拖慢这条消息的发送。
         runCatching { personaEvolution.ensureAsync(session.personaId, now) }
+        // 自动情绪判定：条件到了（4 条用户消息 / 24 小时）就在后台判一次，
+        // 结果写进多维心情、下一轮提示词里生效；没有 API 配置或失败时按时间衰减。
+        runCatching { moodJudgement.ensureAsync(session.personaId, now) }
     }
 
     fun generateAssistant(sessionId: String): Flow<GenerationEvent> = flow {
@@ -771,9 +780,11 @@ class ChatRepository @Inject constructor(
             runCatching {
                 val mood = moodRepository.current(persona.id, now0)
                 val recovered = MoodRecovery.afterWake(mood, now0)
-                personaDao.setMood(
-                    id = persona.id,
-                    mood = recovered.label,
+                // 走仓库而不是直接写 DAO：醒来时标签可能变了，三个维度要跟着重新折算，
+                // 否则提示词里会出现「平静（愉快度 -2）」这种自相矛盾的组合。
+                moodRepository.setMood(
+                    personaId = persona.id,
+                    label = recovered.label,
                     intensity = recovered.intensity,
                     reason = recovered.reason,
                     now = now0
@@ -806,6 +817,8 @@ class ChatRepository @Inject constructor(
             var finalBody = ""
             var round = 0
             var deferred = false
+            // `stay_silent`：这一轮只标已读、不落任何 assistant 消息（与 defer 的区别是「什么都不留」）。
+            var silenced = false
             while (true) {
                 val buffer = StringBuilder()
                 adapter.streamChat(
@@ -856,9 +869,16 @@ class ChatRepository @Inject constructor(
                             configId = config.id,
                             sessionId = sessionId
                         )
-                        traces += execution.trace
+                        // 「已读不回」不产生任何用户可见的东西：成功时这一轮没有 assistant 消息，
+                        // 连动作卡片也不该留下；被拒绝的那次同样不显示（沉默不是一个发生过的动作）。
+                        if (!call.name.trim().equals(ToolCatalog.STAY_SILENT, ignoreCase = true)) {
+                            traces += execution.trace
+                        }
                         toolAttachments += execution.attachments
                         if (call.name.trim().equals(ToolCatalog.DEFER_REPLY, ignoreCase = true)) deferred = true
+                        if (call.name.trim().equals(ToolCatalog.STAY_SILENT, ignoreCase = true) && execution.result.ok) {
+                            silenced = true
+                        }
                         execution.result
                     }
                 }
@@ -906,6 +926,15 @@ class ChatRepository @Inject constructor(
                 completed = true
                 // 与睡眠无关（他醒着，只是决定晚点再说）：界面不显示睡眠提示行。
                 emit(GenerationEvent.Silent(SilentReason.DEFERRED))
+                return@flow
+            }
+            if (silenced) {
+                // stay_silent：只把用户消息标成已读，然后结束这一轮。
+                // 不写念头、不排窗口、不落消息——界面上连一个占位气泡都不会有，
+                // 用户看到的只有「已读」。
+                runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
+                completed = true
+                emit(GenerationEvent.Silent(SilentReason.STAY_SILENT))
                 return@flow
             }
             val rawFinalText = finalBody.trim()
@@ -971,6 +1000,8 @@ class ChatRepository @Inject constructor(
                 return@flow
             }
             completed = true
+            // 他回了一句：连续「已读不回」的计数清零（规范 §4 的连续性只按连续轮次算）。
+            runCatching { settingsRepository.resetStaySilentStreak() }
             // 普通回复落库后：只要「这个会话没开着」或者「App 根本不在前台」，都补一条系统通知。
             // 后者是必须的——按 Home 退到桌面时聊天页还挂在栈上，不这样写就永远收不到通知。
             if (ChatNotificationPolicy.shouldNotify(
@@ -1794,6 +1825,9 @@ class ChatRepository @Inject constructor(
         // 0.12 人设引导：系统提示词按规范 §1 的五段顺序拼（身份 → 世界 → 此刻状态 → 话风 → 关系），
         // 记忆 / 念头 / 工具说明放在边界之前；边界与语言指令由 PromptBuilder 统一收尾。
         val now = System.currentTimeMillis()
+        // 多维心情（schema v17）：与 moodLine 来自同一个实体，但会带上 valence/arousal/dominance。
+        // 读失败（老库/坏数据）时返回按旧标签折算的基准值，不会让提示词少一段。
+        val moodReading = runCatching { moodRepository.reading(persona.id, now) }.getOrNull()
         val card = personaCardRepository.readCard(persona)
         val minuteOfDay = runCatching {
             Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).let { it.hour * 60 + it.minute }
@@ -1819,6 +1853,7 @@ class ChatRepository @Inject constructor(
                 now = now,
                 zone = ZoneId.systemDefault(),
                 moodBlock = moodLine,
+                moodDetail = moodReading,
                 asleep = asleep,
                 extraStatus = listOf(moodPace, presenceLine(persona.id)).filter { it.isNotBlank() }
                     .joinToString("\n"),

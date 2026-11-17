@@ -34,7 +34,9 @@ struct PresetEditorScreen: View {
     private var isNew: Bool { presetId == nil }
     private var accent: Color { Color(argb: env.currentSettings.accentColor) }
     private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var canSave: Bool { !trimmedName.isEmpty }
+    /// 预设也可以什么都不填（0.13 真机反馈第一批）：名字空 → 存成「未命名」，
+    /// 提示词空 → 应用/复制时由名字 + 一句话介绍生成。预设本来就是「底稿」，允许粗糙。
+    private var canSave: Bool { true }
 
     var body: some View {
         ScrollView {
@@ -65,7 +67,7 @@ struct PresetEditorScreen: View {
 
     private var identityCard: some View {
         MFCard {
-            FieldCaption(L("预设名字"), hint: L("只是给你自己看的，例如「临港建筑师」。"))
+            FieldCaption(L("预设名字"), hint: L("只是给你自己看的，例如「临港建筑师」。留空也行。"))
             TextField(L("比如：临港建筑师"), text: $name)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -73,7 +75,7 @@ struct PresetEditorScreen: View {
                 .background(fieldBackground)
                 .padding(.bottom, 14)
 
-            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也会成为人格的介绍。"))
+            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也会成为人格的介绍。可以留空。"))
             TextField(L("比如：一个嘴硬心软的建筑师"), text: $summary)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -81,7 +83,7 @@ struct PresetEditorScreen: View {
                 .background(fieldBackground)
                 .padding(.bottom, 14)
 
-            FieldCaption(L("提示词（他是谁）"), hint: L("可以留空：应用后再在人格里写。人设卡等其他字段沿用目标人格的。"))
+            FieldCaption(L("提示词（他是谁）"), hint: L("可以留空：会用名字和一句话介绍生成一段；两样都空就用默认人设。人设卡等其他字段沿用目标人格的。"))
             TextEditor(text: $prompt)
                 .font(.system(.body, design: .serif))
                 .scrollContentBackground(.hidden)
@@ -275,14 +277,18 @@ struct PresetEditorScreen: View {
             avoid: speechAvoid,
             source: .manual
         )
+        let resolvedDescription = summary.trimmingCharacters(in: .whitespacesAndNewlines)
         return PersonaPresetEntity(
             id: existing?.id ?? UUID().uuidString,
-            name: trimmedName,
-            description: summary.trimmingCharacters(in: .whitespacesAndNewlines),
-            prompt: prompt,
+            name: PersonaDraft.resolvedName(trimmedName, fallback: L("未命名")),
+            description: resolvedDescription,
+            prompt: PersonaDraft.resolvedPrompt(
+                prompt, name: trimmedName, description: resolvedDescription
+            ),
             category: existing?.category ?? "",
             avatarUri: existing?.avatarUri,
-            avatarSeed: existing?.avatarSeed ?? Self.avatarSeed(for: trimmedName),
+            avatarSeed: existing?.avatarSeed
+                ?? Self.avatarSeed(for: PersonaDraft.resolvedName(trimmedName, fallback: L("未命名"))),
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
             worldJson: worldPreset.isEmpty ? nil : worldPreset.jsonString(),
@@ -317,7 +323,9 @@ struct PresetEditorScreen: View {
                 let preset = try await env.savePreset(
                     buildEntity(existing: existingPreset(), now: now), isNew: existingPreset() == nil
                 )
-                let updated = PersonaPresetApplier.applying(preset, to: persona, now: now)
+                let updated = PersonaPresetApplier.applying(
+                    preset, to: persona, now: now, fallbackName: L("未命名")
+                )
                 _ = try await env.savePersona(updated, isNew: false)
                 _ = env.session(forPersona: updated.id)
                 dismiss()
@@ -334,7 +342,9 @@ struct PresetEditorScreen: View {
                 let preset = try await env.savePreset(
                     buildEntity(existing: existingPreset(), now: now), isNew: existingPreset() == nil
                 )
-                let draft = PersonaPresetApplier.newPersona(from: preset, now: now)
+                let draft = PersonaPresetApplier.newPersona(
+                    from: preset, now: now, fallbackName: L("未命名")
+                )
                 let created = try await env.savePersona(draft, isNew: true)
                 _ = env.session(forPersona: created.id)
                 if env.currentSettings.activePersonaId == nil {

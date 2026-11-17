@@ -51,6 +51,43 @@ class MainOptionsTest {
     }
 
     @Test
+    fun `llm flags and environment are parsed with command line precedence`() {
+        assertNull("默认没有服务端 LLM 配置", parse().llmBaseUrl)
+        assertNull(parse().llmKey)
+        assertNull(parse().llmModel)
+
+        val fromEnv = parse(
+            env = mapOf(
+                "YAP_LLM_BASE_URL" to "https://env.example.com/v1",
+                "YAP_LLM_KEY" to "sk-env",
+                "YAP_LLM_MODEL" to "env-model"
+            )
+        )
+        assertEquals("https://env.example.com/v1", fromEnv.llmBaseUrl)
+        assertEquals("sk-env", fromEnv.llmKey)
+        assertEquals("env-model", fromEnv.llmModel)
+
+        val fromFlags = parse(
+            "--llm-base-url", "https://cli.example.com/v1",
+            "--llm-key=sk-cli",
+            "--llm-model", "cli-model",
+            env = mapOf("YAP_LLM_BASE_URL" to "https://env.example.com/v1")
+        )
+        assertEquals("命令行优先", "https://cli.example.com/v1", fromFlags.llmBaseUrl)
+        assertEquals("sk-cli", fromFlags.llmKey)
+        assertEquals("cli-model", fromFlags.llmModel)
+    }
+
+    @Test
+    fun `blank llm flags are rejected instead of silently ignored`() {
+        for (args in listOf(arrayOf("--llm-base-url", "  "), arrayOf("--llm-key="), arrayOf("--llm-model", ""))) {
+            val failure = runCatching { parse(*args) }.exceptionOrNull()
+            assertTrue("${args.toList()} 应该解析失败：$failure", failure is IllegalArgumentException)
+            assertTrue(failure?.message?.contains("--llm-") == true)
+        }
+    }
+
+    @Test
     fun `blank data directory is rejected`() {
         for (args in listOf(arrayOf("--data", "   "), arrayOf("--data="))) {
             val failure = runCatching { parse(*args) }.exceptionOrNull()

@@ -56,6 +56,11 @@ public enum ToolCatalog {
     /// 1.9：这一轮他选择先不说话（§四）。它不是「工具」，是**回复节奏**的一部分：
     /// 客户端拿到它就不再产生助手消息，只留一条到点的念头。
     public static let deferReply = "defer_reply"
+    /// 0.13（多维情绪 / 可以不回）：**这一轮就不回**（`spec/mood/README.md` §4）。
+    ///
+    /// 与 `defer_reply` 的分工是规范钉死的：`defer_reply` 是「过一会儿再回」（会落念头），
+    /// `stay_silent` 是「这轮不回」（不落消息、不留念头，只标已读）。
+    public static let staySilent = "stay_silent"
     /// 0.13：他自己的日记板（`spec/diary/README.md`）：写一条、翻一翻、删一条。
     ///
     /// 它不是「记住对方的事」（那是 `remember`），而是**他自己的备忘录**：
@@ -87,6 +92,14 @@ public enum ToolCatalog {
     private static let recallDescription = "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己看过什么的时候调用；depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。"
     private static let deferReplyDescription = "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
         "调用后这一轮不会发出任何消息，对方只会看到「已读」。不想回就别硬回，别用它来敷衍正在着急的人。"
+    /// 使用条件写清（规范 §4）：累/在忙/对方只是随口一句/不想说话时；
+    /// **不用于逃避重要话题**，**不要连续用超过 2 轮**；并明确与 `defer_reply` 的区别。
+    private static let staySilentDescription = "这一轮你只想「已读」、不想回时调用" +
+        "（累了、在忙、对方只是随口一句、不想说话）。" +
+        "调用后这一轮不产生任何消息，也不留念头——对方只看到「已读」。" +
+        "不要用它逃避重要或着急的话题，也别连续两轮都用；连续使用超过 2 轮会被强制要求回一句。" +
+        "对方在等答案就回一句短的。它不是 defer_reply：defer_reply 是「过一会儿再回」" +
+        "（会留下一个到点会想起的念头），stay_silent 是「这一轮不回」（什么都不留）。"
 
     /// 日记板（`spec/diary/README.md`）：他自己的备忘录，不是「记住对方的事」。
     /// 三种动作写清各自的必填项与后果，模型才不会把 remove 当成 list。
@@ -211,6 +224,16 @@ public enum ToolCatalog {
     }
     """
 
+    /// `stay_silent` 没有必填参数（规范 §4：「无参数或 reason 可选」）。
+    private static let staySilentParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "reason": {"type": "string", "description": "为什么这一轮不想说，一句话（只给自己看，不会发出去）"}
+      }
+    }
+    """
+
     private static let diaryParameters = """
     {
       "type": "object",
@@ -289,6 +312,7 @@ public enum ToolCatalog {
     private static let setMoodSideEffect = "改你此刻的心情，接下来几轮的语气跟着变。"
     private static let recallSideEffect = "只翻你自己的记忆与旧聊天，不改任何东西；翻不到就是翻不到。"
     private static let deferReplySideEffect = "这一轮不会发出任何消息（对方只看到「已读」），过一会儿你再决定要不要开口。"
+    private static let staySilentSideEffect = "这一轮不会发出任何消息（对方只看到「已读」），也不会留下过一会儿要开口的念头；下次对方再说话时照常回。"
     private static let diarySideEffect = "写/删你自己那份日记板（对方看不到内容）；挂的定时提醒到点会变成你自己的念头。"
     private static let stickerSideEffect = "send 会真的发出一条表情消息（对方立刻看到）；make 只生成一个新表情（存进你的表情库，不会自动发）；save 只把消息里的表情收进收藏，不发消息。"
     private static let listenSideEffect = "只把那段语音的原始声音交给模型听一遍，不改库、不发消息；听到什么就是什么，没有转写文本。"
@@ -315,6 +339,8 @@ public enum ToolCatalog {
                  sideEffect: recallSideEffect),
         ToolSpec(name: deferReply, description: deferReplyDescription,
                  parametersJson: deferReplyParameters, sideEffect: deferReplySideEffect),
+        ToolSpec(name: staySilent, description: staySilentDescription,
+                 parametersJson: staySilentParameters, sideEffect: staySilentSideEffect),
         ToolSpec(name: diary, description: diaryDescription, parametersJson: diaryParameters,
                  sideEffect: diarySideEffect),
         ToolSpec(name: sticker, description: stickerDescription, parametersJson: stickerParameters,
@@ -726,6 +752,9 @@ public enum ToolProtocol {
         case ToolCatalog.setMood: return String(localized: "心情变了")
         case ToolCatalog.recall: return String(localized: "回想了一下")
         case ToolCatalog.deferReply: return String(localized: "决定先不回")
+        // 这一轮他什么都没说：界面上不该出现任何占位气泡（规范 §4），
+        // 这个标题只在「他最近在想什么」这类留痕里用得到。
+        case ToolCatalog.staySilent: return String(localized: "这轮没说话")
         // 0.13 日记板：默认是「写日记」，翻/删由 `ToolResult.traceTitle` 按动作覆盖成
         // 「翻日记」「删了日记」（`spec/diary/README.md`：痕迹标题「写日记」「翻日记」）。
         case ToolCatalog.diary: return String(localized: "写日记")
@@ -797,6 +826,9 @@ public enum ToolProtocol {
         case ToolCatalog.deferReply:
             let minutes = invocation.intArgument("minutes", default: 45)
             return "过 \(minutes) 分钟再说"
+        case ToolCatalog.staySilent:
+            let reason = invocation.argument("reason") ?? ""
+            return reason.isEmpty ? "这轮先不回" : "这轮不回：\(String(reason.prefix(60)))"
         case ToolCatalog.updatePersona:
             return invocation.argument("reason").map { "原因：\(String($0.prefix(120)))" }
         case ToolCatalog.setActivity:
