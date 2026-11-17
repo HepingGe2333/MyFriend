@@ -72,6 +72,10 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
   and rows; v1–v5 remain readable; 8 MiB per file and 128 MiB total with skipped counts.
 - **Video/audio upload limits**: duration and size are checked before sending/uploading (video ≤2 min/64 MiB,
   audio ≤5 min/8 MiB); over-limit items are rejected without uploading.
+- **Prompt tested against the DeepSeek API**: after stating explicitly "when you do not want to talk, call stay_silent
+  instead of replying in text; do not use it when the user raises something important", the model stays silent for
+  "good night / you there / eaten?" and replies normally to "my boss yelled at me". The rule is now part of the anti-AI
+  section on both platforms.
 - **Still missing**: backups do not carry sticker/audio/video binaries or diary notes; `listen/watch` in server mode must be
   executed by agentd (clients support upload and local-mode tools this round).
 - Tests: Android 1568 / 153 classes, iOS 1753 (2 skipped), agentd 392, agentcore 90; both platforms build.

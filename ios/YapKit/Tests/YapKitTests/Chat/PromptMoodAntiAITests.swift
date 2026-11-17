@@ -61,7 +61,7 @@ final class PromptMoodAntiAITests: XCTestCase {
 
     func testAntiAISectionCoversEveryRuleFromSpec() {
         XCTAssertEqual(AntiAIPrompt.section, "# 别像 AI")
-        XCTAssertEqual(6, AntiAIPrompt.rules.count)
+        XCTAssertEqual(7, AntiAIPrompt.rules.count)
         let text = AntiAIPrompt.text()
         // 规范 §5 的六条，逐条对应关键字。
         XCTAssertTrue(text.contains("反问"))

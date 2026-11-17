@@ -229,7 +229,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
@@ -361,7 +362,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
@@ -649,7 +651,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
@@ -826,7 +829,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
@@ -1071,7 +1075,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
@@ -1166,7 +1171,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_12_13,
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
-                YapDatabase.MIGRATION_15_16
+                YapDatabase.MIGRATION_15_16,
+                YapDatabase.MIGRATION_16_17
             )
             .allowMainThreadQueries()
             .build()
