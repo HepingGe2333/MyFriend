@@ -756,6 +756,153 @@ final class SchemaMigrationTests: XCTestCase {
         XCTAssertEqual(try reopened.personas.count(), 0)
     }
 
+    // MARK: - v14 → v15：日记板与人格进化的待确认变化
+
+    /// v14 的库（没有两张新表）打开一次 → 两张表连同索引一起建出来，已有数据不丢。
+    ///
+    /// 14→15 只有「建表 + 建索引」，没有回填；这条测试守两件事：
+    /// 1. 老库升级后表结构完整（迁移与 `createStatements` 用的是同一份 DDL）；
+    /// 2. 升级不会碰已有行（人格/消息一条不少）。
+    func testV14ToV15CreatesDiaryAndPendingPatchTables() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores).database
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt)
+            VALUES ('\(personaId)', '林深', 'v14 的数据', 7, '你叫林深。', '朋友', 3, 1, 1, \(now))
+            """)
+        // 退回 v14：把 v15 加的两张表删掉、版本号改回 14（老库就是这个样子）。
+        try database.execute("DROP TABLE \(Schema.diaryNotesTable)")
+        try database.execute("DROP TABLE \(Schema.personaPendingPatchesTable)")
+        try database.setUserVersion(14)
+        XCTAssertFalse(database.hasTable(Schema.diaryNotesTable))
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertEqual(Schema.version, 17, "当前 schema 是 v17（多维心情三列）")
+        XCTAssertTrue(try reopened.database.hasTable(Schema.diaryNotesTable), "v15 要建 diary_notes")
+        XCTAssertTrue(try reopened.database.hasTable(Schema.personaPendingPatchesTable),
+                      "v15 要建 persona_pending_patches")
+        let indexes = try indexNames(reopened.database)
+        for name in [
+            "index_diary_notes_personaId", "index_diary_notes_remindAt",
+            "index_persona_pending_patches_personaId", "index_persona_pending_patches_createdAt"
+        ] {
+            XCTAssertTrue(indexes.contains(name), "缺索引：\(name)")
+        }
+
+        // 老数据还在，且新表真的能写（列齐全、可空列是 NULL）。
+        XCTAssertEqual(try reopened.personas.count(), 1)
+        XCTAssertEqual(try reopened.personas.byId(personaId)?.version, 3)
+        try reopened.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-1", personaId: personaId, content: "升级之后写的第一条",
+            createdAt: now, remindAt: nil, updatedAt: now
+        ))
+        XCTAssertEqual(try reopened.diaryNotes.count(personaId: personaId), 1)
+        try reopened.personaPendingPatches.upsert(PersonaPendingPatchEntity(
+            id: "p-1", personaId: personaId, patchJson: "[]",
+            summary: "升级之后的一条", reason: "", createdAt: now
+        ))
+        XCTAssertEqual(try reopened.personaPendingPatches.count(personaId: personaId), 1)
+        reopened.database.close()
+
+        // 幂等：再打开一次不会重复建表/重复加索引。
+        let again = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try again.database.userVersion(), Schema.version)
+        XCTAssertEqual(try again.diaryNotes.count(personaId: personaId), 1)
+        XCTAssertEqual(try again.database.scalarInt64(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'diary_notes'", []
+        ), 1)
+    }
+
+    /// 空库 v14 也能升上来（新表建出来、没有数据）。
+    func testV14EmptyDatabaseMigratesToV15() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        try database.execute("DROP TABLE \(Schema.diaryNotesTable)")
+        try database.execute("DROP TABLE \(Schema.personaPendingPatchesTable)")
+        try database.setUserVersion(14)
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertTrue(try reopened.database.hasTable(Schema.diaryNotesTable))
+        XCTAssertTrue(try reopened.database.hasTable(Schema.personaPendingPatchesTable))
+        XCTAssertEqual(try reopened.diaryNotes.count(), 0)
+        XCTAssertEqual(try reopened.personaPendingPatches.count(), 0)
+    }
+
+    // MARK: - v15 → v16：表情包
+
+    /// v15 的库（没有 stickers）打开一次 → 表与两条索引一起建出来，已有数据不丢；重复打开幂等。
+    func testV15ToV16CreatesStickerTable() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores).database
+        try database.execute("""
+            INSERT INTO personas (id, name, description, avatarSeed, prompt, category, version,
+                                  isDefault, createdAt, updatedAt)
+            VALUES ('\(personaId)', '林深', 'v15 的数据', 7, '你叫林深。', '朋友', 3, 1, 1, \(now))
+            """)
+        // 退回 v15：把 v16 建的 stickers 删掉、版本号改回 15。
+        try database.execute("DROP TABLE \(Schema.stickersTable)")
+        try database.setUserVersion(15)
+        XCTAssertFalse(database.hasTable(Schema.stickersTable))
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertTrue(try reopened.database.hasTable(Schema.stickersTable), "v16 要建 stickers")
+        let indexes = try indexNames(reopened.database)
+        for name in ["index_stickers_createdAt", "index_stickers_personaId"] {
+            XCTAssertTrue(indexes.contains(name), "缺索引：\(name)")
+        }
+        // 老数据还在，新表真的能写（可空列是 NULL、默认值列有默认值）。
+        XCTAssertEqual(try reopened.personas.count(), 1)
+        try reopened.stickers.upsert(StickerEntity(
+            id: "sticker-1",
+            ownerUserId: nil,
+            personaId: personaId,
+            file: "/tmp/sticker-1.gif",
+            width: 320,
+            height: 240,
+            frames: 12,
+            bytes: 4_096,
+            source: StickerSource.modelMade.rawValue,
+            createdBy: StickerCreator.model.rawValue,
+            createdAt: now
+        ))
+        XCTAssertEqual(try reopened.stickers.count(), 1)
+        XCTAssertEqual(try reopened.stickers.byId("sticker-1")?.frames, 12)
+        reopened.database.close()
+
+        // 幂等：再打开一次不会重复建表/重复加索引。
+        let again = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try again.database.userVersion(), Schema.version)
+        XCTAssertEqual(try again.stickers.count(), 1)
+        XCTAssertEqual(try again.database.scalarInt64(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'stickers'", []
+        ), 1)
+    }
+
+    /// 空库 v15 也能升上来（新表建出来、没有数据）。
+    func testV15EmptyDatabaseMigratesToV16() throws {
+        var stores: DatabaseStores? = try DatabaseStores.open(path: databasePath)
+        let database = try XCTUnwrap(stores?.database)
+        try database.execute("DROP TABLE \(Schema.stickersTable)")
+        try database.setUserVersion(15)
+        stores = nil
+        database.close()
+
+        let reopened = try DatabaseStores.open(path: databasePath)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
+        XCTAssertTrue(try reopened.database.hasTable(Schema.stickersTable))
+        XCTAssertEqual(try reopened.stickers.count(), 0)
+    }
+
     // MARK: - 小工具
 
     private func indexNames(_ database: SQLiteDatabase) throws -> Set<String> {

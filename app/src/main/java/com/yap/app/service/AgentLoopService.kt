@@ -6,8 +6,10 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import com.yap.app.BuildConfig
 import com.yap.app.R
 import com.yap.app.data.repo.HeartbeatController
 import com.yap.app.util.AgentNotifier
@@ -72,7 +74,17 @@ class AgentLoopService : Service() {
      */
     private suspend fun runLoop() {
         while (scope.isActive) {
-            val beat = runCatching { heartbeat.beat() }.getOrNull()
+            val result = runCatching { heartbeat.beat() }
+            val beat = result.getOrNull()
+            if (BuildConfig.DEBUG && beat == null) {
+                // beat 自己几乎不抛（内部都 runCatching 了），真抛出来说明有心跳之外的硬故障：
+                // 不记这一条的话，服务就像「活着但从不判定」。
+                Log.d(
+                    LOG_TAG,
+                    "beat 抛异常，这一拍按未发生处理（下一拍继续）：" +
+                        (result.exceptionOrNull()?.javaClass?.simpleName ?: "未知")
+                )
+            }
             // 常驻通知的文案不能每 30 秒变一次，那会变成骚扰；
             // 只有他真的做了事，才让通知里那句换一换。
             if (beat != null && beat.fired && beat.acted && beat.summary.isNotBlank()) {
@@ -113,12 +125,25 @@ class AgentLoopService : Service() {
     companion object {
         const val ACTION_STOP = "com.yap.app.action.STOP_AGENT_LOOP"
 
+        /** 诊断日志 tag：`adb logcat -s AgentLoopService`。 */
+        private const val LOG_TAG = "AgentLoopService"
+
         // 「两次真正思考之间至少 5 分钟」的下限搬到了 HeartbeatController.FIRST_TICK_GAP_MS：
         // 现在每 30 秒都在判定，这个下限必须在判定那一层生效，服务这边只负责按节拍走。
 
         fun start(context: Context) {
             val intent = Intent(context, AgentLoopService::class.java)
+            // Android 12+ 在后台起前台服务会抛 ForegroundServiceStartNotAllowedException。
+            // 兜底是 15 分钟的 AgentTickWorker，所以这里不崩；但**必须留一条 warn**：
+            // 否则真机上「服务没起来、只剩兜底」这件事在 logcat 里完全不可见。
             runCatching { ContextCompat.startForegroundService(context, intent) }
+                .onFailure { error ->
+                    Log.w(
+                        LOG_TAG,
+                        "前台服务没起来（后台限制？），只能靠 WorkManager 兜底：" +
+                            error.javaClass.simpleName
+                    )
+                }
         }
 
         fun stop(context: Context) {

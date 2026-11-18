@@ -721,8 +721,6 @@
 
     <!-- PersonaEditorViewModel -->
     <string name="persona_editor_persona_missing">That persona doesn\'t exist</string>
-    <string name="persona_editor_name_required">Give the persona a name</string>
-    <string name="persona_editor_prompt_required">Write his text, or restore a previous version</string>
     <string name="persona_editor_save_failed">Couldn\'t save</string>
     <string name="persona_editor_card_save_failed">Persona saved, but the persona card couldn\'t be written: %1$s</string>
     <string name="persona_editor_unknown_error">Unknown error</string>
@@ -936,7 +934,6 @@
     <string name="preset_import_failed">Couldn\'t import it</string>
     <string name="preset_editor_not_found">This preset is gone. It may have been deleted.</string>
     <string name="preset_editor_name_required">Give the preset a name first</string>
-    <string name="preset_editor_prompt_required">A preset needs its persona text first</string>
     <string name="preset_editor_save_failed">Couldn\'t save it</string>
 
     <!-- ui/components: Common.kt / Avatar.kt / MarkdownText.kt -->
@@ -1596,7 +1593,59 @@
     <string name="tool_trace_set_mood">Mood changed</string>
     <string name="tool_trace_recall">Recalled</string>
     <string name="tool_trace_defer_reply">Decided not to reply yet</string>
+    <string name="tool_trace_diary">Diary</string>
+    <string name="tool_trace_diary_add">Wrote a note</string>
+    <string name="tool_trace_diary_list">Flipped through the diary</string>
+    <string name="tool_trace_diary_remove">Tore out a page</string>
+    <string name="tool_trace_diary_remind">%1$s · reminds at %2$s</string>
+    <plurals name="tool_trace_diary_count">
+        <item quantity="one">%1$d note</item>
+        <item quantity="other">%1$d notes</item>
+    </plurals>
+    <string name="tool_trace_diary_saved_detail">Written down in his own notebook.</string>
+    <string name="tool_trace_diary_remind_detail">He will remember it at %1$s.</string>
+    <string name="tool_trace_diary_removed_detail">Torn out.</string>
+    <string name="tool_trace_diary_not_found_detail">That note is not in the diary — it may have been torn out already.</string>
+    <string name="tool_trace_diary_empty_detail">There is nothing in the diary yet.</string>
     <string name="tool_trace_unknown">Action</string>
+
+    <!-- Stickers (spec/stickers): tool traces and in-chat sticker UI -->
+    <string name="tool_trace_sticker">Sticker</string>
+    <string name="tool_trace_sticker_send">Sent a sticker</string>
+    <string name="tool_trace_sticker_make">Made a sticker</string>
+    <string name="tool_trace_sticker_save">Saved a sticker</string>
+    <string name="tool_trace_sticker_static">%1$d×%2$d · still · %3$d KB</string>
+    <string name="tool_trace_sticker_animated">%1$d×%2$d · %3$d frames · %4$d KB</string>
+    <string name="tool_trace_sticker_detail">The sticker is in My Stickers.</string>
+    <string name="tool_trace_sticker_sent_detail">This sticker was sent as a message.</string>
+    <string name="tool_trace_sticker_made_detail">Done — it is in My Stickers; send it again if you want it on screen.</string>
+    <string name="tool_trace_sticker_saved_detail">Their sticker was added to My Stickers.</string>
+    <string name="tool_trace_sticker_failed_missing_action">No action given (send / make / save)</string>
+    <string name="tool_trace_sticker_failed_unknown_action">Unknown action</string>
+    <string name="tool_trace_sticker_failed_not_found">Sticker not found</string>
+    <string name="tool_trace_sticker_failed_message_not_found">Message not found</string>
+    <string name="tool_trace_sticker_failed_no_sticker">That message has no sticker</string>
+    <string name="tool_trace_sticker_failed_empty_make">No material given (URL / base / overlay / text)</string>
+    <string name="tool_trace_sticker_failed_bad_url">That link cannot be downloaded</string>
+    <string name="tool_trace_sticker_failed_download">The image could not be downloaded</string>
+    <string name="tool_trace_sticker_failed_unreadable">That image cannot be read</string>
+    <string name="tool_trace_sticker_failed_too_big">It cannot fit under the sticker size limit</string>
+    <string name="tool_trace_sticker_failed_save">Saving failed</string>
+
+    <!-- Stickers: composer, history panel, bubbles -->
+    <string name="chat_send_sticker">Send a sticker</string>
+    <string name="chat_sticker_panel_title">My stickers</string>
+    <string name="chat_sticker_panel_recent">Recent</string>
+    <string name="chat_sticker_panel_all">All</string>
+    <string name="chat_sticker_panel_empty">No stickers yet. Import an image or GIF from the top right, or long-press a sticker in the chat to save it.</string>
+    <string name="chat_sticker_panel_import">Import sticker</string>
+    <string name="chat_sticker_panel_import_failed">That image could not be turned into a sticker</string>
+    <string name="chat_sticker_message">Sticker</string>
+    <string name="chat_sticker_save">Add to my stickers</string>
+    <string name="chat_sticker_saved">Added to my stickers</string>
+    <string name="chat_sticker_save_failed">Could not add that sticker</string>
+    <string name="chat_sticker_sending_failed">The sticker was not sent</string>
+    <string name="chat_preview_sticker">Sticker</string>
 
     <string name="tool_trace_think_detail_placeholder">(No specific question — thinking it through first)</string>
     <string name="tool_trace_search_no_result">No results found</string>
@@ -1684,6 +1733,27 @@
     <string name="settings_server_bootstrap_merging">Merging data from both sides: %1$d messages</string>
     <string name="settings_server_bootstrap_done">Data aligned (%1$d messages)</string>
     <string name="settings_server_bootstrap_failed">Data alignment did not finish; it will retry on the next connection</string>
+    <!-- 0.13 switching to the cloud: consent dialog, per-item media upload, full download back to local -->
+    <string name="settings_server_consent_title">Hand your conversations to the cloud?</string>
+    <string name="settings_server_consent_body">Your on-device conversations, personas, memories and pictures/voice/video will be uploaded to this server. Choose “Only sync new content” to keep history on this device, or cancel.</string>
+    <string name="settings_server_consent_full">Agree and sync</string>
+    <string name="settings_server_consent_new_only">Only sync new content</string>
+    <string name="settings_server_consent_cancel">Cancel</string>
+    <string name="settings_server_sync_starting">Syncing to the server…</string>
+    <string name="settings_server_media_starting">Checking your media history…</string>
+    <string name="settings_server_media_progress">Uploading media history: item %1$d/%2$d (%3$d uploaded · %4$d failed)</string>
+    <string name="settings_server_cancel_sync">Cancel sync</string>
+    <string name="settings_server_sync_done">Synced to the server: %1$d messages</string>
+    <string name="settings_server_sync_done_media">Synced to the server: %1$d messages, %2$d media items could not be uploaded</string>
+    <string name="settings_server_sync_new_only">Server mode is on: history stays on this device, new messages go through the server</string>
+    <string name="settings_server_sync_already">This server was already synced before</string>
+    <string name="settings_server_sync_failed">Sync did not finish. Server mode stays on and will retry on the next connection.</string>
+    <string name="settings_server_sync_cancelled">Sync cancelled; server mode was not turned on</string>
+    <string name="settings_server_downloading">Fetching everything from the server: %1$d messages</string>
+    <string name="settings_server_download_done">Downloaded %1$d messages; server mode is off</string>
+    <string name="settings_server_download_failed">This device still has fewer messages than the server, so server mode stays on (local %1$d / server %2$d)</string>
+    <string name="settings_server_download_unavailable">Couldn\'t reach the server, so server mode stays on. Try again later.</string>
+    <string name="settings_server_download_cancelled">Download cancelled; server mode stays on</string>
     <string name="chat_server_reply_pending">The reply did not arrive yet; it will sync shortly</string>
     <string name="chat_server_action_unsupported">This action is not supported in server mode yet</string>
     <string name="error_server_unreachable">Couldn\'t reach the server, so this wasn\'t saved</string>
@@ -1691,4 +1761,64 @@
     <string name="error_server_media_too_large">That image is too large for the server\'s 2MB limit</string>
     <string name="error_server_media_failed">The image couldn\'t be uploaded, so nothing was sent</string>
     <string name="persona_editor_sleep_time_invalid">Sleep times must look like HH:mm (24:00 means midnight, e.g. 24:00–08:00)</string>
+    <!-- 0.13 persona evolution: "His recent changes" on the persona editor -->
+    <string name="persona_evolution_section_title">His recent changes</string>
+    <string name="persona_evolution_section_note">These are the changes he has noticed in himself over your recent conversations. Nothing goes into his profile unless you say yes — anything you leave alone is dropped after a week.</string>
+    <string name="persona_evolution_field_traits">Personality</string>
+    <string name="persona_evolution_field_likes">Likes</string>
+    <string name="persona_evolution_field_behaviors">Habits</string>
+    <string name="persona_evolution_field_quirks">Quirks</string>
+    <string name="persona_evolution_accept">Accept</string>
+    <string name="persona_evolution_reject">Not this</string>
+    <string name="persona_evolution_accepted">Noted — this is part of his profile now.</string>
+    <string name="persona_evolution_rejected">Dropped that one.</string>
+    <string name="persona_evolution_accept_failed">Could not apply it — try again in a moment.</string>
+    <string name="persona_evolution_reject_failed">Could not drop it — try again in a moment.</string>
+    <string name="persona_evolution_section_note_server">These are the changes he has noticed in himself over your recent conversations. Accepting one updates his profile and syncs it to your server; anything you leave alone is dropped after a week.</string>
+    <string name="persona_evolution_accepted_server">Noted — this is part of his profile now and synced to your server.</string>
+    <!-- ============================== 0.13 voice / video (spec/audio-video) ============================== -->
+    <string name="media_error_audio_too_large">This voice message is over 8 MB and cannot be sent</string>
+    <string name="media_error_audio_too_long">Voice messages are limited to 5 minutes; this one was not sent</string>
+    <string name="media_error_video_too_large">This video is over 64 MB — trim it and try again</string>
+    <string name="media_error_video_too_long">Videos are limited to 2 minutes; this one is longer</string>
+    <string name="media_error_video_format">This video format is not supported; try mp4 or mov</string>
+
+    <string name="chat_preview_audio">Voice</string>
+    <string name="chat_preview_video">Video</string>
+    <string name="chat_send_voice">Send a voice message (hold to record)</string>
+    <string name="chat_send_video">Send a video</string>
+    <string name="chat_voice_message">Voice message</string>
+    <string name="chat_video_message">Video message</string>
+    <string name="chat_voice_play">Play voice message</string>
+    <string name="chat_voice_pause">Pause voice message</string>
+    <string name="chat_video_play">Play video</string>
+    <string name="chat_video_close">Close video</string>
+    <string name="chat_voice_recording">Recording %1$s · release to send</string>
+    <string name="chat_voice_record_failed">Nothing was recorded — try again</string>
+    <string name="chat_voice_permission_denied">No microphone permission, so voice messages are unavailable</string>
+    <string name="chat_video_too_long">Videos are limited to 2 minutes</string>
+    <string name="chat_video_pick_failed">This video could not be read</string>
+
+    <string name="tool_trace_listen">Listened</string>
+    <string name="tool_trace_watch">Watched</string>
+    <string name="tool_trace_listen_detail">Listened to this %1$d-second voice message; the audio was handed over.</string>
+    <string name="tool_trace_watch_detail">Looked at %1$d frames.</string>
+    <string name="tool_trace_media_none_audio">There is no voice message in this chat</string>
+    <string name="tool_trace_media_none_video">There is no video in this chat</string>
+    <string name="tool_trace_media_unreadable_audio">This voice message cannot be opened</string>
+    <string name="tool_trace_media_unreadable_video">This video cannot be opened</string>
+
+    <string name="error_media_audio_unsupported">This model cannot hear audio</string>
+    <string name="error_media_video_unsupported">This model cannot see video</string>
+    <string name="error_media_audio_too_large">This voice message is too large for the model</string>
+    <string name="error_media_video_too_large">This video is too large for the model</string>
+
+    <!-- 0.13 optional-save fallbacks: localized name / prompt used when the user leaves them blank.
+         The quotes around ": " are Android's way to preserve the trailing space. -->
+    <string name="draft_default_name">Unnamed</string>
+    <string name="draft_default_prompt_separator">": "</string>
+    <string name="draft_default_prompt">You are a friend the user talks to. Speak naturally and warmly, and remember what he tells you.</string>
+    <!-- 0.13 stay silent (spec/mood §4): only ever shown in an expanded trace; normally no bubble at all -->
+    <string name="tool_trace_stay_silent">Read, no reply</string>
+    <string name="chat_sticker_delete_failed">Couldn\'t delete it, try again in a moment</string>
 </resources>

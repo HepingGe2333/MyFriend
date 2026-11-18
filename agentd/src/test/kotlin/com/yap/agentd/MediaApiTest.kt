@@ -264,16 +264,19 @@ class MediaApiTest {
     }
 
     @Test
-    fun `kind is required and restricted to the three known values`() {
+    fun `kind is required and restricted to known values`() {
         val missing = upload(byteArrayOf(1), "/v1/media")
         assertEquals(400, missing.status)
         assertEquals("missing_field", errorCode(missing))
 
-        val invalid = upload(byteArrayOf(1), "/v1/media?kind=VIDEO")
+        val invalid = upload(byteArrayOf(1), "/v1/media?kind=UNKNOWN")
         assertEquals(400, invalid.status)
         assertEquals("invalid_argument", errorCode(invalid))
 
-        assertTrue(store.mediaItems().isEmpty())
+        // 0.13：GIF/音频/视频也是合法 kind。
+        assertEquals(201, upload(byteArrayOf(1, 2, 3), "/v1/media?kind=VIDEO&mime=video/mp4", "video/mp4").status)
+        assertEquals(201, upload(byteArrayOf(4, 5, 6), "/v1/media?kind=AUDIO&mime=audio/m4a", "audio/m4a").status)
+        assertEquals(201, upload(byteArrayOf(7, 8, 9), "/v1/media?kind=STICKER&mime=image/gif", "image/gif").status)
     }
 
     @Test
@@ -523,7 +526,7 @@ class MediaApiTest {
         store.updatePersona(personaId) { persona, _ -> persona.copy(avatarUrl = url) }
 
         val backup = exportBackup()
-        assertEquals(5, backup.int("formatVersion"))
+        assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(0, backup.int("mediaSkipped"))
         val exported = backup.objects("media").single()
         assertEquals(id, exported.str("id"))

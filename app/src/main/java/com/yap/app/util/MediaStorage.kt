@@ -11,6 +11,7 @@ import android.os.Build
 import android.util.Base64
 import android.util.Log
 import com.yap.app.R
+import com.yap.app.domain.AudioVideoPolicy
 import com.yap.app.domain.AvatarImagePolicy
 import com.yap.app.domain.BackupAvatarPath
 import com.yap.app.domain.BackupCompressedImage
@@ -40,6 +41,30 @@ object MediaStorage {
 
     /** 聊天图片 / 聊天背景 / 其它聊天媒体所在的目录。 */
     private const val MEDIA_DIR = "media"
+
+    /**
+     * 语音目录（`files/audio/<voice-id>.m4a`，0.13）。
+     *
+     * 与聊天图片分开：图片的清理规则（`chat-*`、压缩、备份）完全不适用于音频，
+     * 放同一个目录会让「清空聊天图片」不小心把语音删掉。
+     */
+    private const val AUDIO_DIR = "audio"
+
+    /** 视频目录（`files/video/<video-id>.mp4`，0.13）。不转码，原件落地。 */
+    private const val VIDEO_DIR = "video"
+
+    /** 语音/视频文件名前缀：清理时只认自己这一类，别碰目录里将来可能出现的东西。 */
+    private const val VOICE_PREFIX = "voice-"
+    private const val VIDEO_PREFIX = "video-"
+
+    /**
+     * 表情包目录（`files/stickers/<id>.gif`，`spec/stickers/README.md`）。
+     *
+     * **刻意不算进 [ownedRoots]**：聊天附件里的表情引用的是这里的文件，而「删消息 → 删附件文件」
+     * 那条路不该把用户收藏的表情一起删掉（同一个文件可能同时被「我的表情」和十条消息引用）。
+     * 表情文件的生命周期归 `StickerRepository`（跟着 `stickers` 行走）。
+     */
+    private const val STICKER_DIR = "stickers"
 
     /** `persistChatImage` 落盘时的文件名前缀；「清空聊天」只删这一类。 */
     private const val CHAT_IMAGE_PREFIX = "chat-"
@@ -410,6 +435,26 @@ object MediaStorage {
     fun mediaDirectory(context: Context): File =
         File(context.filesDir, MEDIA_DIR).apply { runCatching { mkdirs() } }
 
+    /** 表情包目录（`files/stickers`）：不存在就建好。 */
+    fun stickerDirectory(context: Context): File =
+        File(context.filesDir, STICKER_DIR).apply { runCatching { mkdirs() } }
+
+    /** 语音目录（`files/audio`）：不存在就建好。 */
+    fun audioDirectory(context: Context): File =
+        File(context.filesDir, AUDIO_DIR).apply { runCatching { mkdirs() } }
+
+    /** 视频目录（`files/video`）：不存在就建好。 */
+    fun videoDirectory(context: Context): File =
+        File(context.filesDir, VIDEO_DIR).apply { runCatching { mkdirs() } }
+
+    /** 整目录删掉表情文件（只给「删除全部数据」用；单张删除走 `StickerRepository`）。 */
+    fun clearStickers(context: Context): Int {
+        val dir = File(context.filesDir, STICKER_DIR)
+        val count = runCatching { dir.listFiles()?.count { it.isFile } ?: 0 }.getOrDefault(0)
+        runCatching { dir.deleteRecursively() }
+        return count
+    }
+
     /**
      * 把数据库/备份里的 `file://` 引用解析成「确实属于 [directory] 的现有文件」。
      *
@@ -606,7 +651,11 @@ object MediaStorage {
 
     private fun ownedRoots(context: Context): List<File> = listOf(
         File(context.filesDir, MEDIA_DIR),
-        File(context.filesDir, AVATAR_DIR)
+        File(context.filesDir, AVATAR_DIR),
+        // 0.13：语音/视频也是「删消息就跟着删」的附件，归属守卫必须覆盖它们，
+        // 否则删消息时这些文件会永远留在沙盒里（用户看不到，也删不掉）。
+        File(context.filesDir, AUDIO_DIR),
+        File(context.filesDir, VIDEO_DIR)
     )
 
     /**
@@ -753,6 +802,175 @@ object MediaStorage {
             if (buffer.size() in 1..ImageContextBudget.MAX_ENCODED_BYTES) return buffer.toByteArray()
         }
         return null
+    }
+
+    // ------------------------------------------------------------ 语音 / 视频（0.13）
+
+    /**
+     * 录音结束后的落盘：临时文件 → `files/audio/voice-<uuid>.m4a`（**原子改名**）。
+     *
+     * 为什么先写临时文件再改名：录制过程中 App 被杀 / 用户撤回，磁盘上只留一个 `.tmp`，
+     * 枚举目录时不会把它当成一条能播放的语音；改名成功才算「这条语音真的存在」。
+     *
+     * 超限（>8 MiB / >5 分钟）返回失败并删掉临时文件：宁可让用户重录，
+     * 也不要把一条注定传不上去的语音放进消息里。
+     */
+    suspend fun persistRecordedAudio(
+        context: Context,
+        tempFile: File,
+        durationMs: Long
+    ): Result<MessageAttachment> = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = audioDirectory(context)
+            if (!tempFile.isFile || tempFile.length() <= 0L) {
+                tempFile.delete()
+                error(context.getString(R.string.media_error_empty))
+            }
+            if (!MediaOwnership.isWithin(tempFile, listOf(dir))) {
+                tempFile.delete()
+                error(context.getString(R.string.media_error_unreadable))
+            }
+            val size = tempFile.length()
+            val rejection = AudioVideoPolicy.checkAudio(size, durationMs)
+            if (rejection != null) {
+                tempFile.delete()
+                error(
+                    when (rejection) {
+                        com.yap.app.domain.MediaRejection.TOO_LARGE ->
+                            context.getString(R.string.media_error_audio_too_large)
+                        com.yap.app.domain.MediaRejection.TOO_LONG ->
+                            context.getString(R.string.media_error_audio_too_long)
+                        else -> context.getString(R.string.media_error_empty)
+                    }
+                )
+            }
+            val target = File(dir, "$VOICE_PREFIX${UUID.randomUUID()}.${AudioVideoPolicy.AUDIO_CONTAINER_EXTENSION}")
+            MediaFileGc.withFileIoLock {
+                if (!tempFile.renameTo(target)) {
+                    tempFile.delete()
+                    error(context.getString(R.string.media_error_process_failed))
+                }
+            }
+            MessageAttachment(
+                uri = Uri.fromFile(target).toString(),
+                mime = "audio/m4a",
+                kind = MessageAttachment.KIND_AUDIO,
+                durationMs = durationMs.coerceAtLeast(0L)
+            )
+        }
+    }
+
+    /**
+     * 把系统选择器里选的视频**原样**复制到 `files/video`（不转码）。
+     *
+     * 为什么不在 Android 上转码：转码要引入编解码器/耗电/发热，还会让「用户看到的那段视频」
+     * 和「发出去的那段」不是同一段；规格明确要求「不做转码，超限拒绝并提示」，这里照做。
+     * 复制过程带计数上限：绝不把一个 500 MB 的文件读进内存再发现超限。
+     *
+     * @param durationMs 由调用方用 `MediaMetadataRetriever` 读出来（读不到就传 null，只按大小挡）
+     */
+    suspend fun persistVideo(
+        context: Context,
+        source: Uri,
+        durationMs: Long?
+    ): Result<MessageAttachment> = withContext(Dispatchers.IO) {
+        runCatching {
+            val dir = videoDirectory(context)
+            val declared = context.contentResolver.getType(source)
+            val displayName = runCatching {
+                context.contentResolver.query(source, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
+            }.getOrNull()
+            val mime = AudioVideoPolicy.videoMime(declared, displayName)
+                ?: error(context.getString(R.string.media_error_video_format))
+            val extension = if (mime == "video/quicktime") "mov" else "mp4"
+            val target = File(dir, "$VIDEO_PREFIX${UUID.randomUUID()}.$extension")
+            val temp = File(dir, "$VIDEO_PREFIX${UUID.randomUUID()}.tmp")
+            var copied = 0L
+            try {
+                context.contentResolver.openInputStream(source)?.use { input ->
+                    temp.outputStream().use { output ->
+                        val chunk = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(chunk)
+                            if (read < 0) break
+                            copied += read
+                            if (copied > AudioVideoPolicy.VIDEO_MAX_BYTES) {
+                                error(context.getString(R.string.media_error_video_too_large))
+                            }
+                            output.write(chunk, 0, read)
+                        }
+                    }
+                } ?: error(context.getString(R.string.media_error_unreadable))
+                if (copied <= 0L) error(context.getString(R.string.media_error_empty))
+                val rejection = AudioVideoPolicy.checkVideo(copied, durationMs)
+                if (rejection != null) {
+                    error(
+                        when (rejection) {
+                            com.yap.app.domain.MediaRejection.TOO_LONG ->
+                                context.getString(R.string.media_error_video_too_long)
+                            com.yap.app.domain.MediaRejection.TOO_LARGE ->
+                                context.getString(R.string.media_error_video_too_large)
+                            else -> context.getString(R.string.media_error_empty)
+                        }
+                    )
+                }
+                MediaFileGc.withFileIoLock {
+                    if (!temp.renameTo(target)) {
+                        error(context.getString(R.string.media_error_process_failed))
+                    }
+                }
+                MessageAttachment(
+                    uri = Uri.fromFile(target).toString(),
+                    mime = mime,
+                    kind = MessageAttachment.KIND_VIDEO,
+                    durationMs = durationMs?.takeIf { it > 0L }
+                )
+            } catch (error: Exception) {
+                temp.delete()
+                throw error
+            }
+        }
+    }
+
+    /**
+     * 「清空聊天」时的语音/视频清理（带引用守卫，与聊天图片同一套语义）。
+     *
+     * 与 [clearChatImagesExceptIfUnreferenced] 分开：文件在不同目录、前缀也不同，
+     * 混在一起写一次就会有一条路径漏掉守卫。
+     */
+    suspend fun clearVoiceVideoExceptIfUnreferenced(
+        context: Context,
+        keepFileNames: Set<String>,
+        referrer: suspend (Collection<String>) -> Set<String>
+    ): Int = withContext(Dispatchers.IO) {
+        val candidates = voiceVideoDirectories(context).flatMap { dir ->
+            runCatching { dir.listFiles() }.getOrNull()?.filter { file ->
+                file.isFile &&
+                    (file.name.startsWith(VOICE_PREFIX) || file.name.startsWith(VIDEO_PREFIX)) &&
+                    file.name !in keepFileNames
+            }.orEmpty()
+        }
+        if (candidates.isEmpty()) return@withContext 0
+        MediaFileGc.deleteUnreferencedFilesWithReferrer(candidates) { names -> referrer(names) }
+    }
+
+    /** 语音 + 视频两个目录。 */
+    fun voiceVideoDirectories(context: Context): List<File> =
+        listOf(File(context.filesDir, AUDIO_DIR), File(context.filesDir, VIDEO_DIR))
+
+    /**
+     * 把一条语音/视频附件解析成本机文件（播放与抽帧用）。
+     *
+     * 只认**自己目录里的**文件：附件 uri 来自数据库，是「数据即代码」的输入面。
+     * 服务端引用（`/v1/media/<id>`）返回 null，由调用方先下载到缓存再交回来。
+     */
+    fun voiceVideoFile(context: Context, uriString: String?): File? {
+        val raw = uriString?.trim().orEmpty()
+        if (raw.isEmpty()) return null
+        val file = fileOf(raw) ?: return null
+        if (!MediaOwnership.isWithin(file, voiceVideoDirectories(context))) return null
+        return file.takeIf { it.isFile && it.canRead() }
     }
 
     /**

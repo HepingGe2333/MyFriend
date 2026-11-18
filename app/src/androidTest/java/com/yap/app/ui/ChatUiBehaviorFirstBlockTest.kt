@@ -11,6 +11,7 @@ import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.data.repo.ApiConfigRepository
 import com.yap.app.data.repo.ChatRepository
 import com.yap.app.data.repo.MediaJanitor
+import com.yap.app.data.repo.StickerRepository
 import com.yap.app.data.repo.MemoryRepository
 import com.yap.app.data.repo.MessageBlockWriter
 import com.yap.app.data.repo.MoodRepository
@@ -67,6 +68,9 @@ class ChatUiBehaviorFirstBlockTest {
     @Inject lateinit var settingsRepository: SettingsRepository
     @Inject lateinit var chatNotifier: ChatNotifier
     @Inject lateinit var mediaJanitor: MediaJanitor
+    @Inject lateinit var stickerRepository: StickerRepository
+    /** 0.13：语音/视频（只看附件解析成可播放文件这一条路径，UI 测试里不会真的播）。 */
+    @Inject lateinit var audioVideoRepository: com.yap.app.data.repo.AudioVideoRepository
 
     private val context: Context get() = ApplicationProvider.getApplicationContext()
     private val store = androidx.lifecycle.ViewModelStore()
@@ -89,7 +93,9 @@ class ChatUiBehaviorFirstBlockTest {
             proactiveRepository = proactiveRepository,
             settingsRepository = settingsRepository,
             chatNotifier = chatNotifier,
-            mediaJanitor = mediaJanitor
+            mediaJanitor = mediaJanitor,
+            stickerRepository = stickerRepository,
+            audioVideoRepository = audioVideoRepository
         )
     }
 

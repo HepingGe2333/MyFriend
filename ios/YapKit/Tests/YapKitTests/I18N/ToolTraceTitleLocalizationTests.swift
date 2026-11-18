@@ -36,6 +36,7 @@ final class ToolTraceTitleLocalizationTests: XCTestCase {
         TitleRow(tool: ToolCatalog.setMood, chinese: "心情变了", english: "Mood changed"),
         TitleRow(tool: ToolCatalog.recall, chinese: "回想了一下", english: "Recalled"),
         TitleRow(tool: ToolCatalog.deferReply, chinese: "决定先不回", english: "Decided not to reply yet"),
+        TitleRow(tool: ToolCatalog.sticker, chinese: "表情", english: "Sticker"),
         // 工具名为空（模型给了一个空名字）时的兜底标题。
         //
         // 注意与 Android 的差异：Android 的 `ToolTraceTitle.forTool` 对**任何**认不出的名字都给
@@ -52,7 +53,12 @@ final class ToolTraceTitleLocalizationTests: XCTestCase {
         TitleRow(tool: ToolCatalog.remember, chinese: "又确认了一次", english: "Confirmed again"),
         TitleRow(tool: ToolCatalog.remember, chinese: "这次先不记", english: "Not saving this one"),
         TitleRow(tool: ToolCatalog.remember, chinese: "想了想要不要记", english: "Thought about whether to remember it"),
-        TitleRow(tool: ToolCatalog.updatePersona, chinese: "想了想，没有改", english: "Thought it over, left it unchanged")
+        TitleRow(tool: ToolCatalog.updatePersona, chinese: "想了想，没有改", english: "Thought it over, left it unchanged"),
+        // 0.13 表情包：按 action 分叉的三个标题（`ToolExecutor.sticker`）。
+        TitleRow(tool: ToolCatalog.sticker, chinese: "已发送表情", english: "Sent a sticker"),
+        TitleRow(tool: ToolCatalog.sticker, chinese: "做好了表情", english: "Made a sticker"),
+        TitleRow(tool: ToolCatalog.sticker, chinese: "已收藏表情", english: "Saved a sticker"),
+        TitleRow(tool: ToolCatalog.sticker, chinese: "已经在收藏里了", english: "Already in your stickers")
     ]
 
     private func stubResult(tool: String, traceTitle: String? = nil) -> ToolResult {

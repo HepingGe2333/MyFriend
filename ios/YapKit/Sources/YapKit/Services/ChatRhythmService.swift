@@ -20,6 +20,17 @@ public protocol ChatRhythmHandling: AnyObject {
     /// 他睡着时被连续几条消息叫醒了：心情拉回 + 在「他最近在想什么」里留一句。
     func handleWokenUp(personaId: String, at: Int64)
 
+    /// 这一轮还能不能只沉默（`stay_silent`，规范 `spec/mood/README.md` §4：连续 ≤2 轮）。
+    ///
+    /// 默认实现允许：老调用点（没有接这一层的测试替身）行为不变。
+    func canStaySilent(personaId: String, now: Int64) -> Bool
+
+    /// 这一轮他选择只标已读不回：记一笔连续沉默（不落消息、不留念头）。
+    func handleStayedSilent(personaId: String, sessionId: String, at: Int64)
+
+    /// 这一轮他正常说话了：连续沉默清零。
+    func handleReplied(personaId: String, at: Int64)
+
     /// 模型这一轮选择不回（`defer_reply`）：写一条 REACH_OUT 的念头，到点再决定开不开口。
     ///
     /// `plan` 由**调用点**算好传进来（0.11.0：`ChatService` 经由 `AgentCoreClient` 拿计划，
@@ -27,6 +38,15 @@ public protocol ChatRhythmHandling: AnyObject {
     /// 这样「夹取 / 窗口」只有一次计算，不会出现调用点算一个、落库处再算一个的漂移。
     func handleDeferredReply(personaId: String, sessionId: String,
                              plan: DeferPlan, at: Int64)
+}
+
+public extension ChatRhythmHandling {
+    /// 默认允许沉默：只关心「睡着了 / 推迟」的老调用点不用改。
+    func canStaySilent(personaId: String, now: Int64) -> Bool { true }
+
+    func handleStayedSilent(personaId: String, sessionId: String, at: Int64) {}
+
+    func handleReplied(personaId: String, at: Int64) {}
 }
 
 /// 真正的实现：全部落在既有的仓储上（不新建表，不新建第二种「念头」）。
@@ -47,6 +67,8 @@ public final class ChatRhythmService: ChatRhythmHandling {
     private let mood: MoodRepository
     private let ticks: AgentTickStoring
     private let intents: AgentIntentSupport
+    /// 连续沉默的计数（`stay_silent` 的「连续 ≤2 轮」靠它）。
+    private let silentLedger: StaySilentRecording
     private let now: () -> Int64
 
     public init(
@@ -54,13 +76,37 @@ public final class ChatRhythmService: ChatRhythmHandling {
         mood: MoodRepository,
         ticks: AgentTickStoring,
         intents: AgentIntentSupport,
+        silentLedger: StaySilentRecording = UserDefaultsStaySilentLedger(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis }
     ) {
         self.stores = stores
         self.mood = mood
         self.ticks = ticks
         self.intents = intents
+        self.silentLedger = silentLedger
         self.now = now
+    }
+
+    // MARK: - 这一轮不回（stay_silent）
+
+    /// 还能不能沉默（规范 §4：连续 ≤2 轮）。
+    public func canStaySilent(personaId: String, now: Int64) -> Bool {
+        silentLedger.canStaySilent(personaId: personaId, now: now)
+    }
+
+    /// 记一笔「这一轮只标已读」。
+    ///
+    /// 什么库都不写：不落消息、不落念头（这是它与 `defer_reply` 的唯一区别），
+    /// 只在本机记一个连续计数（UserDefaults，不进备份），用来限制连续沉默的轮数。
+    public func handleStayedSilent(personaId: String, sessionId: String, at: Int64) {
+        _ = sessionId
+        silentLedger.recordSilent(personaId: personaId, at: at)
+    }
+
+    /// 他说话了：连续沉默清零。
+    public func handleReplied(personaId: String, at: Int64) {
+        _ = at
+        silentLedger.reset(personaId: personaId)
     }
 
     // MARK: - 被叫醒

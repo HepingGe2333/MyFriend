@@ -387,6 +387,35 @@ final class BackupCodecTests: XCTestCase {
              "createdAt", "updatedAt"]
         )
 
+        // v6：表情与日记便条的形状（与 Kotlin 的 BackupSticker / BackupDiaryNote 逐字一致）。
+        // 取并集核对：可空字段（`ownerUserId` / `remindedAt`）在 nil 时不写进 JSON。
+        // `file` 与 `fileName` 是同一个值的两个字段名（iOS / Android 各认一个），
+        // 两端导出都写，读取时都认。
+        let expectedStickerKeys: Set<String> = [
+            "id", "ownerUserId", "personaId", "file", "fileName", "mime", "width", "height",
+            "frames", "bytes", "source", "createdBy", "createdAt"
+        ]
+        var stickerKeyUnion = Set<String>()
+        for index in 0..<BackupSamples.iosBundle().stickers.count {
+            let set = try keys(of: "stickers", at: index)
+            XCTAssertTrue(set.isSubset(of: expectedStickerKeys),
+                          "表情里出现了 Kotlin 结构没有的字段：\(set.subtracting(expectedStickerKeys))")
+            stickerKeyUnion.formUnion(set)
+        }
+        XCTAssertEqual(stickerKeyUnion, expectedStickerKeys)
+
+        let expectedDiaryKeys: Set<String> = [
+            "id", "personaId", "content", "createdAt", "remindAt", "remindedAt", "updatedAt"
+        ]
+        var diaryKeyUnion = Set<String>()
+        for index in 0..<BackupSamples.iosBundle().diaryNotes.count {
+            let set = try keys(of: "diaryNotes", at: index)
+            XCTAssertTrue(set.isSubset(of: expectedDiaryKeys),
+                          "日记里出现了 Kotlin 结构没有的字段：\(set.subtracting(expectedDiaryKeys))")
+            diaryKeyUnion.formUnion(set)
+        }
+        XCTAssertEqual(diaryKeyUnion, expectedDiaryKeys)
+
         guard case .object(let settings)? = root["settings"] else {
             return XCTFail("设置段丢了")
         }
@@ -403,7 +432,8 @@ final class BackupCodecTests: XCTestCase {
             Set(root.keys),
             ["format", "formatVersion", "appVersion", "exportedAt", "apiKeysOmitted",
              "personas", "memories", "sessions", "messages", "media", "presets", "proactiveRules",
-             "agentIntents", "memoryConsolidations", "apiConfigs", "settings"]
+             "agentIntents", "memoryConsolidations", "stickers", "diaryNotes",
+             "apiConfigs", "settings"]
         )
         // 顶层不该出现 Kotlin 结构里没有的东西。
         XCTAssertFalse(root.keys.contains("apiUsage"))
@@ -425,7 +455,7 @@ final class BackupCodecTests: XCTestCase {
         guard case .array(let media)? = root["media"] else {
             return XCTFail("media 段丢了")
         }
-        XCTAssertEqual(media.count, 2, "样本里是「人格头像 + 聊天图片」两张")
+        XCTAssertEqual(media.count, 5, "样本里是「人格头像 + 聊天图片 + 表情 + 语音 + 视频」五份")
         for item in media {
             guard case .object(let object) = item else { return XCTFail("media 里有一条不是对象") }
             XCTAssertEqual(
@@ -452,8 +482,9 @@ final class BackupCodecTests: XCTestCase {
             XCTAssertEqual(decoded.count, Int(declared), "bytes 必须等于 data 解出来的字节数")
             expected.append(decoded.count)
         }
-        // 样本用的是真的 2×2 小图：632 字节的 jpeg、75 字节的 png。
-        XCTAssertEqual(expected, [632, 75])
+        // 样本：632 字节的 2×2 jpeg、75 字节的 2×2 png、42 字节的 1×1 gif，
+        // 以及 16 字节的语音/视频样本字节（备份格式只要求字节数一致）。
+        XCTAssertEqual(expected, [632, 75, 42, 16, 16])
     }
 
     /// `data` 是标准 RFC 4648 base64：带 padding、不换行、不含空白。
@@ -573,6 +604,38 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertNotEqual(base, changed)
     }
 
+    // MARK: - v6 宽容解码（跨端字段名 / 坏数据）
+
+    /// Android 的 `stickers[]` 行可能只写 `fileName`（它导出时两个都写，但契约要求两个都认）。
+    func testStickerAcceptsAndroidFileNameField() throws {
+        let json = """
+        {"format":"myfriend.backup","formatVersion":6,
+         "stickers":[{"id":"s1","fileName":"sticker-android.gif","mime":"image/gif",
+                      "frames":3,"bytes":42,"source":"AI","createdBy":"PERSONA","createdAt":5}],
+         "diaryNotes":[{"id":"n1","personaId":"p1","content":"记得问他到家没",
+                        "createdAt":9,"remindAt":10}]}
+        """
+        let bundle = try XCTUnwrap(try success(json).bundle)
+        let sticker = try XCTUnwrap(bundle.stickers.first)
+        XCTAssertEqual(sticker.file, "sticker-android.gif", "`fileName` 要能当 `file` 读")
+        XCTAssertEqual(sticker.frames, 3)
+        let note = try XCTUnwrap(bundle.diaryNotes.first)
+        XCTAssertEqual(note.remindAt, 10)
+        XCTAssertNil(note.remindedAt)
+    }
+
+    /// 坏行只丢那一条，不整段失败（与其它段同一套宽容语义）。
+    func testBrokenStickerAndDiaryRowsAreSkippedNotFatal() throws {
+        let json = """
+        {"format":"myfriend.backup","formatVersion":6,
+         "stickers":[5, {"id":"s1","file":"a.gif"}, {"file":"no-id.gif"}],
+         "diaryNotes":"不是数组"}
+        """
+        let bundle = try XCTUnwrap(try success(json).bundle)
+        XCTAssertEqual(bundle.stickers.map(\.id), ["s1"], "坏行与空 id 行丢掉")
+        XCTAssertTrue(bundle.diaryNotes.isEmpty, "不是数组 → 空列表")
+    }
+
     // MARK: - 预览与文件名
 
     func testPreviewCountsAndDescribes() {
@@ -584,8 +647,13 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(preview.rules, 2)
         XCTAssertEqual(preview.presets, 1)
         XCTAssertEqual(preview.apiConfigs, 1)
+        XCTAssertEqual(preview.stickers, 1)
+        XCTAssertEqual(preview.diaryNotes, 2)
         XCTAssertFalse(preview.isEmpty)
-        XCTAssertEqual(preview.describe(), "1 个人格 · 1 条记忆 · 1 段对话 · 3 句话 · 2 条主动节奏")
+        XCTAssertEqual(
+            preview.describe(),
+            "1 个人格 · 1 条记忆 · 1 段对话 · 3 句话 · 2 条主动节奏 · 1 个表情 · 2 条日记"
+        )
         XCTAssertTrue(preview.exportedAtText().hasSuffix(" 带走"))
     }
 
@@ -630,7 +698,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertTrue(en.contains("2025"), "英文文案应含年份：\(en)")
     }
 
-    /// 世界预设的兜底字段 notes 跟着 `worldJson` 原样往返（v5 格式不变、不升版本）。
+    /// 世界预设的兜底字段 notes 跟着 `worldJson` 原样往返（notes 不需要单独的备份字段）。
     ///
     /// 备份里 `personas[].worldJson` 是一个**字符串**：notes 是它的一部分，
     /// 所以「notes 会不会丢」等价于「worldJson 是否原样带走」。这里钉住这条。
@@ -648,7 +716,7 @@ final class BackupCodecTests: XCTestCase {
         bundle.personas[0] = persona
 
         let encoded = try BackupCodec.encode(bundle)
-        XCTAssertEqual(BackupCodec.formatVersion, 5, "notes 不需要升备份版本")
+        XCTAssertEqual(BackupCodec.formatVersion, 6, "notes 就在 worldJson 里，不需要为它单独升版本")
         let decoded = try XCTUnwrap(try success(encoded).bundle)
         let restored = try XCTUnwrap(decoded.personas.first)
         let restoredWorld = try XCTUnwrap(WorldPreset.decode(restored.worldJson))

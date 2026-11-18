@@ -17,7 +17,11 @@ import com.yap.app.data.secure.SecretCipher
 import com.yap.app.core.AgentCoreClient
 import com.yap.app.domain.AgentCore
 import com.yap.app.domain.AgentWindow
+import com.yap.app.domain.AudioVideoKind
+import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.MediaTool
 import com.yap.app.domain.DeferReply
+import com.yap.app.domain.Diary
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.ToolArgClamp
 import com.yap.app.domain.MemoryCandidate
@@ -31,6 +35,12 @@ import com.yap.app.domain.PersonaCard
 import com.yap.app.domain.PersonaCardCodec
 import com.yap.app.domain.PersonaCardPatch
 import com.yap.app.domain.RecallDepth
+import com.yap.app.domain.StickerMakeRequest
+import com.yap.app.domain.StickerPosition
+import com.yap.app.domain.StickerTool
+import com.yap.app.domain.StickerToolAction
+import com.yap.app.domain.StickerToolFailure
+import com.yap.app.domain.StickerToolOutcome
 import com.yap.app.domain.ToolInvocation
 import com.yap.app.domain.ToolResult
 import com.yap.app.domain.ToolTraceItem
@@ -42,16 +52,27 @@ import com.yap.app.network.toUserError
 import com.yap.app.domain.WebToolsProviders
 import com.yap.app.network.WebSearchClient
 import com.yap.app.network.WebSearchHit
+import com.yap.app.data.prefs.SettingsRepository
+import com.yap.app.domain.StaySilent
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import java.time.ZoneId
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** 一次工具执行的结果 + 要展示在气泡下面的痕迹。 */
+/**
+ * 一次工具执行的结果 + 要展示在气泡下面的痕迹。
+ *
+ * [attachments] 是 0.13 加的：`sticker` 工具的 `send` 会「直接发一张表情」，
+ * 那张图必须跟着**本轮的助手消息**一起落库（`ChatRepository` 把它写进 `attachmentsJson`），
+ * 否则界面上只有一句「已发送」，表情本身不见了。
+ */
 data class ToolExecution(
     val result: ToolResult,
-    val trace: ToolTraceItem
+    val trace: ToolTraceItem,
+    val attachments: List<com.yap.app.domain.MessageAttachment> = emptyList()
 )
 
 /**
@@ -77,10 +98,18 @@ class ToolExecutor @Inject constructor(
     private val moodRepository: MoodRepository,
     private val agentIntentRepository: AgentIntentRepository,
     private val messageDao: MessageDao,
+    /** 他自己的备忘本（`spec/diary`）：写/翻/撕，以及到点提醒变成念头。 */
+    private val diaryRepository: DiaryRepository,
     private val secretCipher: SecretCipher,
+    /** 表情包：`send` / `make` / `save`（`spec/stickers/README.md`）。 */
+    private val stickerRepository: StickerRepository,
+    /** 语音/视频（0.13）：`listen` / `watch` 要从会话里找媒体、读字节、抽帧。 */
+    private val audioVideoRepository: AudioVideoRepository,
     private val database: com.yap.app.data.local.YapDatabase,
     /** 服务端模式的写路径：活动上报失败只记日志，本地照常（M3）。 */
-    private val serverWrite: com.yap.app.data.remote.ServerWriteGateway
+    private val serverWrite: com.yap.app.data.remote.ServerWriteGateway,
+    /** 「已读不回」的连续轮数存在设置里（内部状态）：`stay_silent` 要读、要写、要清。 */
+    private val settingsRepository: SettingsRepository
 ) {
 
     suspend fun execute(
@@ -100,7 +129,12 @@ class ToolExecutor @Inject constructor(
             "set_activity" -> setActivity(invocation, persona, now)
             "set_mood" -> setMood(invocation, persona, now)
             "recall" -> recall(invocation, persona, now)
+            "diary" -> diary(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
+            "stay_silent" -> staySilent(invocation, persona, sessionId, now)
+            "sticker" -> sticker(invocation, persona)
+            "listen" -> listen(invocation, sessionId)
+            "watch" -> watch(invocation, sessionId)
             "think" -> think(invocation)
             else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_UNKNOWN, arg = name))
         }
@@ -523,6 +557,131 @@ class ToolExecutor @Inject constructor(
         )
     }
 
+    // ---------------------------------------------------------------- 日记板
+
+    /**
+     * diary：他自己的备忘录（`spec/diary/README.md`）。
+     *
+     * 三个动作都要能**回灌一句人话**：
+     * - `add`：记下了（带提醒就到点会想起）；
+     * - `list`：翻最近的（空本子也要说「还没有东西」，不能给空字符串让模型以为工具坏了）；
+     * - `remove`：撕掉一页；找不到不是错误（可能已经撕掉了），别再重复删。
+     */
+    private suspend fun diary(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val action = invocation.argument("action")?.trim()?.lowercase().orEmpty()
+        return when (action) {
+            "", "add" -> diaryAdd(invocation, persona, now)
+            "list" -> diaryList(invocation, persona, now)
+            "remove", "delete" -> diaryRemove(invocation, persona, now)
+            else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_QUERY_MISSING))
+        }
+    }
+
+    private suspend fun diaryAdd(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val content = Diary.cleanContent(invocation.argument("content"))
+        if (content == null) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_CONTENT_MISSING))
+        val remindAt = Diary.resolveRemindAt(
+            remindAtMillis = invocation.optionalLongArgument("remindAt"),
+            remindInMinutes = invocation.optionalIntArgument("remindInMinutes"),
+            now = now
+        )
+        val note = diaryRepository.add(
+            personaId = persona.id,
+            content = content,
+            remindAtMillis = remindAt,
+            remindInMinutes = null,
+            now = now
+        ).getOrElse { error -> return failure(invocation, error.toUserError()) }
+
+        val entry = Diary.Entry(
+            id = note.id,
+            content = note.content,
+            createdAt = note.createdAt,
+            remindAt = note.remindAt,
+            remindedAt = note.remindedAt
+        )
+        val zone = ZoneId.systemDefault()
+        val remindText = entry.remindAt?.let { Diary.absolute(it, zone, now) }
+        val detail = buildString {
+            append(ToolTraceText.diaryAddSubtitle(appContext, entry.content, remindText))
+            if (entry.remindAt != null) {
+                append("\n").append(appContext.getString(R.string.tool_trace_diary_remind_detail, remindText.orEmpty()))
+            } else {
+                append("\n").append(appContext.getString(R.string.tool_trace_diary_saved_detail))
+            }
+        }
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.DIARY_ADD,
+            subtitle = ToolTraceText.diaryAddSubtitle(appContext, entry.content, remindText),
+            detail = detail.take(600),
+            modelSummary = if (remindText == null) "记在日记里了" else "记下了，到点会想起",
+            modelText = Diary.renderOne(entry, now, zone) + "\nid：${entry.id}"
+        )
+    }
+
+    private suspend fun diaryList(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val entries = diaryRepository.recent(persona.id, invocation.optionalIntArgument("limit"))
+        val zone = ZoneId.systemDefault()
+        // 给用户看的行：内容 + 提醒时间（不展示 id，界面不是数据库）。
+        val lines = entries.map { entry ->
+            val text = entry.content.replace('\n', ' ').take(60)
+            entry.remindAt?.let {
+                appContext.getString(R.string.tool_trace_diary_remind, text, Diary.absolute(it, zone, now))
+            } ?: text
+        }
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.DIARY_LIST,
+            subtitle = ToolTraceText.diaryListSubtitle(appContext, entries.size),
+            detail = ToolTraceText.diaryListDetail(appContext, lines).take(600),
+            modelSummary = if (entries.isEmpty()) "日记本上还没有东西" else "翻了翻日记 · ${entries.size} 条",
+            modelText = Diary.renderForModel(entries, now, zone)
+        )
+    }
+
+    private suspend fun diaryRemove(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        now: Long
+    ): ToolExecution {
+        val noteId = invocation.argument("noteId")?.trim().orEmpty()
+        if (noteId.isBlank()) return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_QUERY_MISSING))
+        val removed = diaryRepository.remove(persona.id, noteId)
+        return if (removed) {
+            success(
+                invocation = invocation,
+                title = ToolTraceTitle.DIARY_REMOVE,
+                subtitle = null,
+                detail = ToolTraceText.diaryRemovedDetail(appContext),
+                modelSummary = "撕掉了一页",
+                modelText = "这一页已经撕掉了，不要再删一次。"
+            )
+        } else {
+            // 找不到不是错误：可能他之前就删过 / id 记错了。给一句人话，别让模型反复重试。
+            success(
+                invocation = invocation,
+                title = ToolTraceTitle.DIARY_REMOVE,
+                subtitle = null,
+                detail = ToolTraceText.diaryNotFoundDetail(appContext),
+                modelSummary = "本子上没有这一条",
+                modelText = "日记本上没有这条备忘，可能已经撕掉了；别再重复删。"
+            )
+        }
+    }
+
     // ---------------------------------------------------------------- 人设
 
     private suspend fun updatePersona(
@@ -671,6 +830,65 @@ class ToolExecutor @Inject constructor(
         )
     }
 
+    // ---------------------------------------------------------------- 已读不回
+
+    /**
+     * 这一轮只「已读」不回（`spec/mood/README.md` §4）。
+     *
+     * 与 [deferReply] 的区别是**什么都不留**：不写念头、不排窗口，只把用户消息标成已读。
+     * 连续轮数存在设置里（内部状态），第 3 轮直接拒绝：返回一个「未成功」的结果并要求模型
+     * 这一轮说一句——比让它一直沉默更符合人在真实关系里的分寸。
+     *
+     * 真正的「不落 assistant 消息」由 ChatRepository 保证：它看到这个工具成功就直接结束这一轮，
+     * 界面只会因为 readAt 非空显示「已读」，不会出现任何占位气泡。
+     */
+    private suspend fun staySilent(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Long
+    ): ToolExecution {
+        val reason = invocation.argument("reason")?.trim()?.take(60).orEmpty()
+        val settings = runCatching { settingsRepository.settings.first() }.getOrNull()
+        // 换人格时不算「连续」：上一个人格的两轮沉默不该让这个人格被强制开口。
+        val previous = if (settings?.staySilentPersonaId == persona.id) settings.staySilentStreak else 0
+        if (!StaySilent.allowed(previous)) {
+            return ToolExecution(
+                result = ToolResult(
+                    invocation = invocation,
+                    // ok=false：ChatRepository 据此知道「这一轮并没有真的静默」，会继续让模型说话。
+                    ok = false,
+                    summary = "不能再不回了",
+                    contentForModel = StaySilent.deniedModelText(),
+                    errorMessage = null
+                ),
+                // 不给用户看任何「动作卡片」：被拒绝的沉默不是一个发生过的动作。
+                trace = silentTrace(invocation)
+            )
+        }
+        // 他确实看过了，只是选择不回；「已读」是唯一该出现的反应（免打扰/睡眠不在这里判定）。
+        runCatching { messageDao.markUserMessagesRead(sessionId, now) }
+        runCatching { settingsRepository.setStaySilentStreak(persona.id, StaySilent.nextStreak(previous)) }
+        return ToolExecution(
+            result = ToolResult(
+                invocation = invocation,
+                ok = true,
+                summary = StaySilent.summary(reason),
+                contentForModel = StaySilent.allowedModelText(reason)
+            ),
+            trace = silentTrace(invocation)
+        )
+    }
+
+    /** `stay_silent` 的痕迹：没有用户可见标题（这一轮本来就不该有任何气泡/卡片）。 */
+    private fun silentTrace(invocation: ToolInvocation): ToolTraceItem = ToolTraceItem(
+        name = invocation.name,
+        title = "",
+        subtitle = null,
+        detail = "",
+        ok = true
+    )
+
     // ---------------------------------------------------------------- 先不回
 
     /**
@@ -721,6 +939,107 @@ class ToolExecutor @Inject constructor(
         )
     }
 
+    // ---------------------------------------------------------------- 表情包
+
+    /**
+     * `sticker`：`send` / `make` / `save`（`spec/stickers/README.md`「模型工具 sticker」）。
+     *
+     * 逻辑本身在 `domain/StickerTool`（纯 Kotlin，可单测），这里只做三件事：
+     * 1. 从参数里拼出请求（`action` 必填，其余按动作取）；
+     * 2. 把结果翻成「成功/失败」的痕迹（标题走资源，中文只回灌给模型）；
+     * 3. `send` 成功时把表情附件带给调用方（`ChatRepository` 挂到本轮助手消息上）。
+     *
+     * 失败一律**不让整轮回复挂掉**：工具失败只是「这次没做成」，模型会用已知的东西接着说。
+     */
+    private suspend fun sticker(
+        invocation: ToolInvocation,
+        persona: PersonaEntity
+    ): ToolExecution {
+        val action = StickerToolAction.normalize(invocation.argument("action"))
+        val outcome: StickerToolOutcome = when (action) {
+            StickerToolAction.SEND -> StickerTool.send(
+                workspace = stickerRepository,
+                stickerId = invocation.argument("stickerId")
+            )
+
+            StickerToolAction.MAKE -> StickerTool.make(
+                workspace = stickerRepository,
+                request = StickerMakeRequest(
+                    url = invocation.argument("url"),
+                    baseStickerId = invocation.argument("baseStickerId"),
+                    text = invocation.argument("text"),
+                    overlayStickerId = invocation.argument("overlayStickerId"),
+                    position = StickerPosition.parse(invocation.argument("position"))
+                ),
+                personaId = persona.id
+            )
+
+            StickerToolAction.SAVE -> StickerTool.save(
+                workspace = stickerRepository,
+                fromMessageId = invocation.argument("fromMessageId"),
+                personaId = persona.id
+            )
+
+            "" -> StickerToolOutcome.Failed(StickerToolFailure.MISSING_ACTION)
+            else -> StickerToolOutcome.Failed(StickerToolFailure.UNKNOWN_ACTION)
+        }
+
+        if (outcome is StickerToolOutcome.Failed) {
+            val reason = ToolTraceText.stickerFailure(appContext, outcome.reason)
+            return ToolExecution(
+                result = ToolResult(
+                    invocation = invocation,
+                    ok = false,
+                    summary = StickerTool.summary(outcome),
+                    contentForModel = StickerTool.contentForModel(outcome),
+                    errorMessage = StickerTool.failureText(outcome.reason)
+                ),
+                trace = ToolTraceItem(
+                    name = invocation.name,
+                    title = ToolTraceText.stickerTitle(appContext, action),
+                    subtitle = null,
+                    detail = reason,
+                    ok = false
+                )
+            )
+        }
+
+        val record = when (outcome) {
+            is StickerToolOutcome.Sent -> outcome.sticker
+            is StickerToolOutcome.Made -> outcome.sticker
+            is StickerToolOutcome.Saved -> outcome.sticker
+            is StickerToolOutcome.Failed -> error("unreachable")
+        }
+        val entity = stickerRepository.get(record.id)
+        val attachment = if (outcome is StickerToolOutcome.Sent && entity != null) {
+            listOf(stickerRepository.attachmentOf(entity))
+        } else {
+            emptyList()
+        }
+        return ToolExecution(
+            result = ToolResult(
+                invocation = invocation,
+                ok = true,
+                summary = StickerTool.summary(outcome),
+                contentForModel = StickerTool.contentForModel(outcome)
+            ),
+            trace = ToolTraceItem(
+                name = invocation.name,
+                title = ToolTraceText.stickerTitle(appContext, action),
+                subtitle = ToolTraceText.stickerSubtitle(
+                    appContext,
+                    record.width,
+                    record.height,
+                    record.frames,
+                    record.bytes
+                ),
+                detail = ToolTraceText.stickerDetail(appContext, action),
+                ok = true
+            ),
+            attachments = attachment
+        )
+    }
+
     private fun formatClock(minutes: Int): String =
         "%02d:%02d".format(minutes / 60, minutes % 60)
 
@@ -736,6 +1055,102 @@ class ToolExecutor @Inject constructor(
      *        不传时沿用显示副标题（数据类副标题本来就是模型原文）。
      * @param modelText 回灌给模型的正文：提示词脚手架，继续中文。
      */
+    // ---------------------------------------------------------------- 语音 / 视频（0.13）
+
+    /**
+     * `listen`：真的把那段语音交给模型（`input_audio`），而不是拿转写糊弄。
+     *
+     * 找不到媒体与读不出文件是两种失败，回灌给模型的话也不同（见 [MediaTool]）：
+     * 前者让它请对方再发一段，后者让它老实说自己这边打不开。
+     */
+    private suspend fun listen(invocation: ToolInvocation, sessionId: String): ToolExecution {
+        val media = audioVideoRepository.findMedia(
+            sessionId = sessionId,
+            kind = AudioVideoKind.AUDIO,
+            requestedId = MediaTool.requestedId(invocation)
+        )
+        if (media == null) return mediaFailed(invocation, AudioVideoKind.AUDIO, null)
+        val clip = audioVideoRepository.audioClip(media)
+            ?: return mediaFailed(invocation, AudioVideoKind.AUDIO, media)
+        val result = MediaTool.listening(invocation, clip, media.attachment.durationMs)
+        return ToolExecution(
+            result = result,
+            trace = ToolTraceItem(
+                name = invocation.name,
+                title = ToolTraceText.title(appContext, ToolTraceTitle.LISTEN),
+                subtitle = AudioVideoPolicy.clockDuration(media.attachment.durationMs),
+                detail = appContext.getString(
+                    R.string.tool_trace_listen_detail,
+                    AudioVideoPolicy.durationSeconds(media.attachment.durationMs)
+                ),
+                ok = true
+            )
+        )
+    }
+
+    /** `watch`：抽最多 8 帧交给模型（`image_url`），并在提示里写清「N 帧 / 多少秒」。 */
+    private suspend fun watch(invocation: ToolInvocation, sessionId: String): ToolExecution {
+        val media = audioVideoRepository.findMedia(
+            sessionId = sessionId,
+            kind = AudioVideoKind.VIDEO,
+            requestedId = MediaTool.requestedId(invocation)
+        )
+        if (media == null) return mediaFailed(invocation, AudioVideoKind.VIDEO, null)
+        val duration = audioVideoRepository.videoDurationMs(media) ?: media.attachment.durationMs
+        val frames = audioVideoRepository.videoFrames(media)
+        if (frames.isEmpty()) return mediaFailed(invocation, AudioVideoKind.VIDEO, media)
+        val result = MediaTool.watching(invocation, frames, duration)
+        return ToolExecution(
+            result = result,
+            trace = ToolTraceItem(
+                name = invocation.name,
+                title = ToolTraceText.title(appContext, ToolTraceTitle.WATCH),
+                subtitle = AudioVideoPolicy.clockDuration(duration),
+                detail = appContext.getString(R.string.tool_trace_watch_detail, frames.size),
+                ok = true
+            )
+        )
+    }
+
+    /**
+     * 媒体工具失败：模型拿到的是中文人话，界面拿到的是按语言取的资源。
+     *
+     * [media] 为 null 表示「这段会话里根本没有这段媒体」，非空表示「有，但读不出来」。
+     */
+    private fun mediaFailed(
+        invocation: ToolInvocation,
+        kind: AudioVideoKind,
+        media: SessionMedia?
+    ): ToolExecution {
+        val result = if (media == null) {
+            MediaTool.missing(invocation, kind)
+        } else {
+            MediaTool.unreadable(invocation, kind)
+        }
+        val missing = media == null
+        val detail = when {
+            missing && kind == AudioVideoKind.AUDIO ->
+                appContext.getString(R.string.tool_trace_media_none_audio)
+            missing -> appContext.getString(R.string.tool_trace_media_none_video)
+            kind == AudioVideoKind.AUDIO ->
+                appContext.getString(R.string.tool_trace_media_unreadable_audio)
+            else -> appContext.getString(R.string.tool_trace_media_unreadable_video)
+        }
+        return ToolExecution(
+            result = result,
+            trace = ToolTraceItem(
+                name = invocation.name,
+                title = ToolTraceText.title(
+                    appContext,
+                    if (kind == AudioVideoKind.AUDIO) ToolTraceTitle.LISTEN else ToolTraceTitle.WATCH
+                ),
+                subtitle = null,
+                detail = detail,
+                ok = false
+            )
+        )
+    }
+
     private fun success(
         invocation: ToolInvocation,
         title: ToolTraceTitle,

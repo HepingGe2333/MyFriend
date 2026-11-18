@@ -69,8 +69,14 @@ enum class ServerBootstrapPhase {
     IDLE,
     INSPECTING,
     PUSHING,
+
+    /** 0.13「同意并同步」：正在逐项上传历史媒体（图片/语音/视频）。 */
+    UPLOADING_MEDIA,
     PULLING,
     MERGING,
+
+    /** 0.13「切回本地」：正在把服务端全量下载回本机。 */
+    DOWNLOADING,
     COMPLETED,
     ALREADY_DONE,
     FAILED
@@ -83,14 +89,21 @@ data class ServerBootstrapProgress(
     val personas: Int = 0,
     val sessions: Int = 0,
     val messages: Int = 0,
+    /** 0.13 历史媒体：总项数 / 已处理 / 已上传 / 失败（设置页「第 N/M 项」）。 */
+    val mediaTotal: Int = 0,
+    val mediaProcessed: Int = 0,
+    val mediaUploaded: Int = 0,
+    val mediaFailed: Int = 0,
     /** 失败时的技术原因（English，已去掉地址与令牌）；成功/进行中为 null。 */
     val error: String? = null
 ) {
     val running: Boolean
         get() = phase == ServerBootstrapPhase.INSPECTING ||
             phase == ServerBootstrapPhase.PUSHING ||
+            phase == ServerBootstrapPhase.UPLOADING_MEDIA ||
             phase == ServerBootstrapPhase.PULLING ||
-            phase == ServerBootstrapPhase.MERGING
+            phase == ServerBootstrapPhase.MERGING ||
+            phase == ServerBootstrapPhase.DOWNLOADING
 }
 
 /** 一次 bootstrap 的结果。 */
@@ -102,7 +115,32 @@ data class ServerBootstrapOutcome(
     val personas: Int = 0,
     val sessions: Int = 0,
     val messages: Int = 0,
+    /** 0.13「同意并同步」：历史媒体项数 / 已上传 / 失败（失败不阻断文字同步）。 */
+    val mediaTotal: Int = 0,
+    val mediaUploaded: Int = 0,
+    val mediaFailed: Int = 0,
     val attempts: Int = 0,
+    val error: Throwable? = null
+)
+
+/**
+ * 「切回本地」时的一次全量下载结果（0.13，`spec/sync-consent/README.md` §4）。
+ *
+ * 只有 [success] 才能关闭服务端开关：成功口径是「本地消息条数 ≥ 服务端条数」且
+ * 每个服务端会话都不缺消息（本地可能有离线时多出来的消息，允许合并，所以是 ≥ 而不是 ==）。
+ */
+data class ServerFullDownloadOutcome(
+    val success: Boolean,
+    /** 这次从服务端取回/对齐的消息条数。 */
+    val downloadedMessages: Int = 0,
+    /** 下载后本地消息总条数。 */
+    val localMessages: Int = 0,
+    /** 服务端会话 `messageCount` 之和（权威条数）。 */
+    val serverMessages: Long = 0,
+    /** 条数不足的服务端会话 id（空 = 校验通过）。 */
+    val shortSessions: List<String> = emptyList(),
+    /** true = 服务端根本没连上（不是「条数不够」），界面要说「没连上」而不是报数字。 */
+    val unavailable: Boolean = false,
     val error: Throwable? = null
 )
 
@@ -159,6 +197,22 @@ interface ServerBootstrapLocal {
 
     /** bootstrap 完成后把增量同步游标推进到这次快照的位置（避免下一次又把全量拉一遍）。 */
     suspend fun setSyncCursors(stateCursor: Long, eventCursor: Long) = Unit
+
+    /**
+     * 0.13 历史媒体迁移的**总项数预估**：所有本地消息附件里「还是本地文件」的条数。
+     *
+     * 只用于进度条的分母（「第 N/M 项」）；真实处理时以逐项结果为准，估多了不会卡死。
+     * 默认 0 让只测文字搬运的假实现不必实现它。
+     */
+    suspend fun attachmentTotal(): Int = 0
+
+    /**
+     * 某个本地会话的消息条数（0.13「切回本地」的逐会话条数校验用）。
+     *
+     * 返回负数表示「这个实现不做逐会话校验」（只做全局条数比较）；默认 -1，
+     * 生产实现返回真实条数。
+     */
+    suspend fun messageCount(localSessionId: String): Int = -1
 }
 
 /**
@@ -186,6 +240,18 @@ class ServerBootstrapManager(
     private val remote: ServerBootstrapRemote,
     private val store: ServerLocalStore,
     /**
+     * 这台服务端的「切换同意」（0.13）：`FULL` 推历史（含媒体），`NEW_ONLY` 只建元数据。
+     *
+     * 默认 `FULL` 保持 0.12.1 单测与旧装配的行为；生产装配注入 [ServerLocalStore.syncConsent]
+     * 并把「没有记录」映射成 `NEW_ONLY`（没同意过就不能替用户上传历史）。
+     */
+    private val consentFor: suspend (String) -> ServerSyncConsent = { ServerSyncConsent.FULL },
+    /**
+     * 历史媒体逐项上传（0.13）：null 表示这个环境没有媒体能力（纯 JVM 单测），
+     * 此时附件按服务端导入规则丢掉，文字照常同步。
+     */
+    private val historyMedia: ServerHistoryMediaPort? = null,
+    /**
      * 推送人格/预设头像：本地文件 → `POST /v1/media` → `/v1/media/<id>`。
      *
      * 默认实现返回 null（测试/无媒体环境）：头像丢了也比整轮 bootstrap 卡住好；生产装配
@@ -197,12 +263,25 @@ class ServerBootstrapManager(
     private val retryDelaysMillis: List<Long> = DEFAULT_RETRY_DELAYS,
     private val delayFn: suspend (Long) -> Unit = { delay(it) },
     private val now: () -> Long = { System.currentTimeMillis() }
-) {
+) : ServerBootstrapRunner {
 
     private val mutex = Mutex()
 
     private val _progress = MutableStateFlow(ServerBootstrapProgress())
     val progress: StateFlow<ServerBootstrapProgress> = _progress.asStateFlow()
+
+    /**
+     * [ServerBootstrapRunner] 入口：设置页「同意并同步」与运行时共用同一次/同一把锁。
+     */
+    override suspend fun runBootstrap(baseUrl: String): ServerBootstrapOutcome = runIfNeeded(baseUrl)
+
+    /** 最近一次成功/跳过对应的地址与结果（并发调用时后到的调用者也能拿到真实计数）。 */
+    private var lastOutcomeKey: String? = null
+    private var lastOutcome: ServerBootstrapOutcome? = null
+
+    /** 完成时的结果（设置页「3 张图片没上传成功」用它；并发/跳过的调用方也能读到）。 */
+    override fun latestOutcome(baseUrl: String): ServerBootstrapOutcome? =
+        lastOutcome?.takeIf { lastOutcomeKey == normalize(baseUrl) }
 
     /**
      * 需要时执行一次 bootstrap；已经做过（同一 baseUrl）直接跳过。
@@ -219,7 +298,9 @@ class ServerBootstrapManager(
         }
         if (store.bootstrapDone(key)) {
             _progress.value = ServerBootstrapProgress(phase = ServerBootstrapPhase.ALREADY_DONE)
-            return ServerBootstrapOutcome(success = true, skipped = true)
+            // 并发时「另一次调用刚跑完」：把那次的结果带回去（skipped 仍为 true）。
+            return latestOutcome(key)?.copy(skipped = true)
+                ?: ServerBootstrapOutcome(success = true, skipped = true)
         }
 
         var lastError: Throwable? = null
@@ -228,24 +309,34 @@ class ServerBootstrapManager(
             attempts++
             try {
                 _progress.value = ServerBootstrapProgress(phase = ServerBootstrapPhase.INSPECTING)
-                val result = runOnce()
+                val result = runOnce(ServerSyncConsentPolicy.effective(consentFor(key)))
                 store.markBootstrapDone(key)
                 _progress.value = ServerBootstrapProgress(
                     phase = ServerBootstrapPhase.COMPLETED,
                     mode = result.mode,
                     personas = result.personas,
                     sessions = result.sessions,
-                    messages = result.messages
+                    messages = result.messages,
+                    mediaTotal = result.media.total,
+                    mediaProcessed = result.media.processed,
+                    mediaUploaded = result.media.uploaded,
+                    mediaFailed = result.media.failed
                 )
-                return ServerBootstrapOutcome(
+                val outcome = ServerBootstrapOutcome(
                     success = true,
                     mode = result.mode,
                     counts = result.counts,
                     personas = result.personas,
                     sessions = result.sessions,
                     messages = result.messages,
+                    mediaTotal = result.media.total,
+                    mediaUploaded = result.media.uploaded,
+                    mediaFailed = result.media.failed,
                     attempts = attempts
                 )
+                lastOutcomeKey = key
+                lastOutcome = outcome
+                return outcome
             } catch (cancel: CancellationException) {
                 // 用户关掉服务端模式/退后台会取消这一轮：进度清零，下次重新开始时不要停在「进行中」。
                 _progress.value = ServerBootstrapProgress(phase = ServerBootstrapPhase.IDLE)
@@ -268,6 +359,78 @@ class ServerBootstrapManager(
         )
     }
 
+    /**
+     * 「切回本地」前的一次**全量下载 + 条数校验**（0.13，`spec/sync-consent/README.md` §4）。
+     *
+     * 只有校验通过（本地消息条数 ≥ 服务端条数、且每个服务端会话都不缺消息）才返回成功，
+     * 上层据此决定「关闭服务端开关」；失败/取消都不写开关，保持云端模式并提示。
+     *
+     * 与 [runIfNeeded] 共用同一把锁：下载期间不会有另一轮 bootstrap 并发写库。
+     * 明确**不推**任何本地独有数据（本地独有消息允许保留合并，不反向上传）。
+     */
+    override suspend fun runFullDownload(baseUrl: String): ServerFullDownloadOutcome = mutex.withLock {
+        val key = normalize(baseUrl)
+        if (key.isEmpty()) {
+            return ServerFullDownloadOutcome(
+                success = false,
+                error = ServerApiException("server base url is empty", code = "server_unavailable")
+            )
+        }
+        try {
+            _progress.value = ServerBootstrapProgress(phase = ServerBootstrapPhase.DOWNLOADING)
+            // 三个读请求顺序与 bootstrap 一致：先 state（拿游标/时钟），再人格与会话列表。
+            val state = remote.state()
+            val remotePersonas = remote.personas()
+            val remoteSessions = remote.sessions()
+            val serverMessages = remoteSessions.sumOf { it.messageCount }
+                .coerceAtLeast(state.messages.size.toLong())
+            val tally = pullAll(state, remotePersonas, remoteSessions, download = true)
+
+            // 条数校验：全局「本地 ≥ 服务端」（本地独有消息允许合并）+ 逐会话不缺消息。
+            val localCounts = local.counts()
+            val localMessages = localCounts.localMessages
+            val shortSessions = remoteSessions.mapNotNull { session ->
+                if (session.messageCount <= 0L) return@mapNotNull null
+                val localSessionId = store.localSessionId(session.id) ?: session.id
+                val localCount = local.messageCount(localSessionId)
+                // 负数 = 这个本地实现不做逐会话校验。
+                if (localCount >= 0 && localCount < session.messageCount) session.id else null
+            }
+            val success = localMessages.toLong() >= serverMessages && shortSessions.isEmpty()
+            _progress.value = if (success) {
+                ServerBootstrapProgress(
+                    phase = ServerBootstrapPhase.COMPLETED,
+                    messages = tally.messages
+                )
+            } else {
+                ServerBootstrapProgress(
+                    phase = ServerBootstrapPhase.FAILED,
+                    messages = tally.messages,
+                    error = "count_mismatch"
+                )
+            }
+            return ServerFullDownloadOutcome(
+                success = success,
+                downloadedMessages = tally.messages,
+                localMessages = localMessages,
+                serverMessages = serverMessages,
+                shortSessions = shortSessions,
+                error = if (success) null else ServerBootstrapFailure(
+                    "local messages ($localMessages) are fewer than server messages ($serverMessages)"
+                )
+            )
+        } catch (cancel: CancellationException) {
+            _progress.value = ServerBootstrapProgress(phase = ServerBootstrapPhase.IDLE)
+            throw cancel
+        } catch (error: Throwable) {
+            _progress.value = ServerBootstrapProgress(
+                phase = ServerBootstrapPhase.FAILED,
+                error = describe(error)
+            )
+            return ServerFullDownloadOutcome(success = false, unavailable = true, error = error)
+        }
+    }
+
     // ------------------------------------------------------------------ 一轮
 
     private data class BootstrapResult(
@@ -275,16 +438,26 @@ class ServerBootstrapManager(
         val counts: ServerBootstrapCounts,
         val personas: Int,
         val sessions: Int,
-        val messages: Int
+        val messages: Int,
+        val media: MediaTally = MediaTally()
     )
 
     private data class Tally(
         var personas: Int = 0,
         var sessions: Int = 0,
-        var messages: Int = 0
+        var messages: Int = 0,
+        var media: MediaTally = MediaTally()
     )
 
-    private suspend fun runOnce(): BootstrapResult {
+    /** 历史媒体迁移的累计计数（跨会话累加；设置页「第 N/M 项」用它）。 */
+    private data class MediaTally(
+        var total: Int = 0,
+        var processed: Int = 0,
+        var uploaded: Int = 0,
+        var failed: Int = 0
+    )
+
+    private suspend fun runOnce(consent: ServerSyncConsent): BootstrapResult {
         val localCounts = local.counts()
         // 三个读请求的顺序固定：先 state（拿游标/时钟），再完整人格列表与会话列表。
         val state = remote.state()
@@ -308,8 +481,15 @@ class ServerBootstrapManager(
                     phase = ServerBootstrapPhase.PUSHING,
                     mode = mode
                 )
-                val tally = pushAll(remotePersonas)
-                BootstrapResult(mode, counts, tally.personas, tally.sessions, tally.messages)
+                val tally = pushAll(remotePersonas, consent)
+                BootstrapResult(
+                    mode = mode,
+                    counts = counts,
+                    personas = tally.personas,
+                    sessions = tally.sessions,
+                    messages = tally.messages,
+                    media = tally.media
+                )
             }
             ServerBootstrapMode.PULL -> {
                 _progress.value = ServerBootstrapProgress(
@@ -324,7 +504,7 @@ class ServerBootstrapManager(
                     phase = ServerBootstrapPhase.MERGING,
                     mode = mode
                 )
-                val tally = merge(state, remotePersonas, remoteSessions)
+                val tally = merge(state, remotePersonas, remoteSessions, consent)
                 BootstrapResult(mode, counts, tally.personas, tally.sessions, tally.messages)
             }
         }
@@ -332,8 +512,14 @@ class ServerBootstrapManager(
 
     // ------------------------------------------------------------------ 全量推送
 
-    private suspend fun pushAll(remotePersonas: List<JsonObject>): Tally {
+    private suspend fun pushAll(
+        remotePersonas: List<JsonObject>,
+        consent: ServerSyncConsent
+    ): Tally {
         val tally = Tally()
+        val media = MediaTally()
+        tally.media = media
+        val pushHistory = consent == ServerSyncConsent.FULL
         val remotePersonaIds = remotePersonas.mapNotNull { it.string("id")?.takeIf(String::isNotBlank) }.toSet()
         val personaServerIds = mutableMapOf<String, String>()
 
@@ -385,7 +571,8 @@ class ServerBootstrapManager(
         }
 
         // 记忆：按人格推送，先拿远端列表避免重试时重复创建。
-        local.personas().forEach { persona ->
+        // NEW_ONLY（只同步之后的新内容）：记忆也是历史，不推。
+        if (pushHistory) local.personas().forEach { persona ->
             val serverPersonaId = personaServerIds[persona.id] ?: return@forEach
             val remoteMemories = remote.memories(serverPersonaId).orEmpty()
             val remoteIds = remoteMemories.mapNotNull { it.string("id") }.toSet()
@@ -414,6 +601,10 @@ class ServerBootstrapManager(
             val mapped = store.serverPersonaId(persona.id)
             if (mapped != null) serverPersonaIdOfLocal[persona.id] = mapped
         }
+        // 媒体总项数预估只在「同意并同步」且有媒体能力时做（一次窄列扫描，给进度分母）。
+        if (pushHistory && historyMedia != null) {
+            media.total = local.attachmentTotal()
+        }
         local.sessions().forEach { session ->
             // 会话必须挂在「已经推到服务端的那个 id」上；本地孤儿会话（persona 行不存在）
             // 不能拿本机 UUID 硬建，否则服务端 404 会让整次 bootstrap 永远重试。
@@ -427,7 +618,16 @@ class ServerBootstrapManager(
                 ?: throw ServerBootstrapFailure("session response is missing id")
             store.setSessionMapping(serverSessionId, session.id)
             tally.sessions++
-            pushMessages(serverSessionId, local.messages(session.id), tally)
+            // NEW_ONLY：会话元数据建好但消息为空（历史不上传）。
+            if (pushHistory) {
+                pushMessages(
+                    serverSessionId = serverSessionId,
+                    messages = local.messages(session.id),
+                    serverPersonaId = serverPersonaId,
+                    consent = consent,
+                    tally = tally
+                )
+            }
             publish(ServerBootstrapPhase.PUSHING, ServerBootstrapMode.PUSH, tally)
         }
 
@@ -439,15 +639,63 @@ class ServerBootstrapManager(
     private suspend fun pushMessages(
         serverSessionId: String,
         messages: List<MessageEntity>,
+        serverPersonaId: String?,
+        consent: ServerSyncConsent,
         tally: Tally
     ) {
-        ServerBootstrapMapping.sortMessages(messages)
-            .chunked(ServerApi.MAX_IMPORT_MESSAGES)
-            .forEach { batch ->
-                importWithAttachmentFallback(serverSessionId, batch)
-                tally.messages += batch.size
-                publish(ServerBootstrapPhase.PUSHING, ServerBootstrapMode.PUSH, tally)
-            }
+        importInChunks(
+            serverSessionId = serverSessionId,
+            messages = ServerBootstrapMapping.sortMessages(messages),
+            serverPersonaId = serverPersonaId,
+            consent = consent,
+            phase = ServerBootstrapPhase.PUSHING,
+            mode = ServerBootstrapMode.PUSH,
+            tally = tally
+        )
+    }
+
+    /**
+     * 逐项上传这批消息的附件，并把成功的附件改写成 `/v1/media/<id>`。
+     *
+     * 关键顺序：**先上传、再 import**。服务端导入端会校验附件存在，`file://` 或还没传上去的
+     * 引用会让整批 400；这里返回的消息副本只保留真正可用的服务端引用，失败项从副本里去掉
+     * （本地消息不动），所以文字总能同步，最后再按数量提示。
+     */
+    private suspend fun uploadHistoryMedia(
+        messages: List<MessageEntity>,
+        serverPersonaId: String?,
+        media: MediaTally
+    ): List<MessageEntity> {
+        val port = historyMedia ?: return messages
+        _progress.value = _progress.value.copy(
+            phase = ServerBootstrapPhase.UPLOADING_MEDIA,
+            mode = ServerBootstrapMode.PUSH,
+            mediaTotal = media.total,
+            mediaProcessed = media.processed,
+            mediaUploaded = media.uploaded,
+            mediaFailed = media.failed
+        )
+        val progress = HistoryMediaProgress(
+            total = media.total,
+            processed = media.processed,
+            uploaded = media.uploaded,
+            failed = media.failed
+        )
+        val result = port.prepare(messages, serverPersonaId, progress) { current ->
+            media.total = maxOf(media.total, current.total)
+            media.processed = current.processed
+            media.uploaded = current.uploaded
+            media.failed = current.failed
+            _progress.value = _progress.value.copy(
+                phase = ServerBootstrapPhase.UPLOADING_MEDIA,
+                mode = ServerBootstrapMode.PUSH,
+                mediaTotal = media.total,
+                mediaProcessed = current.processed,
+                mediaUploaded = current.uploaded,
+                mediaFailed = current.failed
+            )
+        }
+        return result.messages
     }
 
     /**
@@ -482,7 +730,8 @@ class ServerBootstrapManager(
     private suspend fun pullAll(
         state: StateSnapshot,
         remotePersonas: List<JsonObject>,
-        remoteSessions: List<ServerSession>
+        remoteSessions: List<ServerSession>,
+        download: Boolean = false
     ): Tally {
         val tally = Tally()
         val localPersonas = local.personas().associateBy { it.id }
@@ -500,12 +749,12 @@ class ServerBootstrapManager(
         // 先写完整人格（含提示词/世界/话风），再用快照补会话（快照映射器只认 name/avatar）。
         local.applyPersonas(entities)
         tally.personas += entities.size
-        publish(ServerBootstrapPhase.PULLING, ServerBootstrapMode.PULL, tally)
+        publish(if (download) ServerBootstrapPhase.DOWNLOADING else ServerBootstrapPhase.PULLING, ServerBootstrapMode.PULL, tally)
 
         local.applySnapshot(StateSnapshot(personas = summaries, sessions = remoteSessions))
         remoteSessions.forEach { session ->
             val localPersonaId = store.localPersonaId(session.personaId) ?: session.personaId
-            pullPages(session.id, localPersonaId, ServerBootstrapMode.PULL, tally)
+            pullPages(session.id, localPersonaId, ServerBootstrapMode.PULL, tally, download)
             tally.sessions++
         }
 
@@ -545,7 +794,7 @@ class ServerBootstrapManager(
         val settings = remote.settings()
         if (settings.isNotEmpty()) local.applySettings(localizeSettings(settings))
 
-        advanceCursors(state, ServerBootstrapMode.PULL)
+        advanceCursors(state, ServerBootstrapMode.PULL, download)
         return tally
     }
 
@@ -558,7 +807,8 @@ class ServerBootstrapManager(
         serverSessionId: String,
         localPersonaId: String?,
         mode: ServerBootstrapMode,
-        tally: Tally
+        tally: Tally,
+        download: Boolean = false
     ): Set<String> {
         val seen = mutableSetOf<String>()
         var page = remote.latestPage(serverSessionId)
@@ -572,7 +822,11 @@ class ServerBootstrapManager(
                 }
                 tally.messages += page.messages.size
                 publish(
-                    if (mode == ServerBootstrapMode.MERGE) ServerBootstrapPhase.MERGING else ServerBootstrapPhase.PULLING,
+                    when {
+                        mode == ServerBootstrapMode.MERGE -> ServerBootstrapPhase.MERGING
+                        download -> ServerBootstrapPhase.DOWNLOADING
+                        else -> ServerBootstrapPhase.PULLING
+                    },
                     mode,
                     tally
                 )
@@ -590,9 +844,14 @@ class ServerBootstrapManager(
     private suspend fun merge(
         state: StateSnapshot,
         remotePersonas: List<JsonObject>,
-        remoteSessions: List<ServerSession>
+        remoteSessions: List<ServerSession>,
+        consent: ServerSyncConsent
     ): Tally {
         val tally = Tally()
+        val pushHistory = consent == ServerSyncConsent.FULL
+        if (pushHistory && historyMedia != null) {
+            tally.media.total = local.attachmentTotal()
+        }
         val localPersonas = local.personas().associateBy { it.id }
         val remotePersonaById = remotePersonas
             .mapNotNull { raw -> raw.string("id")?.takeIf { it.isNotBlank() }?.let { it to raw } }
@@ -671,7 +930,17 @@ class ServerBootstrapManager(
             handledLocalSessions += localSessionId
             val localOnly = ServerBootstrapMapping.sortMessages(local.messages(localSessionId))
                 .filter { it.id !in serverIds }
-            importInChunks(session.id, localOnly, tally)
+            if (pushHistory) {
+                importInChunks(
+                    serverSessionId = session.id,
+                    messages = localOnly,
+                    serverPersonaId = store.serverPersonaId(localPersonaId) ?: localPersonaId,
+                    consent = consent,
+                    phase = ServerBootstrapPhase.MERGING,
+                    mode = ServerBootstrapMode.MERGE,
+                    tally = tally
+                )
+            }
             publish(ServerBootstrapPhase.MERGING, ServerBootstrapMode.MERGE, tally)
         }
 
@@ -692,7 +961,15 @@ class ServerBootstrapManager(
                 ?: throw ServerBootstrapFailure("session response is missing id")
             store.setSessionMapping(serverSessionId, session.id)
             tally.sessions++
-            pushMessages(serverSessionId, local.messages(session.id), tally)
+            if (pushHistory) {
+                pushMessages(
+                    serverSessionId = serverSessionId,
+                    messages = local.messages(session.id),
+                    serverPersonaId = serverPersonaId,
+                    consent = consent,
+                    tally = tally
+                )
+            }
             publish(ServerBootstrapPhase.MERGING, ServerBootstrapMode.MERGE, tally)
         }
 
@@ -760,6 +1037,8 @@ class ServerBootstrapManager(
                     serverId == mapped || serverId == memory.id
                 }
                 if (remoteEntry == null) {
+                    // NEW_ONLY：本地历史记忆不推（远端已有的照常拉取）。
+                    if (!pushHistory) return@forEach
                     val server = remote.saveMemory(
                         serverPersonaId,
                         ServerMemoryWrite.payload(memory, creating = true)
@@ -813,20 +1092,40 @@ class ServerBootstrapManager(
         return tally
     }
 
+    /**
+     * 分批 import；「同意并同步」时先把这批消息的历史媒体逐项传上去并改写附件。
+     *
+     * merge 复用同一份实现：本地独有消息也要按同样的「先上传后 import」顺序走，
+     * 否则这些消息里的图片会被服务端导入端整批 400。
+     */
     private suspend fun importInChunks(
         serverSessionId: String,
         messages: List<MessageEntity>,
+        serverPersonaId: String?,
+        consent: ServerSyncConsent,
+        phase: ServerBootstrapPhase,
+        mode: ServerBootstrapMode,
         tally: Tally
     ) {
-        messages.chunked(ServerApi.MAX_IMPORT_MESSAGES).forEach { batch ->
+        val prepared = if (consent == ServerSyncConsent.FULL && historyMedia != null) {
+            uploadHistoryMedia(messages, serverPersonaId, tally.media)
+        } else {
+            messages
+        }
+        prepared.chunked(ServerApi.MAX_IMPORT_MESSAGES).forEach { batch ->
             importWithAttachmentFallback(serverSessionId, batch)
             tally.messages += batch.size
+            publish(phase, mode, tally)
         }
     }
 
     // ------------------------------------------------------------------ 内部
 
-    private suspend fun advanceCursors(state: StateSnapshot, mode: ServerBootstrapMode) {
+    private suspend fun advanceCursors(
+        state: StateSnapshot,
+        mode: ServerBootstrapMode,
+        download: Boolean = false
+    ) {
         val personaMax = state.personas.maxOfOrNull { it.updatedAt } ?: 0L
         val sessionMax = state.sessions.maxOfOrNull { it.updatedAt } ?: 0L
         val messageMax = state.messages.maxOfOrNull { it.createdAt } ?: 0L
@@ -835,7 +1134,11 @@ class ServerBootstrapManager(
         // 这里只把游标推进到快照时刻，避免「自己刚推的东西」永远重拉。
         local.setSyncCursors(stateCursor = stateCursor, eventCursor = state.serverCursor)
         publish(
-            if (mode == ServerBootstrapMode.PULL) ServerBootstrapPhase.PULLING else ServerBootstrapPhase.MERGING,
+            when {
+                mode == ServerBootstrapMode.MERGE -> ServerBootstrapPhase.MERGING
+                download -> ServerBootstrapPhase.DOWNLOADING
+                else -> ServerBootstrapPhase.PULLING
+            },
             mode,
             Tally()
         )

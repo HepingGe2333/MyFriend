@@ -85,6 +85,15 @@ public final class HeartbeatController {
     private let now: () -> Int64
     private let roll: () -> Double
     private let isLowPower: () -> Bool
+    /// 每一拍的结论写进日志（真机排查「他为什么不主动」时唯一的线索）。
+    ///
+    /// 默认空实现：测试与老调用点不用改；App 层接上 `DebugSeeding.log`。
+    private let log: (String) -> Void
+    /// 服务端模式判定（0.13）：他在服务端那边活着时，本机这一拍什么都不做。
+    ///
+    /// 用闭包而不是 Bool 参数：模式可以在运行中切换，每一拍都要问「此刻是不是」。
+    /// 默认 `false` 让测试与老调用点不用改；App 层接的是 `serverModeActive`。
+    private let isServerMode: () -> Bool
     /// agent 决策层（0.11.0）：每日主动上限的**基础值**走它（心情修正仍在本机）。
     private let agentCore: any AgentCoreClient
     private let lock = NSLock()
@@ -110,7 +119,9 @@ public final class HeartbeatController {
         tickRunner: @escaping (Int64) async -> AgentLoop.Outcome?,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
-        isLowPower: @escaping () -> Bool = { false }
+        isLowPower: @escaping () -> Bool = { false },
+        isServerMode: @escaping () -> Bool = { false },
+        log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
         self.settings = settings
@@ -122,14 +133,28 @@ public final class HeartbeatController {
         self.now = now
         self.roll = roll
         self.isLowPower = isLowPower
+        self.isServerMode = isServerMode
+        self.log = log
     }
 
     /// 一次「心跳」：轻到可以每半分钟跑一回；只有掷中的时候才会花时间。
     ///
     /// **并发调用只会真的跑一次**：另一次立刻返回「上一拍还没跑完」（不留副作用）。
+    ///
+    /// 每一次的结论都会写一行日志（`log`）：真机上「他从不主动」几乎都是某一拍被某道闸
+    /// 挡掉了，而以前这件事完全不可见。日志形如：`[heartbeat] 没动 · 刚聊完，先安静一会儿`。
     public func beat(now: Int64? = nil, roll: Double? = nil) async -> Beat {
+        let beat = await beatInternal(now: now, roll: roll)
+        log("[heartbeat] \(beat.fired ? "起心动念" : "没动")"
+            + (beat.why.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : " · \(beat.why)"))
+        return beat
+    }
+
+    private func beatInternal(now: Int64? = nil, roll: Double? = nil) async -> Beat {
         guard beginBeat() else { return Beat(why: "上一拍还没跑完") }
         defer { endBeat() }
+        // 服务端模式：他在服务端那边活着，本机这一拍什么都不做（连设置/库都不读）。
+        if isServerMode() { return Beat(why: LocalAutonomy.serverModeWhy) }
         let at = now ?? self.now()
         let dice = roll ?? self.roll()
         let settings = settings.load()
@@ -138,6 +163,11 @@ public final class HeartbeatController {
         guard let persona = pickPersona(settings.activePersonaId) else {
             return Beat(why: "还没有可以对话的人格")
         }
+
+        // 日记板的到点提醒（`spec/diary/README.md` §提醒）：**每拍都查**，而且必须在
+        // 掷骰子之前 —— 提醒是「我自己写下的时间到了」，不该靠概率才被想起。
+        // 睡着/在忙也照样记标记与念头（念头会不会变成消息，由自主循环的睡眠判定决定）。
+        _ = checkDiaryReminders(persona: persona, now: at)
 
         // 他睡觉的时候不掷：既省电，也更像人。
         let minute = ServiceTime.minuteOfDay(at)
@@ -186,7 +216,11 @@ public final class HeartbeatController {
         if !Heartbeat.shouldFire(probability: perBeat, roll: dice) { return Beat(why: "") }
 
         // 中了才算这些账：没中就不花查询去确认「今天说够了没」「额度还剩多少」。
-        if let lastTick = ticks.lastTickAt(), at - lastTick < Self.firstTickGapMillis {
+        // 0.13 修复：「刚想过」以前看的是**所有人格里最近的一次** tick。
+        // 换人格之后新人格会被上一个人格的思考记录挡住 5 分钟（真机上表现为「换人之后他不说话」）。
+        // 现在只看这个人的最近一次：两个实现（SQLite / 内存）都支持按人格查。
+        if let lastTick = ticks.latest(personaId: persona.id)?.at,
+           at - lastTick < Self.firstTickGapMillis {
             return Beat(why: "刚想过，再等等")
         }
         // 每天最多主动几次，现在由人格的 `proactiveLevel` 决定（§一、§三）。
@@ -233,6 +267,133 @@ public final class HeartbeatController {
             summary: outcome?.summary ?? "",
             why: outcome == nil ? "这一轮没想成" : ""
         )
+    }
+
+    // MARK: - 诊断（他为什么不主动）
+
+    /// 现在挡在「主动开口」前面的是哪道闸（`ProactiveDiagnosis`）。
+    ///
+    /// 只读、不改任何状态（不推进时钟、不掷骰子、不写库），所以设置页可以随手调。
+    /// 判定顺序与 `beatInternal` 一致：任何一处顺序变了，诊断就会说谎 —— 两条路径共用同一组常量。
+    public func explain(now: Int64? = nil) -> ProactiveDiagnosis {
+        let at = now ?? self.now()
+        let settings = settings.load()
+        let persona = pickPersona(settings.activePersonaId)
+        let personaId = persona?.id ?? ""
+        let spoken = persona.map { intents.spokenToday(personaId: $0.id, now: at) } ?? 0
+        let cap = persona?.proactiveDailyCap ?? 0
+
+        func diagnosis(_ gate: ProactiveDiagnosis.Gate, _ detail: String,
+                       minutes: Double = 0, cooldownLeft: Double = 0,
+                       activity: String? = nil) -> ProactiveDiagnosis {
+            ProactiveDiagnosis(
+                gate: gate, detail: detail,
+                minutesSinceInteraction: minutes,
+                cooldownMinutesLeft: cooldownLeft,
+                spokenToday: spoken, dailyCap: cap, activity: activity
+            )
+        }
+
+        guard settings.agentLoopEnabled else {
+            return diagnosis(.loopDisabled, "设置里关掉了「让他常驻后台继续活着」")
+        }
+        guard let persona else {
+            return diagnosis(.noPersona, "还没有可以对话的人格")
+        }
+        let minute = ServiceTime.minuteOfDay(at)
+        if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
+            let wake = PersonaSleep.minutesUntilWake(persona, minuteOfDay: minute)
+            return diagnosis(.asleep, "作息窗口里：大约 \(wake) 分钟后醒")
+        }
+        let activity = PersonaActivity.decode(persona.activityJson, now: at)
+        if case .skip = PersonaActivity.proactiveGate(activity, now: at) {
+            return diagnosis(.busy, "在忙：\(activity?.activity ?? "")", activity: activity?.activity)
+        }
+        let snapshot = snapshotFor(persona: persona, settings: settings, now: at)
+        let minutes = Heartbeat.minutesBetween(lastResetAt: snapshot.resetAt, now: at)
+        if minutes < Heartbeat.COOL_DOWN_MINUTES {
+            return diagnosis(
+                .coolingDown,
+                "距上次互动 \(Int(minutes)) 分钟，冷却 \(Int(Heartbeat.COOL_DOWN_MINUTES)) 分钟",
+                minutes: minutes,
+                cooldownLeft: Heartbeat.COOL_DOWN_MINUTES - minutes,
+                activity: activity?.activity
+            )
+        }
+        if let lastTick = ticks.latest(personaId: personaId)?.at,
+           at - lastTick < Self.firstTickGapMillis {
+            let wait = (Self.firstTickGapMillis - (at - lastTick)) / 60_000
+            return diagnosis(.tooSoonAfterTick, "刚想过，再过 \(wait) 分钟才可能再想", minutes: minutes)
+        }
+        if spoken >= cap {
+            return diagnosis(.dailyCapReached, "今天已经开口 \(spoken) 次（上限 \(cap)）", minutes: minutes)
+        }
+        let perMinute = Heartbeat.probability(
+            minutesSinceReset: minutes,
+            mood: snapshot.mood,
+            now: at,
+            hourOfDay: ServiceTime.hourOfDay(at)
+        ) * ProactiveLevel.heartbeatWeight(persona.proactiveLevel)
+        return diagnosis(
+            .ready,
+            "每分钟冲动概率约 \(Int((perMinute * 100).rounded()))%，今天 \(spoken)/\(cap)",
+            minutes: minutes,
+            activity: activity?.activity
+        )
+    }
+
+    // MARK: - 日记板提醒
+
+    /// 把到点的日记提醒变成**他自己的念头**，并写 `remindedAt` 防重复。
+    ///
+    /// 规则（`spec/diary/README.md` §提醒）：
+    /// - 同一条提醒只触发一次：先 `markReminded`（条件更新 `remindedAt IS NULL`），
+    ///   只有真的改到行的那一拍才继续生成念头 —— 两拍并发时也只会有一条；
+    /// - 错过超过 24 小时不补发：只清标记（否则「明天记得问他到家没」会在三天后诈尸）；
+    /// - 念头的窗口给 1 小时：到点这一刻他在忙/在睡，也可以晚一点再想起来。
+    ///
+    /// - Returns: 这一拍真的生成了几条念头（测试与日志用）。
+    @discardableResult
+    public func checkDiaryReminders(now: Int64? = nil) -> Int {
+        let at = now ?? self.now()
+        guard let persona = pickPersona(settings.load().activePersonaId) else { return 0 }
+        return checkDiaryReminders(persona: persona, now: at)
+    }
+
+    /// 指定人格的版本（`beat()` 里已经选好人格，不必再读一次设置）。
+    @discardableResult
+    func checkDiaryReminders(persona: PersonaEntity, now: Int64) -> Int {
+        let due: [DiaryNoteEntity]
+        do {
+            due = try stores.diaryNotes.due(personaId: persona.id, now: now)
+        } catch {
+            return 0
+        }
+        guard !due.isEmpty else { return 0 }
+        var planned = 0
+        for note in due {
+            // 条件更新：只有「还没提醒过」的那一拍能拿到 true。
+            guard (try? stores.diaryNotes.markReminded(id: note.id, at: now)) == true else { continue }
+            // 错过太久：标记已经清了，不补念头。
+            guard !note.isStale(now: now) else { continue }
+            let window = AgentWindow(
+                earliestAt: now,
+                latestAt: now + 60 * 60_000,
+                note: "日记提醒：\(String(note.content.prefix(120)))",
+                hint: "这条是你自己之前写在日记板上的提醒。现在到点了：想说什么、要不要主动开口，你自己决定；"
+                    + "不想说也可以只是想一下。"
+            )
+            intents.plan(
+                personaId: persona.id,
+                window: window,
+                kind: .followUp,
+                note: window.note,
+                hint: window.hint,
+                now: now
+            )
+            planned += 1
+        }
+        return planned
     }
 
     // MARK: - 单拍互斥

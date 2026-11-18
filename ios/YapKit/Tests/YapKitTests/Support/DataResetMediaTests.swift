@@ -146,6 +146,67 @@ final class DataResetMediaTests: XCTestCase {
         XCTAssertTrue(try temp.stores.messageBlocks.inconsistencies().isEmpty)
     }
 
+    /// 0.13：日记板与待确认的人格变化也要跟着「删除全部数据」一起清。
+    func testClearAllAlsoClearsDiaryNotesAndPendingPatches() throws {
+        try temp.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-1", personaId: "persona-1", content: "他会忘掉这条便条",
+            createdAt: 1, updatedAt: 1
+        ))
+        try temp.stores.personaPendingPatches.upsert(PersonaPendingPatchEntity(
+            id: "p-1", personaId: "persona-1", patchJson: "[]",
+            summary: "待确认的变化", reason: "", createdAt: 1
+        ))
+        _ = makeReset().clearAll()
+        XCTAssertEqual(try temp.stores.diaryNotes.count(), 0)
+        XCTAssertEqual(try temp.stores.personaPendingPatches.count(), 0)
+        // 只清聊天（保留人格）时，日记板属于「他写给自己的东西」，不跟着聊天一起删。
+        try temp.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "d-2", personaId: "persona-1", content: "留着", createdAt: 1, updatedAt: 1
+        ))
+        _ = try makeReset().clearChats()
+        XCTAssertEqual(try temp.stores.diaryNotes.count(), 1)
+    }
+
+    /// 0.13 表情包：删除全部数据要连表情库行与表情文件一起清；只清聊天时表情留着（那是用户的收藏）。
+    func testClearAllAlsoClearsStickersAndTheirFiles() throws {
+        let stickerDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("mf-sticker-reset-\(UUID().uuidString)", isDirectory: true)
+        let stickerStorage = StickerStorage(directory: stickerDirectory)
+        defer { try? FileManager.default.removeItem(at: stickerDirectory) }
+
+        func makeSticker(id: String) throws -> StickerEntity {
+            let data = try XCTUnwrap(StickerTestMedia.animatedGIF(width: 100, height: 100, frameCount: 2))
+            let url = try stickerStorage.write(data, id: id)
+            return StickerEntity(
+                id: id, file: url.path, mime: "image/gif",
+                width: 100, height: 100, frames: 2, bytes: data.count,
+                source: StickerSource.imported.rawValue,
+                createdBy: StickerCreator.user.rawValue,
+                createdAt: 1
+            )
+        }
+
+        let sticker = try makeSticker(id: "s-1")
+        try temp.stores.stickers.upsert(sticker)
+        _ = DataReset(
+            stores: temp.stores, settings: settings, media: media, stickerStorage: stickerStorage
+        ).clearAll()
+        XCTAssertEqual(try temp.stores.stickers.count(), 0, "删除全部数据要清表情行")
+        XCTAssertTrue(
+            (try FileManager.default.contentsOfDirectory(atPath: stickerDirectory.path) ?? []).isEmpty,
+            "删除全部数据要清表情文件"
+        )
+
+        // 只清聊天（保留人格与「我的表情」）：表情是用户自己的收藏，不跟着聊天一起删。
+        let kept = try makeSticker(id: "s-2")
+        try temp.stores.stickers.upsert(kept)
+        _ = try DataReset(
+            stores: temp.stores, settings: settings, media: media, stickerStorage: stickerStorage
+        ).clearChats()
+        XCTAssertEqual(try temp.stores.stickers.count(), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.file))
+    }
+
     func testClearAllReportsTablesThatFailedToClear() throws {
         try temp.stores.personas.upsert(TestData.persona())
         try temp.stores.presets.upsert(PersonaPresetEntity(

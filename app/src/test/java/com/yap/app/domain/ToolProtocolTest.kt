@@ -171,11 +171,11 @@ class ToolProtocolTest {
         val prompt = ToolCatalog.capabilityPrompt()
 
         assertTrue(prompt.isNotBlank())
-        assertTrue("提示词应保持简短（≤ 700 字），实际 ${prompt.length}", prompt.length <= 700)
+        assertTrue("提示词是「段」而不是手册：≤ 3200 字，实际 ${prompt.length}", prompt.length <= 3200)
         assertTrue(prompt.contains(ToolProtocol.BLOCK_LANGUAGE))
         assertTrue(prompt.contains(ToolCatalog.THINK))
         // 新增的回忆工具必须出现在提示词里，否则模型根本不会想到它
-        assertTrue(prompt.contains("${ToolCatalog.RECALL}("))
+        assertTrue(prompt.contains(ToolCatalog.RECALL))
         ToolCatalog.all.forEach { spec ->
             assertTrue("提示词应提到 ${spec.name}", prompt.contains(spec.name))
         }
@@ -338,7 +338,8 @@ class ToolProtocolTest {
 
     @Test
     fun catalogExposesSpecsByName() {
-        assertEquals(10, ToolCatalog.all.size)
+        // 0.13：多了 stay_silent（已读不回，spec/mood §4）。
+        assertEquals(15, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))
@@ -367,8 +368,9 @@ class ToolProtocolTest {
         val online = ToolCatalog.capabilityPrompt(webEnabled = true)
         val offline = ToolCatalog.capabilityPrompt(webEnabled = false)
         assertTrue(online.contains("web_search"))
-        assertTrue(!offline.contains("web_search("))
+        assertTrue("关掉联网后不能再出现这个工具行", !offline.contains("- ${ToolCatalog.WEB_SEARCH}："))
         assertTrue(offline.contains("没有联网能力"))
-        assertTrue(offline.length <= 700)
+        // 这一段是「模型该知道的手」，不是手册：≤ 2600 字（内容由工具注册表生成，见 ToolCapabilitySectionTest）。
+        assertTrue(offline.length <= 2600)
     }
 }

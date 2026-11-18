@@ -13,6 +13,11 @@ final class BackupServiceTests: XCTestCase {
     private var service: BackupService!
     /// 附件目录（头像 + 聊天图）：每个用例一份临时目录，绝不往 `MediaStorage.shared` 里写测试数据。
     private var attachments: URL!
+    /// v6 的三个目录与 `attachments` 同根（`mediaRoot` 删一次就全清）。
+    private var mediaRoot: URL!
+    private var stickersDirectory: URL { mediaRoot.appendingPathComponent("stickers", isDirectory: true) }
+    private var audioDirectory: URL { mediaRoot.appendingPathComponent("audio", isDirectory: true) }
+    private var videoDirectory: URL { mediaRoot.appendingPathComponent("video", isDirectory: true) }
     private let fileManager = FileManager.default
 
     override func setUpWithError() throws {
@@ -26,14 +31,25 @@ final class BackupServiceTests: XCTestCase {
             )
         )
         vectorIndex = MemoryVectorIndex(stores: db.stores, now: { TestData.now })
-        attachments = fileManager.temporaryDirectory
+        mediaRoot = fileManager.temporaryDirectory
             .appendingPathComponent("mf-backup-service-\(UUID().uuidString)", isDirectory: true)
+        // v6：表情/语音/视频也有各自的目录，测试一律用临时目录
+        //（默认值指向 Application Support，不该在跑测试时往开发机里写文件）。
+        // `attachments` 仍然是 mediaRoot 下的子目录：既有断言用「目录里的文件」判断
+        // 「有没有落盘图片」，多出三个兄弟目录会把它误判成「写了媒体」。
+        attachments = mediaRoot.appendingPathComponent("attachments", isDirectory: true)
         try fileManager.createDirectory(at: attachments, withIntermediateDirectories: true)
+        for directory in [stickersDirectory, audioDirectory, videoDirectory] {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
         service = BackupService(
             stores: db.stores, settings: settings, vectorIndex: vectorIndex,
             appVersion: "0.9.1-ios",
             avatarFileExists: { [fileManager] path in fileManager.fileExists(atPath: path) },
             mediaDirectory: attachments,
+            stickerDirectory: stickersDirectory,
+            audioDirectory: audioDirectory,
+            videoDirectory: videoDirectory,
             now: { TestData.now }
         )
         try seed()
@@ -45,7 +61,8 @@ final class BackupServiceTests: XCTestCase {
         settings = nil
         db.cleanUp()
         db = nil
-        if let attachments { try? fileManager.removeItem(at: attachments) }
+        if let mediaRoot { try? fileManager.removeItem(at: mediaRoot) }
+        mediaRoot = nil
         attachments = nil
     }
 

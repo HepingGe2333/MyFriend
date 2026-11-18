@@ -10,6 +10,7 @@ import com.yap.agentd.proactive.ProactiveDecision
 import com.yap.agentd.proactive.ProactiveEngine
 import com.yap.agentd.proactive.ProactiveScheduler
 import com.yap.agentd.proactive.ProactiveSink
+import com.yap.agentd.proactive.ProactiveTextSource
 import com.yap.agentd.proactive.ProactiveSource
 import com.yap.agentd.proactive.ProactiveTarget
 import com.yap.agentd.search.Providers
@@ -18,8 +19,12 @@ import com.yap.agentd.search.SearchException
 import com.yap.agentd.search.SearchLimits
 import com.yap.agentd.search.SearchRequest
 import com.yap.agentd.store.FileStore
+import com.yap.agentd.store.DiaryNote
+import com.yap.agentd.store.MessageRole
+import com.yap.agentd.store.MessageSource
 import com.yap.agentd.store.Persona
 import com.yap.agentd.store.Session
+import com.yap.agentd.store.StoredIntent
 import com.yap.agentd.store.StoreJson
 import com.yap.app.core.json.Json
 import com.yap.app.core.json.JsonParseException
@@ -330,12 +335,25 @@ internal class ProactiveTicker(
     private val store: FileStore,
     private val clock: Clock = Clock.systemDefaultZone(),
     private val roll: () -> Double = { Random.nextDouble() },
-    private val pushSender: PushSender = NoopPushSender
+    private val pushSender: PushSender = NoopPushSender,
+    /**
+     * 正文来源：生产是 `llm/LlmProactiveTextSource`（真调模型）；默认 [ProactiveTextSource.DEFAULT]
+     * 只给测试/冒烟用。返回空串表示这一拍不开口（不落固定文案）。
+     */
+    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT
 ) {
 
     private val lock = Any()
-    private val fired = ArrayList<FiredProactive>()
-    private val engine = ProactiveEngine(clock = clock, roll = roll)
+
+    /**
+     * 手动 tick 收集「这一拍落了哪些消息」。
+     *
+     * 定时器（[start]）与 HTTP 调试 tick 可能同时跑：定时器那一拍不该把结果塞进某个请求的响应里，
+     * 所以收集器放在 ThreadLocal —— 同一个线程里的 [tickWithDecisions] 才收，定时器线程不收。
+     */
+    private val collected = ThreadLocal<MutableList<FiredProactive>?>()
+
+    private val engine = ProactiveEngine(clock = clock, roll = roll, texts = texts)
     private val scheduler = ProactiveScheduler(
         engine = engine,
         source = ProactiveSource { now -> targets(now) },
@@ -353,10 +371,141 @@ internal class ProactiveTicker(
      * 所以「先 tick 一次拿 fired、再 tick 一次拿原因」这种写法在这里不存在（第二次会是空的）。
      */
     fun tickWithDecisions(now: Long): ProactiveTickOutcome = synchronized(lock) {
-        fired.clear()
-        val tick = scheduler.tick(now)
-        ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
+        val fired = ArrayList<FiredProactive>()
+        collected.set(fired)
+        try {
+            val tick = scheduler.tick(now)
+            // 0.13：日记提醒与 defer_reply 的念头也在这里落库。它们**不参与**主动判定的
+            // 冷却/每日上限（用户自己定的提醒不该被「今天说够了」挡掉），但同样不依赖客户端。
+            deliverDiaryReminders(now, fired)
+            deliverDeferredIntents(now, fired)
+            ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
+        } finally {
+            collected.remove()
+        }
     }
+
+    // ------------------------------------------------------------------ 日记提醒 / 延后回复
+
+    /**
+     * 到点的日记提醒 → 一条主动消息（**只发一次**）。
+     *
+     * 三个细节：
+     * - 先 `expireOverdueDiaryReminders`：错过超过 24h 的只清标记、不补发
+     *   （「周四提醒你打电话」周六才发出来只会让人莫名其妙）；
+     * - 落下 remarks 之后写 `remindedAt`，所以下一拍不会重复；
+     * - 消息正文带**笔记原文**（这是他自己的备忘），不走 LLM：提醒的价值在内容，不在措辞。
+     */
+    private fun deliverDiaryReminders(now: Long, fired: MutableList<FiredProactive>) {
+        store.expireOverdueDiaryReminders(now)
+        for (note in store.dueDiaryReminders(now)) {
+            val session = latestSessionFor(note.personaId) ?: continue
+            val message = try {
+                store.appendMessage(
+                    sessionId = session.id,
+                    role = MessageRole.ASSISTANT,
+                    content = diaryReminderText(note),
+                    source = MessageSource.PROACTIVE
+                )
+            } catch (failure: Exception) {
+                System.err.println(
+                    "[agentd] 日记提醒落库失败（${note.id}）：${failure::class.simpleName}: ${failure.message}"
+                )
+                continue
+            }
+            store.markDiaryReminded(note.id, now)
+            fired += FiredProactive(
+                personaId = note.personaId,
+                sessionId = session.id,
+                messageId = message.id,
+                reason = REASON_DIARY_REMINDER
+            )
+            notifyPush(note.personaId, session.id, message.id, message.content, message.createdAt)
+        }
+    }
+
+    /**
+     * 到点的 `defer_reply` 念头 → 一条主动消息（**只发一次**）。
+     *
+     * 正文由 [texts] 生成（生产是 LLM，测试是固定文案）：念头本身只有「为什么当时没回」，
+     * 不适合直接发给对方。生成失败（空串）就落一句最朴素的兜底，不能让「过会儿再说」变成永不回话。
+     */
+    private fun deliverDeferredIntents(now: Long, fired: MutableList<FiredProactive>) {
+        store.expireIntents(now)
+        for (intent in store.dueIntents(now)) {
+            val persona = store.persona(intent.personaId) ?: continue
+            val session = intent.sessionId?.let { store.session(it) } ?: latestSessionFor(intent.personaId) ?: continue
+            val text = try {
+                texts.compose(personaState(persona, session, now), now).trim().ifBlank { DEFERRED_FALLBACK_TEXT }
+            } catch (failure: Exception) {
+                System.err.println("[agentd] 延后回复正文生成失败，用兜底文案：${failure::class.simpleName}")
+                DEFERRED_FALLBACK_TEXT
+            }
+            val message = try {
+                store.appendMessage(
+                    sessionId = session.id,
+                    role = MessageRole.ASSISTANT,
+                    content = text,
+                    source = MessageSource.PROACTIVE
+                )
+            } catch (failure: Exception) {
+                System.err.println(
+                    "[agentd] 延后回复落库失败（${intent.id}）：${failure::class.simpleName}: ${failure.message}"
+                )
+                continue
+            }
+            store.markIntentSent(intent.id, now)
+            fired += FiredProactive(
+                personaId = intent.personaId,
+                sessionId = session.id,
+                messageId = message.id,
+                reason = REASON_DEFERRED
+            )
+            notifyPush(intent.personaId, session.id, message.id, message.content, message.createdAt)
+        }
+    }
+
+    /** 日记提醒的正文（模板，不走 LLM：提醒的价值在内容）。 */
+    private fun diaryReminderText(note: DiaryNote): String {
+        val content = note.content.replace('\n', ' ').trim().take(200)
+        return "刚翻到自己在备忘里记的一句：$content"
+    }
+
+    /** 推送：有 token 才调用适配器；失败只记日志（与主动消息同一套 M6 规则）。 */
+    private fun notifyPush(personaId: String, sessionId: String, messageId: String, body: String, createdAt: Long) {
+        val tokens = store.pushTokens()
+        if (tokens.isEmpty()) return
+        val name = store.persona(personaId)?.name.orEmpty()
+        runCatching {
+            pushSender.send(
+                tokens,
+                PushMessage(
+                    personaId = personaId,
+                    sessionId = sessionId,
+                    messageId = messageId,
+                    title = name.ifBlank { "Yap" },
+                    body = body,
+                    createdAt = createdAt
+                )
+            )
+        }.onFailure { failure ->
+            System.err.println("[agentd] 推送适配器调用失败：${failure::class.simpleName}")
+        }
+    }
+
+    /**
+     * 启动服务端主动心跳（`Main` 在启动时调用，60 秒一拍）。
+     *
+     * 幂等：重复调用不会起两个线程池。定时器与客户端连接无关——这是「客户端没有后台进程也能主动」
+     * 的前提（`docs/design/server-authoritative.md` §3.4）。
+     */
+    fun start() = scheduler.start()
+
+    /** 停掉心跳（`Main` 的 shutdown hook；已在跑的这一拍会自然结束）。 */
+    fun stop() = scheduler.stop()
+
+    /** 心跳是不是在跑（`Main` 启动日志/测试用）。 */
+    val isRunning: Boolean get() = scheduler.isRunning
 
     /** 只有「有人格的会话」才参与判定：没有会话就没有落库的地方，不掷骰子。 */
     private fun targets(now: Long): List<ProactiveTarget> = store.personas().mapNotNull { persona ->
@@ -412,11 +561,13 @@ internal class ProactiveTicker(
             dailyCap = decision.dailyCap,
             minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong()
         ) ?: return
-        fired += FiredProactive(
-            personaId = decision.targetPersonaId,
-            sessionId = session.id,
-            messageId = message.id,
-            reason = decision.reason.code
+        collected.get()?.add(
+            FiredProactive(
+                personaId = decision.targetPersonaId,
+                sessionId = session.id,
+                messageId = message.id,
+                reason = decision.reason.code
+            )
         )
         // M6：消息已经落库后才调用适配器；失败只记日志，绝不回滚消息或影响 tick 响应。
         val tokens = store.pushTokens()
@@ -449,4 +600,15 @@ internal class ProactiveTicker(
         store.sessions()
             .filter { it.personaId == personaId }
             .maxByOrNull { it.lastMessageAt ?: it.createdAt }
+
+    companion object {
+        /** `fired[].reason`：到点的日记提醒。 */
+        const val REASON_DIARY_REMINDER = "diary_reminder"
+
+        /** `fired[].reason`：`defer_reply` 的念头到点了。 */
+        const val REASON_DEFERRED = "deferred_reply"
+
+        /** 念头到点时正文生成失败用的兜底（不含内部理由，读起来像一句人话）。 */
+        const val DEFERRED_FALLBACK_TEXT = "刚才没顾上说话，现在回来找你了。"
+    }
 }

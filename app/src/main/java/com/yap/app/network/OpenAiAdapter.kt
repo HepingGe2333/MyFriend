@@ -37,6 +37,71 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+/**
+ * chat.completions 请求体的唯一构造处。
+ *
+ * 抽成 `internal` 顶层函数只为一件事：**请求体里的参数可以被单测直接断言**。
+ * 以前温度/最大输出是在这里 `?.let { put(...) }` 拼的，null 就整段不出现，
+ * 于是「应用默认到底发的是什么」只能靠读代码猜；现在默认值来自 `ApiDefaults`，
+ * 这里只负责如实写进 JSON（`spec/api-defaults/README.md` 的验收项）。
+ */
+internal fun buildChatCompletionPayload(
+    model: String,
+    messages: List<WireMessage>,
+    params: InferenceParams,
+    stream: Boolean
+): JsonObject = buildJsonObject {
+    put("model", model)
+    put("messages", buildJsonArray {
+        messages.forEach { message ->
+            add(buildJsonObject {
+                put("role", message.role)
+                if (!message.hasMedia) {
+                    put("content", message.content)
+                } else {
+                    put("content", buildJsonArray {
+                        if (message.content.isNotBlank()) {
+                            add(buildJsonObject {
+                                put("type", "text")
+                                put("text", message.content)
+                            })
+                        }
+                        // 图片/视频帧走 OpenAI 兼容的 image_url（视频也是「抽出来的几张图」）。
+                        message.images.forEach { dataUrl ->
+                            add(buildJsonObject {
+                                put("type", "image_url")
+                                put("image_url", buildJsonObject { put("url", dataUrl) })
+                            })
+                        }
+                        // 语音走 input_audio：base64 + format（`spec/audio-video/README.md`）。
+                        // 不支持音频的模型会在服务端回 4xx，由聊天层明确报「这个模型听不了语音」，
+                        // 这里绝不退化成「自己编一段转写」。
+                        message.audios.forEach { audio ->
+                            add(buildJsonObject {
+                                put("type", "input_audio")
+                                put("input_audio", buildJsonObject {
+                                    put("data", audio.base64)
+                                    put("format", audio.format)
+                                })
+                            })
+                        }
+                    })
+                }
+            })
+        }
+    })
+    put("stream", stream)
+    if (stream) {
+        // 让服务端在最后一个分片里带上 usage；不支持的网关会忽略这个字段。
+        put("stream_options", buildJsonObject { put("include_usage", true) })
+    }
+    params.temperature?.let { put("temperature", it) }
+    params.topP?.let { put("top_p", it) }
+    params.maxOutputTokens?.let { put("max_tokens", it) }
+    params.frequencyPenalty?.let { put("frequency_penalty", it) }
+    params.presencePenalty?.let { put("presence_penalty", it) }
+}
+
 class OpenAiAdapter(
     private val client: OkHttpClient,
     private val json: Json,
@@ -183,11 +248,18 @@ class OpenAiAdapter(
                     }
                     emit(StreamEvent.Done)
                     // 服务端没给 usage 时按字数估一个：聊天的钱通常是最大头，不能记成 0。
+                    // 服务端没给 usage 时按字数估：多模态 parts（图片/语音 base64）按字符数/4 计入，
+                    // 否则「发了段语音」这一轮的花费会被记成只有几个字。
+                    val mediaChars = messages.sumOf { message ->
+                        message.images.sumOf { it.length } + message.audios.sumOf { it.base64.length }
+                    }
                     reportStreamUsage(
                         kind,
                         model,
                         streamUsage ?: TokenUsage(
-                            promptTokens = estimateTokens(messages.joinToString("") { it.content.orEmpty() }),
+                            promptTokens = estimateTokens(
+                                messages.joinToString("") { it.content.orEmpty() }
+                            ) + mediaChars / 4,
                             completionTokens = estimateTokens(collector.toString())
                         ),
                         sessionId,
@@ -222,33 +294,35 @@ class OpenAiAdapter(
         personaId: String?
     ): String = gatekeeper.withPermit(lane) {
         withContext(Dispatchers.IO) {
-        var attempts = 0
-        while (true) {
-            try {
-                val request = buildRequest(config, apiKey, model, messages, params, stream = false, extraHeaders = extraHeaders)
-                val payload = withTimeout(180_000) {
-                    client.newCall(request).execute().use { response ->
-                        val raw = response.body?.string().orEmpty()
-                        if (!response.isSuccessful) throw response.toApiException(raw)
-                        parseCompletion(raw, response.code)
+            var attempts = 0
+            while (true) {
+                try {
+                    val request = buildRequest(
+                        config, apiKey, model, messages, params, stream = false, extraHeaders = extraHeaders
+                    )
+                    val payload = withTimeout(180_000) {
+                        client.newCall(request).execute().use { response ->
+                            val raw = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) throw response.toApiException(raw)
+                            parseCompletion(raw, response.code)
+                        }
                     }
+                    // 记账在返回之前做：这一笔花掉了就是花掉了，哪怕之后调用方处理失败。
+                    reporting.record(kind, model, payload.usage, sessionId, personaId)
+                    return@withContext payload.text
+                } catch (cancel: CancellationException) {
+                    if (cancel is kotlinx.coroutines.TimeoutCancellationException) {
+                        throw ApiException(NetworkErrorKind.Timeout)
+                    }
+                    throw cancel
+                } catch (error: Exception) {
+                    if (!isRetryable(error) || attempts >= MAX_RETRIES) throw mapNetworkError(error)
+                    attempts++
+                    delay(700L * attempts)
                 }
-                // 记账在返回之前做：这一笔花掉了就是花掉了，哪怕之后调用方处理失败。
-                reporting.record(kind, model, payload.usage, sessionId, personaId)
-                return@withContext payload.text
-            } catch (cancel: CancellationException) {
-                if (cancel is kotlinx.coroutines.TimeoutCancellationException) {
-                    throw ApiException(NetworkErrorKind.Timeout)
-                }
-                throw cancel
-            } catch (error: Exception) {
-                if (!isRetryable(error) || attempts >= MAX_RETRIES) throw mapNetworkError(error)
-                attempts++
-                delay(700L * attempts)
             }
-        }
-        @Suppress("UNREACHABLE_CODE")
-        ""
+            @Suppress("UNREACHABLE_CODE")
+            ""
         }
     }
 
@@ -291,45 +365,9 @@ class OpenAiAdapter(
             NetworkGuard.endpoint(config.baseUrl, "chat/completions").toString(),
             config.allowInsecureHttp
         )
-        val payload = buildJsonObject {
-            put("model", model)
-            put("messages", buildJsonArray {
-                messages.forEach { message ->
-                    add(buildJsonObject {
-                        put("role", message.role)
-                        if (message.images.isEmpty()) {
-                            put("content", message.content)
-                        } else {
-                            put("content", buildJsonArray {
-                                if (message.content.isNotBlank()) {
-                                    add(buildJsonObject {
-                                        put("type", "text")
-                                        put("text", message.content)
-                                    })
-                                }
-                                message.images.forEach { dataUrl ->
-                                    add(buildJsonObject {
-                                        put("type", "image_url")
-                                        put("image_url", buildJsonObject { put("url", dataUrl) })
-                                    })
-                                }
-                            })
-                        }
-                    })
-                }
-            })
-            put("stream", stream)
-            if (stream) {
-                // 让服务端在最后一个分片里带上 usage；不支持的网关会忽略这个字段。
-                put("stream_options", buildJsonObject { put("include_usage", true) })
-            }
-            params.temperature?.let { put("temperature", it) }
-            params.topP?.let { put("top_p", it) }
-            params.maxOutputTokens?.let { put("max_tokens", it) }
-            params.frequencyPenalty?.let { put("frequency_penalty", it) }
-            params.presencePenalty?.let { put("presence_penalty", it) }
-        }
-        val requestBody = payload.toString().toRequestBody(JSON_MEDIA_TYPE)
+        val requestBody = buildChatCompletionPayload(model, messages, params, stream)
+            .toString()
+            .toRequestBody(JSON_MEDIA_TYPE)
         return Request.Builder()
             .url(url)
             .post(requestBody)

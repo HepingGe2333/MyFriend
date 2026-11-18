@@ -113,7 +113,24 @@ data class PersonaEntity(
      */
     val translationJson: String? = null,
     /** 上面那份缓存对应的语言（BCP-47：`zh` / `en` …）；为空表示没有缓存。 */
-    val translationLang: String? = null
+    val translationLang: String? = null,
+
+    // ---- 0.13 多维情绪（schema v17，`spec/mood/README.md` §1） ------------------
+    /**
+     * 愉快度：-2 很不悦 … 0 平静 … 2 很愉快。
+     *
+     * 与 `mood`（标签）、`moodIntensity`（强度）是同一份情绪的三个视角：标签给人看，
+     * 三个维度给模型看——「累」和「烦」都可能强度 3，但唤醒度与掌控感完全不同，
+     * 语气应该不一样。可空是为了让 v16 的老库升级后读出来是 NULL（由代码按旧标签映射），
+     * 而不是被塞一个「看起来有值、其实是猜的」数字。
+     */
+    val moodValence: Int? = null,
+
+    /** 唤醒度：0 很低（困/没劲）… 5 很高（激动）。 */
+    val moodArousal: Int? = null,
+
+    /** 掌控感：0 被压住 … 3 一般 … 5 很有把握。 */
+    val moodDominance: Int? = null
 )
 
 @Entity(
@@ -571,3 +588,66 @@ data class MemoryVectorEntity(
         return result
     }
 }
+
+/**
+ * 日记板上的一条笔记：**他自己的备忘录**（`spec/diary/README.md`，schema v15）。
+ *
+ * 和记忆不是一回事：记忆是「他记得关于你的事」，由抽取器与整理器维护、会衰减、会归档；
+ * 日记是他主动写下的备忘（「周五提醒我问她面试怎么样」「那家店在巷子口第二家」），
+ * 只有他自己会写、会翻、会删，别人看不到。
+ *
+ * 字段语义：
+ * - [remindAt]：要不要到点提醒（毫秒时间戳，可空 = 不提醒）；
+ * - [remindedAt]：这条提醒**已经变成念头**的时刻，非空即「提醒过」——
+ *   它是「只触发一次」的唯一凭据（心跳/主动 tick 用带条件的 UPDATE 原子占位）；
+ * - 删除是硬删除（规范要求），不保留墓碑。
+ */
+@Entity(
+    tableName = "diary_notes",
+    indices = [Index(value = ["personaId"]), Index(value = ["remindAt"])]
+)
+data class DiaryNoteEntity(
+    @PrimaryKey val id: String,
+    val personaId: String,
+    val content: String,
+    val createdAt: Long,
+    val remindAt: Long? = null,
+    val remindedAt: Long? = null,
+    val updatedAt: Long
+)
+
+/**
+ * 一张表情包（`spec/stickers/SCHEMA.md`，schema v16）。
+ *
+ * 与聊天附件的关系：消息里的 `attachmentsJson` 只存 `{uri, mime, kind=STICKER}`，
+ * 表情本身的元数据（帧数、字节、来源、谁做的）在这张表里——同一条消息里的图片不需要这些，
+ * 而表情需要「最近 30 个 / 全部 / 我的收藏」这类列表，所以它值得一张表。
+ *
+ * 字段语义：
+ * - [file]：本机 `file://` 路径（`files/stickers/<id>.gif`）或服务端模式的 `/v1/media/<id>`；
+ * - [mime]：永远是 `image/gif`（静态图也存成单帧 GIF：渲染/上传只有一条路径）；
+ * - [frames]、[bytes]：落库时算好，列表页不必解码就知道「是不是动图、多大」；
+ * - [source] / [createdBy]：`IMPORTED | MODEL_MADE | FROM_USER_MESSAGE | WEB` 与 `USER | MODEL`，
+ *   与规范逐字一致，两端靠字符串对齐（不写枚举列，避免迁移时改值）；
+ * - [ownerUserId]、[personaId]：谁收藏的、属于哪个人格（可空 = 不属于某个人格）。
+ */
+@Entity(
+    tableName = "stickers",
+    indices = [Index(value = ["createdAt"]), Index(value = ["personaId"])]
+)
+data class StickerEntity(
+    @PrimaryKey val id: String,
+    val ownerUserId: String? = null,
+    val personaId: String? = null,
+    val file: String,
+    val mime: String = "image/gif",
+    // 这四个默认值是 `spec/stickers/SCHEMA.md` 里写死的 DDL 默认值：Room 的 schema 校验会比对
+    // 「实体声明的默认值」与「数据库里的默认值」，不写 @ColumnInfo 就会升级即崩。
+    @ColumnInfo(defaultValue = "0") val width: Int = 0,
+    @ColumnInfo(defaultValue = "0") val height: Int = 0,
+    @ColumnInfo(defaultValue = "1") val frames: Int = 1,
+    @ColumnInfo(defaultValue = "0") val bytes: Int = 0,
+    val source: String = "IMPORTED",
+    val createdBy: String = "USER",
+    val createdAt: Long
+)

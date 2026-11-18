@@ -103,17 +103,32 @@ final class MoodTests: XCTestCase {
     // MARK: 提示词
 
     func testPromptCarriesMoodAndReason() {
-        let line = MoodPrompt.line(MoodState(label: "有点累", intensity: 3, reason: "今天加班"))
+        // 规范 §3 的形状：标题 + 「心情：词（强度 n/5）。愉快度 … / 唤醒度 … / 掌控感 …」+
+        // 一句按维度的行为提示 + 一句「别报数值 / 别说「我的情绪是」」。
+        let line = MoodPrompt.line(MoodState(
+            label: "有点累", intensity: 3, reason: "今天加班",
+            dimensions: MoodDimensions(valence: -1, arousal: 1, dominance: 2)
+        ))
+        XCTAssertTrue(line.contains(MoodPrompt.sectionTitle))
         XCTAssertTrue(line.contains("有点累"))
         XCTAssertTrue(line.contains("3/5"))
         XCTAssertTrue(line.contains("今天加班"))
+        XCTAssertTrue(line.contains("愉快度 -1"))
+        XCTAssertTrue(line.contains("唤醒度 1/5"))
+        XCTAssertTrue(line.contains("掌控感 2/5"))
+        // 行为提示按维度给：唤醒度低 → 回得更短。
         XCTAssertTrue(line.contains("更短"))
+        XCTAssertTrue(line.contains("我的情绪是"), "要明确禁止自述情绪")
     }
 
     func testPromptWithoutMoodStillSaysBaseline() {
         let line = MoodPrompt.line(MoodState())
         XCTAssertTrue(line.contains("心情"))
         XCTAssertTrue(line.contains(MoodLexicon.BASELINE))
+        // 没判定过也要有三维（基准 0/2/3），否则提示词里会少半句。
+        XCTAssertTrue(line.contains("愉快度 0"))
+        XCTAssertTrue(line.contains("唤醒度 2/5"))
+        XCTAssertTrue(line.contains("掌控感 3/5"))
     }
 
     func testReflectionNudgeIsFirstPerson() {

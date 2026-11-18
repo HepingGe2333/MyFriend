@@ -36,6 +36,10 @@ public final class MoodRepository {
 
     /// 记下心情。label 会被规整（去空白、限长）；空标签理解为「回到平静」。
     /// 返回落库后的状态，人设不存在时返回 nil。
+    ///
+    /// 这是**模型主动说**、或者「被叫醒」这类事件写心情的入口：它只拿到一个词 + 强度，
+    /// 所以三维按词表推（`MoodDimensions.fromLegacy`）。自动判定走 `applyJudgement`，
+    /// 那条路径的三维是模型看过对话后给的，不能被这里的推断覆盖。
     public func setMood(
         personaId: String,
         label: String,
@@ -49,13 +53,107 @@ public final class MoodRepository {
         let word = MoodLexicon.normalize(label)
         let strength = min(max(intensity ?? max(previous.intensity, 2), 1), 5)
         let cleanReason = String((reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        let next = MoodState(label: word, intensity: strength, reason: cleanReason, updatedAt: at)
+        let dimensions = MoodDimensions.fromLegacy(label: word, intensity: strength)
+        let next = MoodState(
+            label: word, intensity: strength, reason: cleanReason,
+            updatedAt: at, dimensions: dimensions
+        )
         persona.mood = next.label
         persona.moodIntensity = next.intensity
         persona.moodReason = next.reason.isEmpty ? nil : next.reason
         persona.moodUpdatedAt = at
+        persona.moodValence = dimensions.valence
+        persona.moodArousal = dimensions.arousal
+        persona.moodDominance = dimensions.dominance
         _ = try? stores.personas.upsert(persona)
         return next
+    }
+
+    /// 自动情绪判定的落库入口（`spec/mood/README.md` §2）。
+    ///
+    /// 判定结果已经过 `MoodJudgementRules` 校验（范围、单次幅度 ≤2、有没有明显变化），
+    /// 这里只负责写三列 + label/intensity/reason/时间。
+    @discardableResult
+    public func applyJudgement(
+        personaId: String,
+        judgement: MoodJudgement,
+        previous: MoodState,
+        now: Int64? = nil
+    ) -> MoodState? {
+        let at = now ?? self.now()
+        guard var persona = try? stores.personas.byId(personaId) else { return nil }
+        var next = MoodJudgementRules.merged(judgement, previous: previous)
+        next.updatedAt = at
+        persona.mood = next.label
+        persona.moodIntensity = next.intensity
+        persona.moodReason = next.reason.isEmpty ? nil : next.reason
+        persona.moodUpdatedAt = at
+        if let dimensions = next.dimensions {
+            persona.moodValence = dimensions.valence
+            persona.moodArousal = dimensions.arousal
+            persona.moodDominance = dimensions.dominance
+        }
+        _ = try? stores.personas.upsert(persona)
+        return next
+    }
+
+    /// 服务端判定结果的落库入口（0.13 云端模式）。
+    ///
+    /// 与 `applyJudgement` 的区别：那边是**本地模型**的输出，要过 `MoodJudgementRules`
+    /// 的校验（范围、单次幅度 ≤2、有没有明显变化）；这边是**服务端已经判定完的结论**，
+    /// 服务端是权威，客户端只负责把它缓存在本机（界面、离线提示词、心跳的情绪放大都读本地）。
+    /// 所以这里只做「夹取到合法范围 + 照抄」，不重算、不再判一次。
+    ///
+    /// - Returns: 落库后的状态；人格已经不在本机时 nil。
+    @discardableResult
+    public func applyServerMood(
+        personaId: String,
+        label: String,
+        intensity: Int,
+        dimensions: MoodDimensions?,
+        reason: String?,
+        now: Int64? = nil
+    ) -> MoodState? {
+        let at = now ?? self.now()
+        guard var persona = (try? stores.personas.byId(personaId)) ?? nil else { return nil }
+        let word = MoodLexicon.normalize(label)
+        guard !word.isEmpty else { return nil }
+        let strength = min(max(intensity, 1), 5)
+        let cleanReason = String(
+            (reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(60)
+        )
+        // 三维缺省时按词表推（老服务端不懂三维）：本地缓存至少不会因为「少两列」而报错。
+        let resolved = dimensions ?? MoodDimensions.fromLegacy(label: word, intensity: strength)
+        let next = MoodState(
+            label: word, intensity: strength, reason: cleanReason,
+            updatedAt: at, dimensions: resolved
+        )
+        persona.mood = next.label
+        persona.moodIntensity = next.intensity
+        persona.moodReason = next.reason.isEmpty ? nil : next.reason
+        persona.moodUpdatedAt = at
+        persona.moodValence = resolved.valence
+        persona.moodArousal = resolved.arousal
+        persona.moodDominance = resolved.dominance
+        _ = try? stores.personas.upsert(persona)
+        return next
+    }
+
+    /// 判定失败 / 没有可用的 API 配置时，把心情按时间往基准挪一步并落库（规范 §2）。
+    ///
+    /// 不抛错、不打扰用户：调用方只写一行日志。返回 (当前心情, 这次有没有真的变过)。
+    @discardableResult
+    public func decayOnFailure(personaId: String, now: Int64? = nil) -> (state: MoodState, changed: Bool) {
+        let at = now ?? self.now()
+        guard let persona = (try? stores.personas.byId(personaId)) ?? nil else {
+            return (MoodState(label: MoodLexicon.BASELINE, intensity: 1), false)
+        }
+        let stored = stateOf(persona)
+        let decayed = MoodJudgementRules.decayedOnFailure(stored, now: at)
+        if decayed != stored {
+            persistDecayed(personaId: personaId, state: decayed)
+        }
+        return (decayed, decayed != stored)
     }
 
     /// 拼进系统提示词的那一段；没有心情时也给一句基准描述。
@@ -88,23 +186,45 @@ public final class MoodRepository {
     // MARK: - 内部
 
     private func stateOf(_ persona: PersonaEntity) -> MoodState {
+        let dimensions = Self.dimensionsOf(persona)
         let label = persona.mood.map { MoodLexicon.normalize($0) } ?? ""
         if label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return MoodState(label: MoodLexicon.BASELINE, intensity: 1, updatedAt: persona.moodUpdatedAt ?? 0)
+            return MoodState(
+                label: MoodLexicon.BASELINE, intensity: 1,
+                updatedAt: persona.moodUpdatedAt ?? 0,
+                dimensions: dimensions
+            )
         }
         return MoodState(
             label: label,
             intensity: min(max(persona.moodIntensity ?? 2, 1), 5),
             reason: persona.moodReason ?? "",
-            updatedAt: persona.moodUpdatedAt ?? 0
+            updatedAt: persona.moodUpdatedAt ?? 0,
+            dimensions: dimensions
         )
     }
 
-    /// Android 的 `personaDao.fadeMood`：只改心情的两个字段，不动别的列。
+    /// 三列要么都有值（判定过），要么都没有（没判过）。
+    ///
+    /// 只写了一半的坏数据（例如只有 valence）按「没判过」处理会更安全：
+    /// 混着用会让 arousal 悄悄退回基准，而用户看到的心情标签又是另一个。
+    static func dimensionsOf(_ persona: PersonaEntity) -> MoodDimensions? {
+        guard let valence = persona.moodValence,
+              let arousal = persona.moodArousal,
+              let dominance = persona.moodDominance else { return nil }
+        return MoodDimensions(valence: valence, arousal: arousal, dominance: dominance)
+    }
+
+    /// Android 的 `personaDao.fadeMood`：只改心情这几列，不动别的列。
     private func persistDecayed(personaId: String, state: MoodState) {
         guard var persona = try? stores.personas.byId(personaId) else { return }
         persona.mood = state.label
         persona.moodIntensity = state.intensity
+        if let dimensions = state.dimensions {
+            persona.moodValence = dimensions.valence
+            persona.moodArousal = dimensions.arousal
+            persona.moodDominance = dimensions.dominance
+        }
         _ = try? stores.personas.upsert(persona)
     }
 

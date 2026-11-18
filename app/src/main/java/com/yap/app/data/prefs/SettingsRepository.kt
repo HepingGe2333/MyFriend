@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
+import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -58,6 +59,20 @@ class SettingsRepository @Inject constructor(
         // 心跳的内部状态：只用来让冲动曲线跨重启接着走，不对外暴露（设置页里没有它）。
         val heartbeatLastResetAt = longPreferencesKey("heartbeat_last_reset_at")
         val heartbeatLastFiredAt = longPreferencesKey("heartbeat_last_fired_at")
+
+        // 人格进化评估的游标（内部状态，界面里看不到）。
+        val evolutionPersonaId = stringPreferencesKey("evolution_persona_id")
+        val evolutionUserMessageCount = intPreferencesKey("evolution_user_message_count")
+        val evolutionLastRunAt = longPreferencesKey("evolution_last_run_at")
+
+        // 自动情绪判定的游标（内部状态，界面里看不到）：每 4 条用户消息 / 24 小时一次。
+        val moodJudgePersonaId = stringPreferencesKey("mood_judge_persona_id")
+        val moodJudgeUserMessageCount = intPreferencesKey("mood_judge_user_message_count")
+        val moodJudgeLastRunAt = longPreferencesKey("mood_judge_last_run_at")
+
+        // 「已读不回」连续轮数（内部状态）：连续 ≤2 轮，回一句就清零。
+        val staySilentPersonaId = stringPreferencesKey("stay_silent_persona_id")
+        val staySilentStreak = intPreferencesKey("stay_silent_streak")
     }
 
     val settings: Flow<AppSettings> = context.settingsDataStore.data.map { prefs ->
@@ -77,7 +92,15 @@ class SettingsRepository @Inject constructor(
             autoTranslatePersona = prefs[Keys.autoTranslatePersona] ?: true,
             backgroundTipDismissed = prefs[Keys.backgroundTipDismissed] ?: false,
             heartbeatLastResetAt = prefs[Keys.heartbeatLastResetAt]?.takeIf { it > 0L } ?: 0L,
-            heartbeatLastFiredAt = prefs[Keys.heartbeatLastFiredAt]?.takeIf { it > 0L }
+            heartbeatLastFiredAt = prefs[Keys.heartbeatLastFiredAt]?.takeIf { it > 0L },
+            evolutionPersonaId = prefs[Keys.evolutionPersonaId],
+            evolutionUserMessageCount = prefs[Keys.evolutionUserMessageCount] ?: 0,
+            evolutionLastRunAt = prefs[Keys.evolutionLastRunAt] ?: 0L,
+            moodJudgePersonaId = prefs[Keys.moodJudgePersonaId],
+            moodJudgeUserMessageCount = prefs[Keys.moodJudgeUserMessageCount] ?: 0,
+            moodJudgeLastRunAt = prefs[Keys.moodJudgeLastRunAt] ?: 0L,
+            staySilentPersonaId = prefs[Keys.staySilentPersonaId],
+            staySilentStreak = (prefs[Keys.staySilentStreak] ?: 0).coerceIn(0, STAY_SILENT_MAX_STREAK)
         )
     }
 
@@ -243,5 +266,51 @@ class SettingsRepository @Inject constructor(
         } else {
             it.remove(Keys.heartbeatLastFiredAt)
         }
+    }
+
+    /**
+     * 推进人格进化评估的游标（内部状态，没有对应的界面）。
+     *
+     * 存「哪个会话已经是第几条用户消息、上次评估是什么时候」，重启后接着算，
+     * 避免每次冷启动都以为「已经过了 24 小时」而立刻打一次模型。
+     */
+    suspend fun setEvolutionCursor(personaId: String, userMessageCount: Int, at: Long) = edit {
+        it[Keys.evolutionPersonaId] = personaId
+        it[Keys.evolutionUserMessageCount] = userMessageCount.coerceAtLeast(0)
+        it[Keys.evolutionLastRunAt] = at.coerceAtLeast(0L)
+    }
+
+    /**
+     * 推进自动情绪判定的游标（内部状态，没有对应的界面）。
+     *
+     * 与进化游标同样的道理：存「第几条用户消息、上次判定是什么时候」，重启后接着算，
+     * 避免每次冷启动都以为「已经过了 24 小时」而立刻打一次模型。
+     */
+    suspend fun setMoodJudgeCursor(personaId: String, userMessageCount: Int, at: Long) = edit {
+        it[Keys.moodJudgePersonaId] = personaId
+        it[Keys.moodJudgeUserMessageCount] = userMessageCount.coerceAtLeast(0)
+        it[Keys.moodJudgeLastRunAt] = at.coerceAtLeast(0L)
+    }
+
+    /**
+     * 记下「已读不回」走到第几轮（内部状态）。
+     *
+     * `personaId` 与人格绑定：换人格时如果对不上就从 0 开始算，
+     * 免得 A 的沉默轮到 B 头上被强制打断。
+     */
+    suspend fun setStaySilentStreak(personaId: String, streak: Int) = edit {
+        it[Keys.staySilentPersonaId] = personaId
+        it[Keys.staySilentStreak] = streak.coerceIn(0, STAY_SILENT_MAX_STREAK)
+    }
+
+    /** 他回了一句（落了一条 assistant 消息）：连续沉默的计数清零。 */
+    suspend fun resetStaySilentStreak() = edit {
+        it.remove(Keys.staySilentStreak)
+        it.remove(Keys.staySilentPersonaId)
+    }
+
+    companion object {
+        /** 连续「已读不回」的上限（`spec/mood/README.md` §4：不要连续使用超过 2 轮）。 */
+        const val STAY_SILENT_MAX_STREAK = 2
     }
 }

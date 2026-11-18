@@ -61,6 +61,28 @@ interface PersonaDao {
     @Query("UPDATE personas SET mood = :mood, moodIntensity = :intensity, moodReason = :reason, moodUpdatedAt = :now WHERE id = :id")
     suspend fun setMood(id: String, mood: String?, intensity: Int?, reason: String?, now: Long)
 
+    /**
+     * 多维心情写入（schema v17）：标签 / 强度 / 三观维度一起落库。
+     *
+     * 单独一条而不是改 [setMood] 的签名：老调用方（服务端同步、唤醒恢复）只知道标签与强度，
+     * 它们不该被逼着猜维度；需要写维度的路径（`set_mood`、自动判定）走这一条。
+     */
+    @Query(
+        "UPDATE personas SET mood = :mood, moodIntensity = :intensity, moodReason = :reason, " +
+            "moodValence = :valence, moodArousal = :arousal, moodDominance = :dominance, " +
+            "moodUpdatedAt = :now WHERE id = :id"
+    )
+    suspend fun setMoodVector(
+        id: String,
+        mood: String?,
+        intensity: Int?,
+        reason: String?,
+        valence: Int?,
+        arousal: Int?,
+        dominance: Int?,
+        now: Long
+    )
+
     /** 睡觉前要不要开免打扰：由模型的 dnd / quiet_hours 动作写，用户没有入口。 */
     @Query("UPDATE personas SET dndOnSleep = :enabled, updatedAt = :now WHERE id = :id")
     suspend fun setDndOnSleep(id: String, enabled: Boolean, now: Long)
@@ -78,9 +100,19 @@ interface PersonaDao {
     @Query("UPDATE personas SET sleepEnabled = 0 WHERE id IN (:ids)")
     suspend fun disableSleepFor(ids: List<String>): Int
 
-    /** 心情随时间淡下去，只改词和强度。 */
-    @Query("UPDATE personas SET mood = :mood, moodIntensity = :intensity WHERE id = :id")
-    suspend fun fadeMood(id: String, mood: String?, intensity: Int?)
+    /** 心情随时间淡下去：词、强度与三个维度一起衰减（维度由 v17 起才有）。 */
+    @Query(
+        "UPDATE personas SET mood = :mood, moodIntensity = :intensity, " +
+            "moodValence = :valence, moodArousal = :arousal, moodDominance = :dominance WHERE id = :id"
+    )
+    suspend fun fadeMood(
+        id: String,
+        mood: String?,
+        intensity: Int?,
+        valence: Int?,
+        arousal: Int?,
+        dominance: Int?
+    )
 
     @Query("DELETE FROM personas")
     suspend fun deleteAll()
@@ -308,6 +340,15 @@ interface MessageDao {
     suspend fun setBlockIndex(id: String, blockIndex: Int)
 
     /**
+     * 只改附件 JSON（0.13 服务端模式）。
+     *
+     * 服务端消息只回附件 id，不带 mime/kind/duration；上传方知道这些元数据，
+     * 在消息落库后补写一次，否则「语音」在服务端模式里会渲染成一张加载不出来的图片。
+     */
+    @Query("UPDATE messages SET attachmentsJson = :json WHERE id = :id")
+    suspend fun updateAttachments(id: String, json: String?)
+
+    /**
      * 把一段稳定序区间整体改成同一块（导入/重建时用：一块一条 UPDATE，而不是一条消息一条）。
      *
      * 区间两端都是**闭区间**，用 `(createdAt, id)` 双列比较，和排序键完全一致，
@@ -358,6 +399,14 @@ interface MessageDao {
      */
     @Query("SELECT COUNT(*) FROM messages")
     suspend fun countAll(): Int
+
+    /**
+     * 0.13 历史媒体迁移的进度分母：只取「带附件」消息的 `attachmentsJson` 窄列。
+     *
+     * 不物化整行消息：几十万条纯文本消息不会进内存，返回的只是附件 JSON 片段。
+     */
+    @Query("SELECT attachmentsJson FROM messages WHERE attachmentsJson IS NOT NULL AND attachmentsJson != ''")
+    suspend fun allAttachmentJson(): List<String>
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
@@ -990,4 +1039,117 @@ interface MemoryVectorDao {
 
     @Query("DELETE FROM memory_vectors")
     suspend fun deleteAll()
+}
+
+/**
+ * 日记板（`spec/diary/README.md`）。
+ *
+ * 只做四件事：写、按时间倒序翻、按 id 删、把到点的提醒**原子地**领走。
+ * 领提醒用 `UPDATE ... WHERE remindedAt IS NULL` 并对返回行数判定：
+ * 心跳与主动 tick 可能同时跑，靠这条带条件的更新保证「只触发一次」，
+ * 而不是先查后写在两个协程之间留一个窗口。
+ */
+@Dao
+interface DiaryNoteDao {
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun recent(personaId: String, limit: Int): List<DiaryNoteEntity>
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    fun observeRecent(personaId: String, limit: Int): kotlinx.coroutines.flow.Flow<List<DiaryNoteEntity>>
+
+    @Query("SELECT * FROM diary_notes WHERE personaId = :personaId")
+    suspend fun allForPersona(personaId: String): List<DiaryNoteEntity>
+
+    @Query("SELECT * FROM diary_notes WHERE id = :id")
+    suspend fun getById(id: String): DiaryNoteEntity?
+
+    @Query("SELECT COUNT(*) FROM diary_notes WHERE personaId = :personaId")
+    suspend fun count(personaId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(note: DiaryNoteEntity)
+
+    /** 按 id + 人格删（跨人格隔离：别人的笔记 id 删不掉）。返回真删掉的行数。 */
+    @Query("DELETE FROM diary_notes WHERE id = :id AND personaId = :personaId")
+    suspend fun delete(id: String, personaId: String): Int
+
+    /** 到点且还没提醒过的笔记（整库口径：他的提醒不因为当前打开的是哪个人格而消失）。 */
+    @Query(
+        "SELECT * FROM diary_notes WHERE remindAt IS NOT NULL AND remindedAt IS NULL " +
+            "AND remindAt <= :now ORDER BY remindAt ASC LIMIT :limit"
+    )
+    suspend fun dueReminders(now: Long, limit: Int): List<DiaryNoteEntity>
+
+    /** 原子占位：只有 `remindedAt IS NULL` 时才写，返回 1 表示这一拍抢到了这条提醒。 */
+    @Query("UPDATE diary_notes SET remindedAt = :at, updatedAt = :at WHERE id = :id AND remindedAt IS NULL")
+    suspend fun markReminded(id: String, at: Long): Int
+
+    @Query("DELETE FROM diary_notes WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM diary_notes")
+    suspend fun deleteAll()
+}
+
+/**
+ * 表情包的读写口（`spec/stickers/SCHEMA.md`）。
+ *
+ * 列表只有两种口径，和 `spec/stickers/README.md` 的「最近 30 个 + 全部」一一对应：
+ * 「最近」按 `createdAt` 倒序，`createdAt` 相同时用 `id` 兜底（同一毫秒导入两张不会跳序）；
+ * 「全部」同序但不限量。`personaId` 只作为「属于哪个人格」的弱归属，不参与过滤——
+ * 用户换人格时自己的表情不该消失。
+ */
+@Dao
+interface StickerDao {
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    fun observeRecent(limit: Int): kotlinx.coroutines.flow.Flow<List<StickerEntity>>
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC")
+    fun observeAll(): kotlinx.coroutines.flow.Flow<List<StickerEntity>>
+
+    @Query("SELECT * FROM stickers ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun recent(limit: Int): List<StickerEntity>
+
+    @Query("SELECT * FROM stickers WHERE id = :id")
+    suspend fun getById(id: String): StickerEntity?
+
+    /** 同一个文件是否已经有表情行（「收藏」要复用同一份文件，不能存成两份）。 */
+    @Query("SELECT * FROM stickers WHERE file = :file LIMIT 1")
+    suspend fun findByFile(file: String): StickerEntity?
+
+    @Query("SELECT COUNT(*) FROM stickers")
+    suspend fun count(): Int
+
+    @Query("SELECT COUNT(*) FROM stickers WHERE personaId = :personaId")
+    suspend fun countForPersona(personaId: String): Int
+
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insert(sticker: StickerEntity): Long
+
+    /**
+     * 服务端缓存刷新用的「有就覆盖」写入（0.13）。
+     *
+     * 为什么不能只用 [insert]（IGNORE）：服务端那一行可能先是「字节没落盘、file 指向
+     * `/v1/media/<id>`」，下一轮下载成功后要用本地文件路径覆盖同一 id；IGNORE 会让它永远
+     * 停在服务端引用上。
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(sticker: StickerEntity): Long
+
+    @Query("UPDATE stickers SET personaId = :personaId WHERE id = :id")
+    suspend fun setPersona(id: String, personaId: String?)
+
+    @Query("DELETE FROM stickers WHERE id = :id")
+    suspend fun delete(id: String): Int
+
+    @Query("DELETE FROM stickers WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM stickers")
+    suspend fun deleteAll()
+
+    @Query("SELECT file FROM stickers")
+    suspend fun allFiles(): List<String>
 }

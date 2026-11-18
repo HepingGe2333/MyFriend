@@ -217,17 +217,19 @@ final class ToolProtocolTests: XCTestCase {
 
     func testCapabilityPromptContainsRequiredLines() {
         let prompt = ToolCatalog.capabilityPrompt(webEnabled: true)
-        XCTAssertTrue(prompt.hasPrefix("## 你可以调用这些工具"))
+        XCTAssertTrue(prompt.hasPrefix(ToolCatalog.capabilitySection), "0.13 的段标题是「# 你能做什么」")
         XCTAssertTrue(prompt.contains("- think(question)："))
         XCTAssertTrue(prompt.contains("- web_search(query, count?)："))
         XCTAssertTrue(prompt.contains("- web_fetch(url)："))
         XCTAssertTrue(prompt.contains("- remember(content, drawer, importance)："))
-        XCTAssertTrue(prompt.contains("- recall(query, depth)："))
+        XCTAssertTrue(prompt.contains("- recall(query, depth?)："))
         // 输出格式（代码块协议 + 回灌后说完）必须在里面。
         XCTAssertTrue(prompt.contains("```yap-tool"))
         XCTAssertTrue(prompt.contains("结果会交回给你，用自己的口吻说完，别把代码块念给对方。"))
         // 1.9：能力清单里必须有「这一轮先不回」这个动作，否则模型不知道它可以沉默。
         XCTAssertTrue(prompt.contains("- defer_reply("))
+        // 0.13：日记板也要在清单里（否则模型不知道它能给自己留便条）。
+        XCTAssertTrue(prompt.contains("- diary("))
         // 联网关掉时不再勾引他去查，但明确说「别编」。
         let offline = ToolCatalog.capabilityPrompt(webEnabled: false)
         // 注意：代码块示例里永远有 web_search 这个词，所以这里只断言「没有把联网当成可用工具列出来」。
@@ -236,14 +238,59 @@ final class ToolProtocolTests: XCTestCase {
         XCTAssertTrue(offline.contains("你现在没有联网能力"))
     }
 
+    /// 0.13 契约：提示词里的工具清单**就是从 `ToolCatalog` 生成的**（不手写第二份）。
+    ///
+    /// 断言三件事：
+    /// 1. 提示词里出现的每个工具名都在 `ToolCatalog.all` 里（不多）；
+    /// 2. `ToolCatalog.all` 里的每个工具都在提示词里（不少）；
+    /// 3. 每个工具的用途与副作用都真的写进了提示词（加工具必须写清「调用后世界变什么」）。
+    func testCapabilityPromptIsGeneratedFromToolCatalog() {
+        let prompt = ToolCatalog.capabilityPrompt(webEnabled: true)
+        let listed = Self.toolNames(inCapabilityPrompt: prompt)
+        XCTAssertEqual(listed, Set(ToolCatalog.all.map(\.name)), "提示词的工具集合必须等于 ToolCatalog.all")
+        XCTAssertEqual(listed.count, ToolCatalog.all.count, "不能重复列同一个工具")
+        for spec in ToolCatalog.all {
+            XCTAssertTrue(prompt.contains("- \(ToolCatalog.signature(spec))："), "缺少工具行：\(spec.name)")
+            XCTAssertTrue(prompt.contains(spec.description), "\(spec.name) 的用途没进提示词")
+            XCTAssertFalse(spec.sideEffect.isEmpty, "\(spec.name) 必须写清副作用")
+            XCTAssertTrue(prompt.contains(spec.sideEffect), "\(spec.name) 的副作用没进提示词")
+        }
+        // 联网关掉：清单里只剩 9 个（去掉两个联网工具），代码块示例不算。
+        let offline = Self.toolNames(inCapabilityPrompt: ToolCatalog.capabilityPrompt(webEnabled: false))
+        XCTAssertEqual(offline, Set(ToolCatalog.all.map(\.name)).subtracting([ToolCatalog.webSearch, ToolCatalog.webFetch]))
+        // 原生 tools 数组与提示词是同一份集合。
+        let json = ToolCatalog.toOpenAiToolsJson(ToolCatalog.enabled(webEnabled: false))
+        let array = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
+        let nativeNames = Set(array?.compactMap { ($0["function"] as? [String: Any])?["name"] as? String } ?? [])
+        XCTAssertEqual(nativeNames, offline)
+    }
+
+    /// 从「- name(...)：」这种行里取出工具名（代码块里的 JSON 不算）。
+    static func toolNames(inCapabilityPrompt prompt: String) -> Set<String> {
+        var names = Set<String>()
+        for line in prompt.split(separator: "\n") {
+            guard line.hasPrefix("- ") else { continue }
+            guard let open = line.firstIndex(of: "(") else { continue }
+            let name = line[line.index(line.startIndex, offsetBy: 2)..<open]
+            names.insert(name.trimmingCharacters(in: .whitespaces))
+        }
+        return names
+    }
+
     func testToolCatalogShape() {
         // 1.9 多了一个 `defer_reply`：模型可以用它说「这一轮先不回」（§四）。
         // 0.12 多了一个 `set_activity`：模型可以声明「我接下来这段时间在做什么」（人设引导 §4）。
-        XCTAssertEqual(ToolCatalog.all.count, 10)
+        // 0.13 多了一个 `diary`：他自己的日记板（`spec/diary/README.md`）。
+        // 0.13 表情包再多一个 `sticker`：发/做/收藏表情（`spec/stickers/README.md`）。
+        // 0.13 音视频再多 `listen` / `watch`：真的听一段语音、看几帧视频画面
+        //（`spec/audio-video/README.md`；不是转写、不是猜）。
+        // 0.13 多维情绪/可以不回再加一个 `stay_silent`：这一轮只标已读、不回
+        //（`spec/mood/README.md` §4；与 `defer_reply` 的分工见工具描述）。
+        XCTAssertEqual(ToolCatalog.all.count, 15)
         XCTAssertEqual(ToolCatalog.all.map(\.name), [
             "think", "web_search", "web_fetch", "remember",
             "update_persona", "set_quiet_hours", "set_activity", "set_mood", "recall",
-            "defer_reply"
+            "defer_reply", "stay_silent", "diary", "sticker", "listen", "watch"
         ])
         XCTAssertNotNil(ToolCatalog.byName(" recall "))
         XCTAssertNil(ToolCatalog.byName("nope"))
@@ -256,7 +303,7 @@ final class ToolProtocolTests: XCTestCase {
         // OpenAI tools 数组形状
         let json = ToolCatalog.toOpenAiToolsJson()
         let array = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
-        XCTAssertEqual(array?.count, 10)
+        XCTAssertEqual(array?.count, 15)
         XCTAssertEqual(array?.first?["type"] as? String, "function")
         let function = array?.first?["function"] as? [String: Any]
         XCTAssertEqual(function?["name"] as? String, "think")
@@ -295,7 +342,8 @@ final class ToolProtocolTests: XCTestCase {
         XCTAssertTrue(activity.description.contains("两者可以同时存在"), activity.description)
         // 能力提示里也要有这个工具与它的取值范围。
         let prompt = ToolCatalog.capabilityPrompt()
-        XCTAssertTrue(prompt.contains("- set_activity(activity, minutes?, kind?, availability?)"))
+        // 参数提示由 schema 生成：必填在前，其余按字母序（activity, availability?, kind?, minutes?）。
+        XCTAssertTrue(prompt.contains("- set_activity(activity, availability?, kind?, minutes?)："))
         XCTAssertTrue(prompt.contains("15–480"))
         XCTAssertTrue(prompt.contains("BUSY/LIMITED/FREE"))
         // 动作卡片标题不裸露工具名。

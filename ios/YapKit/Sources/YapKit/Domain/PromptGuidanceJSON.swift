@@ -191,4 +191,58 @@ enum PromptClock {
     static func dayIndex(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> Int {
         components(millis, calendar: calendar).weekday ?? 1
     }
+
+    // MARK: - 每一次请求都重取的「此刻」（`spec/context-time/README.md`）
+
+    /// 「2026-11-17」。
+    ///
+    /// 为什么不用 `DateFormatter`：同上（会跟着系统语言变），而提示词是中文脚手架、
+    /// 形状必须固定。日期本身按**设备当前时区**算，跨天后日期自然变。
+    static func dateText(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
+        let parts = fullComponents(millis, calendar: calendar)
+        return String(format: "%04d-%02d-%02d",
+                      parts.year ?? 1970, parts.month ?? 1, parts.day ?? 1)
+    }
+
+    /// 「UTC+08:00」/「UTC-05:00」/「UTC+00:00」。
+    ///
+    /// 偏移取自 `calendar.timeZone`（默认设备当前时区）：设备换时区后这里自然跟着变，
+    /// 所以提示词里不能缓存它。写成固定两位的 `±HH:mm`，模型才好照抄进答复里。
+    static func utcOffsetText(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
+        let date = Date(timeIntervalSince1970: Double(millis) / 1000.0)
+        let seconds = calendar.timeZone.secondsFromGMT(for: date)
+        let sign = seconds < 0 ? "-" : "+"
+        let totalMinutes = abs(seconds) / 60
+        return String(format: "UTC%@%02d:%02d", sign, totalMinutes / 60, totalMinutes % 60)
+    }
+
+    /// 一条完整的时间：「2026-11-17 周二 02:42（UTC+08:00）」。
+    ///
+    /// 这是 `spec/context-time/README.md` 规定的形状（`YYYY-MM-DD 周X HH:mm` + 偏移）。
+    /// **纯函数**：`millis` 与 `calendar` 都由调用方给，测试可以钉住跨天/跨时区。
+    public static func momentText(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
+        "\(dateText(millis, calendar: calendar)) "
+            + "\(weekdayText(millis, calendar: calendar)) "
+            + "\(clockText(millis, calendar: calendar))"
+            + "（\(utcOffsetText(millis, calendar: calendar))）"
+    }
+
+    /// 「2026-11-17 周二」：作为脚手架 `state_line` 的 `{weekday}` 取值。
+    ///
+    /// 0.13 起 `{weekday}` 不再只是一个星期几：跨天之后「周三」这两个字没变，
+    /// 模型就没有任何线索知道今天已经换了一天（这正是 `spec/context-time` 要修的 bug），
+    /// 所以日期合并进这一格。
+    static func dateWeekdayText(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
+        "\(dateText(millis, calendar: calendar)) \(weekdayText(millis, calendar: calendar))"
+    }
+
+    /// 「02:42（UTC+08:00）」：作为脚手架 `state_line` 的 `{time}` 取值。
+    static func clockWithOffsetText(_ millis: Int64, calendar: Calendar = ServiceTime.calendar()) -> String {
+        "\(clockText(millis, calendar: calendar))（\(utcOffsetText(millis, calendar: calendar))）"
+    }
+
+    static func fullComponents(_ millis: Int64, calendar: Calendar) -> DateComponents {
+        let date = Date(timeIntervalSince1970: Double(millis) / 1000.0)
+        return calendar.dateComponents([.year, .month, .day, .weekday, .hour, .minute], from: date)
+    }
 }

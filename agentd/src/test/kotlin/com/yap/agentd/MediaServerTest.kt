@@ -149,9 +149,9 @@ class MediaServerTest {
     }
 
     @Test
-    fun `media uploads accept up to four mebibytes at the http layer and still cap files at two`() {
+    fun `media uploads allow a larger http body but still cap per-kind file size`() {
         val server = start()
-        // 3 MiB：HTTP 层允许（媒体路由 4 MiB），路由层按单文件 2 MiB 拒绝。
+        // 3 MiB：HTTP 层允许（媒体路由 66 MiB），路由层按图片单文件 2 MiB 拒绝。
         val threeMib = ByteArray(3 * 1024 * 1024) { 1 }
         val tooLargeFile = postBytes(
             server.port,
@@ -164,7 +164,7 @@ class MediaServerTest {
     }
 
     @Test
-    fun `declared body above four mebibytes on media is rejected from the headers`() {
+    fun `declared body above the media body limit is rejected from the headers`() {
         val server = start()
         Socket("127.0.0.1", server.port).use { socket ->
             socket.soTimeout = 5_000
@@ -181,7 +181,7 @@ class MediaServerTest {
             val response = readAll(socket.getInputStream())
             assertTrue("期望 413，实际：${response.take(160)}", response.startsWith("HTTP/1.1 413"))
             assertTrue(response.contains("content_too_large"))
-            assertTrue("媒体路由的上限文案应是 4096 KiB", response.contains("4096 KiB"))
+            assertTrue("媒体路由的上限文案应带上实际上限", response.contains("${MediaRoutes.MAX_REQUEST_BODY_BYTES / 1024} KiB"))
         }
 
         // 其它路由仍保持 1 MiB：声明 1.5 MiB 直接 413。

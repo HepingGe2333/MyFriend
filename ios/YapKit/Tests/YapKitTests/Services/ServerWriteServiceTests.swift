@@ -321,13 +321,25 @@ final class ServerWriteServiceTests: XCTestCase {
     // MARK: - 备份
 
     func testExportBackupReadsServerObject() async throws {
+        // 0.13 起服务端导出的就是**客户端 v6 同形 JSON**：v6 的三段必须原样带出来，
+        // 客户端不能「先解析成自己的结构再重新编码」（那会悄悄丢掉它不认识的字段）。
         ServerURLProtocolStub.enqueue(.json(
-            #"{"version":5,"exportedAt":123,"personas":[{"id":"p1"}],"settings":{"themeMode":"DARK"}}"#
+            """
+            {"format":"myfriend.backup","formatVersion":6,"exportedAt":123,
+             "personas":[{"id":"p1"}],
+             "media":[{"id":"stk_1","kind":"STICKER","fileName":"stk_1.gif","bytes":3,"data":"R0lG"}],
+             "stickers":[{"id":"stk_1","file":"stk_1.gif","fileName":"stk_1.gif"}],
+             "diaryNotes":[{"id":"n1","personaId":"p1","content":"周四打电话"}],
+             "settings":{"themeMode":"DARK"}}
+            """
         ))
         let text = try await service().exportBackup()
-        XCTAssertTrue(text.contains("\"version\""))
         let object = JSONValueParser.object(from: text)
+        XCTAssertEqual(object?["formatVersion"]?.intValue, 6)
         XCTAssertEqual(object?["personas"]?.arrayValue?.count, 1)
+        XCTAssertEqual(object?["stickers"]?.arrayValue?.count, 1)
+        XCTAssertEqual(object?["diaryNotes"]?.arrayValue?.count, 1)
+        XCTAssertEqual(object?["media"]?.arrayValue?.count, 1)
         let request = try XCTUnwrap(ServerURLProtocolStub.recordedRequests.last)
         XCTAssertEqual(request.httpMethod, "GET")
         XCTAssertEqual(request.url?.path, "/v1/backup")
@@ -360,6 +372,50 @@ final class ServerWriteServiceTests: XCTestCase {
             (try? temp.stores.personas.byId("p1"))??.name, "林深",
             "导入后本地缓存里有这个人"
         )
+    }
+
+    // MARK: - 服务端备份与客户端 v6 的互通（0.13）
+
+    /// 两端共用的 v6 黄金样本：服务端模式下也必须原样读通/写通。
+    private func fixture(_ name: String) throws -> String {
+        let directory = try XCTUnwrap(
+            RepoLayout.backupFixtureDirectory(),
+            "找不到 fixtures/backup（工作目录=\(FileManager.default.currentDirectoryPath)）"
+        )
+        return try String(contentsOf: directory.appendingPathComponent(name), encoding: .utf8)
+    }
+
+    func testExportBackupKeepsV6FixtureSections() async throws {
+        let raw = try fixture("android-export-v6.json")
+        ServerURLProtocolStub.enqueue(.json(raw))
+
+        let text = try await service().exportBackup()
+
+        let object = try XCTUnwrap(JSONValueParser.object(from: text))
+        XCTAssertEqual(object["formatVersion"]?.intValue, 6)
+        XCTAssertEqual(object["stickers"]?.arrayValue?.count, 1)
+        XCTAssertEqual(object["diaryNotes"]?.arrayValue?.count, 1)
+        XCTAssertFalse(object["media"]?.arrayValue?.isEmpty ?? true, "v6 备份要带媒体段")
+    }
+
+    func testImportAndroidV6FixturePostsV6DataObjectServerFirst() async throws {
+        let raw = try fixture("android-export-v6.json")
+        ServerURLProtocolStub.enqueue(.json(
+            #"{"mode":"replace","imported":{"personas":1,"sessions":1,"messages":0,"memories":1,"presets":0,"settings":true}}"#
+        ))
+
+        _ = try await service(withBackup: true).importBackup(text: raw, mode: .replace)
+
+        let request = try XCTUnwrap(ServerURLProtocolStub.recordedRequests.last)
+        XCTAssertEqual(request.httpMethod, "POST")
+        XCTAssertEqual(request.url?.path, "/v1/backup")
+        let body = try requestBodyJSON()
+        XCTAssertEqual(body["mode"] as? String, "replace")
+        let data = try XCTUnwrap(body["data"] as? [String: Any])
+        XCTAssertEqual(data["formatVersion"] as? Int, 6)
+        XCTAssertNotNil(data["stickers"] as? [Any])
+        XCTAssertNotNil(data["diaryNotes"] as? [Any])
+        XCTAssertNotNil(data["media"] as? [Any])
     }
 
     func testImportBackupFailureDoesNotTouchLocalCache() async throws {

@@ -58,5 +58,38 @@ data class AppSettings(
      */
     val heartbeatLastResetAt: Long = 0L,
     /** 上一次他真的因为这股冲动想了一回的时刻；null = 还没发生过。同样是内部状态。 */
-    val heartbeatLastFiredAt: Long? = null
+    val heartbeatLastFiredAt: Long? = null,
+
+    /**
+     * 人格进化评估的游标（`docs/design/persona-evolution.md` §2）。
+     *
+     * 三件都是**内部状态**，界面上没有它们：只为了让「每 20 条用户消息或 24 小时评估一次」
+     * 在 App 重启之后接着算，而不是每次冷启动都算作「已经过了 24 小时」。
+     * 换人格时游标重置（[evolutionPersonaId] 对不上就当 0）。
+     */
+    val evolutionPersonaId: String? = null,
+    /** 上次评估时这个会话已经有几条用户消息。 */
+    val evolutionUserMessageCount: Int = 0,
+    /** 上次评估的时刻；0 = 还没评估过。 */
+    val evolutionLastRunAt: Long = 0L,
+
+    /**
+     * 自动情绪判定的游标（`spec/mood/README.md` §2）。
+     *
+     * 与进化游标一样是**内部状态**：只为了让「每 4 条用户消息或 24 小时判定一次」
+     * 在 App 重启之后接着算。换人格时游标重置（[moodJudgePersonaId] 对不上就当 0）。
+     */
+    val moodJudgePersonaId: String? = null,
+    val moodJudgeUserMessageCount: Int = 0,
+    val moodJudgeLastRunAt: Long = 0L,
+
+    /**
+     * 连续「已读不回」（`stay_silent`）的轮数，以及它属于哪个人格。
+     *
+     * 规范 §4 要求连续不超过 2 轮，第 3 次必须要么回一句、要么忽略这次调用。
+     * 计数器同样是内部状态：回一句（产生 assistant 消息）时清零；
+     * 换人格时按 [staySilentPersonaId] 判断，不会把 A 的沉默算到 B 头上。
+     */
+    val staySilentPersonaId: String? = null,
+    val staySilentStreak: Int = 0
 )

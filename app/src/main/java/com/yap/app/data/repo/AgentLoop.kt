@@ -32,6 +32,7 @@ import com.yap.app.domain.MoodTuning
 import com.yap.app.domain.LlmLane
 import com.yap.app.domain.OpenSessionTracker
 import com.yap.app.domain.ProactiveCapInput
+import com.yap.app.domain.PromptBuilder
 import com.yap.app.domain.SleepPolicy
 import com.yap.app.domain.ResolvedApiConfig
 import com.yap.app.network.ApiException
@@ -83,7 +84,14 @@ class AgentLoop @Inject constructor(
     private val database: YapDatabase,
     /** 块元数据的唯一写入入口（规范 §2）：主动消息/心跳消息也是新消息。 */
     private val blockWriter: MessageBlockWriter,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    /** 他的日记板：主动 tick 也要把到点提醒变成念头（与心跳同一条路径，靠原子占位去重）。 */
+    private val diaryRepository: DiaryRepository,
+    /**
+     * 服务端模式：主动思考/主动消息由服务端独立负责。客户端即使被别的入口（WorkManager 兜底、
+     * 主动规则 Worker、历史遗留的服务实例）叫到，也必须在这里停住——这是最后一道闸。
+     */
+    private val serverMode: com.yap.app.data.remote.ServerModeRepository
 ) {
 
     /**
@@ -122,6 +130,10 @@ class AgentLoop @Inject constructor(
     suspend fun lastTickAt(): Long? = runCatching { tickDao.lastTickAt() }.getOrNull()
 
     suspend fun tick(now: Long = System.currentTimeMillis()): Outcome {
+        // 服务端模式：不启动本地自主决策（连锁都不抢）。等切回本地模式，下一次心跳自然恢复。
+        if (serverMode.isEnabled()) {
+            return Outcome(IDLE_MAX, false, "服务端模式：主动由服务端负责（客户端只同步）")
+        }
         if (!tickLock.tryEnter()) {
             return Outcome(IDLE_MAX, false, "上一次思考还没结束，这一拍跳过")
         }
@@ -139,6 +151,10 @@ class AgentLoop @Inject constructor(
 
         val persona = pickPersona(settings.activePersonaId)
             ?: return Outcome(BACKOFF_MINUTES, false, "还没有可以对话的人格")
+
+        // 日记里到点的提醒先变成念头：心跳每 30 秒会调它一次，这里只是「主动 tick 也顺手检查一遍」，
+        // 同一条提醒不会触发两次（DiaryRepository 用带条件的 UPDATE 抢占）。
+        runCatching { diaryRepository.remindDue(now) }
 
         // 先把过期的念头作废，再把到点的节奏变成「想在某个窗口里找他」。
         runCatching { intentRepository.expireStale(now) }
@@ -496,7 +512,11 @@ class AgentLoop @Inject constructor(
             else -> "深夜"
         }
         val sb = StringBuilder()
-        sb.appendLine("现在：${zoned.format(DateTimeFormatter.ofPattern("yyyy-MM-dd EEEE HH:mm"))}（$greeting）")
+        // 与聊天共用同一份时间格式（`spec/context-time`）：日期 + 周X + 时刻 + 时区偏移。
+        // 主动消息也是一次「请求发出瞬间」，所以这里同样现取 now，不缓存。
+        val clock = PromptBuilder.clockText(now, zone)
+            ?: zoned.format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
+        sb.appendLine("现在：$clock · $greeting")
         personaCardRepository.sleepHint(persona)?.let { sb.appendLine("你的作息：$it") }
         // 他得知道自己在什么光景里：刚醒、在发呆、一个人翻着东西……
         // 这不是系统状态，是他对自己此刻的感知；措辞用第二人称，别让他读成别人。

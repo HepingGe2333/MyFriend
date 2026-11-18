@@ -1,17 +1,35 @@
 package com.yap.app.network
 
 import com.yap.app.data.local.ApiConfigEntity
+import com.yap.app.domain.ApiDefaults
 import com.yap.app.domain.NetworkErrorKind
 import com.yap.app.domain.UserError
 import com.yap.app.domain.debugText
 import com.yap.app.data.local.ProviderType
 
+/**
+ * 一段要随请求发出的语音（0.13）。
+ *
+ * [base64] 是裸编码（OpenAI 兼容的 `input_audio.input_audio.data` 就长这样），
+ * [format] 是 provider 认的短名（`m4a` / `mp3` / `wav`）。
+ * 只有「这一轮用户发的语音」和 `listen` 工具结果会带它：历史里永远不重复 base64。
+ */
+data class WireAudio(
+    val base64: String,
+    val format: String
+)
+
 data class WireMessage(
     val role: String,
     val content: String,
     /** 已经编码好的 data URL（base64），非空时以多模态 content 数组发送。 */
-    val images: List<String> = emptyList()
-)
+    val images: List<String> = emptyList(),
+    /** 这一轮要一起发出去的语音（`input_audio`）；历史消息里恒为空。 */
+    val audios: List<WireAudio> = emptyList()
+) {
+    /** 这条消息是否带任何多模态内容（决定 content 用字符串还是数组）。 */
+    val hasMedia: Boolean get() = images.isNotEmpty() || audios.isNotEmpty()
+}
 
 data class InferenceParams(
     val temperature: Double? = null,
@@ -21,12 +39,20 @@ data class InferenceParams(
     val presencePenalty: Double? = null
 )
 
+/**
+ * 这个配置实际要发出去的推理参数。
+ *
+ * 配置里**显式填了**就用配置（用户能覆盖），没填就用应用默认值：
+ * `temperature=0.75`、`max_tokens=16384`、`top_p=1.0`、频率/存在惩罚 0
+ * （`spec/api-defaults/README.md`）。默认值写在 [ApiDefaults] 一处，聊天、主动消息、
+ * 工具回路每一轮都走这里，不会出现「第一轮是 0.75、第二轮忘了带」。
+ */
 fun ApiConfigEntity.inferenceParams(): InferenceParams = InferenceParams(
-    temperature = temperature,
-    topP = topP,
-    maxOutputTokens = maxOutputTokens,
-    frequencyPenalty = frequencyPenalty,
-    presencePenalty = presencePenalty
+    temperature = temperature ?: ApiDefaults.TEMPERATURE,
+    topP = topP ?: ApiDefaults.TOP_P,
+    maxOutputTokens = maxOutputTokens ?: ApiDefaults.MAX_OUTPUT_TOKENS,
+    frequencyPenalty = frequencyPenalty ?: ApiDefaults.FREQUENCY_PENALTY,
+    presencePenalty = presencePenalty ?: ApiDefaults.PRESENCE_PENALTY
 )
 
 data class ProviderCapabilities(

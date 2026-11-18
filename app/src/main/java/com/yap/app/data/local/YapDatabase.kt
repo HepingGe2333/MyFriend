@@ -25,9 +25,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ApiUsageEntity::class,
         MemoryTermEntity::class,
         MemoryVersionEntity::class,
-        MemoryVectorEntity::class
+        MemoryVectorEntity::class,
+        DiaryNoteEntity::class,
+        StickerEntity::class
     ],
-    version = 14,
+    version = 17,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -52,12 +54,165 @@ abstract class YapDatabase : RoomDatabase() {
     abstract fun memoryTermDao(): MemoryTermDao
     abstract fun memoryVersionDao(): MemoryVersionDao
     abstract fun memoryVectorDao(): MemoryVectorDao
+    abstract fun diaryNoteDao(): DiaryNoteDao
+    abstract fun stickerDao(): StickerDao
 
     /** 媒体文件引用计数（0.12 去重收尾）：纯查询，不新增表，也不动 schema。 */
     abstract fun mediaReferenceDao(): MediaReferenceDao
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v17：多维情绪（`spec/mood/README.md` §1）。
+         *
+         * 给 `personas` 加三列可空 `INTEGER`：
+         * - `moodValence`（-2..2 愉快度）；
+         * - `moodArousal`（0..5 唤醒度）；
+         * - `moodDominance`（0..5 掌控感）。
+         *
+         * 然后按规范「旧数据迁移」把已有的标签/强度折算进来：valence 由 label 映射
+         * （累/烦→-1、平静→0、开心→1），arousal 由 intensity 推，dominance=3。
+         *
+         * 为什么不把映射写成一条 SQL `CASE`：心情词表在 `MoodLexicon` 里，SQL 再抄一份
+         * 就等于有两个真源，以后加词一定会漂。这里直接调 `MoodDimensions.fromLegacy`
+         * （与运行时读路径同一个函数），SQL 只负责「把算好的三个数写回这一行」。
+         *
+         * 只补 `moodValence IS NULL` 且 `mood IS NOT NULL` 的行：
+         * - 空心情没有可映射的东西，保持 NULL（读路径会给基准值）；
+         * - 重复执行时已经没有 NULL 行可补，天然幂等。
+         *
+         * 列本身仍然可空：将来换词表/判定的维度是 NULL 时才代表「还没算过」，
+         * 不能用一个看起来有值的 0 冒充「他很平静」。
+         *
+         * 幂等：先查 `PRAGMA table_info`，列已经在就跳过；回填只针对 NULL 行。
+         */
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                // 防御：极老/被修复脚本动过的库可能连 personas 都没有。没有表就没有旧心情要保，
+                // 交给 Room 按 v17 的实体建表即可；这里硬 ALTER 只会让升级当场崩。
+                if (personaColumns.isEmpty()) return
+                if ("moodValence" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodValence` INTEGER")
+                }
+                if ("moodArousal" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodArousal` INTEGER")
+                }
+                if ("moodDominance" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `moodDominance` INTEGER")
+                }
+                backfillMoodDimensions(db)
+            }
+        }
+
+        /**
+         * v17 的旧数据回填：把 `(mood, moodIntensity)` 折算成三个维度写回。
+         *
+         * 先读完再写（不在打开的游标上执行 UPDATE）：人格数量很少（几十条），
+         * 用一次列表换「不同 SQLite 版本上的游标行为一致」是值得的。
+         */
+        private fun backfillMoodDimensions(db: SupportSQLiteDatabase) {
+            val rows = mutableListOf<Triple<String, String?, Int?>>()
+            db.query(
+                "SELECT `id`, `mood`, `moodIntensity` FROM `personas` " +
+                    "WHERE `mood` IS NOT NULL AND `mood` != '' AND `moodValence` IS NULL"
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    rows += Triple(
+                        cursor.getString(0),
+                        if (cursor.isNull(1)) null else cursor.getString(1),
+                        if (cursor.isNull(2)) null else cursor.getInt(2)
+                    )
+                }
+            }
+            rows.forEach { (id, mood, intensity) ->
+                val reading = com.yap.app.domain.MoodDimensions.fromLegacy(
+                    label = mood.orEmpty(),
+                    intensity = intensity ?: 2
+                )
+                db.execSQL(
+                    "UPDATE `personas` SET `moodValence` = ?, `moodArousal` = ?, `moodDominance` = ? WHERE `id` = ?",
+                    arrayOf<Any>(reading.valence, reading.arousal, reading.dominance, id)
+                )
+            }
+        }
+
+        /**
+         * v16：表情包（`spec/stickers/README.md` / `SCHEMA.md`）。
+         *
+         * 只新建一张表 + 两条索引，不动任何既有表与既有一行数据：老库升级后 `stickers` 是空的
+         * =「他还没有表情」，聊天、记忆、人格、日记一条都不受影响。
+         *
+         * 幂等：`CREATE TABLE IF NOT EXISTS` + `CREATE INDEX IF NOT EXISTS`，
+         * 迁移测试与将来的修复脚本可以重复调用（重复执行不报错、也不清数据）。
+         *
+         * 列名/顺序/可空/默认值必须与 `SCHEMA.md` 逐字一致（两端靠它对齐）。
+         */
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `stickers` (
+                        `id` TEXT NOT NULL,
+                        `ownerUserId` TEXT,
+                        `personaId` TEXT,
+                        `file` TEXT NOT NULL,
+                        `mime` TEXT NOT NULL,
+                        `width` INTEGER NOT NULL DEFAULT 0,
+                        `height` INTEGER NOT NULL DEFAULT 0,
+                        `frames` INTEGER NOT NULL DEFAULT 1,
+                        `bytes` INTEGER NOT NULL DEFAULT 0,
+                        `source` TEXT NOT NULL,
+                        `createdBy` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_stickers_createdAt` ON `stickers` (`createdAt`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_stickers_personaId` ON `stickers` (`personaId`)"
+                )
+            }
+        }
+
+        /**
+         * v15：日记板（`spec/diary/README.md`）。
+         *
+         * 只新建一张表，不动任何既有表：老库升级后 `diary_notes` 是空的 = 「他还没写过备忘」，
+         * 聊天、记忆、人格一条都不受影响。这是最安全的一类迁移——没有回填、没有重命名、
+         * 没有列改写，所以不存在「升级之后他忘了我」的风险。
+         *
+         * 幂等：`CREATE TABLE IF NOT EXISTS` + 索引同样 `IF NOT EXISTS`，
+         * 迁移测试与将来的修复脚本可以重复调用（重复执行不会报错，也不会清数据）。
+         */
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `diary_notes` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `content` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `remindAt` INTEGER,
+                        `remindedAt` INTEGER,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_diary_notes_personaId` ON `diary_notes` (`personaId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_diary_notes_remindAt` ON `diary_notes` (`remindAt`)"
+                )
+            }
+        }
 
         /**
          * v14：人格提示词的翻译缓存（`spec/persona-translation/README.md` §4）。

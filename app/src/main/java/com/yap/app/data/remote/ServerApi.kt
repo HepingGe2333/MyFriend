@@ -403,8 +403,8 @@ class ServerApi(
      * `POST /v1/media?mime=&kind=&personaId=`：**原始字节**请求体，不是 multipart。
      *
      * 客户端上传前已经把图片压成 JPEG（聊天图 ≤800 KB、头像 ≤400 KB），服务端仍按
-     * [ServerMediaLimits.MAX_UPLOAD_BYTES]（2 MiB）兜底：压缩器是可替换实现，不能只信它。
-     * 超限在这里就失败，不把 3 MB 的 body 发出去再等服务端 413。
+     * [ServerMediaLimits.maxUploadBytes]（图片 2 MiB / 音频 8 MiB / 视频 64 MiB）兜底：
+     * 压缩器是可替换实现，不能只信它。超限在这里就失败，不把超大 body 发出去再等服务端 413。
      */
     override suspend fun uploadMedia(
         bytes: ByteArray,
@@ -415,9 +415,10 @@ class ServerApi(
         if (bytes.isEmpty()) {
             throw ServerApiException("media body is empty", code = "media_empty")
         }
-        if (bytes.size > ServerMediaLimits.MAX_UPLOAD_BYTES) {
+        val limit = ServerMediaLimits.maxUploadBytes(kind)
+        if (bytes.size > limit) {
             throw ServerApiException(
-                "media body exceeds the ${ServerMediaLimits.MAX_UPLOAD_BYTES} byte upload limit",
+                "media body exceeds the $limit byte upload limit",
                 code = "media_too_large"
             )
         }
@@ -452,8 +453,15 @@ class ServerApi(
         return media.copy(url = media.url.ifBlank { ServerMediaRef.canonical(media.id).orEmpty() })
     }
 
-    /** `GET /v1/media/{id}`：下载原始字节（备份/缓存导出用；渲染走 Coil 的磁盘缓存）。 */
-    suspend fun downloadMedia(mediaRef: String): ByteArray {
+    /**
+     * `GET /v1/media/{id}`：下载原始字节（备份/缓存导出/音视频播放用；图片渲染走 Coil 的磁盘缓存）。
+     *
+     * @param maxBytes 下载上限：图片默认 2 MiB；语音/视频播放缓存传 8 / 64 MiB（0.13）
+     */
+    suspend fun downloadMedia(
+        mediaRef: String,
+        maxBytes: Int = ServerMediaLimits.MAX_DOWNLOAD_BYTES
+    ): ByteArray {
         val id = ServerMediaRef.idOf(mediaRef)
             ?: throw ServerApiException("not a media reference", code = "invalid_argument")
         val request = requestBuilder(url("v1", "media", id)).get().build()
@@ -462,7 +470,7 @@ class ServerApi(
             val body = response.body
                 ?: throw ServerApiException("server returned an empty media body", code = "invalid_response")
             val declared = body.contentLength()
-            if (declared > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+            if (declared > maxBytes) {
                 throw ServerApiException("media exceeds the download limit", code = "response_too_large")
             }
             val output = ByteArrayOutputStream()
@@ -473,7 +481,7 @@ class ServerApi(
                     val read = input.read(chunk)
                     if (read < 0) break
                     total += read
-                    if (total > ServerMediaLimits.MAX_DOWNLOAD_BYTES) {
+                    if (total > maxBytes) {
                         throw ServerApiException("media exceeds the download limit", code = "response_too_large")
                     }
                     output.write(chunk, 0, read)
@@ -531,6 +539,52 @@ class ServerApi(
             "memories"
         )
 
+    // ------------------------------------------------------------------ 0.13：表情包 / 日记板（§3.7）
+
+    /**
+     * `GET /v1/stickers?personaId=&limit=`：服务端表情列表（按 createdAt 倒序，最近在前）。
+     *
+     * 用 [requestObjectList] 而不是强类型反序列化：服务端可能回 `{ "stickers": […] }`，
+     * 也可能在别的版本里回裸数组；拿 [JsonObject] 再逐条宽松解码，字段增减不会让整次同步失败。
+     */
+    suspend fun stickers(personaId: String? = null, limit: Int? = null): List<ServerStickerRow> =
+        requestObjectList(
+            url("v1", "stickers") { builder ->
+                if (!personaId.isNullOrBlank()) builder.addQueryParameter("personaId", personaId)
+                if (limit != null) builder.addQueryParameter("limit", limit.coerceIn(1, MAX_STICKER_LIMIT).toString())
+            },
+            "stickers"
+        ).mapNotNull { row ->
+            runCatching { json.decodeFromJsonElement<ServerStickerRow>(row) }.getOrNull()
+        }
+
+    /** `POST /v1/stickers`：元数据 + base64（或 `mediaId`）；响应里带服务端分配 id 的整行。 */
+    suspend fun createSticker(payload: JsonObject): ServerStickerRow? =
+        postJson<ServerStickerCreated>(url("v1", "stickers"), payload).sticker
+
+    /** `DELETE /v1/stickers/{id}`：服务端不存在时抛 404（由网关决定是否当「已经没了」）。 */
+    suspend fun deleteSticker(stickerId: String) = delete(url("v1", "stickers", stickerId))
+
+    /** `GET /v1/personas/{id}/diary?limit=&since=`：一个日记分页。 */
+    suspend fun diary(personaId: String, limit: Int? = null, since: Long = 0L): List<ServerDiaryRow> =
+        requestObjectList(
+            url("v1", "personas", personaId, "diary") { builder ->
+                if (limit != null) builder.addQueryParameter("limit", limit.coerceIn(1, MAX_DIARY_LIMIT).toString())
+                if (since > 0L) builder.addQueryParameter("since", since.toString())
+            },
+            "notes"
+        ).mapNotNull { row ->
+            runCatching { json.decodeFromJsonElement<ServerDiaryRow>(row) }.getOrNull()
+        }
+
+    /** `POST /v1/personas/{id}/diary`：不带 `id` 新建、带 `id` 更新；响应是 `{"note":…}`。 */
+    suspend fun saveDiary(personaId: String, payload: JsonObject): ServerDiaryRow? =
+        postJson<ServerDiarySaved>(url("v1", "personas", personaId, "diary"), payload).note
+
+    /** `DELETE /v1/personas/{id}/diary/{noteId}`：跨人格隔离由服务端保证。 */
+    suspend fun deleteDiary(personaId: String, noteId: String) =
+        delete(url("v1", "personas", personaId, "diary", noteId))
+
     /** `GET /v1/settings`：服务端公开设置（不含 API Key）。 */
     suspend fun settings(): JsonObject =
         requestJson(requestBuilder(url("v1", "settings")).get().build())
@@ -570,6 +624,69 @@ class ServerApi(
             put("data", data)
         }
     )
+
+    // ------------------------------------------------------------------ 0.13：云端情绪 / 人格进化 / 配置推送
+
+    /**
+     * `POST /v1/personas/{id}/mood/evaluate`：让**服务端**用自己的模型判定一次多维情绪。
+     *
+     * 与服务端「没配模型也不报错」的约定一致：端点仍回 200，`source` 说明是
+     * `llm` / `decay` / `unchanged`。客户端只在 [ServerMoodEvaluation.mood] 有值时写本地缓存。
+     */
+    suspend fun evaluateMood(personaId: String): ServerMoodEvaluation =
+        postJson(
+            url("v1", "personas", personaId, "mood", "evaluate"),
+            buildJsonObject { }
+        )
+
+    /**
+     * `POST /v1/personas/{id}/evolution/evaluate`：让服务端评估一次人格进化并写服务端待审表。
+     *
+     * 返回体里的 `patch` 是**服务端分配 id** 的补丁（客户端把它缓存到本地待审表，
+     * 接受/拒绝时用这个 id 调服务端端点）。
+     */
+    suspend fun evaluateEvolution(personaId: String): ServerEvolutionEvaluation =
+        postJson(
+            url("v1", "personas", personaId, "evolution", "evaluate"),
+            buildJsonObject { }
+        )
+
+    /** `GET /v1/personas/{id}/evolution/pending`：服务端待审补丁（服务端已顺手清掉过期项）。 */
+    suspend fun pendingEvolution(personaId: String): ServerEvolutionPending =
+        requestJson(
+            requestBuilder(url("v1", "personas", personaId, "evolution", "pending")).get().build()
+        )
+
+    /** `POST /v1/personas/{id}/evolution/{patchId}/accept`：服务端合并四字段 + `version + 1`。 */
+    suspend fun acceptEvolution(personaId: String, patchId: String): ServerEvolutionAcceptance =
+        postJson(
+            url("v1", "personas", personaId, "evolution", patchId, "accept"),
+            buildJsonObject { }
+        )
+
+    /** `POST /v1/personas/{id}/evolution/{patchId}/reject`：只丢补丁，人格不动。 */
+    suspend fun rejectEvolution(personaId: String, patchId: String): ServerEvolutionRejection =
+        postJson(
+            url("v1", "personas", personaId, "evolution", patchId, "reject"),
+            buildJsonObject { }
+        )
+
+    /**
+     * `POST /v1/llm-config`（**仅本机部署**）：把客户端已经配好的模型配置推给服务端。
+     *
+     * 远程部署由服务端回 403 `remote_config_disallowed`；客户端**不重试、不提示**，
+     * 只记一条日志（推送是让本机服务端「不用再配一遍」的便利，不是聊天链路的一部分）。
+     */
+    suspend fun pushLlmConfig(payload: ServerLlmConfigWrite): JsonObject =
+        postJsonObject(
+            url("v1", "llm-config"),
+            buildJsonObject {
+                put("baseUrl", payload.baseUrl)
+                put("model", payload.model)
+                put("apiKey", payload.apiKey)
+                put("provider", payload.provider)
+            }
+        )
 
     // ------------------------------------------------------------------ 内部：请求构造 / 执行 / 解析
 
@@ -822,6 +939,12 @@ class ServerApi(
 
         /** `GET /v1/personas/{id}/memories` 的单页上限（服务端 `MAX_MEMORY_LIMIT`）。 */
         const val MEMORY_PAGE_LIMIT = 500
+
+        /** `GET /v1/stickers` 的 `limit` 上限（服务端 `MAX_STICKER_LIMIT`）。 */
+        const val MAX_STICKER_LIMIT = 100
+
+        /** `GET /v1/personas/{id}/diary` 的 `limit` 上限（服务端 `MAX_DIARY_LIMIT`）。 */
+        const val MAX_DIARY_LIMIT = 50
 
         /** 备份导出专用上限：64 MiB（聊天越多备份越大，普通 JSON 仍按 2 MiB）。 */
         const val MAX_BACKUP_RESPONSE_BYTES = 64L * 1024 * 1024

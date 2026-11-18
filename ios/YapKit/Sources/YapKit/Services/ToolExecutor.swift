@@ -44,6 +44,17 @@ public final class ToolExecutor: ToolRunning {
     private let personaCards: PersonaCardRepository
     private let intents: AgentIntentSupport
     private let echoes: MemoryEchoStoring
+    /// 表情包（`spec/stickers/README.md`）：发 / 做 / 收藏。
+    ///
+    /// 为什么默认值按 `stores` 现造一个：工具执行器在 Kit 里，不依赖 App 的装配；
+    /// 服务端模式需要「上传/下载」闭包，由装配层注入一个配置好的实例（见 `AppEnvironment`）。
+    private let stickers: StickerService
+    /// 语音/视频（0.13 `listen` / `watch`）：读本机媒体 + 抽视频关键帧。
+    ///
+    /// 与 `MediaStorage` 分开注入：单测用临时目录 + 假抽帧器，
+    /// 不必真的录一段音、解一段视频。
+    private let audioVideo: AudioVideoStore
+    private let videoFrames: VideoFrameExtracting
     private let webTools: WebToolsClient
     /// 搜完顺手判断「值不值得记」；没接（或没配置）就是「只搜不记」，搜索本身不受影响。
     private let scorer: WebSearchScoring?
@@ -71,6 +82,9 @@ public final class ToolExecutor: ToolRunning {
         personaCards: PersonaCardRepository,
         intents: AgentIntentSupport,
         echoes: MemoryEchoStoring? = nil,
+        stickers: StickerService? = nil,
+        audioVideo: AudioVideoStore = .shared,
+        videoFrames: VideoFrameExtracting = AVVideoFrameExtractor(),
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
@@ -86,6 +100,9 @@ public final class ToolExecutor: ToolRunning {
         self.personaCards = personaCards
         self.intents = intents
         self.echoes = echoes ?? MemoryEchoStore(database: stores.database)
+        self.stickers = stickers ?? StickerService(stores: stores)
+        self.audioVideo = audioVideo
+        self.videoFrames = videoFrames
         self.webTools = webTools
         self.scorer = scorer
         self.agentCore = agentCore
@@ -122,8 +139,18 @@ public final class ToolExecutor: ToolRunning {
             return recall(invocation, persona: persona, now: at)
         case "defer_reply":
             return await deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
+        case "stay_silent":
+            return staySilent(invocation, persona: persona)
+        case "diary":
+            return diary(invocation, persona: persona, now: at)
         case "think":
             return think(invocation)
+        case "sticker":
+            return await sticker(invocation, persona: persona, sessionId: sessionId)
+        case "listen":
+            return await listen(invocation, sessionId: sessionId)
+        case "watch":
+            return await watch(invocation, sessionId: sessionId)
         default:
             // 不认识就明确说，不假装做过：模型要能知道这条路走不通。
             return failure(invocation, String(format: String(localized: "不认识这个工具：%@"), name))
@@ -742,6 +769,438 @@ public final class ToolExecutor: ToolRunning {
             modelText: "接下来 \(activity.minutes) 分钟你在「\(activity.activity)」（大约到 \(clock)）。"
                 + promptTail
                 + "对方不需要知道你在用一个工具，也不用主动汇报日程；聊到相关的事自然带一句就好。"
+        )
+    }
+
+    // MARK: - 日记板（`spec/diary/README.md`）
+
+    /// 他自己的备忘录：写一条 / 翻一翻 / 删一条。
+    ///
+    /// 三件事都只碰 `diary_notes` 里**属于这个人格**的行：
+    /// - `add`：内容必填、≤2000 字；`remindAt` 与 `remindInMinutes` 二选一（都不填 = 不提醒）；
+    /// - `list`：按 `createdAt` 倒序，默认 20 条、最多 50（多了模型也读不完）；
+    /// - `remove`：按 id 硬删除（删了就是删了，不留墓碑）。
+    ///
+    /// 回灌给模型的文本里带 **id** 与提醒时间：没有 id，模型就永远删不掉自己写的东西。
+    /// 失败一律给一句人话（内容太长、id 不对、动作不认识），不静默。
+    private func diary(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
+        let rawAction = (invocation.argument("action") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        // 缺省按 add 处理（模型常常只给 content）：这是最常见的用法，也是最不容易误删的。
+        let action = rawAction.isEmpty ? "add" : rawAction
+        switch action {
+        case "add":
+            return diaryAdd(invocation, persona: persona, now: now)
+        case "list":
+            return diaryList(invocation, persona: persona)
+        case "remove", "delete":
+            return diaryRemove(invocation, persona: persona)
+        default:
+            return failure(invocation, String(localized: "日记只支持 add / list / remove 三个动作"))
+        }
+    }
+
+    private func diaryAdd(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
+        guard let content = DiaryLimits.clean(invocation.argument("content")) else {
+            return failure(invocation, String(localized: "没有写要记下的内容"))
+        }
+        guard DiaryLimits.isWithinLimit(content) else {
+            return failure(
+                invocation,
+                String(format: String(localized: "日记太长了（最多 %d 字），这次没写进去"),
+                       DiaryLimits.contentMax)
+            )
+        }
+        var remindAt: Int64?
+        let explicitRemindAt = Self.int64Argument(invocation, "remindAt")
+        let remindInMinutes = Self.int64Argument(invocation, "remindInMinutes")
+        if let explicitRemindAt, explicitRemindAt > 0 {
+            // 规范 §工具协议：`remindAt` 与 `remindInMinutes` 二选一；两个都给时以绝对时间为准
+            //（模型说「明天 9 点」比「还有 600 分钟」更不容易算错）。
+            guard explicitRemindAt > now else {
+                return failure(invocation, String(localized: "提醒时间已经过去了，这次没写进去"))
+            }
+            remindAt = explicitRemindAt
+        } else if let remindInMinutes, remindInMinutes > 0 {
+            let minutes = min(remindInMinutes, Int64(DiaryLimits.remindInMinutesMax))
+            remindAt = now + minutes * 60_000
+        }
+        let note = DiaryNoteEntity(
+            id: UUID().uuidString,
+            personaId: persona.id,
+            content: content,
+            createdAt: now,
+            remindAt: remindAt,
+            updatedAt: now
+        )
+        do {
+            try stores.diaryNotes.upsert(note)
+        } catch {
+            log("[tool] diary add 落库失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没写进去"))
+        }
+        var modelText = "已经写进你的日记板：「\(String(content.prefix(120)))」（id：\(note.id)）。"
+        var detail = content
+        if let remindAt {
+            let clock = DiaryNoteEntity.displayClock(remindAt)
+            modelText += "到 \(clock) 你会自己想起这条，再决定要不要开口；不想说也可以只是想起来。"
+            detail += "\n" + String(format: String(localized: "提醒：%@"), clock)
+        }
+        modelText += "对方看不到日记内容，也不用跟他说你写了日记。"
+        return success(
+            invocation,
+            title: String(localized: "写日记"),
+            subtitle: String(content.prefix(40)),
+            detail: detail,
+            modelText: modelText
+        )
+    }
+
+    private func diaryList(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        let requested = invocation.intArgument("limit", default: DiaryLimits.listDefault)
+        let limit = DiaryLimits.clampListLimit(requested)
+        let notes: [DiaryNoteEntity]
+        do {
+            notes = try stores.diaryNotes.byPersona(persona.id, limit: limit)
+        } catch {
+            log("[tool] diary list 读取失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没翻成"))
+        }
+        guard !notes.isEmpty else {
+            return ToolResult(
+                invocation: invocation,
+                ok: true,
+                summary: String(localized: "日记板还是空的"),
+                contentForModel: "你的日记板还是空的（没有写过，或者都删掉了）。"
+                    + "想记点什么就 add 一条，不用为了翻而翻。",
+                traceTitle: String(localized: "翻日记"),
+                traceDetail: String(localized: "还没有写过")
+            )
+        }
+        var rendered = "你的日记板（最近 \(notes.count) 条，按时间倒序）：\n"
+        for (index, note) in notes.enumerated() {
+            rendered += "\(index + 1). \(DiaryNoteEntity.displayClock(note.createdAt))"
+            if let remindAt = note.remindAt {
+                rendered += " · 提醒 \(DiaryNoteEntity.displayClock(remindAt))"
+                if note.remindedAt != nil { rendered += "（已经提醒过）" }
+            }
+            rendered += " · id=\(note.id)\n   \(String(note.content.prefix(300)))\n"
+        }
+        rendered += "\n要删哪条就用它后面的 id 调 remove。"
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: PluralText.format("日记 %d 条", notes.count),
+            contentForModel: rendered,
+            traceTitle: String(localized: "翻日记"),
+            traceDetail: notes.prefix(5).map { note in
+                DiaryNoteEntity.displayClock(note.createdAt) + " " + String(note.content.prefix(60))
+            }.joined(separator: "\n")
+        )
+    }
+
+    private func diaryRemove(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        guard let noteId = DiaryLimits.clean(invocation.argument("noteId")) else {
+            return failure(invocation, String(localized: "没有说要删哪一条（需要 noteId）"))
+        }
+        do {
+            guard try stores.diaryNotes.remove(id: noteId, personaId: persona.id) else {
+                return failure(invocation, String(localized: "日记板里没有这一条（id 可能不对，先 list 看看）"))
+            }
+        } catch {
+            log("[tool] diary remove 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没删成"))
+        }
+        return success(
+            invocation,
+            title: String(localized: "删了日记"),
+            subtitle: String(noteId.prefix(20)),
+            detail: String(localized: "这一条已经从日记板删掉了。"),
+            modelText: "已经从日记板上删掉那一条了。对方本来也看不到，不用解释。"
+        )
+    }
+
+    // MARK: - 表情包（`spec/stickers/README.md`）
+
+    /// 表情的三种动作。与日记板一样「一次只做一件事」，但三种动作的必填项完全不同：
+    /// - `send`：`stickerId`（发出去会**立刻多一条助手消息**）；
+    /// - `make`：`url` / `baseStickerId` / `text` / `overlayStickerId` 任意组合
+    ///   （做好只入库，不自动发）；
+    /// - `save`：`fromMessageId`（把用户/模型发过的表情收进收藏）。
+    ///
+    /// 失败一律给一句人话（id 不对、链接被拒、压不成 GIF、消息里没有表情……），不静默。
+    private func sticker(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String
+    ) async -> ToolResult {
+        let rawAction = (invocation.argument("action") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch rawAction {
+        case "send":
+            return stickerSend(invocation, persona: persona, sessionId: sessionId)
+        case "make":
+            return await stickerMake(invocation, persona: persona)
+        case "save":
+            return await stickerSave(invocation)
+        default:
+            return failure(invocation, String(localized: "表情只支持 send / make / save 三个动作"))
+        }
+    }
+
+    private func stickerSend(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String
+    ) -> ToolResult {
+        let stickerId = (invocation.argument("stickerId") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if stickerId.isEmpty {
+            return failure(invocation, String(localized: "没有说要发哪个表情（需要 stickerId）"))
+        }
+        do {
+            let message = try stickers.send(
+                stickerId: stickerId, personaId: persona.id, sessionId: sessionId
+            )
+            let sticker = try? stores.stickers.byId(stickerId)
+            var result = success(
+                invocation,
+                title: String(localized: "已发送表情"),
+                subtitle: sticker?.displaySummary ?? String(localized: "表情"),
+                detail: String(format: String(localized: "表情 id：%@"), stickerId)
+                    + (sticker.map { "\n" + $0.displaySummary } ?? ""),
+                modelText: "已经把表情发出去了（消息 id：\(message.id)）。"
+                    + "它就是一句话，不用再用文字解释这个表情；想接着说别的就正常说。"
+            )
+            // 告诉 `ChatService`：这一轮已经有一条助手消息了，别再因为「没写正文」判失败。
+            result.producedMessageId = message.id
+            return result
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没发成"))
+        } catch {
+            log("[tool] sticker send 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没发成"))
+        }
+    }
+
+    private func stickerMake(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity
+    ) async -> ToolResult {
+        do {
+            let sticker = try await stickers.makeSticker(
+                url: invocation.argument("url"),
+                baseStickerId: invocation.argument("baseStickerId"),
+                text: invocation.argument("text"),
+                overlayStickerId: invocation.argument("overlayStickerId"),
+                position: invocation.argument("position"),
+                personaId: persona.id
+            )
+            return success(
+                invocation,
+                title: String(localized: "做好了表情"),
+                subtitle: sticker.displaySummary,
+                detail: String(format: String(localized: "新表情 id：%@"), sticker.id)
+                    + "\n" + sticker.displaySummary,
+                modelText: "做好了（id=\(sticker.id)，\(sticker.displaySummary)）。"
+                    + "它已经存进你的表情库；要发出去就用 sticker 的 send 动作，别忘了只有发了对方才看得到。"
+            )
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没做成"))
+        } catch {
+            log("[tool] sticker make 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没做成"))
+        }
+    }
+
+    private func stickerSave(_ invocation: ToolInvocation) async -> ToolResult {
+        let messageId = (invocation.argument("fromMessageId") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if messageId.isEmpty {
+            return failure(invocation, String(localized: "没有说是哪条消息里的表情（需要 fromMessageId）"))
+        }
+        do {
+            let result = try await stickers.save(fromMessageId: messageId)
+            let title = result.alreadySaved
+                ? String(localized: "已经在收藏里了")
+                : String(localized: "已收藏表情")
+            return success(
+                invocation,
+                title: title,
+                subtitle: result.sticker.displaySummary,
+                detail: String(format: String(localized: "表情 id：%@"), result.sticker.id)
+                    + "\n" + result.sticker.displaySummary,
+                modelText: result.alreadySaved
+                    ? "这个表情早就在你的收藏里了（id=\(result.sticker.id)），不用再收一次。"
+                    : "已收藏（id=\(result.sticker.id)）。以后想发就用这个 id；收藏本身不会发消息。"
+            )
+        } catch let stickerError as StickerError {
+            return failure(invocation, stickerError.errorDescription ?? String(localized: "这次没收成"))
+        } catch {
+            log("[tool] sticker save 失败：\(error.localizedDescription)")
+            return failure(invocation, String(localized: "这次没收成"))
+        }
+    }
+
+    /// 读一个可能写成数字、字符串或浮点的整型参数（模型经常把 1794500000000 写成字符串）。
+    static func int64Argument(_ invocation: ToolInvocation, _ name: String) -> Int64? {
+        guard let object = argumentsObject(invocation.argumentsJson) else { return nil }
+        if let number = object[name] as? NSNumber { return number.int64Value }
+        if let text = object[name] as? String {
+            return Int64(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    // MARK: - 听语音 / 看视频（0.13，`spec/audio-video/README.md`）
+
+    /// 一段可播放媒体在聊天记录里的位置（工具回灌时要说清「是哪一条消息里的」）。
+    private struct FoundMedia {
+        var messageId: String
+        var attachment: MessageAttachment
+    }
+
+    /// 在工作里找最近的一段语音/视频（不看历史远端，只看本机缓存最近 50 条）。
+    ///
+    /// - Parameter requestedId: 模型给的 `audioId` / `videoId`；空 = 取最近那一段。
+    /// - 匹配方式：`mediaRefId`（服务端 id 或本地文件名主干）或 `uri` 后缀；
+    ///   模型有时会把整条 `file://` 路径抄回来，所以两种都认。
+    private func findRecentMedia(
+        sessionId: String,
+        wantAudio: Bool,
+        requestedId: String?
+    ) -> FoundMedia? {
+        let requested = requestedId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let recent = (try? stores.messages.recent(
+            sessionId: sessionId, limit: Self.listenScanLimit
+        )) ?? []
+        for message in recent.reversed() {
+            for attachment in AttachmentsCodec.decode(message.attachmentsJson) {
+                guard wantAudio ? attachment.isAudio : attachment.isVideo else { continue }
+                if requested.isEmpty {
+                    return FoundMedia(messageId: message.id, attachment: attachment)
+                }
+                let id = attachment.mediaRefId ?? ""
+                if id == requested || attachment.uri == requested
+                    || attachment.uri.hasSuffix("/" + requested) {
+                    return FoundMedia(messageId: message.id, attachment: attachment)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// `listen`：把这段语音**真的**交给模型听一遍（`input_audio`），不是转写。
+    ///
+    /// 失败要给一句人话：没语音、id 找不到、文件已不在本机、格式不支持。
+    /// 绝不能回「我听到了…」——模型没收到音频时那样说就是伪造。
+    private func listen(_ invocation: ToolInvocation, sessionId: String) async -> ToolResult {
+        let requested = invocation.argument("audioId")
+        guard let found = findRecentMedia(sessionId: sessionId, wantAudio: true, requestedId: requested)
+        else {
+            let message = (requested?.isEmpty == false)
+                ? String(localized: "没找到这段语音（id 可能不对）")
+                : String(localized: "这里还没有语音可以听")
+            return failure(invocation, message)
+        }
+        let attachment = found.attachment
+        guard let data = audioVideo.data(for: attachment) else {
+            return failure(invocation, String(localized: "这段语音已经不在本机了，听不到"))
+        }
+        guard let format = WireAudioPart.format(forMime: attachment.mime) else {
+            return failure(
+                invocation,
+                String(format: String(localized: "这种语音格式还不支持（%@）"), attachment.mime)
+            )
+        }
+        let durationText = attachment.durationText
+        let parts = MediaWireParts(audio: [
+            WireAudioPart(base64: data.base64EncodedString(), format: format)
+        ])
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: durationText.isEmpty ? String(localized: "听了一遍") : durationText,
+            contentForModel: "我听了一遍这段语音（时长 \(durationText)，\(Self.byteText(data.count))）。"
+                + "声音本身已经作为音频片段交给你了：按你真正听到的内容回答，"
+                + "不要把它当成文字转写，也不要假装听到了不存在的话；没听清就直说。",
+            traceTitle: String(localized: "听了一遍"),
+            traceDetail: String(format: String(localized: "语音 %@ · %@"), durationText, Self.byteText(data.count)),
+            mediaParts: parts
+        )
+    }
+
+    /// `watch`：抽 ≤8 帧关键画面交给模型（多张 `image_url`），并说明「N 帧 / 时长」。
+    private func watch(_ invocation: ToolInvocation, sessionId: String) async -> ToolResult {
+        let requested = invocation.argument("videoId")
+        guard let found = findRecentMedia(sessionId: sessionId, wantAudio: false, requestedId: requested)
+        else {
+            let message = (requested?.isEmpty == false)
+                ? String(localized: "没找到这段视频（id 可能不对）")
+                : String(localized: "这里还没有视频可以看")
+            return failure(invocation, message)
+        }
+        let attachment = found.attachment
+        guard let url = audioVideo.fileURL(for: attachment) else {
+            return failure(invocation, String(localized: "这段视频已经不在本机了，看不了"))
+        }
+        let count = VideoFramePolicy.frameCount(durationSeconds: attachment.durationSeconds)
+        let rawFrames = await videoFrames.frames(
+            of: url, count: count, maxPixel: VideoFramePolicy.maxPixel
+        )
+        let frames = VideoFramePolicy.budgeted(rawFrames)
+        guard !frames.isEmpty else {
+            return failure(invocation, String(localized: "这段视频的画面读不出来"))
+        }
+        let duration = attachment.durationSeconds
+            ?? VideoFramePolicy.estimatedDuration(frames.count)
+        let note = VideoFramePolicy.note(frameCount: frames.count, durationSeconds: duration)
+        let images = frames.map { "data:image/jpeg;base64,\($0.base64EncodedString())" }
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: note,
+            contentForModel: "我看了这段视频的 \(frames.count) 帧（\(note)）。"
+                + "画面已经作为图片交给你了：按你看到的回答，"
+                + "没看到的部分（前后被剪掉、画面外、声音）就说不知道，不要编。",
+            traceTitle: String(localized: "看了几帧"),
+            traceDetail: note,
+            // 帧数/时长已经写在 `contentForModel` 里（回灌时会一起交给模型），
+            // 这里不再重复一段 note，免得同一句「视频：N 帧」在请求里出现两遍。
+            mediaParts: MediaWireParts(images: images)
+        )
+    }
+
+    /// 工具扫描最近几条消息找媒体（一屏的聊天量足够：语音/视频都是「刚发来的」）。
+    static let listenScanLimit = 50
+
+    static func byteText(_ bytes: Int) -> String {
+        if bytes >= 1024 * 1024 {
+            return String(format: "%.1f MB", Double(bytes) / (1024 * 1024))
+        }
+        return String(format: "%d KB", max(1, bytes / 1024))
+    }
+
+    // MARK: - 这一轮不回（stay_silent）
+
+    /// 「这一轮就不回」（`spec/mood/README.md` §4）：不落消息、不留念头、只标已读。
+    ///
+    /// 真正的拦截在 `ChatService`（拿到 `stay_silent` 就直接结束这一轮）；这里实现一份是为了
+    /// 让「任何一处调它」语义一致，也为了让工具注册表与执行器保持一一对应
+    ///（`ToolExecutorTests` 守着「清单里的每个工具都有人认识」）。
+    ///
+    /// 这里**什么都不写库**：连续沉默的计数在 `ChatRhythmService` 里（本机 UserDefaults），
+    /// 不在工具层。
+    private func staySilent(_ invocation: ToolInvocation, persona: PersonaEntity) -> ToolResult {
+        let reason = StaySilent.cleanReason(invocation.argument("reason"))
+        _ = persona
+        _ = reason
+        return ToolResult(
+            invocation: invocation,
+            ok: true,
+            summary: String(localized: "这轮先不回"),
+            contentForModel: "这一轮你选择只看一眼、不回话。不再产生任何消息，也不用解释。",
+            traceTitle: String(localized: "这轮没说话")
         )
     }
 

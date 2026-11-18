@@ -46,13 +46,27 @@ sealed class SseEvent {
         )
     }
 
-    /** assistant 消息已落库；`usage` 是这一次生成的 token 数。 */
-    data class Done(val assistantMessageId: String, val usage: Usage) : SseEvent() {
+    /**
+     * assistant 消息已落库；`usage` 是这一次生成的 token 数。
+     *
+     * [silent] 只在 `stay_silent`（这一轮只已读不回）时为 true，此时 [assistantMessageId] 是空串、
+     * 库里**没有** assistant 消息。为了不破坏老客户端的解析，这个键只在 true 时出现
+     * （`event: done` 的其余字段一个都没变）。
+     */
+    data class Done(
+        val assistantMessageId: String,
+        val usage: Usage,
+        val silent: Boolean = false
+    ) : SseEvent() {
         override val type: String get() = "done"
-        override fun data(): JsonValue.Obj = StoreJson.obj(
-            "assistantMessageId" to StoreJson.str(assistantMessageId),
-            "usage" to usage.toJson()
-        )
+        override fun data(): JsonValue.Obj {
+            val fields = linkedMapOf<String, JsonValue>(
+                "assistantMessageId" to StoreJson.str(assistantMessageId),
+                "usage" to usage.toJson()
+            )
+            if (silent) fields["silent"] = StoreJson.bool(true)
+            return JsonValue.Obj(fields)
+        }
     }
 
     data class Error(val code: String, val message: String) : SseEvent() {

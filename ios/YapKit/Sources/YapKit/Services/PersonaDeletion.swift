@@ -8,6 +8,8 @@ import Foundation
 // - `memory_echoes`（「只被提过一次」的回声里存着用户原话）；
 // - `agent_ticks`（他的思考留痕，含 actionJson 与 messageId）；
 // - `memory_versions`（记忆的历史版本里存着正文与 beforeContent —— 「忘掉就是真删」的承诺）；
+// 0.13 起再加上 `diary_notes`（他写给自己的便条）与 `persona_pending_patches`
+//（待确认的人格变化）：同样没有外键，同样必须显式删。
 // 另外删掉默认人格之后，库里可能一个默认人格都没有（`defaultPersona()` 返回 nil），
 // 「正在聊的人」还指着一个已经不存在的 id。
 //
@@ -71,6 +73,12 @@ public enum PersonaDeletion {
             _ = try? stores.memoryVersions.delete(where: "memoryId = ?", [.text(memory.id)])
             memoryRepository.delete(memory)
         }
+
+        // 1.5) 0.13 的两张新表：日记板与待确认的人格变化。
+        // 它们没有 persona 外键，留着就会变成「看不见但一直占着」的孤儿行
+        //（日记内容还是他写给自己的话，删人之后不应该留在库里）。
+        _ = try? stores.diaryNotes.delete(where: "personaId = ?", [.text(personaId)])
+        _ = try? stores.personaPendingPatches.delete(where: "personaId = ?", [.text(personaId)])
 
         // 2) 回声与思考留痕（这两张表没有 persona 外键，必须显式删）。
         let echoStore = MemoryEchoStore(database: stores.database)

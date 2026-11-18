@@ -5,21 +5,23 @@ import java.security.MessageDigest
 import java.util.UUID
 
 /**
- * 备份格式 v3 的媒体部分：头像与聊天图片真的跟着备份走。
+ * 备份格式的媒体部分：头像、聊天图片、表情、语音、视频真的跟着备份走。
  *
  * v2 及以前，`personas.avatarUri` 只写一个「裸文件名」、`attachmentsJson` 只写路径：
  * 换台手机以后这些引用全都指不到文件，图片等于丢了。v3 在 JSON 里加一个顶层 `media`
  * 数组，把本机**当前还引用得到**的图片二进制用 base64 一起装进去。
+ * v6（0.13）把同一套机制扩到表情（GIF）/ 语音 / 视频：`media[].kind` 增加
+ * `STICKER` / `AUDIO` / `VIDEO`，二进制仍然只内联一次（表情的元数据在顶层 `stickers[]` 里）。
  *
  * 三条边界写在这里，是为了以后没人能「顺手」放开：
  *
- * 1. **只带本机真的引用到的图片**：人格头像、用户自己的头像、预设头像、聊天消息里的附件。
- *    孤儿文件不扫描——备份不是磁盘镜像。
- * 2. **总量与单张都有上限**（[BackupMediaLimits]）：base64 会让体积涨约 1/3，
+ * 1. **只带本机真的引用到的媒体**：人格头像、用户自己的头像、预设头像、聊天消息里的附件，
+ *    以及 `stickers` 表里文件还在本机的表情行。孤儿文件不扫描——备份不是磁盘镜像。
+ * 2. **总量与单份都有上限**（[BackupMediaLimits]）：base64 会让体积涨约 1/3，
  *    而备份是一个要在手机上生成、传输、再读回来的 JSON 文件。超限就停，用户会看到
- *    「有 N 张图片没有随备份带走」——宁可少几张，也不要一份导不回去的备份。
- * 3. **导入时文件名一律重建**：备份里的 `fileName` 只用来做「消息/头像 ↔ 媒体」的关联，
- *    落盘永远是新的 UUID 文件名，并且必须过 [MediaOwnership] 的目录归属守卫。
+ *    「有 N 份媒体没有随备份带走」——宁可少几份，也不要一份导不回去的备份。
+ * 3. **导入时文件名一律重建**：备份里的 `fileName` 只用来做「消息/头像/表情 ↔ 媒体」的关联，
+ *    落盘永远是新的 UUID / 内容哈希文件名，并且必须过 [MediaOwnership] 的目录归属守卫。
  *    备份是外部输入，不能让它决定往哪个路径写字节。
  */
 object BackupMediaLimits {
@@ -89,15 +91,31 @@ object BackupMediaLimits {
         ((perFileBytes + 2) / 3) * 4
 }
 
-/** `media[].kind` 的合法取值。 */
+/**
+ * `media[].kind` 的合法取值。
+ *
+ * v3 只有三种图片；v6（0.13）加了表情/音频/视频：
+ * - [STICKER]：表情包 GIF，字节同时被顶层 `stickers[].fileName` 引用（不重复内联 base64）；
+ * - [AUDIO]：语音（`files/audio/voice-*`）；
+ * - [VIDEO]：视频（`files/video/video-*`）。
+ *
+ * 只有头像与聊天图片会走「导入重编码」（[isCompressible]）：GIF 一旦转 JPEG 就不动了，
+ * 音频/视频更不能拿 Bitmap 去压。
+ */
 object BackupMediaKind {
     const val PERSONA_AVATAR = "PERSONA_AVATAR"
     const val USER_AVATAR = "USER_AVATAR"
     const val CHAT_IMAGE = "CHAT_IMAGE"
+    const val STICKER = "STICKER"
+    const val AUDIO = "AUDIO"
+    const val VIDEO = "VIDEO"
 
-    val all = setOf(PERSONA_AVATAR, USER_AVATAR, CHAT_IMAGE)
+    val all = setOf(PERSONA_AVATAR, USER_AVATAR, CHAT_IMAGE, STICKER, AUDIO, VIDEO)
 
     fun isAvatar(kind: String): Boolean = kind == PERSONA_AVATAR || kind == USER_AVATAR
+
+    /** 导入时是否应该交给 `MediaStorage.compressBackupImage` 重编码。 */
+    fun isCompressible(kind: String): Boolean = isAvatar(kind) || kind == CHAT_IMAGE
 }
 
 /** v3 媒体相关的提醒：数据层只给计数与种类，句子由 UI 按语言拼。 */
@@ -217,21 +235,69 @@ object BackupBase64 {
     }
 }
 
-/** v3 支持的图片格式：只认这三种；GIF/视频先不带（见报告「没做与风险」）。 */
+/**
+ * 备份支持的媒体格式。
+ *
+ * 两套语义，刻意分开：
+ * - [supported] / [isSupported] 是 **v3 的图片语义**：只有 JPEG/PNG/WEBP 会送去重编码。
+ *   `MediaStorage.compressBackupImage` 只认这三种，GIF 送进去会被当静态图转成 JPEG（动图就没了），
+ *   所以「能不能压缩」永远按这个集合判断。
+ * - [supports] / [extensionFor] 是 **v6 的 kind-aware 语义**：表情只收图片（含 GIF），
+ *   音频/视频只收各自的容器格式。打包与落盘都走这两个函数，避免把 `audio/m4a` 当图片、
+ *   或把 GIF 当 JPEG 去压缩。
+ */
 object BackupMediaFormats {
 
     const val JPEG = "image/jpeg"
     const val PNG = "image/png"
     const val WEBP = "image/webp"
+    const val GIF = "image/gif"
 
+    const val AUDIO_M4A = "audio/m4a"
+    const val AUDIO_MP4 = "audio/mp4"
+    const val AUDIO_MPEG = "audio/mpeg"
+
+    const val VIDEO_MP4 = "video/mp4"
+    const val VIDEO_QUICKTIME = "video/quicktime"
+
+    /** v3/v4 的「可压缩图片」集合：导入重编码只处理这三种。 */
     val supported: Set<String> = setOf(JPEG, PNG, WEBP)
 
+    /** 表情可以带的图片格式（GIF 是主形态；静态表情跨端也可能是 PNG/WEBP/JPEG）。 */
+    private val stickerMimes: Set<String> = setOf(GIF, PNG, WEBP, JPEG)
+
+    private val audioMimes: Set<String> = setOf(AUDIO_M4A, AUDIO_MP4, AUDIO_MPEG)
+
+    private val videoMimes: Set<String> = setOf(VIDEO_MP4, VIDEO_QUICKTIME)
+
     fun isSupported(mime: String): Boolean = mime.trim().lowercase() in supported
+
+    /** kind-aware：这个 kind 能不能带这个 mime。 */
+    fun supports(kind: String, mime: String): Boolean {
+        val clean = mime.trim().lowercase()
+        return when (kind) {
+            BackupMediaKind.PERSONA_AVATAR, BackupMediaKind.USER_AVATAR, BackupMediaKind.CHAT_IMAGE ->
+                clean in supported
+            BackupMediaKind.STICKER -> clean in stickerMimes
+            BackupMediaKind.AUDIO -> clean in audioMimes
+            BackupMediaKind.VIDEO -> clean in videoMimes
+            else -> false
+        }
+    }
+
+    /** 这个 kind 是否走导入重编码（只有头像与聊天图）。 */
+    fun isCompressible(kind: String): Boolean = BackupMediaKind.isCompressible(kind)
 
     fun extensionOf(mime: String): String? = when (mime.trim().lowercase()) {
         JPEG -> "jpg"
         PNG -> "png"
         WEBP -> "webp"
+        GIF -> "gif"
+        // 语音落盘统一 .m4a（与 MediaStorage.voice-* 一致），mp4 容器的音频也收成 m4a。
+        AUDIO_M4A, AUDIO_MP4 -> "m4a"
+        AUDIO_MPEG -> "mp3"
+        VIDEO_MP4 -> "mp4"
+        VIDEO_QUICKTIME -> "mov"
         else -> null
     }
 
@@ -239,10 +305,19 @@ object BackupMediaFormats {
         "jpg", "jpeg" -> JPEG
         "png" -> PNG
         "webp" -> WEBP
+        "gif" -> GIF
+        "m4a" -> AUDIO_M4A
+        "mp3" -> AUDIO_MPEG
+        "mp4" -> VIDEO_MP4
+        "mov" -> VIDEO_QUICKTIME
         else -> null
     }
 
-    /** 按文件名后缀猜 mime；猜不到返回 null（调用方跳过这张图）。 */
+    /** kind-aware：这个 kind 的 mime 应该落成什么扩展名；不支持返回 null。 */
+    fun extensionFor(kind: String, mime: String): String? =
+        if (supports(kind, mime)) extensionOf(mime) else null
+
+    /** 按文件名后缀猜 mime；猜不到返回 null（调用方跳过这个文件）。 */
     fun mimeOfFile(fileName: String): String? {
         val extension = fileName.substringAfterLast('.', missingDelimiterValue = "")
         if (extension.isEmpty() || extension == fileName) return null
@@ -311,8 +386,11 @@ object BackupMediaPacker {
         for ((position, candidate) in unique.withIndex()) {
             val file = candidate.file
             if (!file.isFile || !file.canRead()) continue
-            val mime = candidate.mime.takeIf { BackupMediaFormats.isSupported(it) }
+            // v6：mime 必须与 kind 匹配（GIF 只能进 STICKER，音频不能进 CHAT_IMAGE）。
+            val declared = candidate.mime.trim().lowercase()
+            val mime = declared.takeIf { BackupMediaFormats.supports(candidate.kind, it) }
                 ?: BackupMediaFormats.mimeOfFile(candidate.fileName)
+                    ?.takeIf { BackupMediaFormats.supports(candidate.kind, it) }
                 ?: continue
             if (!BackupAvatarPath.isSafeName(candidate.fileName)) continue
             val length = file.length()
@@ -357,6 +435,17 @@ data class BackupMediaRestoreResult(
     val avatarsByPersonaId: Map<String, RestoredBackupMedia> = emptyMap(),
     val chatImagesByFileName: Map<String, RestoredBackupMedia> = emptyMap(),
     val userAvatar: RestoredBackupMedia? = null,
+    /** v6：表情/音频/视频的「备份裸文件名 → 本机新文件」关联。 */
+    val stickersByFileName: Map<String, RestoredBackupMedia> = emptyMap(),
+    val audioByFileName: Map<String, RestoredBackupMedia> = emptyMap(),
+    val videoByFileName: Map<String, RestoredBackupMedia> = emptyMap(),
+    /**
+     * 所有 kind 合并后的关联表（key 是备份里的裸文件名）。
+     *
+     * 消息附件不区分 kind（图片/表情/语音/视频都可能挂在 `attachmentsJson` 上），
+     * 重建附件时按名字查这一张表即可。
+     */
+    val byFileName: Map<String, RestoredBackupMedia> = emptyMap(),
     val warnings: List<BackupMediaWarning> = emptyList(),
     val writtenFiles: List<File> = emptyList()
 )
@@ -365,12 +454,18 @@ data class BackupMediaRestoreResult(
  * 导入时的媒体落盘：把 `media[].data` 解码、写进本机媒体目录、返回关联表。
  *
  * 安全边界：
- * - 备份里的 `fileName` 只做关联键，**不参与拼路径**；落盘名一律是新 UUID；
+ * - 备份里的 `fileName` 只做关联键，**不参与拼路径**；落盘名一律是新 UUID / 内容哈希；
  * - 目标路径必须过 [MediaOwnership.isWithin]（目录归属守卫），目录非法就整类跳过；
- * - 坏 base64 / 不支持的 mime / 字节数与声明不符 / 超限：跳过并计数，绝不抛。
+ * - 坏 base64 / 与 kind 不匹配的 mime / 字节数与声明不符 / 超限：跳过并计数，绝不抛。
+ *
+ * v6 起按 kind 分发到五个目录：
+ * 头像 `files/avatars`、聊天图 `files/media`、表情 `files/stickers`、
+ * 语音 `files/audio`、视频 `files/video`。只有头像与聊天图会交给 [compressor] 重编码。
+ * `stickerDir` / `audioDir` / `videoDir` 传 null 表示这次调用不管这类媒体
+ * （旧的纯图片调用方不必改签名）：落到这些 kind 的条目按「跳过」计数。
  *
  * 返回的 [BackupMediaRestoreResult.writtenFiles] 用于「媒体写完、落库失败」时回滚，
- * 避免留下一批没人引用的图片。
+ * 避免留下一批没人引用的文件。
  */
 object BackupMediaRestorer {
 
@@ -378,6 +473,12 @@ object BackupMediaRestorer {
         entries: List<BackupMedia>,
         avatarDir: File,
         chatDir: File,
+        /** v6：表情目录（`MediaStorage.stickerDirectory`）；null = 这类跳过。 */
+        stickerDir: File? = null,
+        /** v6：语音目录（`MediaStorage.audioDirectory`）；null = 这类跳过。 */
+        audioDir: File? = null,
+        /** v6：视频目录（`MediaStorage.videoDirectory`）；null = 这类跳过。 */
+        videoDir: File? = null,
         totalBudget: Long = BackupMediaLimits.effectiveMediaBudget(),
         perFileLimit: Int = BackupMediaLimits.MAX_MEDIA_FILE_BYTES,
         /**
@@ -391,9 +492,16 @@ object BackupMediaRestorer {
 
         val avatarReady = ensureDirectory(avatarDir)
         val chatReady = ensureDirectory(chatDir)
+        val stickerReady = stickerDir != null && ensureDirectory(stickerDir)
+        val audioReady = audioDir != null && ensureDirectory(audioDir)
+        val videoReady = videoDir != null && ensureDirectory(videoDir)
         val avatarsByFileName = linkedMapOf<String, RestoredBackupMedia>()
         val avatarsByPersonaId = linkedMapOf<String, RestoredBackupMedia>()
         val chatImages = linkedMapOf<String, RestoredBackupMedia>()
+        val stickers = linkedMapOf<String, RestoredBackupMedia>()
+        val audios = linkedMapOf<String, RestoredBackupMedia>()
+        val videos = linkedMapOf<String, RestoredBackupMedia>()
+        val byFileName = linkedMapOf<String, RestoredBackupMedia>()
         val written = mutableListOf<File>()
         var userAvatar: RestoredBackupMedia? = null
         var invalid = 0
@@ -412,11 +520,11 @@ object BackupMediaRestorer {
                 return@forEach
             }
             val mime = entry.mime.trim().lowercase()
-            if (!BackupMediaFormats.isSupported(mime)) {
+            if (!BackupMediaFormats.supports(kind, mime)) {
                 invalid++
                 return@forEach
             }
-            val extension = BackupMediaFormats.extensionOf(mime) ?: run { invalid++; return@forEach }
+            val extension = BackupMediaFormats.extensionFor(kind, mime) ?: run { invalid++; return@forEach }
             if (entry.bytes < 0 || entry.bytes > perFileLimit ||
                 entry.data.length > BackupMediaLimits.maxBase64Chars(perFileLimit)
             ) {
@@ -435,12 +543,15 @@ object BackupMediaRestorer {
             // 总量按**原始**字节计（压缩前），避免「压缩后变小」成为绕过 128 MiB 预算的口子。
             total += bytes.size
 
-            // v4 媒体压缩：头像长边 512 / 聊天图 1600、JPEG 85、透明垫白底；
+            // v4 媒体压缩：只有头像与聊天图重编码（v6：GIF/音频/视频原样落盘）。
             // 压不出来（坏图 / 压不进字节上限）就跳过并计数，绝不让导入整体失败。
-            val compressed = compressor?.let { compress ->
-                runCatching { compress(bytes, mime, kind) }.getOrNull()
+            val compressible = BackupMediaKind.isCompressible(kind)
+            val compressed = if (compressor != null && compressible) {
+                runCatching { compressor(bytes, mime, kind) }.getOrNull()
+            } else {
+                null
             }
-            if (compressor != null && compressed == null) {
+            if (compressor != null && compressible && compressed == null) {
                 invalid++
                 return@forEach
             }
@@ -454,33 +565,56 @@ object BackupMediaRestorer {
                 return@forEach
             }
             val outputMime = (compressed?.mime ?: mime).trim().lowercase()
-            if (!BackupMediaFormats.isSupported(outputMime)) {
+            if (!BackupMediaFormats.supports(kind, outputMime)) {
                 invalid++
                 return@forEach
             }
             val outputExtension = compressed?.extension?.trim()?.lowercase()
                 ?.takeIf { it.isNotEmpty() }
-                ?: BackupMediaFormats.extensionOf(outputMime)
+                ?: BackupMediaFormats.extensionFor(kind, outputMime)
                 ?: run { invalid++; return@forEach }
 
-            val isAvatar = BackupMediaKind.isAvatar(kind)
-            if (isAvatar && !avatarReady) {
+            val dir: File?
+            val prefix: String
+            val ready: Boolean
+            when (kind) {
+                BackupMediaKind.PERSONA_AVATAR, BackupMediaKind.USER_AVATAR -> {
+                    dir = avatarDir
+                    prefix = AvatarPrefix
+                    ready = avatarReady
+                }
+                BackupMediaKind.CHAT_IMAGE -> {
+                    dir = chatDir
+                    prefix = ChatPrefix
+                    ready = chatReady
+                }
+                BackupMediaKind.STICKER -> {
+                    dir = stickerDir
+                    prefix = StickerPrefix
+                    ready = stickerReady
+                }
+                BackupMediaKind.AUDIO -> {
+                    dir = audioDir
+                    prefix = AudioPrefix
+                    ready = audioReady
+                }
+                else -> {
+                    dir = videoDir
+                    prefix = VideoPrefix
+                    ready = videoReady
+                }
+            }
+            if (dir == null || !ready) {
                 invalid++
                 return@forEach
             }
-            if (!isAvatar && !chatReady) {
-                invalid++
-                return@forEach
-            }
-            val dir = if (isAvatar) avatarDir else chatDir
-            val prefix = if (isAvatar) AvatarPrefix else ChatPrefix
             val target = File(dir, newName(prefix, outputExtension, outputBytes))
             // 目录归属守卫：写之前确认目标确实落在我们自己的媒体目录里。
             if (!BackupAvatarPath.isSafeName(target.name) || !MediaOwnership.isWithin(target, listOf(dir))) {
                 invalid++
                 return@forEach
             }
-            // 内容寻址去重：同名（= 同一张图）已经在磁盘上就不再写第二份。
+            // 内容寻址去重：同名（= 同一份内容）已经在磁盘上就不再写第二份。
             // 聊天图片用纯内容名（chat-<sha16>.jpg），头像仍然带 UUID（见 defaultNewName 的注释）。
             var created = false
             if (target.exists()) {
@@ -509,36 +643,58 @@ object BackupMediaRestorer {
                 uri = fileUri(target),
                 mime = outputMime
             )
+            fun rejectDuplicate() {
+                if (created) {
+                    written -= target
+                    runCatching { target.delete() }
+                }
+                invalid++
+            }
+            // 同一个源文件名出现多次时以第一条为准（文件内容不同的「同名」是坏数据）。
+            if (byFileName.putIfAbsent(restored.fileName, restored) != null) {
+                rejectDuplicate()
+                return@forEach
+            }
             when (kind) {
                 BackupMediaKind.PERSONA_AVATAR -> {
-                    // 同一个源文件名出现多次时以第一条为准（文件内容不同的「同名」是坏数据）。
                     if (avatarsByFileName.putIfAbsent(restored.fileName, restored) == null) {
                         val personaId = entry.personaId?.trim().orEmpty()
                         if (personaId.isNotEmpty()) avatarsByPersonaId.putIfAbsent(personaId, restored)
                     } else {
-                        if (created) {
-                            written -= target
-                            runCatching { target.delete() }
-                        }
-                        invalid++
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
                     }
                 }
                 BackupMediaKind.USER_AVATAR -> {
-                    if (userAvatar == null) userAvatar = restored else {
-                        if (created) {
-                            written -= target
-                            runCatching { target.delete() }
-                        }
-                        invalid++
+                    if (userAvatar == null) {
+                        userAvatar = restored
+                    } else {
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
+                    }
+                }
+                BackupMediaKind.CHAT_IMAGE -> {
+                    if (chatImages.putIfAbsent(restored.fileName, restored) != null) {
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
+                    }
+                }
+                BackupMediaKind.STICKER -> {
+                    if (stickers.putIfAbsent(restored.fileName, restored) != null) {
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
+                    }
+                }
+                BackupMediaKind.AUDIO -> {
+                    if (audios.putIfAbsent(restored.fileName, restored) != null) {
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
                     }
                 }
                 else -> {
-                    if (chatImages.putIfAbsent(restored.fileName, restored) != null) {
-                        if (created) {
-                            written -= target
-                            runCatching { target.delete() }
-                        }
-                        invalid++
+                    if (videos.putIfAbsent(restored.fileName, restored) != null) {
+                        byFileName.remove(restored.fileName)
+                        rejectDuplicate()
                     }
                 }
             }
@@ -553,6 +709,10 @@ object BackupMediaRestorer {
             avatarsByPersonaId = avatarsByPersonaId,
             chatImagesByFileName = chatImages,
             userAvatar = userAvatar,
+            stickersByFileName = stickers,
+            audioByFileName = audios,
+            videoByFileName = videos,
+            byFileName = byFileName,
             warnings = warnings,
             writtenFiles = written
         )
@@ -563,6 +723,26 @@ object BackupMediaRestorer {
 
     /** 聊天图片前缀（`MediaStorage.clearChatImages` 只清这一类，所以恢复时也必须用它）。 */
     const val ChatPrefix = "chat-"
+
+    /**
+     * 表情文件前缀（v6）。
+     *
+     * `StickerRepository` 自己落盘用 `<uuid>.gif`，清理走「整目录」或「按行删文件」，
+     * 所以备份恢复用内容寻址的 `sticker-<sha16>.gif` 也不会被别的清理路径误伤；
+     * 前缀只为「人肉一眼看出来这是备份恢复的表情」与将来按前缀清理留一条路。
+     */
+    const val StickerPrefix = "sticker-"
+
+    /**
+     * 语音前缀（v6）：必须与 `MediaStorage` 的 `voice-` 一致。
+     *
+     * `MediaStorage.clearVoiceVideoExceptIfUnreferenced` 只清 `voice-*` / `video-*`，
+     * 恢复时换个前缀，那批文件就永远回收不掉。
+     */
+    const val AudioPrefix = "voice-"
+
+    /** 视频前缀（v6）：与 `MediaStorage` 的 `video-` 一致（同上）。 */
+    const val VideoPrefix = "video-"
 
     /**
      * `File.toURI()` 给的是 `file:/path`（单斜杠），而 App 其它地方（`Uri.fromFile`）写的是
@@ -581,6 +761,9 @@ object BackupMediaRestorer {
      * - 头像：`avatar-<sha256前16>-<uuid>.jpg` —— 头像有「换头像时删旧文件」的生命周期
      *   （`MediaStorage.deleteAvatar`），两张人格共用一份文件会在改其中一个时把另一个删坏；
      *   所以头像只把哈希当索引前缀，仍然保持一文一文件。
+     * - 表情/语音/视频（v6）：`sticker-<sha16>.<ext>` / `voice-<sha16>.<ext>` /
+     *   `video-<sha16>.<ext>` —— 纯内容寻址：同一张表情被十条消息引用、同一条语音被服务端
+     *   回推两次，落盘都只留一份；前缀与 `MediaStorage` 的清理语义对齐。
      */
     internal fun defaultNewName(prefix: String, extension: String, bytes: ByteArray): String {
         val hash = sha256Hex(bytes).take(16)
@@ -606,12 +789,13 @@ object BackupMediaRestorer {
 }
 
 /**
- * `messages.attachmentsJson` 在 v3 里的两条转换。
+ * `messages.attachmentsJson` 的跨端转换。
  *
- * 导出：把每条的 `uri` 从设备路径换成**裸文件名**（换机后路径必然失效；裸名用来在
- * `media` 里找到同一张图）。文件不存在 / 名字不安全 / 格式不支持的附件直接丢掉。
+ * 导出（v3 起）：把每条的 `uri` 从设备路径换成**裸文件名**（换机后路径必然失效；裸名用来在
+ * `media` 里找到同一份媒体）。文件不存在 / 名字不安全 / 格式与 kind 不匹配的附件直接丢掉。
+ * v6 起图片/表情/语音/视频都走同一条路：`kind` 与 `durationMs` 原样保留，只有 `uri` 变裸名。
  *
- * 导入：只有能在 `media`（CHAT_IMAGE + 同名 fileName）里找到的附件才重建成本机新路径；
+ * 导入：只有能在 `media`（同名 fileName）里找到的附件才重建成本机新路径；
  * 找不到的丢掉并计数——这正是 v1/v2 备份「图片没有跟着备份走，只剩文字」的老行为。
  */
 object BackupAttachmentsPortable {
@@ -619,40 +803,64 @@ object BackupAttachmentsPortable {
     /** 导入一条消息的附件结果：[json] 为 null 表示没有（可用的）附件了。 */
     data class Restored(val json: String?, val dropped: Int)
 
-    /** 导出：`allowedNames` 是本次真的装进 media 的聊天图片文件名集合。 */
+    /**
+     * 导出：`allowedNames` 是本次真的装进 media 的所有文件名（五种 kind 都算）。
+     *
+     * 旧代码只允许聊天图片；v6 的语音/视频/表情同样要能被消息引用，否则换台手机
+     * 消息里的「那条语音」就只剩一个播放不出来的气泡。
+     */
     fun portable(raw: String?, allowedNames: Set<String>): String? {
         val attachments = AttachmentsCodec.decode(raw)
         if (attachments.isEmpty() || allowedNames.isEmpty()) return null
         val portable = attachments.mapNotNull { attachment ->
             val name = BackupAvatarPath.portable(attachment.uri) ?: return@mapNotNull null
             if (name !in allowedNames) return@mapNotNull null
-            if (!BackupMediaFormats.isSupported(attachment.mime)) {
-                // mime 字段可能是历史遗留的奇怪值：按文件名再认一次。
-                if (BackupMediaFormats.mimeOfFile(name) == null) return@mapNotNull null
+            val kind = portableKindOf(attachment)
+            if (BackupMediaFormats.supports(kind, attachment.mime)) {
+                attachment.copy(uri = name)
+            } else {
+                // mime 字段可能是历史遗留的奇怪值：按文件名再认一次，认出来就用文件后缀的 mime。
+                val derived = BackupMediaFormats.mimeOfFile(name) ?: return@mapNotNull null
+                if (!BackupMediaFormats.supports(kind, derived)) return@mapNotNull null
+                attachment.copy(uri = name, mime = derived)
             }
-            attachment.copy(uri = name)
         }
         return AttachmentsCodec.encode(portable)
     }
 
-    /** 导入：按 `media` 里的 CHAT_IMAGE 重建本机路径。 */
+    /**
+     * 导入：按 `media` 里恢复出来的文件重建本机路径与 mime。
+     *
+     * `byFileName` 是 [BackupMediaRestoreResult.byFileName]（五种 kind 合并后的表）。
+     * `kind` / `durationMs` 由 [MessageAttachment.copy] 原样保留——语音的时长丢了，
+     * 界面上那条气泡就不知道该画多长。
+     */
     fun restore(
         raw: String?,
-        chatImagesByFileName: Map<String, RestoredBackupMedia>
+        byFileName: Map<String, RestoredBackupMedia>
     ): Restored {
         val attachments = AttachmentsCodec.decode(raw)
         if (attachments.isEmpty()) return Restored(null, 0)
         var dropped = 0
         val rebuilt = attachments.mapNotNull { attachment ->
-            // v3 的附件 uri 是裸文件名；v1/v2 里的设备路径一律不认（换机后本来也指不到文件）。
+            // 附件 uri 是裸文件名；v1/v2 里的设备路径一律不认（换机后本来也指不到文件）。
             val bare = attachment.uri.trim()
             if (bare.contains('/') || bare.contains('\\') || bare.contains("..")) {
                 dropped++
                 return@mapNotNull null
             }
-            val media = chatImagesByFileName[bare] ?: run { dropped++; return@mapNotNull null }
+            val media = byFileName[bare] ?: run { dropped++; return@mapNotNull null }
             attachment.copy(uri = media.uri, mime = media.mime)
         }
         return Restored(AttachmentsCodec.encode(rebuilt), dropped)
     }
+
+    /** 附件应该落进 media 的哪个 kind（顺序有意义：表情也是图片）。 */
+    private fun portableKindOf(attachment: MessageAttachment): String = when {
+        attachment.isSticker -> BackupMediaKind.STICKER
+        attachment.isAudio -> BackupMediaKind.AUDIO
+        attachment.isVideo -> BackupMediaKind.VIDEO
+        else -> BackupMediaKind.CHAT_IMAGE
+    }
 }
+

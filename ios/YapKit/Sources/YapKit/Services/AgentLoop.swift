@@ -90,6 +90,9 @@ public final class AgentLoop {
     /// 当前界面语言：主动消息也用缓存里的译文拼提示词（`spec/persona-translation`）。
     /// 触发翻译在视图层，这一层只读缓存。
     private let translationLanguage: () -> String
+    /// 服务端模式判定（0.13）：他在服务端那边独立运行，本机不启动自主决策。
+    /// 闭包是因为模式运行中可切换；默认 `false` 让测试与老调用点不用改。
+    private let isServerMode: () -> Bool
 
     public init(
         stores: DatabaseStores,
@@ -108,7 +111,8 @@ public final class AgentLoop {
         browseOnce: ((String, Int64) -> BrowseOutcome?)? = nil,
         browsingDigest: @escaping (String) -> String? = { _ in nil },
         onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)? = nil,
-        translationLanguage: (() -> String)? = nil
+        translationLanguage: (() -> String)? = nil,
+        isServerMode: @escaping () -> Bool = { false }
     ) {
         self.stores = stores
         self.settings = settings
@@ -127,6 +131,7 @@ public final class AgentLoop {
         self.browsingDigest = browsingDigest
         self.onMessageDelivered = onMessageDelivered
         self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
+        self.isServerMode = isServerMode
     }
 
     /// 最近一次思考的时间（任何人格）：服务刚被拉起时用来说明「是不是想得太近了」。
@@ -136,6 +141,10 @@ public final class AgentLoop {
 
     /// 想一次。
     public func tick(config: CompletionConfig?, model: String, now: Int64? = nil) async -> Outcome {
+        // 服务端模式：不启动本地自主决策（这道闸放在抢锁之前：连锁都不抢）。
+        if isServerMode() {
+            return Outcome(nextDelayMinutes: Self.idleMax, acted: false, summary: LocalAutonomy.serverModeWhy + "（客户端只同步）")
+        }
         // 串行化用 `AsyncMutex`：等待的 tick 挂起而不是占住线程，系统锁也不会被带过 await。
         // 0.11.1 审计 P2-18：等锁响应取消（BGTask 到期时不再白跑一整拍 LLM）。
         do {
@@ -404,7 +413,9 @@ public final class AgentLoop {
             to: persona, lang: translationLanguage()
         )
         let memories = memoryRepository.getRelevant(personaId: persona.id)
-        var instruction = "现在是 \(ServiceTime.formatted(now))，按之前和对方的约定，到了你主动开口的时间。\n"
+        // 时间注入（`spec/context-time/README.md`）：主动消息也是「一轮请求」，
+        // 同样在拼提示词这一刻重新取时间，形状与服务端/聊天一致（含 UTC 偏移）。
+        var instruction = "现在是 \(PromptClock.momentText(now))，按之前和对方的约定，到了你主动开口的时间。\n"
         instruction += "这件事的背景：\(rule.note.isEmpty ? "你希望主动关心对方" : rule.note)\n"
         instruction += "开口时的指引：\(rule.hint.isEmpty ? "用你的方式自然地关心对方此刻的状态" : rule.hint)\n"
         instruction += "要求：只写这一条消息本身，像平时发消息一样，1-3 句，不要解释你在执行规则，不要使用列表，不要提及「主动唤醒」这个功能。"

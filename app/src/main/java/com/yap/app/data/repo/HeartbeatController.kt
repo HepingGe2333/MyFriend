@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.util.Log
+import com.yap.app.BuildConfig
 import com.yap.app.data.local.AgentTickDao
 import com.yap.app.data.local.ChatSessionDao
 import com.yap.app.data.local.MessageDao
@@ -18,6 +20,8 @@ import com.yap.app.domain.ProactiveCapInput
 import com.yap.app.domain.MoodTuning
 import com.yap.app.domain.MoodState
 import com.yap.app.domain.PersonaActivityCodec
+import com.yap.app.domain.ProactiveDiagnostics
+import com.yap.app.domain.ProactiveDiagnostics.Reason
 import com.yap.app.domain.ProactiveLevel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +32,9 @@ import java.time.ZoneId
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.random.Random
+
+/** 心跳诊断日志的 logcat tag：`adb logcat -s Heartbeat` 就能只看着他这一条线。 */
+private const val HEARTBEAT_LOG_TAG = "Heartbeat"
 
 /**
  * 他的心跳：每半分钟问自己一句「现在想不想他」。
@@ -61,8 +68,15 @@ class HeartbeatController @Inject constructor(
     private val tickDao: AgentTickDao,
     private val sessionDao: ChatSessionDao,
     private val messageDao: MessageDao,
+    /** 他的日记板：到点的提醒在这里变成念头（`spec/diary/README.md`）。 */
+    private val diaryRepository: DiaryRepository,
     /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
-    private val agentCore: AgentCoreClient
+    private val agentCore: AgentCoreClient,
+    /**
+     * 服务端模式：他此时在服务端那边活着（主动消息/情绪/日记提醒都由服务端自己跑）。
+     * 客户端的心跳必须停下，否则就是双份主动消息、双份情绪判定。
+     */
+    private val serverMode: com.yap.app.data.remote.ServerModeRepository
 ) {
 
     /**
@@ -85,16 +99,25 @@ class HeartbeatController @Inject constructor(
         now: Long = System.currentTimeMillis(),
         roll: Double = Random.nextDouble()
     ): Beat {
+        // 服务端模式：这一拍什么都不做。放在最前面，连设置/库都不读。
+        if (serverMode.isEnabled()) return stop(Reason.SERVER_MODE, why = "服务端模式：主动由服务端负责")
         val settings = runCatching { settingsRepository.settings.first() }.getOrNull()
-            ?: return Beat(why = "读不到设置")
-        if (!settings.agentLoopEnabled) return Beat(why = "常驻循环已关闭")
+            ?: return stop(Reason.SETTINGS_UNREADABLE, why = "读不到设置")
+        if (!settings.agentLoopEnabled) return stop(Reason.LOOP_DISABLED, why = "常驻循环已关闭")
 
-        val persona = pickPersona(settings.activePersonaId) ?: return Beat(why = "还没有可以对话的人格")
+        val persona = pickPersona(settings.activePersonaId)
+            ?: return stop(Reason.NO_PERSONA, why = "还没有可以对话的人格")
+
+        // 日记里到点的提醒先变成「念头」，再走下面那套「想不想开口」的判定。
+        // 放在睡觉/在忙的判断**之前**：提醒到点是他心里的一件事，不该因为他睡了就被丢掉；
+        // 要不要因此说话，仍然由循环自己决定（睡着时它不会开口，念头留在窗口里）。
+        // 只会触发一次：DiaryRepository 用带条件的 UPDATE 原子占位，错过 >24h 只清标记不补。
+        runCatching { diaryRepository.remindDue(now) }
 
         // 他睡觉的时候不掷：既省电，也更像人。
         val minute = minuteOfDay(now)
         if (runCatching { personaCardRepository.isAsleep(persona, minute) }.getOrDefault(false)) {
-            return Beat(why = "他在睡觉")
+            return stop(Reason.SLEEPING, why = "他在睡觉")
         }
 
         // 0.12 人设引导（规范 §4）：此刻在忙就别主动开口。
@@ -103,7 +126,7 @@ class HeartbeatController @Inject constructor(
         val activity = runCatching { PersonaActivityCodec.decode(persona.activityJson) }.getOrNull()
         val activityAvailability = activity?.availabilityAt(now)
         if (activityAvailability == com.yap.app.domain.ActivityAvailability.BUSY) {
-            return Beat(why = "他正忙着：${activity?.activity.orEmpty().take(40)}")
+            return stop(Reason.BUSY, why = "他正忙着：${activity?.activity.orEmpty().take(40)}")
         }
 
         // 刚聊完先安静一会儿：收尾期不是「概率低一点」，而是这段时间根本不掷骰子。
@@ -111,12 +134,25 @@ class HeartbeatController @Inject constructor(
         val snapshot = snapshotFor(persona, settings, now)
         if (snapshot.resetAt <= 0L) {
             // 第一次跑起来：从「刚刚互动过」开始，而不是从三个小时的思念开始。
-            runCatching { settingsRepository.setHeartbeatState(now, settings.heartbeatLastFiredAt) }
-            return Beat(why = "") // 这一拍只把起点定下来，不掷
+            val saved = runCatching {
+                settingsRepository.setHeartbeatState(now, settings.heartbeatLastFiredAt)
+            }.isSuccess
+            // 修 bug（真机反馈「FIRST_BEAT 连打两三次」）：写完盘必须同时更新内存快照。
+            // 否则 60 秒 TTL 内接下来两拍拿到的还是 resetAt = 0，会把这个「首次起点」分支
+            // 再走一遍。写盘失败时把起点留在进程内（unsavedResetAt），下一拍快照刷新还能接上，
+            // 不会变成「每十分钟重新定一次起点、永远不掷骰子」。
+            if (!saved) unsavedResetAt = now
+            cached = snapshot.copy(resetAt = now, at = now)
+            return stop(Reason.FIRST_BEAT, detail = "第一次心跳，把概率起点定在 $now")
         }
         val minutes = Heartbeat.minutesBetween(snapshot.resetAt, now)
         if (minutes < Heartbeat.COOL_DOWN_MINUTES) {
-            return Beat(why = "刚聊完，先安静一会儿")
+            return stop(
+                Reason.COOL_DOWN,
+                why = "刚聊完，先安静一会儿",
+                detail = "刚聊完（距上次互动 ${oneDecimal(minutes)} 分钟，" +
+                    "冷却 ${Heartbeat.COOL_DOWN_MINUTES.toInt()} 分钟）"
+            )
         }
 
         // 概率是「每分钟」的，心跳是离散采样：换算成这一拍的概率再掷。
@@ -131,12 +167,22 @@ class HeartbeatController @Inject constructor(
         }
         val weighted = perMinute * ProactiveLevel.heartbeatWeight(persona.proactiveLevel) * activityWeight
         val perBeat = Heartbeat.perBeatProbability(weighted, intervalMinutes()).coerceIn(0.0, 1.0)
-        if (!Heartbeat.shouldFire(perBeat, roll)) return Beat(why = "")
+        if (!Heartbeat.shouldFire(perBeat, roll)) {
+            return stop(
+                Reason.ROLL_MISSED,
+                detail = "本拍概率 ${percent(perBeat)}，掷出 ${percent(roll)}，没中"
+            )
+        }
 
         // 中了才算这些账：没中就不花查询去确认「今天说够了没」。
         val lastTick = runCatching { agentLoop.lastTickAt() }.getOrNull()
         if (lastTick != null && now - lastTick < FIRST_TICK_GAP_MS) {
-            return Beat(why = "刚想过，再等等")
+            return stop(
+                Reason.TICK_GAP,
+                why = "刚想过，再等等",
+                detail = "距上次思考 ${(now - lastTick) / 1000} 秒" +
+                    "（下限 ${FIRST_TICK_GAP_MS / 60_000} 分钟）"
+            )
         }
         // 每日上限由人格的主动程度决定；1.9 没有「每天最多主动几次」这个设置了。
         // 0.11.0：换算走 agent 决策层（默认进程内，可切 agentd），规则只有 :agentcore 一份。
@@ -149,27 +195,77 @@ class HeartbeatController @Inject constructor(
                 )
             )
         }
-        if (dailyCap <= 0) return Beat(why = "他今天不想主动开口")
+        if (dailyCap <= 0) {
+            return stop(Reason.DAILY_CAP, why = "他今天不想主动开口", detail = "主动上限算出来是 0")
+        }
         val spoken = runCatching { intentRepository.spokenToday(persona.id, now) }.getOrDefault(0)
-        if (spoken >= dailyCap) return Beat(why = "今天说够了（$spoken/$dailyCap）")
+        if (spoken >= dailyCap) {
+            return stop(Reason.DAILY_CAP, why = "今天说够了（$spoken/$dailyCap）")
+        }
 
         // 让他自己看着处境决定做什么。做什么都记在他自己的思考日志里。
         val outcome = runCatching { agentLoop.tick(now) }.getOrNull()
         // 不管他做了什么、甚至出错了，这一轮都算「想过一回」：曲线从此刻重新走。
         val finishedAt = maxOf(now, System.currentTimeMillis())
-        runCatching {
+        val savedReset = runCatching {
             settingsRepository.setHeartbeatState(
                 lastResetAt = finishedAt,
                 lastFiredAt = finishedAt
             )
-        }
+        }.isSuccess
+        // 写盘失败时同样留一个进程内起点：否则下一次快照刷新会退回旧的 resetAt，
+        // 可能立刻又掷中（频率变密），也可能像首拍那样反复重来。
+        if (!savedReset) unsavedResetAt = finishedAt
         cached = cached?.copy(resetAt = finishedAt, at = finishedAt)
-        return Beat(
+        // why 保持原样（调用方不看它，但别改既有返回值）；logcat 用 classify 把 tick 的
+        // summary 翻译成「到底是没配置、没解析出来、被分寸拦住，还是真的做了点什么」。
+        val acted = outcome?.acted == true
+        val summary = outcome?.summary.orEmpty()
+        val why = if (outcome == null) "这一轮没想成" else ""
+        return stop(
+            reason = ProactiveDiagnostics.classify(
+                fired = true,
+                acted = acted,
+                why = why,
+                tickSummary = summary
+            ),
+            why = why,
             fired = true,
-            acted = outcome?.acted == true,
-            summary = outcome?.summary.orEmpty(),
-            why = if (outcome == null) "这一轮没想成" else ""
+            acted = acted,
+            summary = summary,
+            detail = summary.ifBlank { why }
         )
+    }
+
+    /**
+     * 把这一拍记进本地 debug 日志，然后**原样**返回同一个 [Beat]。
+     *
+     * 为什么每个 return 都要走这里：真机反馈「他不主动找我」时，logcat 必须能直接回答
+     * 「这一拍卡在哪道闸门」。如果只在函数末尾打一条，早退的拍（绝大多数）就什么都看不到。
+     * 日志只在 debug 构建里打；它不读库、不改概率、不改顺序，只是把已经算好的结果记下来。
+     *
+     * `detail` 为空时退回 `why`，再退回 [Reason.explanation]，保证任何一条日志都能看懂。
+     */
+    private fun stop(
+        reason: Reason,
+        why: String = "",
+        fired: Boolean = false,
+        acted: Boolean = false,
+        summary: String = "",
+        detail: String = ""
+    ): Beat {
+        if (BuildConfig.DEBUG) {
+            Log.d(
+                HEARTBEAT_LOG_TAG,
+                ProactiveDiagnostics.logLine(
+                    fired = fired,
+                    acted = acted,
+                    reason = reason,
+                    detail = detail.ifBlank { why }
+                )
+            )
+        }
+        return Beat(fired = fired, acted = acted, summary = summary, why = why)
     }
 
     /**
@@ -203,6 +299,15 @@ class HeartbeatController @Inject constructor(
 
     private var cached: BeatSnapshot? = null
 
+    /**
+     * 首拍起点写盘失败时的**进程内兜底**。
+     *
+     * 只在 DataStore 写不进去（磁盘满 / 被系统拒绝）时才会用到。没有它的话，快照 60 秒过期的
+     * 下一次刷新会读到 `heartbeatLastResetAt = 0`，于是又一次「首次起点」→ 又冷却十分钟，
+     * 如此循环，他永远不会真正掷骰子。它不是产品状态，只保证「一次写失败不该让心跳停摆」。
+     */
+    private var unsavedResetAt = 0L
+
     private suspend fun snapshotFor(
         persona: PersonaEntity,
         settings: com.yap.app.data.prefs.AppSettings,
@@ -216,6 +321,8 @@ class HeartbeatController @Inject constructor(
         val resetAt = Heartbeat.latestMark(
             settings.heartbeatLastResetAt,
             settings.heartbeatLastFiredAt,
+            // 写盘失败时的进程内起点：取 max 让「持久化的值」始终优先，只在它缺席时兜底。
+            unsavedResetAt,
             runCatching { lastInteractionAt(persona.id) }.getOrNull()
         )
         val snapshot = BeatSnapshot(
@@ -286,6 +393,23 @@ class HeartbeatController @Inject constructor(
     }.getOrDefault(0)
 
     private fun hourOfDay(now: Long): Int = minuteOfDay(now) / 60
+
+    /**
+     * 日志里只留一位小数：几毫秒的精度对「他为什么没主动」没有意义，
+     * 但整数会把 0.4 分钟抹成 0，看起来像「刚互动完」。
+     */
+    private fun oneDecimal(value: Double): String {
+        if (!value.isFinite()) return "0.0"
+        val scaled = (value * 10).toInt()
+        return "${scaled / 10}.${scaled % 10}"
+    }
+
+    /** 概率写成 6.1% 这种样子：logcat 里比 0.061 好读，也方便和曲线参数对照。 */
+    private fun percent(value: Double): String {
+        if (!value.isFinite()) return "0.0%"
+        val scaled = (value * 1000).toInt()
+        return "${scaled / 10}.${scaled % 10}%"
+    }
 
     companion object {
         /** 一拍里要读的那几件事（互动、心情、重置点），一分钟内不重复读。 */

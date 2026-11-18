@@ -148,7 +148,7 @@ class AuthorityServerTest {
                 emit(SseEvent.Delta("块$chunk"))
                 Thread.sleep(3)
             }
-            Usage(promptTokens = 10, completionTokens = 20)
+            ReplyOutcome(Usage(promptTokens = 10, completionTokens = 20))
         }
         val server = start(slowGenerator)
         val payload = """{"clientMessageId":"gone-1","content":"你慢慢说，我先走了"}"""

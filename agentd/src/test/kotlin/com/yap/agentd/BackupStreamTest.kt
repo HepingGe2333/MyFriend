@@ -132,7 +132,7 @@ class BackupStreamTest {
                 val body = decodeChunked(raw.substring(headerEnd + 4))
                 val parsed = TestSupport.parse(body)
                 assertEquals(FileStore.BACKUP_FORMAT_NAME, parsed.str("format"))
-                assertEquals(5, parsed.int("formatVersion"))
+                assertEquals(FileStore.BACKUP_FORMAT_VERSION, parsed.int("formatVersion"))
                 assertEquals(2, parsed.objects("messages").size)
             }
         } finally {
@@ -208,9 +208,15 @@ class BackupStreamTest {
             val imported = TestSupport.parse(response.body()).obj("imported")
             assertEquals(2, imported.int("messages"))
             assertTrue(Files.exists(root.resolve(FileStore.SESSIONS_FILE)))
+            // 清理是请求结束后的收尾动作：极慢的 CI 上可能晚一两个调度周期才从磁盘消失。
+            val staging = root.resolve(FileStore.STAGING_DIR)
+            val deadline = System.currentTimeMillis() + 2_000
+            while (Files.exists(staging) && System.currentTimeMillis() < deadline) {
+                Thread.sleep(20)
+            }
             assertFalse(
                 "导入结束后必须清掉 `.staging/`（成功路径也不留垃圾）",
-                Files.exists(root.resolve(FileStore.STAGING_DIR))
+                Files.exists(staging)
             )
         } finally {
             server.stop()

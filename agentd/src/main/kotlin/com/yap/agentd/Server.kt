@@ -80,7 +80,7 @@ object AgentdServer {
     /** 一次请求（请求行 + 头部 + body）的总读时限（毫秒）。 */
     const val READ_TIMEOUT_MS = 5_000L
 
-    /** `POST /v1/backup` 的请求体上限（与客户端 v5 备份的 256 MiB 语义一致）。 */
+    /** `POST /v1/backup` 的请求体上限（与客户端备份的 256 MiB 语义一致）。 */
     const val MAX_BACKUP_BODY_BYTES = 256 * 1024 * 1024
 
     /** 处理请求的固定线程数：慢客户端最多占住这些线程，`/health` 仍有线程可用。 */
@@ -475,7 +475,7 @@ object AgentdServer {
             MediaRoutes.matches(target) -> MediaRoutes.bodyLimit(target)
             // 批量历史消息导入：200 条一批、单批 ≤8 MiB（与 handler 层同一个常量）。
             CrudRoutes.isMessageImportPath(target.substringBefore('?')) -> CrudRoutes.MAX_IMPORT_BODY_BYTES
-            // 备份导入是整份 JSON（含媒体的 base64）：与客户端 v5 的 256 MiB 语义一致。
+            // 备份导入是整份 JSON（含媒体的 base64）：与客户端备份的 256 MiB 语义一致。
             target.substringBefore('?') == CrudRoutes.BACKUP_PATH -> MAX_BACKUP_BODY_BYTES
             else -> MAX_BODY_BYTES
         }
@@ -724,7 +724,13 @@ object AgentdServer {
             val bodyDeadline = System.nanoTime() +
                 TimeUnit.SECONDS.toNanos(BACKUP_IMPORT_READ_TIMEOUT_SECONDS)
             readBodyToFile(input, output, maxOf(deadlineNanos, bodyDeadline), head, temp)
-            val response = CrudRoutes.importBackupFromFile(store, temp)
+            // 裸备份文件（客户端导出的 v6 json 原样 POST）用 mode 默认 merge；信封走 data.mode。
+            val mode = if (head.target.substringAfter('?', "").contains("mode=replace")) {
+                FileStore.MODE_REPLACE
+            } else {
+                FileStore.MODE_MERGE
+            }
+            val response = CrudRoutes.importBackupFromFile(store, temp, mode)
             reply(socket, output, response.status, response.body)
         } catch (_: RequestTimeoutException) {
             reply(socket, output, 408, ERROR_TIMEOUT)

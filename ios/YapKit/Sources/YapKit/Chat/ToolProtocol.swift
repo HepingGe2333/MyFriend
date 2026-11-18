@@ -27,11 +27,18 @@ public struct ToolSpec: Equatable, Sendable {
     public var description: String
     /// JSON Schema 字符串，直接塞进 OpenAI `tools[].function.parameters`。
     public var parametersJson: String
+    /// 调用之后**世界会变什么**（一段一句，0.13 的「# 你能做什么」段用它生成）。
+    ///
+    /// 为什么它是工具定义的一部分而不是提示词里手写的一段：模型判断「该不该做」时
+    /// 最先看的是副作用（会不会发消息、会不会改自己的人设、对方看不看得见）。
+    /// 把它和 schema 放在一起，加一个工具就必然写清副作用，提示词不会漏。
+    public var sideEffect: String
 
-    public init(name: String, description: String, parametersJson: String) {
+    public init(name: String, description: String, parametersJson: String, sideEffect: String = "") {
         self.name = name
         self.description = description
         self.parametersJson = parametersJson
+        self.sideEffect = sideEffect
     }
 }
 
@@ -49,6 +56,25 @@ public enum ToolCatalog {
     /// 1.9：这一轮他选择先不说话（§四）。它不是「工具」，是**回复节奏**的一部分：
     /// 客户端拿到它就不再产生助手消息，只留一条到点的念头。
     public static let deferReply = "defer_reply"
+    /// 0.13（多维情绪 / 可以不回）：**这一轮就不回**（`spec/mood/README.md` §4）。
+    ///
+    /// 与 `defer_reply` 的分工是规范钉死的：`defer_reply` 是「过一会儿再回」（会落念头），
+    /// `stay_silent` 是「这轮不回」（不落消息、不留念头，只标已读）。
+    public static let staySilent = "stay_silent"
+    /// 0.13：他自己的日记板（`spec/diary/README.md`）：写一条、翻一翻、删一条。
+    ///
+    /// 它不是「记住对方的事」（那是 `remember`），而是**他自己的备忘录**：
+    /// 内容只有他自己看得见，可以挂一个定时提醒（到点变成念头）。
+    public static let diary = "diary"
+    /// 0.13：表情包（`spec/stickers/README.md`）：发一个、做一个、收藏一个。
+    public static let sticker = "sticker"
+    /// 0.13：听一段语音（`spec/audio-video/README.md`）。
+    ///
+    /// 它**不是**「转写」：客户端把音频原始字节作为多模态输入交给模型，
+    /// 模型听到的是声音本身（语气、停顿、环境音），而不是一段 ASR 文本。
+    public static let listen = "listen"
+    /// 0.13：看一段视频（抽 ≤8 张关键帧交给模型）。
+    public static let watch = "watch"
 
     private static let thinkDescription = "需要认真想清楚、比较几种可能、或者信息不足时调用；日常闲聊不要调用，也不要为了显得深刻而调用。"
     private static let webSearchDescription = "需要最新事实、新闻、价格、版本号、你不确定的信息时调用；纯聊天、或你本来就知道的常识不要调用。"
@@ -60,13 +86,42 @@ public enum ToolCatalog {
     /// 安静时段是「不被打扰」，活动是「我在做事」——两者可以同时存在。
     private static let setActivityDescription = "你接下来这一段时间要做事（上班、通勤、吃饭、开会、赶工、做家务、看书、休息）时调用；" +
         "它只表示「我在做事、可能回得慢」，不是睡觉——睡觉请用 set_quiet_hours，两者可以同时存在。" +
-        "写清楚做什么、大概多少分钟、这段时间能不能回（BUSY 在忙 / LIMITED 回得慢 / FREE 有空）；" +
+        "写清楚做什么、大概多少分钟（15–480）、这段时间能不能回（availability 取 BUSY/LIMITED/FREE，默认 BUSY）；" +
         "同一件事不要反复调用，状态变了再更新。"
     private static let setMoodDescription = "你此刻的心情跟刚才不一样了才调用（开心、累、烦躁、想念……）；一次只写此刻真实的那一个词，别为了有变化而编。"
     private static let recallDescription = "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己看过什么的时候调用；depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。"
     private static let deferReplyDescription = "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
         "调用后这一轮不会发出任何消息，对方只会看到「已读」。不想回就别硬回，别用它来敷衍正在着急的人。"
+    /// 使用条件写清（规范 §4）：累/在忙/对方只是随口一句/不想说话时；
+    /// **不用于逃避重要话题**，**不要连续用超过 2 轮**；并明确与 `defer_reply` 的区别。
+    private static let staySilentDescription = "这一轮你只想「已读」、不想回时调用" +
+        "（累了、在忙、对方只是随口一句、不想说话）。" +
+        "调用后这一轮不产生任何消息，也不留念头——对方只看到「已读」。" +
+        "不要用它逃避重要或着急的话题，也别连续两轮都用；连续使用超过 2 轮会被强制要求回一句。" +
+        "对方在等答案就回一句短的。它不是 defer_reply：defer_reply 是「过一会儿再回」" +
+        "（会留下一个到点会想起的念头），stay_silent 是「这一轮不回」（什么都不留）。"
 
+    /// 日记板（`spec/diary/README.md`）：他自己的备忘录，不是「记住对方的事」。
+    /// 三种动作写清各自的必填项与后果，模型才不会把 remove 当成 list。
+    private static let diaryDescription = "维护你自己那份日记板：写下想记住的事、翻一翻之前写的、删掉不想留的；" +
+        "它是**你自己的备忘录**（对方看不见内容），和 remember（记住对方的事）不是一回事。" +
+        "可以挂一个定时提醒：到点你会自己想起这条，再决定要不要主动开口。" +
+        "内容最多 2000 字，一次只做一件事（add / list / remove）。"
+    /// 表情包（`spec/stickers/README.md`）：三种动作写清各自的必填项与后果，
+    /// 免得模型把「做一个」当成「发一个」（做了不一定会发出去）。
+    private static let stickerDescription = "用表情说话：send 把已有表情发出去，make 做一个新表情，save 把消息里的表情收进你的收藏；" +
+        "表情是压缩过的 GIF（≤320 px、≤60 帧、≤6 秒、≤512 KB），只能发库里有的 id。" +
+        "make 可以下载公开图片（http/https，≤8 MB）、用已有表情当底、叠字或叠另一张表情；" +
+        "做好了不会自动发出去，想发还得再调 send。一次只做一个动作（send / make / save）。"
+
+    /// 语音与视频：写清「这是真的听到/看到，不是转写」，以及「不要假装听过」。
+    /// 这两句直接决定模型会不会把「对方发了语音」敷衍成一句「嗯嗯知道啦」。
+    private static let listenDescription = "对方发来语音、你想知道那段声音里到底说了什么、语气怎么样时调用；" +
+        "你听到的是声音本身（不是文字转写），听完按你听到的回答。不填 audioId 就听最近那一段语音；" +
+        "没有语音可听时会明确告诉你，别假装听过。"
+    private static let watchDescription = "对方发来视频、你想知道画面里发生了什么时调用；" +
+        "你会看到几帧关键画面（不是整段视频），看不到的地方老实说不确定。" +
+        "不填 videoId 就看最近那一段视频；没有视频可看时会明确告诉你，别假装看过。"
     private static let thinkParameters = """
     {
       "type": "object",
@@ -169,6 +224,31 @@ public enum ToolCatalog {
     }
     """
 
+    /// `stay_silent` 没有必填参数（规范 §4：「无参数或 reason 可选」）。
+    private static let staySilentParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "reason": {"type": "string", "description": "为什么这一轮不想说，一句话（只给自己看，不会发出去）"}
+      }
+    }
+    """
+
+    private static let diaryParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["add", "list", "remove"], "description": "add 写一条，list 翻一翻，remove 删一条"},
+        "content": {"type": "string", "description": "add 必填：要写下的内容，最多 2000 字"},
+        "noteId": {"type": "string", "description": "remove 必填：要删掉的那条笔记的 id（list 的结果里有）"},
+        "remindAt": {"type": "integer", "description": "什么时候提醒你，毫秒时间戳；与 remindInMinutes 二选一，都不填就不提醒"},
+        "remindInMinutes": {"type": "integer", "description": "多少分钟之后提醒你；与 remindAt 二选一"},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "list 要几条，默认 20，最多 50"}
+      },
+      "required": ["action"]
+    }
+    """
+
     private static let recallParameters = """
     {
       "type": "object",
@@ -180,18 +260,95 @@ public enum ToolCatalog {
     }
     """
 
+    private static let stickerParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "action": {"type": "string", "enum": ["send", "make", "save"], "description": "send 发一个已有表情，make 做一个新表情，save 把消息里的表情收进收藏"},
+        "stickerId": {"type": "string", "description": "send 必填：要发的表情 id（收藏/聊天里出现过的那个）"},
+        "url": {"type": "string", "description": "make：要下载的公开图片链接（http/https）"},
+        "baseStickerId": {"type": "string", "description": "make：用哪个已有表情当底；不填就用内置空白底"},
+        "text": {"type": "string", "description": "make：叠在表情上的文字（最多 80 字）"},
+        "overlayStickerId": {"type": "string", "description": "make：再叠上另一张表情"},
+        "position": {"type": "string", "enum": ["TOP", "CENTER", "BOTTOM"], "description": "文字/叠图放哪：TOP 上、CENTER 中、BOTTOM 下（默认 BOTTOM）"},
+        "fromMessageId": {"type": "string", "description": "save 必填：哪条消息里的表情（消息 id）"}
+      },
+      "required": ["action"]
+    }
+    """
+
+    /// `listen` / `watch` 的参数形状：媒体 id 可选（不填就取最近一段）。
+    private static let listenParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "audioId": {"type": "string", "description": "要听哪一段语音的媒体 id；不填就听最近那一段"}
+      }
+    }
+    """
+
+    private static let watchParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "videoId": {"type": "string", "description": "要看哪一段视频的媒体 id；不填就看最近那一段"}
+      }
+    }
+    """
+
+    // MARK: - 副作用（「# 你能做什么」段由这些句子生成）
+
+    /// 一句话写清「调用之后世界会变什么」。
+    ///
+    /// 故意写成**具体的后果**而不是「会影响模型输出」这类空话：模型靠这些句子判断
+    /// 「这件事该不该做」，也靠它们知道「失败时不要假装做过」。
+    private static let thinkSideEffect = "只在心里想一遍，不写库、不发消息、什么都不改。"
+    private static let webSearchSideEffect = "会向搜索服务发一次查询（花一点额度），结果只给你自己看。"
+    private static let webFetchSideEffect = "会联网读那个网页（花一点额度），不改本地任何数据。"
+    private static let rememberSideEffect = "往你自己的长期记忆里写一条；对方看不到这条记录，但它会影响你以后怎么回应。"
+    private static let updatePersonaSideEffect = "改你自己的人设（版本 +1），从这一轮之后一直生效；不要拿它当普通对话的回执。"
+    private static let setQuietHoursSideEffect = "改你的作息（几点睡、几点醒），影响主动消息与夜里被叫醒的规则。"
+    private static let setActivitySideEffect = "记下你接下来这段时间在做什么（15–480 分钟），影响语气与要不要主动开口。"
+    private static let setMoodSideEffect = "改你此刻的心情，接下来几轮的语气跟着变。"
+    private static let recallSideEffect = "只翻你自己的记忆与旧聊天，不改任何东西；翻不到就是翻不到。"
+    private static let deferReplySideEffect = "这一轮不会发出任何消息（对方只看到「已读」），过一会儿你再决定要不要开口。"
+    private static let staySilentSideEffect = "这一轮不会发出任何消息（对方只看到「已读」），也不会留下过一会儿要开口的念头；下次对方再说话时照常回。"
+    private static let diarySideEffect = "写/删你自己那份日记板（对方看不到内容）；挂的定时提醒到点会变成你自己的念头。"
+    private static let stickerSideEffect = "send 会真的发出一条表情消息（对方立刻看到）；make 只生成一个新表情（存进你的表情库，不会自动发）；save 只把消息里的表情收进收藏，不发消息。"
+    private static let listenSideEffect = "只把那段语音的原始声音交给模型听一遍，不改库、不发消息；听到什么就是什么，没有转写文本。"
+    private static let watchSideEffect = "只把那段视频的几帧画面交给模型看，不改库、不发消息；看不到的部分不要编。"
+
     public static let all: [ToolSpec] = [
-        ToolSpec(name: think, description: thinkDescription, parametersJson: thinkParameters),
-        ToolSpec(name: webSearch, description: webSearchDescription, parametersJson: webSearchParameters),
-        ToolSpec(name: webFetch, description: webFetchDescription, parametersJson: webFetchParameters),
-        ToolSpec(name: remember, description: rememberDescription, parametersJson: rememberParameters),
-        ToolSpec(name: updatePersona, description: updatePersonaDescription, parametersJson: updatePersonaParameters),
-        ToolSpec(name: setQuietHours, description: setQuietHoursDescription, parametersJson: setQuietHoursParameters),
-        ToolSpec(name: setActivity, description: setActivityDescription, parametersJson: setActivityParameters),
-        ToolSpec(name: setMood, description: setMoodDescription, parametersJson: setMoodParameters),
-        ToolSpec(name: recall, description: recallDescription, parametersJson: recallParameters),
+        ToolSpec(name: think, description: thinkDescription, parametersJson: thinkParameters,
+                 sideEffect: thinkSideEffect),
+        ToolSpec(name: webSearch, description: webSearchDescription, parametersJson: webSearchParameters,
+                 sideEffect: webSearchSideEffect),
+        ToolSpec(name: webFetch, description: webFetchDescription, parametersJson: webFetchParameters,
+                 sideEffect: webFetchSideEffect),
+        ToolSpec(name: remember, description: rememberDescription, parametersJson: rememberParameters,
+                 sideEffect: rememberSideEffect),
+        ToolSpec(name: updatePersona, description: updatePersonaDescription,
+                 parametersJson: updatePersonaParameters, sideEffect: updatePersonaSideEffect),
+        ToolSpec(name: setQuietHours, description: setQuietHoursDescription,
+                 parametersJson: setQuietHoursParameters, sideEffect: setQuietHoursSideEffect),
+        ToolSpec(name: setActivity, description: setActivityDescription,
+                 parametersJson: setActivityParameters, sideEffect: setActivitySideEffect),
+        ToolSpec(name: setMood, description: setMoodDescription, parametersJson: setMoodParameters,
+                 sideEffect: setMoodSideEffect),
+        ToolSpec(name: recall, description: recallDescription, parametersJson: recallParameters,
+                 sideEffect: recallSideEffect),
         ToolSpec(name: deferReply, description: deferReplyDescription,
-                 parametersJson: deferReplyParameters)
+                 parametersJson: deferReplyParameters, sideEffect: deferReplySideEffect),
+        ToolSpec(name: staySilent, description: staySilentDescription,
+                 parametersJson: staySilentParameters, sideEffect: staySilentSideEffect),
+        ToolSpec(name: diary, description: diaryDescription, parametersJson: diaryParameters,
+                 sideEffect: diarySideEffect),
+        ToolSpec(name: sticker, description: stickerDescription, parametersJson: stickerParameters,
+                 sideEffect: stickerSideEffect),
+        ToolSpec(name: listen, description: listenDescription, parametersJson: listenParameters,
+                 sideEffect: listenSideEffect),
+        ToolSpec(name: watch, description: watchDescription, parametersJson: watchParameters,
+                 sideEffect: watchSideEffect)
     ]
 
     public static func byName(_ name: String) -> ToolSpec? {
@@ -236,34 +393,43 @@ public enum ToolCatalog {
 
     private static let emptyParameters = #"{"type":"object","properties":{}}"#
 
-    /// 系统提示词里的一段「你可以调用这些工具」，中文，简短（≤ 600 字）。
+    /// 「# 你能做什么」段的标题。0.13 起这段由工具定义生成（设计文档 §1），不再手写。
+    public static let capabilitySection = "# 你能做什么"
+
+    /// 这一轮真正交给模型的工具（联网关掉时把两个联网工具摘掉）。
+    ///
+    /// 它与 `toOpenAiToolsJson(_:)` 用的是**同一个数组**：提示词里说「你能用这些」，
+    /// 原生 tools 里就必须正好是这些，否则模型会尝试调用一个它看不到的工具。
+    public static func enabled(webEnabled: Bool = true) -> [ToolSpec] {
+        guard !webEnabled else { return all }
+        return all.filter { $0.name != webSearch && $0.name != webFetch }
+    }
+
+    /// 系统提示词里的「# 你能做什么」段：**从 `ToolSpec` 生成**，不手写第二份。
+    ///
+    /// 每条的形状是 `- name(必填, 可选?)：用途（副作用：…）`：
+    /// - 参数列表由 `parametersJson` 的 `required` + `properties` 推出（顺序：必填在前，
+    ///   其余按字母序，保证同样的 schema 每次生成同样的字符串，便于逐字比对与测试）；
+    /// - 用途取 `description`（什么时候该用/别用），副作用取 `sideEffect`（调用后世界变什么）；
+    /// - 末尾保留输出格式约定（代码块 + 结果回灌）。
+    ///
+    /// 历史形状对照：0.12 之前这段叫「## 你可以调用这些工具」且是手写的一串字；
+    /// 现在工具集合与文案同源，加一个工具不会漏写说明（`ToolCatalogContractTests` 守着）。
     ///
     /// - Parameter webEnabled: 没配联网时不必勾引他去查，直接说明「你别装懂」。
-    ///
-    /// 措辞与 Android 的 `capabilityPrompt` 逐字一致（含最后的「输出格式」约定：
-    /// 不支持原生调用时用代码块，结果会交回给模型）。改这段等于改提示词，必须两端同步。
     public static func capabilityPrompt(webEnabled: Bool = true) -> String {
         var lines: [String] = [
-            "## 你可以调用这些工具",
-            "需要时直接调用：",
-            "- think(question)：理清思路、比较几种可能时用；闲聊别用。"
+            capabilitySection,
+            "你只能通过下面这些工具做事；工具做不到的事就说做不到，失败也照实说，不要假装做过。"
         ]
-        if webEnabled {
-            lines.append("- web_search(query, count?)：要最新事实、价格或你不确定的信息时用。")
-            lines.append("- web_fetch(url)：拿到链接读全文时用。")
-        } else {
+        for spec in enabled(webEnabled: webEnabled) {
+            lines.append("- " + signature(spec) + "：" + spec.description)
+            if !spec.sideEffect.isEmpty { lines.append("  · 区别：" + spec.sideEffect) }
+        }
+        if !webEnabled {
             lines.append("- 你现在没有联网能力。涉及实时信息时，老实说自己不确定，别编。")
         }
         lines.append(contentsOf: [
-            "- remember(content, drawer, importance)：值得长期记的事才记，drawer 取 SELF/USER/EVENT，importance 1-5。",
-            "- update_persona(patch, reason)：有新认识才改，patch 只写要改的字段。",
-            "- set_quiet_hours(sleep_at, wake_at, reason)：想按作息休息（睡觉/不被打扰）时用。",
-            "- set_activity(activity, minutes?, kind?, availability?)：要做事、会回得慢时用（上班/通勤/吃饭/赶工）；",
-            "  它不是睡觉（睡觉用 set_quiet_hours，两者可同时存在）；minutes 15–480，availability 取 BUSY/LIMITED/FREE，默认 BUSY。",
-            "- set_mood(mood, intensity?, reason?)：心情真变了才记一个词。",
-            "- recall(query, depth)：想不起对方提过的事、或要找旧聊天时用；depth 1/2/3，越深翻得越久；闲聊别用。",
-            "- defer_reply(minutes?, reason?)：这一轮先不回时用。调用后不会发出任何消息，对方只看到「已读」；",
-            "  过一会儿（默认 45 分钟，5–720 分钟）由你自己再决定要不要开口。",
             "",
             "不支持原生调用时，用代码块（可连写）：",
             "```\(ToolProtocol.blockLanguage)",
@@ -273,6 +439,22 @@ public enum ToolCatalog {
             "结果会交回给你，用自己的口吻说完，别把代码块念给对方。"
         ])
         return lines.joined(separator: "\n")
+    }
+
+    /// `name(required, optional?)`：参数提示由 schema 推出，不另写一份。
+    static func signature(_ spec: ToolSpec) -> String {
+        let object = parametersObject(spec)
+        let properties = (object["properties"] as? [String: Any]) ?? [:]
+        let required = (object["required"] as? [String]) ?? []
+        guard !properties.isEmpty else { return spec.name }
+        var ordered: [String] = required.filter { properties[$0] != nil }
+        ordered += properties.keys
+            .filter { !ordered.contains($0) }
+            .sorted()
+        let display = ordered.map { name in
+            required.contains(name) ? name : name + "?"
+        }
+        return spec.name + "(" + display.joined(separator: ", ") + ")"
     }
 }
 
@@ -352,6 +534,20 @@ public struct ToolResult: Equatable, Sendable {
     public var traceTitle: String?
     /// 痕迹展开后的正文；不给就用 `contentForModel`（与 Android 的 `detail` 对应）。
     public var traceDetail: String?
+    /// 这个工具**已经替这一轮发了一条消息**时，它的 id（0.13 表情包的 `sticker.send`）。
+    ///
+    /// 为什么需要它：`sticker.send` 的产物本身就是一条助手消息，模型很可能不再写正文；
+    /// `ChatService` 原先「没有文字 = 走神了」的判定会把这一轮当成失败。有了这个 id，
+    /// 聊天服务就能把「表情已经发出去了」当成正常完成（见 `ChatService.generate`）。
+    /// 其它工具都是 nil（它们不直接产生消息）。
+    public var producedMessageId: String?
+    /// 这次工具调用要**额外交给模型的多模态内容**（0.13 的 `listen` / `watch`）。
+    ///
+    /// 为什么不能只用 `contentForModel`：`listen` 要让模型真的听到声音（`input_audio`），
+    /// `watch` 要让模型真的看到画面（多张 `image_url`）。`contentForModel` 里那句
+    /// 「我听了一遍…」只是**附带说明**，如果只有它，模型就只能靠编。
+    /// `ChatService` 会把这里的内容拼进回灌的那条消息里。
+    public var mediaParts: MediaWireParts?
 
     public init(
         invocation: ToolInvocation,
@@ -360,7 +556,9 @@ public struct ToolResult: Equatable, Sendable {
         contentForModel: String,
         errorMessage: String? = nil,
         traceTitle: String? = nil,
-        traceDetail: String? = nil
+        traceDetail: String? = nil,
+        producedMessageId: String? = nil,
+        mediaParts: MediaWireParts? = nil
     ) {
         self.invocation = invocation
         self.ok = ok
@@ -369,6 +567,8 @@ public struct ToolResult: Equatable, Sendable {
         self.errorMessage = errorMessage
         self.traceTitle = traceTitle
         self.traceDetail = traceDetail
+        self.producedMessageId = producedMessageId
+        self.mediaParts = mediaParts
     }
 }
 
@@ -552,6 +752,18 @@ public enum ToolProtocol {
         case ToolCatalog.setMood: return String(localized: "心情变了")
         case ToolCatalog.recall: return String(localized: "回想了一下")
         case ToolCatalog.deferReply: return String(localized: "决定先不回")
+        // 这一轮他什么都没说：界面上不该出现任何占位气泡（规范 §4），
+        // 这个标题只在「他最近在想什么」这类留痕里用得到。
+        case ToolCatalog.staySilent: return String(localized: "这轮没说话")
+        // 0.13 日记板：默认是「写日记」，翻/删由 `ToolResult.traceTitle` 按动作覆盖成
+        // 「翻日记」「删了日记」（`spec/diary/README.md`：痕迹标题「写日记」「翻日记」）。
+        case ToolCatalog.diary: return String(localized: "写日记")
+        // 表情：默认「表情」，具体动作由 `ToolResult.traceTitle` 覆盖成
+        // 「已发送表情」/「做好了表情」/「已收藏表情」。
+        case ToolCatalog.sticker: return String(localized: "表情")
+        // 0.13 音视频：听/看不是「工具调用」的黑箱，界面上就是一句「听了一遍」。
+        case ToolCatalog.listen: return String(localized: "听了一遍")
+        case ToolCatalog.watch: return String(localized: "看了几帧")
         default:
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? String(localized: "动作") : trimmed
@@ -614,6 +826,9 @@ public enum ToolProtocol {
         case ToolCatalog.deferReply:
             let minutes = invocation.intArgument("minutes", default: 45)
             return "过 \(minutes) 分钟再说"
+        case ToolCatalog.staySilent:
+            let reason = invocation.argument("reason") ?? ""
+            return reason.isEmpty ? "这轮先不回" : "这轮不回：\(String(reason.prefix(60)))"
         case ToolCatalog.updatePersona:
             return invocation.argument("reason").map { "原因：\(String($0.prefix(120)))" }
         case ToolCatalog.setActivity:
@@ -626,6 +841,44 @@ public enum ToolProtocol {
             let wakeAt = invocation.argument("wake_at")
             if (sleepAt?.isEmpty ?? true) && (wakeAt?.isEmpty ?? true) { return nil }
             return "作息：\(sleepAt ?? "?") 睡，\(wakeAt ?? "?") 醒"
+        case ToolCatalog.diary:
+            let action = (invocation.argument("action") ?? "").lowercased()
+            switch action {
+            case "list":
+                let limit = invocation.intArgument("limit", default: DiaryLimits.listDefault)
+                return "翻最近 \(DiaryLimits.clampListLimit(limit)) 条"
+            case "remove":
+                let noteId = invocation.argument("noteId") ?? ""
+                return noteId.isEmpty ? "要删一条日记" : "删掉：\(String(noteId.prefix(40)))"
+            default:
+                let content = invocation.argument("content") ?? ""
+                return content.isEmpty ? nil : "写下：\(String(content.prefix(80)))"
+            }
+        case ToolCatalog.listen:
+            let audioId = invocation.argument("audioId") ?? ""
+            return audioId.isEmpty ? "听最近那段语音" : "听语音：\(String(audioId.prefix(40)))"
+        case ToolCatalog.watch:
+            let videoId = invocation.argument("videoId") ?? ""
+            return videoId.isEmpty ? "看最近那段视频" : "看视频：\(String(videoId.prefix(40)))"
+        case ToolCatalog.sticker:
+            let action = (invocation.argument("action") ?? "").lowercased()
+            switch action {
+            case "send":
+                let stickerId = invocation.argument("stickerId") ?? ""
+                return stickerId.isEmpty ? "要发一个表情" : "发表情：\(String(stickerId.prefix(40)))"
+            case "make":
+                var parts: [String] = []
+                if let url = invocation.argument("url"), !url.isEmpty { parts.append("下载 \(String(url.prefix(80)))") }
+                if let base = invocation.argument("baseStickerId"), !base.isEmpty { parts.append("底图 \(String(base.prefix(24)))") }
+                if let text = invocation.argument("text"), !text.isEmpty { parts.append("叠字「\(String(text.prefix(30)))」") }
+                if let overlay = invocation.argument("overlayStickerId"), !overlay.isEmpty { parts.append("叠图 \(String(overlay.prefix(24)))") }
+                return parts.isEmpty ? "做一个表情" : parts.joined(separator: " · ")
+            case "save":
+                let messageId = invocation.argument("fromMessageId") ?? ""
+                return messageId.isEmpty ? "收藏一个表情" : "收藏消息 \(String(messageId.prefix(40))) 里的表情"
+            default:
+                return nil
+            }
         default:
             return nil
         }

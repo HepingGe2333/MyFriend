@@ -18,16 +18,22 @@ public enum PersonaPresetApplier {
     /// 把预设的字段应用到一份已有人格上（返回内存副本，调用方负责 upsert）。
     ///
     /// 版本号：预设的提示词与人设文本覆盖了旧内容 → 版本 +1（与编辑页"改了提示词才升版"同一口径）。
+    /// - Parameter fallbackName: 预设名字为空时的兜底（界面传 `L("未命名")`；Kit 不读资源）。
     public static func applying(
         _ preset: PersonaPresetEntity,
         to persona: PersonaEntity,
-        now: Int64
+        now: Int64,
+        fallbackName: String = PersonaDraft.fallbackName
     ) -> PersonaEntity {
         var updated = persona
-        let promptChanged = updated.prompt != preset.prompt
-        updated.name = preset.name
+        let name = PersonaDraft.resolvedName(preset.name, fallback: fallbackName)
+        let prompt = PersonaDraft.resolvedPrompt(
+            preset.prompt, name: name, description: preset.description
+        )
+        let promptChanged = updated.prompt != prompt
+        updated.name = name
         updated.description = preset.description
-        updated.prompt = preset.prompt
+        updated.prompt = prompt
         updated.category = preset.category
         updated.worldJson = PromptGuidanceJSON.clean(preset.worldJson)
         updated.speechStyleJson = PromptGuidanceJSON.clean(preset.speechStyleJson)
@@ -40,17 +46,22 @@ public enum PersonaPresetApplier {
     }
 
     /// 从预设新建一份人格（「复制到人格」的动作）。
+    /// - Parameter fallbackName: 预设名字为空时的兜底（界面传 `L("未命名")`）。
     public static func newPersona(
         from preset: PersonaPresetEntity,
         id: String = UUID().uuidString,
-        now: Int64
+        now: Int64,
+        fallbackName: String = PersonaDraft.fallbackName
     ) -> PersonaEntity {
-        PersonaEntity(
+        let name = PersonaDraft.resolvedName(preset.name, fallback: fallbackName)
+        return PersonaEntity(
             id: id,
-            name: preset.name,
+            name: name,
             description: preset.description,
             avatarSeed: preset.avatarSeed,
-            prompt: preset.prompt,
+            prompt: PersonaDraft.resolvedPrompt(
+                preset.prompt, name: name, description: preset.description
+            ),
             category: preset.category,
             version: 1,
             isDefault: false,

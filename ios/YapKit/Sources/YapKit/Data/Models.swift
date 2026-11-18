@@ -231,6 +231,13 @@ public struct PersonaEntity: Equatable, Sendable {
     public var moodUpdatedAt: Int64?
     /// 上次被引导着回看心情的时间，避免同一句话反复追问。
     public var moodNudgedAt: Int64?
+    /// v17 的多维心情（`spec/mood/README.md` §1）：愉快度 -2..2、唤醒度 0..5、掌控感 0..5。
+    ///
+    /// 三列都可空，而且**必须**可空：`nil` = 还没自动判定过（老数据 / 模型只写过 label），
+    /// 读取时退回 `MoodDimensions.fromLegacy` 的词表推断；有值才是模型真的看过对话的结论。
+    public var moodValence: Int?
+    public var moodArousal: Int?
+    public var moodDominance: Int?
 
     // MARK: 1.9 的细分字段
     //
@@ -304,6 +311,9 @@ public struct PersonaEntity: Equatable, Sendable {
         moodReason: String? = nil,
         moodUpdatedAt: Int64? = nil,
         moodNudgedAt: Int64? = nil,
+        moodValence: Int? = nil,
+        moodArousal: Int? = nil,
+        moodDominance: Int? = nil,
         traits: [String] = [],
         likes: [String] = [],
         behaviors: [String] = [],
@@ -342,6 +352,10 @@ public struct PersonaEntity: Equatable, Sendable {
         self.moodReason = moodReason
         self.moodUpdatedAt = moodUpdatedAt
         self.moodNudgedAt = moodNudgedAt
+        // 三列要么全空（没判过），要么夹到合法范围里：库里的坏数据不该让提示词出现 -7。
+        self.moodValence = moodValence.map(MoodDimensions.clampValence)
+        self.moodArousal = moodArousal.map(MoodDimensions.clampArousal)
+        self.moodDominance = moodDominance.map(MoodDimensions.clampDominance)
         self.traits = PersonaTags.normalize(traits)
         self.likes = PersonaTags.normalize(likes)
         self.behaviors = PersonaTags.normalize(behaviors)

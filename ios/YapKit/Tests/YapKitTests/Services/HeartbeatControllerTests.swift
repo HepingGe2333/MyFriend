@@ -248,4 +248,67 @@ final class HeartbeatControllerTests: XCTestCase {
         XCTAssertEqual(lowPower.checkIntervalMillis(), HeartbeatController.lowPowerBeatIntervalMillis)
         XCTAssertEqual(lowPower.intervalMinutes(), 2.0, accuracy: 0.000_1)
     }
+    // MARK: - 日记板提醒（0.13，`spec/diary/README.md`）
+
+    /// 到点的提醒 → 一条念头（followUp）+ 写 `remindedAt`；同一拍只触发一次。
+    func testDueDiaryReminderBecomesIntentOnlyOnce() async throws {
+        let remindAt = TestData.now - 60_000
+        try db.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "diary-1", personaId: "persona-1", content: "问问他到家没",
+            createdAt: TestData.now - 3_600_000, remindAt: remindAt, updatedAt: TestData.now - 3_600_000
+        ))
+        let controller = makeController()
+
+        XCTAssertEqual(controller.checkDiaryReminders(now: TestData.now), 1)
+        XCTAssertEqual(try db.stores.diaryNotes.byId("diary-1")?.remindedAt, TestData.now)
+        let pending = intents.pending(personaId: "persona-1")
+        XCTAssertEqual(pending.count, 1)
+        XCTAssertEqual(pending.first?.kind, .followUp)
+        XCTAssertTrue(pending.first?.note.contains("问问他到家没") == true)
+
+        // 第二拍：不再生成、不再重复写标记。
+        XCTAssertEqual(controller.checkDiaryReminders(now: TestData.now + 60_000), 0)
+        XCTAssertEqual(intents.pending(personaId: "persona-1").count, 1)
+    }
+
+    /// 错过超过 24 小时：只清标记，不补念头。
+    func testStaleDiaryReminderOnlyClearsMark() async throws {
+        let remindAt = TestData.now - DiaryLimits.reminderStaleMillis - 60_000
+        try db.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "diary-stale", personaId: "persona-1", content: "三天前的提醒",
+            createdAt: remindAt, remindAt: remindAt, updatedAt: remindAt
+        ))
+        let controller = makeController()
+        XCTAssertEqual(controller.checkDiaryReminders(now: TestData.now), 0)
+        XCTAssertNotNil(try db.stores.diaryNotes.byId("diary-stale")?.remindedAt,
+                        "标记要清，避免每一拍都重新判断一遍")
+        XCTAssertTrue(intents.pending(personaId: "persona-1").isEmpty)
+    }
+
+    /// 还没到点的提醒不提前生成；别的便条不受影响。
+    func testFutureDiaryReminderIsNotTriggeredEarly() async throws {
+        try db.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "diary-future", personaId: "persona-1", content: "明天再说",
+            createdAt: TestData.now, remindAt: TestData.now + 3_600_000, updatedAt: TestData.now
+        ))
+        let controller = makeController()
+        XCTAssertEqual(controller.checkDiaryReminders(now: TestData.now), 0)
+        XCTAssertNil(try db.stores.diaryNotes.byId("diary-future")?.remindedAt)
+        XCTAssertTrue(intents.pending(personaId: "persona-1").isEmpty)
+    }
+
+    /// 心跳每拍都会查（不依赖骰子）：即便这一拍注定「不想说话」，到点的提醒也会被记下来。
+    func testBeatChecksDiaryEvenWhenDiceMisses() async throws {
+        // 骰子一定不中（概率再高也掷不出来），但提醒照样要处理。
+        try db.stores.diaryNotes.upsert(DiaryNoteEntity(
+            id: "diary-beat", personaId: "persona-1", content: "到点了",
+            createdAt: TestData.now - 60_000, remindAt: TestData.now - 30_000, updatedAt: TestData.now - 60_000
+        ))
+        let controller = makeController(roll: { 1.0 })
+        let beat = await controller.beat(now: TestData.now)
+        XCTAssertFalse(beat.fired)
+        XCTAssertEqual(try db.stores.diaryNotes.byId("diary-beat")?.remindedAt, TestData.now)
+        XCTAssertEqual(intents.pending(personaId: "persona-1").count, 1)
+        XCTAssertTrue(tickCalls.isEmpty, "提醒由心跳直接记成念头，不需要这一拍真的去思考")
+    }
 }

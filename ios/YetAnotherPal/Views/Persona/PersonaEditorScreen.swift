@@ -77,6 +77,11 @@ struct PersonaEditorScreen: View {
     @State private var cardExpanded = false
     @State private var loaded = false
     @State private var banner: MFAlert?
+    /// 他最近的变化（0.13 人格进化）：待确认的 `persona_pending_patches`。
+    /// 空 = 不显示这一张卡（没有变化时不占地方）。
+    @State private var pendingChanges: [PersonaPendingPatchEntity] = []
+    /// 接受/拒绝请求还在路上：按钮先禁用，避免连点两条。
+    @State private var pendingBusy = false
 
     private var isNew: Bool { personaId == nil }
     private var accent: Color { Color(argb: env.currentSettings.accentColor) }
@@ -91,6 +96,7 @@ struct PersonaEditorScreen: View {
                 speechCard
                 translationCard
                 characterCard
+                recentChangesCard
                 storyCard
                 personaCardCard
                 behaviorCard
@@ -125,7 +131,7 @@ struct PersonaEditorScreen: View {
 
             MFRowDivider(leadingInset: 0)
 
-            FieldCaption(L("名字"), hint: L("他会怎么称呼自己。"))
+            FieldCaption(L("名字"), hint: L("他会怎么称呼自己。留空也行，会先叫「未命名」。"))
             TextField(L("比如：林深"), text: $name)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -133,7 +139,7 @@ struct PersonaEditorScreen: View {
                 .background(fieldBackground)
                 .padding(.bottom, 14)
 
-            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也能帮他记住自己是谁。"))
+            FieldCaption(L("一句话介绍"), hint: L("给别人看的一句话，也能帮他记住自己是谁。可以留空。"))
             TextField(L("比如：一个温柔而安静的朋友"), text: $summary)
                 .textFieldStyle(.plain)
                 .padding(.vertical, 8)
@@ -488,6 +494,167 @@ struct PersonaEditorScreen: View {
                 values: $behaviors,
                 accent: accent
             )
+        }
+    }
+
+    // MARK: - 他最近的变化（0.13 人格进化）
+
+    /// 「他最近的变化」：模型在对话里对自己提出的、**等他点头**的小改动。
+    ///
+    /// 三个约束直接写在界面上：
+    /// - 只有四个字段（性格 / 喜欢 / 习惯 / 个人设定），名字、简介、手写提示词、世界设定
+    ///   永远不会被它改（白名单在 `PersonaEvolution.sanitize`，这一层只是展示）；
+    /// - 接受才写回人格并 `version+1`；拒绝只丢掉这条提议；
+    /// - 7 天没人管会自动过期（读取时清理），不会堆成永远没人点的死按钮。
+    ///
+    /// **两种模式都显示**（0.13 补齐云端）：本地模式的接受写本机人格；服务端模式下
+    /// 接受要先 `POST /v1/personas`（`CloudPersonaEvolution`），服务端成功之后才回填
+    /// 本地缓存并 `version+1`，失败时这一条留在原地（可以再点一次）。
+    @ViewBuilder
+    private var recentChangesCard: some View {
+        if !pendingChanges.isEmpty {
+            MFCard {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(L("他最近的变化"))
+                        .font(.system(.body, design: .serif))
+                    Spacer()
+                    if pendingBusy {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Text(Lf("%d 条待确认", pendingChanges.count))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                MFNote(text: env.serverModeActive
+                    ? L("这些是他自己在对话里提出的小变化。接受后会先同步到他的云端档案；拒绝就丢掉；7 天不管会自动过期。")
+                    : L("这些是他自己在对话里提出的小变化。接受才会写进他的人格，拒绝就丢掉；7 天不管会自动过期。"))
+                ForEach(pendingChanges, id: \.id) { patch in
+                    MFRowDivider(leadingInset: 0)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(patch.summary)
+                            .font(.callout)
+                        if !patch.reason.isEmpty {
+                            Text(patch.reason)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack(spacing: 12) {
+                            Button(L("接受")) { decide(patch, accept: true) }
+                                .font(.footnote)
+                                .tint(accent)
+                                .disabled(pendingBusy)
+                            Button(L("不用了")) { decide(patch, accept: false) }
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
+                                .disabled(pendingBusy)
+                            Spacer()
+                        }
+                        .padding(.top, 2)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+    }
+
+    /// 接受 / 拒绝一条待确认的变化。
+    ///
+    /// 两种模式走两条写路径，**界面上的结果是一样的**：
+    /// - 本地模式：直接写本机人格（`PersonaEvolutionService.approve`）；
+    /// - 服务端模式：先 `POST /v1/personas`（`CloudPersonaEvolution`），服务端成功之后
+    ///   才回填本地缓存并 `version+1`；失败时这一条**留在原地**，用户可以再点一次。
+    ///
+    /// 接受之后要**同步本地表单状态**：这个页面的 `traits/likes/behaviors/quirks` 是打开时
+    /// 读的一份快照，不同步的话，用户接着点「保存」会拿旧值把刚接受的变化盖回去。
+    private func decide(_ patch: PersonaPendingPatchEntity, accept: Bool) {
+        guard !pendingBusy else { return }
+        pendingBusy = true
+        guard env.serverModeActive else {
+            defer { pendingBusy = false }
+            decideLocally(patch, accept: accept)
+            return
+        }
+        guard let cloud = env.cloudPersonaEvolution() else {
+            pendingBusy = false
+            banner = MFAlert(
+                title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                message: L("云端连接还没准备好，稍后再试。")
+            )
+            return
+        }
+        // 云端要等一次网络往返：期间按钮保持禁用（`pendingBusy`），避免连点两条。
+        Task { @MainActor in
+            defer { pendingBusy = false }
+            do {
+                if accept {
+                    let result = try await cloud.approve(patchId: patch.id)
+                    applyAccepted(result.persona, applied: result.applied)
+                } else {
+                    try await cloud.reject(patchId: patch.id)
+                }
+            } catch {
+                banner = MFAlert(
+                    title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                    message: error.localizedDescription
+                )
+            }
+            reloadPendingChanges()
+        }
+    }
+
+    /// 本地模式：同步写库（与 0.13 之前的实现逐字一致）。
+    private func decideLocally(_ patch: PersonaPendingPatchEntity, accept: Bool) {
+        do {
+            if accept {
+                let result = try env.personaEvolution.approve(patchId: patch.id)
+                applyAccepted(result.persona, applied: result.applied)
+            } else {
+                try env.personaEvolution.reject(patchId: patch.id)
+            }
+        } catch {
+            banner = MFAlert(
+                title: accept ? L("这次没接受成") : L("这次没拒绝成"),
+                message: error.localizedDescription
+            )
+        }
+        reloadPendingChanges()
+    }
+
+    /// 接受成功后的统一收尾：同步表单快照 + 告诉用户「第几版了」。
+    private func applyAccepted(_ persona: PersonaEntity, applied: Int) {
+        guard applied > 0 else {
+            banner = MFAlert(
+                title: L("这条已经不成立了"),
+                message: L("他的人格里本来就是这样，已经把这条提议丢掉了。")
+            )
+            return
+        }
+        traits = persona.traits
+        likes = persona.likes
+        behaviors = persona.behaviors
+        quirks = persona.quirks ?? ""
+        banner = MFAlert(
+            title: L("已经写进他的人格"),
+            message: Lf("现在是他第 %d 版。", persona.version)
+        )
+    }
+
+    private func reloadPendingChanges() {
+        if let personaId {
+            pendingChanges = env.personaEvolution.pending(personaId: personaId)
+        }
+    }
+
+    /// 云端模式：先把服务端那份待审列表拉下来覆盖本地缓存，再重读（服务端是权威）。
+    ///
+    /// 为什么要这一步：待审补丁可能在**另一台设备**上被接受/拒绝，也可能已经 7 天过期。
+    /// 不拉一次的话，这个页面会给人看一堆点不动的旧按钮。
+    private func refreshPendingFromServerIfNeeded() {
+        guard env.serverModeActive, let personaId, let cloud = env.cloudPersonaEvolution() else { return }
+        Task { @MainActor in
+            _ = await cloud.refreshPending(personaId: personaId)
+            reloadPendingChanges()
         }
     }
 
@@ -985,7 +1152,7 @@ struct PersonaEditorScreen: View {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(L("提示词全文（高级）"))
                             .font(.system(.body, design: .serif))
-                        Text(L("上面那些字段会被拼成小节，接在这一段后面。"))
+                        Text(L("可以留空：会按上面的名字和一句话介绍生成一段；上面也没填就用默认人设。"))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -1227,10 +1394,17 @@ struct PersonaEditorScreen: View {
         cardExpanded = !loadedCard.isEmpty
         // 提示词只有真写过才展开：默认收起，别让一屏全是字号很小的正文。
         promptExpanded = !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isNew == false
+        // 人格进化：读取待确认的变化（7 天过期的顺手清掉）。
+        pendingChanges = env.personaEvolution.pending(personaId: persona.id)
+        // 云端模式：服务端是待审补丁的权威，打开页面时拉一次覆盖本地缓存。
+        refreshPendingFromServerIfNeeded()
     }
 
-    /// 只要求名字：其余字段都可以空着（§三「老数据不填也能用」）。
-    private var canSave: Bool { !trimmedName.isEmpty }
+    /// 什么都可以空着（0.13 真机反馈第一批）：名字空 → 保存成「未命名」，
+    /// 提示词空 → 由名字 + 一句话介绍生成，两样都空就用系统默认人设文本。
+    ///
+    /// 以前这里要求名字非空才让点保存，用户只是想先建一个人、回头再写，却被表单挡住。
+    private var canSave: Bool { true }
 
     private func save() {
         Task { @MainActor in await saveAsync() }
@@ -1240,17 +1414,24 @@ struct PersonaEditorScreen: View {
     private func saveAsync() async {
         let now = DomainClock.nowMillis
         let existing: PersonaEntity? = personaId.flatMap { try? env.stores.personas.byId($0) } ?? nil
+        // 空字段的兜底（`PersonaDraft`，Kit 里的纯函数，编辑页与提示词渲染共用同一套规则）：
+        // 名字空 → 本地化的「未命名」；提示词空 → 由名字 + 介绍生成，两样都空用系统默认。
+        let resolvedName = PersonaDraft.resolvedName(trimmedName, fallback: L("未命名"))
+        let resolvedDescription = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedPrompt = PersonaDraft.resolvedPrompt(
+            prompt, name: trimmedName, description: resolvedDescription
+        )
         var entity = existing ?? PersonaEntity(
             id: UUID().uuidString,
-            name: trimmedName,
+            name: resolvedName,
             createdAt: now,
             updatedAt: now
         )
-        let promptChanged = entity.prompt != prompt
-        entity.name = trimmedName
-        entity.description = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let promptChanged = entity.prompt != resolvedPrompt
+        entity.name = resolvedName
+        entity.description = resolvedDescription
         entity.avatarUri = avatarUri
-        entity.prompt = prompt
+        entity.prompt = resolvedPrompt
         entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? nil
             : modelOverride.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1284,7 +1465,7 @@ struct PersonaEditorScreen: View {
         entity.updatedAt = now
         if existing == nil {
             entity.version = max(entity.version, 1)
-            entity.avatarSeed = Self.avatarSeed(for: trimmedName)
+            entity.avatarSeed = Self.avatarSeed(for: resolvedName)
         } else if promptChanged {
             // 提示词变了才算新的一版；只改性格或作息不该把版本号顶上去。
             entity.version = max(entity.version, 1) + 1
@@ -1300,7 +1481,7 @@ struct PersonaEditorScreen: View {
                 var finalCard = card
                 // 卡里没填名字时用上面填的人格名——否则系统提示里的稳定策略会退化成通用兜底。
                 if finalCard.identity.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    finalCard.identity.name = trimmedName
+                    finalCard.identity.name = resolvedName
                 }
                 // 走 saveCardFields：它会在落库前按卡片上限收敛（去空项、夹强度、截长度），
                 // 并把 prompt 重写成卡的镜像。卡没变化时它什么也不写。

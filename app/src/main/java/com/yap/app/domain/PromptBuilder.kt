@@ -151,11 +151,25 @@ object PromptBuilder {
         val zone: ZoneId = ZoneId.systemDefault(),
         /** `MoodPrompt.line(...)` 的原文：标题会被剥掉，正文拆成「心情 + 强度」并进「你此刻的状态」。 */
         val moodBlock: String = "",
+        /**
+         * 多维心情（schema v17，`spec/mood/README.md` §3）。
+         *
+         * 有它就用「心情 + 强度 + 三个维度 + 行为提示」的多维段；没有（老调用方、人格卡预览）
+         * 才退回 [moodBlock] 的单行渲染。两者都不会同时出现，免得提示词里写两遍心情。
+         */
+        val moodDetail: MoodReading? = null,
         /** 现在是不是他平时的睡觉时间（安静时段）。 */
         val asleep: Boolean = false,
         /** 额外状态（presence / 今天话多话少），一行一句，并进状态段。 */
         val extraStatus: String = "",
-        /** 记忆、念头、工具说明……放在边界之前。 */
+        /**
+         * 「# 你能做什么」段（工具用途）。
+         *
+         * 内容由 [ToolCatalog.capabilityPrompt] 从工具注册表生成，这里只负责放在「关系」之后、
+         * 记忆/念头之前：模型先知道自己是谁、在哪、能做什么，再看这一轮想起了什么。
+         */
+        val capabilitiesSection: String = "",
+        /** 记忆、念头……放在边界之前。 */
         val variableBlocks: List<String> = emptyList(),
         /** 语言指令（`LanguageDirective.section`），放在边界之前。 */
         val languageSection: String = ""
@@ -189,6 +203,9 @@ object PromptBuilder {
 
     private val HH_MM = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
 
+    /** 日期只要 `yyyy-MM-dd`：星期与时区偏移各自单独拼，避免受 Locale 影响。 */
+    private val YYYY_MM_DD = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT)
+
     private val WEEKDAYS = mapOf(
         DayOfWeek.MONDAY to "周一",
         DayOfWeek.TUESDAY to "周二",
@@ -202,6 +219,7 @@ object PromptBuilder {
     /** 完整系统提示词：五段人设 + 可变部分 + 语言指令 + 边界。 */
     fun system(input: Inputs): String = buildString {
         append(base(input))
+        append("\n\n").append(antiAiSection())
         input.variableBlocks.map { it.trim() }.filter { it.isNotBlank() }.forEach {
             append("\n\n").append(it)
         }
@@ -213,15 +231,43 @@ object PromptBuilder {
 
     /** 只有五段人设（不含记忆/工具/边界）；给主动思考这类需要自己接尾巴的调用方用。 */
     fun base(input: Inputs): String {
-        val sections = listOf(
-            identitySection(input),
-            worldSection(input.world),
-            statusSection(input),
-            speechSection(input),
-            relationshipSection(input)
-        )
+        val sections = buildList {
+            add(identitySection(input))
+            add(worldSection(input.world))
+            add(statusSection(input))
+            add(speechSection(input))
+            add(relationshipSection(input))
+            // 五段之后是「我能用什么」：没有这一段，模型不知道自己有手，只会空口答应。
+            input.capabilitiesSection.trim().takeIf { it.isNotBlank() }?.let { add(it) }
+        }
         return sections.joinToString("\n\n").trim()
     }
+
+    /** 「别像 AI」段的标题（规范 §5；不在 `scaffold.json` 里，所以单独一段）。 */
+    const val SECTION_ANTI_AI = "# 别像 AI"
+
+    /**
+     * 反 AI 味约束（`spec/mood/README.md` §5）。
+     *
+     * 为什么单独一段而不是并进「你怎么说话」：话风是**用户/模型学来的数据**（句子短、少感叹号），
+     * 这一段是**产品级的行为禁忌**（不要每句反问、不要总结对方、不要列点、不要总安慰、可以沉默、
+     * 不重复口头禅），对所有人生效、也不该被用户填的话风覆盖。放在边界之前、人设之后，
+     * 顺序上仍然「越靠前越强」，同时不改变脚手架六段的既有位置。
+     */
+    fun antiAiSection(): String = buildString {
+        append(SECTION_ANTI_AI)
+        ANTI_AI_RULES.forEach { append("\n- ").append(it) }
+    }
+
+    private val ANTI_AI_RULES = listOf(
+        "不要每句话都反问；不需要每轮都把话题抛回去。",
+        "不要总结对方说的话，也不要说「所以你的意思是…」。",
+        "不要列点、不要「首先/其次/最后」，不要写成一段说明书。",
+        "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
+        "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
+        "不主动给建议、清单或心理分析；不知道就说不知道。",
+        "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。"
+    )
 
     /**
      * §1.1 / §1.2 的边界：放在整份提示词最后，约束最容易被忘掉的那几件事。
@@ -286,7 +332,13 @@ object PromptBuilder {
         val parts = buildList {
             clockLine(input.now, input.zone)?.let { add(it) }
             add(activityForPrompt(input.activity, input.now, input.zone))
-            addAll(moodLines(input.moodBlock))
+            val moodDetail = input.moodDetail
+            if (moodDetail != null) {
+                // 多维心情段（规范 §3）：标题由「你此刻的状态」承担，这里只加正文行。
+                addAll(MoodDimensions.promptLines(moodDetail))
+            } else {
+                addAll(moodLines(input.moodBlock))
+            }
             if (input.asleep) add(ASLEEP_SENTENCE)
             val extra = stripHeading(input.extraStatus)
             if (extra.isNotBlank()) add(extra)
@@ -353,13 +405,53 @@ object PromptBuilder {
     // ------------------------------------------------------------------ 工具
 
     /**
-     * 时间句；拿不到时间（`now <= 0` 或时区换算失败）时返回 `null`，由调用方整行省略。
+     * 时间句；拿不到时间（`now <= 0`）或时区换算失败时返回 `null`，由调用方整行省略。
+     *
+     * 规范依据是 `spec/context-time/README.md`：**每一轮请求**都注入请求发出瞬间的本地时间
+     * （`YYYY-MM-DD 周X HH:mm` + 时区偏移 `UTC±HH:mm`），不缓存、不按会话保存。
+     * 所以这里全部由调用方传进来的 `now` / `zone` 现算，类里没有任何时间缓存字段——
+     * 跨天或改时区后同一会话的下一条消息就会拿到新的日期与偏移。
+     *
+     * 为什么不新增一个脚手架键：`spec/persona-guidance/scaffold.json` 的 `state_line` 只有
+     * `{weekday}` / `{time}` 两个占位符，而本轮不改 `spec/`，契约测试要求常量与 spec 逐字一致。
+     * 于是把两个占位符的**填充内容**加宽：`{weekday}` 填「日期 + 星期」，`{time}` 填「时刻（UTC±HH:mm）」，
+     * 渲染出来是 `现在是2026-11-18 周三 19:40（UTC+08:00）。`——模板仍然只有一个，中文固定文案没有第二份。
      */
     private fun clockLine(now: Long, zone: ZoneId): String? {
+        val parts = clockParts(now, zone) ?: return null
+        return fill(Scaffold.STATE_LINE, "weekday" to parts.first, "time" to parts.second)
+    }
+
+    /**
+     * 聊天之外的地方（主动消息的处境描述）共用同一份时间格式：`YYYY-MM-DD 周X HH:mm（UTC±HH:mm）`。
+     *
+     * 只给一行文本、不带「现在是…。」的脚手架句式——那边自己有一句「现在：」；
+     * 但**日期/星期/时刻/偏移的写法只有这一处**，两端不会各写一套。
+     *
+     * @return 拿不到时间（`now <= 0` / 时区换算失败）时返回 `null`
+     */
+    fun clockText(now: Long, zone: ZoneId = ZoneId.systemDefault()): String? {
+        val parts = clockParts(now, zone) ?: return null
+        return "${parts.first} ${parts.second}"
+    }
+
+    /** `(日期 + 星期, 时刻 + 时区偏移)`：两个时钟渲染入口的唯一真源。 */
+    private fun clockParts(now: Long, zone: ZoneId): Pair<String, String>? {
         if (now <= 0L) return null
         val zoned = runCatching { Instant.ofEpochMilli(now).atZone(zone) }.getOrNull() ?: return null
         val weekday = WEEKDAYS[zoned.dayOfWeek] ?: zoned.dayOfWeek.name
-        return fill(Scaffold.STATE_LINE, "weekday" to weekday, "time" to zoned.format(HH_MM))
+        val day = zoned.format(YYYY_MM_DD)
+        val offset = zoneOffsetLabel(zoned.offset)
+        return "$day $weekday" to "${zoned.format(HH_MM)}（$offset）"
+    }
+
+    /** `UTC+08:00` / `UTC-05:30` / `UTC`：偏移按规范写成 `UTC±HH:mm`，不依赖 Locale。 */
+    private fun zoneOffsetLabel(offset: java.time.ZoneOffset): String {
+        val totalMinutes = offset.totalSeconds / 60
+        if (totalMinutes == 0) return "UTC"
+        val sign = if (totalMinutes < 0) "-" else "+"
+        val abs = kotlin.math.abs(totalMinutes)
+        return "UTC%s%02d:%02d".format(Locale.ROOT, sign, abs / 60, abs % 60)
     }
 
     /**

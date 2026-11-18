@@ -2,7 +2,9 @@
 
 package com.yap.app.ui.screens.chat
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +25,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +59,7 @@ import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteOutline
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.EmojiEmotions
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.ExpandLess
 import androidx.compose.material.icons.outlined.ExpandMore
@@ -71,6 +75,8 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.WarningAmber
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Mic
+import androidx.compose.material.icons.rounded.Videocam
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.AlertDialog
@@ -107,6 +113,7 @@ import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -127,6 +134,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -134,6 +142,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import java.io.File
 import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.yap.app.R
@@ -234,6 +243,23 @@ fun ChatScreen(
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(4)
     ) { uris -> viewModel.addImages(uris) }
+    // 表情导入：一次选一张（GIF/PNG/WebP/APNG 都认），选完走 sticker 自己的压缩管线。
+    val stickerPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri -> uri?.let(viewModel::importSticker) }
+    // 0.13：视频只从系统选择器选（VideoOnly），选完直接进草稿，不在这里转码。
+    val videoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri -> uri?.let(viewModel::addVideo) }
+    // 录音权限：第一次按语音按钮时申请；拒绝就提示一句，不反复弹。
+    //
+    // 授权回来后**不自动开始录**：申请权限那一下用户已经松手了，此时偷偷录一段是
+    // 最容易被当成「App 自己在录音」的行为；让用户再按一次更诚实。
+    val recordPermission = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (!granted) viewModel.onVoicePermissionDenied()
+    }
     val coroutineScope = rememberCoroutineScope()
 
     val exportLauncher = rememberLauncherForActivityResult(
@@ -348,6 +374,8 @@ fun ChatScreen(
                         },
                         onRetry = viewModel::regenerate,
                         onViewImage = { viewingImage = it },
+                        loadStickerFrames = viewModel::loadStickerFrames,
+                        resolveMedia = viewModel::playableFile,
                         onOpenLink = onOpenLink,
                         onSuggestion = { suggestion ->
                             viewModel.setDraft(suggestion)
@@ -367,6 +395,34 @@ fun ChatScreen(
                     onOpenSettings = onOpenSettings
                 )
             }
+            if (state.showStickerPanel) {
+                val visibleStickers = remember(state.stickers, state.stickerShowAll) {
+                    if (state.stickerShowAll) {
+                        state.stickers
+                    } else {
+                        state.stickers.take(com.yap.app.data.repo.StickerRepository.RECENT_LIMIT)
+                    }
+                }
+                val thumbnails = rememberStickerThumbnails(
+                    stickers = visibleStickers,
+                    visible = state.showStickerPanel,
+                    load = viewModel::loadStickerFrames
+                )
+                StickerPanel(
+                    stickers = visibleStickers,
+                    showAll = state.stickerShowAll,
+                    thumbnails = thumbnails,
+                    onToggleShowAll = viewModel::setStickerShowAll,
+                    onPick = { sticker -> viewModel.sendSticker(sticker.id) },
+                    onImport = {
+                        stickerPicker.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    onClose = viewModel::closeStickerPanel,
+                    onDelete = { sticker -> viewModel.deleteSticker(sticker.id) }
+                )
+            }
             Composer(
                 state = state,
                 accent = accent,
@@ -378,7 +434,27 @@ fun ChatScreen(
                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                     )
                 },
-                onRemoveImage = viewModel::removeImage
+                onPickVideo = {
+                    videoPicker.launch(
+                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly)
+                    )
+                },
+                onRemoveImage = viewModel::removeImage,
+                onVoicePress = {
+                    val granted = ContextCompat.checkSelfPermission(
+                        context,
+                        Manifest.permission.RECORD_AUDIO
+                    ) == PackageManager.PERMISSION_GRANTED
+                    if (granted) {
+                        viewModel.startVoiceRecording()
+                    } else {
+                        recordPermission.launch(Manifest.permission.RECORD_AUDIO)
+                    }
+                },
+                onVoiceRelease = viewModel::finishVoiceRecording,
+                onVoiceCancel = viewModel::cancelVoiceRecording,
+                onToggleStickers = viewModel::toggleStickerPanel,
+                stickersOpen = state.showStickerPanel
             )
         }
 
@@ -460,10 +536,18 @@ fun ChatScreen(
     }
 
     selectedMessage?.let { message ->
+        val messageHasSticker = remember(message.id, message.attachmentsJson) {
+            com.yap.app.domain.AttachmentsCodec.decode(message.attachmentsJson).any { it.isSticker }
+        }
         MessageActionSheet(
             message = message,
             isLastAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == message.id,
             onDismiss = { selectedMessage = null },
+            canSaveSticker = messageHasSticker,
+            onSaveSticker = {
+                selectedMessage = null
+                viewModel.saveStickerFromMessage(message.id)
+            },
             onCopy = {
                 clipboard.setText(AnnotatedString(message.content))
                 selectedMessage = null
@@ -817,6 +901,10 @@ private fun ChatMessageList(
     onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
     onSuggestion: (String) -> Unit,
+    /** 按需解一张表情的帧（本地文件 / 服务端媒体都走这条）。 */
+    loadStickerFrames: suspend (String) -> com.yap.app.domain.StickerSource?,
+    /** 0.13：把一条语音/视频附件解析成本机可播放文件（服务端媒体先缓存）。 */
+    resolveMedia: suspend (MessageAttachment) -> File?,
     onOpenLink: (String) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -1015,6 +1103,8 @@ private fun ChatMessageList(
                                 onLongPress = { onLongPress(item.message) },
                                 onRetry = onRetry,
                                 onViewImage = onViewImage,
+                                loadStickerFrames = loadStickerFrames,
+                                resolveMedia = resolveMedia,
                                 onOpenLink = onOpenLink
                             )
                         }
@@ -1251,6 +1341,10 @@ private fun MessageBubble(
     onLongPress: () -> Unit,
     onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
+    /** 表情要逐帧播放，所以这里要一个「异步解帧」的口子（Coil 的动图支持在额外依赖里）。 */
+    loadStickerFrames: suspend (String) -> com.yap.app.domain.StickerSource?,
+    /** 0.13：语音/视频播放前的本地文件解析（服务端引用会先下载到缓存）。 */
+    resolveMedia: suspend (MessageAttachment) -> File? = { null },
     onOpenLink: (String) -> Unit
 ) {
     val attachments = remember(message.id, message.attachmentsJson) {
@@ -1266,15 +1360,18 @@ private fun MessageBubble(
     val context = LocalContext.current
     // 纯图片消息（无正文）用更小的内边距，让照片几乎贴着气泡边缘，
     // 否则会像被一圈底色装裱起来，观感偏重。
+    val stickerOnly = attachments.isNotEmpty() && attachments.all { it.isSticker }
     val imageOnly = attachments.isNotEmpty() &&
         message.content.isBlank() &&
         message.status != MessageStatus.ERROR
     val padH = when {
+        stickerOnly -> 6.dp
         imageOnly -> 5.dp
         settings.bubbleStyle == BubbleStyle.COMPACT -> 12.dp
         else -> 14.dp
     }
     val padV = when {
+        stickerOnly -> 6.dp
         imageOnly -> 5.dp
         settings.bubbleStyle == BubbleStyle.COMPACT -> 8.dp
         else -> 10.dp
@@ -1336,6 +1433,46 @@ private fun MessageBubble(
                 )
             ) {
                 attachments.forEach { attachment ->
+                    // 0.13：语音/视频各自一个气泡内组件（音频播放器 / 视频首帧 + 点开播放）。
+                    if (attachment.isAudio) {
+                        VoiceBubble(
+                            attachment = attachment,
+                            tint = contentColor,
+                            accent = if (outgoing && !isOutlined) contentColor else accent,
+                            resolveFile = resolveMedia,
+                            modifier = Modifier.padding(bottom = if (imageOnly) 2.dp else 6.dp)
+                        )
+                        return@forEach
+                    }
+                    if (attachment.isVideo) {
+                        VideoBubble(
+                            attachment = attachment,
+                            tint = contentColor,
+                            resolveFile = resolveMedia,
+                            modifier = Modifier.padding(bottom = if (imageOnly) 2.dp else 6.dp)
+                        )
+                        return@forEach
+                    }
+                    if (attachment.isSticker) {
+                        // 表情：自己解帧自己播（240dp、等比、不动时只画第一帧），点开看大图。
+                        var stickerFrames by remember(attachment.uri) {
+                            mutableStateOf<com.yap.app.domain.StickerSource?>(null)
+                        }
+                        LaunchedEffect(attachment.uri) {
+                            stickerFrames = loadStickerFrames(attachment.uri)
+                        }
+                        StickerImage(
+                            source = stickerFrames,
+                            contentDescription = stringResource(R.string.chat_sticker_message),
+                            maxSize = STICKER_BUBBLE_SIZE,
+                            modifier = Modifier
+                                .padding(bottom = if (imageOnly) 2.dp else 6.dp)
+                                .widthIn(max = STICKER_BUBBLE_SIZE),
+                            onClick = { onViewImage(attachment) },
+                            onLongClick = onLongPress
+                        )
+                        return@forEach
+                    }
                     // 气泡里图片的最大显示尺寸就是解码目标：272×340 / 248×300dp。
                     val imageRequest = rememberSizedImageRequest(
                         data = attachment.uri,
@@ -1781,7 +1918,16 @@ private fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
     onPickImages: () -> Unit,
-    onRemoveImage: (String) -> Unit
+    /** 0.13：视频按钮（系统 VideoOnly 选择器，选完进草稿，不转码）。 */
+    onPickVideo: () -> Unit,
+    onRemoveImage: (String) -> Unit,
+    /** 0.13：按住录音 → 松开发送。 */
+    onVoicePress: () -> Unit,
+    onVoiceRelease: () -> Unit,
+    onVoiceCancel: () -> Unit,
+    /** 表情按钮（与图片按钮分开）：点开/收起「我的表情」面板。 */
+    onToggleStickers: () -> Unit,
+    stickersOpen: Boolean
 ) {
     var value by rememberSaveable(stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue("")) }
     LaunchedEffect(state.draft) {
@@ -1820,42 +1966,84 @@ private fun Composer(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     state.images.forEach { attachment ->
-                        Box {
-                            val pendingRequest = rememberSizedImageRequest(
-                                data = attachment.uri,
-                                width = 62.dp,
-                                height = 62.dp
+                        when {
+                            // 语音/视频：一个小方块显示类型和时长，右上角删除。
+                            attachment.isAudio -> PendingMediaTile(
+                                icon = Icons.Rounded.Mic,
+                                label = com.yap.app.domain.AudioVideoPolicy.clockDuration(attachment.durationMs),
+                                accent = accent,
+                                contentDescription = stringResource(R.string.chat_voice_message),
+                                onRemove = { onRemoveImage(attachment.uri) }
                             )
-                            AsyncImage(
-                                model = pendingRequest,
-                                contentDescription = stringResource(R.string.chat_pending_image),
-                                contentScale = ContentScale.Crop,
-                                modifier = Modifier
-                                    .size(62.dp)
-                                    .clip(RoundedCornerShape(14.dp))
+                            attachment.isVideo -> PendingMediaTile(
+                                icon = Icons.Rounded.Videocam,
+                                label = com.yap.app.domain.AudioVideoPolicy.clockDuration(attachment.durationMs),
+                                accent = accent,
+                                contentDescription = stringResource(R.string.chat_video_message),
+                                onRemove = { onRemoveImage(attachment.uri) }
                             )
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.TopEnd)
-                                    .padding(2.dp)
-                                    .size(18.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.Black.copy(alpha = 0.55f))
-                                    .combinedClickable(
-                                        onClick = { onRemoveImage(attachment.uri) },
-                                        onLongClick = null
-                                    ),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Rounded.Close,
-                                    contentDescription = stringResource(R.string.chat_remove_image),
-                                    tint = Color.White,
-                                    modifier = Modifier.size(12.dp)
+                            else -> Box {
+                                val pendingRequest = rememberSizedImageRequest(
+                                    data = attachment.uri,
+                                    width = 62.dp,
+                                    height = 62.dp
                                 )
+                                AsyncImage(
+                                    model = pendingRequest,
+                                    contentDescription = stringResource(R.string.chat_pending_image),
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(62.dp)
+                                        .clip(RoundedCornerShape(14.dp))
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.Black.copy(alpha = 0.55f))
+                                        .combinedClickable(
+                                            onClick = { onRemoveImage(attachment.uri) },
+                                            onLongClick = null
+                                        ),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.Close,
+                                        contentDescription = stringResource(R.string.chat_remove_image),
+                                        tint = Color.White,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                }
                             }
                         }
                     }
+                }
+            }
+            // 录音中：输入框上方一行字，告诉用户「在录 / 松开发送」。
+            if (state.recordingElapsedMs > 0L) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 6.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        Modifier
+                            .size(8.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.error)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = stringResource(
+                            R.string.chat_voice_recording,
+                            com.yap.app.domain.AudioVideoPolicy.clockDuration(state.recordingElapsedMs)
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
             Row(
@@ -1877,6 +2065,87 @@ private fun Composer(
                             tint = if (state.canSend) MaterialTheme.colorScheme.onSurfaceVariant
                             else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                             modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    // 表情是**独立**的一个按钮（规范要求与图片按钮分开）：
+                    // 它打开的是收藏面板，点一下就发，不经过输入框。
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 6.dp)
+                            .size(40.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (stickersOpen) accent.copy(alpha = 0.16f) else Color.Transparent
+                            )
+                            .combinedClickable(onClick = onToggleStickers, onLongClick = null),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Outlined.EmojiEmotions,
+                            contentDescription = stringResource(R.string.chat_send_sticker),
+                            tint = when {
+                                stickersOpen -> accent
+                                state.canSend -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            },
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
+                    // 0.13：语音（按住录音、松开发送）与视频（系统选择器）。
+                    // 录音中不换按钮：同一个位置、同一根手指，松手就是发送。
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .background(
+                                if (state.recordingElapsedMs > 0L) accent.copy(alpha = 0.18f)
+                                else Color.Transparent
+                            )
+                            .pointerInput(state.canSend) {
+                                detectTapGestures(
+                                    onPress = {
+                                        if (state.canSend) {
+                                            onVoicePress()
+                                            val released = tryAwaitRelease()
+                                            if (released) onVoiceRelease() else onVoiceCancel()
+                                        }
+                                    }
+                                )
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Rounded.Mic,
+                            contentDescription = stringResource(R.string.chat_send_voice),
+                            tint = when {
+                                state.recordingElapsedMs > 0L -> accent
+                                state.canSend -> MaterialTheme.colorScheme.onSurfaceVariant
+                                else -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            },
+                            modifier = Modifier.size(21.dp)
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .padding(end = 4.dp)
+                            .size(36.dp)
+                            .clip(CircleShape)
+                            .combinedClickable(
+                                onClick = { if (state.canSend) onPickVideo() },
+                                onLongClick = null
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Rounded.Videocam,
+                            contentDescription = stringResource(R.string.chat_send_video),
+                            tint = if (state.canSend) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+                            },
+                            modifier = Modifier.size(21.dp)
                         )
                     }
                 }
@@ -2305,7 +2574,10 @@ private fun MessageActionSheet(
     onCopy: () -> Unit,
     onEdit: () -> Unit,
     onRegenerate: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    /** 这条消息里有表情时为 true：菜单多一项「添加到我的表情」。 */
+    canSaveSticker: Boolean,
+    onSaveSticker: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -2333,6 +2605,14 @@ private fun MessageActionSheet(
             )
             Spacer(Modifier.height(6.dp))
             SheetActionRow(Icons.Outlined.ContentCopy, stringResource(R.string.chat_copy), onClick = onCopy)
+            if (canSaveSticker) {
+                // 表情是「作品」不是文字：长按的第一件事是收进自己的收藏（规范 §发送与历史）。
+                SheetActionRow(
+                    Icons.Outlined.EmojiEmotions,
+                    stringResource(R.string.chat_sticker_save),
+                    onClick = onSaveSticker
+                )
+            }
             if (message.role == MessageRole.USER) {
                 SheetActionRow(Icons.Outlined.Edit, stringResource(R.string.chat_edit_and_resend), onClick = onEdit)
             } else if (isLastAssistant) {

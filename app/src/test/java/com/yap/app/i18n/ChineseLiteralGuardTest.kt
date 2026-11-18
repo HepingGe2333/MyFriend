@@ -70,6 +70,9 @@ class ChineseLiteralGuardTest {
             "记忆重构提示词（想起旧事时的措辞）",
         "src/main/java/com/yap/app/data/repo/MemoryRepository.kt" to
             "记忆抽取提示词与「你记得的事」上下文块",
+        "src/main/java/com/yap/app/data/repo/PersonaEvolutionRepository.kt" to
+            "人格进化评估的提示词角色指代（「对方/他」，只进模型上下文）与待审补丁的内部理由；" +
+            "界面显示的是模型给的变化摘要，不直出这里的字符串",
         "src/main/java/com/yap/app/data/repo/PersonaCardRepository.kt" to
             "人设卡里的作息措辞：写进卡 JSON、渲染进提示词，模型也按它说话",
         "src/main/java/com/yap/app/data/repo/PresenceRepository.kt" to

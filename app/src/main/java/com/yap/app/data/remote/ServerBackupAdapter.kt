@@ -13,7 +13,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
- * 服务端备份（`GET /v1/backup`）→ 客户端本地 v5 备份形状。
+ * 服务端备份（`GET /v1/backup`，v6 同形）→ 客户端本地 v6 备份形状。
+ *
+ * 0.13 起服务端导出的就是**客户端 v6 同形 JSON**（`formatVersion=6`，顶层含
+ * `media[]` / `stickers[]` / `diaryNotes[]`），所以这里只做「两端历史字段名不一致」的兼容，
+ * 不再有版本落差：
+ * - v6 新增的三段原样透传（本地 `BackupCodec` 已经能吃 v6）；
+ * - 表情行的 `fileName` / `file` 两个同义字段互相补齐（服务端只写一个时本地也读得到）。
  *
  * 为什么需要一层适配而不是直接把服务端 JSON 塞进本地 `importBundle`：
  * - 服务端人格用 `avatarUrl`，客户端列是 `avatarUri`；
@@ -26,7 +32,7 @@ import kotlinx.serialization.json.put
  */
 object ServerBackupAdapter {
 
-    /** 服务端备份原文 → 本地可解码的 v5 原文；不是 JSON 对象时返回 null。 */
+    /** 服务端备份原文 → 本地可解码的 v6 原文；不是 JSON 对象时返回 null。 */
     fun toLocalBackupJson(raw: String): String? {
         val root = runCatching { kotlinx.serialization.json.Json.parseToJsonElement(raw) as? JsonObject }
             .getOrNull() ?: return null
@@ -67,6 +73,18 @@ object ServerBackupAdapter {
         } }
         // 预设字段两边同构（含 avatarUri），原样保留即可。
         root["presets"]?.let { fields["presets"] = it }
+        // v6：表情行的文件名有两个同义字段（Android 写 `fileName`、iOS/服务端写 `file`）。
+        // 两边都补齐，本地导入/缓存刷新才不会因为「表情文件找不到」把整行丢掉。
+        root["stickers"]?.let { fields["stickers"] = mapArray(it) { sticker ->
+            val out = LinkedHashMap(sticker)
+            val fileName = sticker.string("fileName")?.takeIf { it.isNotBlank() }
+            val file = sticker.string("file")?.takeIf { it.isNotBlank() }
+            if (fileName == null && file != null) out["fileName"] = JsonPrimitive(file)
+            if (file == null && fileName != null) out["file"] = JsonPrimitive(fileName)
+            JsonObject(out)
+        } }
+        // v6：日记行两端同构（七个字段），原样保留即可；此处显式列出是为了让读者知道它被考虑过。
+        root["diaryNotes"]?.let { fields["diaryNotes"] = it }
         root["messages"]?.let { fields["messages"] = mapArray(it) { message ->
             val out = LinkedHashMap(message)
             message["attachments"]?.let { attachments ->

@@ -52,8 +52,16 @@ struct ChatScreen: View {
     @State private var showProfile = false
     /// 相册里选中的临时项；读成 Data、压缩落盘之后就清空（避免重复导入）。
     @State private var pickedItems: [PhotosPickerItem] = []
+    /// 相册里选中的视频（PHPicker，`.videos`）：只选一个、不转码。
+    @State private var pickedVideo: PhotosPickerItem?
+    /// 按住说话的录音机（0.13）。录完落进 `Application Support/audio` 再发送。
+    @StateObject private var recorder = VoiceRecorder()
+    /// 正在申请麦克风权限 / 启动录音（防止 `onChanged` 连发几次启出两个录音器）。
+    @State private var voiceStarting = false
     /// 全屏看图：点的是哪条消息里的第几张。
     @State private var previewItem: ChatImagePreviewItem?
+    /// 表情历史面板（0.13）：输入栏独立表情按钮打开。
+    @State private var showStickerPanel = false
     @State private var confirmClear = false
     @State private var pendingDelete: MessageEntity?
 
@@ -96,6 +104,14 @@ struct ChatScreen: View {
         }
         .fullScreenCover(item: $previewItem) { item in
             ChatImageViewer(attachments: item.attachments, initialIndex: item.index)
+        }
+        .sheet(isPresented: $showStickerPanel) {
+            StickerHistoryPanel { sticker in
+                // 点选即发送（不进草稿）：面板自己 dismiss，这里只管把表情发出去。
+                autoFollow = true
+                model.sendSticker(sticker)
+            }
+            .environmentObject(env)
         }
         .sheet(isPresented: $showProfile) {
             ChatProfileSheet(
@@ -351,6 +367,7 @@ struct ChatScreen: View {
                                         message: message, attachments: attachments, index: index
                                     )
                                 },
+                                onAddSticker: { model.saveSticker(from: message) },
                                 onCopy: { model.copy(message.content) },
                                 onRegenerate: { model.regenerate() },
                                 onDelete: { pendingDelete = message }
@@ -645,8 +662,16 @@ struct ChatScreen: View {
 
             attachmentPreview
 
-            HStack(alignment: .bottom, spacing: 10) {
+            voiceRecordingBar
+
+            HStack(alignment: .bottom, spacing: 8) {
+                stickerButton
+
                 photoPickerButton
+
+                voiceButton
+
+                videoPickerButton
 
                 TextField(composerPlaceholder, text: $model.draft, axis: .vertical)
                     // 1–5 行自适应：一句话时不占地方，写长了会自己长高（再多就内部滚动）。
@@ -747,6 +772,26 @@ struct ChatScreen: View {
         return L("说点什么…")
     }
 
+    // MARK: - 表情（0.13）
+
+    /// 独立的表情按钮（与图片按钮分开，`spec/stickers/README.md` §发送与历史）。
+    /// 点开是历史面板（最近 30 + 全部）；点选即发送。
+    private var stickerButton: some View {
+        let enabled = model.hasApiConfig && !model.isGenerating && !model.isPreparingAttachments
+        return Button {
+            showStickerPanel = true
+        } label: {
+            Image(systemName: "face.smiling")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(enabled ? accent : Color.secondary.opacity(0.45))
+                .frame(width: 38, height: 38)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(Text(L("发送表情")))
+    }
+
     // MARK: - 发图片
 
     /// 「+」：打开系统相册选图（`PhotosPicker` = `PHPickerViewController` 的 SwiftUI 外壳）。
@@ -754,7 +799,7 @@ struct ChatScreen: View {
     /// 一条消息最多四张（`AttachmentsCodec.maxImagesPerMessage`）：已选的张数会从可选上限里扣掉，
     /// 选满之后按钮自己变灰，而不是让用户选完再被裁掉。
     private var photoPickerButton: some View {
-        let remaining = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingAttachments.count)
+        let remaining = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingImageCount)
         let enabled = model.hasApiConfig && !model.isGenerating && remaining > 0
         // 闭包里只读这一份快照：`PhotosPicker` 的 label 是 @Sendable，
         // 直接读 @MainActor 的 `model.isPreparingAttachments` 会出并发警告。
@@ -786,11 +831,7 @@ struct ChatScreen: View {
                 HStack(spacing: 8) {
                     ForEach(Array(model.pendingAttachments.enumerated()), id: \.offset) { index, attachment in
                         ZStack(alignment: .topTrailing) {
-                            AttachmentThumbnail(uri: attachment.uri, pointSize: 54) { missing in
-                                AttachmentPlaceholder(missing: missing, compact: true)
-                            }
-                            .frame(width: 54, height: 54)
-                            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                            pendingAttachmentTile(attachment)
 
                             Button {
                                 model.removeAttachment(at: index)
@@ -802,7 +843,9 @@ struct ChatScreen: View {
                             }
                             .buttonStyle(.plain)
                             .offset(x: 5, y: -5)
-                            .accessibilityLabel(Text(L("撤掉这张图")))
+                            .accessibilityLabel(Text(attachment.isPlayableMedia
+                                ? L("撤掉这个附件")
+                                : L("撤掉这张图")))
                         }
                     }
                 }
@@ -812,11 +855,180 @@ struct ChatScreen: View {
         }
     }
 
+    // MARK: - 发语音（0.13）
+
+    /// 按住录音、松开发送（上滑取消）。
+    ///
+    /// 为什么用 `DragGesture(minimumDistance: 0)` 而不是 `LongPressGesture`：
+    /// 「按下的那一刻就开始录」是微信/Telegram 的肌肉记忆；长按手势要等 0.5 秒才触发，
+    /// 用户会以为没录上而松手。
+    private var voiceButton: some View {
+        let enabled = model.hasApiConfig && !model.isGenerating
+            && !model.isPreparingAttachments && !model.hasPendingPlayableMedia
+        return Image(systemName: recorder.isRecording ? "waveform" : "mic.fill")
+            .font(.system(size: 17, weight: .medium))
+            .foregroundStyle(recorder.isRecording ? Color.red : (enabled ? accent : Color.secondary.opacity(0.45)))
+            .frame(width: 38, height: 38)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        guard enabled, !recorder.isRecording else { return }
+                        startVoiceRecording()
+                    }
+                    .onEnded { value in
+                        guard recorder.isRecording else { return }
+                        finishVoiceRecording(cancelled: value.translation.height < -50)
+                    }
+            )
+            .allowsHitTesting(enabled || recorder.isRecording)
+            .accessibilityLabel(Text(L("按住说话")))
+    }
+
+    /// 录音中的提示条：红色圆点 + 时长 + 「松开发送，上滑取消」。
+    @ViewBuilder
+    private var voiceRecordingBar: some View {
+        if recorder.isRecording {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color.red)
+                    .frame(width: 9, height: 9)
+                Text(AudioVideoLimits.durationText(recorder.elapsedMs))
+                    .font(.footnote.monospacedDigit())
+                    .foregroundStyle(.primary)
+                Text(L("松开发送，上滑取消"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+                Text(Lf("最长 %d 分钟", AudioVideoLimits.audioMaxDurationMs / 60_000))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color.red.opacity(0.08))
+        }
+    }
+
+    private func startVoiceRecording() {
+        guard !voiceStarting else { return }
+        voiceStarting = true
+        recorder.onAutoStop = { [weak recorder] in
+            guard let recorder, recorder.isRecording else { return }
+            // 到 5 分钟自动停并直接发出去（用户按着不动时不该把录音丢掉）。
+            finishVoiceRecording(cancelled: false)
+        }
+        Task { @MainActor in
+            defer { voiceStarting = false }
+            do {
+                try await recorder.start()
+            } catch {
+                recorder.onAutoStop = nil
+                model.showToast(
+                    (error as? LocalizedError)?.errorDescription ?? L("没能开始录音，检查一下麦克风权限")
+                )
+            }
+        }
+    }
+
+    private func finishVoiceRecording(cancelled: Bool) {
+        recorder.onAutoStop = nil
+        if cancelled {
+            recorder.cancel()
+            model.showToast(L("已取消录音"))
+            return
+        }
+        guard let result = recorder.stop() else {
+            model.showToast(L("说得太短了"))
+            return
+        }
+        model.setPreparingAttachments(true)
+        Task { @MainActor in
+            let outcome = await AudioVideoImport.saveRecording(
+                at: result.url, durationMs: result.durationMs
+            )
+            model.setPreparingAttachments(false)
+            switch outcome {
+            case .success(let attachment):
+                model.addAttachments([attachment])
+                autoFollow = true
+                model.send()
+            case .failure(let message):
+                model.showToast(message)
+            }
+        }
+    }
+
+    // MARK: - 发视频（0.13）
+
+    /// 视频按钮：PHPicker 只出 `.videos`，选完先看时长/体积（超限直接拒绝、不转码）。
+    private var videoPickerButton: some View {
+        let enabled = model.hasApiConfig && !model.isGenerating
+            && !model.isPreparingAttachments && !model.hasPendingPlayableMedia
+        return PhotosPicker(
+            selection: $pickedVideo,
+            matching: .videos,
+            photoLibrary: .shared()
+        ) {
+            Image(systemName: model.isPreparingAttachments ? "hourglass" : "video.fill")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(enabled ? accent : Color.secondary.opacity(0.45))
+                .frame(width: 38, height: 38)
+                .contentShape(Circle())
+        }
+        .disabled(!enabled)
+        .accessibilityLabel(Text(L("从相册选一段视频")))
+        .onChange(of: pickedVideo) { item in
+            guard let item else { return }
+            pickedVideo = nil
+            importPickedVideo(item)
+        }
+    }
+
+    private func importPickedVideo(_ item: PhotosPickerItem) {
+        model.setPreparingAttachments(true)
+        Task { @MainActor in
+            let outcome = await AudioVideoImport.importVideo(item)
+            model.setPreparingAttachments(false)
+            switch outcome {
+            case .success(let attachment):
+                model.addAttachments([attachment])
+            case .failure(let message):
+                model.showToast(message)
+            }
+        }
+    }
+
+    /// 待发送托盘里的一格：图片给缩略图；语音/视频给一个带图标和时长的方块。
+    @ViewBuilder
+    private func pendingAttachmentTile(_ attachment: MessageAttachment) -> some View {
+        if attachment.isPlayableMedia {
+            VStack(spacing: 3) {
+                Image(systemName: attachment.isAudio ? "waveform" : "video.fill")
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(accent)
+                Text(attachment.durationText)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 54, height: 54)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .accessibilityLabel(Text(attachment.isAudio ? L("一段语音") : L("一段视频")))
+        } else {
+            AttachmentThumbnail(uri: attachment.uri, pointSize: 54) { missing in
+                AttachmentPlaceholder(missing: missing, compact: true)
+            }
+            .frame(width: 54, height: 54)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+        }
+    }
+
     /// 相册选完：压好、落盘、放进待发送列表。失败的图给一句中文提示，不影响其它张。
     private func importPickedImages(_ items: [PhotosPickerItem]) {
         guard !items.isEmpty else { return }
         pickedItems = []
-        let room = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingAttachments.count)
+        let room = max(0, AttachmentsCodec.maxImagesPerMessage - model.pendingImageCount)
         guard room > 0 else { return }
         model.setPreparingAttachments(true)
         Task { @MainActor in

@@ -88,6 +88,19 @@ final class PersonaDeletionTests: XCTestCase {
             AgentIntentEntity(id: "i-2", personaId: otherId, kind: .reachOut, earliestAt: now,
                               latestAt: now, note: "", status: .pending, createdAt: now)
         ])
+        // 0.13：日记板与待确认的人格变化（同样没有 persona 外键）。
+        try temp.stores.diaryNotes.upsert([
+            DiaryNoteEntity(id: "d-1", personaId: personaId, content: "他写给自己的便条",
+                            createdAt: now, updatedAt: now),
+            DiaryNoteEntity(id: "d-2", personaId: otherId, content: "别人的便条",
+                            createdAt: now, updatedAt: now)
+        ])
+        try temp.stores.personaPendingPatches.upsert([
+            PersonaPendingPatchEntity(id: "p-1", personaId: personaId, patchJson: "[]",
+                                      summary: "他的待确认变化", reason: "", createdAt: now),
+            PersonaPendingPatchEntity(id: "p-2", personaId: otherId, patchJson: "[]",
+                                      summary: "别人的待确认变化", reason: "", createdAt: now)
+        ])
     }
 
     // MARK: - 全量级联
@@ -117,6 +130,9 @@ final class PersonaDeletionTests: XCTestCase {
         XCTAssertTrue(try temp.stores.memoryConsolidations.fetch(where: "personaId = ?", [.text(personaId)]).isEmpty)
         XCTAssertTrue(try temp.stores.proactiveRules.fetch(where: "personaId = ?", [.text(personaId)]).isEmpty)
         XCTAssertTrue(try temp.stores.agentIntents.fetch(where: "personaId = ?", [.text(personaId)]).isEmpty)
+        XCTAssertTrue(try temp.stores.diaryNotes.fetch(where: "personaId = ?", [.text(personaId)]).isEmpty,
+                      "日记板要跟着走（他不在了，便条不该留在库里）")
+        XCTAssertTrue(try temp.stores.personaPendingPatches.fetch(where: "personaId = ?", [.text(personaId)]).isEmpty)
 
         // 默认人格转移给还在的那个人；「正在聊的人」也跟着换。
         let successor = try XCTUnwrap(try temp.stores.personas.defaultPersona())
@@ -137,6 +153,8 @@ final class PersonaDeletionTests: XCTestCase {
         XCTAssertEqual(try temp.stores.memoryVersions.count(where: "memoryId = ?", [.text("mem-2")]), 1)
         XCTAssertEqual(MemoryEchoStore(database: temp.stores.database).byPersona(otherId).count, 1)
         XCTAssertEqual(AgentTickStore(database: temp.stores.database).recent(personaId: otherId, limit: 10).count, 1)
+        XCTAssertEqual(try temp.stores.diaryNotes.count(personaId: otherId), 1, "别人的便条一行都不该动")
+        XCTAssertEqual(try temp.stores.personaPendingPatches.count(personaId: otherId), 1)
     }
 
     func testDeletingNonDefaultPersonaKeepsExistingDefault() throws {

@@ -5,14 +5,13 @@ import com.yap.app.data.local.MessageEntity
 import com.yap.app.data.local.MessageRole
 import com.yap.app.data.local.MessageStatus
 import com.yap.app.data.local.PersonaEntity
+import com.yap.app.domain.AttachmentsCodec
+import com.yap.app.domain.MessageAttachment
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 /** 同步要用的三个服务端读接口；抽接口让 `ServerSyncManager` 能纯 JVM 测。 */
@@ -27,14 +26,23 @@ data class ServerSyncApplyResult(
     val sessions: Int = 0,
     val messages: Int = 0,
     val moods: Int = 0,
-    val presence: Int = 0
+    val presence: Int = 0,
+    /** 0.13：本批附件真的落到本机持久目录的条数（同一 id 只计一次）。 */
+    val mediaDownloaded: Int = 0,
+    /** 本批落盘失败的附件条数（保留服务端引用，界面继续走网络/占位）。 */
+    val mediaFailed: Int = 0,
+    /** 本批本来就在本机（幂等跳过）的附件条数。 */
+    val mediaSkipped: Int = 0
 ) {
     operator fun plus(other: ServerSyncApplyResult): ServerSyncApplyResult = ServerSyncApplyResult(
         personas = personas + other.personas,
         sessions = sessions + other.sessions,
         messages = messages + other.messages,
         moods = moods + other.moods,
-        presence = presence + other.presence
+        presence = presence + other.presence,
+        mediaDownloaded = mediaDownloaded + other.mediaDownloaded,
+        mediaFailed = mediaFailed + other.mediaFailed,
+        mediaSkipped = mediaSkipped + other.mediaSkipped
     )
 }
 
@@ -195,15 +203,24 @@ object ServerMergePlan {
      * 服务端快照只带 `id/name/avatarUrl/updatedAt`，**不能**用一份精简 DTO 覆盖本地完整人设：
      * 那会把世界预设、话风、翻译缓存、心情全部清空。所以只更新服务端真正拥有的两个展示字段
      * （名字、更新时间），本地多出来的字段原样保留。
+     *
+     * @param localAvatarUri 0.13：本批已经从 `/v1/media/<id>` 落到 `files/avatars` 的头像路径。
+     *        为空表示这次没拿到本地文件（下载失败/不是媒体引用），此时退回服务端引用。
      */
-    fun persona(local: PersonaEntity?, server: ServerPersona, now: Long = System.currentTimeMillis()): PersonaEntity {
+    fun persona(
+        local: PersonaEntity?,
+        server: ServerPersona,
+        now: Long = System.currentTimeMillis(),
+        localAvatarUri: String? = null
+    ): PersonaEntity {
         if (local != null && !shouldOverwrite(local.updatedAt, server.updatedAt)) return local
+        val fallbackAvatar = localAvatarUri?.takeIf { it.isNotBlank() } ?: server.avatarUrl
         if (local != null) {
             return local.copy(
                 name = server.name.ifBlank { local.name },
-                // 本机没有头像文件、服务端有一个媒体引用时补上：换设备/服务端新建的人格
-                // 不该在首页是一块没有脸的色块。本机已有头像时保留本地文件（离线也能看）。
-                avatarUri = local.avatarUri?.takeIf { it.isNotBlank() } ?: server.avatarUrl,
+                // 本机已有真实头像文件（`file://`）就保留，离线也能看；本地只是服务端引用时
+                // 优先换成这次刚落盘的文件，避免同一张头像每隔一次同步都重新走网络。
+                avatarUri = preferredAvatar(local.avatarUri, fallbackAvatar),
                 updatedAt = maxOf(local.updatedAt, server.updatedAt)
             )
         }
@@ -211,7 +228,7 @@ object ServerMergePlan {
             id = server.id,
             name = server.name,
             description = "",
-            avatarUri = server.avatarUrl,
+            avatarUri = fallbackAvatar,
             avatarSeed = server.id.hashCode(),
             prompt = "",
             category = DEFAULT_SERVER_PERSONA_CATEGORY,
@@ -222,6 +239,13 @@ object ServerMergePlan {
             createdAt = now,
             updatedAt = server.updatedAt.takeIf { it > 0 } ?: now
         )
+    }
+
+    /** 本地头像已是真文件就保留；只是服务端引用时优先用刚落盘的本地文件。 */
+    private fun preferredAvatar(local: String?, fallback: String?): String? {
+        val current = local?.takeIf { it.isNotBlank() }
+        val keepLocal = current != null && !ServerMediaRef.isMediaRef(current)
+        return if (keepLocal) current else fallback ?: current
     }
 
     /**
@@ -262,8 +286,19 @@ object ServerMergePlan {
         )
     }
 
-    /** 服务端消息 → 本地实体；本地已有同 id 时以服务端内容为准（含已读时间）。 */
-    fun message(server: ServerMessage, personaId: String, local: MessageEntity?): MessageEntity {
+    /**
+     * 服务端消息 → 本地实体；本地已有同 id 时以服务端内容为准（含已读时间）。
+     *
+     * @param media 0.13：本批附件的本地化结果（由 `ServerMediaStore.materialize` 在事务外给出）。
+     *        有映射时附件 `uri` 写本地 `file://`、保留 `serverMediaId`；没有映射（下载失败或
+     *        非媒体引用）时 `uri` 仍是 `/v1/media/<id>`，界面继续走网络加载/占位。
+     */
+    fun message(
+        server: ServerMessage,
+        personaId: String,
+        local: MessageEntity?,
+        media: Map<String, ServerMediaAttachment> = emptyMap()
+    ): MessageEntity {
         val createdAt = server.createdAt.takeIf { it > 0 } ?: local?.createdAt ?: System.currentTimeMillis()
         return MessageEntity(
             id = server.id,
@@ -283,9 +318,12 @@ object ServerMergePlan {
             errorMessage = null,
             model = local?.model,
             edited = local?.edited ?: false,
-            // 媒体文件本身还没同步（M3 只做文本缓存）：保留 id，界面加载失败时显示占位，
-            // 而不是把「他发过一张图」这件事悄悄丢掉。
-            attachmentsJson = attachmentsJson(server.attachments) ?: local?.attachmentsJson,
+            // 媒体本身在 0.13 已经落到本机持久目录（attachmentsJson 里是 file:// + serverMediaId）；
+            // 落盘失败时保留 id，界面加载失败显示占位，而不是把「他发过一张图」这件事悄悄丢掉。
+            // 服务端只回 `/v1/media/<id>`；语音/视频的 mime、kind、durationMs 只有本机知道。
+            // 已有本机行时按顺序把元数据带过去，否则「语音」在同步之后会变成一张加载不出来的图片。
+            attachmentsJson = attachmentsJson(server.attachments, local?.attachmentsJson, media)
+                ?: local?.attachmentsJson,
             toolTraceJson = local?.toolTraceJson,
             readAt = server.readAt ?: local?.readAt,
             blockIndex = server.blockIndex.coerceAtLeast(0)
@@ -302,11 +340,51 @@ object ServerMergePlan {
         }
     }
 
-    private fun attachmentsJson(attachments: List<String>): String? {
+    /**
+     * 服务端附件列表 → 本机 `attachmentsJson`。
+     *
+     * 三条规则：
+     * 1. **顺序对应**：[localJson] 里同下标的语音/视频/表情把 mime、kind、durationMs 带过来；
+     * 2. **本地化优先**：有 [media] 映射时 `uri` 用 `file://` 本地路径，没有时保留服务端引用
+     *    （下载失败也保留，界面继续走网络/占位）；
+     * 3. **服务端身份不丢**：每项都写 `serverMediaId`（回推/去重/换设备再下载都要靠它）。
+     *
+     * 数量对不上时只补前缀，越界的一律当普通附件。
+     */
+    private fun attachmentsJson(
+        attachments: List<String>,
+        localJson: String?,
+        media: Map<String, ServerMediaAttachment> = emptyMap()
+    ): String? {
         if (attachments.isEmpty()) return null
-        return JsonArray(
-            attachments.map { id -> buildJsonObject { put("uri", JsonPrimitive(id)) } }
-        ).toString()
+        val localAttachments = AttachmentsCodec.decode(localJson)
+        val merged = attachments.mapIndexed { index, raw ->
+            val local = localAttachments.getOrNull(index)
+            val entry = media.attachmentFor(raw)
+            val uri = entry?.uri ?: raw
+            val mime = entry?.mime?.takeIf { it.isNotBlank() }
+                ?: local?.mime
+                ?: DEFAULT_ATTACHMENT_MIME
+            val serverMediaId = entry?.serverMediaId ?: ServerMediaRef.idOf(raw)
+            if (local != null && (local.isAudioOrVideo || local.isSticker)) {
+                local.copy(
+                    uri = uri,
+                    mime = local.mime.ifBlank { mime },
+                    serverMediaId = serverMediaId ?: local.serverMediaId
+                )
+            } else {
+                MessageAttachment(
+                    uri = uri,
+                    mime = mime,
+                    width = local?.width ?: 0,
+                    height = local?.height ?: 0,
+                    kind = entry?.kind ?: local?.kind,
+                    durationMs = local?.durationMs,
+                    serverMediaId = serverMediaId ?: local?.serverMediaId
+                )
+            }
+        }
+        return AttachmentsCodec.encode(merged)
     }
 
     /**
@@ -315,6 +393,9 @@ object ServerMergePlan {
      * 用内置分类而不是空串：人格列表按分类筛选时，空串会掉进「未分类」那个假分类里。
      */
     const val DEFAULT_SERVER_PERSONA_CATEGORY = "日常聊天"
+
+    /** 附件缺 mime 时的缺省值（与 [MessageAttachment] 的默认值一致，0.12 的老图片就是它）。 */
+    private const val DEFAULT_ATTACHMENT_MIME = "image/jpeg"
 }
 
 /** [ServerApi] → [ServerStateSource] 的适配器（传输层不反向依赖同步层）。 */

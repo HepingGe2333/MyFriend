@@ -1,6 +1,7 @@
 package com.yap.app.data.remote
 
 import android.content.Context
+import com.yap.app.domain.AudioVideoPolicy
 import com.yap.app.domain.MediaOwnership
 import com.yap.app.domain.MessageAttachment
 import com.yap.app.util.MediaStorage
@@ -56,6 +57,40 @@ class ServerChatMediaSender @Inject constructor(
             localStore.serverPersonaId(localId) ?: localId
         }
         return uploader.uploadImages(attachments, serverPersonaId)
+    }
+
+    /**
+     * 上传语音/视频（0.13）：**不压缩、不转码**，只做大小/时长复核后 `kind=AUDIO|VIDEO`。
+     *
+     * 读的是 `files/audio` / `files/video` 里的原件；任何一项失败整条消息失败，
+     * 不返回半截附件列表（否则用户会看到「少了一段」而不知道为什么）。
+     */
+    suspend fun uploadVoiceVideo(
+        attachments: List<MessageAttachment>,
+        personaId: String?
+    ): Result<List<String>> {
+        val media = attachments.filter { it.isAudioOrVideo }
+        if (media.isEmpty()) return Result.success(emptyList())
+        val api = mode.api() ?: return Result.failure(
+            ServerApiException("server mode is not available", code = "server_unavailable")
+        )
+        val uploader = ServerAudioVideoUploader(
+            api = api,
+            readBytes = { attachment ->
+                readOwned(
+                    uri = attachment.uri,
+                    directory = if (attachment.isAudio) {
+                        MediaStorage.audioDirectory(context)
+                    } else {
+                        MediaStorage.videoDirectory(context)
+                    }
+                )
+            }
+        )
+        val serverPersonaId = personaId?.takeIf { it.isNotBlank() }?.let { localId ->
+            localStore.serverPersonaId(localId) ?: localId
+        }
+        return uploader.upload(media, serverPersonaId)
     }
 
     /**
@@ -126,6 +161,7 @@ class ServerChatMediaSender @Inject constructor(
     private fun mediaDirectory(): File = MediaStorage.mediaDirectory(context)
 
     private companion object {
-        const val MAX_READ_BYTES = 8L * 1024 * 1024
+        /** 读取上限按视频的最大值放宽：语音 8 MiB 仍由上传编排按 kind 再挡一次。 */
+        val MAX_READ_BYTES = AudioVideoPolicy.VIDEO_MAX_BYTES
     }
 }

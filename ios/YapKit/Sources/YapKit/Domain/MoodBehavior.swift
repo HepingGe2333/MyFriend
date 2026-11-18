@@ -78,10 +78,106 @@ public enum MoodBehavior {
 
     /// 心情 → 行为倾向。
     ///
+    /// 两条路径（0.13 schema v17 之后）：
+    /// - **有三维**（`mood.dimensions != nil`，即自动判定写进去的那一份）：按维度换算，
+    ///   见 `fromDimensions`；
+    /// - **没有三维**（老数据 / 模型只写了 label）：退回词表路径，行为与 0.12 逐字一致
+    ///   —— 升级不该让「他」的作息节奏突然变了。
+    ///
     /// - Parameters:
     ///   - mood: 当前心情（已经过时间衰减）
     ///   - now: 用来判断是不是深夜；只影响「更安静一点」这一档
     public static func from(_ mood: MoodState, now: Int64 = DomainClock.nowMillis) -> MoodTuning {
+        if let dimensions = mood.dimensions {
+            let intensity = min(Swift.max(mood.intensity, 1), 5)
+            return clamp(applyNight(fromDimensions(dimensions, intensity: intensity), now: now))
+        }
+        return lexiconTuning(mood, now: now)
+    }
+
+    /// 三维心情 → 行为倾向（规范 `spec/mood/README.md` §3「按维度的行为提示」）。
+    ///
+    /// 原则与词表路径一致：宁可少动，也别夸张。
+    /// - 愉快度低 → 想得少、说得少、懒得分享；愉快度高 → 稍微勤快一点；
+    /// - 唤醒度低（困/没劲）→ 间隔更长、回得更短；唤醒度高（激动）→ 稍微勤快；
+    /// - 掌控感低 → 少主动开新话题（上限 -1）；掌控感高 → 更笃定（上限 +1）。
+    public static func fromDimensions(_ dimensions: MoodDimensions, intensity: Int = 3) -> MoodTuning {
+        let strength = min(Swift.max(intensity, 1), 5)
+        let baseline = MoodDimensions.baseline
+        if dimensions == baseline {
+            return MoodTuning()
+        }
+        var tuning = MoodTuning()
+        var hints: [String] = []
+
+        switch dimensions.valence {
+        case ...(-2):
+            tuning.tickIntervalMultiplier = 1.3 + 0.05 * Double(strength - 1)   // 1.3 ~ 1.5
+            tuning.dailyMessageCapDelta -= 1
+            tuning.browseBias = 0.4
+            tuning.shareBias = 0.35
+            hints.append("今天话少一点、慢一点，不用硬撑热情。")
+        case -1:
+            tuning.tickIntervalMultiplier = 1.1
+            tuning.browseBias = 0.75
+            tuning.shareBias = 0.8
+        case 1:
+            tuning.tickIntervalMultiplier = 0.95
+            tuning.browseBias = 1.1
+            tuning.shareBias = 1.15
+        case 2:
+            tuning.tickIntervalMultiplier = strength >= 3 ? 0.88 : 0.94
+            tuning.browseBias = 1.25
+            tuning.shareBias = 1.35
+            if strength >= 3 { tuning.dailyMessageCapDelta += 1 }
+            hints.append("心情好，话可以多一点，语气轻快些。")
+        default:
+            break
+        }
+
+        switch dimensions.arousal {
+        case ...1:
+            tuning.tickIntervalMultiplier *= 1.15
+            tuning.browseBias *= 0.8
+            tuning.shareBias *= 0.8
+            hints.append("有点没劲，回得更短、更慢。")
+        case 4...:
+            tuning.tickIntervalMultiplier *= 0.92
+            hints.append("有点兴奋，话容易多，收着点。")
+        default:
+            break
+        }
+
+        switch dimensions.dominance {
+        case ...1:
+            tuning.shareBias *= 0.9
+            hints.append("说不上什么主意，少替对方拿主意。")
+        case 4...:
+            tuning.shareBias *= 1.1
+        default:
+            break
+        }
+
+        if !hints.isEmpty {
+            tuning.replyLengthHint = hints.prefix(2).joined(separator: "")
+        }
+        tuning.note = note(for: dimensions)
+        return tuning
+    }
+
+    /// 给他自己看的一句内部说明（进 tick 的 summary 与处境里）。
+    public static func note(for dimensions: MoodDimensions) -> String {
+        var parts: [String] = []
+        if dimensions.valence <= -1 { parts.append("心情不太好") }
+        else if dimensions.valence >= 1 { parts.append("心情不错") }
+        if dimensions.arousal <= 1 { parts.append("没什么劲") }
+        else if dimensions.arousal >= 4 { parts.append("有点静不下来") }
+        if dimensions.dominance <= 1 { parts.append("不太想拿主意") }
+        return parts.isEmpty ? "" : parts.joined(separator: "，")
+    }
+
+    /// 词表路径（0.12 的行为，逐字保留）。
+    static func lexiconTuning(_ mood: MoodState, now: Int64) -> MoodTuning {
         let label = mood.isEmpty() ? "" : MoodLexicon.normalize(mood.label)
         let intensity = mood.isEmpty() ? 1 : min(Swift.max(mood.intensity, 1), 5)
         let word = MoodLexicon.classify(label)

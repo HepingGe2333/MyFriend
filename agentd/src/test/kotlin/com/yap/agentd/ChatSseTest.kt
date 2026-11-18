@@ -111,7 +111,7 @@ class ChatSseTest {
             emit(SseEvent.Tool("web_search", "running", "正在搜索"))
             emit(SseEvent.Tool("web_search", "done", "3 条结果"))
             emit(SseEvent.Delta("结论如下"))
-            Usage(promptTokens = 7, completionTokens = 9)
+            ReplyOutcome(Usage(promptTokens = 7, completionTokens = 9))
         }
         val sink = send(services(generator), """{"clientMessageId":"c-tool","content":"搜一下"}""")
 
@@ -176,7 +176,7 @@ class ChatSseTest {
         val generator = ReplyGenerator { _, emit ->
             generated.incrementAndGet()
             emit(SseEvent.Delta("只生成一次"))
-            Usage(1, 1)
+            ReplyOutcome(Usage(1, 1))
         }
         val authoritative = services(generator)
         val body = """{"clientMessageId":"same-id","content":"重复发送"}"""
@@ -199,7 +199,7 @@ class ChatSseTest {
             generated.incrementAndGet()
             Thread.sleep(80)
             emit(SseEvent.Delta("慢一点"))
-            Usage(2, 3)
+            ReplyOutcome(Usage(2, 3))
         }
         val authoritative = services(generator)
         val body = """{"clientMessageId":"race-id","content":"同时发两次"}"""

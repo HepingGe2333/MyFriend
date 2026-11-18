@@ -405,6 +405,140 @@ final class ToolExecutorTests: XCTestCase {
         try apiKeys.setWebToolsAPIKey("sk-web", for: "config-1")
     }
 
+    // MARK: - 日记板（0.13，`spec/diary/README.md`）
+
+    /// 增 → 查 → 删：内容、id、提醒时间都真的落库；痕迹标题是「写日记」「翻日记」。
+    func testDiaryAddListRemoveRoundTrip() async throws {
+        let added = await run("diary", arguments: [
+            "action": "add",
+            "content": "明天问问他到家没",
+            "remindInMinutes": 30
+        ])
+        XCTAssertTrue(added.ok, added.errorMessage ?? "")
+        XCTAssertEqual(added.traceTitle, "写日记")
+        XCTAssertTrue(added.contentForModel.contains("日记板"))
+        XCTAssertTrue(added.contentForModel.contains("id："), "回灌里必须带 id，否则模型永远删不掉")
+
+        let notes = try temp.stores.diaryNotes.byPersona(personaId)
+        let note = try XCTUnwrap(notes.first)
+        XCTAssertEqual(note.content, "明天问问他到家没")
+        XCTAssertEqual(note.remindAt, now + 30 * 60_000)
+        XCTAssertNil(note.remindedAt)
+
+        let listed = await run("diary", arguments: ["action": "list"])
+        XCTAssertTrue(listed.ok)
+        XCTAssertEqual(listed.traceTitle, "翻日记")
+        XCTAssertTrue(listed.contentForModel.contains(note.id))
+        XCTAssertTrue(listed.contentForModel.contains("明天问问他到家没"))
+
+        let removed = await run("diary", arguments: ["action": "remove", "noteId": note.id])
+        XCTAssertTrue(removed.ok)
+        XCTAssertTrue(try temp.stores.diaryNotes.byPersona(personaId).isEmpty, "删除是硬删除")
+    }
+
+    /// 内容 ≤2000 字：超了明确拒绝（不静默截断），空白内容也拒绝。
+    func testDiaryContentLimitAndEmptyContent() async throws {
+        let tooLong = String(repeating: "字", count: DiaryLimits.contentMax + 1)
+        let rejected = await run("diary", arguments: ["action": "add", "content": tooLong])
+        XCTAssertFalse(rejected.ok)
+        XCTAssertTrue(rejected.errorMessage?.contains("2000") == true)
+        XCTAssertTrue(try temp.stores.diaryNotes.byPersona(personaId).isEmpty)
+
+        let empty = await run("diary", arguments: ["action": "add", "content": "   "])
+        XCTAssertFalse(empty.ok)
+
+        // 刚好到上限是允许的。
+        let atLimit = String(repeating: "字", count: DiaryLimits.contentMax)
+        let ok = await run("diary", arguments: ["action": "add", "content": atLimit])
+        XCTAssertTrue(ok.ok)
+        XCTAssertEqual(try temp.stores.diaryNotes.byPersona(personaId).first?.content.count, DiaryLimits.contentMax)
+    }
+
+    /// `remindAt` 与 `remindInMinutes` 二选一；两个都给以 `remindAt` 为准；过去的时间拒绝。
+    func testDiaryReminderArgumentRules() async throws {
+        let absolute = now + 3_600_000
+        _ = await run("diary", arguments: [
+            "action": "add", "content": "以绝对时间优先",
+            "remindAt": absolute, "remindInMinutes": 10
+        ])
+        XCTAssertEqual(try temp.stores.diaryNotes.byPersona(personaId).first?.remindAt, absolute)
+
+        let past = await run("diary", arguments: [
+            "action": "add", "content": "时间已经过去了", "remindAt": now - 1
+        ])
+        XCTAssertFalse(past.ok, "过去的时间要明确拒绝，而不是排一个永远不触发的提醒")
+        XCTAssertEqual(try temp.stores.diaryNotes.byPersona(personaId).count, 1)
+
+        // 不填提醒 = 普通便条。
+        _ = await run("diary", arguments: ["action": "add", "content": "只是想记一笔"])
+        let notes = try temp.stores.diaryNotes.byPersona(personaId)
+        XCTAssertNil(notes.first { $0.content == "只是想记一笔" }?.remindAt)
+
+        // `remindInMinutes` 夹在 30 天（与 Android 的 Diary.REMIND_IN_MINUTES_MAX 一致）。
+        _ = await run("diary", arguments: [
+            "action": "add", "content": "三十天后再提醒", "remindInMinutes": 999_999_999
+        ])
+        let clamped = try XCTUnwrap(try temp.stores.diaryNotes.byPersona(personaId)
+            .first { $0.content == "三十天后再提醒" })
+        XCTAssertEqual(clamped.remindAt, now + Int64(DiaryLimits.remindInMinutesMax) * 60_000)
+    }
+
+    /// list：按 createdAt 倒序、默认 20 条、最多 50（超出的按 50 截）。
+    func testDiaryListOrderAndLimit() async throws {
+        // 直接写库（带上不同的 createdAt）：工具执行器的时钟是固定的，
+        // 55 条同一毫秒的便条在 SQLite 里排序不稳定，测不出「按时间倒序」。
+        var seeded: [DiaryNoteEntity] = []
+        for index in 0..<55 {
+            seeded.append(DiaryNoteEntity(
+                id: "diary-\(index)", personaId: personaId, content: "第 \(index) 条",
+                createdAt: now - Int64(55 - index) * 1000, updatedAt: now
+            ))
+        }
+        try temp.stores.diaryNotes.upsert(seeded)
+        let defaultList = await run("diary", arguments: ["action": "list"])
+        XCTAssertTrue(defaultList.contentForModel.contains("最近 20 条"))
+        let maxList = await run("diary", arguments: ["action": "list", "limit": 999])
+        XCTAssertTrue(maxList.contentForModel.contains("最近 50 条"), "最多 50 条")
+        // 倒序：最新那条在最前。
+        XCTAssertTrue(maxList.contentForModel.contains("第 54 条"))
+        XCTAssertFalse(maxList.contentForModel.contains("第 0 条"), "50 条之后的老便条不再出现")
+    }
+
+    /// 跨人格隔离：不能删别人格的便条，list 也看不到。
+    func testDiaryIsolationAcrossPersonas() async throws {
+        try temp.stores.personas.upsert(TestData.persona(id: "persona-2", isDefault: false))
+        _ = await run("diary", arguments: ["action": "add", "content": "属于 persona-1 的便条"])
+        let other = try XCTUnwrap(try temp.stores.diaryNotes.byPersona(personaId).first)
+
+        let persona2 = try XCTUnwrap(try temp.stores.personas.byId("persona-2"))
+        let invocation = ToolInvocation(
+            id: "call-2", name: "diary",
+            argumentsJson: #"{"action":"remove","noteId":"\#(other.id)"}"#
+        )
+        let removed = await executor.run(invocation, persona: persona2, sessionId: "session-2")
+        XCTAssertFalse(removed.ok, "不能删别人格的便条")
+        XCTAssertEqual(try temp.stores.diaryNotes.count(personaId: personaId), 1)
+    }
+
+    /// 不认识的 action：明确报错（不静默当成 add）。
+    func testDiaryUnknownActionFailsLoudly() async throws {
+        let result = await run("diary", arguments: ["action": "rename", "content": "x"])
+        XCTAssertFalse(result.ok)
+        XCTAssertTrue(result.errorMessage?.contains("add / list / remove") == true)
+    }
+
+    /// 契约：`ToolCatalog.all` 里的每个工具都必须被执行器认识（不能有「列在提示词里但没人执行」的工具）。
+    func testEveryCatalogToolIsHandledByExecutor() async throws {
+        for spec in ToolCatalog.all {
+            let result = await run(spec.name, arguments: [:])
+            let message = result.errorMessage ?? ""
+            XCTAssertFalse(
+                message.contains("不认识这个工具"),
+                "工具 \(spec.name) 在 ToolCatalog 里，但 ToolExecutor 不认识它"
+            )
+        }
+    }
+
     private func run(_ name: String, arguments: [String: Any]) async -> ToolResult {
         let data = try! JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
         let json = String(data: data, encoding: .utf8) ?? "{}"

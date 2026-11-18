@@ -3,10 +3,10 @@ import Foundation
 
 /// iOS 侧的「黄金样本」。
 ///
-/// - `iosBundle()`：**v5**（0.12，schema v13，人设引导）结构，写进
-///   `fixtures/backup/ios-export-v5.json`，Android 的 `BackupFixtureTest` 用它验证
-///   「iOS 导出的备份 Android 接得住」；`ios-export-v4.json` 从那以后是**只读输入**
-///   （证明 v4 仍然能读），不再重写；
+/// - `iosBundle()`：**v6**（0.13，schema v15，表情 / 语音 / 视频 / 日记便条）结构，写进
+///   `fixtures/backup/ios-export-v6.json`，Android 的 `BackupFixtureTest` 用它验证
+///   「iOS 导出的备份 Android 接得住」；`ios-export-v5.json` 从那以后是**只读输入**
+///   （证明 v5 仍然能读），不再重写；
 /// - 值全部是 iOS 自己造的（名字、id 都不同），并且**每个可选字段都填上**：
 ///   「所有可选字段都非 nil」的样本能顺带检查「编码时字段一个不多一个不少」
 ///   （见 BackupCodecTests 的键集合断言）——漏字段是备份互通最隐蔽的 bug。
@@ -26,6 +26,17 @@ enum BackupSamples {
     static let personaAvatarFileName = "avatar-ios-sample.jpg"
     /// 样本聊天图片的**裸文件名**：`messages.attachmentsJson[].uri` 与 `media[].fileName` 一致。
     static let chatImageFileName = "chatImage-ios-sample.png"
+    /// v6：样本表情 / 语音 / 视频的**裸文件名**（关联键同上）。
+    static let stickerFileName = "sticker-ios-sample.gif"
+    static let audioFileName = "audio-ios-sample.m4a"
+    static let videoFileName = "video-ios-sample.mp4"
+
+    /// 1×1 的 GIF（43 字节）：表情必须是真 GIF，Android 侧才能真的解出一张图。
+    static let sampleGIFBase64 = "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
+    /// 语音/视频的样本字节：备份格式只要求「base64 → 原始字节数一致」，
+    /// 不必是能播放的容器（真有内容的样本会让 fixture 大几十倍，而格式完全相同）。
+    static let sampleAudioBase64 = "bW9jay1hdWRpby1ieXRlcw=="   // "mock-audio-bytes"（16 字节）
+    static let sampleVideoBase64 = "bW9jay12aWRlby1ieXRlcw=="   // "mock-video-bytes"（16 字节）
 
     static let personaId = "ios-persona-1"
     static let sessionId = "ios-session-1"
@@ -152,7 +163,9 @@ enum BackupSamples {
                     model: "deepseek-chat",
                     edited: true,
                     // v3：附件 uri 是裸文件名，本体在 media 的 CHAT_IMAGE 里。
-                    attachmentsJson: "[{\"uri\":\"chatImage-ios-sample.png\",\"mime\":\"image/png\",\"width\":2,\"height\":2}]",
+                    // v6：同一条消息还可以带一段语音；`kind` 与 `durationMs` 一起带走
+                    //（服务端不下发这两样，丢了气泡上就永远是 --:--）。
+                    attachmentsJson: "[{\"uri\":\"chatImage-ios-sample.png\",\"mime\":\"image/png\",\"width\":2,\"height\":2,\"kind\":\"IMAGE\"},{\"uri\":\"audio-ios-sample.m4a\",\"mime\":\"audio/m4a\",\"kind\":\"AUDIO\",\"durationMs\":7000}]",
                     toolTraceJson: "[{\"name\":\"web_search\",\"ok\":true}]"
                 ),
                 BackupMessage(
@@ -189,6 +202,34 @@ enum BackupSamples {
                     mime: "image/png",
                     bytes: 75,
                     data: samplePNGBase64
+                ),
+                // v6：表情 / 语音 / 视频。kind 是新的三个取值，旧版本读到会跳过并计数。
+                BackupMedia(
+                    id: "ios-media-3",
+                    kind: "STICKER",
+                    personaId: personaId,
+                    fileName: stickerFileName,
+                    mime: "image/gif",
+                    bytes: 42,
+                    data: sampleGIFBase64
+                ),
+                BackupMedia(
+                    id: "ios-media-4",
+                    kind: "AUDIO",
+                    personaId: personaId,
+                    fileName: audioFileName,
+                    mime: "audio/m4a",
+                    bytes: 16,
+                    data: sampleAudioBase64
+                ),
+                BackupMedia(
+                    id: "ios-media-5",
+                    kind: "VIDEO",
+                    personaId: personaId,
+                    fileName: videoFileName,
+                    mime: "video/mp4",
+                    bytes: 16,
+                    data: sampleVideoBase64
                 )
             ],
             presets: [
@@ -274,6 +315,44 @@ enum BackupSamples {
                     forgotten: 0,
                     summary: "把两条关于旧书的记忆并成了一条",
                     modelName: "deepseek-chat"
+                )
+            ],
+            // v6：一张表情（文件在 media 的 STICKER 里）。
+            stickers: [
+                BackupSticker(
+                    id: "ios-sticker-1",
+                    ownerUserId: "ios-owner-1",
+                    personaId: personaId,
+                    file: stickerFileName,
+                    mime: "image/gif",
+                    width: 1,
+                    height: 1,
+                    frames: 1,
+                    bytes: 42,
+                    source: "AI",
+                    createdBy: "PERSONA",
+                    createdAt: now - 5_400_000
+                )
+            ],
+            // v6：两条日记便条 —— 一条带提醒（已经提醒过）、一条不提醒。
+            diaryNotes: [
+                BackupDiaryNote(
+                    id: "ios-diary-1",
+                    personaId: personaId,
+                    content: "明天记得问他那本书看完了没",
+                    createdAt: now - 3_600_000,
+                    remindAt: now + 72_000_000,
+                    remindedAt: nil,
+                    updatedAt: now - 3_600_000
+                ),
+                BackupDiaryNote(
+                    id: "ios-diary-2",
+                    personaId: personaId,
+                    content: "他说过奶奶的生日是腊月十七，别忘了",
+                    createdAt: now - 86_400_000,
+                    remindAt: now - 82_800_000,
+                    remindedAt: now - 82_700_000,
+                    updatedAt: now - 82_700_000
                 )
             ],
             apiConfigs: [

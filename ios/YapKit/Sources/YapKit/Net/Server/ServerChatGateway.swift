@@ -45,8 +45,14 @@ public final class ServerChatGateway {
     private let log: (String) -> Void
     /// 上传图片（生产 = `ServerAPIClient`；测试注入假实现断言调用顺序）。
     private let mediaUploader: (any ServerMediaUploading)?
+    /// 上传任意媒体（0.13 语音/视频：按 kind 判上限与 mime 白名单）。
+    private let mediaFileUploader: (any ServerMediaFileUploading)?
     /// 「本地附件 → 压缩后字节」（默认复用选图路径已经压好的 JPEG）。
     private let mediaPreparer: any ServerChatMediaPreparing
+    /// 语音/视频文件（`Application Support/audio|video`）。
+    private let audioVideo: AudioVideoStore
+    /// 服务端媒体 id → 附件元信息（同一条消息同步回来时保住 kind/时长）。
+    private let mediaMeta: ServerMediaMetaStore
     private let lock = NSLock()
     /// 正在发送的 clientMessageId（同一条不并发发两次；补发与用户手点撞上也只发一次）。
     private var inFlight: Set<String> = []
@@ -56,7 +62,10 @@ public final class ServerChatGateway {
         stores: DatabaseStores,
         outbox: ServerOutboxStore? = nil,
         mediaUploader: (any ServerMediaUploading)? = nil,
+        mediaFileUploader: (any ServerMediaFileUploading)? = nil,
         mediaPreparer: (any ServerChatMediaPreparing)? = nil,
+        audioVideo: AudioVideoStore = .shared,
+        mediaMeta: ServerMediaMetaStore? = nil,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -67,7 +76,10 @@ public final class ServerChatGateway {
         self.blockState = ServerSyncStateStore(database: stores.database)
         // `ServerAPIClient` 本身就是上传实现；显式注入只是测试口子。
         self.mediaUploader = mediaUploader ?? client
+        self.mediaFileUploader = mediaFileUploader ?? client
         self.mediaPreparer = mediaPreparer ?? LocalChatMediaPreparer()
+        self.audioVideo = audioVideo
+        self.mediaMeta = mediaMeta ?? ServerMediaMetaStore(database: stores.database, now: now)
         self.now = now
         self.log = log
     }
@@ -119,7 +131,8 @@ public final class ServerChatGateway {
             for message in sorted {
                 let existing = (try? stores.messages.byId(message.id)) ?? nil
                 var record = ServerSyncMapping.message(
-                    from: message, existing: existing, personaId: personaId, now: at
+                    from: message, existing: existing, personaId: personaId, now: at,
+                    mediaMeta: mediaMeta
                 )
                 record.sessionId = localSessionId
                 try stores.messages.upsert(record)
@@ -251,25 +264,45 @@ public final class ServerChatGateway {
         guard let session = (try? stores.sessions.byId(sessionId)) ?? nil else {
             return .rejected(ApiException(statusCode: nil, message: String(localized: "会话不存在")))
         }
-        guard attachments.count <= AttachmentsCodec.maxImagesPerMessage else {
-            return .rejected(ApiException(statusCode: nil, message: "一条消息最多带 \(AttachmentsCodec.maxImagesPerMessage) 张图"))
+        // 0.13：一条消息最多 4 张图 + 1 段语音/1 段视频；其它类型直接拒绝（别发一个注定失败的请求）。
+        let images = attachments.filter { $0.isImage }
+        let playable = attachments.filter { $0.isPlayableMedia }
+        let unknown = attachments.filter { !$0.isImage && !$0.isPlayableMedia }
+        guard unknown.isEmpty else {
+            return .rejected(ApiException(
+                statusCode: nil,
+                message: String(localized: "这个附件发不出去")
+            ))
+        }
+        guard images.count <= AttachmentsCodec.maxImagesPerMessage else {
+            return .rejected(ApiException(
+                statusCode: nil,
+                message: "一条消息最多带 \(AttachmentsCodec.maxImagesPerMessage) 张图"
+            ))
+        }
+        guard playable.count <= AttachmentsCodec.maxAudioPerMessage + AttachmentsCodec.maxVideoPerMessage else {
+            return .rejected(ApiException(
+                statusCode: nil,
+                message: String(localized: "一次只能发一段语音或一段视频")
+            ))
         }
         if attachments.isEmpty {
             return start(session: session, content: content, mediaIds: [])
         }
-        guard let uploader = mediaUploader else {
-            return .rejected(ApiException(
-                statusCode: nil,
-                message: String(localized: "服务端模式还不能发图片")
-            ))
-        }
 
-        // 逐张：准备（压缩）→ 上传。顺序固定，测试用假实现断言「上传的字节已经是压缩产物」。
         var mediaIds: [String] = []
-        for attachment in attachments {
+        // 1) 图片：准备（压缩）→ 上传。顺序固定，测试用假实现断言「上传的字节已经是压缩产物」。
+        for attachment in images {
             if let existingId = ServerMediaReference.mediaId(from: attachment.uri) {
+                mediaMeta.record(attachment, mediaId: existingId)
                 mediaIds.append(existingId)
                 continue
+            }
+            guard let uploader = mediaUploader else {
+                return .rejected(ApiException(
+                    statusCode: nil,
+                    message: String(localized: "服务端模式还不能发图片")
+                ))
             }
             guard let prepared = mediaPreparer.prepare(attachment: attachment, kind: kind),
                   !prepared.bytes.isEmpty else {
@@ -285,10 +318,75 @@ public final class ServerChatGateway {
                     kind: ServerMediaKind(mediaKind: kind).rawValue,
                     personaId: session.personaId
                 )
+                mediaMeta.record(attachment, mediaId: media.id)
                 mediaIds.append(media.id)
             } catch {
                 // 上传失败：不入队、不发文字 —— 用户看到的应该是一句「为什么没发出去」。
                 log("图片上传失败：\(ServerSyncService.describe(error))")
+                return .rejected(error)
+            }
+        }
+
+        // 2) 语音/视频：**不转码**，原样上传（`/v1/media?kind=AUDIO|VIDEO`）。
+        //
+        // 本地校验全部在发请求之前做：一个 64 MB 的视频在慢网络上不该先传一分钟再被拒。
+        for attachment in playable {
+            guard let mediaKind = AudioVideoLimits.kind(of: attachment) else {
+                return .rejected(ApiException(statusCode: nil, message: String(localized: "这个附件发不出去")))
+            }
+            if let existingId = ServerMediaReference.mediaId(from: attachment.uri) {
+                mediaMeta.record(attachment, mediaId: existingId)
+                mediaIds.append(existingId)
+                continue
+            }
+            let mime = AudioVideoLimits.canonicalMime(attachment.mime)
+            guard mediaKind.allowedMimes.contains(mime) else {
+                return .rejected(ApiException(
+                    statusCode: nil,
+                    message: String(format: String(localized: "这种%@格式还不支持（%@）"), mediaKind.displayName, mime)
+                ))
+            }
+            // 先按**文件大小**判一次，再把字节读进内存（0.13 第二阶段）：
+            // 一段 200 MB 的视频读进内存只为发现「超限」，在真机上足够把 App 撑崩；
+            // 而且 `audioVideo.data(for:)` 自己也会对超限文件返回 nil，那时用户看到的
+            // 只会是一句含糊的「读不出来」，而不是「视频超过 64 MB」。
+            if let rejection = AudioVideoLimits.rejection(
+                durationMs: attachment.durationMs,
+                bytes: audioVideo.byteCount(for: attachment),
+                kind: mediaKind
+            ) {
+                return .rejected(ApiException(statusCode: nil, message: rejection))
+            }
+            guard let data = audioVideo.data(for: attachment), !data.isEmpty else {
+                return .rejected(ApiException(
+                    statusCode: nil,
+                    message: String(format: String(localized: "这段%@读不出来，重新录/选一次试试"), mediaKind.displayName)
+                ))
+            }
+            // 再按真实字节数复核一次（文件可能在上面两行之间被替换过）。
+            if let rejection = AudioVideoLimits.rejection(
+                durationMs: attachment.durationMs, bytes: data.count, kind: mediaKind
+            ) {
+                return .rejected(ApiException(statusCode: nil, message: rejection))
+            }
+            guard let uploader = mediaFileUploader else {
+                return .rejected(ApiException(
+                    statusCode: nil,
+                    message: String(localized: "服务端模式还不能发语音/视频")
+                ))
+            }
+            do {
+                let media = try await uploader.uploadMediaFile(
+                    bytes: data,
+                    mime: mime,
+                    kind: mediaKind.kindValue,
+                    personaId: session.personaId
+                )
+                // 服务端只存 id；回到客户端时靠这一行元信息认出「这是一段语音」。
+                mediaMeta.record(attachment, mediaId: media.id)
+                mediaIds.append(media.id)
+            } catch {
+                log("语音/视频上传失败：\(ServerSyncService.describe(error))")
                 return .rejected(error)
             }
         }
@@ -458,6 +556,13 @@ public final class ServerChatGateway {
             )
             return finished ? .toolFinished(item) : .toolStarted(item)
         case .done(let assistantMessageId, let usage):
+            // 0.13：`silent: true` 的那一轮没有 assistant 消息（服务端只标已读）。
+            // 出队并给界面一个「他这回没说话」的事件，而不是让用户看到一个空气泡。
+            if assistantMessageId.isEmpty {
+                try? outbox.remove(clientMessageId: entry.clientMessageId)
+                log("这一轮他选择了不说话（已读，无气泡）")
+                return .noReply(.stayedSilent)
+            }
             guard let message = try finishAssistantMessage(
                 entry: entry,
                 assistantMessageId: assistantMessageId,
@@ -492,7 +597,9 @@ public final class ServerChatGateway {
             updatedAt: entry.createdAt,
             status: .error,
             errorMessage: String(localized: "还没发出去，联网后会自动补发"),
-            attachmentsJson: ServerSyncMapping.attachmentsJson(from: entry.attachments)
+            attachmentsJson: ServerSyncMapping.attachmentsJson(
+                from: entry.attachments, mediaMeta: mediaMeta
+            )
         )
         try stores.messages.upsert(message)
         if var session {
@@ -521,7 +628,9 @@ public final class ServerChatGateway {
                 createdAt: createdAt > 0 ? createdAt : entry.createdAt,
                 updatedAt: createdAt > 0 ? createdAt : entry.createdAt,
                 status: .complete,
-                attachmentsJson: ServerSyncMapping.attachmentsJson(from: entry.attachments)
+                attachmentsJson: ServerSyncMapping.attachmentsJson(
+                from: entry.attachments, mediaMeta: mediaMeta
+            )
             )
             try stores.messages.upsert(message)
         }

@@ -16,6 +16,9 @@ class TestServerLocalStore : ServerLocalStore {
     val pending = mutableListOf<PendingServerMessage>()
     val doneBootstraps = mutableSetOf<String>()
 
+    /** 0.13：`server_sync_consent:<baseUrl>` 的内存版（按归一化地址分键）。 */
+    val consents = mutableMapOf<String, ServerSyncConsent>()
+
     private val serverToLocalSession = mutableMapOf<String, String>()
     private val localToServerSession = mutableMapOf<String, String>()
     private val serverToLocalPersona = mutableMapOf<String, String>()
@@ -95,6 +98,14 @@ class TestServerLocalStore : ServerLocalStore {
     override suspend fun markBootstrapDone(baseUrl: String) {
         val key = baseUrl.trim().trimEnd('/')
         if (key.isNotEmpty()) doneBootstraps += key
+    }
+
+    override suspend fun syncConsent(baseUrl: String): ServerSyncConsent? =
+        consents[baseUrl.trim().trimEnd('/')]
+
+    override suspend fun setSyncConsent(baseUrl: String, consent: ServerSyncConsent) {
+        val key = baseUrl.trim().trimEnd('/')
+        if (key.isNotEmpty()) consents[key] = consent
     }
 
     override suspend fun resetForNewServer() {

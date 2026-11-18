@@ -93,11 +93,20 @@ class ProactiveEngineTest {
         assertEquals("想问 小雨：现在忙吗（$afternoon）", decision.pending?.text)
     }
 
+    /**
+     * 0.13 的行为变更：正文生成失败（LLM 失败/无配置 → 空串）时**不回落到固定文案**。
+     *
+     * 以前这里会退回 `ProactiveTextSource.DEFAULT`（「忽然想起你…」），让链路"看起来成功"；
+     * 现在主动消息的真实感全部来自内容，发模板话比不发更伤人设，所以这一拍记为
+     * `generation_failed`：不落库、不发事件，下一拍再试。
+     */
     @Test
-    fun `blank text falls back to the default line instead of an empty message`() {
+    fun `blank generation marks generation_failed instead of falling back to a fixed line`() {
         val texts = ProactiveTextSource { _, _ -> "   " }
         val decision = engineAt(afternoon, roll = 0.0, texts = texts).evaluate(persona(), LevelPolicy(), afternoon)
-        assertTrue(decision.pending?.text?.isNotBlank() == true)
+        assertEquals(ProactiveReason.GENERATION_FAILED, decision.reason)
+        assertEquals(false, decision.shouldFire)
+        assertNull(decision.pending)
     }
 
     // ------------------------------------------------------------------ 睡眠与免打扰

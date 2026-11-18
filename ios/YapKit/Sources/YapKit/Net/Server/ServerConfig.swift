@@ -67,6 +67,38 @@ public struct ServerConfig: Equatable, Sendable, CustomStringConvertible, Custom
     /// 能不能真的发请求：开关打开且地址有效。
     public var isUsable: Bool { enabled && baseURL != nil }
 
+    /// 这台服务端是不是就跑在本机上（`127.0.0.0/8`、`::1`、`localhost`）。
+    ///
+    /// 用途只有一个：**本机部署才允许客户端把模型配置推上去**（`POST /v1/llm-config`）。
+    /// 远程服务器必须由部署者自己配 Key —— 让任何客户端把 Key 推到公网服务上，
+    /// 等于把「谁付账、走哪家模型」交给不可信的第三方。服务端那边也按监听地址再挡一次
+    /// （`AgentdServices.allowClientLlmConfig`），两边都不靠对方的判断。
+    ///
+    /// 只认能**静态判定**的回环写法：不解析 DNS（`my-mac.local` 解析到哪台机器，
+    /// 客户端在发请求前无法验证），也不认局域网地址（192.168/10/172.16 不是本机）。
+    public var isLoopback: Bool {
+        guard let host = baseURL?.host else { return false }
+        return Self.isLoopbackHost(host)
+    }
+
+    static func isLoopbackHost(_ host: String) -> Bool {
+        var value = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if value.hasPrefix("["), value.hasSuffix("]") {
+            value = String(value.dropFirst().dropLast())
+        }
+        if let percent = value.firstIndex(of: "%") { value = String(value[..<percent]) }
+        if value == "localhost" || value.hasSuffix(".localhost") { return true }
+        if value == "::1" || value == "0:0:0:0:0:0:0:1" { return true }
+        // IPv4 回环：整个 127/8。
+        let parts = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4,
+              let first = Int(parts[0]),
+              parts.allSatisfy({ Int($0).map { (0...255).contains($0) } ?? false }) else {
+            return false
+        }
+        return first == 127
+    }
+
     /// 有没有配置 Token（不暴露 Token 本身）。
     public var hasToken: Bool { token != nil }
 
@@ -208,7 +240,7 @@ public extension ServerConfig {
     /// - `https`：任意主机都允许；
     /// - `http`：必须同时满足「当前构建允许明文」（DEBUG）与「主机是本机/局域网」；
     /// - 其他协议、带账号密码、带 query/fragment 的地址一律拒绝。
-    static func validatedURL(
+    public static func validatedURL(
         _ raw: String,
         buildAllowsInsecureHTTP: Bool = buildAllowsInsecureHTTP
     ) throws -> URL {
@@ -241,6 +273,20 @@ public extension ServerConfig {
             }
         }
         return normalizedBaseURL(url)
+    }
+
+    /// 把用户输入的地址规范成「同一台服务端只有一种写法」。
+    ///
+    /// 用途：`server_sync_consent:<url>` 这类**按地址做键**的簿记。
+    /// 不合法（空 / 协议不对 / Release 里的明文 http / 带账号密码）→ nil：
+    /// 这类地址本身就不该被保存，更不该被记住「用户同意过」。
+    public static func normalizedBaseURLText(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty,
+              let url = try? validatedURL(trimmed) else {
+            return nil
+        }
+        return normalizedBaseURL(url).absoluteString
     }
 
     /// 这个主机是不是「本机 / 局域网」。

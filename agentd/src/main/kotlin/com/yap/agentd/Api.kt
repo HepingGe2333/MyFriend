@@ -29,7 +29,7 @@ import com.yap.app.domain.SleepInput
 object AgentdApi {
 
     const val SERVICE = "yap-agentd"
-    const val VERSION = "0.12.1"
+    const val VERSION = "0.13.0"
 
     /**
      * JSON 路由的请求体字节上限（HTTP 层与 handler 层共用这一份）。

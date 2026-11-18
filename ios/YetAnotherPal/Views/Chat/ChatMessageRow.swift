@@ -49,6 +49,8 @@ struct ChatBubbleRow: View {
     let onOpenLink: (String) -> Void
     /// 点开第几张图（附件数组 + 下标）。
     let onOpenImage: ([MessageAttachment], Int) -> Void
+    /// 长按「添加到我的表情」（0.13 表情包）。
+    let onAddSticker: () -> Void
     let onCopy: () -> Void
     let onRegenerate: () -> Void
     let onDelete: () -> Void
@@ -63,6 +65,18 @@ struct ChatBubbleRow: View {
     private var traces: [ToolTraceItem] { ToolTraceCodec.decode(message.toolTraceJson) }
     private var shape: ChatBubbleShape { ChatBubbleShape.of(bubbleStyle, outgoing: outgoing) }
     private var attachments: [MessageAttachment] { AttachmentsCodec.decode(message.attachmentsJson) }
+    /// 图片附件（0.13 起 `attachments` 还可能带语音/视频）。
+    private var imageAttachments: [MessageAttachment] { attachments.filter { $0.isImage } }
+    /// 语音/视频附件：一条消息最多各一段（`AttachmentsCodec.maxAudioPerMessage`）。
+    private var playableAttachments: [MessageAttachment] { attachments.filter { $0.isPlayableMedia } }
+    /// 这条消息是不是「纯表情」：只有表情附件、没有正文（0.13）。纯表情不套气泡底，
+    /// 直接贴在聊天里（240 px），与微信/QQ 的观感一致。
+    private var isStickerOnly: Bool {
+        !attachments.isEmpty && attachments.allSatisfy { $0.isSticker } && message.content.isEmpty
+    }
+    private var hasStickerAttachment: Bool {
+        attachments.contains { $0.isSticker }
+    }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
@@ -80,11 +94,11 @@ struct ChatBubbleRow: View {
 
     private var bubble: some View {
         bubbleContent
-            .padding(.horizontal, padH)
-            .padding(.vertical, padV)
-            .background(fill)
+            .padding(.horizontal, isStickerOnly ? 0 : padH)
+            .padding(.vertical, isStickerOnly ? 0 : padV)
+            .background(isStickerOnly ? Color.clear : fill)
             .clipShape(shape)
-            .overlay(shape.strokeBorder(borderColor, lineWidth: borderWidth))
+            .overlay(shape.strokeBorder(isStickerOnly ? Color.clear : borderColor, lineWidth: borderWidth))
             .contextMenu { menu }
     }
 
@@ -92,9 +106,21 @@ struct ChatBubbleRow: View {
     /// 一条链上写太多修饰符时，类型检查器会在整段表达式上放弃（报 failed to produce diagnostic）。
     private var bubbleContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if !attachments.isEmpty {
-                ChatAttachmentsView(attachments: attachments) { index in
-                    onOpenImage(attachments, index)
+            if isStickerOnly, let sticker = attachments.first {
+                StickerBubbleView(attachment: sticker)
+                    .padding(.bottom, 2)
+            } else if !attachments.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    if !playableAttachments.isEmpty {
+                        ForEach(Array(playableAttachments.enumerated()), id: \.offset) { _, attachment in
+                            ChatPlayableMediaView(attachment: attachment)
+                        }
+                    }
+                    if !imageAttachments.isEmpty {
+                        ChatAttachmentsView(attachments: imageAttachments) { index in
+                            onOpenImage(imageAttachments, index)
+                        }
+                    }
                 }
                 .padding(.bottom, message.content.isEmpty ? 0 : 6)
             }
@@ -258,6 +284,11 @@ struct ChatBubbleRow: View {
         if !message.content.isEmpty {
             Button(action: onCopy) {
                 Label(L("复制"), systemImage: "doc.on.doc")
+            }
+        }
+        if hasStickerAttachment {
+            Button(action: onAddSticker) {
+                Label(L("添加到我的表情"), systemImage: "face.smiling")
             }
         }
         if isLatestAssistant {

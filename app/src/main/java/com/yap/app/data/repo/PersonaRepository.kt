@@ -21,6 +21,7 @@ import com.yap.app.domain.PersonaRevisionReason
 import com.yap.app.domain.ProactiveLevel
 import com.yap.app.domain.SleepPolicy
 import com.yap.app.domain.PersonaDraft
+import com.yap.app.domain.PersonaDraftDefaults
 import com.yap.app.network.NetworkGuard
 import com.yap.app.network.userError
 import com.yap.app.util.MediaStorage
@@ -86,18 +87,27 @@ class PersonaRepository @Inject constructor(
     suspend fun getAll(): List<PersonaEntity> = personaDao.getAll()
 
     suspend fun save(draft: PersonaDraft): Result<String> = runCatching {
-        val name = draft.name.trim()
-        if (name.isBlank()) userError(DomainErrorCode.PERSONA_NAME_REQUIRED)
+        // 0.13：名字/提示词可以留空。编辑页、预设生成人格、导入、复制都会走到这里，
+        // 兜底必须放在仓储层，否则「编辑页能存、复制出来却启动不了」这类不一致还会出现。
+        val name = PersonaDraftDefaults.name(draft.name, appContext.getString(R.string.draft_default_name))
+        val prompt = PersonaDraftDefaults.prompt(
+            rawPrompt = draft.prompt,
+            name = draft.name,
+            description = draft.description,
+            separator = appContext.getString(R.string.draft_default_prompt_separator),
+            fallback = appContext.getString(R.string.draft_default_prompt)
+        )
+        // 长度上限保留：默认值不该成为绕过限制的后门。
         if (name.length > 80) userError(DomainErrorCode.PERSONA_NAME_TOO_LONG)
         if (draft.description.length > 600) userError(DomainErrorCode.PERSONA_DESCRIPTION_TOO_LONG)
-        if (draft.prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PERSONA_PROMPT_TOO_LONG)
+        if (prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PERSONA_PROMPT_TOO_LONG)
         val category = draft.category.trim().ifBlank { "未分类" }.take(30)
         val now = System.currentTimeMillis()
         val existing = draft.id?.let { personaDao.getById(it) }
         val id = existing?.id ?: UUID.randomUUID().toString()
         // 只有提示词变化才代表人格进入新版本；改名字、换头像、换默认 API 不应产生新版本，
         // 否则版本历史会被空版本污染，原生会话也会被无谓地标记为需要重新同步。
-        val promptChanged = existing != null && existing.prompt != draft.prompt
+        val promptChanged = existing != null && existing.prompt != prompt
         val version = when {
             existing == null -> 1
             promptChanged -> existing.version + 1
@@ -111,7 +121,7 @@ class PersonaRepository @Inject constructor(
             description = draft.description.trim(),
             avatarUri = draft.avatarUri,
             avatarSeed = draft.avatarSeed,
-            prompt = draft.prompt,
+            prompt = prompt,
             category = category,
             version = version,
             defaultApiConfigId = draft.defaultApiConfigId,
@@ -125,7 +135,7 @@ class PersonaRepository @Inject constructor(
             description = draft.description.trim(),
             avatarUri = draft.avatarUri,
             avatarSeed = draft.avatarSeed,
-            prompt = draft.prompt,
+            prompt = prompt,
             category = category,
             version = version,
             defaultApiConfigId = draft.defaultApiConfigId,

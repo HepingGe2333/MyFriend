@@ -26,12 +26,27 @@ public struct WireMessage: Equatable, Sendable {
     public var content: String
     /// 已经编码好的 data URL（base64）。非空时以多模态 content 数组发送。
     public var images: [String]
+    /// 音频片段（0.13 语音输入 / `listen` 工具）。非空时以 `input_audio` part 发送。
+    ///
+    /// 为什么放在 `WireMessage` 上而不是单独一条消息：OpenAI 兼容协议的
+    /// `content[]` 里音频就是**同一条消息**的一个 part，拆成两条消息模型会以为
+    /// 对方发了两句。
+    public var audio: [WireAudioPart]
 
-    public init(role: String, content: String, images: [String] = []) {
+    public init(
+        role: String,
+        content: String,
+        images: [String] = [],
+        audio: [WireAudioPart] = []
+    ) {
         self.role = role
         self.content = content
         self.images = images
+        self.audio = audio
     }
+
+    /// 这条消息需不需要以多模态数组发送。
+    public var isMultimodal: Bool { !images.isEmpty || !audio.isEmpty }
 }
 
 /// 推理参数。nil 表示「不发给服务端」，让它用默认值。
@@ -59,14 +74,12 @@ public struct InferenceParams: Equatable, Sendable {
 
 public extension ApiConfigEntity {
     /// 配置里的推理参数（Android 是 `ApiConfigEntity.inferenceParams()`）。
+    ///
+    /// 0.13 起它把 `spec/api-defaults/README.md` 的默认参数补进来：
+    /// temperature 0.75 / top_p 1.0 / max_tokens 16384 / 惩罚 0；配置里显式填了的以配置为准。
+    /// 聊天与工具回路都调它，所以两端看到的默认值只在这里定义一次。
     func inferenceParams() -> InferenceParams {
-        InferenceParams(
-            temperature: temperature,
-            topP: topP,
-            maxOutputTokens: maxOutputTokens,
-            frequencyPenalty: frequencyPenalty,
-            presencePenalty: presencePenalty
-        )
+        effectiveInferenceParams()
     }
 }
 
@@ -664,17 +677,12 @@ public final class OpenAICompatibleClient: ChatCompleting {
         payload["model"] = model
         payload["messages"] = messages.map { message -> [String: Any] in
             var entry: [String: Any] = ["role": message.role]
-            if message.images.isEmpty {
+            if !message.isMultimodal {
                 entry["content"] = message.content
             } else {
-                var parts: [[String: Any]] = []
-                if !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    parts.append(["type": "text", "text": message.content])
-                }
-                for dataUrl in message.images {
-                    parts.append(["type": "image_url", "image_url": ["url": dataUrl]])
-                }
-                entry["content"] = parts
+                entry["content"] = MultimodalPayload.contentParts(
+                    text: message.content, images: message.images, audio: message.audio
+                )
             }
             return entry
         }

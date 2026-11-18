@@ -606,7 +606,10 @@ fun SettingsScreen(
                     onSave = viewModel::saveServerConnection,
                     onSetEnabled = viewModel::setServerEnabled,
                     onTest = viewModel::testServerConnection,
-                    onClearToken = viewModel::clearServerToken
+                    onClearToken = viewModel::clearServerToken,
+                    onConsent = viewModel::chooseServerSyncConsent,
+                    onDismissConsent = viewModel::dismissServerSyncConsent,
+                    onCancelSync = viewModel::cancelServerSync
                 )
 
                 BackupSection(

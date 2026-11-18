@@ -80,7 +80,8 @@ final class PromptBuilderTests: XCTestCase {
 
     /// 空的可选段（没记忆、没摘要、没状态、没引导）不能留下多余的空行或标题。
     ///
-    /// 唯一**永远存在**的可选段是「边界」：它是规范 §1.1 的硬约束，不能因为字段都没填就消失。
+    /// 永远存在的两段是「边界」（规范 §1.1 的硬约束）与「别像个 AI」（规范 §5 的反 AI 味约束）：
+    /// 它们不因为字段都没填就消失。
     func testEmptyOptionalSegmentsAddNothing() {
         let text = PromptBuilder.systemPrompt(SystemPromptInput(
             personaText: "人格", memoriesBlock: "", earlierMemoryBlock: "",
@@ -90,17 +91,19 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(
             text,
             "# 你是谁\n" + PromptBuilder.firstPersonRule(name: "") + "\n\n人格"
-                + "\n\n---\nP\n\nT\n\n" + PromptBuilder.defaultBoundary
+                + "\n\n---\nP\n\nT\n\n" + AntiAIPrompt.text()
+                + "\n\n" + PromptBuilder.defaultBoundary
         )
         XCTAssertFalse(text.contains("## 你此刻的状态"))
-        XCTAssertFalse(text.contains("## 你现在的心情"))
+        XCTAssertFalse(text.contains(MoodPrompt.sectionTitle))
     }
 
     /// 默认输入里就带主动唤醒与工具能力（这两段不能忘）。
     func testDefaultInputIncludesCapabilityBlocks() {
         let text = PromptBuilder.systemPrompt(SystemPromptInput(personaText: "人格"))
         XCTAssertTrue(text.contains("## 你可以主动联系对方"))
-        XCTAssertTrue(text.contains("## 你可以调用这些工具"))
+        // 0.13：工具那一段的标题改成「# 你能做什么」，内容由 `ToolCatalog` 生成。
+        XCTAssertTrue(text.contains(ToolCatalog.capabilitySection))
         XCTAssertTrue(text.contains("```yap-tool"))
         XCTAssertTrue(text.contains("```yap-wake"))
     }
@@ -236,10 +239,13 @@ final class PromptBuilderTests: XCTestCase {
             personaText: String(repeating: "人", count: 300)
         ))
         XCTAssertGreaterThan(base.count, 1_000, "能力说明 + 输出格式这一段不能丢")
-        XCTAssertLessThan(base.count, 4_000)
+        // 0.13 多了「别像个 AI」六条（约 300 字）：上限相应放宽，但仍然要短。
+        XCTAssertLessThan(base.count, 4_600)
         // 两段能力说明各自都有量级在 600~900 字。
         XCTAssertGreaterThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 300)
-        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 1_500)
+        // 0.13 加了 diary / stay_silent 和每个工具的副作用句，上限相应放宽
+        //（仍然要短，不能占满上下文）。
+        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 3_000)
         XCTAssertGreaterThan(ProactiveCapabilityPrompt.text.count, 300)
         XCTAssertLessThan(ProactiveCapabilityPrompt.text.count, 1_500)
     }

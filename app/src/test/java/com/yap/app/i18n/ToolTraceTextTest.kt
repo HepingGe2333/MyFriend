@@ -39,6 +39,20 @@ class ToolTraceTextTest {
         ToolTraceTitle.SET_MOOD to ("心情变了" to "Mood changed"),
         ToolTraceTitle.RECALL to ("回想了一下" to "Recalled"),
         ToolTraceTitle.DEFER_REPLY to ("决定先不回" to "Decided not to reply yet"),
+        // 0.13：已读不回（spec/mood §4）。它和 defer 是两件事：一个过会儿再回，一个这轮不回。
+        ToolTraceTitle.STAY_SILENT to ("只读不回" to "Read, no reply"),
+        ToolTraceTitle.DIARY to ("日记" to "Diary"),
+        ToolTraceTitle.DIARY_ADD to ("写日记" to "Wrote a note"),
+        ToolTraceTitle.DIARY_LIST to ("翻日记" to "Flipped through the diary"),
+        ToolTraceTitle.DIARY_REMOVE to ("撕掉一页" to "Tore out a page"),
+        // 0.13：表情包（spec/stickers）。send/make/save 三句分开，兜底那一条只写「表情」。
+        ToolTraceTitle.STICKER to ("表情" to "Sticker"),
+        ToolTraceTitle.STICKER_SEND to ("发了一张表情" to "Sent a sticker"),
+        ToolTraceTitle.STICKER_MAKE to ("做了一张表情" to "Made a sticker"),
+        ToolTraceTitle.STICKER_SAVE to ("收藏了一张表情" to "Saved a sticker"),
+        // 0.13：语音/视频（spec/audio-video）。工具名就叫 listen / watch，标题写成「听语音/看视频」。
+        ToolTraceTitle.LISTEN to ("听语音" to "Listened"),
+        ToolTraceTitle.WATCH to ("看视频" to "Watched"),
         ToolTraceTitle.UNKNOWN to ("动作" to "Action")
     )
 

@@ -64,6 +64,37 @@ public final class ServerSyncStateStore {
         public static func memoryIdMap(_ localMemoryId: String) -> String {
             "server.idmap.memory.\(localMemoryId)"
         }
+
+        // ---- 0.13：切换云端时的同步同意 + 历史媒体上传去重 ----
+
+        /// 「切换云端时的同步同意」的键名前缀（规范 `spec/sync-consent/README.md` §5）。
+        public static let syncConsentPrefix = "server_sync_consent:"
+        /// 某台服务端的同意状态（`FULL` / `NEW_ONLY`）。**按 baseURL 分开**：换服务端要重新问。
+        public static func syncConsent(_ baseURL: String) -> String {
+            syncConsentPrefix + baseURL
+        }
+        /// 上传过的媒体内容：`sha256 → /v1/media/<id>`，**按 baseURL 分开**。
+        ///
+        /// 为什么用它而不是「本地文件路径」：重试时文件可能已经被压过一遍（字节不变），
+        /// 也可能同一张图被多条消息引用；按内容哈希去重才是「不重复上传」的准确判据。
+        /// 服务端自己也是按 sha256 去重的（同内容 200 复用），这里只是省掉一次网络往返。
+        ///
+        /// 为什么必须带 baseURL：媒体 id 是**那台服务端**生成的。换一台服务端之后
+        /// 复用旧映射会把消息附件改写成新服务端上不存在的 `/v1/media/<id>`
+        ///（import 会 `unknown_media`，界面上是坏图）。
+        public static func mediaSha256(_ baseURL: String, _ sha256: String) -> String {
+            "server.media.sha256.\(baseURL)#\(sha256.lowercased())"
+        }
+
+        /// 服务端媒体 id → 附件元信息（kind / mime / 时长 / 宽高）。
+        ///
+        /// 为什么需要它：服务端消息只下发 `["/v1/media/<id>"]`（没有 kind/mime），
+        /// 而 0.13 的语音/视频气泡**必须**知道自己是不是语音——没有这一行，
+        /// 一段语音同步回来就变成了「坏图」。元信息在**上传那一刻**是本机已知的，
+        /// 记在这里（`server_sync_state`，纯文本，不新增表）。
+        public static func mediaMeta(_ mediaId: String) -> String {
+            "server.media.meta.\(mediaId)"
+        }
     }
 
     private let database: SQLiteDatabase

@@ -38,7 +38,7 @@ enum class ServerBackupMode(val wire: String) {
 class ServerWriteGateway @Inject constructor(
     private val mode: ServerApiProvider,
     private val localStore: ServerLocalStore
-) {
+) : ServerPersonaIdMapper {
 
     /** 现在是不是服务端模式（仓储层据此决定走权威写还是本地写）。 */
     fun isEnabled(): Boolean = mode.isEnabled()
@@ -49,7 +49,7 @@ class ServerWriteGateway @Inject constructor(
      * bootstrap 推送过的本地人格保留客户端 UUID，服务端是它分配的 id；写路径不换这个 id
      * 就会 404（服务端只认自己的 id）。没有映射时原样返回（本地/服务端 id 一致的情况）。
      */
-    suspend fun serverPersonaId(localPersonaId: String): String =
+    override suspend fun serverPersonaId(localPersonaId: String): String =
         localStore.serverPersonaId(localPersonaId) ?: localPersonaId
 
     /** 本地记忆 id → 服务端记忆 id（同上：bootstrap 推送后两者不同）。 */
@@ -183,8 +183,81 @@ class ServerWriteGateway @Inject constructor(
         warn("server settings push failed: ${error.javaClass.simpleName}")
     }
 
-    /** `GET /v1/backup`：服务端当前的完整备份 JSON（原样，供 UI 写文件）。 */
-    suspend fun exportBackup(): Result<String> = runCatching {
+    // ------------------------------------------------------------------ 0.13：表情包 / 日记板
+
+    /**
+     * `POST /v1/stickers`：新建一个服务端表情，返回服务端分配 id 的整行。
+     *
+     * 与人格/记忆同一条纪律：**服务端成功了才算保存成功**。本地只在成功后写缓存行，
+     * 失败原样返回 failure（界面提示「表情没存下来」），绝不悄悄只写本机。
+     */
+    suspend fun createSticker(payload: JsonObject): Result<ServerStickerRow> = runCatching {
+        requireApi().createSticker(payload) ?: throw ServerApiException(
+            "server sticker response is missing the sticker object",
+            code = "invalid_response"
+        )
+    }.onFailure { error ->
+        warn("server createSticker failed: ${error.javaClass.simpleName}")
+    }
+
+    /**
+     * `POST /v1/media?kind=STICKER`：先把大表情的原始字节传到服务端，返回媒体 id。
+     *
+     * 为什么需要这条：`POST /v1/stickers` 的 inline base64 有 ~192 KiB 的原文件上限
+     *（服务端 JSON 单字符串硬上限 256 KiB），而表情本身可以到 512 KiB。
+     * 大图走「先传媒体、再 `{"mediaId":…}` 建行」，小图仍走一条请求。
+     */
+    suspend fun uploadStickerMedia(bytes: ByteArray, personaId: String?): Result<String> = runCatching {
+        val media = requireApi().uploadMedia(
+            bytes = bytes,
+            mime = "image/gif",
+            kind = ServerStickerUploader.KIND_STICKER,
+            personaId = personaId
+        )
+        ServerMediaRef.idOf(media.url)?.let { return@runCatching it }
+        media.id.takeIf { ServerMediaRef.isValidId(it) }
+            ?: throw ServerApiException("server returned a media entry without a usable id", code = "invalid_response")
+    }.onFailure { error ->
+        warn("server uploadStickerMedia failed: ${error.javaClass.simpleName}")
+    }
+
+    /** `DELETE /v1/stickers/{id}`；404 视为已经删掉（本机缓存也该跟着消失）。 */
+    suspend fun deleteSticker(stickerId: String): Result<Unit> = runCatching {
+        guardDelete { requireApi().deleteSticker(stickerId) }
+    }.onFailure { error ->
+        warn("server deleteSticker failed: ${error.javaClass.simpleName}")
+    }
+
+    /** `POST /v1/personas/{id}/diary`：新建（无 id）或更新（带 id），返回服务端那一行。 */
+    suspend fun saveDiary(personaId: String, payload: JsonObject): Result<ServerDiaryRow> = runCatching {
+        requireApi().saveDiary(serverPersonaId(personaId), payload) ?: throw ServerApiException(
+            "server diary response is missing the note object",
+            code = "invalid_response"
+        )
+    }.onFailure { error ->
+        warn("server saveDiary failed: ${error.javaClass.simpleName}")
+    }
+
+    /** `DELETE /v1/personas/{id}/diary/{noteId}`；404 视为已经删掉。 */
+    suspend fun deleteDiary(personaId: String, noteId: String): Result<Unit> = runCatching {
+        guardDelete { requireApi().deleteDiary(serverPersonaId(personaId), noteId) }
+    }.onFailure { error ->
+        warn("server deleteDiary failed: ${error.javaClass.simpleName}")
+    }
+
+    /** `GET /v1/stickers`：拉取服务端表情列表（缓存刷新用；失败返回 failure 由调用方静默跳过）。 */
+    suspend fun stickers(personaId: String? = null, limit: Int? = null): Result<List<ServerStickerRow>> =
+        runCatching { requireApi().stickers(personaId, limit) }
+            .onFailure { error -> warn("server stickers failed: ${error.javaClass.simpleName}") }
+
+    /** `GET /v1/personas/{id}/diary`：拉取一个服务端人格的日记行。 */
+    suspend fun diary(personaId: String, since: Long = 0L): Result<List<ServerDiaryRow>> = runCatching {
+        requireApi().diary(serverPersonaId(personaId), since = since)
+    }.onFailure { error ->
+        warn("server diary failed: ${error.javaClass.simpleName}")
+    }
+
+    /** `GET /v1/backup`：服务端当前的完整备份 JSON（原样，供 UI 写文件）。 */    suspend fun exportBackup(): Result<String> = runCatching {
         requireApi().exportBackup()
     }.onFailure { error ->
         warn("server backup export failed: ${error.javaClass.simpleName}")
@@ -204,6 +277,38 @@ class ServerWriteGateway @Inject constructor(
         }.onFailure { error ->
             warn("server backup import failed: ${error.javaClass.simpleName}")
         }
+
+    // ------------------------------------------------------------------ 0.13：人格进化（服务端端点）
+
+    /**
+     * `POST /v1/personas/{id}/evolution/evaluate`：服务端用自己的模型评估一次。
+     *
+     * 失败（503 没配模型、502 上游错）原样返回 failure：进化是显式动作，仓储层会把
+     * 「这一轮没评估成」静默吞掉，不影响聊天；但不会把失败伪装成「没有提议」。
+     */
+    suspend fun evaluateEvolution(personaId: String): Result<ServerEvolutionEvaluation> =
+        runCatching { requireApi().evaluateEvolution(serverPersonaId(personaId)) }
+            .onFailure { error -> warn("server evolution evaluate failed: ${error.javaClass.simpleName}") }
+
+    /** `GET /v1/personas/{id}/evolution/pending`：服务端待审列表（服务端顺手清过期）。 */
+    suspend fun pendingEvolution(personaId: String): Result<ServerEvolutionPending> =
+        runCatching { requireApi().pendingEvolution(serverPersonaId(personaId)) }
+            .onFailure { error -> warn("server evolution pending failed: ${error.javaClass.simpleName}") }
+
+    /** `POST .../{patchId}/accept`：服务端合并四字段 + `version + 1`，响应里带完整人格。 */
+    suspend fun acceptEvolution(personaId: String, patchId: String): Result<ServerEvolutionAcceptance> =
+        runCatching { requireApi().acceptEvolution(serverPersonaId(personaId), patchId) }
+            .onFailure { error -> warn("server evolution accept failed: ${error.javaClass.simpleName}") }
+
+    /**
+     * `POST .../{patchId}/reject`：只丢补丁。
+     *
+     * 404/410 在这里**不当作成功**：补丁不存在/过期时本地待审项也应该消失，但那是仓储层
+     * 依据错误 code 决定「清掉缓存并提示」还是「保留重试」的事，网关只如实上报。
+     */
+    suspend fun rejectEvolution(personaId: String, patchId: String): Result<ServerEvolutionRejection> =
+        runCatching { requireApi().rejectEvolution(serverPersonaId(personaId), patchId) }
+            .onFailure { error -> warn("server evolution reject failed: ${error.javaClass.simpleName}") }
 
     /** `POST /v1/media`：媒体上传（头像/聊天图共用）。 */
     suspend fun uploadMedia(

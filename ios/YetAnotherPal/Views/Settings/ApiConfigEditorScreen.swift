@@ -458,6 +458,9 @@ struct ApiConfigEditorScreen: View {
 
         do {
             try env.stores.apiConfigs.upsert(entity)
+            // 刚配好第一个 API 时，前台心跳可能还没起来（冷启动时它放弃了）。
+            // 这里顺手重新评估一次，幂等：主动消息不必等到下次切后台才工作。
+            env.refreshProactivePulse()
             let typedKey = apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines)
             if !typedKey.isEmpty {
                 try env.apiKeys.setAPIKey(typedKey, for: entity.id)

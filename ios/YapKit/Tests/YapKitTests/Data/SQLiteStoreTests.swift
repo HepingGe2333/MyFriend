@@ -2,7 +2,7 @@ import Foundation
 import XCTest
 @testable import YapKit
 
-/// 数据层：建库、13 张表、v8、每个实体写读一遍、按 persona 查询、事务回滚。
+/// 数据层：建库、16 张表、v8、每个实体写读一遍、按 persona 查询、事务回滚。
 ///
 /// 这里用真实的临时文件库（不是 `:memory:`）：WAL、`user_version`、关闭再打开这些行为
 /// 只有在文件库上才看得出差别 —— 而它们正是「App 重启后数据还在」的前提。
@@ -28,20 +28,24 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV14() throws {
-        XCTAssertEqual(Schema.version, 14,
-                       "v13 = 人设引导（personas.worldJson/speechStyleJson/activityJson + 预设两列）")
-        XCTAssertEqual(Schema.tables.count, 13, "13 张记录型表")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV17() throws {
+        XCTAssertEqual(Schema.version, 17,
+                       "v17 = 多维心情三列（spec/mood/README.md）")
+        XCTAssertEqual(Schema.tables.count, 16,
+                       "16 张记录型表（v15 的日记板/待确认变化 + v16 的 stickers）")
         XCTAssertEqual(Schema.supplementaryTables.count, 4, "四张服务层用表（两张 1.8 遗留 + 两张服务端模式）")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
-        XCTAssertEqual(Schema.allTables.count, 18, "13 + 4 + message_blocks")
+        XCTAssertEqual(Schema.allTables.count, 21, "16 + 4 + message_blocks")
 
         let names = try stores.database.tableNames()
         for table in Schema.allTables {
             XCTAssertTrue(names.contains(table), "缺表：\(table)")
         }
-        // 规范点名要有的那张表（块分页与迁移都依赖它）。
+        // 规范点名要有的表（块分页、日记板、人格进化的迁移都依赖它们）。
         XCTAssertTrue(names.contains("message_blocks"), "v11 必须建 message_blocks")
+        XCTAssertTrue(names.contains(Schema.diaryNotesTable), "v15 必须建 diary_notes")
+        XCTAssertTrue(names.contains(Schema.personaPendingPatchesTable), "v15 必须建 persona_pending_patches")
+        XCTAssertTrue(names.contains(Schema.stickersTable), "v16 必须建 stickers")
         XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
@@ -62,7 +66,10 @@ final class SQLiteStoreTests: XCTestCase {
             (PersonaPresetEntity.tableName, PersonaPresetEntity.columns),
             (ProactiveRuleEntity.tableName, ProactiveRuleEntity.columns),
             (AgentIntentEntity.tableName, AgentIntentEntity.columns),
-            (ApiUsageEntity.tableName, ApiUsageEntity.columns)
+            (ApiUsageEntity.tableName, ApiUsageEntity.columns),
+            (DiaryNoteEntity.tableName, DiaryNoteEntity.columns),
+            (PersonaPendingPatchEntity.tableName, PersonaPendingPatchEntity.columns),
+            (StickerEntity.tableName, StickerEntity.columns)
         ]
         XCTAssertEqual(Set(mappings.map(\.0)), Set(Schema.tables + Schema.derivedTables))
 
@@ -289,6 +296,72 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertEqual(try stores.apiUsage.since(1_650_000_000_000).map(\.id), ["u-2", "u-1"])
     }
 
+    // MARK: - v15：日记板与待确认的人格变化
+
+    /// 日记板：写读、按时间倒序、到点提醒、只提醒一次、跨人格隔离、硬删除。
+    func testDiaryNoteRoundTripReminderAndIsolation() throws {
+        let now: Int64 = 1_794_500_000_000
+        let notes = [
+            DiaryNoteEntity(id: "d-1", personaId: "persona-1", content: "明天问问他到家没",
+                            createdAt: now - 3000, remindAt: now - 1000, updatedAt: now - 3000),
+            DiaryNoteEntity(id: "d-2", personaId: "persona-1", content: "他提过想看那部电影",
+                            createdAt: now - 2000, updatedAt: now - 2000),
+            DiaryNoteEntity(id: "d-3", personaId: "persona-2", content: "别人格的便条",
+                            createdAt: now - 1000, remindAt: now - 500, updatedAt: now - 1000)
+        ]
+        for note in notes { try stores.diaryNotes.upsert(note) }
+
+        XCTAssertEqual(try stores.diaryNotes.byId("d-1"), notes[0])
+        // 按 createdAt 倒序；`limit` 夹在 1…50。
+        XCTAssertEqual(try stores.diaryNotes.byPersona("persona-1").map(\.id), ["d-2", "d-1"])
+        XCTAssertEqual(try stores.diaryNotes.byPersona("persona-1", limit: 1).map(\.id), ["d-2"])
+        XCTAssertEqual(try stores.diaryNotes.byPersona("persona-1", limit: 999).count, 2)
+        XCTAssertEqual(try stores.diaryNotes.count(personaId: "persona-1"), 2)
+
+        // 到点提醒：只属于这个人格，`remindedAt` 写一次之后不再出现。
+        XCTAssertEqual(try stores.diaryNotes.due(personaId: "persona-1", now: now).map(\.id), ["d-1"])
+        XCTAssertEqual(try stores.diaryNotes.due(now: now).map(\.id), ["d-1", "d-3"])
+        XCTAssertTrue(try stores.diaryNotes.markReminded(id: "d-1", at: now))
+        XCTAssertFalse(try stores.diaryNotes.markReminded(id: "d-1", at: now), "同一条只提醒一次")
+        XCTAssertTrue(try stores.diaryNotes.due(personaId: "persona-1", now: now).isEmpty)
+        XCTAssertEqual(try stores.diaryNotes.byId("d-1")?.remindedAt, now)
+
+        // 硬删除：删了就查不到，也不能跨人格删。
+        XCTAssertFalse(try stores.diaryNotes.remove(id: "d-2", personaId: "persona-2"),
+                       "不能删别人格的便条")
+        XCTAssertTrue(try stores.diaryNotes.remove(id: "d-2", personaId: "persona-1"))
+        XCTAssertNil(try stores.diaryNotes.byId("d-2"))
+        XCTAssertEqual(try stores.diaryNotes.count(personaId: "persona-1"), 1)
+    }
+
+    /// 待确认的人格变化：写读、去重、过期清理。
+    func testPersonaPendingPatchRoundTripDedupeAndExpiry() throws {
+        let now: Int64 = 1_794_500_000_000
+        let patch = PersonaPendingPatchEntity(
+            id: "p-1", personaId: "persona-1", sessionId: "session-1",
+            patchJson: #"[{"field":"traits","op":"add","value":"更耐心"}]"#,
+            summary: "性格多了「更耐心」", reason: "最近几次都在耐心听", createdAt: now
+        )
+        XCTAssertTrue(try stores.personaPendingPatches.insertIfNew(patch))
+        XCTAssertFalse(try stores.personaPendingPatches.insertIfNew(PersonaPendingPatchEntity(
+            id: "p-1-dup", personaId: "persona-1",
+            patchJson: patch.patchJson, summary: "换个说法", reason: "", createdAt: now + 1
+        )), "同一份 patch 不重复堆")
+        let old = PersonaPendingPatchEntity(
+            id: "p-old", personaId: "persona-1",
+            patchJson: #"[{"field":"likes","op":"remove","value":"夜里散步"}]"#,
+            summary: "喜欢的事少了「夜里散步」", reason: "", createdAt: now - PersonaEvolution.pendingTtlMillis - 1
+        )
+        try stores.personaPendingPatches.upsert(old)
+
+        XCTAssertEqual(try stores.personaPendingPatches.byPersona("persona-1").map(\.id), ["p-1", "p-old"])
+        XCTAssertEqual(try stores.personaPendingPatches.removeExpired(now: now), 1)
+        XCTAssertEqual(try stores.personaPendingPatches.byPersona("persona-1").map(\.id), ["p-1"])
+
+        try stores.personaPendingPatches.remove(id: "p-1")
+        XCTAssertEqual(try stores.personaPendingPatches.count(personaId: "persona-1"), 0)
+    }
+
     // MARK: - 事务与持久化
 
     func testTransactionRollsBackOnError() throws {
@@ -314,10 +387,25 @@ final class SQLiteStoreTests: XCTestCase {
     func testDataSurvivesClosingAndReopening() throws {
         let memory = makeMemory(id: "memory-persist", personaId: "persona-1")
         try stores.memories.upsert(memory)
+        // 0.13：日记板与待确认的人格变化也要「关掉再打开还在」（重启不丢）。
+        let note = DiaryNoteEntity(
+            id: "diary-persist", personaId: "persona-1", content: "重启之后还要在",
+            createdAt: 1_700_000_000_000, remindAt: 1_700_000_600_000,
+            updatedAt: 1_700_000_000_000
+        )
+        try stores.diaryNotes.upsert(note)
+        let patch = PersonaPendingPatchEntity(
+            id: "patch-persist", personaId: "persona-1",
+            patchJson: #"[{"field":"traits","op":"add","value":"更耐心"}]"#,
+            summary: "性格多了「更耐心」", reason: "最近很耐心", createdAt: 1_700_000_000_000
+        )
+        try stores.personaPendingPatches.upsert(patch)
         stores = nil // 触发 close()
 
         let reopened = try DatabaseStores.open(path: databaseURL.path)
         XCTAssertEqual(try reopened.memories.byId(memory.id), memory)
+        XCTAssertEqual(try reopened.diaryNotes.byId(note.id), note)
+        XCTAssertEqual(try reopened.personaPendingPatches.byId(patch.id), patch)
         XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         stores = reopened
     }

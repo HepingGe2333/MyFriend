@@ -9,8 +9,10 @@ import com.yap.app.ui.common.ErrorText
 import com.yap.app.ui.common.WorldEditorErrors
 import com.yap.app.R
 import com.yap.app.data.local.ApiConfigEntity
+import com.yap.app.data.local.PersonaEntity
 import com.yap.app.data.repo.ApiConfigRepository
 import com.yap.app.data.repo.PersonaCardRepository
+import com.yap.app.data.repo.PersonaEvolutionRepository
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PersonaTranslationCoordinator
 import com.yap.app.data.repo.PersonaTranslationOutcome
@@ -30,6 +32,8 @@ import com.yap.app.domain.SpeechStyleCodec
 import com.yap.app.domain.WorldEditorState
 import com.yap.app.domain.WorldPresetCodec
 import com.yap.app.domain.PersonaDraft
+import com.yap.app.domain.PersonaDraftDefaults
+import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaPromptLocalization
 import com.yap.app.domain.PersonaTranslationCodec
 import com.yap.app.domain.PersonaTranslationSource
@@ -37,6 +41,7 @@ import com.yap.app.domain.PersonaTrait
 import com.yap.app.util.MediaStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -110,6 +115,21 @@ data class PersonaForm(
     }
 }
 
+/**
+ * 「他最近的变化」里的一条：把 [PersonaEvolution.Change] 摊成界面能直接排版的结构。
+ *
+ * 文案（字段名、加减号、按钮）仍由界面取资源，这里只带数据。
+ * 同一条待审补丁最多含 3 条变化，所以 [patchId] 可能重复出现——
+ * 接受 / 拒绝的粒度是整条补丁，点其中任意一行都会把整条提议处理掉。
+ */
+data class PendingChangeUi(
+    val patchId: String,
+    val field: PersonaEvolution.Field,
+    val op: PersonaEvolution.Op,
+    val value: String,
+    val reason: String
+)
+
 data class PersonaEditorUiState(
     val personaId: String? = null,
     val form: PersonaForm = PersonaForm(),
@@ -132,7 +152,17 @@ data class PersonaEditorUiState(
     val translationLang: String? = null,
     /** 缓存是否仍然有效（语言与源字段哈希都对得上）。 */
     val translationFresh: Boolean = false,
-    val translating: Boolean = false
+    val translating: Boolean = false,
+    // ---- 0.13 人格进化：人设页「他最近的变化」（待审，用户点头才生效） ----------
+    /** 当前人格待审的进化变化，按补丁创建时间倒序；空列表时整块不显示。 */
+    val pendingChanges: List<PendingChangeUi> = emptyList(),
+    /** 正在接受 / 拒绝某一条：期间所有按钮禁用，避免连点打两次写库。 */
+    val pendingBusy: Boolean = false,
+    /**
+     * 当前是不是服务端模式（0.13）：只影响文案与「接受」实际走的写路径。
+     * 本地模式写本机；服务端模式先 `POST /v1/personas`，成功后再写本机缓存。
+     */
+    val serverMode: Boolean = false
 ) {
     val isDirty: Boolean get() = form != initialForm || card != initialCard
     val boundConfig: ApiConfigEntity? get() = configs.firstOrNull { it.id == form.defaultApiConfigId }
@@ -152,16 +182,33 @@ class PersonaEditorViewModel @Inject constructor(
     private val worldPresetExpander: WorldPresetExpander,
     private val translationCoordinator: PersonaTranslationCoordinator,
     apiConfigRepository: ApiConfigRepository,
-    @ApplicationContext private val context: Context
+    @ApplicationContext private val context: Context,
+    private val personaEvolutionRepository: PersonaEvolutionRepository
 ) : ViewModel() {
     private val personaId: String? = savedStateHandle.get<String>("personaId")?.takeIf { it.isNotBlank() }
-    private val _state = MutableStateFlow(PersonaEditorUiState(personaId = personaId, isNew = personaId == null))
+    private val _state = MutableStateFlow(
+        PersonaEditorUiState(
+            personaId = personaId,
+            isNew = personaId == null,
+            serverMode = personaEvolutionRepository.isServerMode()
+        )
+    )
     val state: StateFlow<PersonaEditorUiState> = _state.asStateFlow()
     private val events = Channel<PersonaEditorEvent>(Channel.BUFFERED)
     val eventFlow = events.receiveAsFlow()
 
+    /**
+     * 「他最近的变化」的订阅。
+     *
+     * 换人格 / 新建人格时要取消上一次的收集，否则旧人格的待审列表会继续往新页面里推。
+     * 本页的 ViewModel 目前一人格一个（personaId 来自导航参数），这里仍然按「可切换」写，
+     * 免得以后复用同一个 ViewModel 时残留。
+     */
+    private var pendingJob: Job? = null
+
     init {
         viewModelScope.launch {
+            observePending(personaId)
             if (personaId != null) {
                 val persona = personaRepository.getById(personaId)
                 savedAvatarUri = persona?.avatarUri
@@ -457,6 +504,135 @@ class PersonaEditorViewModel @Inject constructor(
         PersonaTranslationOutcome.MISSING -> R.string.persona_editor_persona_missing
     }
 
+    // ------------------------------------------------------------ 人格进化（0.13）
+
+    /**
+     * 订阅当前人格的待审进化补丁，摊平成界面能直接排版的行。
+     *
+     * 只订阅、不轮询：7 天过期由仓库在下一次评估时清掉，界面不用自己过滤。
+     * 新建人格（personaId == null）没有待审列表，直接保持空。
+     */
+    private fun observePending(personaId: String?) {
+        pendingJob?.cancel()
+        pendingJob = null
+        _state.update { it.copy(pendingChanges = emptyList()) }
+        if (personaId == null) return
+        pendingJob = viewModelScope.launch {
+            personaEvolutionRepository.observePending(personaId).collect { patches ->
+                val rows = patches.flatMap { patch ->
+                    personaEvolutionRepository.describe(patch).map { change ->
+                        PendingChangeUi(
+                            patchId = patch.id,
+                            field = change.field,
+                            op = change.op,
+                            value = change.value,
+                            reason = change.reason
+                        )
+                    }
+                }
+                _state.update { it.copy(pendingChanges = rows) }
+            }
+        }
+    }
+
+    /**
+     * 接受一条待审变化：写回人格，并把表单里的四个可进化字段对齐到最新人格。
+     *
+     * 取舍：**表单本身有未保存编辑时不覆盖 form**，只把 initialForm 的四个字段对齐新人格。
+     * form 里是用户正在敲的内容，被一次后台写回冲掉比「暂时看到旧值」更糟；
+     * 页面上会先提示已经写进人设，保存或重新进入后就能看到新值。
+     * 没有未保存编辑时 form 与 initialForm 一起刷新，页面立刻显示最新值。
+     * （人格卡 card 的编辑与这四项无关，不阻止 form 刷新。）
+     */
+    fun acceptPendingChange(patchId: String) {
+        if (patchId.isBlank() || _state.value.pendingBusy) return
+        _state.update { it.copy(pendingBusy = true) }
+        viewModelScope.launch {
+            val result = personaEvolutionRepository.accept(patchId)
+            val persona = result.getOrNull()
+            if (persona == null) {
+                _state.update { it.copy(pendingBusy = false) }
+                events.send(
+                    PersonaEditorEvent.Message(
+                        ErrorText.of(
+                            context,
+                            result.exceptionOrNull(),
+                            R.string.persona_evolution_accept_failed
+                        )
+                    )
+                )
+                return@launch
+            }
+            _state.update { state ->
+                val formDirty = state.form != state.initialForm
+                state.copy(
+                    pendingBusy = false,
+                    form = if (formDirty) state.form else state.form.withEvolution(persona),
+                    initialForm = state.initialForm.withEvolution(persona),
+                    // 仓库已经删掉这条补丁；先乐观移除，等 Room 的 Flow 推回权威列表。
+                    pendingChanges = state.pendingChanges.filterNot { it.patchId == patchId }
+                )
+            }
+            events.send(
+                PersonaEditorEvent.Message(
+                    context.getString(
+                        if (_state.value.serverMode) R.string.persona_evolution_accepted_server
+                        else R.string.persona_evolution_accepted
+                    )
+                )
+            )
+        }
+    }
+
+    /**
+     * 拒绝一条待审变化：只丢掉提议，人设一动不动。
+     *
+     * 服务端模式会先调服务端 `reject`：失败时**保留**这条待审并提示，不能在本机假装已经拒绝
+     * （否则下一次拉服务端待审列表它又回来了，用户会以为按钮没生效）。
+     */
+    fun rejectPendingChange(patchId: String) {
+        if (patchId.isBlank() || _state.value.pendingBusy) return
+        _state.update { it.copy(pendingBusy = true) }
+        viewModelScope.launch {
+            val result = personaEvolutionRepository.reject(patchId)
+            if (result.isFailure) {
+                _state.update { it.copy(pendingBusy = false) }
+                events.send(
+                    PersonaEditorEvent.Message(
+                        ErrorText.of(
+                            context,
+                            result.exceptionOrNull(),
+                            R.string.persona_evolution_reject_failed
+                        )
+                    )
+                )
+                return@launch
+            }
+            _state.update { state ->
+                state.copy(
+                    pendingBusy = false,
+                    pendingChanges = state.pendingChanges.filterNot { it.patchId == patchId }
+                )
+            }
+            events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_evolution_rejected)))
+        }
+    }
+
+    /**
+     * 人格实体 → 表单里的四个可进化字段（只动这四项，别的编辑一概不碰）。
+     *
+     * 列表用当前语言的分隔符回显，和初次加载时保持一致（[PersonaForm.joinList]）。
+     */
+    private fun PersonaForm.withEvolution(persona: PersonaEntity): PersonaForm {
+        val separator = context.getString(R.string.persona_editor_list_separator)
+        return copy(
+            traitsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.traits), separator),
+            likesText = PersonaForm.joinList(PersonaProfile.decodeList(persona.likes), separator),
+            behaviorsText = PersonaForm.joinList(PersonaProfile.decodeList(persona.behaviors), separator),
+            quirks = persona.quirks.orEmpty()
+        )
+    }
+
     private fun buildWorldJson(form: PersonaForm): String? {
         val world = form.world.toPreset()
         return if (world.isEmpty() || world.worldName.isBlank()) null else WorldPresetCodec.encode(world)
@@ -476,18 +652,17 @@ class PersonaEditorViewModel @Inject constructor(
         val current = _state.value
         if (current.saving) return
         val form = current.form
-        if (form.name.isBlank()) {
-            viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_name_required)))
-            }
-            return
-        }
-        if (form.prompt.isBlank()) {
-            viewModelScope.launch {
-                events.send(PersonaEditorEvent.Message(context.getString(R.string.persona_editor_prompt_required)))
-            }
-            return
-        }
+        // 0.13：名字和提示词不再是保存闸门（真机反馈「一项没填就保存不了」）。
+        // 名字空 → 本地化默认名；提示词空 → 用名字 + 简介生成一句。规则在 domain 里，
+        // 与仓储层共用；这里先算出来，是为了让「保存后能正常聊天」不依赖调用方记得兜底。
+        val name = PersonaDraftDefaults.name(form.name, context.getString(R.string.draft_default_name))
+        val prompt = PersonaDraftDefaults.prompt(
+            rawPrompt = form.prompt,
+            name = form.name,
+            description = form.description,
+            separator = context.getString(R.string.draft_default_prompt_separator),
+            fallback = context.getString(R.string.draft_default_prompt)
+        )
         // 作息时间：非法格式以前会被静默存成 null（→ 用默认 23:30–08:00），
         // 用户以为设了 24:00，实际却在 23:30 就睡了。这里显式拦下并提示。
         if (form.sleepEnabled) {
@@ -514,11 +689,11 @@ class PersonaEditorViewModel @Inject constructor(
             val result = personaRepository.save(
                 PersonaDraft(
                     id = personaId,
-                    name = form.name,
+                    name = name,
                     description = form.description,
                     avatarUri = form.avatarUri,
                     avatarSeed = form.avatarSeed,
-                    prompt = form.prompt,
+                    prompt = prompt,
                     category = form.category,
                     defaultApiConfigId = form.defaultApiConfigId,
                     modelOverride = form.modelOverride.ifBlank { null },

@@ -19,8 +19,10 @@ import com.yap.app.data.local.ProactiveRuleEntity
 import com.yap.app.data.prefs.AppSettings
 import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.data.repo.ApiConfigRepository
+import com.yap.app.data.repo.AudioVideoRepository
 import com.yap.app.data.repo.ChatRepository
 import com.yap.app.data.repo.MediaJanitor
+import com.yap.app.data.repo.StickerRepository
 import com.yap.app.data.repo.MemoryRepository
 import com.yap.app.data.repo.MoodRepository
 import com.yap.app.data.repo.PersonaCardRepository
@@ -29,7 +31,11 @@ import com.yap.app.data.repo.ProactiveRepository
 import com.yap.app.data.repo.ProactiveScheduler
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PersonaTranslationCoordinator
+import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.MediaRejection
+import com.yap.app.domain.MediaSendGuard
 import com.yap.app.domain.MessageAttachment
+import com.yap.app.domain.StickerSource
 import com.yap.app.domain.ReadReceipt
 import com.yap.app.domain.PersonaSwitchNotice
 import com.yap.app.domain.MoodState
@@ -44,10 +50,15 @@ import com.yap.app.domain.ProactiveProposal
 import com.yap.app.util.ChatNotifier
 import com.yap.app.util.HumanTiming
 import com.yap.app.util.MediaStorage
+import com.yap.app.util.VideoFramesExtractor
+import com.yap.app.util.VoiceRecorder
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancelAndJoin
@@ -68,6 +79,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import javax.inject.Inject
 
 data class ChatUiState(
@@ -127,7 +139,20 @@ data class ChatUiState(
      * 0.12 续 7：只在「这一轮因为睡着被静默」且他此刻仍在睡的时候出现。它不是消息气泡、
      * 不写库，收到回复或他睡醒之后自己消失（判定见 `ChatSleepHint`）。
      */
-    val sleepHint: String? = null
+    val sleepHint: String? = null,
+    /** 表情历史面板是否展开（输入框上方那块）。 */
+    val showStickerPanel: Boolean = false,
+    /** 面板切到「全部」了吗；false = 最近 30 个。 */
+    val stickerShowAll: Boolean = false,
+    /** 我的表情（按 createdAt 倒序）；面板里只渲染前 30 个或全部。 */
+    val stickers: List<com.yap.app.data.local.StickerEntity> = emptyList(),
+    /**
+     * 正在录音的毫秒数（0 = 没在录）。
+     *
+     * 只驱动输入框上方那条「录音中 0:03 · 松开发送」的提示；到 5 分钟/8 MB 会被
+     * [VoiceRecorder] 自动停并直接发送（规格：≤5 分钟自动停）。
+     */
+    val recordingElapsedMs: Long = 0L
 ) {
     val canSend: Boolean
         get() = session != null && config != null && persona != null && !isGenerating && !switchingPersona
@@ -153,7 +178,12 @@ data class ChatEphemeral(
      * 只有 [SilentReason.ASLEEP] 会让聊天页显示那行睡眠提示，其余原因（免打扰、晚点回）
      * 只是「已读不回」，界面不解释。
      */
-    val silentReason: SilentReason? = null
+    val silentReason: SilentReason? = null,
+    /** 表情面板的开关与「最近/全部」切换（纯界面状态，不进库）。 */
+    val showStickerPanel: Boolean = false,
+    val stickerShowAll: Boolean = false,
+    /** 录音进行中的毫秒数；0 表示没在录。 */
+    val recordingElapsedMs: Long = 0L
 )
 
 /** 本地分页状态：只影响聊天页，不进 Session。 */
@@ -189,6 +219,10 @@ class ChatViewModel @Inject constructor(
     private val mediaJanitor: MediaJanitor,
     /** 打开会话前按需翻译人设（`spec/persona-translation/README.md` §2 第 1 条）。 */
     private val translationCoordinator: PersonaTranslationCoordinator,
+    /** 表情包（`spec/stickers/README.md`）：历史面板、点选即发送、长按收藏。 */
+    private val stickerRepository: StickerRepository,
+    /** 语音/视频（0.13）：气泡播放要先把服务端媒体缓存成本地文件。 */
+    private val audioVideoRepository: AudioVideoRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -253,6 +287,8 @@ class ChatViewModel @Inject constructor(
         DetailsBundle(pair.first, pair.second, configs)
     }.combine(settingsRepository.settings) { bundle, settings ->
         bundle to settings
+    }.combine(stickerRepository.observeAll()) { (bundle, settings), stickers ->
+        ScreenState(bundle, settings, stickers)
     }
 
     /** 心情和「他正在……」一起进界面：都是他自己的状态，界面看得到、改不了。 */
@@ -261,10 +297,12 @@ class ChatViewModel @Inject constructor(
     private val localFlow = combine(ephemeral, window) { local, blocks -> local to blocks }
 
     private val uiFlow = combine(
-        detailsFlow.combine(ambientFlow) { (bundle, settings), ambient -> Triple(bundle, settings, ambient) },
+        detailsFlow.combine(ambientFlow) { screen, ambient -> screen to ambient },
         localFlow
-    ) { (bundle, settings, ambient), (local, paging) ->
+    ) { (screen, ambient), (local, paging) ->
+        val bundle = screen.bundle
         val details = bundle.details
+        val settings = screen.settings
         // 已读判定用到的「最后一条可计入的助手消息」一次算好（审计 P2-10）：
         // 以前每个气泡都扫一遍整个窗口，翻完历史后每帧上万次比较。
         val lastAssistantAt = ReadReceipt.latestAssistantAt(
@@ -300,7 +338,11 @@ class ChatViewModel @Inject constructor(
             hasMoreNewer = paging.hasMoreNewer,
             loadingNewer = paging.loadingNewer,
             lastAssistantAt = lastAssistantAt,
-            sleepHint = sleepHintText(local.silentReason, details.persona, presence)
+            sleepHint = sleepHintText(local.silentReason, details.persona, presence),
+            showStickerPanel = local.showStickerPanel,
+            stickerShowAll = local.stickerShowAll,
+            stickers = screen.stickers,
+            recordingElapsedMs = local.recordingElapsedMs
         )
     }
 
@@ -586,6 +628,269 @@ class ChatViewModel @Inject constructor(
         }
     }
 
+    // ---------------------------------------------------------------- 语音 / 视频（0.13）
+
+    /** 按住说话的录音器：整个 ViewModel 一个（同时只可能录一段）。 */
+    private val voiceRecorder = VoiceRecorder(context)
+
+    /** 录音计时协程：只更新界面上的「0:03」。 */
+    private var recordingJob: Job? = null
+
+    /** 正在录音（界面据此把发送键换成「松开发送」的提示）。 */
+    val isRecordingVoice: Boolean get() = voiceRecorder.isRecording
+
+    /**
+     * 开始录音（按住语音按钮）。
+     *
+     * 返回 false 表示开不了（没有麦克风权限 / 麦克风被占用 / 目录写不进去），
+     * 界面提示一句即可。权限申请在界面层（Compose 的 RequestPermission），这里只接结果。
+     */
+    fun startVoiceRecording(): Boolean {
+        if (voiceRecorder.isRecording) return true
+        if (!voiceRecorder.start()) {
+            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_voice_record_failed)) }
+            return false
+        }
+        // 到 5 分钟 / 8 MB：系统自己停了，等于「松手」，直接发送这一段。
+        voiceRecorder.onAutoStop = {
+            viewModelScope.launch { finishVoiceRecording() }
+        }
+        recordingJob?.cancel()
+        recordingJob = viewModelScope.launch {
+            while (isActive && voiceRecorder.isRecording) {
+                val elapsed = voiceRecorder.elapsedMs()
+                ephemeral.update { it.copy(recordingElapsedMs = elapsed) }
+                delay(RECORDING_TICK_MS)
+            }
+        }
+        return true
+    }
+
+    /**
+     * 松手：落盘 + 立刻发送。
+     *
+     * 太短的误触（< [AudioVideoPolicy.MIN_RECORDING_MS]）直接丢掉，不打扰用户；
+     * 落盘失败说一句「没录上」，文件已经在 [VoiceRecorder.stop] 里只剩临时件，由落盘方删掉。
+     */
+    fun finishVoiceRecording() {
+        if (!voiceRecorder.isRecording) return
+        recordingJob?.cancel()
+        recordingJob = null
+        val clip = voiceRecorder.stop()
+        ephemeral.update { it.copy(recordingElapsedMs = 0L) }
+        if (clip == null) return
+        if (clip.durationMs < AudioVideoPolicy.MIN_RECORDING_MS) {
+            clip.tempFile.delete()
+            return
+        }
+        viewModelScope.launch {
+            // 与选图同一条规矩：落盘 + 登记在不可取消区域里，进程被杀也不会留下无主文件。
+            val attachment = withContext(NonCancellable) {
+                MediaStorage.persistRecordedAudio(context, clip.tempFile, clip.durationMs).getOrNull()
+            }
+            if (attachment == null) {
+                ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_voice_record_failed)) }
+                return@launch
+            }
+            if (draftWindowClosed) {
+                mediaJanitor.deleteAttachmentsLater(listOf(attachment))
+                return@launch
+            }
+            ephemeral.update { it.copy(images = it.images + attachment) }
+            // 「松开发送」：录完就直接是一条语音消息，不需要再点一次发送。
+            send()
+        }
+    }
+
+    /** 用户拒绝了录音权限：只说一句，不再反复申请（系统也不再弹了）。 */
+    fun onVoicePermissionDenied() {
+        ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_voice_permission_denied)) }
+    }
+
+    /** 取消录音（滑开按钮 / 离开页面）：文件删掉，什么也不留下。 */
+    fun cancelVoiceRecording() {
+        recordingJob?.cancel()
+        recordingJob = null
+        voiceRecorder.cancel()
+        ephemeral.update { it.copy(recordingElapsedMs = 0L) }
+    }
+
+    /**
+     * 从系统选择器选了一段视频（`VideoOnly`）。
+     *
+     * 规矩（规格原文）：≤2 分钟、≤64 MiB，**不转码**，超了就拒绝并说清楚。
+     * 时长先读一遍再复制：一段 10 分钟的视频不必先复制 300 MB 才发现超时。
+     */
+    fun addVideo(uri: Uri) {
+        viewModelScope.launch {
+            val duration = withContext(Dispatchers.IO) {
+                VideoFramesExtractor.durationMs(context, uri)
+            }
+            if (duration != null && duration > AudioVideoPolicy.VIDEO_MAX_DURATION_MS) {
+                ephemeral.update {
+                    it.copy(snackbar = context.getString(R.string.chat_video_too_long))
+                }
+                return@launch
+            }
+            val persisted = withContext(NonCancellable) {
+                MediaStorage.persistVideo(context, uri, duration)
+            }
+            persisted.fold(
+                onSuccess = { attachment ->
+                    if (draftWindowClosed) {
+                        mediaJanitor.deleteAttachmentsLater(listOf(attachment))
+                        return@fold
+                    }
+                    ephemeral.update { it.copy(images = it.images + attachment) }
+                },
+                onFailure = { error ->
+                    ephemeral.update {
+                        it.copy(snackbar = ErrorText.of(context, error, R.string.chat_video_pick_failed))
+                    }
+                }
+            )
+        }
+    }
+
+    /**
+     * 发送前的音视频校验：只查**本机真的有文件**的附件。
+     *
+     * 服务端引用（换过服务端/别的设备发来的）此时本机没有文件，尺寸与时长只能由上传/下载
+     * 链路拿真实字节判断——那一条链路上传前也会再校验（[com.yap.app.data.remote.ServerAudioVideoUploader]）。
+     */
+    private fun mediaSendBlock(attachments: List<MessageAttachment>): MediaSendGuard.Rejection? {
+        val candidates = attachments.filter { it.isAudioOrVideo }.mapNotNull { attachment ->
+            val kind = attachment.mediaKind ?: return@mapNotNull null
+            val file = MediaStorage.voiceVideoFile(context, attachment.uri) ?: return@mapNotNull null
+            val duration = attachment.durationMs?.takeIf { it > 0L }
+                ?: VideoFramesExtractor.durationMs(file)
+            MediaSendGuard.Candidate(kind = kind, sizeBytes = file.length(), durationMs = duration)
+        }
+        return MediaSendGuard.firstRejection(candidates)
+    }
+
+    /** 超限/文件坏掉时的明确提示（文案与选片失败共用同一批资源）。 */
+    private fun rejectionText(rejection: MediaSendGuard.Rejection): Int = when {
+        MediaSendGuard.isUnreadable(rejection.reason) -> R.string.media_error_unreadable
+        rejection.candidate.isAudio && rejection.reason == MediaRejection.TOO_LARGE ->
+            R.string.media_error_audio_too_large
+
+        rejection.candidate.isAudio && rejection.reason == MediaRejection.TOO_LONG ->
+            R.string.media_error_audio_too_long
+
+        rejection.reason == MediaRejection.TOO_LARGE -> R.string.media_error_video_too_large
+        rejection.reason == MediaRejection.TOO_LONG -> R.string.media_error_video_too_long
+        else -> R.string.media_error_unreadable
+    }
+
+    /** 气泡播放用：把一条语音/视频附件解析成本机可播放文件（服务端引用先缓存）。 */
+    suspend fun playableFile(attachment: MessageAttachment): File? =
+        audioVideoRepository.localFile(attachment)
+
+    // ---------------------------------------------------------------- 表情包（spec/stickers）
+
+    /**
+     * 打开/收起「我的表情」面板。
+     *
+     * 它和草稿是两件事：点开面板不清空输入框里已经打了一半的字，收起也不把表情塞进草稿。
+     */
+    fun toggleStickerPanel() {
+        ephemeral.update { it.copy(showStickerPanel = !it.showStickerPanel) }
+    }
+
+    fun closeStickerPanel() {
+        ephemeral.update { it.copy(showStickerPanel = false) }
+    }
+
+    fun setStickerShowAll(showAll: Boolean) {
+        ephemeral.update { it.copy(stickerShowAll = showAll) }
+    }
+
+    /** 相册导入一张图/GIF：走 sticker 自己的压缩管线，成功后刷新面板（Room 会自动推）。 */
+    fun importSticker(uri: Uri) {
+        viewModelScope.launch {
+            val result = stickerRepository.import(uri, personaId = uiState.value.persona?.id)
+            if (result.isFailure) {
+                ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_sticker_panel_import_failed)) }
+            }
+        }
+    }
+
+    /**
+     * 长按删掉一个表情（面板里唯一的长按动作）。
+     *
+     * 服务端模式下由仓储先 `DELETE /v1/stickers/{id}`，成功后才删本机缓存；失败提示一句
+     * 「没删掉」——不能让用户以为删了、下次同步又回来。
+     */
+    fun deleteSticker(stickerId: String) {
+        viewModelScope.launch {
+            val result = stickerRepository.delete(stickerId)
+            if (result.isFailure) {
+                ephemeral.update {
+                    it.copy(snackbar = context.getString(R.string.chat_sticker_delete_failed))
+                }
+            }
+        }
+    }
+
+    /**
+     * 点选一张表情**直接发出去**（规范：点选即发送，不进入文字草稿）。
+     *
+     * 与服务端模式的发送共用同一套编排（压缩/上传/SSE），区别只是附件是 `kind=STICKER`。
+     */
+    fun sendSticker(stickerId: String) {
+        if (ephemeral.value.isGenerating || operationInFlight) return
+        val sticker = uiState.value.stickers.firstOrNull { it.id == stickerId } ?: return
+        val current = uiState.value
+        if (!chatRepository.isServerMode() && current.config == null) {
+            ephemeral.update {
+                it.copy(showStickerPanel = false, snackbar = context.getString(R.string.chat_select_config_first))
+            }
+            return
+        }
+        val attachment = stickerRepository.attachmentOf(sticker)
+        if (chatRepository.isServerMode()) {
+            ephemeral.update { it.copy(showStickerPanel = false) }
+            sendViaServer("", listOf(attachment))
+            return
+        }
+        viewModelScope.launch {
+            if (operationInFlight) return@launch
+            operationInFlight = true
+            try {
+                leaveJumpWindowForNewMessage()
+                val result = chatRepository.sendUserSticker(sessionId, stickerId)
+                if (result.isFailure) {
+                    ephemeral.update {
+                        it.copy(snackbar = context.getString(R.string.chat_sticker_sending_failed))
+                    }
+                    return@launch
+                }
+                // 表情不算「读了几个字」：等他回话前的停顿按最短的来。
+                ephemeral.update { it.copy(showStickerPanel = false, snackbar = null) }
+                startGeneration(HumanTiming.readDelayMillis(textLength = 0, images = 1, paceFactor = 1f))
+            } finally {
+                operationInFlight = false
+            }
+        }
+    }
+
+    /** 长按「添加到我的表情」：把这条消息里的表情收进收藏。 */
+    fun saveStickerFromMessage(messageId: String) {
+        viewModelScope.launch {
+            val result = stickerRepository.saveFromMessage(messageId, personaId = uiState.value.persona?.id)
+            val text = if (result.isSuccess) {
+                R.string.chat_sticker_saved
+            } else {
+                R.string.chat_sticker_save_failed
+            }
+            ephemeral.update { it.copy(snackbar = context.getString(text)) }
+        }
+    }
+
+    /** 渲染用：把某个表情引用解成帧序列（文件或服务端媒体都走这一条）。 */
+    suspend fun loadStickerFrames(uri: String): StickerSource? = stickerRepository.loadFrames(uri)
+
     /**
      * 从草稿里去掉一张图：文件已经落盘了，取消发送就得把它删掉，
      * 否则「选了又删」每来一次就多一个孤儿文件。
@@ -627,6 +932,12 @@ class ChatViewModel @Inject constructor(
         val text = ephemeral.value.draft
         val images = ephemeral.value.images
         if ((text.isBlank() && images.isEmpty()) || ephemeral.value.isGenerating || operationInFlight) return
+        // 0.13：发送前用**现有元数据**再核一次语音/视频上限（选片时查过一次，但文件可能被替换）。
+        // 超限就明确提示、不发送；服务端上传前还会再挡一次（`ServerAudioVideoUploader`）。
+        mediaSendBlock(images)?.let { rejection ->
+            ephemeral.update { it.copy(snackbar = context.getString(rejectionText(rejection))) }
+            return
+        }
         val current = uiState.value
         // 服务端模式不需要本地 API 配置：模型与密钥都在服务端。
         if (!chatRepository.isServerMode() && current.config == null) {
@@ -805,13 +1116,16 @@ class ChatViewModel @Inject constructor(
                             }
                         }
                         is GenerationEvent.Failed -> {
+                            // 错误气泡里的话可能比结构化错误更具体（例如「这个模型听不了语音」），
+                            // 有落库文案就用它，让 snackbar 与气泡说同一句话。
+                            val stored = ErrorText.stored(context, event.errorMessage?.errorMessage)
                             ephemeral.update {
                                 it.copy(
                                     isGenerating = false,
                                     hasStarted = false,
                                     streamingText = "",
                                     silentReason = null,
-                                    snackbar = ErrorText.of(context, event.error)
+                                    snackbar = stored ?: ErrorText.of(context, event.error)
                                 )
                             }
                         }
@@ -1097,6 +1411,8 @@ class ChatViewModel @Inject constructor(
         draftWindowClosed = true
         streamJob?.cancel()
         memoryJob?.cancel()
+        // 正在录的那一段随页面一起丢掉（临时文件由 cancel 删除）。
+        runCatching { cancelVoiceRecording() }
         // 审计 P2-1：选了图但没发出去（返回键 / 切人格 / 从通知跳到别的会话）时，
         // 文件已经落在 files/media/chat-*.jpg 了。只有「点 ×」「清空」「发送成功」三条路
         // 会处理它们，退出编辑必须在这里兜一次，否则是纯增量、无上限的磁盘泄漏。
@@ -1111,6 +1427,9 @@ class ChatViewModel @Inject constructor(
 
     private companion object {
         const val MAX_IMAGES = 4
+
+        /** 录音计时的刷新间隔：200ms 够顺滑，又不会每帧都重组。 */
+        const val RECORDING_TICK_MS = 200L
 
         /** 定位消息最多等多久：窗口挪过去通常几十毫秒，留 5 秒足够；超时就当作「那条消息不在了」。 */
         const val JUMP_TIMEOUT_MILLIS = 5_000L
@@ -1127,5 +1446,12 @@ class ChatViewModel @Inject constructor(
         val details: Details,
         val personas: List<PersonaEntity>,
         val apiConfigs: List<ApiConfigEntity>
+    )
+
+    /** 聊天页需要的「库里的东西」：会话/人格/配置/设置/表情，合成一次给界面。 */
+    private data class ScreenState(
+        val bundle: DetailsBundle,
+        val settings: AppSettings,
+        val stickers: List<com.yap.app.data.local.StickerEntity>
     )
 }

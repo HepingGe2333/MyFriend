@@ -105,6 +105,27 @@ final class AttachmentsCodecTests: XCTestCase {
         XCTAssertEqual(first["height"] as? Int, 20)
     }
 
+    /// 0.13 表情附件：`kind=STICKER` 只在写的时候出现，读的时候 `image/gif` 也认。
+    func testStickerAttachmentRoundTripAndCompatibility() throws {
+        let sticker = MessageAttachment(
+            uri: "file:///stickers/s-1.gif",
+            mime: "image/gif",
+            width: 320,
+            height: 280,
+            kind: MessageAttachment.stickerKind
+        )
+        let encoded = try XCTUnwrap(AttachmentsCodec.encode([sticker]))
+        XCTAssertEqual(AttachmentsCodec.decode(encoded), [sticker])
+        XCTAssertTrue(try XCTUnwrap(AttachmentsCodec.decode(encoded).first).isSticker)
+
+        // Android/老版本只写 mime（没有 kind）：也要当成表情。
+        let legacy = AttachmentsCodec.decode(#"[{"uri":"file:///s.gif","mime":"image/gif"}]"#)
+        XCTAssertTrue(try XCTUnwrap(legacy.first).isSticker)
+        // 老图片附件不能被误判成表情。
+        let image = AttachmentsCodec.decode(#"[{"uri":"file:///a.jpg","mime":"image/jpeg"}]"#)
+        XCTAssertFalse(try XCTUnwrap(image.first).isSticker)
+    }
+
     /// 消息里的附件上限（Android `MAX_IMAGES_PER_MESSAGE` / `MAX_IMAGE_MESSAGES_IN_CONTEXT`）。
     func testContextLimits() {
         XCTAssertEqual(AttachmentsCodec.maxImagesPerMessage, 4)

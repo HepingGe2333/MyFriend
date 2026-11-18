@@ -1,11 +1,15 @@
 package com.yap.app.data.repo
 
+import android.content.Context
+import com.yap.app.R
 import com.yap.app.data.local.PersonaPresetDao
 import com.yap.app.data.local.PersonaPresetEntity
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.ExportFile
 import com.yap.app.domain.PersonaDraft
+import com.yap.app.domain.PersonaDraftDefaults
 import com.yap.app.network.userError
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -66,7 +70,9 @@ class PresetRepository @Inject constructor(
     private val serverWrites: com.yap.app.data.remote.ServerWriteGateway,
     /** M5：预设头像先压缩再上传成 `/v1/media/<id>`。 */
     private val serverMediaSender: com.yap.app.data.remote.ServerChatMediaSender,
-    private val json: Json
+    private val json: Json,
+    /** 可空保存的兜底文案（默认名 / 默认人设）要按界面语言取，不能硬编码中文。 */
+    @ApplicationContext private val appContext: Context
 ) {
     fun observeAll(): Flow<List<PersonaPresetEntity>> = presetDao.observeAll()
     fun observeById(id: String): Flow<PersonaPresetEntity?> = presetDao.observeById(id)
@@ -76,18 +82,26 @@ class PresetRepository @Inject constructor(
     suspend fun count(): Int = presetDao.count()
 
     suspend fun save(draft: PresetDraft): Result<String> = runCatching {
-        val name = draft.name.trim()
-        if (name.isBlank()) userError(DomainErrorCode.PRESET_NAME_REQUIRED)
+        // 0.13：和人格同一套兜底——名字空 → 本地化默认名，提示词空 → 用名字 + 简介生成。
+        // 「用预设创建人格」会带着这份值去 PersonaRepository.save，所以入口之间必须一致。
+        val name = PersonaDraftDefaults.name(draft.name, appContext.getString(R.string.draft_default_name))
+        val prompt = PersonaDraftDefaults.prompt(
+            rawPrompt = draft.prompt,
+            name = draft.name,
+            description = draft.description,
+            separator = appContext.getString(R.string.draft_default_prompt_separator),
+            fallback = appContext.getString(R.string.draft_default_prompt)
+        )
+        // 长度上限保留：默认值不该成为绕过限制的后门。
         if (name.length > 60) userError(DomainErrorCode.PRESET_NAME_TOO_LONG)
-        if (draft.prompt.isBlank()) userError(DomainErrorCode.PRESET_PROMPT_REQUIRED)
-        if (draft.prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PRESET_PROMPT_TOO_LONG)
+        if (prompt.length > MAX_PROMPT_CHARS) userError(DomainErrorCode.PRESET_PROMPT_TOO_LONG)
         val now = System.currentTimeMillis()
         val existing = draft.id?.let { presetDao.getById(it) }
         var entity = PersonaPresetEntity(
             id = existing?.id ?: UUID.randomUUID().toString(),
             name = name,
             description = draft.description.trim().take(300),
-            prompt = draft.prompt,
+            prompt = prompt,
             category = draft.category.trim().ifBlank { "未分类" }.take(30),
             avatarUri = draft.avatarUri,
             avatarSeed = draft.avatarSeed,

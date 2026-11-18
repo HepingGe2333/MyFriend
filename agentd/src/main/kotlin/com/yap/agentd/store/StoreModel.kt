@@ -370,12 +370,16 @@ data class BackupImportResult(
     val memories: Int,
     val presets: Int,
     val settings: Boolean,
-    val media: Int = 0
+    val media: Int = 0,
+    /** v6：导入的表情行数。 */
+    val stickers: Int = 0,
+    /** v6：导入的日记条数。 */
+    val diaryNotes: Int = 0
 )
 
 /** 备份里的 version 不受支持（路由翻成 409）。 */
 class UnsupportedBackupVersionException(val version: Int) :
-    IllegalArgumentException("备份格式 v$version 不受支持（本服务只读 v5）")
+    IllegalArgumentException("备份格式 v$version 不受支持（本服务读 v1–v${FileStore.BACKUP_FORMAT_VERSION}）")
 
 /** 备份内容结构/引用不合法（路由翻成 400；导入前校验，不写盘）。 */
 class BackupValidationException(message: String) : IllegalArgumentException(message)
@@ -392,21 +396,42 @@ data class Session(
     /** 最新块的编号；没有任何消息时是 -1（契约里用整数表示「没有块」）。 */
     val lastBlockIndex: Int,
     val unread: Int,
-    val messageCount: Long
+    val messageCount: Long,
+    /**
+     * 客户端会话列里服务端没有专门建模的字段（`apiConfigId` / `model` / `pinned` /
+     * `summary` / `summarizedUpTo` / `summaryAt` / `memoryRetentionOverride` /
+     * `extractionEveryOverride` / `lastPersonaVersion` / …）。
+     *
+     * 为什么保留：备份 v6 的 `sessions[]` 是**客户端形状**，这些字段必须在
+     * 「导入 → 落库 → 再导出」这条链路上原样活下来（否则换端后长会话的滚动摘要、
+     * 置顶、模型覆盖全丢了，而且不会报错）。
+     */
+    val extraFields: Map<String, JsonValue> = emptyMap()
 ) {
-    fun toJson(): JsonValue.Obj = obj(
-        "id" to str(id),
-        "personaId" to str(personaId),
-        "title" to str(title),
-        "createdAt" to num(createdAt),
-        "updatedAt" to num(updatedAt),
-        "lastMessageAt" to nullableNum(lastMessageAt),
-        "lastBlockIndex" to num(lastBlockIndex),
-        "unread" to num(unread),
-        "messageCount" to num(messageCount)
-    )
+    fun toJson(): JsonValue.Obj {
+        val fields = linkedMapOf(
+            "id" to str(id),
+            "personaId" to str(personaId),
+            "title" to str(title),
+            "createdAt" to num(createdAt),
+            "updatedAt" to num(updatedAt),
+            "lastMessageAt" to nullableNum(lastMessageAt),
+            "lastBlockIndex" to num(lastBlockIndex),
+            "unread" to num(unread),
+            "messageCount" to num(messageCount)
+        )
+        for ((key, value) in extraFields) {
+            if (key !in RESERVED_KEYS && !isSecretLikeFieldName(key)) fields[key] = value
+        }
+        return JsonValue.Obj(fields)
+    }
 
     companion object {
+        val RESERVED_KEYS: Set<String> = setOf(
+            "id", "personaId", "title", "createdAt", "updatedAt", "lastMessageAt",
+            "lastBlockIndex", "unread", "unreadCount", "messageCount"
+        )
+
         fun fromJson(value: JsonValue.Obj, where: String): Session = Session(
             id = value.reqString("id", where),
             personaId = value.reqString("personaId", where),
@@ -415,8 +440,10 @@ data class Session(
             updatedAt = value.reqLong("updatedAt", where),
             lastMessageAt = value.optLong("lastMessageAt", where),
             lastBlockIndex = value.optInt("lastBlockIndex", where) ?: -1,
-            unread = value.optInt("unread", where) ?: 0,
-            messageCount = value.optLong("messageCount", where) ?: 0
+            // 兼容客户端备份的 `unreadCount`（v6 的 sessions[] 用这个名字）。
+            unread = value.optInt("unread", where) ?: value.optInt("unreadCount", where) ?: 0,
+            messageCount = value.optLong("messageCount", where) ?: 0,
+            extraFields = value.fields.filterKeys { it !in RESERVED_KEYS }
         )
     }
 }
@@ -443,7 +470,15 @@ data class Message(
     val clientMessageId: String?,
     val replyTo: String?,
     val promptTokens: Int?,
-    val completionTokens: Int?
+    val completionTokens: Int?,
+    /**
+     * 这一轮工具回路的痕迹（`spec`/客户端 `messages.toolTraceJson` 的服务端对应物）。
+     *
+     * 存**客户端同形的 JSON 文本**（`[{"name":"web_search","status":"done","summary":"…"}]`），
+     * 所以备份 v6 的 `messages[].toolTraceJson` 可以原样来回搬，客户端「他当时查了两个网页」
+     * 那张卡片不用再翻译一次。`null` = 这一轮没有工具调用（绝大多数消息）。
+     */
+    val toolTraceJson: String? = null
 ) {
     fun toJson(): JsonValue.Obj = obj(
         "id" to str(id),
@@ -458,7 +493,9 @@ data class Message(
         "clientMessageId" to nullableStr(clientMessageId),
         "replyTo" to nullableStr(replyTo),
         "promptTokens" to nullableInt(promptTokens),
-        "completionTokens" to nullableInt(completionTokens)
+        "completionTokens" to nullableInt(completionTokens),
+        // 可加字段：老数据目录没有这一格（null），不升存储版本号。
+        "toolTraceJson" to nullableStr(toolTraceJson)
     )
 
     companion object {
@@ -475,7 +512,8 @@ data class Message(
             clientMessageId = value.optString("clientMessageId", where),
             replyTo = value.optString("replyTo", where),
             promptTokens = value.optInt("promptTokens", where),
-            completionTokens = value.optInt("completionTokens", where)
+            completionTokens = value.optInt("completionTokens", where),
+            toolTraceJson = value.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() }
         )
     }
 }
@@ -551,26 +589,70 @@ data class BlockMeta(
 
 // ---------------------------------------------------------------------- 心情 / 在场
 
+/**
+ * 多维心情（`spec/mood/README.md` §1，schema v17）。
+ *
+ * 四格一起表达「一个词 + 三个维度」：
+ * - [label] 给人看的短词（累/平静/烦/开心…）；
+ * - [valence] 愉快度 -2..2（负=不悦，正=愉快）；
+ * - [arousal] 唤醒度 0..5（0=低能量/困，5=激动）；
+ * - [dominance] 掌控感 0..5（0=被压住，5=掌控）；
+ * - [intensity] 强度 1..5（既有列）；
+ * - [reason] 为什么（模型内部/调试用，不直接展示）。
+ *
+ * 旧数据只有 `label/intensity`：读盘时按规范 §1 的迁移规则补维度
+ * （valence 由 label 映射，arousal 由 intensity 推，dominance=3）。`moods.json` 不升版本。
+ */
 data class Mood(
     val personaId: String,
     val label: String,
     val intensity: Int,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val valence: Int = 0,
+    val arousal: Int = 2,
+    val dominance: Int = 3,
+    val reason: String = ""
 ) {
     fun toJson(): JsonValue.Obj = obj(
         "personaId" to str(personaId),
         "label" to str(label),
         "intensity" to num(intensity),
-        "updatedAt" to num(updatedAt)
+        "updatedAt" to num(updatedAt),
+        // 0.13 可加字段：老数据目录没有它们，读的时候按迁移规则补齐。
+        "valence" to num(valence),
+        "arousal" to num(arousal),
+        "dominance" to num(dominance),
+        "reason" to str(reason)
     )
 
     companion object {
-        fun fromJson(value: JsonValue.Obj, where: String): Mood = Mood(
-            personaId = value.reqString("personaId", where),
-            label = value.reqString("label", where),
-            intensity = value.optInt("intensity", where) ?: 0,
-            updatedAt = value.reqLong("updatedAt", where)
-        )
+        /** 心情原因的字符上限（只进提示词/调试，不给人看长文）。 */
+        const val MAX_REASON_CHARS = 200
+
+        /** 旧数据迁移：label → valence（累/烦 → -1，平静 → 0，开心 → 1……由词表给出）。 */
+        fun defaultValence(label: String): Int =
+            com.yap.app.domain.MoodLexicon.classify(label).valence.coerceIn(-2, 2)
+
+        /** 旧数据迁移：arousal 由 intensity 推（强度越高越"有劲"，区间 0..5）。 */
+        fun defaultArousal(intensity: Int): Int = intensity.coerceIn(0, 5)
+
+        /** 旧数据迁移：dominance 默认 3（中间值，不猜）。 */
+        fun defaultDominance(): Int = 3
+
+        fun fromJson(value: JsonValue.Obj, where: String): Mood {
+            val label = value.reqString("label", where)
+            val intensity = value.optInt("intensity", where) ?: 0
+            return Mood(
+                personaId = value.reqString("personaId", where),
+                label = label,
+                intensity = intensity,
+                updatedAt = value.reqLong("updatedAt", where),
+                valence = value.optInt("valence", where) ?: defaultValence(label),
+                arousal = value.optInt("arousal", where) ?: defaultArousal(intensity),
+                dominance = value.optInt("dominance", where) ?: defaultDominance(),
+                reason = value.optString("reason", where).orEmpty()
+            )
+        }
     }
 }
 
@@ -738,3 +820,55 @@ class StoreMemoryNotFoundException(val memoryId: String) :
 /** 预设不存在（路由翻成 404）。 */
 class StorePresetNotFoundException(val presetId: String) :
     NoSuchElementException("没有这个预设：$presetId")
+
+/** 日记不存在 / 不属于 URL 里的人格（路由翻成 404）。 */
+class StoreDiaryNoteNotFoundException(val noteId: String) :
+    NoSuchElementException("没有这条日记：$noteId")
+
+// ---------------------------------------------------------------------- pending_patches.json
+
+/**
+ * 一条**待审**的人格进化补丁（`spec`/客户端 `persona_pending_patches` 的服务端对应物）。
+ *
+ * 服务端不自动改人格：模型给出的变化先落这里，用户/客户端调 accept 才写进 `personas.json`，
+ * reject 就丢掉。字段形状与客户端一致（`patchJson` 是 `{"changes":[…]}` 的文本），
+ * 多出来的 [expiresAt] 是服务端为了「7 天后自动丢弃」显式算好的（不靠读的时候再猜 TTL）。
+ *
+ * @param sessionId 评估时读的会话（诊断用；会话删了也不影响补丁本身）
+ * @param summary 给人看的一行（例如「性格 +嘴硬心软」）
+ * @param reason 为什么要改（固定中文，不参与规则）
+ */
+data class PendingPatch(
+    val id: String,
+    val personaId: String,
+    val sessionId: String?,
+    val patchJson: String,
+    val summary: String,
+    val reason: String,
+    val createdAt: Long,
+    val expiresAt: Long
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "id" to str(id),
+        "personaId" to str(personaId),
+        "sessionId" to nullableStr(sessionId),
+        "patchJson" to str(patchJson),
+        "summary" to str(summary),
+        "reason" to str(reason),
+        "createdAt" to num(createdAt),
+        "expiresAt" to num(expiresAt)
+    )
+
+    companion object {
+        fun fromJson(value: JsonValue.Obj, where: String): PendingPatch = PendingPatch(
+            id = value.reqString("id", where),
+            personaId = value.reqString("personaId", where),
+            sessionId = value.optString("sessionId", where),
+            patchJson = value.reqString("patchJson", where),
+            summary = value.optString("summary", where).orEmpty(),
+            reason = value.optString("reason", where).orEmpty(),
+            createdAt = value.reqLong("createdAt", where),
+            expiresAt = value.optLong("expiresAt", where) ?: value.reqLong("createdAt", where)
+        )
+    }
+}

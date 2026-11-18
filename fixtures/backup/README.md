@@ -14,6 +14,8 @@
 | `ios-export-v4.json` | v4 | 0.12 起 iOS 导出的样本，双方必须互读通过 |
 | `android-export-v5.json` | v5 | 0.12 起 Android 导出的样本：`personas[]` 带 `worldJson`/`speechStyleJson`/`activityJson`，`presets[]` 带前两者（世界预设与话风学习） |
 | `ios-export-v5.json` | v5 | 0.12 起 iOS 导出的样本，双方必须互读通过 |
+| `android-export-v6.json` | v6 | 0.13 起 Android 导出的样本：`media[]` 扩到表情/语音/视频（`STICKER`/`AUDIO`/`VIDEO`），新增顶层 `stickers[]` 与 `diaryNotes[]`；表情字节只内联一次 |
+| `ios-export-v6.json` | v6 | 0.13 起 iOS 导出的样本；缺失时 Android 测试跳过（并行实现） |
 
 
 这些文件是 **Android 与 iOS 之间的接口契约**，不是示例数据：
@@ -26,11 +28,15 @@
 | `android-export-v1.json` / `ios-export-v1.json` | 1.8 时代留下的历史样本，**不再重写** | 两端的 v1 兼容用例 | 必须仍能读进来：旧开关与额度字段被忽略、人格缺的字段走默认、多段会话只留最新 |
 
 共同要求：
-- `format = "myfriend.backup"`（兼容保留的格式名，产品已更名为 YetAnotherPal / Yap，不要随品牌改名）、`formatVersion = 5`（0.12 起；v4/v3/v2/v1 只作为输入）、`apiKeysOmitted = true`；
-- `media[]` 的键固定为 `id` / `kind`（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`）/ `personaId`（可空）/ `fileName` / `mime` / `bytes` / `data`（标准 base64，无换行）；总量 128 MiB、单张 8 MiB；
+- `format = "myfriend.backup"`（兼容保留的格式名，产品已更名为 YetAnotherPal / Yap，不要随品牌改名）、`formatVersion = 6`（0.13 起；v5/v4/v3/v2/v1 只作为输入）、`apiKeysOmitted = true`；
+- `media[]` 的键固定为 `id` / `kind`（`PERSONA_AVATAR` / `USER_AVATAR` / `CHAT_IMAGE`，v6 起还有 `STICKER` / `AUDIO` / `VIDEO`）/ `personaId`（可空）/ `fileName` / `mime` / `bytes` / `data`（标准 base64，无换行）；总量 128 MiB、单个文件 8 MiB（视频也按 8 MiB，超限跳过并计数）；
+- v6 的 `stickers[]` 字段：`id` / `ownerUserId` / `personaId` / `fileName` / `file` / `mime` / `width` / `height` / `frames` / `bytes` / `source` / `createdBy` / `createdAt`；`fileName` 与 `media[]` 里 `kind=STICKER` 的 `fileName` 对应，**不重复内联 base64**；`file` 是 iOS 端的同义字段（两端导出都写、读取取非空那个），保证任一端的 v6 备份另一端都能接住；
+- v6 的 `diaryNotes[]` 字段：`id` / `personaId` / `content` / `createdAt` / `remindAt` / `remindedAt` / `updatedAt`；
+- v6 缺段兼容：`stickers` / `diaryNotes` 缺失或坏条目按空/跳过处理，绝不让整份失败。
 - **任何密钥字段都不允许出现**（`apiKey` / `*Cipher` / `Authorization` / `customHeadersJson`），两端导出前后都会自检；
 - 缺字段用默认值、未知字段忽略：这样老备份能被新版本读，新备份也不会把旧版本读崩；
-- 改动备份格式时**两端一起改**，并重新生成两个 v5 文件；只改一边，测试立刻红。
+- 改动备份格式时**两端一起改**，并重新生成两个 v6 文件（`android-export-v6.json` / `ios-export-v6.json`）；只改一边，测试立刻红。旧的 `*-v5.json` 保留不动。
+- **0.13 的字段增删（v6）**：顶层新增 `stickers[]` / `diaryNotes[]`；`media[]` 的 `kind` 增加 `STICKER` / `AUDIO` / `VIDEO`；消息 `attachmentsJson` 的 `kind`/`durationMs` 跟着备份走，`uri` 仍只写裸文件名。
 - **0.12 的字段增删（v5）**：`personas[]` 新增 `worldJson`/`speechStyleJson`/`activityJson`，`presets[]` 新增 `worldJson`/`speechStyleJson`（均可空；世界预设与话风学习见 `spec/persona-guidance`）。
 - **0.12 的字段增删（v4）**：`apiConfigs[]` 新增 `webToolsProvider`（默认 `MESSAGEAPI`；搜索 Key 仍不进备份）。
 - **0.12.0 的字段增删**：新增顶层 `media[]`；`personas[].avatarUri` / `presets[].avatarUri` / `messages[].attachmentsJson` 里的路径改成裸文件名（真正字节在 `media[]` 里）。备份**不含**消息区块（`blockIndex` / `message_blocks` 是派生数据，导入时按消息顺序重建）。

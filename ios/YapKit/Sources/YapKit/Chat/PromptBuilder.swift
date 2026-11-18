@@ -44,6 +44,10 @@ public struct SystemPromptInput {
     public var relationshipBlock: String
     /// 「# 边界」那一段：可以覆盖，默认是 `PromptBuilder.boundarySection`。
     public var boundaryBlock: String
+    /// 「# 别像个 AI」那一段（`spec/mood/README.md` §5 的反 AI 味约束）。
+    ///
+    /// 默认就是 `AntiAIPrompt.text()`；传空串 = 这一轮不加（只有测试会这么用）。
+    public var antiAIPrompt: String
     /// 记忆块（Android: `memoryRepository.formatForPrompt(memories)`），空串表示这次没挑到记忆。
     public var memoriesBlock: String
     /// 会话滚动摘要块（`HistoryCompression.memoryBlock(session.historySummary, …)`）。
@@ -75,6 +79,7 @@ public struct SystemPromptInput {
         speechStyleBlock: String = "",
         relationshipBlock: String = "",
         boundaryBlock: String = PromptBuilder.defaultBoundary,
+        antiAIPrompt: String = AntiAIPrompt.text(),
         memoriesBlock: String = "",
         earlierMemoryBlock: String = "",
         moodBlock: String = "",
@@ -92,6 +97,7 @@ public struct SystemPromptInput {
         self.speechStyleBlock = speechStyleBlock
         self.relationshipBlock = relationshipBlock
         self.boundaryBlock = boundaryBlock
+        self.antiAIPrompt = antiAIPrompt
         self.memoriesBlock = memoriesBlock
         self.earlierMemoryBlock = earlierMemoryBlock
         self.moodBlock = moodBlock
@@ -120,7 +126,23 @@ public enum ProactiveCapabilityPrompt {
 public enum PromptBuilder {
 
     /// 一次回复最多带多少字的对话正文。与 Android 的 `CONTEXT_CHAR_BUDGET` 一致。
+    ///
+    /// 它是**产品上限**（历史再长也只逐字带这么多，其余靠摘要），不是模型窗口：
+    /// 窗口上限见 `contextTokenBudget(configured:)`（0.13 起默认 1M，`spec/api-defaults`）。
     public static let contextCharBudget = 28_000
+
+    /// 上下文预算（tokens）：默认 1M 上限，配置里显式给的值优先且不超过 1M。
+    public static func contextTokenBudget(configured: Int? = nil) -> Int {
+        ApiDefaults.contextTokenLimit(configured: configured)
+    }
+
+    /// 「这个窗口还能带多少字历史」：窗口换算结果与产品上限取小。
+    ///
+    /// 默认窗口（1M）下结果就是 `contextCharBudget`（28 000）——1M 不会让请求体真的胀到 1M；
+    /// 只有在有人把窗口配得很小时（比如 20K）才会真的收紧历史。
+    public static func historyCharBudget(contextTokens: Int = ApiDefaults.contextWindowTokens) -> Int {
+        min(contextCharBudget, ApiDefaults.historyCharBudget(contextTokens: contextTokens))
+    }
 
     /// 装配上下文时最多从库里读多少条消息（Android: `CONTEXT_RECENT_LIMIT`）。
     public static let contextRecentLimit = 200
@@ -163,6 +185,9 @@ public enum PromptBuilder {
         text += input.proactiveCapability
         text += "\n\n"
         text += input.toolsCapability
+        // 反 AI 味（`spec/mood/README.md` §5）：与 `# 边界` 一样是**规则**，
+        // 放在边界**之前**（与 Android 的拼接顺序一致：能力段 → 反 AI → 可变块 → 边界）。
+        text += antiAIBlock(input.antiAIPrompt)
         text += boundaryBlock(input.boundaryBlock)
         text += input.moodNudgeBlock
         text += languageSection(input.languageDirective)
@@ -258,6 +283,11 @@ public enum PromptBuilder {
     /// 规范 §6.3 的形状：
     /// `现在是{weekday HH:mm}。{activity 或「没在忙什么」}{；心情：…}{；已经睡了…}`
     /// 这里只负责「时间 + 活动 + 在场」；心情由 `MoodPrompt` 那两段跟在后面。
+    ///
+    /// 时间（`spec/context-time/README.md`）：**每次拼提示词都重新取**，第一行就是
+    /// `现在是 2026-11-17 周二 02:42（UTC+08:00）。`。`now` 由调用方在**发请求那一刻**
+    /// 传进来（`ChatService` 每轮取一次），所以跨天 / 换时区之后这里自然是对的。
+    /// 工具回路不会重建 system，因此这一行在一次回复里只出现一次。
     public static func stateSection(
         now: Int64,
         activity: PersonaActivity?,
@@ -265,10 +295,11 @@ public enum PromptBuilder {
         calendar: Calendar = ServiceTime.calendar()
     ) -> String {
         guard now > 0 else { return "" }
-        // 「现在是周三 19:40。」逐字来自脚手架 `state_line`；`state_idle` 同理。
+        // 第一行逐字来自脚手架 `state_line`（`现在是{weekday} {time}。`）：
+        // 0.13 把日期并进 `{weekday}`、把 UTC 偏移并进 `{time}`，模板本身没动。
         var line = PersonaPromptScaffold.fill(PersonaPromptScaffold.stateLine, [
-            "weekday": PromptClock.weekdayText(now, calendar: calendar),
-            "time": PromptClock.clockText(now, calendar: calendar)
+            "weekday": PromptClock.dateWeekdayText(now, calendar: calendar),
+            "time": PromptClock.clockWithOffsetText(now, calendar: calendar)
         ])
         if let activity, activity.isActive(now: now) {
             line += activity.renderStateLine(now: now, calendar: calendar)
@@ -289,6 +320,12 @@ public enum PromptBuilder {
 
     /// 把「边界」那一段拼进 system；传空串 = 整节不出现（只有测试会这么用）。
     public static func boundaryBlock(_ custom: String) -> String {
+        let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? "" : "\n\n" + trimmed
+    }
+
+    /// 把「# 别像个 AI」那一段拼进 system；传空串 = 整节不出现。
+    public static func antiAIBlock(_ custom: String) -> String {
         let trimmed = custom.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "" : "\n\n" + trimmed
     }
@@ -317,12 +354,13 @@ public enum PromptBuilder {
         let name = persona.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let description = persona.description.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // 0.13：空提示词不再等于「没有身份」（真机反馈：只填了名字/什么都没填的人，
+        // 系统提示里连 `# 你是谁` 都没有，模型于是自称助手）。
+        // 非空时保留原文；空时由名字 + 介绍生成，两样都空就用系统默认人设文本。
         if !prompt.isEmpty {
             lines.append(prompt)
-        } else if !name.isEmpty {
-            var lead = "你叫\(name)。"
-            if !description.isEmpty { lead += description }
-            lines.append(lead)
+        } else {
+            lines.append(PersonaDraft.generatedPrompt(name: name, description: description))
         }
 
         func appendSection(_ title: String, _ rawContent: String) {
@@ -367,10 +405,19 @@ public enum PromptBuilder {
     /// 但**只带最近 `AttachmentsCodec.maxImageMessagesInContext` 条带图的消息**——
     /// base64 会让请求体膨胀 4/3，把整段历史里的图全带上等于把上下文预算烧在旧图上。
     /// 文件已经被清掉（换机、从备份接回）时 `imageResolver` 返回 nil，这条就只剩那句「发来一张图片」。
+    ///
+    /// 语音/视频（0.13）：**历史只带一句说明，不带二进制**。
+    /// - 每条带语音/视频的消息都会在正文后面补一行「这条消息是一段语音，时长 12 秒；
+    ///   媒体 id：…；想听就用 listen」——模型因此知道「这条消息不是文字」，
+    ///   也知道要用哪个 id 去听/看；
+    /// - 真正的 `input_audio`（base64）与视频关键帧只给**当轮那一条**消息
+    ///   （`mediaParts` 里按消息 id 给）：历史里的语音如果再发一遍，一次请求会被
+    ///   几段几十 MB 的 base64 撑爆，而它们早就被模型听过了。
     public static func history(
         messages: [MessageEntity],
         summarizedUpTo: Int64?,
-        imageResolver: ((MessageAttachment) -> String?)? = nil
+        imageResolver: ((MessageAttachment) -> String?)? = nil,
+        mediaParts: [String: MediaWireParts] = [:]
     ) -> [WireMessage] {
         let cutoff = summarizedUpTo.flatMap { $0 > 0 ? $0 : nil }
         // 先筛出「真的要发给模型的那几条」，再定哪几条的图值得带上（与 Android 的
@@ -399,19 +446,51 @@ public enum PromptBuilder {
         var result: [WireMessage] = []
         for message in visible {
             let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            let decoded = AttachmentsCodec.decode(message.attachmentsJson)
 
             var images: [String] = []
             if let imageResolver, imageOwnerIds.contains(message.id) {
-                images = AttachmentsCodec.decode(message.attachmentsJson)
+                images = decoded
                     .filter { $0.isImage }
                     .prefix(AttachmentsCodec.maxImagesPerMessage)
                     .compactMap { imageResolver($0) }
             }
 
+            // 这条消息带的是语音/视频吗：正文后面补一行说明（历史里**只有这一行**）。
+            var text = message.content
+            for attachment in decoded where attachment.isPlayableMedia {
+                let line = attachment.mediaContextLine
+                guard !line.isEmpty else { continue }
+                text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? line
+                    : text + "\n" + line
+            }
+
+            // 只有当轮那一条消息会真的带上二进制（音频/base64、视频关键帧）。
+            let parts = mediaParts[message.id]
+            var audio: [WireAudioPart] = []
+            if let parts {
+                audio = parts.audio
+                images.append(contentsOf: parts.images)
+                let note = parts.note.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !note.isEmpty {
+                    text = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        ? note
+                        : text + "\n" + note
+                }
+            }
+
+            // 正文为空时补一句「（发来一张图片）」：模型至少知道发生过这件事。
+            // 语音/视频消息的正文里已经有 `mediaContextLine`，不会走到这里。
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                text = "（发来一张图片）"
+            }
+
             result.append(WireMessage(
                 role: message.role == .user ? "user" : "assistant",
-                content: content.isEmpty ? "（发来一张图片）" : message.content,
-                images: images
+                content: text,
+                images: images,
+                audio: audio
             ))
         }
         return result
@@ -436,5 +515,20 @@ public enum PromptBuilder {
     public static func wireMessages(system: String, history: [WireMessage],
                                     budget: Int = PromptBuilder.contextCharBudget) -> [WireMessage] {
         [WireMessage(role: "system", content: system)] + trimHistory(history, budget: budget)
+    }
+
+    /// 按**模型窗口**装配（`spec/api-defaults/README.md` 的「上下文预算计算使用 1M 上限」）。
+    ///
+    /// 聊天走这一条：窗口 → 字数预算 → 裁剪，默认 1M 下结果与旧的 28 000 字上限相同，
+    /// 窗口被配小时才会真的少带历史。
+    public static func wireMessages(
+        system: String,
+        history: [WireMessage],
+        contextTokens: Int
+    ) -> [WireMessage] {
+        wireMessages(
+            system: system, history: history,
+            budget: historyCharBudget(contextTokens: contextTokens)
+        )
     }
 }

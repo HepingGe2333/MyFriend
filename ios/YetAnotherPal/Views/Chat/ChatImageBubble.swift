@@ -1,3 +1,4 @@
+import AVKit
 import SwiftUI
 
 /// 聊天气泡里的图片：缩略图 + 点击全屏。
@@ -80,6 +81,280 @@ struct ChatAttachmentsView: View {
         }
         let height = maxHeight
         return CGSize(width: max(96, height * clamped), height: height)
+    }
+}
+
+// MARK: - 语音 / 视频（0.13）
+
+/// 一条消息里的一段语音或视频。
+///
+/// 为什么气泡分成两种而不是一个「播放器」：
+/// - 语音是一行小条（播放键 + 时长），像微信那样占的地方最小；
+/// - 视频要有封面（首帧）+ 时长角标，点开全屏。
+///
+/// 两者的文件来源是同一套（`MediaPlayback`）：本地沙盒文件，或服务端
+/// `/v1/media/<id>`（先带 Authorization 下载成带扩展名的缓存文件再播）。
+struct ChatPlayableMediaView: View {
+
+    let attachment: MessageAttachment
+
+    var body: some View {
+        if attachment.isAudio {
+            ChatAudioBubble(attachment: attachment)
+        } else if attachment.isVideo {
+            ChatVideoBubble(attachment: attachment)
+        }
+    }
+}
+
+/// 语音气泡：播放/暂停 + 时长。播放中再点一下暂停（再点继续）。
+struct ChatAudioBubble: View {
+
+    let attachment: MessageAttachment
+
+    @Environment(\.colorScheme) private var scheme
+    @State private var player: AVPlayer?
+    @State private var item: AVPlayerItem?
+    @State private var isPlaying = false
+    @State private var isPreparing = false
+    @State private var missing = false
+
+    private var durationText: String { attachment.durationText }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button {
+                toggle()
+            } label: {
+                ZStack {
+                    Circle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 34, height: 34)
+                    if isPreparing {
+                        ProgressView().scaleEffect(0.7)
+                    } else {
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.primary.opacity(0.8))
+                    }
+                }
+                .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(isPlaying ? L("暂停语音") : L("播放语音")))
+
+            // 一根「声波」：纯装饰，但能让语音气泡一眼被认出来（不必真的画波形）。
+            HStack(spacing: 2.5) {
+                ForEach(0..<12, id: \.self) { index in
+                    Capsule()
+                        .fill(Color.primary.opacity(isPlaying ? 0.55 : 0.28))
+                        .frame(width: 2.5, height: barHeight(index))
+                }
+            }
+            .frame(height: 20)
+            .animation(.easeInOut(duration: 0.2), value: isPlaying)
+
+            Text(missing ? L("语音已不在本机") : durationText)
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(MFTheme.subtleText(scheme))
+        }
+        .frame(width: 176, alignment: .leading)
+        .onDisappear { stop() }
+        .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { note in
+            guard let item, note.object as? AVPlayerItem === item else { return }
+            isPlaying = false
+            item.seek(to: .zero)
+        }
+    }
+
+    private func barHeight(_ index: Int) -> CGFloat {
+        // 固定的一组高度（不随录音变化）：它只是「这是一段声音」的形状，不是真波形。
+        let pattern: [CGFloat] = [7, 13, 18, 11, 16, 9, 15, 20, 12, 17, 10, 14]
+        return pattern[index % pattern.count]
+    }
+
+    private func toggle() {
+        if isPlaying {
+            player?.pause()
+            isPlaying = false
+            return
+        }
+        if let player {
+            player.play()
+            isPlaying = true
+            return
+        }
+        isPreparing = true
+        Task { @MainActor in
+            guard let url = await MediaPlayback.playableFileURL(for: attachment) else {
+                isPreparing = false
+                missing = true
+                return
+            }
+            let item = AVPlayerItem(url: url)
+            let player = AVPlayer(playerItem: item)
+            self.item = item
+            self.player = player
+            self.isPreparing = false
+            player.play()
+            self.isPlaying = true
+        }
+    }
+
+    private func stop() {
+        player?.pause()
+        player = nil
+        item = nil
+        isPlaying = false
+    }
+}
+
+/// 视频气泡：首帧封面 + 时长角标；点开全屏播放。
+struct ChatVideoBubble: View {
+
+    let attachment: MessageAttachment
+
+    @Environment(\.colorScheme) private var scheme
+    @Environment(\.displayScale) private var displayScale
+    @State private var poster: CGImage?
+    @State private var missing = false
+    @State private var showPlayer = false
+
+    private var size: CGSize {
+        // 有宽高就按比例（上限 232×280，与图片气泡同一套观感）；没有就给 16:9。
+        guard attachment.width > 0, attachment.height > 0 else {
+            return CGSize(width: 232, height: 130)
+        }
+        let ratio = CGFloat(attachment.width) / CGFloat(attachment.height)
+        let clamped = min(max(ratio, 0.5), 2.4)
+        if clamped >= 1 {
+            return CGSize(width: 232, height: max(96, 232 / clamped))
+        }
+        return CGSize(width: max(96, 280 * clamped), height: 200)
+    }
+
+    var body: some View {
+        Button {
+            guard !missing else { return }
+            showPlayer = true
+        } label: {
+            ZStack {
+                if let poster {
+                    Image(decorative: poster, scale: 1)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(scheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06))
+                }
+                if missing {
+                    VStack(spacing: 6) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 22, weight: .light))
+                        Text(L("视频已不在本机"))
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(.secondary)
+                } else {
+                    Image(systemName: "play.circle.fill")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .shadow(radius: 4)
+                }
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Text(attachment.durationText)
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(.black.opacity(0.45), in: Capsule())
+                    }
+                }
+                .padding(6)
+            }
+            .frame(width: size.width, height: size.height)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(Text(L("视频，点开播放")))
+        .task(id: attachment.uri) { await loadPoster() }
+        .fullScreenCover(isPresented: $showPlayer) {
+            ChatVideoPlayerSheet(attachment: attachment)
+        }
+    }
+
+    private func loadPoster() async {
+        guard poster == nil, !missing else { return }
+        let target = Int(max(size.width, size.height) * displayScale)
+        let image = await MediaPlayback.videoPosterImage(
+            for: attachment, maxPixel: max(320, min(target, 1024))
+        )
+        if let image {
+            poster = image
+        } else {
+            missing = true
+        }
+    }
+}
+
+/// 全屏播放（`AVPlayerViewController` 的 SwiftUI 外壳 `VideoPlayer`）。
+struct ChatVideoPlayerSheet: View {
+
+    let attachment: MessageAttachment
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var url: URL?
+    @State private var failed = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            Group {
+                if let url {
+                    VideoPlayer(player: AVPlayer(url: url))
+                        .ignoresSafeArea()
+                } else if failed {
+                    VStack(spacing: 8) {
+                        Image(systemName: "video.slash")
+                            .font(.system(size: 32, weight: .light))
+                        Text(L("视频已不在本机"))
+                            .font(.footnote)
+                    }
+                    .foregroundStyle(.white.opacity(0.8))
+                } else {
+                    ProgressView().tint(.white)
+                }
+            }
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: 38, height: 38)
+                    .background(.black.opacity(0.45), in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+            .padding(.trailing, 14)
+            .accessibilityLabel(Text(L("关闭")))
+        }
+        .statusBarHidden(true)
+        .task { await load() }
+    }
+
+    private func load() async {
+        guard url == nil else { return }
+        if let local = await MediaPlayback.playableFileURL(for: attachment) {
+            url = local
+        } else {
+            failed = true
+        }
     }
 }
 

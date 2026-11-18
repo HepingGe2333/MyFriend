@@ -65,6 +65,7 @@ object AuthorityRoutes {
     fun matches(method: String, rawPath: String): Boolean {
         val path = rawPath.substringBefore('?')
         if (path == STATE_PATH || path == EVENTS_PATH || path == SESSIONS_PATH) return true
+        if (LlmConfigRoutes.matches(path)) return true
         if (path.startsWith("$SESSIONS_PATH/") || path.startsWith("$PERSONAS_PATH/")) return true
         return CrudRoutes.matches(path)
     }
@@ -102,6 +103,8 @@ object AuthorityRoutes {
             val verb = method.uppercase()
             val path = rawPath.substringBefore('?')
             when {
+                LlmConfigRoutes.matches(path) -> LlmConfigRoutes.handle(services, method, body)
+
                 path == STATE_PATH -> {
                     requireGet(verb, STATE_PATH)
                     state(store, rawPath)
@@ -123,13 +126,21 @@ object AuthorityRoutes {
                 path == PERSONAS_PATH -> CrudRoutes.handle(store, method, rawPath, body)
 
                 path.startsWith("$PERSONAS_PATH/") -> {
-                    val sub = personaSubPath(path)
-                    if (sub?.second == ACTIVITY_SEGMENT) {
-                        requirePost(verb, "$PERSONAS_PATH/{id}/$ACTIVITY_SEGMENT")
-                        activity(store, sub.first, body)
+                    if (EvolutionRoutes.matches(path)) {
+                        // 人格进化：evaluate / pending / accept / reject（0.13）。
+                        EvolutionRoutes.handle(services, method, rawPath, body)
+                    } else if (MoodRoutes.matches(path)) {
+                        // 多维情绪判定（0.13）。
+                        MoodRoutes.handle(services, method, rawPath, body)
                     } else {
-                        // DELETE /v1/personas/{id}（没有子路径）、GET/POST /v1/personas/{id}/memories
-                        CrudRoutes.handle(store, method, rawPath, body)
+                        val sub = personaSubPath(path)
+                        if (sub?.second == ACTIVITY_SEGMENT) {
+                            requirePost(verb, "$PERSONAS_PATH/{id}/$ACTIVITY_SEGMENT")
+                            activity(store, sub.first, body)
+                        } else {
+                            // DELETE /v1/personas/{id}（没有子路径）、GET/POST /v1/personas/{id}/memories
+                            CrudRoutes.handle(store, method, rawPath, body)
+                        }
                     }
                 }
 

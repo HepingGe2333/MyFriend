@@ -49,6 +49,9 @@ object CrudRoutes {
     const val BACKUP_PATH = "/v1/backup"
     const val PUSH_REGISTER_PATH = "/v1/push/register"
 
+    /** 0.13：表情包（`spec/stickers`）。 */
+    const val STICKERS_PATH = StickerRoutes.PATH
+
     /** 批量历史消息导入路由的后缀；完整路径是 `/v1/sessions/{id}/messages/import`。 */
     const val MESSAGES_IMPORT_SUFFIX = "/messages/import"
 
@@ -69,7 +72,8 @@ object CrudRoutes {
             path == PRESETS_PATH || path.startsWith("$PRESETS_PATH/") ||
             path == SETTINGS_PATH ||
             path == BACKUP_PATH ||
-            path == PUSH_REGISTER_PATH
+            path == PUSH_REGISTER_PATH ||
+            StickerRoutes.matches(path)
 
     /** `/v1/sessions/{id}/messages/import` 的形状判断（HTTP 层用它放宽请求体上限）。 */
     fun isMessageImportPath(path: String): Boolean =
@@ -128,6 +132,9 @@ object CrudRoutes {
                 "DELETE" -> unregisterPush(store, rawPath, body)
                 else -> throw methodNotAllowed("$PUSH_REGISTER_PATH 只支持 POST/DELETE")
             }
+
+            // 表情包（0.13）：GET/POST /v1/stickers、DELETE /v1/stickers/{id}。
+            StickerRoutes.matches(path) -> StickerRoutes.handle(store, verb, rawPath, body)
 
             else -> throw notFound("没有这个接口")
         }
@@ -211,6 +218,11 @@ object CrudRoutes {
         if (sub == "activity") {
             // 活动上报仍由 AuthorityRoutes 校验/归一化；这里不会走到（见 AuthorityRoutes.handle）。
             throw notFound("没有这个人格接口")
+        }
+        if (DiaryRoutes.matches(path, sub)) {
+            // 日记板（0.13）：GET/POST /v1/personas/{id}/diary、DELETE …/diary/{noteId}。
+            requireValidId(personaId, "personaId")
+            return DiaryRoutes.handle(store, verb, personaId, sub, rawPath, body)
         }
         if (sub != "memories") throw notFound("没有这个人格接口")
         requireValidId(personaId, "personaId")
@@ -554,7 +566,7 @@ object CrudRoutes {
         return Response(200, out.toString())
     }
 
-    private fun postBackup(store: FileStore, body: String?): Response = importBackup(store) {
+    private fun postBackup(store: FileStore, body: String?): Response = importBackup(store, FileStore.MODE_MERGE) {
         if (body.isNullOrBlank()) throw AgentdApi.ApiFailure(400, "empty_body", "请求体不能为空")
         StringReader(body)
     }
@@ -564,8 +576,8 @@ object CrudRoutes {
      * 这里用文件 [Reader] 增量解析（内存与备份大小无关）。异常在这里就地翻成统一错误体
      * （调用方是 `AgentdServer`，不经过 `AuthorityRoutes.handle` 的 catch）。
      */
-    fun importBackupFromFile(store: FileStore, file: Path): Response = try {
-        importBackup(store) { Files.newBufferedReader(file, StandardCharsets.UTF_8) }
+    fun importBackupFromFile(store: FileStore, file: Path, mode: String = FileStore.MODE_MERGE): Response = try {
+        importBackup(store, mode) { Files.newBufferedReader(file, StandardCharsets.UTF_8) }
     } catch (failure: AgentdApi.ApiFailure) {
         AgentdApi.errorResponse(failure.status, failure.code, failure.message ?: "备份不合法")
     } catch (unexpected: Exception) {
@@ -573,9 +585,13 @@ object CrudRoutes {
     }
 
     /** 备份导入的公共异常映射（两条入口共用）。 */
-    private inline fun importBackup(store: FileStore, open: () -> Reader): Response {
+    private inline fun importBackup(
+        store: FileStore,
+        mode: String = FileStore.MODE_MERGE,
+        open: () -> Reader
+    ): Response {
         val result = try {
-            open().use { store.importBackupRequest(it) }
+            open().use { store.importBackupRequest(it, bareMode = mode) }
         } catch (unsupported: UnsupportedBackupVersionException) {
             throw AgentdApi.ApiFailure(409, "unsupported_backup_version", unsupported.message ?: "备份版本不支持")
         } catch (invalidBackup: BackupValidationException) {
@@ -597,6 +613,8 @@ object CrudRoutes {
                         "memories" to StoreJson.num(result.memories),
                         "presets" to StoreJson.num(result.presets),
                         "media" to StoreJson.num(result.media),
+                        "stickers" to StoreJson.num(result.stickers),
+                        "diaryNotes" to StoreJson.num(result.diaryNotes),
                         "settings" to StoreJson.bool(result.settings)
                     )
                 )

@@ -127,6 +127,15 @@ public struct ServerBootstrapReport: Equatable, Sendable {
     public var settingsPulled: Bool
     /// 这次有没有把本地头像上传成 `USER_AVATAR`（推设置时顺手做的）。
     public var avatarUploaded: Bool
+    /// 历史媒体逐项上传的结果（0.13：`mediaUploaded` 真正传上去的项数，
+    /// `mediaReused` 已经是服务端引用的项数，`mediaFailed` 没传上去的项数）。
+    public var mediaUploaded: Int
+    public var mediaReused: Int
+    public var mediaFailed: Int
+    /// 这次是按「只同步之后的新内容」跑的：没有推任何历史消息。
+    public var historySkipped: Bool
+    /// 这次跑的同意方式（写进完成标记，设置页重启后能还原）。
+    public var consent: ServerSyncConsentDecision?
     public var at: Int64
 
     public init(
@@ -147,6 +156,11 @@ public struct ServerBootstrapReport: Equatable, Sendable {
         settingsPushed: Bool = false,
         settingsPulled: Bool = false,
         avatarUploaded: Bool = false,
+        mediaUploaded: Int = 0,
+        mediaReused: Int = 0,
+        mediaFailed: Int = 0,
+        historySkipped: Bool = false,
+        consent: ServerSyncConsentDecision? = nil,
         at: Int64 = 0
     ) {
         self.mode = mode
@@ -166,6 +180,11 @@ public struct ServerBootstrapReport: Equatable, Sendable {
         self.settingsPushed = settingsPushed
         self.settingsPulled = settingsPulled
         self.avatarUploaded = avatarUploaded
+        self.mediaUploaded = mediaUploaded
+        self.mediaReused = mediaReused
+        self.mediaFailed = mediaFailed
+        self.historySkipped = historySkipped
+        self.consent = consent
         self.at = at
     }
 
@@ -174,6 +193,9 @@ public struct ServerBootstrapReport: Equatable, Sendable {
             + "、记忆 \(memoriesPushed)/\(memoriesPulled)、会话 \(sessionsPushed)/\(sessionsPulled)"
             + "、消息 推 \(messagesPushed)（跳过 \(messagesSkipped)）/拉 \(messagesPulled)"
             + "\(attachmentsDropped > 0 ? "、丢弃本地图引用 \(attachmentsDropped)" : "")"
+            + (mediaUploaded + mediaFailed > 0
+                ? "、媒体 上传 \(mediaUploaded)（失败 \(mediaFailed)）" : "")
+            + (historySkipped ? "、只同步了新内容" : "")
     }
 }
 
@@ -182,6 +204,8 @@ public enum ServerBootstrapOutcome: Equatable, Sendable {
     case skipped(reason: String)
     case completed(ServerBootstrapReport)
     case failed(message: String, attempts: Int)
+    /// 用户取消（进度条上的「取消」/ 拨回开关）。取消后不切换模式。
+    case cancelled
 }
 
 /// 完成标记的内容（`server_bootstrap_done:<url>` 的值）。
@@ -189,17 +213,22 @@ public struct ServerBootstrapDone: Codable, Equatable, Sendable {
     public var at: Int64
     public var mode: String
     public var messages: Int
+    /// 这次是按哪种同意方式跑的（`FULL` / `NEW_ONLY`）。老完成标记没有这个字段 → nil。
+    public var consent: String?
 
-    public init(at: Int64, mode: String, messages: Int) {
+    public init(at: Int64, mode: String, messages: Int, consent: String? = nil) {
         self.at = at
         self.mode = mode
         self.messages = messages
+        self.consent = consent
     }
 
     /// 给设置页显示的一行（进程重启后没有内存里的 report，只能从这里还原）。
     public var describe: String {
         let label = ServerBootstrapMode(rawValue: mode)?.label ?? mode
-        return "上次接上时：\(label) · 推上去 \(messages) 条"
+        let suffix = consent == ServerSyncConsentDecision.newOnly.rawValue
+            ? " · 只同步之后的新内容" : ""
+        return "上次接上时：\(label)\(suffix) · 推上去 \(messages) 条"
     }
 }
 
@@ -226,6 +255,8 @@ public actor ServerBootstrapService {
     private let client: ServerAPIClient
     private let stores: DatabaseStores
     private let state: ServerSyncStateStore
+    /// 服务端媒体 id → 附件元信息（0.13：语音/视频同步回来要知道自己是什么）。
+    private let mediaMeta: ServerMediaMetaStore
     private let resolver: ServerSessionResolver
     /// 服务端设置拉回来要落到这里；单独构造（测试不关心设置）时可为 nil。
     private let settings: SettingsStore?
@@ -233,6 +264,8 @@ public actor ServerBootstrapService {
     private let memories: MemoryRepository?
     /// 本地头像上传（推设置时顺手做）；不注入时本地头像不推到服务端。
     private let avatarUploader: ServerUserAvatarUploader?
+    /// 历史媒体逐项上传（consent == .full 时跑）；不注入时跳过（只搬文字）。
+    private let mediaUploader: (any ServerHistoryMediaUploading)?
     private let retry: ServerSyncService.RetryPolicy
     private let now: () -> Int64
     private let log: (String) -> Void
@@ -244,6 +277,9 @@ public actor ServerBootstrapService {
     private var serverSessions: [String: ServerSession] = [:]
     /// 本次运行里已经处理过的会话（服务端 id），避免同一会话在推/拉两阶段重复。
     private var pulledMessageIds: [String: Set<String>] = [:]
+    /// 本次全量拉取里每条消息的附件引用（本地会话 id → [(消息 id, 服务端引用)]）。
+    /// 「切回本地」的校验要确认这些引用真的落进了本地库（不是只落了一半）。
+    private var pulledAttachmentRefs: [String: [(messageId: String, uri: String)]] = [:]
     /// **服务端人格 id → 本机人格 id**（只在两边 id 不同时才有这一行）。
     ///
     /// 为什么必须有它：本机模式先播了种子人格（id 是本机 UUID），服务端也播了自己的种子
@@ -260,6 +296,7 @@ public actor ServerBootstrapService {
         settings: SettingsStore? = nil,
         memories: MemoryRepository? = nil,
         avatarUploader: ServerUserAvatarUploader? = nil,
+        mediaUploader: (any ServerHistoryMediaUploading)? = nil,
         retry: ServerSyncService.RetryPolicy = ServerSyncService.RetryPolicy(),
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in },
@@ -272,10 +309,12 @@ public actor ServerBootstrapService {
         self.client = client
         self.stores = stores
         self.state = state ?? ServerSyncStateStore(database: stores.database)
+        self.mediaMeta = ServerMediaMetaStore(database: stores.database)
         self.resolver = ServerSessionResolver(stores: stores)
         self.settings = settings
         self.memories = memories
         self.avatarUploader = avatarUploader
+        self.mediaUploader = mediaUploader
         self.retry = retry
         self.now = now
         self.log = log
@@ -310,7 +349,13 @@ public actor ServerBootstrapService {
     /// - Parameters:
     ///   - force: 忽略完成标记与「正在跑」标志（设置页「重新同步」/ 测试用）。
     ///     生产路径不要传：它会让每次进前台都重推一遍全量。
-    public func bootstrap(force: Bool = false) async -> ServerBootstrapOutcome {
+    ///   - consent: 用户对这台服务端的同意方式（`FULL`：搬历史+媒体；
+    ///     `NEW_ONLY`：只搬人格/预设/设置等元数据，**不推历史消息**）。
+    ///     默认 `.full` 是为了不影响既有调用点（老测试/重试路径），生产路径一律显式传。
+    public func bootstrap(
+        force: Bool = false,
+        consent: ServerSyncConsentDecision = .full
+    ) async -> ServerBootstrapOutcome {
         guard client.config.isUsable else {
             return .skipped(reason: "服务端模式未启用")
         }
@@ -331,7 +376,7 @@ public actor ServerBootstrapService {
         while attempt < retry.maxAttempts {
             attempt += 1
             do {
-                let report = try await run(resuming: !force)
+                let report = try await run(resuming: !force, consent: consent)
                 markDone(report)
                 publish(ServerBootstrapProgress(
                     stage: .done,
@@ -348,8 +393,15 @@ public actor ServerBootstrapService {
                 log("首次同步完成：\(report.describe)")
                 return .completed(report)
             } catch is CancellationError {
-                return .failed(message: "首次同步被取消", attempts: attempt)
+                log("首次同步被取消（不切换模式）")
+                return .cancelled
             } catch {
+                // 取消有时会以网络错误的形式冒出来（URLSession 的 cancelled）：
+                // 别把它当抖动重试三遍，直接按取消处理。
+                if Task.isCancelled {
+                    log("首次同步被取消（不切换模式）")
+                    return .cancelled
+                }
                 lastMessage = ServerSyncService.describe(error)
                 log("首次同步失败（第 \(attempt)/\(retry.maxAttempts) 次）：\(lastMessage)")
                 guard attempt < retry.maxAttempts else { break }
@@ -359,13 +411,177 @@ public actor ServerBootstrapService {
         return .failed(message: lastMessage, attempts: attempt)
     }
 
+    // MARK: 云端 → 本地：全量下载 + 校验（0.13）
+
+    /// 把服务端的**全部**内容拉回本机，并校验消息条数/媒体引用。
+    ///
+    /// 与 `bootstrap()` 的区别：
+    /// - 只拉不推（切回本地时服务端是权威，不能用本机缓存盖掉它）；
+    /// - 不写「首次同步完成」标记（下次再开服务端模式时 bootstrap 仍会按需跑，幂等）；
+    /// - 跑完做一次条数校验，**不通过就不算成功**（调用方据此保持服务端模式）。
+    ///
+    /// 失败按 `ServerSyncService.RetryPolicy` 重试；取消会抛不出去（转成 `failed`。
+    /// 条数校验失败不重试：数据对不上不是网络抖动，重试只会白跑几千个请求。
+    public func downloadAll() async -> ServerRestoreOutcome {
+        guard client.config.isUsable else {
+            return .skipped(reason: "服务端模式未启用")
+        }
+        if inFlight { return .skipped(reason: "已经有一次同步在跑") }
+        inFlight = true
+        defer { inFlight = false }
+
+        var attempt = 0
+        var lastMessage = ""
+        while attempt < retry.maxAttempts {
+            attempt += 1
+            do {
+                let report = try await downloadOnce()
+                if report.verification.passed {
+                    log("全量下载完成：\(report.describe)")
+                    return .completed(report)
+                }
+                log("全量下载校验失败：\(report.verification.describe)")
+                return .failed(
+                    message: report.verification.describe,
+                    verification: report.verification
+                )
+            } catch is CancellationError {
+                return .failed(message: "取消", verification: nil)
+            } catch {
+                if Task.isCancelled { return .failed(message: "取消", verification: nil) }
+                lastMessage = ServerSyncService.describe(error)
+                log("全量下载失败（第 \(attempt)/\(retry.maxAttempts) 次）：\(lastMessage)")
+                guard attempt < retry.maxAttempts else { break }
+                await sleeper(retry.delay(after: attempt))
+            }
+        }
+        return .failed(message: lastMessage, verification: nil)
+    }
+
+    /// 一轮全量下载（内部）。
+    private func downloadOnce() async throws -> ServerRestoreReport {
+        let at = now()
+        personaAlias.removeAll()
+        pulledMessageIds.removeAll()
+        pulledAttachmentRefs.removeAll()
+        publish(ServerBootstrapProgress(stage: .detecting, mode: .pull, detail: "取回全部记录", at: at))
+
+        let snapshot = try await client.state(since: 0)
+        serverSessions = Dictionary(
+            snapshot.sessions.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let localPersonas = try stores.personas.all(orderBy: "createdAt ASC")
+        // 本机人格与服务端人格同名不同 id 时先铺折算，避免拉出第二个「林深」。
+        primePersonaAlias(localPersonas: localPersonas)
+
+        var report = ServerBootstrapReport(mode: .pull, at: at)
+        let total = snapshot.personas.count + snapshot.sessions.count + 1
+            + snapshot.personas.count + 1 + snapshot.sessions.count
+        var record: ServerBootstrapRecord?
+        try await pullAll(
+            snapshot: snapshot,
+            report: &report,
+            record: &record,
+            progressBase: 0,
+            progressTotal: max(total, 1)
+        )
+        if snapshot.serverCursor > 0 {
+            try state.advanceCursor(to: snapshot.serverCursor, at: at)
+            try state.set(String(at), for: ServerSyncStateStore.Key.lastSyncAt, at: at)
+        }
+
+        let verification = try verifyRestore(snapshot)
+        let atEnd = now()
+        publish(ServerBootstrapProgress(
+            stage: .done,
+            mode: .pull,
+            completed: report.messagesPulled,
+            total: report.messagesPulled,
+            detail: verification.describe,
+            at: atEnd
+        ))
+        return ServerRestoreReport(
+            personas: report.personasPulled,
+            sessions: report.sessionsPulled,
+            messages: report.messagesPulled,
+            presets: report.presetsPulled,
+            memories: report.memoriesPulled,
+            settingsPulled: report.settingsPulled,
+            verification: verification,
+            at: atEnd
+        )
+    }
+
+    /// 校验「服务端有的，本地都有」。
+    ///
+    /// 口径见 `ServerRestoreVerification`：本机独有的消息允许存在（合并语义），
+    /// 但服务端声称的条数不能多于本地，且服务端真的发下来的每条消息 id、
+    /// 每个媒体引用都必须落库。
+    private func verifyRestore(_ snapshot: ServerStateSnapshot) throws -> ServerRestoreVerification {
+        var verification = ServerRestoreVerification()
+        for serverPersona in snapshot.personas {
+            if ((try? stores.personas.byId(serverPersona.id)) ?? nil) == nil {
+                verification.failures.append("人格「\(serverPersona.name)」没有落到本机")
+            }
+        }
+        for serverSession in snapshot.sessions {
+            let localId = resolver.existingLocalSessionId(serverSessionId: serverSession.id)
+                ?? serverSession.id
+            guard let localSession = (try? stores.sessions.byId(localId)) ?? nil else {
+                verification.failures.append("会话 \(serverSession.id) 没有落到本机")
+                continue
+            }
+            _ = localSession
+            let localMessages = (try? stores.messages.bySession(localId)) ?? []
+            let localIds = Set(localMessages.map(\.id))
+            let serverIds = pulledMessageIds[localId] ?? []
+            let serverCount = Int(serverSession.messageCount)
+            let localCount = localIds.count
+            verification.sessionsChecked += 1
+            verification.messagesOnServer += serverCount
+            verification.messagesOnLocal += localCount
+
+            let missingIds = serverIds.subtracting(localIds)
+            let countGap = max(0, serverCount - localCount)
+            if missingIds.count > 0 || countGap > 0 {
+                verification.missingMessages += max(missingIds.count, countGap)
+                verification.failures.append(
+                    "会话 \(serverSession.id)：本地 \(localCount) 条，服务端 \(serverCount) 条"
+                )
+            }
+            if localCount > serverCount {
+                verification.extraLocalMessages += localCount - serverCount
+            }
+
+            for entry in pulledAttachmentRefs[localId] ?? [] {
+                verification.mediaRefs += 1
+                guard let mediaId = ServerMediaReference.mediaId(from: entry.uri) else { continue }
+                let localMessage = (try? stores.messages.byId(entry.messageId)) ?? nil
+                let localIdsInMessage = AttachmentsCodec.decode(localMessage?.attachmentsJson)
+                    .compactMap { ServerMediaReference.mediaId(from: $0.uri) }
+                if !localIdsInMessage.contains(mediaId) {
+                    verification.missingMediaRefs += 1
+                }
+            }
+        }
+        if verification.missingMediaRefs > 0 {
+            verification.failures.append("本地缺 \(verification.missingMediaRefs) 处媒体引用")
+        }
+        return verification
+    }
+
     // MARK: 内部：一轮
 
-    private func run(resuming: Bool) async throws -> ServerBootstrapReport {
+    private func run(
+        resuming: Bool,
+        consent: ServerSyncConsentDecision
+    ) async throws -> ServerBootstrapReport {
         let at = now()
         // 每次重试都是一轮新的对账：上一轮失败前记下的折算关系可能已经过时（用户删了人格）。
         personaAlias.removeAll()
         pulledMessageIds.removeAll()
+        pulledAttachmentRefs.removeAll()
         publish(ServerBootstrapProgress(
             stage: .detecting, mode: .empty, detail: "", at: at
         ))
@@ -394,7 +610,7 @@ public actor ServerBootstrapService {
         log("首次同步：本机 \(localPersonas.count) 人 / \(localSessions.count) 段会话，"
             + "服务端 \(snapshot.personas.count) 人 / \(snapshot.sessions.count) 段会话 → \(mode.rawValue)")
 
-        var report = ServerBootstrapReport(mode: mode, at: at)
+        var report = ServerBootstrapReport(mode: mode, consent: consent, at: at)
         if mode == .empty {
             // 两边都没有：仍然把设置推一次（主题/头像这类东西没有历史也能搬），
             // 但不再造会话。失败不影响「完成」——下一次进前台会重试。
@@ -453,8 +669,28 @@ public actor ServerBootstrapService {
             }
         }
 
+        // 4.5) 历史媒体逐项上传（只在「同意并同步」时做）。
+        //
+        // 为什么必须在 import 之前：服务端的 import 只认 `/v1/media/<id>`，
+        // 本地 `file://` 会被整批 `unknown_media` 拒掉。上传器会把本地消息的
+        // `attachmentsJson` 改写成服务端引用，`pushSessions` 随后就按正常路径搬。
+        // 失败项保留本地引用（不阻断整次同步），计数进报告。
+        if consent == .full, let mediaUploader {
+            let mediaReport = try await mediaUploader.uploadAll()
+            report.mediaUploaded = mediaReport.uploaded
+            report.mediaReused = mediaReport.reused
+            report.mediaFailed = mediaReport.failed
+            log("历史媒体：\(mediaReport.describe)")
+        }
+
         // 5) 推会话与消息（push：全部；merge：只推服务端还没有的那些消息）。
-        if mode == .push || mode == .merge {
+        //
+        // 「只同步之后的新内容」：**一条历史消息都不推**（连会话都不建）。
+        // 之后的聊天走 `ServerChatGateway`，服务端按需建会话。
+        if consent == .newOnly {
+            report.historySkipped = true
+            log("同意方式为 NEW_ONLY：不推历史消息（\(localSessions.count) 段会话留在本机）")
+        } else if mode == .push || mode == .merge {
             if personaIdMap.isEmpty {
                 personaIdMap = loadPersonaIdMap(localIds: localPersonas.map(\.id))
             }
@@ -956,6 +1192,10 @@ public actor ServerBootstrapService {
             if record?.pulledSessions.contains(localId) == true { continue }
             let messages = try await pullAllBlocks(serverSession: serverSession)
             pulledMessageIds[localId] = Set(messages.map(\.id))
+            // 「切回本地」的校验要确认服务端消息里的媒体引用真的落进了本地库。
+            pulledAttachmentRefs[localId] = messages.flatMap { message in
+                message.attachments.map { (messageId: message.id, uri: $0) }
+            }
             let written = try writeMessages(
                 messages,
                 snapshot: snapshot,
@@ -1175,7 +1415,8 @@ public actor ServerBootstrapService {
                     : mappedPersonaId
                 let existing = (try? stores.messages.byId(serverMessage.id)) ?? nil
                 var record = ServerSyncMapping.message(
-                    from: serverMessage, existing: existing, personaId: personaId, now: at
+                    from: serverMessage, existing: existing, personaId: personaId, now: at,
+                    mediaMeta: mediaMeta
                 )
                 record.sessionId = localId
                 // 已读时间：快照/分页里的 readAt 是服务端权威，映射里已经带上；
@@ -1233,7 +1474,10 @@ public actor ServerBootstrapService {
 
     private func markDone(_ report: ServerBootstrapReport) {
         let done = ServerBootstrapDone(
-            at: report.at, mode: report.mode.rawValue, messages: report.messagesPushed
+            at: report.at,
+            mode: report.mode.rawValue,
+            messages: report.messagesPushed,
+            consent: report.consent?.rawValue
         )
         if let data = try? JSONEncoder().encode(done),
            let text = String(data: data, encoding: .utf8) {

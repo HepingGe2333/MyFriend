@@ -35,6 +35,53 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
 - For searchability, historical entries below use the current product, package and path names. The only
   retained legacy string is the compatibility format name `myfriend.backup`.
 
+
+## 0.13.0
+
+Release: 0.13.0 / build 20 (Android and iOS); the server runs independently and backup v6 interoperates with clients.
+
+- **Current time injected every turn**: chat/proactive/tool loops read the local time (date + weekday + HH:mm + UTC
+  offset) per request; never cached, never appended twice.
+- **Model API defaults**: temperature 0.75, context limit 1,000,000, max output 16,384; explicit config wins.
+- **Diary board `diary` tool** (schema v15): add/list/remove the persona's own notes with `remindAt`/`remindInMinutes`;
+  reminders become thoughts via the heartbeat, fire once, and are not back-filled after 24h. Both platforms share the schema.
+- **Prompt framework completed**: a new "what you can do" section generated from the tool registry (purpose, side
+  effects, contrast), with contract tests keeping it identical to the registry.
+- **Persona evolution**: every 20 user messages or 24h the model may propose ≤3 changes (only
+  traits/likes/behaviors/quirks, confidence ≥0.6, de-duplicated) into a "recent changes" review list; accepted changes
+  are applied with version+1, proposals expire after 7 days.
+- **Stickers**: importing images/GIF/WebP/APNG compresses them to GIF (≤512 KB, 320 px long edge, ≤20 fps, ≤60 frames,
+  ≤6 s); a dedicated picker + history panel (recent 30/all), tap to send, long-press to save. The model `sticker` tool can
+  send / make (download, base+text, base+overlay, position) / save, uploaded through `/v1/media?kind=STICKER` in server mode.
+- **Voice and video**: hold to record (AAC 16 kHz, ≤5 min, ≤8 MB) or pick a video (≤2 min/64 MB, no transcode); attachments
+  gain AUDIO/VIDEO kinds and duration, with playable bubbles. The model actually hears audio via multimodal `input_audio`
+  and sees video keyframes, plus new `listen(audioId?)` / `watch(videoId?)` tools; unsupported models fail explicitly.
+- **Consent when switching to the cloud**: a dialog (sync everything / only new content / cancel); agreeing uploads
+  historical media item by item with progress, failures and cancellation; declining keeps local mode. Switching back to
+  local performs a full download with count verification and stays in cloud mode on failure.
+- **Tool capability section unified** across platforms (same generated format).
+- **Persona evolution works in cloud mode**: server-mode replies also evaluate every 20 messages/24 h; accepting posts
+  `/v1/personas` and updates the local cache.
+- **Server media resources are downloaded**: when syncing `/v1/media/<id>` the clients download bytes into the
+  persistent per-kind local directories (images/avatars/stickers/audio/video), rewrite attachments to local paths and
+  keep `serverMediaId`; idempotent, failures counted and left as placeholders; rendering/playback uses local files.
+- **Cloud mood and persona evolution**: server-mode replies call `/v1/personas/{id}/mood/evaluate` (every 4 messages) and
+  `evolution/evaluate`, `pending`, `accept|reject`; acceptance writes the server's response into the local cache and is
+  skipped silently when the server has no LLM.
+- **A local server uses the client's model config**: clients push their own config to a loopback server via
+  `POST /v1/llm-config`; remote servers return 403 and must be configured by the deployer with `--llm-*` / `YAP_LLM_*`.
+- **Full backup v6**: media (images/avatars/stickers/audio/video) plus `stickers[]` and `diaryNotes[]`, restoring files
+  and rows; v1–v5 remain readable; 8 MiB per file and 128 MiB total with skipped counts.
+- **Video/audio upload limits**: duration and size are checked before sending/uploading (video ≤2 min/64 MiB,
+  audio ≤5 min/8 MiB); over-limit items are rejected without uploading.
+- **Prompt tested against the DeepSeek API**: after stating explicitly "when you do not want to talk, call stay_silent
+  instead of replying in text; do not use it when the user raises something important", the model stays silent for
+  "good night / you there / eaten?" and replies normally to "my boss yelled at me". The rule is now part of the anti-AI
+  section on both platforms.
+- **Still missing**: backups do not carry sticker/audio/video binaries or diary notes; `listen/watch` in server mode must be
+  executed by agentd (clients support upload and local-mode tools this round).
+- Tests: Android 1568 / 153 classes, iOS 1753 (2 skipped), agentd 392, agentcore 90; both platforms build.
+
 ## 0.12.1
 
 Patch release: **automatic two-way synchronisation when switching to a remote server**, **new clients pull their history

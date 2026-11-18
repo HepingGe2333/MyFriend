@@ -9,23 +9,29 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.yap.app.R
 import com.yap.app.data.remote.ServerConfigRejection
+import com.yap.app.data.remote.ServerSyncConsent
 import com.yap.app.ui.components.SettingCard
 import com.yap.app.ui.components.SettingRow
 import com.yap.app.ui.components.StyledOutlinedField
@@ -49,12 +55,17 @@ fun ServerModeSection(
     onSetEnabled: (Boolean) -> Unit,
     onTest: (url: String, token: String) -> Unit,
     onClearToken: () -> Unit,
+    onConsent: (ServerSyncConsent) -> Unit,
+    onDismissConsent: () -> Unit,
+    onCancelSync: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     // 首次/保存后把已存的地址带进输入框；用户正在打字时 state.url 不会变，所以不会被覆盖。
     var url by rememberSaveable(state.url) { mutableStateOf(state.url) }
     var token by rememberSaveable { mutableStateOf("") }
-    var enabled by rememberSaveable(state.enabled) { mutableStateOf(state.enabled) }
+    // 开关完全由状态驱动：本地 → 远程要先过同意弹窗，远程 → 本地要先完成全量下载，
+    // 所以不能在点击时先乐观翻转（那会出现「看起来切了、其实没有」）。
+    val enabled = state.enabled
 
     SectionLabel(stringResource(R.string.settings_section_server), modifier = modifier)
     SettingCard {
@@ -65,10 +76,7 @@ fun ServerModeSection(
             trailing = {
                 Switch(
                     checked = enabled,
-                    onCheckedChange = { checked ->
-                        enabled = checked
-                        onSetEnabled(checked)
-                    }
+                    onCheckedChange = { checked -> onSetEnabled(checked) }
                 )
             },
             showDivider = true
@@ -133,6 +141,25 @@ fun ServerModeSection(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
+            // 0.13：历史媒体逐项上传 / 全量下载的进度 + 取消（取消后不切换模式）。
+            state.syncStatus?.let { status ->
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = status,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (state.syncRunning) {
+                        Spacer(Modifier.weight(1f))
+                        TextButton(onClick = onCancelSync) {
+                            Text(stringResource(R.string.settings_server_cancel_sync))
+                        }
+                    }
+                }
+            }
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -167,6 +194,49 @@ fun ServerModeSection(
                 )
             }
         }
+    }
+    if (state.consentPrompt) {
+        ServerSyncConsentDialog(onChoose = onConsent, onDismiss = onDismissConsent)
+    }
+}
+
+/**
+ * 0.13「把对话交给云端处理？」弹窗（`spec/sync-consent/README.md` §1）。
+ *
+ * 三个选项是规格的一部分：**同意并同步** / **只同步之后的新内容** / **取消**，
+ * 默认焦点放在「取消」——这是一次会把私人聊天传到别人机器上的操作，默认不该是同意。
+ */
+@Composable
+private fun ServerSyncConsentDialog(
+    onChoose: (ServerSyncConsent) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val cancelFocus = remember { FocusRequester() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.settings_server_consent_title)) },
+        text = { Text(stringResource(R.string.settings_server_consent_body)) },
+        confirmButton = {
+            Column {
+                TextButton(onClick = { onChoose(ServerSyncConsent.FULL) }) {
+                    Text(stringResource(R.string.settings_server_consent_full))
+                }
+                TextButton(onClick = { onChoose(ServerSyncConsent.NEW_ONLY) }) {
+                    Text(stringResource(R.string.settings_server_consent_new_only))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.focusRequester(cancelFocus)
+            ) {
+                Text(stringResource(R.string.settings_server_consent_cancel))
+            }
+        }
+    )
+    LaunchedEffect(cancelFocus) {
+        runCatching { cancelFocus.requestFocus() }
     }
 }
 

@@ -13,6 +13,7 @@ import com.yap.app.data.ai.SpeechStyleSummarizer
 import com.yap.app.data.ai.WorldPresetExpander
 import com.yap.app.data.repo.PresetDraft
 import com.yap.app.data.repo.PresetRepository
+import com.yap.app.domain.PersonaDraftDefaults
 import com.yap.app.domain.SpeechStyle
 import com.yap.app.domain.SpeechStyleCodec
 import com.yap.app.domain.WorldEditorState
@@ -209,14 +210,16 @@ class PresetEditorViewModel @Inject constructor(
         val current = _state.value
         if (current.saving) return
         val form = current.form
-        if (form.name.isBlank()) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_name_required))) }
-            return
-        }
-        if (form.prompt.isBlank()) {
-            viewModelScope.launch { events.send(PresetEditorEvent.Message(context.getString(R.string.preset_editor_prompt_required))) }
-            return
-        }
+        // 0.13：预设和人格共用同一套兜底——名字空 → 本地化默认名，提示词空 → 用名字 + 简介生成。
+        // 只保留「最终能生成一段提示词」这一个约束，世界/话风全空也能直接保存。
+        val name = PersonaDraftDefaults.name(form.name, context.getString(R.string.draft_default_name))
+        val prompt = PersonaDraftDefaults.prompt(
+            rawPrompt = form.prompt,
+            name = form.name,
+            description = form.description,
+            separator = context.getString(R.string.draft_default_prompt_separator),
+            fallback = context.getString(R.string.draft_default_prompt)
+        )
         // 可视化编辑器也要校验：问题定位到「哪一段的第几行」，不静默丢条目（规范 §2.3）。
         val worldIssues = form.world.issues()
         if (worldIssues.isNotEmpty()) {
@@ -237,9 +240,9 @@ class PresetEditorViewModel @Inject constructor(
             val result = presetRepository.save(
                 PresetDraft(
                     id = presetId,
-                    name = form.name,
+                    name = name,
                     description = form.description,
-                    prompt = form.prompt,
+                    prompt = prompt,
                     category = form.category,
                     avatarUri = null,
                     avatarSeed = form.avatarSeed,

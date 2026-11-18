@@ -142,12 +142,48 @@ public struct ServerMood: Codable, Equatable, Sendable {
     public var label: String
     public var intensity: Int
     public var updatedAt: Int64
+    /// 0.13 的三维心情（`spec/mood/README.md` §1）。老服务端不下发这三个键 → nil。
+    ///
+    /// 用可选而不是「默认 0/2/3」：`nil` 表示「这个服务端还不懂三维」，
+    /// 此时本地退回词表推断（`MoodState.resolvedDimensions`），与升级前行为一致。
+    public var valence: Int?
+    public var arousal: Int?
+    public var dominance: Int?
+    /// 为什么会这样（一句话）。老服务端没有这个键。
+    public var reason: String?
 
-    public init(personaId: String, label: String, intensity: Int = 0, updatedAt: Int64 = 0) {
+    public init(
+        personaId: String,
+        label: String,
+        intensity: Int = 0,
+        updatedAt: Int64 = 0,
+        valence: Int? = nil,
+        arousal: Int? = nil,
+        dominance: Int? = nil,
+        reason: String? = nil
+    ) {
         self.personaId = personaId
         self.label = label
         self.intensity = intensity
         self.updatedAt = updatedAt
+        self.valence = valence
+        self.arousal = arousal
+        self.dominance = dominance
+        self.reason = reason
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case personaId, label, intensity, updatedAt, valence, arousal, dominance, reason
+    }
+
+    /// 服务端下发的三维 → 本地 `MoodDimensions`；三个都缺就返回 nil。
+    ///
+    /// 缺一个/两个时**不猜**：三维是一组（愉快度/唤醒度/掌控感），拿默认值补齐会让
+    /// 「他今天很平静」和「服务端没给我这一维」混成同一个状态（与 `MoodState.dimensions`
+    /// 的取舍同一条理由）。所以只要有一个缺失，就整组退回词表推断。
+    public var dimensions: MoodDimensions? {
+        guard let valence, let arousal, let dominance else { return nil }
+        return MoodDimensions(valence: valence, arousal: arousal, dominance: dominance)
     }
 }
 

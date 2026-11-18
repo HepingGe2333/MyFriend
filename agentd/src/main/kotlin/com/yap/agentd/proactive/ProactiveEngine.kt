@@ -137,9 +137,19 @@ class ProactiveEngine(
             )
         }
 
-        // 9. 掷中：写正文、产出 pending。正文为空时不落一条空消息（宁可回落到兜底文案）。
-        val text = texts.compose(persona, now).trim().ifEmpty {
-            ProactiveTextSource.DEFAULT.compose(persona, now)
+        // 9. 掷中：写正文、产出 pending。正文为空（LLM 失败/无配置）时这一拍不开口，
+        //    **不回落到固定文案**：主动消息的真实感全部来自内容，发模板话比不发更伤人设。
+        val text = texts.compose(persona, now).trim()
+        if (text.isEmpty()) {
+            return decision(
+                persona,
+                ProactiveReason.GENERATION_FAILED,
+                now + tick,
+                probability = perBeat,
+                roll = rollValue,
+                dailyCap = cap,
+                sentToday = sent
+            )
         }
         return decision(
             persona,

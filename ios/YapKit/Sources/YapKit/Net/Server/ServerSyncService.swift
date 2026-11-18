@@ -151,7 +151,8 @@ public enum ServerSyncMapping {
         from server: ServerMessage,
         existing: MessageEntity?,
         personaId: String,
-        now: Int64
+        now: Int64,
+        mediaMeta: ServerMediaMetaStore? = nil
     ) -> MessageEntity {
         var record = existing ?? MessageEntity(
             id: server.id,
@@ -169,7 +170,10 @@ public enum ServerSyncMapping {
         record.updatedAt = record.createdAt
         record.status = .complete
         record.readAt = server.readAt
-        record.attachmentsJson = attachmentsJson(from: server.attachments) ?? record.attachmentsJson
+        record.attachmentsJson = attachmentsJson(
+            from: server.attachments, mediaMeta: mediaMeta,
+            existing: existing?.attachmentsJson
+        ) ?? record.attachmentsJson
         return record
     }
 
@@ -178,19 +182,52 @@ public enum ServerSyncMapping {
     /// 服务端下发的形状是 `["/v1/media/<id>"]`（契约 §3.6）；本地 `attachmentsJson`
     /// 的 `uri` 就存这个相对路径，渲染时由 `ServerMediaCache` 带 Authorization 取。
     /// `server:<id>` 是 M4 的旧形状，读到也认（`ServerMediaReference` 统一解析）。
-    public static func attachmentsJson(from attachments: [String]) -> String? {
+    /// - Parameter existing: 本地这一行**原来**的 `attachmentsJson`（可能已经被
+    ///   `ServerMediaSyncService` 换成了本机文件）。同一个 `serverMediaId` 已经落地成
+    ///   `file://` 的，就**保留本机路径**，不要被服务端的 `/v1/media/<id>` 覆盖回去 ——
+    ///   否则每次同步都会把引用打回远程、渲染退回网络下载（离线时就成了占位图）。
+    public static func attachmentsJson(
+        from attachments: [String],
+        mediaMeta: ServerMediaMetaStore? = nil,
+        existing: String? = nil
+    ) -> String? {
+        let localized = localizedById(existing)
         let items = attachments.compactMap { raw -> MessageAttachment? in
             // 服务端下发/我们入队时可能给裸 mediaId，也可能给 `/v1/media/<id>`（契约两种都收）；
             // 本地一律存标准相对路径，界面只认这一种。
             let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return nil }
-            if let id = ServerMediaReference.mediaId(from: trimmed) {
-                return MessageAttachment(uri: ServerMediaReference.uri(id: id))
+            let id: String
+            if let parsed = ServerMediaReference.mediaId(from: trimmed) {
+                id = parsed
+            } else {
+                guard !trimmed.contains("/"), !trimmed.contains("\\") else { return nil }
+                id = trimmed
             }
-            guard !trimmed.contains("/"), !trimmed.contains("\\") else { return nil }
-            return MessageAttachment(uri: ServerMediaReference.uri(id: trimmed))
+            // 0.13 第二阶段：这个 mediaId 本机已经有文件了 → 继续用本机文件。
+            if let local = localized[id] { return local }
+            // 0.13：语音/视频的 kind/mime/时长在服务端不下发，靠上传时记下的元信息补齐。
+            if let enriched = mediaMeta?.attachment(mediaId: id) {
+                var copy = enriched
+                copy.serverMediaId = id
+                return copy
+            }
+            return MessageAttachment(uri: ServerMediaReference.uri(id: id), serverMediaId: id)
         }
         return AttachmentsCodec.encode(items)
+    }
+
+    /// 本地已有附件里「已经落到本机文件」的那些，按 `serverMediaId` 建索引。
+    static func localizedById(_ existing: String?) -> [String: MessageAttachment] {
+        var map: [String: MessageAttachment] = [:]
+        for attachment in AttachmentsCodec.decode(existing) {
+            guard let id = attachment.serverMediaId?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !id.isEmpty,
+                !attachment.uri.lowercased().hasPrefix("http"),
+                ServerMediaReference.mediaId(from: attachment.uri) == nil else { continue }
+            map[id] = attachment
+        }
+        return map
     }
 
     /// 会话列表里那一行预览：与本地 `ChatService.refreshPreview` 同一口径
@@ -287,6 +324,8 @@ public actor ServerSyncService {
     private let client: ServerAPIClient
     private let stores: DatabaseStores
     private let state: ServerSyncStateStore
+    /// 服务端媒体 id → 附件元信息（0.13：语音/视频同步回来要知道自己是什么）。
+    private let mediaMeta: ServerMediaMetaStore
     /// 服务端会话 id ⇄ 本地会话 id 的换算（见 `ServerSessionResolver` 的注释）。
     private let sessions: ServerSessionResolver
     private let now: () -> Int64
@@ -314,6 +353,7 @@ public actor ServerSyncService {
         self.client = client
         self.stores = stores
         self.state = state ?? ServerSyncStateStore(database: stores.database)
+        self.mediaMeta = ServerMediaMetaStore(database: stores.database)
         self.sessions = ServerSessionResolver(stores: stores)
         self.retry = retry
         self.now = now
@@ -456,7 +496,8 @@ public actor ServerSyncService {
                     ?? ""
                 let existing = (try? stores.messages.byId(serverMessage.id)) ?? nil
                 var record = ServerSyncMapping.message(
-                    from: serverMessage, existing: existing, personaId: personaId, now: at
+                    from: serverMessage, existing: existing, personaId: personaId, now: at,
+                    mediaMeta: mediaMeta
                 )
                 record.sessionId = localId
                 try stores.messages.upsert(record)

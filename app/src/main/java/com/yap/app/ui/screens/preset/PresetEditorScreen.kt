@@ -248,7 +248,8 @@ fun PresetEditorScreen(
                     } else {
                         stringResource(R.string.preset_editor_save)
                     },
-                    enabled = !state.saving && state.form.name.isNotBlank() && state.form.prompt.isNotBlank(),
+                    // 0.13：保存不再要求先填名字/提示词——ViewModel 会用本地化默认名与生成规则兜底。
+                    enabled = !state.saving,
                     loading = state.saving,
                     onClick = viewModel::save
                 )

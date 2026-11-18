@@ -1,6 +1,6 @@
 import Foundation
 
-/// SQLite 建表语句：表名与列名逐字对齐 Android Room v12
+/// SQLite 建表语句：表名与列名逐字对齐 Android Room 导出的最新 schema（当前 v16）
 /// （`spec/messages-blocks/README.md` 的 `messages.blockIndex` + `message_blocks`）。
 ///
 /// 为什么不直接用 `Entities.kt` 的 data class 生成：SQLite 的列顺序、`NOT NULL`、
@@ -8,10 +8,11 @@ import Foundation
 /// 也让 iOS 这边的库结构和 Android 的导出文件可以直接 diff。
 ///
 /// 几点与 Room 的对齐说明：
-/// - `user_version = 12`：Room 用 version 表达 schema 演进，iOS 用同一个数字，
-///   这样「这份库是 v12」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
+/// - `user_version` 与 Room 的 version 相同（当前 v16）：Room 用 version 表达 schema 演进，iOS 用同一个数字，
+///   这样「这份库是第几版」这件事两端含义相同（v11 = 分块历史：`messages.blockIndex`
 ///   + `message_blocks`，见 `spec/messages-blocks/README.md`；v12 = 联网工具可以选
-///   第三方搜索服务：`api_configs.webToolsProvider`，见 `spec/web-search/README.md`）。
+///   第三方搜索服务：`api_configs.webToolsProvider`，见 `spec/web-search/README.md`；
+///   v16 = 表情包 `stickers`，见 `spec/stickers/SCHEMA.md`）。
 /// - 不建 `room_master_table`：那是 Room 用来校验 identityHash 的内部表，
 ///   iOS 不读 Room 的迁移历史；真正需要互通的是**备份 JSON**，不是数据库文件。
 /// - 布尔一律 `INTEGER NOT NULL`（0/1），枚举一律 `TEXT`（存 Kotlin 枚举名），
@@ -28,11 +29,21 @@ public enum Schema {
     /// `persona_presets.worldJson` / `speechStyleJson`（见 `spec/persona-guidance/README.md` §5）。
     /// 0.12（提示词翻译）= v14：`personas.translationJson` / `translationLang`
     ///（见 `spec/persona-translation/README.md` §8：缓存列名两端固定）。
-    public static let version: Int32 = 14
+    /// 0.13 = v15：`diary_notes`（日记板，`spec/diary/README.md`）与
+    /// `persona_pending_patches`（人格进化的待确认变化，`docs/design/persona-evolution.md`）。
+    /// 两张都是**新表**（不改已有列），所以 14→15 是「建表 + 建索引」，没有数据回填。
+    /// 0.13（表情包）= v16：`stickers`（`spec/stickers/SCHEMA.md`）。同样只有新表 + 索引，
+    /// 15→16 没有数据回填；两端列名/顺序/可空/索引名逐字一致。
+    /// 0.13（多维情绪）= v17：`personas.moodValence` / `moodArousal` / `moodDominance`
+    ///（`spec/mood/README.md` §1）。规范里的 `moodLabel` 就是**已有的 `mood` 列**
+    ///（两端都不改名，改名只会让老数据回填变成一次高风险重建），所以 16→17 只有三列加法 +
+    /// 旧数据映射（只有 label/intensity 时按词表推三维）。
+    public static let version: Int32 = 17
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
-    /// 这 13 张是 iOS 第一版就有的；`supplementaryTables` 里那两张是 1.8 遗留的缺表，
+    /// 前 13 张是 iOS 第一版就有的，0.13 补了两张（日记板 / 待确认人格变化）；
+    /// `supplementaryTables` 里那两张是 1.8 遗留的缺表，
     /// 0.9.1 补进了建表语句（见下面的常量说明），`derivedTables` 是 v11 的派生表 ——
     /// **完整表清单**是 `allTables`。
     public static let tables: [String] = [
@@ -48,7 +59,12 @@ public enum Schema {
         "proactive_rules",
         "agent_intents",
         "api_configs",
-        "api_usage"
+        "api_usage",
+        // 0.13 的两张新表（记录型：都有实体 + 仓储 + 备份/界面读写）。
+        "diary_notes",
+        "persona_pending_patches",
+        // v16：表情包（`spec/stickers/SCHEMA.md`）。
+        "stickers"
     ]
 
     /// 一人一段会话的唯一索引名（迁移与测试都按这个名字找它）。
@@ -103,7 +119,10 @@ public enum Schema {
     /// 各自可断言 —— 两者混在一起会让「一张表一个实体」这条约定失效。
     public static let derivedTables: [String] = [messageBlocksTable]
 
-    /// 完整表清单（13 张记录型 + 2 张服务层用表 + 1 张派生表）。
+    /// 完整表清单（16 张记录型 + 4 张服务层用表 + 1 张派生表 = 21）。
+    ///
+    /// 0.13 起记录型从 13 张变成 15 张（`diary_notes` / `persona_pending_patches`），
+    /// v16 再加一张 `stickers`。
     public static let allTables: [String] = tables + supplementaryTables + derivedTables
 
     /// `message_blocks` 的建表语句。
@@ -188,6 +207,21 @@ public enum Schema {
         ("speechStyleJson", "TEXT")
     ]
 
+    /// v17 给 `personas` 加的三列：多维心情（`spec/mood/README.md` §1）。
+    ///
+    /// 三列都可空：`null` = 还没自动判定过（老数据、或者模型只写过 `set_mood` 的 label）。
+    /// 可空是**语义**而不是偷懒：它让「判过、结论是 0/2/3」与「没判过、要退回词表」区分得开
+    ///（见 `MoodState.dimensions`）。
+    ///
+    /// 范围：`moodValence` -2..2、`moodArousal` 0..5、`moodDominance` 0..5。
+    /// 数据库不写 CHECK：范围夹取在 `MoodDimensions` 里（纯函数、可测），
+    /// 而加 CHECK 会让老库迁移多一次整表重建 —— 不值得。
+    public static let personaMoodDimensionColumns: [(name: String, ddl: String)] = [
+        ("moodValence", "INTEGER"),
+        ("moodArousal", "INTEGER"),
+        ("moodDominance", "INTEGER")
+    ]
+
     /// 1.9 给 `chat_sessions` 加的列（会话级覆盖，空 = 继承人格）。
     public static let sessionOverrideColumns: [(name: String, ddl: String)] = [
         ("memoryRetentionOverride", "INTEGER"),
@@ -235,6 +269,11 @@ public enum Schema {
             activityJson TEXT,
             translationJson TEXT,
             translationLang TEXT,
+            -- v17 的三维心情：与 Android 的 17.json 一样**追加在表尾**。
+            -- ADD COLUMN 只能加在末尾，所以新库与升级过的库列序也一致。
+            moodValence INTEGER,
+            moodArousal INTEGER,
+            moodDominance INTEGER,
             PRIMARY KEY (id)
         )
         """,
@@ -576,6 +615,113 @@ public enum Schema {
         "CREATE INDEX IF NOT EXISTS index_server_outbox_sessionId ON server_outbox (sessionId)",
         "CREATE INDEX IF NOT EXISTS index_server_outbox_createdAt ON server_outbox (createdAt)"
     ]
+    // v15：日记板（`spec/diary/README.md`）与人格进化的待确认变化
+    //（`docs/design/persona-evolution.md`）。DDL 与迁移共用同一份常量。
+    + [diaryNotesDDL]
+    + diaryNotesIndexStatements
+    + [personaPendingPatchesDDL]
+    + personaPendingPatchesIndexStatements
+    // v16：表情包（`spec/stickers/SCHEMA.md`）。
+    + [stickersDDL]
+    + stickersIndexStatements
+
+    // MARK: - v15 的两张新表
+
+    /// 日记板：他自己的备忘录（`spec/diary/README.md` §数据）。
+    ///
+    /// 列与 Android 的 `diary_notes` 逐字对齐：`remindAt` / `remindedAt` 可空
+    /// （null = 不提醒 / 还没提醒）；`remindedAt` 由心跳写，写了就不会再触发。
+    public static let diaryNotesTable = "diary_notes"
+
+    /// 待确认的人格变化（`docs/design/persona-evolution.md` §2）。
+    ///
+    /// Android 从 v14 起就有这张表（1.3 之前用来放「等用户点头」的人设补丁）；
+    /// iOS 0.13 才建它，用途是人格进化评估产出的 `changes`：用户接受才写回人格卡。
+    /// 列的形状与 Android `PersonaPendingPatchEntity` 逐字一致（备份/迁移要能互通）。
+    public static let personaPendingPatchesTable = "persona_pending_patches"
+
+    /// `diary_notes` 的建表语句（迁移与 `createStatements` 用的是同一份 DDL）。
+    public static let diaryNotesDDL = """
+        CREATE TABLE IF NOT EXISTS diary_notes (
+            id TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            content TEXT NOT NULL,
+            createdAt INTEGER NOT NULL,
+            remindAt INTEGER,
+            remindedAt INTEGER,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY (id)
+        )
+        """
+
+    /// 日记板的索引（名字与列序与 Android Room 导出的 v15 逐字一致）：
+    /// - `personaId` 覆盖「按人格翻」（再按 createdAt 排序，SQLite 会用同一个索引）；
+    /// - `remindAt` 覆盖心跳的「到点了没」（全库扫的那条）。
+    public static let diaryNotesIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_diary_notes_personaId ON diary_notes (personaId)",
+        "CREATE INDEX IF NOT EXISTS index_diary_notes_remindAt ON diary_notes (remindAt)"
+    ]
+
+    /// `persona_pending_patches` 的建表语句（与 Android v14 的 Room 导出逐列一致）。
+    public static let personaPendingPatchesDDL = """
+        CREATE TABLE IF NOT EXISTS persona_pending_patches (
+            id TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            sessionId TEXT,
+            patchJson TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            createdAt INTEGER NOT NULL,
+            PRIMARY KEY (id)
+        )
+        """
+
+    public static let personaPendingPatchesIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_persona_pending_patches_personaId ON persona_pending_patches (personaId)",
+        "CREATE INDEX IF NOT EXISTS index_persona_pending_patches_createdAt ON persona_pending_patches (createdAt)"
+    ]
+
+    // MARK: - v16 的表情包
+
+    /// 表情包表名（`spec/stickers/SCHEMA.md`）。
+    public static let stickersTable = "stickers"
+
+    /// `stickers` 的建表语句（迁移与 `createStatements` 用同一份 DDL）。
+    ///
+    /// 逐字照 `spec/stickers/SCHEMA.md`：`id` 是 `NOT NULL PRIMARY KEY`（与其它表
+    /// 末尾写 `PRIMARY KEY (id)` 的形状不同，但 PRAGMA 结果一致），`mime` 恒为 `image/gif`，
+    /// `width/height/frames/bytes` 都有默认值（静态图就是 `frames = 1`）。
+    public static let stickersDDL = """
+        CREATE TABLE IF NOT EXISTS stickers (
+            id TEXT NOT NULL PRIMARY KEY,
+            ownerUserId TEXT,
+            personaId TEXT,
+            file TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            frames INTEGER NOT NULL DEFAULT 1,
+            bytes INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL,
+            createdBy TEXT NOT NULL,
+            createdAt INTEGER NOT NULL
+        )
+        """
+
+    /// 表情索引（与 SCHEMA.md 逐字一致）：
+    /// - `createdAt` 覆盖历史面板的「最近 30 / 全部」；
+    /// - `personaId` 覆盖「这个人格做过哪些表情」。
+    /// 规格给 `stickers` 写明 DEFAULT 的列（见 `stickersDDL`）。
+    ///
+    /// 单独列出来是给 `SchemaParityTests` 用的：Android 的 16.json 目前没有这些默认值
+    /// （Room 需要 `@ColumnInfo(defaultValue = …)` 才导出），对齐测试要能区分
+    /// 「iOS 自己多写了一个默认值」（红）与「规格要求、Android 还没补」（记录在案）。
+    public static let stickersSpecDeclaredDefaults: Set<String> = ["width", "height", "frames", "bytes"]
+
+    public static let stickersIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_stickers_createdAt ON stickers (createdAt)",
+        "CREATE INDEX IF NOT EXISTS index_stickers_personaId ON stickers (personaId)"
+    ]
 
     /// 建库入口：App 首次启动、以及测试里建临时库都走这里。
     ///
@@ -603,10 +749,10 @@ public enum Schema {
         }
     }
 
-    // MARK: - v8/v9/v10/v11/v12 → v14
+    // MARK: - v8/v9/v10/v11/v12 → v16
 
-    /// 老库升到 v14：补列（含 v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、清 Harness 列、
-    /// 一人一段、补默认配置、建块表并回填块号。
+    /// 老库升到 v16：补列（v12 的 `webToolsProvider`、v13 的人设引导三列、v14 的翻译两列）、
+    /// 清 Harness 列、一人一段、补默认配置、建块表并回填块号、建 v15 的两张新表、建 v16 的表情表。
     ///
     /// 为什么放在 `create()` 里而不是另开一个迁移器：这个 App 只有一个库、一条时间线，
     /// 迁移必须和建表在同一个事务里，否则「库是半新半旧」的状态比升级失败更糟。
@@ -627,6 +773,10 @@ public enum Schema {
         }
         // v14：提示词翻译缓存。同样可空、同样幂等（用户升级后译文会在下一次进聊天时补上）。
         for column in personaTranslationColumns {
+            try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
+        // v17：多维心情三列（可空 = 还没自动判定过）。
+        for column in personaMoodDimensionColumns {
             try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
         }
         for column in presetGuidanceColumns {
@@ -661,6 +811,82 @@ public enum Schema {
 
         try database.execute(messageBlocksDDL)
         try backfillMessageBlocks(database)
+
+        // v15：日记板 + 待确认的人格变化。14→15 只有「建表 + 建索引」，没有数据回填；
+        // 放在这里是为了让升级路径在迁移阶段就与目标 schema 一致（`createStatements`
+        // 之后还会幂等地再跑一遍）。
+        try ensureV15Tables(database)
+        // v16：表情包。15→16 同样只有「建表 + 建索引」；幂等（IF NOT EXISTS），
+        // 所以新库、老库、重复打开都走同一条路径。
+        try ensureV16Tables(database)
+        // v17：旧心情（只有 label + intensity）映射到三维；只回填「还没判过」的行。
+        try backfillMoodDimensions(database)
+    }
+
+    /// 16 → 17 的旧数据映射（`spec/mood/README.md` §1）：
+    /// valence 由 label 推（累/烦 → -1，平静 → 0，开心 → 1），arousal 由 intensity 推，
+    /// dominance = 3。
+    ///
+    /// 只写 `moodValence IS NULL` 的行：判定过的心情（三列都有值）不会被升级覆盖；
+    /// 没有心情的行保持 NULL（= 从来没判过，读取时退回词表）。幂等，重复打开也安全。
+    static func backfillMoodDimensions(_ database: SQLiteDatabase) throws {
+        guard database.hasTable("personas") else { return }
+        for column in personaMoodDimensionColumns {
+            guard columnExists(database, table: "personas", column: column.name) else { return }
+        }
+        struct Row {
+            let id: String
+            let label: String
+            let intensity: Int
+        }
+        var rows: [Row] = []
+        let select = try database.prepare("""
+            SELECT id, mood, COALESCE(moodIntensity, 2)
+            FROM personas
+            WHERE mood IS NOT NULL AND mood <> '' AND moodValence IS NULL
+            """)
+        while try select.step() {
+            rows.append(Row(
+                id: select.text(at: 0) ?? "",
+                label: select.text(at: 1) ?? "",
+                intensity: Int(select.int64(at: 2))
+            ))
+        }
+        guard !rows.isEmpty else { return }
+        let update = try database.prepare("""
+            UPDATE personas SET moodValence = ?, moodArousal = ?, moodDominance = ?
+            WHERE id = ? AND moodValence IS NULL
+            """)
+        for row in rows {
+            guard !row.id.isEmpty else { continue }
+            let dimensions = MoodDimensions.fromLegacy(label: row.label, intensity: row.intensity)
+            update.reset()
+            try update.bind(.int(dimensions.valence), at: 1)
+            try update.bind(.int(dimensions.arousal), at: 2)
+            try update.bind(.int(dimensions.dominance), at: 3)
+            try update.bind(.text(row.id), at: 4)
+            _ = try update.step()
+        }
+    }
+
+    /// v16 的表情表（幂等）。`createStatements` 里也包含它，两处用的是同一份常量。
+    static func ensureV16Tables(_ database: SQLiteDatabase) throws {
+        try database.execute(stickersDDL)
+        for statement in stickersIndexStatements {
+            try database.execute(statement)
+        }
+    }
+
+    /// v15 的两张新表（幂等）。`createStatements` 里也包含它们，两处用的是同一份常量。
+    static func ensureV15Tables(_ database: SQLiteDatabase) throws {
+        try database.execute(diaryNotesDDL)
+        for statement in diaryNotesIndexStatements {
+            try database.execute(statement)
+        }
+        try database.execute(personaPendingPatchesDDL)
+        for statement in personaPendingPatchesIndexStatements {
+            try database.execute(statement)
+        }
     }
 
     /// v10 → v11 的回填：给每条消息算块号，并由块号生成块行。

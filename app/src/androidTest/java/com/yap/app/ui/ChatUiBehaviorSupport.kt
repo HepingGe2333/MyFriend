@@ -27,6 +27,7 @@ import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.data.repo.ApiConfigRepository
 import com.yap.app.data.repo.ChatRepository
 import com.yap.app.data.repo.MediaJanitor
+import com.yap.app.data.repo.StickerRepository
 import com.yap.app.data.repo.PersonaTranslationCoordinator
 import com.yap.app.data.repo.PersonaTranslationGateway
 import com.yap.app.data.repo.MemoryRepository
@@ -91,6 +92,10 @@ class ChatUiHarness(
     private val chatNotifier: ChatNotifier,
     /** 0.12：删草稿图片前的引用守卫（合成一个真实现，避免测试里手拼假守卫）。 */
     private val mediaJanitor: MediaJanitor,
+    /** 0.13 表情包：ChatViewModel 需要它来开历史面板 / 点选发送（UI 测试只用空库）。 */
+    private val stickerRepository: StickerRepository,
+    /** 0.13 语音/视频：ChatViewModel 用它把附件解析成本机可播放文件（UI 测试不会真的播）。 */
+    private val audioVideoRepository: com.yap.app.data.repo.AudioVideoRepository,
     /**
      * 0.12 人格提示词翻译（spec/persona-translation §2）：这里给一个「不翻译」的实现。
      *
@@ -229,6 +234,8 @@ class ChatUiHarness(
                 settingsRepository = settingsRepository,
                 chatNotifier = chatNotifier,
                 mediaJanitor = mediaJanitor,
+                stickerRepository = stickerRepository,
+                audioVideoRepository = audioVideoRepository,
                 translationCoordinator = translationCoordinator,
                 context = context
             ) as T
