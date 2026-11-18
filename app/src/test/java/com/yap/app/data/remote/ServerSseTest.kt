@@ -67,6 +67,21 @@ class ServerSseTest {
     }
 
     @Test
+    fun `解析器认识 0_14 的 message_created 完整消息`() {
+        val parser = ServerSseParser()
+        val events = mutableListOf<ServerChatEvent>()
+        listOf(
+            "event: message.created",
+            "data: {\"message\":{\"id\":\"a-1\",\"sessionId\":\"s-1\",\"role\":\"ASSISTANT\",\"content\":\"第一条\",\"createdAt\":42,\"blocked\":false}}",
+            ""
+        ).forEach { events += parser.feed(it) }
+        val event = events.single() as ServerChatEvent.MessageCreated
+        assertEquals("a-1", event.message.id)
+        assertEquals("第一条", event.message.content)
+        assertEquals(false, event.message.blocked)
+    }
+
+    @Test
     fun `解析器按规范拼接多行 data`() {
         val parser = ServerSseParser()
         val events = mutableListOf<ServerChatEvent>()

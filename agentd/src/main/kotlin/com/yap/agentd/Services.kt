@@ -2,6 +2,9 @@ package com.yap.agentd
 
 import com.yap.agentd.automation.AutoTriggers
 import com.yap.agentd.evolution.EvolutionService
+import com.yap.agentd.experience.ExperienceService
+import com.yap.agentd.experience.MentalActivityService
+import com.yap.agentd.experience.SessionMemoryService
 import com.yap.agentd.llm.LlmAccess
 import com.yap.agentd.llm.LlmProactiveTextSource
 import com.yap.agentd.llm.LlmReplyGenerator
@@ -90,9 +93,24 @@ class AgentdServices(
     val autoTriggers: AutoTriggers? =
         if (store != null && llm != null) AutoTriggers(store, moodService, evolutionService) else null
 
+    /** 0.14：心理活动（内心独白 + 心情微调）；没有 LLM 时为 null（不假装想过）。 */
+    val mentalActivityService: MentalActivityService? =
+        if (store != null && llm != null) MentalActivityService(store, llm) else null
+
+    /** 0.14：会话级短期/长期摘要（每 5 / 30 条用户消息更新）。 */
+    val sessionMemoryService: SessionMemoryService? =
+        if (store != null && llm != null) SessionMemoryService(store, llm) else null
+
+    /** 0.14：体验功能总入口（聊天后 + 每拍心跳都跑）；没有存储时为 null。 */
+    val experienceService: ExperienceService? = store?.let {
+        ExperienceService(it, mentalActivityService, sessionMemoryService)
+    }
+
     /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
     val chatService: ChatService? =
-        store?.let { ChatService(it, effectiveReplyGenerator, autoTriggers = autoTriggers) }
+        store?.let {
+            ChatService(it, effectiveReplyGenerator, autoTriggers = autoTriggers, experience = experienceService)
+        }
 
     /**
      * `POST /v1/proactive/tick` 的判定状态；`null` 表示没有状态存储（路由回 503）。
@@ -106,7 +124,8 @@ class AgentdServices(
             roll = proactiveRoll,
             pushSender = pushSender,
             texts = llm?.let { access -> LlmProactiveTextSource(store, access) }
-                ?: ProactiveTextSource.DEFAULT
+                ?: ProactiveTextSource.DEFAULT,
+            experience = experienceService
         )
     }
 }

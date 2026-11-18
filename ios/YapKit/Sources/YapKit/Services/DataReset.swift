@@ -227,6 +227,9 @@ public final class DataReset {
             MemoryEchoStore(database: stores.database).deleteAll()
             try stores.memoryConsolidations.deleteAll()
             _ = try? stores.memoryVectors.deleteAll()
+            // 0.14：心理活动与会话备忘录是聊天的一部分（会话没了它们就是孤儿）。
+            try stores.mentalActivities.deleteAll()
+            try stores.sessionMemory.deleteAll()
             // 聊天都删了：待发队列里的消息也不该在下次补发时冒出来。
             try ServerOutboxStore(database: stores.database).deleteAll()
         }
@@ -288,6 +291,9 @@ public final class DataReset {
             attempt("persona_pending_patches") { try stores.personaPendingPatches.deleteAll() }
             // 2.7) 表情包（用户自己的收藏）：库行与文件都跟着「全部数据」一起清。
             attempt("stickers") { try stores.stickers.deleteAll() }
+            // 2.8) 0.14 的两张新表：心理活动与会话备忘录。
+            attempt("mental_activities") { try stores.mentalActivities.deleteAll() }
+            attempt("session_memory") { try stores.sessionMemory.deleteAll() }
             // 3) 人格与配置
             attempt("personas") { try stores.personas.deleteAll() }
             attempt("api_configs") { try stores.apiConfigs.deleteAll() }

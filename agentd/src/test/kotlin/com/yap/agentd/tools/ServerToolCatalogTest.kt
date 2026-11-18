@@ -27,10 +27,11 @@ class ServerToolCatalogTest {
             ((function.fields.getValue("name") as JsonValue.Str).value)
         }
         assertEquals(ServerToolCatalog.names, names)
-        assertEquals(10, names.size)
+        assertEquals(12, names.size)
         assertTrue(names.containsAll(listOf(
             "stay_silent", "defer_reply", "set_mood", "set_activity", "diary",
-            "remember", "recall", "web_search", "web_fetch", "sticker"
+            "remember", "recall", "web_search", "web_fetch", "sticker",
+            "send_message", "block_user"
         )))
     }
 

@@ -696,6 +696,15 @@ final class ChatViewModel: ObservableObject {
             // 自己说的话就马上出现在屏幕上，而不是等模型开口。
             // 用「追加」而不是重读最后 N 条：已加载的历史不能被自己这一句挤掉（P2-5）。
             reloadMessages(preservingLoadedRange: true)
+            // 0.14 拉黑（`spec/experience/README.md` §2）：这一轮不会生成、也不会回，
+            // 进去「正在输入」再立刻退出只会闪一下 —— 直接不进生成态。
+            // 界面靠消息自己的 blocked 标记显示红色感叹号与「对方已将你拉黑」。
+            if messages.last?.blocked == true {
+                isGenerating = false
+                streamingText = ""
+                streamingTraces = []
+                return
+            }
             consume(stream)
         case .rejected(let error):
             let message = Self.describe(error)
@@ -868,6 +877,10 @@ final class ChatViewModel: ObservableObject {
             lastNoReply = reason
             streamingText = ""
             streamingTraces = []
+        case .appended:
+            // 0.14 连发：这一轮又落了一条独立消息，立刻重读让它逐条出现
+            //（而不是等这一轮结束一起冒出来）。
+            reloadMessages(preservingLoadedRange: true)
         }
     }
 
@@ -923,6 +936,10 @@ final class ChatViewModel: ObservableObject {
             let images = ((try? env.stores.messages.bySession(sessionId)) ?? [])
                 .flatMap { AttachmentsCodec.decode($0.attachmentsJson) }
             try env.stores.messages.delete(where: "sessionId = ?", [.text(sessionId)])
+            // 0.14：上下文清空了，备忘录与心理活动也一起走（留着会让下一轮提示词
+            // 说起一段已经不存在的对话）。
+            try env.stores.sessionMemory.delete(where: "sessionId = ?", [.text(sessionId)])
+            try env.stores.mentalActivities.delete(where: "sessionId = ?", [.text(sessionId)])
             MediaStorage.shared.deleteIfUnreferenced(
                 images,
                 references: MediaReferences(stores: env.stores, settings: env.settings)

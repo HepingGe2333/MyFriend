@@ -193,7 +193,7 @@ class MoodService(
         val session = store.sessions()
             .filter { it.personaId == personaId }
             .maxByOrNull { it.lastMessageAt ?: it.createdAt } ?: return emptyList()
-        return store.latestMessages(session.id, RECENT_MESSAGES * 2)
+        return store.latestMessages(session.id, RECENT_MESSAGES * 2, includeBlocked = false)
     }
 
     companion object {

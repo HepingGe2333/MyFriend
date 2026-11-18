@@ -40,7 +40,10 @@ data class ServerPersona(
     val id: String = "",
     val name: String = "",
     val avatarUrl: String? = null,
-    val updatedAt: Long = 0
+    val updatedAt: Long = 0,
+    /** 0.14 拉黑：服务端权威的到期时间；null = 未拉黑。 */
+    val blockedUntil: Long? = null,
+    val blockReason: String? = null
 )
 
 /** 会话列表 / 快照里的一行会话。 */
@@ -71,7 +74,9 @@ data class ServerMessage(
     val attachments: List<String> = emptyList(),
     val source: String = "CHAT",
     val clientMessageId: String? = null,
-    val replyTo: String? = null
+    val replyTo: String? = null,
+    /** 0.14：拉黑期间收到的用户消息；服务端也会永久排除在模型上下文之外。 */
+    val blocked: Boolean = false
 )
 
 /** 心情：服务端推进，客户端只展示。 */

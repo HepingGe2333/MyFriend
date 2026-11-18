@@ -139,6 +139,55 @@ public final class MoodRepository {
         return next
     }
 
+    /// 心理活动带来的**心情微调**（0.14，`spec/experience/README.md` §3：每维 ≤1）。
+    ///
+    /// 与 `setMood` / `applyJudgement` 的分工：
+    /// - `setMood` 是「模型主动说出一个词」，三维按词表重推；
+    /// - `applyJudgement` 是「看过对话后的完整判定」，一次最多动 2；
+    /// - 这里是「他心里嘀咕了一句」带来的细微漂移：**只动三维、每维最多 1**，
+    ///   标签与强度尽量保持不变（嘀咕一句不该让「累」突然变成「雀跃」）。
+    ///
+    /// 三列缺失（老数据还没判过）时先按词表推一份出来，再在它上面微调：
+    /// 否则「微调」会把老用户的心情悄悄变成基准。
+    @discardableResult
+    public func applyMicroAdjustment(
+        personaId: String,
+        valenceDelta: Int,
+        arousalDelta: Int,
+        dominanceDelta: Int,
+        now: Int64? = nil
+    ) -> MoodState? {
+        let at = now ?? self.now()
+        guard var persona = (try? stores.personas.byId(personaId)) ?? nil else { return nil }
+        let current = stateOf(persona)
+        let base = current.dimensions
+            ?? MoodDimensions.fromLegacy(label: current.label, intensity: current.intensity)
+        let draft = MentalActivityDraft(
+            thought: "微调",
+            valenceDelta: valenceDelta,
+            arousalDelta: arousalDelta,
+            dominanceDelta: dominanceDelta
+        )
+        guard draft.hasAnyMoodDelta else { return current }
+        let adjusted = MentalActivityPolicy.adjusted(base, by: draft)
+        var next = current
+        next.dimensions = adjusted
+        // 标签与强度**保持不变**（除非原来是空的）：与 Android `adjustDimensions` 一致 ——
+        // 心里嘀咕一句不该把他对外说的那个心情词（「有点累」）换成另一个。
+        if next.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            next.label = MoodLexicon.BASELINE
+        }
+        next.updatedAt = at
+        persona.mood = next.label.isEmpty ? MoodLexicon.BASELINE : next.label
+        persona.moodIntensity = next.intensity
+        persona.moodUpdatedAt = at
+        persona.moodValence = adjusted.valence
+        persona.moodArousal = adjusted.arousal
+        persona.moodDominance = adjusted.dominance
+        _ = try? stores.personas.upsert(persona)
+        return next
+    }
+
     /// 判定失败 / 没有可用的 API 配置时，把心情按时间往基准挪一步并落库（规范 §2）。
     ///
     /// 不抛错、不打扰用户：调用方只写一行日志。返回 (当前心情, 这次有没有真的变过)。

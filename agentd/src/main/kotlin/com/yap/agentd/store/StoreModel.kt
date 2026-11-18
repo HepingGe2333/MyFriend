@@ -128,6 +128,16 @@ data class Persona(
      */
     val activityJson: String? = null,
     /**
+     * 拉黑到期时刻（毫秒时间戳）；`null` = 没被拉黑（`spec/experience/README.md` §2）。
+     *
+     * 拉黑是**他想清静一会儿**，不是用户的操作：`block_user` 工具两轮确认后才写这两格。
+     * 到期自动解除由读取方判断（[isBlockedAt]），心跳也会真的把这两格清掉，
+     * 所以 `/v1/state` 不会长期挂着一个过去的时刻。
+     */
+    val blockedUntil: Long? = null,
+    /** 拉黑时他给自己的理由（只给自己看，不发给用户；可空）。 */
+    val blockReason: String = "",
+    /**
      * 客户端 schema 里、服务端没有专门建模的字段（`worldJson` / `speechStyleJson` /
      * `traits` / `likes` / `behaviors` / `backstory` / `quirks` / `translationJson` /
      * `translationLang` / `personaCardJson` …）。
@@ -138,6 +148,9 @@ data class Persona(
      */
     val extraFields: Map<String, JsonValue> = emptyMap()
 ) {
+    /** 此刻是否还被拉黑（`blockedUntil` 已过 = 自动解除，不需要等任何人来清）。 */
+    fun isBlockedAt(now: Long): Boolean = blockedUntil != null && blockedUntil > now
+
     fun toJson(): JsonValue.Obj {
         val fields = linkedMapOf(
             "id" to str(id),
@@ -148,7 +161,10 @@ data class Persona(
             "isDefault" to StoreJson.bool(isDefault),
             "createdAt" to num(createdAt),
             "updatedAt" to num(updatedAt),
-            "activityJson" to nullableStr(activityJson)
+            "activityJson" to nullableStr(activityJson),
+            // 0.14 可加字段：`null` / 空串就是没拉黑（老数据目录没有这两格）。
+            "blockedUntil" to nullableNum(blockedUntil),
+            "blockReason" to nullableStr(blockReason.takeIf { it.isNotBlank() })
         )
         // 保留客户端字段的原始 JSON 形状，未知字段也一样（“未知字段保留原文”），
         // 但密钥形状的字段不出口（见 isSecretLikeFieldName）。
@@ -161,7 +177,7 @@ data class Persona(
     companion object {
         val RESERVED_KEYS: Set<String> = setOf(
             "id", "name", "nameEn", "description", "avatarUrl", "isDefault",
-            "createdAt", "updatedAt", "activityJson"
+            "createdAt", "updatedAt", "activityJson", "blockedUntil", "blockReason"
         )
 
         fun fromJson(value: JsonValue.Obj, where: String): Persona = Persona(
@@ -175,6 +191,8 @@ data class Persona(
             updatedAt = value.reqLong("updatedAt", where),
             // 可加字段：老数据目录没有这一格（null），不需要版本号 +1。
             activityJson = value.optString("activityJson", where)?.takeIf { it.isNotBlank() },
+            blockedUntil = value.optLong("blockedUntil", where)?.takeIf { it > 0 },
+            blockReason = value.optString("blockReason", where).orEmpty(),
             extraFields = value.fields.filterKeys { it !in RESERVED_KEYS }
         )
     }
@@ -374,7 +392,11 @@ data class BackupImportResult(
     /** v6：导入的表情行数。 */
     val stickers: Int = 0,
     /** v6：导入的日记条数。 */
-    val diaryNotes: Int = 0
+    val diaryNotes: Int = 0,
+    /** 0.14：导入的心理活动条数（客户端忽略这个可加字段）。 */
+    val mentalActivities: Int = 0,
+    /** 0.14：导入的会话记忆条数（客户端忽略这个可加字段）。 */
+    val sessionMemories: Int = 0
 )
 
 /** 备份里的 version 不受支持（路由翻成 409）。 */
@@ -478,7 +500,14 @@ data class Message(
      * 所以备份 v6 的 `messages[].toolTraceJson` 可以原样来回搬，客户端「他当时查了两个网页」
      * 那张卡片不用再翻译一次。`null` = 这一轮没有工具调用（绝大多数消息）。
      */
-    val toolTraceJson: String? = null
+    val toolTraceJson: String? = null,
+    /**
+     * 拉黑期间落库的用户消息（`spec/experience/README.md` §2）。
+     *
+     * 它是**永久**标记：拉黑解除后这些消息仍然不出现在模型上下文里（读取方按它过滤），
+     * 客户端据此显示红色感叹号与「对方已将你拉黑」。assistant 消息永远是 false。
+     */
+    val blocked: Boolean = false
 ) {
     fun toJson(): JsonValue.Obj = obj(
         "id" to str(id),
@@ -495,7 +524,9 @@ data class Message(
         "promptTokens" to nullableInt(promptTokens),
         "completionTokens" to nullableInt(completionTokens),
         // 可加字段：老数据目录没有这一格（null），不升存储版本号。
-        "toolTraceJson" to nullableStr(toolTraceJson)
+        "toolTraceJson" to nullableStr(toolTraceJson),
+        // 0.14 可加字段：false 也写（客户端可以只看 false/true，不必再猜「缺省是什么意思」）。
+        "blocked" to StoreJson.bool(blocked)
     )
 
     companion object {
@@ -513,7 +544,8 @@ data class Message(
             replyTo = value.optString("replyTo", where),
             promptTokens = value.optInt("promptTokens", where),
             completionTokens = value.optInt("completionTokens", where),
-            toolTraceJson = value.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() }
+            toolTraceJson = value.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() },
+            blocked = value.fields.containsKey("blocked") && value.reqBool("blocked", where)
         )
     }
 }

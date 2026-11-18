@@ -84,6 +84,9 @@ class AutoTriggersTest {
         llm = llm
     )
 
+    /** 只数「情绪判定器」请求：0.14 起心理活动/会话记忆也会打模型，用总数断言会误伤。 */
+    private fun FakeLlmServer.moodRequests(): Int = requests.count { it.body.contains("情绪判定器") }
+
     private fun send(services: AgentdServices, index: Int) {
         services.chatService!!.send(
             sessionId,
@@ -101,11 +104,11 @@ class AutoTriggersTest {
         fakeLlm().use { server ->
             val services = chatOnlyServices(llmFor(server))
             repeat(3) { index -> send(services, index) }
-            assertEquals("3 条还不该判定", 0, server.requests.size)
+            assertEquals("3 条还不该判定", 0, server.moodRequests())
             assertNull(store.mood(personaId)?.takeIf { it.label == "有点累" })
 
             send(services, 4)
-            assertEquals("第 4 条之后要问一次模型", 1, server.requests.size)
+            assertEquals("第 4 条之后要问一次模型", 1, server.moodRequests())
             val mood = store.mood(personaId)!!
             assertEquals("有点累", mood.label)
             assertEquals(-1, mood.valence)
@@ -113,7 +116,7 @@ class AutoTriggersTest {
             assertEquals("聊得有点久", mood.reason)
             // 游标推进了：再聊一条不会重复判定。
             send(services, 5)
-            assertEquals(1, server.requests.size)
+            assertEquals(1, server.moodRequests())
         }
     }
 

@@ -109,7 +109,8 @@ public final class PersonaEvolutionService {
         }
         let session = sessionId.flatMap { (try? stores.sessions.byId($0)) ?? nil }
         let recent = session.map { current in
-            (try? stores.messages.recent(
+            // 0.14：拉黑期间的消息永久不进模型上下文（人格进化也不该被它影响）。
+            (try? stores.messages.recentVisible(
                 sessionId: current.id, limit: PersonaEvolution.recentMessageLimit
             )) ?? []
         } ?? []

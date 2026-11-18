@@ -82,6 +82,13 @@ public final class HeartbeatController {
     private let mood: MoodRepository
     /// 真正「想一下」的那一步。返回 nil 表示这一轮没想成（但仍然算想过一回）。
     private let tickRunner: (Int64) async -> AgentLoop.Outcome?
+    /// 0.14：活跃窗口里的心理活动（每 3 分钟 / 3 轮）。nil = 没接（测试与老调用点不用改）。
+    ///
+    /// 判定（该不该做）在 `MentalActivityService` 里；这里只在「他还在聊」时递一拍，
+    /// 避免在早已没人说话的会话上每 30 秒白问一次。
+    private let mentalActivityRunner: ((String, String, Int64) async -> Void)?
+    /// 0.14：拉黑状态（同时负责「到期自动解除」的落库清列）。
+    private let block: BlockRepository?
     private let now: () -> Int64
     private let roll: () -> Double
     private let isLowPower: () -> Bool
@@ -117,6 +124,8 @@ public final class HeartbeatController {
         mood: MoodRepository,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         tickRunner: @escaping (Int64) async -> AgentLoop.Outcome?,
+        mentalActivityRunner: ((String, String, Int64) async -> Void)? = nil,
+        block: BlockRepository? = nil,
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
         isLowPower: @escaping () -> Bool = { false },
@@ -130,6 +139,8 @@ public final class HeartbeatController {
         self.mood = mood
         self.agentCore = agentCore
         self.tickRunner = tickRunner
+        self.mentalActivityRunner = mentalActivityRunner
+        self.block = block
         self.now = now
         self.roll = roll
         self.isLowPower = isLowPower
@@ -169,10 +180,24 @@ public final class HeartbeatController {
         // 睡着/在忙也照样记标记与念头（念头会不会变成消息，由自主循环的睡眠判定决定）。
         _ = checkDiaryReminders(persona: persona, now: at)
 
+        // 0.14 拉黑：到期自动解除（读一次就清列），拉黑期内不主动开口。
+        if let blockState = block?.state(personaId: persona.id, now: at) {
+            let minutes = max(0, (blockState.until - at) / 60_000)
+            return Beat(why: "他还在拉黑期（还剩 \(minutes) 分钟）")
+        }
+
         // 他睡觉的时候不掷：既省电，也更像人。
         let minute = ServiceTime.minuteOfDay(at)
         if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
             return Beat(why: "他在睡觉")
+        }
+
+        // 0.14 心理活动：活跃窗口里才做（规范 §3）。这与「掷骰子」无关 ——
+        // 他不需要先起心动念才允许心里想一句；想不想主动开口是另一条线。
+        if let mentalActivityRunner,
+           let session = (try? stores.sessions.session(forPersona: persona.id)) ?? nil,
+           ActiveWindow.isActive(lastMessageAt: session.lastMessageAt ?? session.updatedAt, now: at) {
+            await mentalActivityRunner(persona.id, session.id, at)
         }
 
         // 占用时间（`spec/persona-guidance/README.md` §4）：

@@ -937,9 +937,6 @@ private fun ChatMessageList(
             }
         }
     }
-    val extraItems = if (state.isGenerating) 1 else 0
-    val totalItems = displayItems.size + extraItems
-
     // 列表顶部这一行：还有更早的消息 / 正在加载更早。它是 LazyColumn 的第 0 项，
     // 所以下面算「消息在列表里的绝对下标」时要带上这个偏移。
     val showLoadEarlier = state.hasMoreOlder || state.loadingOlder
@@ -1111,13 +1108,18 @@ private fun ChatMessageList(
                     }
                 }
                 if (state.isGenerating && state.hasStarted) {
-                    item(key = "streaming") {
-                        StreamingBubble(
-                            text = state.streamingText,
-                            settings = state.settings,
-                            traces = state.streamingTraces,
-                            onOpenLink = onOpenLink
-                        )
+                    // 首字到达前（以及连发之间）只显示输入指示，不画带「…」的占位气泡。
+                    if (state.streamingText.isBlank()) {
+                        item(key = "typing") { TypingRow() }
+                    } else {
+                        item(key = "streaming") {
+                            StreamingBubble(
+                                text = state.streamingText,
+                                settings = state.settings,
+                                traces = state.streamingTraces,
+                                onOpenLink = onOpenLink
+                            )
+                        }
                     }
                 }
                 if (state.hasMoreNewer || state.loadingNewer) {
@@ -1414,12 +1416,28 @@ private fun MessageBubble(
             .padding(vertical = if (settings.bubbleStyle == BubbleStyle.COMPACT) 1.dp else 2.dp),
         contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Surface(
-            modifier = Modifier
-                .widthIn(min = 56.dp, max = 560.dp)
-                // 头像占 28dp + 6dp 间距：气泡整体往左让出这条槽，两者不会叠在一起。
-                .padding(end = if (showUserAvatar) 34.dp else 0.dp)
-                .combinedClickable(onClick = {}, onLongClick = onLongPress),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 0.14 拉黑：红色感叹号在气泡左侧，提示与气泡分开，不挤占正文。
+            if (outgoing && message.blocked) {
+                Icon(
+                    imageVector = Icons.Outlined.ErrorOutline,
+                    contentDescription = stringResource(R.string.chat_blocked_icon_desc),
+                    modifier = Modifier
+                        .size(16.dp)
+                        .padding(end = 5.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+            Surface(
+                modifier = Modifier
+                    .widthIn(min = 56.dp, max = 560.dp)
+                    // 头像占 28dp + 6dp 间距：气泡整体往左让出这条槽，两者不会叠在一起。
+                    .padding(end = if (showUserAvatar) 34.dp else 0.dp)
+                    .combinedClickable(onClick = {}, onLongClick = onLongPress),
             shape = shape,
             color = background,
             border = border,
@@ -1608,6 +1626,19 @@ private fun MessageBubble(
                         ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 0.14 拉黑：提示挂在时间戳行，红叹号在气泡左侧外面（见上面的 Row）。
+                    if (com.yap.app.domain.BlockPolicy.showsBlockedIndicator(
+                            roleIsUser = outgoing,
+                            blocked = message.blocked
+                        )
+                    ) {
+                        Text(
+                            stringResource(R.string.chat_blocked_hint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
                     if (message.status == MessageStatus.STOPPED) {
                         Text(
                             stringResource(R.string.chat_status_stopped),
@@ -1636,6 +1667,7 @@ private fun MessageBubble(
                     }
                 }
             }
+        }
         }
         if (showUserAvatar) {
             // 像 Telegram 的「自己这一侧」：小头像贴在这条消息的右下角，只占一条窄槽。
@@ -1670,19 +1702,16 @@ private fun StreamingBubble(
         border = androidx.compose.foundation.BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
-            if (text.isBlank()) {
-                TypingIndicator()
-            } else {
-                MarkdownText(
-                    text = text,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    isOutgoing = false,
-                    compact = settings.bubbleStyle == BubbleStyle.COMPACT,
-                    onOpenLink = onOpenLink,
-                    selectable = false
-                )
-                BlinkingCursor()
-            }
+            // 调用方保证这里 text 非空；空文本由 TypingRow 负责，不再生成占位气泡。
+            MarkdownText(
+                text = text,
+                color = MaterialTheme.colorScheme.onSurface,
+                isOutgoing = false,
+                compact = settings.bubbleStyle == BubbleStyle.COMPACT,
+                onOpenLink = onOpenLink,
+                selectable = false
+            )
+            BlinkingCursor()
             if (traces.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 StreamingTraceRow(
@@ -1852,6 +1881,23 @@ private fun ToolTraceDetail(
                 }
             }
         }
+    }
+}
+
+/**
+ * 生成中的输入指示：一行三个点，没有气泡、没有「…」、不占一条消息。
+ *
+ * 这是 0.14 规范 §1 的核心：宁可只显示「他正在输入」，也不要在列表里先放一个空气泡。
+ */
+@Composable
+private fun TypingRow() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TypingIndicator()
     }
 }
 

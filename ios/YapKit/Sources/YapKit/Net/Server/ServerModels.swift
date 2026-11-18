@@ -26,6 +26,12 @@ public struct ServerPersona: Codable, Equatable, Sendable {
     public var isDefault: Bool
     public var createdAt: Int64
     public var updatedAt: Int64
+    /// 0.14 拉黑（服务端契约：`/v1/state` 的 personas 带这两列，null = 未拉黑）。
+    ///
+    /// 本地模式不读它；服务端模式把它同步进 `personas.blockedUntil/blockReason`，
+    /// 这样界面（红色感叹号、输入栏提示）与本地规则同一套。
+    public var blockedUntil: Int64?
+    public var blockReason: String?
 
     public init(
         id: String,
@@ -35,7 +41,9 @@ public struct ServerPersona: Codable, Equatable, Sendable {
         avatarUrl: String? = nil,
         isDefault: Bool = false,
         createdAt: Int64 = 0,
-        updatedAt: Int64 = 0
+        updatedAt: Int64 = 0,
+        blockedUntil: Int64? = nil,
+        blockReason: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -45,6 +53,8 @@ public struct ServerPersona: Codable, Equatable, Sendable {
         self.isDefault = isDefault
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.blockedUntil = blockedUntil
+        self.blockReason = blockReason
     }
 }
 
@@ -102,6 +112,8 @@ public struct ServerMessage: Codable, Equatable, Sendable {
     public var replyTo: String?
     public var promptTokens: Int?
     public var completionTokens: Int?
+    /// 0.14：这条用户消息是否是拉黑期间发的（服务端契约里 `messages.blocked`）。
+    public var blocked: Bool?
 
     public init(
         id: String,
@@ -116,7 +128,8 @@ public struct ServerMessage: Codable, Equatable, Sendable {
         clientMessageId: String? = nil,
         replyTo: String? = nil,
         promptTokens: Int? = nil,
-        completionTokens: Int? = nil
+        completionTokens: Int? = nil,
+        blocked: Bool? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -131,6 +144,7 @@ public struct ServerMessage: Codable, Equatable, Sendable {
         self.replyTo = replyTo
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
+        self.blocked = blocked
     }
 
     public var isUser: Bool { role.uppercased() == "USER" }

@@ -1312,3 +1312,15 @@
 "这一轮得说句话" = "Has to say something this turn";
 "这轮先不回" = "Staying quiet this turn";
 "这轮没说话" = "Said nothing this turn";
+"对方已将你拉黑" = "They have blocked you";
+"一轮最多发 4 条" = "One turn can send at most 4 messages";
+"发了条消息" = "Sent a message";
+"拉黑 %d 小时" = "Blocked for %d hours";
+"没有写要发什么" = "Nothing to send";
+"这一轮已经发够了" = "Already sent enough this turn";
+"拉黑 %d 小时.one" = "Blocked for %d hour";
+"已拉黑" = "Blocked";
+"拉黑提议" = "Block proposal";
+"已生效，到期自动解除。" = "In effect until it expires automatically.";
+"已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。" = "The proposal is saved; you can confirm it only after they send another message.";
+"发消息" = "Message";

@@ -23,6 +23,10 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     private let evolution: PersonaEvolutionService?
     /// 自动情绪判定（0.13 schema v17）。同样可选。
     private let moodJudgement: MoodJudgementService?
+    /// 会话备忘录（0.14）。可选：没装时这条链路安静跳过。
+    private let sessionMemory: SessionMemoryService?
+    /// 心理活动（0.14）。可选：没装时这条链路安静跳过。
+    private let mentalActivity: MentalActivityService?
     /// 服务端模式判定（0.13）：服务端独立运行，本机不再跑「回复后的后台自主逻辑」。
     /// 用闭包是因为模式运行中可切换；默认 `false` 让测试与老调用点不用改。
     private let isServerMode: () -> Bool
@@ -36,6 +40,8 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         resolveConfig: @escaping (ChatSessionEntity) -> CompressionConfig?,
         evolution: PersonaEvolutionService? = nil,
         moodJudgement: MoodJudgementService? = nil,
+        sessionMemory: SessionMemoryService? = nil,
+        mentalActivity: MentalActivityService? = nil,
         isServerMode: @escaping () -> Bool = { false },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -45,6 +51,8 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         self.resolveConfig = resolveConfig
         self.evolution = evolution
         self.moodJudgement = moodJudgement
+        self.sessionMemory = sessionMemory
+        self.mentalActivity = mentalActivity
         self.isServerMode = isServerMode
         self.log = log
     }
@@ -172,6 +180,34 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
                 log("[mood] 判定失败：\(error.localizedDescription)")
                 moodJudgement.decay(personaId: personaId)
             }
+        }
+    }
+
+    /// 0.14 会话备忘录：每 5 / 30 条用户消息更新短期 / 长期摘要。
+    ///
+    /// 节流与服务内的「单飞」都在 `SessionMemoryService` 里；
+    /// 这里只负责「回复已经落库了，异步跑一次，失败当没发生」。
+    public func sessionMemoryNeeded(sessionId: String, personaId: String) {
+        guard localAutonomyAllowed else { return }
+        guard let sessionMemory else { return }
+        let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            await sessionMemory.updateIfNeeded(sessionId: trimmed, personaId: personaId)
+        }
+    }
+
+    /// 0.14 心理活动：活跃窗口内每 3 分钟 / 3 轮写一句私密念头。
+    ///
+    /// 判定（活跃窗口 / 节流 / 心情激动必做）在 `MentalActivityService` 里；
+    /// 这里只把「聊完这一轮」这件事交出去，失败不影响回复。
+    public func mentalActivityNeeded(sessionId: String, personaId: String) {
+        guard localAutonomyAllowed else { return }
+        guard let mentalActivity else { return }
+        let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        Task {
+            await mentalActivity.runIfNeeded(personaId: personaId, sessionId: trimmed)
         }
     }
 

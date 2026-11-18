@@ -964,15 +964,15 @@ class ChatViewModel @Inject constructor(
                     }
                     return@launch
                 }
-                // 1.9：「读消息的节奏」不再是设置项，固定用自然速度。
-                // 具体什么时候回、回不回，交给模型自己的 defer_reply 与睡眠判定。
-                val readDelay = HumanTiming.readDelayMillis(
-                    textLength = text.length,
-                    images = images.size,
-                    paceFactor = 1f
-                )
+                // 0.14：拉黑期间消息已经落库并标了 blocked，但这一轮不启动生成。
+                if (chatRepository.isBlocked(sessionId)) {
+                    ephemeral.update { it.copy(draft = "", images = emptyList(), snackbar = null) }
+                    return@launch
+                }
                 ephemeral.update { it.copy(draft = "", images = emptyList(), snackbar = null) }
-                startGeneration(readDelay)
+                // 首条消息的「正在输入」延迟由仓库在看到首批字/第一条连发时按真实字数计算；
+                // 这里不再额外等一次，否则同一句话会被延迟两遍。
+                startGeneration(0L)
             } finally {
                 operationInFlight = false
             }
@@ -1008,6 +1008,11 @@ class ChatViewModel @Inject constructor(
 
                         is com.yap.app.data.remote.ServerSendEvent.Delta ->
                             ephemeral.update { it.copy(streamingText = it.streamingText + event.text) }
+
+                        // 0.14 连发：服务端逐条发完整消息；先用暂存气泡显示最后一条，
+                        // 流结束后由仓库拉页写 Room，列表里会出现各自独立的气泡。
+                        is com.yap.app.data.remote.ServerSendEvent.MessageCreated ->
+                            ephemeral.update { it.copy(streamingText = event.message.content) }
 
                         is com.yap.app.data.remote.ServerSendEvent.Tool ->
                             ephemeral.update {
@@ -1080,7 +1085,9 @@ class ChatViewModel @Inject constructor(
         ephemeral.update {
             it.copy(
                 isGenerating = true,
-                hasStarted = false,
+                // 从按下发送那一刻就显示「正在输入」——读消息的延迟也是生成的一部分。
+                // 睡眠/免打扰/已读不回会在 Started 之前发 Silent，界面随即收掉。
+                hasStarted = true,
                 streamingText = "",
                 streamingTraces = emptyList(),
                 snackbar = null
@@ -1093,10 +1100,14 @@ class ChatViewModel @Inject constructor(
                     when (event) {
                         // 新一轮真的开始出字了：上一轮的「他睡着了」提示立刻作废。
                         GenerationEvent.Started -> ephemeral.update {
-                            it.copy(hasStarted = true, silentReason = null)
+                            it.copy(hasStarted = true, streamingText = "", silentReason = null)
                         }
                         is GenerationEvent.Delta -> ephemeral.update {
                             it.copy(streamingText = event.fullText, silentReason = null)
+                        }
+                        // 连发的一条完整消息落库了：收起暂存气泡，等下一段「正在输入」。
+                        is GenerationEvent.MessageSent -> ephemeral.update {
+                            it.copy(streamingText = "", streamingTraces = emptyList(), hasStarted = true)
                         }
                         is GenerationEvent.ToolCall -> ephemeral.update { it.copy(streamingTraces = event.traces) }
                         is GenerationEvent.Completed -> {

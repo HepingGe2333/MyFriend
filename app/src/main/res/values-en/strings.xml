@@ -1607,6 +1607,13 @@
     <string name="tool_trace_diary_removed_detail">Torn out.</string>
     <string name="tool_trace_diary_not_found_detail">That note is not in the diary — it may have been torn out already.</string>
     <string name="tool_trace_diary_empty_detail">There is nothing in the diary yet.</string>
+    <string name="tool_trace_send_message">Message</string>
+    <string name="tool_trace_block_user">Block proposal</string>
+    <string name="tool_trace_block_user_applied">Blocked</string>
+    <string name="tool_trace_block_user_pending_detail">The proposal is saved; you can confirm it only after they send another message.</string>
+    <string name="tool_trace_block_user_applied_detail">It is in effect and will end automatically.</string>
+    <string name="chat_blocked_hint">They have blocked you</string>
+    <string name="chat_blocked_icon_desc">Message sent while blocked</string>
     <string name="tool_trace_unknown">Action</string>
 
     <!-- Stickers (spec/stickers): tool traces and in-chat sticker UI -->

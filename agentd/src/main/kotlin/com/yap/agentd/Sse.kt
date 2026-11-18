@@ -69,6 +69,18 @@ sealed class SseEvent {
         }
     }
 
+    /**
+     * 一条 assistant 消息已经落库（0.14 连发：一轮可能有好几条，按发送顺序逐条下发）。
+     *
+     * data 与 `GET /v1/events` 的 `message.created` payload 同形：`{"message": {…}}`。
+     * 老客户端把未知事件类型静默忽略，新客户端以它为准渲染多条气泡；`delta` 仍保留，
+     * 只用于「正在输入…」与单条回复的旧渲染路径。
+     */
+    data class MessageCreated(val message: com.yap.agentd.store.Message) : SseEvent() {
+        override val type: String get() = "message.created"
+        override fun data(): JsonValue.Obj = StoreJson.obj("message" to message.toJson())
+    }
+
     data class Error(val code: String, val message: String) : SseEvent() {
         override val type: String get() = "error"
         override fun data(): JsonValue.Obj = StoreJson.obj(

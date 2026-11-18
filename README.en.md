@@ -18,7 +18,7 @@ YetAnotherPal (Yap) is a companion app for Android and iOS that models a "person
 | Database schema | v13 (messages in blocks of 200; personas carry a world preset, speech style and current activity; both platforms aligned) |
 | Backup format | v5 (`format = "myfriend.backup"`, `formatVersion = 5`; images/avatars, search provider, world presets and speech styles all travel; v1–v4 still readable). The format name is kept for backward compatibility; the product is now YetAnotherPal (Yap) |
 | Build numbers | Android `versionCode` and iOS `CURRENT_PROJECT_VERSION` are kept equal |
-| Unit tests | 2018 on Android (193 classes) + 56 instrumented, 90 in `:agentcore`, 556 in `:agentd`, 2049 on iOS (`swift test`) + 16 App-hosted |
+| Unit tests | 2040 on Android (199 classes) + 56 instrumented, 90 in `:agentcore`, 602 in `:agentd`, 2120 on iOS (`swift test`) + 16 App-hosted |
 | CI | GitHub Actions: Linux runs Android / `:agentcore` / `:agentd`; macOS runs `swift test` + iOS `build-for-testing` |
 
 ## Feature overview

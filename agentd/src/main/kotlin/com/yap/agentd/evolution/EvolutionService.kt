@@ -192,7 +192,7 @@ class EvolutionService(
     /** 最近 12 条（每条 120 字）：「对方：… / 他：…」；会话不存在时返回空串。 */
     fun recentSummary(sessionId: String?): String {
         val id = sessionId ?: return ""
-        val messages: List<Message> = store.latestMessages(id, RECENT_MESSAGES * 2)
+        val messages: List<Message> = store.latestMessages(id, RECENT_MESSAGES * 2, includeBlocked = false)
         return messages
             .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
             .filter { it.content.isNotBlank() }

@@ -171,6 +171,7 @@ class ServerChatGatewayTest {
                 when (it) {
                     is ServerSendEvent.Accepted -> "accepted:${it.userMessageId}"
                     is ServerSendEvent.Delta -> "delta:${it.text}"
+                    is ServerSendEvent.MessageCreated -> "message:${it.message.id}"
                     is ServerSendEvent.Tool -> "tool:${it.name}:${it.status}"
                     is ServerSendEvent.Done -> "done:${it.assistantMessageId}"
                     is ServerSendEvent.Error -> "error:${it.code}"

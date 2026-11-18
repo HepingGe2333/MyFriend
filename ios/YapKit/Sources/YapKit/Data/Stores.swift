@@ -166,7 +166,10 @@ extension PersonaEntity: SQLiteRecord {
         "translationJson", "translationLang",
         // v17 的多维心情（可空 = 还没自动判定过，见 `MoodState.dimensions`）。
         // 顺序跟建表语句一致：追加在表尾（Android 17.json 也是这么排的）。
-        "moodValence", "moodArousal", "moodDominance"
+        "moodValence", "moodArousal", "moodDominance",
+        // v18 的拉黑（可空 = 没被拉黑 / 已到期解除，见 `BlockPolicy`），
+        // 以及未确认的提议（10 分钟有效）。列序与 Android 18.json 一致。
+        "blockedUntil", "blockReason", "blockProposalJson"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -186,7 +189,9 @@ extension PersonaEntity: SQLiteRecord {
             .bool(sleepEnabled), .int(wakeThreshold), .bool(dndOnSleep),
             .optionalText(worldJson), .optionalText(speechStyleJson), .optionalText(activityJson),
             .optionalText(translationJson), .optionalText(translationLang),
-            .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance)
+            .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance),
+            .optionalInt(blockedUntil), .optionalText(blockReason),
+            .optionalText(blockProposalJson)
         ]
     }
 
@@ -238,7 +243,11 @@ extension PersonaEntity: SQLiteRecord {
             speechStyleJson: try row.optionalText("speechStyleJson"),
             activityJson: try row.optionalText("activityJson"),
             translationJson: try row.optionalText("translationJson"),
-            translationLang: try row.optionalText("translationLang")
+            translationLang: try row.optionalText("translationLang"),
+            // v18：老库没有这两列时给 nil（= 未拉黑）。
+            blockedUntil: try row.optionalInt64("blockedUntil"),
+            blockReason: try row.optionalText("blockReason"),
+            blockProposalJson: try row.optionalText("blockProposalJson")
         )
     }
 }
@@ -354,7 +363,7 @@ extension MessageEntity: SQLiteRecord {
     public static let columns = [
         "id", "sessionId", "personaId", "role", "content", "createdAt", "updatedAt",
         "status", "errorMessage", "model", "edited", "attachmentsJson", "toolTraceJson",
-        "readAt", "blockIndex"
+        "readAt", "blockIndex", "blocked"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -362,7 +371,8 @@ extension MessageEntity: SQLiteRecord {
             .text(id), .text(sessionId), .text(personaId), .text(role.stored), .text(content),
             .int(createdAt), .int(updatedAt), .text(status.stored), .optionalText(errorMessage),
             .optionalText(model), .bool(edited), .optionalText(attachmentsJson),
-            .optionalText(toolTraceJson), .optionalInt(readAt), .int(blockIndex)
+            .optionalText(toolTraceJson), .optionalInt(readAt), .int(blockIndex),
+            .bool(blocked)
         ]
     }
 
@@ -382,7 +392,9 @@ extension MessageEntity: SQLiteRecord {
             attachmentsJson: try row.optionalText("attachmentsJson"),
             toolTraceJson: try row.optionalText("toolTraceJson"),
             readAt: try row.optionalInt64("readAt"),
-            blockIndex: try row.int("blockIndex")
+            blockIndex: try row.int("blockIndex"),
+            // v18：老库没有这一列时按 false（= 未被屏蔽）。
+            blocked: try row.bool("blocked", false)
         )
     }
 }
@@ -655,6 +667,71 @@ extension ApiUsageEntity: SQLiteRecord {
             promptTokens: try row.int("promptTokens"),
             completionTokens: try row.int("completionTokens"),
             costMicroUsd: try row.int64("costMicroUsd")
+        )
+    }
+}
+
+// MARK: - v18 心理活动与会话备忘录
+
+extension MentalActivityEntity: SQLiteRecord {
+    public static let tableName = "mental_activities"
+    /// 列序与 Android 18.json 逐字一致（`personaId` 在前、`sessionId` 可空）。
+    public static let columns = [
+        "id", "personaId", "sessionId", "at", "thought",
+        "moodLabel", "moodIntensity", "moodValence", "moodArousal", "moodDominance"
+    ]
+
+    public var bindings: [SQLiteValue] {
+        [
+            .text(id), .text(personaId), .optionalText(sessionId), .int(at), .text(thought),
+            .optionalText(moodLabel), .optionalInt(moodIntensity),
+            .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance)
+        ]
+    }
+
+    public init(row: SQLiteRow) throws {
+        self.init(
+            id: try row.text("id"),
+            sessionId: try row.optionalText("sessionId"),
+            personaId: try row.text("personaId"),
+            at: try row.int64("at"),
+            thought: try row.text("thought"),
+            moodLabel: try row.optionalText("moodLabel"),
+            moodIntensity: try row.optionalInt("moodIntensity"),
+            moodValence: try row.optionalInt("moodValence"),
+            moodArousal: try row.optionalInt("moodArousal"),
+            moodDominance: try row.optionalInt("moodDominance")
+        )
+    }
+}
+
+extension SessionMemoryEntity: SQLiteRecord {
+    public static let tableName = "session_memory"
+    /// 列序与 Android 18.json 逐字一致（两份摘要在前，然后是两个计数与两个时间）。
+    public static let columns = [
+        "sessionId", "personaId", "shortSummary", "longSummary",
+        "shortUserCount", "longUserCount", "shortUpdatedAt", "longUpdatedAt", "updatedAt"
+    ]
+
+    public var bindings: [SQLiteValue] {
+        [
+            .text(sessionId), .text(personaId), .optionalText(shortSummary),
+            .optionalText(longSummary), .int(shortUserCount), .int(longUserCount),
+            .optionalInt(shortUpdatedAt), .optionalInt(longUpdatedAt), .int(updatedAt)
+        ]
+    }
+
+    public init(row: SQLiteRow) throws {
+        self.init(
+            sessionId: try row.text("sessionId"),
+            personaId: try row.text("personaId"),
+            shortSummary: try row.optionalText("shortSummary"),
+            longSummary: try row.optionalText("longSummary"),
+            shortUserCount: try row.int("shortUserCount"),
+            longUserCount: try row.int("longUserCount"),
+            shortUpdatedAt: try row.optionalInt64("shortUpdatedAt"),
+            longUpdatedAt: try row.optionalInt64("longUpdatedAt"),
+            updatedAt: try row.int64("updatedAt")
         )
     }
 }
@@ -1088,6 +1165,13 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     static let hasVisibleContentSQL =
         "length(trim(content, char(9) || char(10) || char(13) || char(32))) > 0"
 
+    /// v18：拉黑期间收下的消息**永远不进模型上下文**（`spec/experience/README.md` §2）。
+    ///
+    /// 为什么写在存储层而不是每个调用点自己 filter：拼提示词、抽记忆、心跳处境、回忆线索
+    /// 都会读「最近的对话」，漏掉任何一处，模型就会从别的地方看见那句被屏蔽的话。
+    /// 界面仍要看得到它们（带红色感叹号），所以 `recent` / 区块分页**不**加这一条。
+    static let notBlockedSQL = "blocked = 0"
+
     /// 最近 `limit` 条**对话消息**（`role` 非 `SYSTEM`、正文 trim 之后非空，时间升序）。
     ///
     /// 拼心跳处境（「最近几句」）与抽记忆的对话窗口都用它：`system` 提示词与空消息
@@ -1095,7 +1179,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     public func recentDialogue(sessionId: String, limit: Int) throws -> [MessageEntity] {
         guard limit > 0 else { return [] }
         let rows = try fetch(
-            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL)",
+            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL) AND \(Self.notBlockedSQL)",
             [.text(sessionId), .text(MessageRole.system.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: limit
@@ -1108,7 +1192,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 只查计数、不读正文：长会话下 `count(*)` 走索引，比把几千条正文捞出来再 `filter` 便宜几个数量级。
     public func countDialogue(sessionId: String) throws -> Int {
         try count(
-            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL)",
+            where: "sessionId = ? AND role <> ? AND \(Self.hasVisibleContentSQL) AND \(Self.notBlockedSQL)",
             [.text(sessionId), .text(MessageRole.system.stored)]
         )
     }
@@ -1119,7 +1203,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 这 N 条可能全是助手消息，用户上一次说话就被截在窗口外面了（0.11.0 P2-1）。
     public func latestUserMessage(sessionId: String) throws -> MessageEntity? {
         let rows = try fetch(
-            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL)",
+            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL) AND \(Self.notBlockedSQL)",
             [.text(sessionId), .text(MessageRole.user.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: 1
@@ -1130,7 +1214,7 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     /// 最后一次「他（助手）说的话」，语义同 `latestUserMessage`。
     public func latestAssistantMessage(sessionId: String) throws -> MessageEntity? {
         let rows = try fetch(
-            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL)",
+            where: "sessionId = ? AND role = ? AND \(Self.hasVisibleContentSQL) AND \(Self.notBlockedSQL)",
             [.text(sessionId), .text(MessageRole.assistant.stored)],
             orderBy: "createdAt DESC, id DESC",
             limit: 1
@@ -1228,6 +1312,43 @@ public final class MessageStore: SQLiteStore<MessageEntity> {
     }
 
     /// 某人格最近一段时间里对方说了几句（睡眠唤醒阈值要数这个，§六）。
+    /// v18：一段会话里「用户消息」一共多少条（可只看未被拉黑的那部分）。
+    ///
+    /// 会话备忘录的节流（每 5 / 30 条）与心理活动的「每 3 轮」都靠它；
+    /// 传 `includeBlocked: false` 时只数模型真正看得到的那些（拉黑期间的话不进备忘录）。
+    public func countUserMessages(
+        sessionId: String,
+        includeBlocked: Bool = true
+    ) throws -> Int {
+        let clause = "sessionId = ? AND role = ?"
+            + (includeBlocked ? "" : " AND \(Self.notBlockedSQL)")
+        return try count(where: clause, [.text(sessionId), .text(MessageRole.user.stored)])
+    }
+
+    /// 提议**之后**新增的用户消息条数（拉黑的两轮确认用，规范 §2）。
+    ///
+    /// 只数 `createdAt > 提议时刻` 的：同一轮里模型连调两次工具时，中间没有新的用户消息，
+    /// 于是确认不生效 —— 这正是「至少隔一轮」的实现。
+    public func countUserMessages(sessionId: String, after timestamp: Int64) throws -> Int {
+        try count(
+            where: "sessionId = ? AND role = ? AND createdAt > ?",
+            [.text(sessionId), .text(MessageRole.user.stored), .int(timestamp)]
+        )
+    }
+
+    /// 最近 `limit` 条**模型可见**的消息（时间升序）：`recent` 去掉拉黑期间的那些。
+    ///
+    /// 为什么要在 SQL 里筛而不是读出来再 filter：拉黑可能很长，窗口里全是屏蔽消息时
+    /// 先读 200 条再滤掉 200 条，等于这一轮没有任何上下文可用。
+    public func recentVisible(sessionId: String, limit: Int) throws -> [MessageEntity] {
+        guard limit > 0 else { return [] }
+        let rows = try fetch(
+            where: "sessionId = ? AND \(Self.notBlockedSQL)", [.text(sessionId)],
+            orderBy: "createdAt DESC, id DESC", limit: limit
+        )
+        return observed("recentVisible", Array(rows.reversed()))
+    }
+
     public func countUserMessages(personaId: String, since: Int64) throws -> Int {
         try count(where: "personaId = ? AND role = ? AND createdAt >= ?",
                   [.text(personaId), .text(MessageRole.user.stored), .int(since)])
@@ -1620,6 +1741,48 @@ public final class ApiUsageStore: SQLiteStore<ApiUsageEntity> {
 ///
 /// 不用单例（`Database.shared`）：测试要能建临时库、App 要能迁移旧库，
 /// 一个显式的 `DatabaseStores(database:)` 比全局状态好推理。
+/// 心理活动仓储（v18）：写一句念头、读最近一条、只留最近 50 条。
+public final class MentalActivityStore: SQLiteStore<MentalActivityEntity> {
+
+    /// 某个人的最近 `limit` 条（**时间倒序**：最新的一条在最前）。
+    public func recent(personaId: String, limit: Int) throws -> [MentalActivityEntity] {
+        try fetch(
+            where: "personaId = ?", [.text(personaId)],
+            orderBy: "at DESC", limit: max(limit, 0)
+        )
+    }
+
+    /// 只保留最近 `keep` 条（规范 §3：50）。
+    ///
+    /// 按 `at` 倒序数到第 keep 条之后的全删；同一毫秒的并列用 `id` 兜底排序，
+    /// 保证「50 条」这个数字是确定的（不会因为排序不稳定而一次删多/删少）。
+    @discardableResult
+    public func prune(personaId: String, keeping keep: Int) throws -> Int {
+        let retained = try fetch(
+            where: "personaId = ?", [.text(personaId)],
+            orderBy: "at DESC, id DESC", limit: max(keep, 0)
+        )
+        let keepIds = Set(retained.map(\.id))
+        let all = try fetch(where: "personaId = ?", [.text(personaId)], orderBy: nil, limit: nil)
+        var deleted = 0
+        for row in all where !keepIds.contains(row.id) {
+            try delete(id: row.id)
+            deleted += 1
+        }
+        return deleted
+    }
+}
+
+/// 会话备忘录仓储（v18）：一段会话一行，短期 / 长期摘要各自独立更新。
+public final class SessionMemoryStore: SQLiteStore<SessionMemoryEntity> {
+
+    /// 这段会话的备忘录。**不能走 `byId`**：这张表的主键列叫 `sessionId`，
+    /// 而通用 `byId` 拼的是 `WHERE id = ?`（SQLite 会直接报「no such column: id」）。
+    public func bySession(_ sessionId: String) throws -> SessionMemoryEntity? {
+        try first(where: "sessionId = ?", [.text(sessionId)])
+    }
+}
+
 public struct DatabaseStores {
     public let database: SQLiteDatabase
     public let personas: PersonaStore
@@ -1643,6 +1806,10 @@ public struct DatabaseStores {
     public let personaPendingPatches: PersonaPendingPatchStore
     /// v16 表情包（`spec/stickers/SCHEMA.md`）。
     public let stickers: StickerStore
+    /// v18 心理活动（`spec/experience/README.md` §3）。
+    public let mentalActivities: MentalActivityStore
+    /// v18 会话备忘录（`spec/experience/README.md` §6）。
+    public let sessionMemory: SessionMemoryStore
 
     public init(database: SQLiteDatabase) {
         self.database = database
@@ -1663,6 +1830,8 @@ public struct DatabaseStores {
         self.diaryNotes = DiaryNoteStore(database: database)
         self.personaPendingPatches = PersonaPendingPatchStore(database: database)
         self.stickers = StickerStore(database: database)
+        self.mentalActivities = MentalActivityStore(database: database)
+        self.sessionMemory = SessionMemoryStore(database: database)
     }
 
     /// 建库 + 装好所有仓储（App 启动走这一条）。

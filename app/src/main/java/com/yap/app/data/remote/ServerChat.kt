@@ -92,6 +92,8 @@ class ServerApiRemote(private val api: ServerApi) : ServerRemote {
 sealed class ServerSendEvent {
     data class Accepted(val userMessageId: String) : ServerSendEvent()
     data class Delta(val text: String) : ServerSendEvent()
+    /** 连发中的一条完整消息（0.14 SSE `message.created`）。 */
+    data class MessageCreated(val message: ServerMessage) : ServerSendEvent()
     data class Tool(val name: String, val status: String, val summary: String?) : ServerSendEvent()
     data class Done(val assistantMessageId: String, val usage: ServerUsage) : ServerSendEvent()
     data class Error(val code: String, val message: String) : ServerSendEvent()
@@ -303,6 +305,9 @@ class ServerChatGateway(
                     }
 
                     is ServerChatEvent.Delta -> onEvent(ServerSendEvent.Delta(event.text))
+
+                    is ServerChatEvent.MessageCreated ->
+                        onEvent(ServerSendEvent.MessageCreated(event.message))
 
                     is ServerChatEvent.Tool -> onEvent(
                         ServerSendEvent.Tool(event.name, event.status, event.summary)

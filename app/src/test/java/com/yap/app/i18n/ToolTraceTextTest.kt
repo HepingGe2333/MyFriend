@@ -53,6 +53,10 @@ class ToolTraceTextTest {
         // 0.13：语音/视频（spec/audio-video）。工具名就叫 listen / watch，标题写成「听语音/看视频」。
         ToolTraceTitle.LISTEN to ("听语音" to "Listened"),
         ToolTraceTitle.WATCH to ("看视频" to "Watched"),
+        // 0.14：连发与拉黑。send_message 平时不落痕迹，但工具注册表里有它，标题必须齐全。
+        ToolTraceTitle.SEND_MESSAGE to ("发消息" to "Message"),
+        ToolTraceTitle.BLOCK_USER to ("拉黑提议" to "Block proposal"),
+        ToolTraceTitle.BLOCK_USER_APPLIED to ("已拉黑" to "Blocked"),
         ToolTraceTitle.UNKNOWN to ("动作" to "Action")
     )
 

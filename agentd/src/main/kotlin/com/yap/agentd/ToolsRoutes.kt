@@ -340,7 +340,12 @@ internal class ProactiveTicker(
      * 正文来源：生产是 `llm/LlmProactiveTextSource`（真调模型）；默认 [ProactiveTextSource.DEFAULT]
      * 只给测试/冒烟用。返回空串表示这一拍不开口（不落固定文案）。
      */
-    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT
+    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT,
+    /**
+     * 0.14 体验功能：心理活动 / 会话记忆 / 拉黑到期都挂在这一拍上（**不依赖客户端连接**）。
+     * `null` = 没有接 LLM/存储（老测试），心跳照常做主动/日记/念头。
+     */
+    private val experience: com.yap.agentd.experience.ExperienceService? = null
 ) {
 
     private val lock = Any()
@@ -379,6 +384,11 @@ internal class ProactiveTicker(
             // 冷却/每日上限（用户自己定的提醒不该被「今天说够了」挡掉），但同样不依赖客户端。
             deliverDiaryReminders(now, fired)
             deliverDeferredIntents(now, fired)
+            // 0.14：心理活动、会话记忆、拉黑到期——同一拍里跑，客户端不在线也照常推进。
+            runCatching { experience?.onTick(now) }
+                .onFailure { failure ->
+                    System.err.println("[agentd] 体验功能心跳失败：${failure::class.simpleName}: ${failure.message}")
+                }
             ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
         } finally {
             collected.remove()

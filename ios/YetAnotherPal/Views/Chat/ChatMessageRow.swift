@@ -81,7 +81,24 @@ struct ChatBubbleRow: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if outgoing { Spacer(minLength: 40) }
-            bubble
+            // 0.14 拉黑（`spec/experience/README.md` §2）：气泡**左侧**一个红色感叹号，
+            // 气泡下方一句「对方已将你拉黑」。只认消息自己的 `blocked` 列：
+            // 解除之后这几条仍然带标记（那是当时发生过的事，模型永远不会看到它们）。
+            if BlockPolicy.showsBlockedIndicator(role: message.role, blocked: message.blocked) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.red)
+                    .padding(.bottom, 2)
+                    .accessibilityLabel(Text(L("对方已将你拉黑")))
+            }
+            VStack(alignment: .trailing, spacing: 3) {
+                bubble
+                if message.blocked && message.role == .user {
+                    Text(L("对方已将你拉黑"))
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
             if outgoing {
                 // 自己那一侧的小头像：这是「我」在这个对话里存在过的证据（1.9.1 新增）。
                 MFAvatar(myAvatarUri: myAvatarUri, size: 26)
@@ -323,28 +340,59 @@ struct ChatStreamingBubble: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                if text.isEmpty {
-                    ChatTypingDots(animationsEnabled: animationsEnabled)
-                } else {
+            if text.isEmpty {
+                // 0.14 §1：生成中**只显示输入指示**，不再画一个带「…」的占位气泡。
+                // 三个点直接贴在聊天里（没有气泡底、没有时间戳），首字一到就换成下面的真气泡。
+                ChatTypingRow(traces: traces, animationsEnabled: animationsEnabled)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
                     ChatMarkdownView(text: text, isOutgoing: false, onOpenLink: onOpenLink)
                     ChatBlinkingCursor(animationsEnabled: animationsEnabled)
                         .padding(.top, 1)
+                    if !traces.isEmpty {
+                        tracesSection
+                            .padding(.top, 6)
+                    }
                 }
-                if !traces.isEmpty {
-                    tracesSection
-                        .padding(.top, 6)
-                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(MFTheme.incomingBubble(scheme))
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.7))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(MFTheme.incomingBubble(scheme))
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.7))
 
             Spacer(minLength: 52)
         }
         .padding(.vertical, 2)
+    }
+
+    /// 生成中但还没有正文：只有三个点（+ 正在跑的工具痕迹），**没有气泡**。
+    ///
+    /// 为什么连痕迹也不套气泡：这一版的要求是「生成中只显示输入指示」；
+    /// 一旦有真字，整个东西才变成一条消息（那是下面的分支）。
+    private struct ChatTypingRow: View {
+        let traces: [ToolTraceItem]
+        let animationsEnabled: Bool
+
+        @Environment(\.colorScheme) private var scheme
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                ChatTypingDots(animationsEnabled: animationsEnabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                if !traces.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles").font(.system(size: 10))
+                        Text(ToolTraceCodec.summarize(traces).isEmpty ? L("正在忙") : ToolTraceCodec.summarize(traces))
+                            .font(.caption2)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(MFTheme.subtleText(scheme))
+                    .padding(.horizontal, 12)
+                }
+            }
+        }
     }
 
     private var tracesSection: some View {

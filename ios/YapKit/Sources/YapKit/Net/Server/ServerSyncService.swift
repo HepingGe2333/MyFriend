@@ -97,6 +97,9 @@ public enum ServerSyncMapping {
         record.isDefault = server.isDefault
         record.updatedAt = server.updatedAt > 0 ? server.updatedAt : now
         if record.createdAt == 0 { record.createdAt = server.createdAt > 0 ? server.createdAt : now }
+        // 0.14 拉黑：服务端是权威，本地跟着同步（界面与本地规则读同一列）。
+        record.blockedUntil = server.blockedUntil
+        record.blockReason = server.blockReason
         // 头像：服务端下发的是 `/v1/media/...` 这样的**服务端路径**，本地 `avatarUri`
         // 是沙盒里的 `file://`。两者不是同一个东西，硬塞进去会让界面去 decode 一个不存在的文件。
         // 这一版刻意不映射头像（见交付报告的「没做到」）。
@@ -170,6 +173,9 @@ public enum ServerSyncMapping {
         record.updatedAt = record.createdAt
         record.status = .complete
         record.readAt = server.readAt
+        // 0.14：拉黑期间的消息在服务端带 `blocked`，本地也要标上（界面显示红色感叹号；
+        // 服务端模式下的模型上下文本来就在服务端，客户端只负责显示）。
+        record.blocked = server.blocked ?? false
         record.attachmentsJson = attachmentsJson(
             from: server.attachments, mediaMeta: mediaMeta,
             existing: existing?.attachmentsJson

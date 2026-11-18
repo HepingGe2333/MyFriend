@@ -167,6 +167,15 @@ public final class AgentLoop {
         intents.collapseDuplicates()
         intents.materializeDueRules(now: at)
 
+        // 0.14 拉黑：他现在不想理对方，也就不安排任何主动动作（到期自己解除）。
+        if BlockPolicy.effective(until: persona.blockedUntil, reason: persona.blockReason, now: at) != nil {
+            return Outcome(
+                nextDelayMinutes: Self.backoffMinutes,
+                acted: false,
+                summary: "还在拉黑期，这一轮不打算做什么"
+            )
+        }
+
         // 他睡觉的时候不思考：既省电，也更像人。
         let minute = ServiceTime.minuteOfDay(at)
         if PersonaSleep.isAsleep(persona, minuteOfDay: minute) {
@@ -432,7 +441,8 @@ public final class AgentLoop {
         // 只有会话绑了 API 配置才带历史（Android 同一口径）：没绑说明这段会话还没真正聊起来。
         let hasConfig = !(session.apiConfigId ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         guard hasConfig else { return [.system(system)] }
-        let recent = (try? stores.messages.recent(sessionId: session.id, limit: 40)) ?? []
+        // 0.14：拉黑期间的消息永久不进模型上下文（主动开口同样看不到）。
+        let recent = (try? stores.messages.recentVisible(sessionId: session.id, limit: 40)) ?? []
         let history = recent
             .filter {
                 ($0.role == .user || $0.role == .assistant)

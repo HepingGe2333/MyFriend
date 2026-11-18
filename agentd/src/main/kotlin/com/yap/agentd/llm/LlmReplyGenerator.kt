@@ -57,7 +57,9 @@ class LlmReplyGenerator(
             mood = store.mood(request.personaId),
             activity = ActivityState.decode(persona.activityJson),
             history = request.history,
-            now = now
+            now = now,
+            sessionMemory = request.sessionMemory,
+            mentalActivity = request.mentalActivity
         )
         val messages = systemMessages.toMutableList()
         val startedAt = now
@@ -68,6 +70,9 @@ class LlmReplyGenerator(
         val attachments = LinkedHashSet<String>()
         var suppressed = false
         var textSoFar = StringBuilder()
+        // 0.14 连发：`send_message` 每调一次收集一条；`OutgoingMessages` 负责「每轮最多 4 条」。
+        val outgoing = ToolExecutor.OutgoingMessages()
+        val sentMessages = ArrayList<String>()
 
         var round = 0
         while (round < MAX_TOOL_ROUNDS) {
@@ -96,13 +101,15 @@ class LlmReplyGenerator(
                     context = ToolExecutor.Context(
                         personaId = request.personaId,
                         sessionId = request.sessionId,
-                        userMessageId = request.userMessage.id
+                        userMessageId = request.userMessage.id,
+                        outgoing = outgoing
                     )
                 )
                 traces += outcome.trace
                 emit(SseEvent.Tool(call.name, "done", outcome.summary))
                 messages += LlmMessage.tool(outcome.contentForModel, call.id)
                 attachments += outcome.attachments
+                outcome.sentMessage?.let { sentMessages += it }
                 if (outcome.staySilent) silentThisRound = true
             }
             if (silentThisRound) {
@@ -123,7 +130,9 @@ class LlmReplyGenerator(
             toolTraceJson = toolTraceJson,
             toolsUsed = traces.map { it.name },
             elapsedMs = clock.millis() - startedAt,
-            textLength = textSoFar.length
+            textLength = textSoFar.length,
+            // 用了 `send_message` 就以逐条消息为准（已流出的文字只当「正在输入」的进度）。
+            messages = if (suppressed) emptyList() else sentMessages.toList()
         )
     }
 

@@ -114,6 +114,24 @@ interface PersonaDao {
         dominance: Int?
     )
 
+    /** 到点自动解除拉黑（schema v18）。返回值只用于日志/测试，不影响调用方。 */
+    @Query(
+        "UPDATE personas SET blockedUntil = NULL, blockReason = NULL " +
+            "WHERE blockedUntil IS NOT NULL AND blockedUntil <= :now"
+    )
+    suspend fun clearExpiredBlocks(now: Long): Int
+
+    /** 写入 / 清空还没生效的拉黑提议（JSON；10 分钟由读取方判断）。 */
+    @Query("UPDATE personas SET blockProposalJson = :json WHERE id = :id")
+    suspend fun setBlockProposal(id: String, json: String?)
+
+    /** 确认拉黑：写到期时间与原因，同时清掉提议（一次提议只能确认一次）。 */
+    @Query(
+        "UPDATE personas SET blockedUntil = :until, blockReason = :reason, blockProposalJson = NULL " +
+            "WHERE id = :id"
+    )
+    suspend fun applyBlock(id: String, until: Long, reason: String?): Int
+
     @Query("DELETE FROM personas")
     suspend fun deleteAll()
 }
@@ -376,11 +394,26 @@ interface MessageDao {
     suspend fun getBySession(sessionId: String): List<MessageEntity>
 
     /** 只取最近 N 条：装配模型上下文用，长会话不再把整段历史读进内存。 */
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    @Query(
+        "SELECT * FROM messages WHERE sessionId = :sessionId AND blocked = 0 " +
+            "ORDER BY createdAt DESC, id DESC LIMIT :limit"
+    )
     suspend fun recentBySession(sessionId: String, limit: Int): List<MessageEntity>
 
+    /**
+     * 最近 N 条（含拉黑期间的消息）。
+     *
+     * 只给「用户可见的历史 / 媒体列表」这一类界面兜底路径用；模型上下文一律走
+     * [recentBySession]，避免拉黑内容在解除后重新进入提示词。
+     */
+    @Query("SELECT * FROM messages WHERE sessionId = :sessionId ORDER BY createdAt DESC, id DESC LIMIT :limit")
+    suspend fun recentIncludingBlockedBySession(sessionId: String, limit: Int): List<MessageEntity>
+
     /** 压缩用：取比某个时间点更早的消息（按时间正序），只拿需要被压进摘要的那一段。 */
-    @Query("SELECT * FROM messages WHERE sessionId = :sessionId AND createdAt <= :before ORDER BY createdAt ASC, id ASC LIMIT :limit")
+    @Query(
+        "SELECT * FROM messages WHERE sessionId = :sessionId AND blocked = 0 AND createdAt <= :before " +
+            "ORDER BY createdAt ASC, id ASC LIMIT :limit"
+    )
     suspend fun olderThan(sessionId: String, before: Long, limit: Int): List<MessageEntity>
 
     @Query("SELECT * FROM messages WHERE id = :id")
@@ -391,6 +424,10 @@ interface MessageDao {
 
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId")
     suspend fun countInSession(sessionId: String): Int
+
+    /** 模型可见的条数（不含拉黑期间收到的消息）；抽记忆/压缩的间隔判断用。 */
+    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND blocked = 0")
+    suspend fun countVisibleInSession(sessionId: String): Int
 
     /**
      * 全库消息条数（bootstrap 四象限判定用）。
@@ -411,17 +448,21 @@ interface MessageDao {
     @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
     suspend fun countUserMessages(sessionId: String): Int
 
+    /** 节流用：不把拉黑期间的消息算进摘要/记忆的进度（它们永远不会被模型看到）。 */
+    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER' AND blocked = 0")
+    suspend fun countVisibleUserMessages(sessionId: String): Int
+
     /**
      * 用户消息第一次被模型「看到」时写已读。
      *
      * 只填 readAt 为空的那几条：重复生成、重试都不会把时间改成「刚刚」，
      * 否则界面上的「已读」会随着每一次重新生成往后跳。
      */
-    @Query("UPDATE messages SET readAt = :now WHERE sessionId = :sessionId AND role = 'USER' AND readAt IS NULL")
+    @Query("UPDATE messages SET readAt = :now WHERE sessionId = :sessionId AND role = 'USER' AND readAt IS NULL AND blocked = 0")
     suspend fun markUserMessagesRead(sessionId: String, now: Long): Int
 
-    /** 睡眠唤醒阈值：最近 30 分钟内这个人格发了几条（含刚刚这一条）。 */
-    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER' AND createdAt >= :since")
+    /** 睡眠唤醒阈值：最近 30 分钟内这个人格发了几条（含刚刚这一条；拉黑消息不算）。 */
+    @Query("SELECT COUNT(*) FROM messages WHERE sessionId = :sessionId AND role = 'USER' AND blocked = 0 AND createdAt >= :since")
     suspend fun countUserMessagesSince(sessionId: String, since: Long): Int
 
     /** 某条用户消息之后有没有他真正说出口的话；界面靠它决定还要不要显示「已读」。 */
@@ -460,20 +501,20 @@ interface MessageDao {
     @Query(
         """
         SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
-        AND content != '' ORDER BY createdAt DESC LIMIT 1
+        AND content != '' AND blocked = 0 ORDER BY createdAt DESC LIMIT 1
         """
     )
     suspend fun lastUserMessage(sessionId: String): MessageEntity?
 
     /** 「对方上次说话」的时间戳；没有说过话时返回 null。 */
-    @Query("SELECT MAX(createdAt) FROM messages WHERE sessionId = :sessionId AND role = 'USER'")
+    @Query("SELECT MAX(createdAt) FROM messages WHERE sessionId = :sessionId AND role = 'USER' AND blocked = 0")
     suspend fun lastUserMessageAt(sessionId: String): Long?
 
     /** 最近几条用户原话（闲逛找话题用）：按时间倒序，只要用户消息，不扫整段历史。 */
     @Query(
         """
         SELECT * FROM messages WHERE sessionId = :sessionId AND role = 'USER'
-        AND content != '' ORDER BY createdAt DESC LIMIT :limit
+        AND content != '' AND blocked = 0 ORDER BY createdAt DESC LIMIT :limit
         """
     )
     suspend fun recentUserMessages(sessionId: String, limit: Int): List<MessageEntity>
@@ -1152,4 +1193,77 @@ interface StickerDao {
 
     @Query("SELECT file FROM stickers")
     suspend fun allFiles(): List<String>
+}
+
+/**
+ * 心理活动的读写口（schema v18）。
+ *
+ * 只保留最近 50 条：`trim` 删除「不在最近 keep 条 id 里」的行，写入后调用一次。
+ * 用 id 子查询而不是 `at < cutoff`，是因为同一毫秒可能写入多条（测试/导入），
+ * 按排序键 id 兜底才能稳定保留恰好 50 条。
+ */
+@Dao
+interface MentalActivityDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(activity: MentalActivityEntity)
+
+    @Query("SELECT * FROM mental_activities WHERE personaId = :personaId ORDER BY at DESC, id DESC LIMIT :limit")
+    suspend fun recent(personaId: String, limit: Int): List<MentalActivityEntity>
+
+    @Query("SELECT * FROM mental_activities WHERE personaId = :personaId ORDER BY at DESC, id DESC LIMIT 1")
+    suspend fun latest(personaId: String): MentalActivityEntity?
+
+    @Query("SELECT * FROM mental_activities WHERE sessionId = :sessionId ORDER BY at DESC, id DESC LIMIT :limit")
+    suspend fun recentForSession(sessionId: String, limit: Int): List<MentalActivityEntity>
+
+    @Query("SELECT COUNT(*) FROM mental_activities WHERE personaId = :personaId")
+    suspend fun count(personaId: String): Int
+
+    @Query(
+        "DELETE FROM mental_activities WHERE personaId = :personaId AND id NOT IN " +
+            "(SELECT id FROM mental_activities WHERE personaId = :personaId ORDER BY at DESC, id DESC LIMIT :keep)"
+    )
+    suspend fun trim(personaId: String, keep: Int)
+
+    @Query("DELETE FROM mental_activities WHERE sessionId = :sessionId")
+    suspend fun deleteBySession(sessionId: String)
+
+    @Query("DELETE FROM mental_activities WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM mental_activities")
+    suspend fun deleteAll()
+}
+
+/**
+ * 会话级「小本子」的读写口（schema v18）。
+ *
+ * 一个会话一行；更新时走 REPLACE。短期/长期各自的用户消息计数是节流凭据：
+ * 只有跨过下一个 5 / 30 的整数倍才真正调用模型，失败时整行不写，旧摘要自然保留。
+ */
+@Dao
+interface SessionMemoryDao {
+    @Query("SELECT * FROM session_memory WHERE sessionId = :sessionId")
+    suspend fun get(sessionId: String): SessionMemoryEntity?
+
+    @Query("SELECT * FROM session_memory WHERE personaId = :personaId")
+    suspend fun byPersona(personaId: String): List<SessionMemoryEntity>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(memory: SessionMemoryEntity)
+
+    @Query("UPDATE session_memory SET shortSummary = :shortSummary, shortUserCount = :count, shortUpdatedAt = :at, updatedAt = :at WHERE sessionId = :sessionId")
+    suspend fun updateShort(sessionId: String, shortSummary: String, count: Int, at: Long)
+
+    @Query("UPDATE session_memory SET longSummary = :longSummary, longUserCount = :count, longUpdatedAt = :at, updatedAt = :at WHERE sessionId = :sessionId")
+    suspend fun updateLong(sessionId: String, longSummary: String, count: Int, at: Long)
+
+    @Query("DELETE FROM session_memory WHERE sessionId = :sessionId")
+    suspend fun deleteBySession(sessionId: String)
+
+    @Query("DELETE FROM session_memory WHERE personaId = :personaId")
+    suspend fun deleteByPersona(personaId: String)
+
+    @Query("DELETE FROM session_memory")
+    suspend fun deleteAll()
 }

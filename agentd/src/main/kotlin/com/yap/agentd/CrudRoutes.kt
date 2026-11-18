@@ -320,6 +320,9 @@ object CrudRoutes {
             createdAt = existing?.createdAt ?: now,
             updatedAt = existing?.updatedAt ?: now,
             activityJson = activityJson,
+            // 0.14：拉黑状态只能由 block_user/到期解除改变；客户端更新人格时原样保留。
+            blockedUntil = existing?.blockedUntil,
+            blockReason = existing?.blockReason.orEmpty(),
             extraFields = extras
         )
     }

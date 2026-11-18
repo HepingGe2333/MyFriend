@@ -99,6 +99,9 @@ class FileStore(
          */
         const val MAX_ACTIVITY_JSON_CHARS = 1024
 
+        /** `personas.blockReason` 的长度上限（只给自己看的一句话，不该成为长文存储）。 */
+        const val MAX_BLOCK_REASON_CHARS = 200
+
         /** 会话/人格 id 只允许 `[A-Za-z0-9_-]`：它们会拼进文件路径，不能接受 `..` / `/`。 */
         private val ID_PATTERN = Regex("[A-Za-z0-9_-]{1,64}")
 
@@ -135,6 +138,15 @@ class FileStore(
 
         /** 0.13：自动判定的游标（每 4 条用户消息判心情、每 20 条评估进化）。 */
         const val AUTO_STATE_FILE = "auto_state.json"
+
+        /** 0.14：`block_user` 还没确认的拉黑提议（两轮确认；10 分钟过期）。 */
+        const val BLOCK_PROPOSALS_FILE = "block_proposals.json"
+
+        /** 0.14：心理活动（他私下的念头 + 心情快照；每个人格只留最近 50 条）。 */
+        const val MENTAL_ACTIVITIES_FILE = "mental_activities.json"
+
+        /** 0.14：会话级「他的备忘录」（短期/长期摘要）。 */
+        const val SESSION_MEMORY_FILE = "session_memory.json"
 
         /**
          * 备份里媒体二进制的上限：单个文件 8 MiB、全部合计 128 MiB（按**原始字节**算）。
@@ -273,6 +285,18 @@ class FileStore(
 
     /** 自动判定游标（`auto_state.json`）。 */
     private val autoStates = LinkedHashMap<String, AutoState>()
+
+    /** 0.14：还没确认的拉黑提议（`block_proposals.json`，key = personaId）。 */
+    private val blockProposals = LinkedHashMap<String, BlockProposal>()
+
+    /** 0.14：心理活动（`mental_activities.json`）；每个人格只保留最近 50 条。 */
+    private val mentalActivities = LinkedHashMap<String, MentalActivity>()
+
+    /** 0.14：会话记忆（`session_memory.json`，key = sessionId）。 */
+    private val sessionMemories = LinkedHashMap<String, SessionMemory>()
+
+    /** 会话用户消息计数缓存：`sessionId → (总用户消息, 其中 blocked)`（见 `countUserMessagesInSession`）。 */
+    private val userMessageCounts = HashMap<String, Pair<Long, Long>>()
 
     /**
      * 媒体元数据索引（`data/media.json`）。二进制在 [mediaDir] 里，文件名 `<id>.<ext>`。
@@ -480,12 +504,17 @@ class FileStore(
             sessions.remove(sessionId)
             blockCache.remove(sessionId)
             messageIndexCache.remove(sessionId)
+            invalidateUserMessageCountsLocked(sessionId)
             deleteRecursively(sessionDir(sessionId))
         }
         moods.remove(personaId)
         presence.remove(personaId)
         proactiveStates.remove(personaId)
         memories.entries.removeAll { it.value.personaId == personaId }
+        // 0.14：心理活动、会话记忆、拉黑提议都跟着人格/会话一起消失（不留无主状态）。
+        mentalActivities.entries.removeAll { it.value.personaId == personaId }
+        sessionMemories.entries.removeAll { it.value.personaId == personaId }
+        blockProposals.remove(personaId)
         // 待审的进化补丁跟着人格一起消失（否则会留下一条永远无法 accept 的孤儿）。
         val doomedPatches = pendingPatches.values.filter { it.personaId == personaId }.map { it.id }
         for (id in doomedPatches) pendingPatches.remove(id)
@@ -497,6 +526,9 @@ class FileStore(
         persistPresenceLocked()
         persistProactiveStateLocked()
         persistMemoriesLocked()
+        persistMentalActivitiesLocked()
+        persistSessionMemoryLocked()
+        persistBlockProposalsLocked()
         true
     }
 
@@ -879,18 +911,63 @@ class FileStore(
     /**
      * 最新 [limit] 条消息（跨块向前取，按时间升序返回），生成器用它当上下文。
      * 内存占用与 [limit] 相关，与历史长度无关。
+     *
+     * @param includeBlocked 是否包含「拉黑期间落库」的用户消息。**模型上下文必须传 false**：
+     *   这些消息是永久排除的（`spec/experience/README.md` §2），解除拉黑后也不可见。
+     *   默认 true 是为了不改变既有调用方（客户端分页/同步要看到它们）。
      */
-    fun latestMessages(sessionId: String, limit: Int = BLOCK_SIZE): List<Message> = lock.withLock {
+    fun latestMessages(
+        sessionId: String,
+        limit: Int = BLOCK_SIZE,
+        includeBlocked: Boolean = true
+    ): List<Message> = lock.withLock {
         requireSessionLocked(sessionId)
         if (limit <= 0) return@withLock emptyList()
         val blocks = blocksForLocked(sessionId)
         val collected = ArrayList<Message>()
         for (block in blocks.asReversed()) {
             val messages = readBlockLocked(sessionId, block.index)
+                .filter { includeBlocked || !it.blocked }
             collected.addAll(0, messages)
             if (collected.size >= limit) break
         }
         if (collected.size > limit) collected.subList(collected.size - limit, collected.size).toList() else collected
+    }
+
+    /**
+     * 一个会话里用户消息的累计条数（[includeBlocked] = false 时只数模型能看见的那些）。
+     *
+     * 会话记忆的节流（每 5 / 30 条）用它：被拉黑的消息永远不会进摘要，所以不计数。
+     */
+    fun countUserMessagesInSession(sessionId: String, includeBlocked: Boolean = false): Long = lock.withLock {
+        requireSessionLocked(sessionId)
+        val (total, blocked) = userMessageCounts.getOrPut(sessionId) { scanUserMessageCountsLocked(sessionId) }
+        if (includeBlocked) total else total - blocked
+    }
+
+    /**
+     * 一个会话的用户消息计数缓存 `(总条数, 其中 blocked 条数)`。
+     *
+     * 为什么缓存：会话记忆的节流按「5 / 30 条用户消息」判断，心跳每 60 秒会给每个会话查一次；
+     * 每次都扫全部块等于每分钟把整段历史读一遍。缓存只在**第一次**扫描，之后追加/删除时增量维护，
+     * 导入/重建块表这类「整段换血」的操作直接失效重算。
+     */
+    private fun scanUserMessageCountsLocked(sessionId: String): Pair<Long, Long> {
+        var total = 0L
+        var blocked = 0L
+        for (block in blocksForLocked(sessionId)) {
+            for (message in readBlockLocked(sessionId, block.index)) {
+                if (message.role != MessageRole.USER) continue
+                total += 1
+                if (message.blocked) blocked += 1
+            }
+        }
+        return total to blocked
+    }
+
+    /** 删掉/重写某会话的消息后让计数缓存失效（下次按块重算）。 */
+    private fun invalidateUserMessageCountsLocked(sessionId: String) {
+        userMessageCounts.remove(sessionId)
     }
 
     fun findMessage(sessionId: String, messageId: String): Message? = lock.withLock {
@@ -913,6 +990,21 @@ class FileStore(
         requireSessionLocked(sessionId)
         val messageId = messageIndexLocked(sessionId).replies[userMessageId] ?: return@withLock null
         findMessageLocked(sessionId, messageId)
+    }
+
+    /**
+     * 某条用户消息生成过的**全部** assistant 回复（0.14 连发：一轮可能落好几条）。
+     *
+     * 索引只记最后一条（`done` 重放要用它）；幂等重放要按顺序把每条都重发一遍，
+     * 所以这里按块扫一遍 `replyTo`——重放是罕见路径，扫一次不值得再加一张索引。
+     */
+    fun findAssistantReplies(sessionId: String, userMessageId: String): List<Message> = lock.withLock {
+        requireSessionLocked(sessionId)
+        val replies = ArrayList<Message>()
+        for (block in blocksForLocked(sessionId)) {
+            replies += readBlockLocked(sessionId, block.index).filter { it.replyTo == userMessageId }
+        }
+        replies.sortedWith(MESSAGE_ORDER)
     }
 
     /**
@@ -1040,6 +1132,7 @@ class FileStore(
      * @param replyTo assistant 消息指回的用户消息 id。
      * @param promptTokens / completionTokens 那一次生成的用量（重放 `done` 时用）。
      * @param toolTraceJson 这一轮工具回路的痕迹（客户端同形 JSON 文本，可空）。
+     * @param blocked 拉黑期间落库的用户消息（永久不进模型上下文）；assistant 消息永远是 false。
      */
     fun appendMessage(
         sessionId: String,
@@ -1052,7 +1145,8 @@ class FileStore(
         readAt: Long? = null,
         promptTokens: Int? = null,
         completionTokens: Int? = null,
-        toolTraceJson: String? = null
+        toolTraceJson: String? = null,
+        blocked: Boolean = false
     ): Message = lock.withLock {
         if (!MessageRole.isValid(role)) throw IllegalArgumentException("非法的角色：$role")
         val session = requireSessionLocked(sessionId)
@@ -1085,7 +1179,8 @@ class FileStore(
             replyTo = replyTo,
             promptTokens = promptTokens,
             completionTokens = completionTokens,
-            toolTraceJson = toolTraceJson?.takeIf { it.isNotBlank() }
+            toolTraceJson = toolTraceJson?.takeIf { it.isNotBlank() },
+            blocked = blocked && role == MessageRole.USER
         )
         appendLineLocked(blockFile(sessionId, block.index), StoreJson.stringify(message.toJson()))
 
@@ -1110,6 +1205,11 @@ class FileStore(
         sessions[sessionId] = updated
         persistSessionsLocked()
         indexForAppendLocked(sessionId, message)
+        if (role == MessageRole.USER) {
+            userMessageCounts[sessionId]?.let { (total, blocked) ->
+                userMessageCounts[sessionId] = (total + 1) to (blocked + if (message.blocked) 1 else 0)
+            }
+        }
 
         appendEventLocked(
             type = EventType.MESSAGE_CREATED,
@@ -1167,6 +1267,7 @@ class FileStore(
      */
     fun deleteMessage(sessionId: String, messageId: String): Boolean = lock.withLock {
         val session = requireSessionLocked(sessionId)
+        invalidateUserMessageCountsLocked(sessionId)
         val blocks = blocksForLocked(sessionId)
         for (block in blocks.asReversed()) {
             val messages = readBlockLocked(sessionId, block.index)
@@ -1267,6 +1368,7 @@ class FileStore(
      */
     fun importMessages(sessionId: String, incoming: List<ImportMessage>): MessageImportResult = lock.withLock {
         val session = requireSessionLocked(sessionId)
+        invalidateUserMessageCountsLocked(sessionId)
         if (incoming.size > MAX_IMPORT_MESSAGES) {
             throw IllegalArgumentException("单批最多 $MAX_IMPORT_MESSAGES 条消息")
         }
@@ -1583,7 +1685,10 @@ class FileStore(
         if (sessions.remove(sessionId) == null) return@withLock false
         blockCache.remove(sessionId)
         messageIndexCache.remove(sessionId)
+        invalidateUserMessageCountsLocked(sessionId)
         deleteRecursively(sessionDir(sessionId))
+        // 0.14：会话没了，它的备忘录也没有意义了。
+        if (sessionMemories.remove(sessionId) != null) persistSessionMemoryLocked()
         persistSessionsLocked()
         true
     }
@@ -1943,11 +2048,22 @@ class FileStore(
         updated
     }
 
-    /** 真的回了一句：连续沉默轮数清零。 */
+    /** 真的回了一句：连续沉默轮数清零；累计回复条数 +1（心理活动的「每 3 轮」按它算）。 */
     fun recordAssistantReply(personaId: String): AutoState = lock.withLock {
-        val previous = autoStates[personaId] ?: return@withLock AutoState(personaId = personaId)
-        if (previous.consecutiveSilent == 0) return@withLock previous
-        val updated = previous.copy(consecutiveSilent = 0)
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(
+            consecutiveSilent = 0,
+            assistantReplies = previous.assistantReplies + 1
+        )
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    /** 记一次心理活动：游标推进到当前回复条数（下一轮重新数）。 */
+    fun recordMentalActivity(personaId: String, at: Long): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(mentalCursor = previous.assistantReplies, mentalEvaluatedAt = at)
         autoStates[personaId] = updated
         persistAutoStateLocked()
         updated
@@ -1963,6 +2079,162 @@ class FileStore(
             }
         }
         total
+    }
+
+    // ================================================================== 0.14 体验功能
+    //
+    // 三块状态（`spec/experience/README.md`）：拉黑（含两轮确认的提议）、心理活动、会话记忆。
+    // 它们都「服务端自己跑、客户端只同步」，所以都落盘、都有明确的上限，不依赖任何连接。
+
+    // ------------------------------------------------------------------ 拉黑
+
+    /**
+     * 把一个用户消息标记成「拉黑期间落库」之后，用这个查「这个人格此刻是否被拉黑」。
+     *
+     * 到期**自动解除**：只判断 `blockedUntil > now`，不需要任何人来改数据；心跳会顺手把
+     * 过期字段真的清掉（见 [expireBlocks]），这样 `/v1/state` 不会一直返回一个过去的时刻。
+     */
+    fun isBlocked(personaId: String, now: Long = serverTime()): Boolean = lock.withLock {
+        personas.firstOrNull { it.id == personaId }?.isBlockedAt(now) ?: false
+    }
+
+    /** 写拉黑（`blockedUntil` + 理由）。返回更新后的人格。 */
+    fun blockPersona(personaId: String, until: Long, reason: String): Persona = lock.withLock {
+        val index = personas.indexOfFirst { it.id == personaId }
+        if (index < 0) throw StorePersonaNotFoundException(personaId)
+        val now = nextTimestampLocked()
+        val updated = personas[index].copy(
+            blockedUntil = until,
+            blockReason = reason.trim().take(MAX_BLOCK_REASON_CHARS),
+            updatedAt = now
+        )
+        personas[index] = updated
+        persistPersonasLocked()
+        updated
+    }
+
+    /** 解除拉黑（正常情况下到期自动解除；这里给心跳清过期字段用）。 */
+    fun clearBlock(personaId: String): Persona? = lock.withLock {
+        val index = personas.indexOfFirst { it.id == personaId }
+        if (index < 0) return@withLock null
+        val existing = personas[index]
+        if (existing.blockedUntil == null && existing.blockReason.isBlank()) return@withLock existing
+        val updated = existing.copy(
+            blockedUntil = null,
+            blockReason = "",
+            updatedAt = nextTimestampLocked()
+        )
+        personas[index] = updated
+        persistPersonasLocked()
+        updated
+    }
+
+    /** 把所有已经到期的拉黑字段清掉，返回清了几个人格（心跳每拍调一次）。 */
+    fun expireBlocks(now: Long = serverTime()): Int = lock.withLock {
+        val expiring = personas.filter { it.blockedUntil != null && it.blockedUntil <= now }
+        if (expiring.isEmpty()) return@withLock 0
+        val nowStamp = nextTimestampLocked()
+        for (existing in expiring) {
+            val index = personas.indexOfFirst { it.id == existing.id }
+            if (index < 0) continue
+            personas[index] = existing.copy(blockedUntil = null, blockReason = "", updatedAt = nowStamp)
+        }
+        persistPersonasLocked()
+        expiring.size
+    }
+
+    /** 覆盖保存一个拉黑提议（同一个人格只留最新一条）。 */
+    fun saveBlockProposal(proposal: BlockProposal): BlockProposal = lock.withLock {
+        blockProposals[proposal.personaId] = proposal
+        persistBlockProposalsLocked()
+        proposal
+    }
+
+    fun blockProposal(personaId: String): BlockProposal? = lock.withLock { blockProposals[personaId] }
+
+    /** 丢弃某个提议（确认生效 / 用户换了话题之后）。 */
+    fun clearBlockProposal(personaId: String): Boolean = lock.withLock {
+        if (blockProposals.remove(personaId) == null) return@withLock false
+        persistBlockProposalsLocked()
+        true
+    }
+
+    /** 清掉超时（10 分钟）的提议；返回清理条数。 */
+    fun expireBlockProposals(now: Long = serverTime()): Int = lock.withLock {
+        val doomed = blockProposals.values.filter { it.isExpired(now) }.map { it.personaId }
+        if (doomed.isEmpty()) return@withLock 0
+        for (personaId in doomed) blockProposals.remove(personaId)
+        persistBlockProposalsLocked()
+        doomed.size
+    }
+
+    // ------------------------------------------------------------------ 心理活动
+
+    /**
+     * 写一条心理活动；每个人格只保留最近 [MentalActivity.KEEP_RECENT] 条（规范 §3）。
+     *
+     * 上限在写入时裁剪，而不是读取时：`mental_activities.json` 是一个长期文件，
+     * 不裁剪会无限长大。
+     */
+    fun saveMentalActivity(activity: MentalActivity): MentalActivity = lock.withLock {
+        mentalActivities[activity.id] = activity.copy(
+            thought = activity.thought.trim().replace('\n', ' ').take(MentalActivity.MAX_THOUGHT_CHARS)
+        )
+        val doomed = mentalActivities.values
+            .filter { it.personaId == activity.personaId }
+            .sortedWith(compareBy({ it.at }, { it.id }))
+            .dropLast(MentalActivity.KEEP_RECENT)
+        for (old in doomed) mentalActivities.remove(old.id)
+        persistMentalActivitiesLocked()
+        mentalActivities.getValue(activity.id)
+    }
+
+    /** 某人格的心理活动（最近的在前）。 */
+    fun mentalActivities(personaId: String, limit: Int = MentalActivity.KEEP_RECENT): List<MentalActivity> =
+        lock.withLock {
+            mentalActivities.values
+                .filter { it.personaId == personaId }
+                .sortedWith(compareByDescending<MentalActivity> { it.at }.thenByDescending { it.id })
+                .take(limit.coerceAtLeast(0))
+        }
+
+    /** 全部心理活动（备份导出用；按时间升序）。 */
+    fun allMentalActivities(): List<MentalActivity> = lock.withLock {
+        mentalActivities.values.sortedWith(compareBy({ it.at }, { it.id }))
+    }
+
+    /** 最近一条心理活动（提示词注入「你刚才心里想：…」用）。 */
+    fun latestMentalActivity(personaId: String): MentalActivity? = lock.withLock {
+        mentalActivities.values
+            .filter { it.personaId == personaId }
+            .maxWithOrNull(compareBy({ it.at }, { it.id }))
+    }
+
+    // ------------------------------------------------------------------ 会话记忆
+
+    fun sessionMemory(sessionId: String): SessionMemory? = lock.withLock { sessionMemories[sessionId] }
+
+    /** 全部会话记忆（备份导出用；按 sessionId 升序保证稳定）。 */
+    fun allSessionMemories(): List<SessionMemory> = lock.withLock {
+        sessionMemories.values.sortedBy { it.sessionId }
+    }
+
+    /** 写入/覆盖一段会话记忆（摘要为空也算「写过」，游标照存）。 */
+    fun saveSessionMemory(memory: SessionMemory): SessionMemory = lock.withLock {
+        val normalized = memory.copy(
+            shortSummary = memory.shortSummary.trim().take(SessionMemory.MAX_SHORT_CHARS),
+            longSummary = memory.longSummary.trim().take(SessionMemory.MAX_LONG_CHARS)
+        )
+        sessionMemories[memory.sessionId] = normalized
+        persistSessionMemoryLocked()
+        normalized
+    }
+
+    /** 删除某会话的记忆（会话被删时级联清掉，避免留下无主摘要）。 */
+    fun deleteSessionMemory(sessionId: String): Boolean = lock.withLock {
+        if (sessionMemories.remove(sessionId) == null) return@withLock false
+        persistSessionMemoryLocked()
+        true
     }
 
     // ================================================================== 备份（流式导出）
@@ -2018,6 +2290,12 @@ class FileStore(
                 intents = intents.values
                     .sortedWith(compareBy({ it.createdAt }, { it.id }))
                     .map { BackupV6.intent(it) },
+                mentalActivities = mentalActivities.values
+                    .sortedWith(compareBy({ it.at }, { it.id }))
+                    .map { BackupV6.mentalActivity(it) },
+                sessionMemories = sessionMemories.values
+                    .sortedBy { it.sessionId }
+                    .map { BackupV6.sessionMemory(it) },
                 settings = BackupV6.settings(publicSettingsLocked()),
                 media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList()
             )
@@ -2060,6 +2338,11 @@ class FileStore(
         writer.value(jsonArray(emptyList()))
         writer.key("agentIntents")
         writer.value(jsonArray(snapshot.intents))
+        // 0.14 的可加段：客户端 v6 的 `ignoreUnknownKeys` 会忽略它们，服务端自己再导入时原样带回。
+        writer.key("mentalActivities")
+        writer.value(jsonArray(snapshot.mentalActivities))
+        writer.key("sessionMemory")
+        writer.value(jsonArray(snapshot.sessionMemories))
         writer.key("memoryConsolidations")
         writer.value(jsonArray(emptyList()))
         writer.key("apiConfigs")
@@ -2087,6 +2370,9 @@ class FileStore(
         val stickers: List<JsonValue>,
         val diaryNotes: List<JsonValue>,
         val intents: List<JsonValue>,
+        /** 0.14：心理活动与会话记忆（客户端忽略，服务端往返用）。 */
+        val mentalActivities: List<JsonValue> = emptyList(),
+        val sessionMemories: List<JsonValue> = emptyList(),
         val settings: JsonValue.Obj,
         val media: List<MediaItem>
     )
@@ -2362,7 +2648,11 @@ class FileStore(
         /** 0.13（v6）：日记板。 */
         val diaryNotes: List<DiaryNote> = emptyList(),
         /** `defer_reply` 的念头（服务端 v6 起也写进备份）。 */
-        val intents: List<StoredIntent> = emptyList()
+        val intents: List<StoredIntent> = emptyList(),
+        /** 0.14：心理活动（服务端扩展段，客户端忽略）。 */
+        val mentalActivities: List<MentalActivity> = emptyList(),
+        /** 0.14：会话记忆（服务端扩展段，客户端忽略）。 */
+        val sessionMemories: List<SessionMemory> = emptyList()
     )
 
     /** 备份里一条已解码到暂存文件的媒体（提交时原子移进 `media/`）。 */
@@ -2397,6 +2687,8 @@ class FileStore(
         val stickers = ArrayList<Sticker>()
         val diary = ArrayList<DiaryNote>()
         val intents = ArrayList<StoredIntent>()
+        val mentalActivities = ArrayList<MentalActivity>()
+        val sessionMemories = ArrayList<SessionMemory>()
         val messageSpools = LinkedHashMap<String, Path>()
         val spoolWriters = LinkedHashMap<String, BufferedWriter>()
         val messageIds = HashSet<String>()
@@ -2493,6 +2785,15 @@ class FileStore(
                         parseBackupIntent(obj, "$where.agentIntents[$index]", now)?.let { intents += it }
                     }
 
+                    // 0.14 的服务端扩展段：缺省/空数组都是正常的（客户端导出的 v6 没有它们）。
+                    "mentalActivities" -> readBackupSection(reader, "mentalActivities") { obj, index ->
+                        mentalActivities += parseBackupMentalActivity(obj, "$where.mentalActivities[$index]")
+                    }
+
+                    "sessionMemory" -> readBackupSection(reader, "sessionMemory") { obj, index ->
+                        sessionMemories += parseBackupSessionMemory(obj, "$where.sessionMemory[$index]")
+                    }
+
                     else -> reader.skipValue()
                 }
             }
@@ -2517,6 +2818,8 @@ class FileStore(
         requireUniqueIds("stickers", stickers.map { it.id })
         requireUniqueIds("diaryNotes", diary.map { it.id })
         requireUniqueIds("agentIntents", intents.map { it.id })
+        requireUniqueIds("mentalActivities", mentalActivities.map { it.id })
+        requireUniqueIds("sessionMemory", sessionMemories.map { it.sessionId })
 
         return StreamedBackup(
             personas = personas,
@@ -2529,7 +2832,9 @@ class FileStore(
             messageCount = messageCount,
             stickers = stickers,
             diaryNotes = diary,
-            intents = intents
+            intents = intents,
+            mentalActivities = mentalActivities,
+            sessionMemories = sessionMemories
         )
     }
 
@@ -2716,6 +3021,21 @@ class FileStore(
                 throw BackupValidationException("日记 ${note.id} 引用了不存在的人格 ${note.personaId}")
             }
         }
+        // 0.14：心理活动挂人格、会话记忆挂会话；后者还要和会话的人格一致（防串记忆）。
+        for (activity in parsed.mentalActivities) {
+            if (finalPersonas[activity.personaId] == null) {
+                throw BackupValidationException("心理活动 ${activity.id} 引用了不存在的人格 ${activity.personaId}")
+            }
+        }
+        for (memory in parsed.sessionMemories) {
+            val session = finalSessions[memory.sessionId]
+                ?: throw BackupValidationException("会话记忆引用了不存在的会话 ${memory.sessionId}")
+            if (session.personaId != memory.personaId) {
+                throw BackupValidationException(
+                    "会话记忆 ${memory.sessionId} 的人格 ${memory.personaId} 与会话的 ${session.personaId} 不一致"
+                )
+            }
+        }
 
         // 受影响会话：导入的会话 + 导入消息落在的会话（replace 时是所有最终会话）。
         val affectedSessions = LinkedHashSet<String>()
@@ -2742,6 +3062,7 @@ class FileStore(
             Files.createDirectories(sessionsDir)
             blockCache.clear()
             messageIndexCache.clear()
+            userMessageCounts.clear()
             moods.clear()
             presence.clear()
             proactiveStates.clear()
@@ -2749,11 +3070,15 @@ class FileStore(
             diaryNotes.clear()
             intents.clear()
             autoStates.clear()
+            mentalActivities.clear()
+            sessionMemories.clear()
+            blockProposals.clear()
         } else {
             for (sessionId in affectedSessions) {
                 deleteRecursively(sessionDir(sessionId))
                 blockCache.remove(sessionId)
                 messageIndexCache.remove(sessionId)
+                invalidateUserMessageCountsLocked(sessionId)
             }
         }
 
@@ -2856,6 +3181,21 @@ class FileStore(
             // 念头是易失的：人格已经不在了就丢掉，不让它把整份导入顶回去。
             if (finalPersonas[intent.personaId] != null) intents[intent.id] = intent
         }
+        // 0.14：心理活动按 id 覆盖；会话记忆按 sessionId 覆盖（merge 时旧会话保留其余状态）。
+        for (activity in parsed.mentalActivities) {
+            if (finalPersonas[activity.personaId] != null) mentalActivities[activity.id] = activity
+        }
+        for (memory in parsed.sessionMemories) {
+            if (finalSessions[memory.sessionId] != null) sessionMemories[memory.sessionId] = memory
+        }
+        // 心理活动仍然只保留最近 50 条/人格（导入一份别的备份不该把上限撑破）。
+        for (personaId in finalPersonas.keys) {
+            val doomed = mentalActivities.values
+                .filter { it.personaId == personaId }
+                .sortedWith(compareBy({ it.at }, { it.id }))
+                .dropLast(MentalActivity.KEEP_RECENT)
+            for (old in doomed) mentalActivities.remove(old.id)
+        }
 
         // 合并设置的语义：备份里给了 settings 才改；只接白名单键。
         if (parsed.settings != null) {
@@ -2881,6 +3221,9 @@ class FileStore(
         persistStickersLocked()
         persistDiaryNotesLocked()
         persistIntentsLocked()
+        persistMentalActivitiesLocked()
+        persistSessionMemoryLocked()
+        persistBlockProposalsLocked()
         writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
         lastTimestamp = maxOf(lastTimestamp, computeLastTimestampLocked())
         for (memory in memories.values) lastTimestamp = maxOf(lastTimestamp, memory.updatedAt)
@@ -2896,7 +3239,9 @@ class FileStore(
             media = parsed.media.size,
             settings = parsed.settings != null,
             stickers = parsed.stickers.size,
-            diaryNotes = parsed.diaryNotes.size
+            diaryNotes = parsed.diaryNotes.size,
+            mentalActivities = parsed.mentalActivities.size,
+            sessionMemories = parsed.sessionMemories.size
         )
     }
 
@@ -3085,6 +3430,9 @@ class FileStore(
             createdAt = createdAt,
             updatedAt = updatedAt,
             activityJson = obj.optString("activityJson", where)?.takeIf { it.isNotBlank() },
+            // 0.14：拉黑状态随备份带走（客户端忽略这两个可加键）。
+            blockedUntil = obj.optLong("blockedUntil", where)?.takeIf { it > 0 },
+            blockReason = obj.optString("blockReason", where).orEmpty().take(MAX_BLOCK_REASON_CHARS),
             extraFields = obj.fields.filterKeys { it !in Persona.RESERVED_KEYS }
         )
     }
@@ -3144,7 +3492,8 @@ class FileStore(
             replyTo = obj.optString("replyTo", where),
             promptTokens = obj.optInt("promptTokens", where),
             completionTokens = obj.optInt("completionTokens", where),
-            toolTraceJson = obj.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() }
+            toolTraceJson = obj.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() },
+            blocked = obj.optBool("blocked", where) ?: false
         )
     }
 
@@ -3305,6 +3654,44 @@ class FileStore(
         )
     }
 
+    /** 0.14：备份里的心理活动（服务端扩展段）。坏 id / 人格不存在在提交阶段拒绝。 */
+    private fun parseBackupMentalActivity(obj: JsonValue.Obj, where: String): MentalActivity {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        return MentalActivity(
+            id = id,
+            personaId = personaId,
+            sessionId = obj.optString("sessionId", where).orEmpty(),
+            at = obj.optLong("at", where) ?: 0L,
+            thought = obj.optString("thought", where).orEmpty().take(MentalActivity.MAX_THOUGHT_CHARS),
+            moodLabel = obj.optString("moodLabel", where).orEmpty(),
+            moodValence = (obj.optLong("moodValence", where) ?: 0L).toInt(),
+            moodArousal = (obj.optLong("moodArousal", where) ?: 2L).toInt(),
+            moodDominance = (obj.optLong("moodDominance", where) ?: 3L).toInt(),
+            moodIntensity = (obj.optLong("moodIntensity", where) ?: 2L).toInt()
+        )
+    }
+
+    /** 0.14：备份里的会话记忆（服务端扩展段）。 */
+    private fun parseBackupSessionMemory(obj: JsonValue.Obj, where: String): SessionMemory {
+        val sessionId = obj.reqString("sessionId", where)
+        if (!isValidId(sessionId)) throw BackupValidationException("$where 的 sessionId 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        return SessionMemory(
+            sessionId = sessionId,
+            personaId = personaId,
+            shortSummary = obj.optString("shortSummary", where).orEmpty().take(SessionMemory.MAX_SHORT_CHARS),
+            shortUpdatedAt = obj.optLong("shortUpdatedAt", where) ?: 0L,
+            shortUserMessages = obj.optLong("shortUserMessages", where) ?: 0L,
+            longSummary = obj.optString("longSummary", where).orEmpty().take(SessionMemory.MAX_LONG_CHARS),
+            longUpdatedAt = obj.optLong("longUpdatedAt", where) ?: 0L,
+            longUserMessages = obj.optLong("longUserMessages", where) ?: 0L
+        )
+    }
+
     private fun parseTags(value: JsonValue?, where: String): List<String> = when (value) {
         null, JsonValue.Null -> emptyList()
         is JsonValue.Arr -> value.items.map { item ->
@@ -3386,6 +3773,8 @@ class FileStore(
             Files.exists(root.resolve(MEDIA_METADATA_FILE)) ||
             Files.exists(root.resolve(STICKERS_FILE)) ||
             Files.exists(root.resolve(DIARY_NOTES_FILE)) ||
+            Files.exists(root.resolve(MENTAL_ACTIVITIES_FILE)) ||
+            Files.exists(root.resolve(SESSION_MEMORY_FILE)) ||
             Files.exists(eventsFile) ||
             Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() } ||
             Files.newDirectoryStream(mediaDir).use { it.iterator().hasNext() }
@@ -3483,6 +3872,18 @@ class FileStore(
         loadOptionalObjectList(root.resolve(AUTO_STATE_FILE), "states") { obj, where ->
             val state = AutoState.fromJson(obj, where)
             autoStates[state.personaId] = state
+        }
+        loadOptionalObjectList(root.resolve(BLOCK_PROPOSALS_FILE), "proposals") { obj, where ->
+            val proposal = BlockProposal.fromJson(obj, where)
+            blockProposals[proposal.personaId] = proposal
+        }
+        loadOptionalObjectList(root.resolve(MENTAL_ACTIVITIES_FILE), "activities") { obj, where ->
+            val activity = MentalActivity.fromJson(obj, where)
+            mentalActivities[activity.id] = activity
+        }
+        loadOptionalObjectList(root.resolve(SESSION_MEMORY_FILE), "memories") { obj, where ->
+            val memory = SessionMemory.fromJson(obj, where)
+            sessionMemories[memory.sessionId] = memory
         }
         if (Files.exists(root.resolve(SECRETS_FILE))) {
             // 0600 是承诺，不是建议：打开时再收紧一次（有人复制/解压可能带上更宽的权限）。
@@ -3649,6 +4050,7 @@ class FileStore(
     }
 
     private fun rebuildBlockIndexLocked(sessionId: String): List<BlockMeta> {
+        invalidateUserMessageCountsLocked(sessionId)
         val dir = blockDir(sessionId)
         if (!Files.exists(dir)) return emptyList()
         val indexes = Files.newDirectoryStream(dir).use { stream ->
@@ -3913,6 +4315,33 @@ class FileStore(
         StoreJson.obj(
             "states" to StoreJson.arr(
                 autoStates.values.sortedBy { it.personaId }.map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistBlockProposalsLocked() = writeJsonLocked(
+        root.resolve(BLOCK_PROPOSALS_FILE),
+        StoreJson.obj(
+            "proposals" to StoreJson.arr(
+                blockProposals.values.sortedBy { it.personaId }.map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistMentalActivitiesLocked() = writeJsonLocked(
+        root.resolve(MENTAL_ACTIVITIES_FILE),
+        StoreJson.obj(
+            "activities" to StoreJson.arr(
+                mentalActivities.values.sortedWith(compareBy({ it.at }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistSessionMemoryLocked() = writeJsonLocked(
+        root.resolve(SESSION_MEMORY_FILE),
+        StoreJson.obj(
+            "memories" to StoreJson.arr(
+                sessionMemories.values.sortedBy { it.sessionId }.map { it.toJson() }
             )
         )
     )

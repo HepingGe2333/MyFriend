@@ -230,7 +230,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -363,7 +364,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -652,7 +654,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -830,7 +833,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -902,7 +906,8 @@ class YapDatabaseMigrationTest {
             YapDatabase.MIGRATION_13_14,
             YapDatabase.MIGRATION_14_15,
             YapDatabase.MIGRATION_15_16,
-            YapDatabase.MIGRATION_16_17
+            YapDatabase.MIGRATION_16_17,
+            YapDatabase.MIGRATION_17_18
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -1076,7 +1081,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -1172,7 +1178,8 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             .allowMainThreadQueries()
             .build()
@@ -1591,6 +1598,43 @@ class YapDatabaseMigrationTest {
      */
     private fun legacyV16Database(): SupportSQLiteDatabase =
         createLegacyDatabase(version = 16, ddl = MINIMAL_V16_SCHEMA)
+
+    // ---------- v17 → v18：拉黑、心理活动、会话备忘录 ----------
+
+    @Test
+    fun migrate17To18_加出拉黑列与新表且旧数据不丢() {
+        val db = createLegacyDatabase(
+            version = 17,
+            ddl = listOf(
+                "CREATE TABLE `personas` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, PRIMARY KEY(`id`))",
+                "CREATE TABLE `messages` (`id` TEXT NOT NULL, `sessionId` TEXT NOT NULL, " +
+                    "`content` TEXT NOT NULL, PRIMARY KEY(`id`))"
+            )
+        )
+        db.execSQL("INSERT INTO personas (id, name) VALUES ('p1', '小满')")
+        db.execSQL("INSERT INTO messages (id, sessionId, content) VALUES ('m1', 's1', '旧消息')")
+
+        YapDatabase.MIGRATION_17_18.migrate(db)
+
+        val personaColumns = db.columnNames("personas")
+        assertTrue("缺少 blockedUntil", "blockedUntil" in personaColumns)
+        assertTrue("缺少 blockReason", "blockReason" in personaColumns)
+        assertTrue("缺少 blockProposalJson", "blockProposalJson" in personaColumns)
+        assertTrue("缺少 messages.blocked", "blocked" in db.columnNames("messages"))
+        assertTrue(db.hasTable("mental_activities"))
+        assertTrue(db.hasTable("session_memory"))
+        assertEquals("旧消息不能被迁移清掉", 1, db.count("messages"))
+        db.query("SELECT blocked FROM messages WHERE id = 'm1'").use { cursor ->
+            assertTrue(cursor.moveToFirst())
+            assertEquals("老消息默认可见", 0, cursor.getInt(0))
+        }
+
+        // 幂等：重复执行不报错、不清数据。
+        YapDatabase.MIGRATION_17_18.migrate(db)
+        assertEquals(1, db.count("messages"))
+        assertTrue(db.hasIndex("index_mental_activities_personaId_at"))
+        assertTrue(db.hasIndex("index_session_memory_updatedAt"))
+    }
 
     // ---------- 造旧库 ----------
 

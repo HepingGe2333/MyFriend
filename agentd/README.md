@@ -1488,6 +1488,108 @@ curl -s -X POST http://127.0.0.1:8788/v1/proactive/tick -d '{}'
 # -> {"now":…,"fired":1,"decisions":[{"personaId":…,"sessionId":…,"messageId":…,"reason":"diary_reminder"}],"skipped":[…]}
 ```
 
+## Experience features: blocking, multi-message turns, inner monologue and session memory (0.14)
+
+0.14 的规则由 `spec/experience/README.md` 定义，服务端和客户端跑**同一套**规则。服务端这一侧
+不依赖客户端连接：拉黑、心理活动、会话记忆都由 `ChatService` 的收尾与 `ProactiveTicker`
+的每一拍推进（`experience/ExperienceService`）。
+
+### What runs without a client (0.14 additions)
+
+| Driver | Cadence | What it does | Where the state lives |
+| --- | --- | --- | --- |
+| **block expiry** (every chat turn + heartbeat) | on read and once per tick | clears `blockedUntil`/`blockReason` once the moment has passed; reading already treats an expired block as unblocked | `personas.json` |
+| **mental activities**（心理活动，same tick + after chat） | every **3 minutes** or every **3 turns** inside the 10-minute active window; **mandatory** when arousal ≥ 4 or a mood dimension moved ≥ 2 | one private thought (≤ 60 chars, never sent), a mood nudge of at most **1 step per dimension**, injected into the next prompt as `# 你刚才心里想的` | `mental_activities.json` (newest 50 per persona) |
+| **session memory**（会话记忆，same tick + after chat） | every **5** non-blocked user messages → `shortSummary` (≤ 200 chars); every **30** → `longSummary` (≤ 500 chars) | injected as `# 你的备忘录` (short before long) in the **variable** area, never written into the persona | `session_memory.json` |
+| **pending block proposal** (`block_user`, per chat turn) | expires after 10 minutes | two-round confirmation state (`personaId/sessionId/userMessageId/hours/reason/proposedAt`) | `block_proposals.json` |
+
+A failed background generation keeps the old state (`mental_activities.json` / `session_memory.json`
+are not touched), records one stderr line, and does not block the reply.
+
+### `block_user`（拉黑）: two rounds, then it is real
+
+```
+turn N   : block_user{hours: 6, reason: "想清静一会儿"}
+           → pending_confirmation, nothing is stored on the persona
+turn N+K : (at least one new user message in between)
+           block_user{hours: 6, confirm: true} → personas.blockedUntil = now + 6h
+```
+
+- `hours` is clamped to 1–24; a proposal older than 10 minutes is discarded (the next call starts over);
+- confirming **in the same turn** is refused — the proposal remembers the user-message id, and it must differ;
+- while blocked: the user can still send. The message is stored with `blocked: true`, **no model call** happens,
+  the stream is `accepted → done{silent:true}`, and the session is marked read;
+- blocked messages are **permanently** excluded from the model context (`latestMessages(..., includeBlocked = false)`),
+  including after the block expires; they still appear in `GET /v1/state`, paging and backups so the client can
+  show the red exclamation mark and “对方已将你拉黑”;
+- expiry is automatic and silent (no notification, no catch-up); there is **no** `unblock` tool and the user cannot
+  unblock manually.
+
+DTO additions (additive; clients ignore unknown keys): `personas[].blockedUntil` / `blockReason` in
+`GET /v1/state` and CRUD responses, `messages[].blocked` (always written, `false` for everything else).
+
+### Multi-message turns（连发）and the SSE shape
+
+`send_message{text}` sends one real assistant message per call (≤ 120 chars, at most **4 per turn**;
+the 5th returns a tool failure). A reply that does not use the tool is split by **blank lines** into 1–3
+messages (extra paragraphs are folded into the last one, never dropped). No placeholder / “…” message
+is ever stored: `stay_silent` and “tool-only” turns produce `done{silent:true}` and nothing else.
+
+SSE for a multi-message turn (contract confirmed with both clients):
+
+```
+event: accepted       data: {"userMessageId":"…","createdAt":…}
+event: delta          data: {"text":"…"}          ← typing indicator / legacy single-bubble path
+event: tool           data: {"name":"send_message","status":"done","summary":"发出第 1 条"}
+event: message.created data: {"message":{…full message DTO…}}   × N, in order
+event: done           data: {"assistantMessageId":"<last id>","usage":{…}}
+```
+
+- **one `done`** at the end (`assistantMessageId` = the last message, usage on its row); single-message
+  turns keep the old shape (`accepted → delta* → done`) so older clients are unaffected;
+- each `message.created` payload is identical to the `GET /v1/events` `message.created` payload;
+- usage/tool trace are recorded on the last message; every message points `replyTo` at the same user message;
+- idempotent replay of such a turn re-sends every `message.created` and then **one** `done`.
+
+### `recall` audit (0.14 fixes)
+
+Three real bugs were fixed in `ToolExecutor.recall`:
+
+1. the candidate set was `memories(limit = 500)` — older memories silently disappeared; it now scans the
+   whole per-persona list (the index is in memory, no disk scan);
+2. the whole query was used as one substring (`"那家店 怕冷"` could never match); it is now tokenised on
+   whitespace/punctuation and any token counts, with the exact phrase scoring higher;
+3. ranking was importance-only; it now scores phrase hits (3) + token hits in content (2) / tags (1), then
+   importance and recency, deduplicates identical content, clamps the query to 200 chars and the rendered
+   answer to ≤ 2,000 chars.
+
+### Backup v6 additions
+
+`GET /v1/backup` keeps the client v6 key set and **adds** (clients ignore unknown keys):
+
+| Where | Field | Meaning |
+| --- | --- | --- |
+| `personas[]` | `blockedUntil`, `blockReason` | optional; present only when blocked |
+| `messages[]` | `blocked` | only written when `true` (permanent context exclusion) |
+| top level | `mentalActivities[]` | id/personaId/sessionId/at/thought/mood snapshot |
+| top level | `sessionMemory[]` | sessionId/personaId/short+long summaries and their cursors |
+
+Import accepts v1–v6 as before; the new sections are optional (an old v6 file without them still imports),
+references are validated (persona/session must exist, session memory must match the session's persona),
+and `replace` clears these tables while `merge` overwrites by id / sessionId. The import result reports
+`mentalActivities` / `sessionMemories` counts as additive fields.
+
+### Tests for 0.14 (`:agentd:test`)
+
+| Test class | What it pins |
+| --- | --- |
+| `BlockUserTest` | two-round confirmation, same-turn refusal, 10-minute expiry, hours clamp, permanent context exclusion, automatic expiry, state/message DTO |
+| `MultiSendTest` | SSE order with multiple `message.created` + single `done`, independent rows/events, 4-per-turn cap, 120-char clamp, blank-line splitting, silent turns, idempotent replay |
+| `MentalActivityTest` | active window, 3 min / 3 turn triggers, arousal/Δ≥2 mandatory, 1-step clamp, prompt injection order, 50-row cap, heartbeat independence, failure writes nothing |
+| `SessionMemoryTest` | 5/30-message throttles, blocked messages excluded, failure keeps old summary, blank/overlong answers, short-before-long injection, persistence across reopen |
+| `ExperienceBackupTest` | export fields/sections, round trip, merge keeps state, old client v6 file still imports |
+| `ToolExecutorTest` | recall audit: >500 memories, tokenised query, dedupe/ranking, truncation, persona isolation |
+
 ## Errors
 
 Every error is an object with a Chinese `message` and a stable `code`, plus a 4xx/5xx status:

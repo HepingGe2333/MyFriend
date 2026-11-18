@@ -30,6 +30,8 @@ object ServerToolCatalog {
     const val WEB_SEARCH = "web_search"
     const val WEB_FETCH = "web_fetch"
     const val STICKER = "sticker"
+    const val SEND_MESSAGE = "send_message"
+    const val BLOCK_USER = "block_user"
 
     /**
      * 一个工具：名字 + 给模型看的中文说明 + JSON Schema + 「和别的工具怎么区分」。
@@ -104,6 +106,22 @@ object ServerToolCatalog {
 
     private const val STICKER_CONTRAST =
         "它管的是「图」，不是文字：想说话直接说，不要为了热闹而发。"
+
+    private const val SEND_MESSAGE_DESCRIPTION =
+        "一轮里想分成几条短消息发出去时调用：每调用一次就真的发出一条（≤120 字），" +
+            "一轮最多 4 条，条与条之间会自然停顿，像人连着打了几句。" +
+            "别为了热闹硬拆；长一点的话直接说，不必拆成四条。"
+
+    private const val SEND_MESSAGE_CONTRAST =
+        "不调用它就是正常说话（一段话）；调用它就按你给的条数逐条发，所以别再另外重复一遍同样的内容。"
+
+    private const val BLOCK_USER_DESCRIPTION =
+        "你真的不想再收到对方消息、想清静一段时间（1–24 小时）时调用。第一轮只算「提议」不生效；" +
+            "下一轮对方又发了消息之后，再用 confirm=true 调一次才真正拉黑。" +
+            "拉黑期间对方发来的消息你永远看不到（解除后也看不到），到点自动解除，没有解封工具。"
+
+    private const val BLOCK_USER_CONTRAST =
+        "和 stay_silent 的区别：stay_silent 只是这一轮不回；block_user 是真的把对方关在门外，别用它赌气。"
 
     // ------------------------------------------------------------------ 参数（JSON Schema，直接进 tools[]）
 
@@ -213,6 +231,28 @@ object ServerToolCatalog {
         }
     """
 
+    private const val SEND_MESSAGE_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "text": {"type": "string", "description": "要发出去的一句话，最多 120 字，一条只写一句"}
+          },
+          "required": ["text"]
+        }
+    """
+
+    private const val BLOCK_USER_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "hours": {"type": "integer", "minimum": 1, "maximum": 24, "description": "拉黑多少小时，1–24"},
+            "reason": {"type": "string", "description": "为什么想清静一会儿，一句话，只给自己看"},
+            "confirm": {"type": "boolean", "description": "第二次调用时传 true 才真正生效；第一次不要传"}
+          },
+          "required": ["hours"]
+        }
+    """
+
     private const val STICKER_PARAMETERS = """
         {
           "type": "object",
@@ -236,7 +276,9 @@ object ServerToolCatalog {
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
         ToolSpec(WEB_SEARCH, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS.trimIndent()),
         ToolSpec(WEB_FETCH, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS.trimIndent()),
-        ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST)
+        ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
+        ToolSpec(SEND_MESSAGE, SEND_MESSAGE_DESCRIPTION, SEND_MESSAGE_PARAMETERS.trimIndent(), SEND_MESSAGE_CONTRAST),
+        ToolSpec(BLOCK_USER, BLOCK_USER_DESCRIPTION, BLOCK_USER_PARAMETERS.trimIndent(), BLOCK_USER_CONTRAST)
     )
 
     val names: List<String> = all.map { it.name }

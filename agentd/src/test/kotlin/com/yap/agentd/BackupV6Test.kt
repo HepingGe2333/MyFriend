@@ -103,7 +103,10 @@ class BackupV6Test {
         val expected = listOf(
             "format", "formatVersion", "appVersion", "exportedAt", "apiKeysOmitted",
             "personas", "memories", "sessions", "messages", "media", "stickers", "diaryNotes",
-            "presets", "proactiveRules", "agentIntents", "memoryConsolidations", "apiConfigs", "settings"
+            "presets", "proactiveRules", "agentIntents",
+            // 0.14：服务端扩展段（客户端 ignoreUnknownKeys 会忽略，但服务端往返要保留）。
+            "mentalActivities", "sessionMemory",
+            "memoryConsolidations", "apiConfigs", "settings"
         )
         assertEquals(expected, backup.fields.keys.toList().filter { it != "mediaSkipped" })
         assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
@@ -120,7 +123,8 @@ class BackupV6Test {
         val ios = TestSupport.parse(fixture("ios-export-v6.json"))
 
         val serverExtras = mapOf(
-            "personas" to setOf("nameEn"),
+            "personas" to setOf("nameEn", "blockedUntil", "blockReason"),
+            "messages" to setOf("blocked"),
             "media" to setOf("sha256"),
             "settings" to setOf("userAvatarUri", "autoTranslatePersona")
         )

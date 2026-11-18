@@ -186,13 +186,16 @@ object MessageSearchSql {
         val sql = buildString {
             append(SELECT_COLUMNS.trimIndent())
             append("\n WHERE m.content != ''")
+            // 0.14：拉黑期间收到的消息永久排除在模型可见的历史之外。
+            // 检索页仍能看到（用户自己的记录），但「回忆」是模型上下文的一部分，不能翻出来。
+            append("\n  AND m.blocked = 0")
             if (personaId != null) {
                 append("\n  AND s.personaId = ?")
                 args += personaId
             }
             append("\n  AND (")
             append(patterns.joinToString("\n     OR ") { "m.content LIKE ? ESCAPE '\\'" })
-            append(")\n ORDER BY m.createdAt DESC, m.id ASC")
+            append(")\n ORDER BY m.createdAt DESC, m.id DESC")
             append("\n LIMIT ?")
         }
         args.addAll(patterns)

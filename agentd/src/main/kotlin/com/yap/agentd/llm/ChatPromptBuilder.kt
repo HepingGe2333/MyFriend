@@ -4,9 +4,11 @@ import com.yap.agentd.mood.MoodRules
 import com.yap.agentd.persona.PersonaFields
 import com.yap.agentd.proactive.ActivityState
 import com.yap.agentd.proactive.ActivityAvailability
+import com.yap.agentd.store.MentalActivity
 import com.yap.agentd.store.Message
 import com.yap.agentd.store.Mood
 import com.yap.agentd.store.Persona
+import com.yap.agentd.store.SessionMemory
 import com.yap.app.domain.PersonaPromptScaffold
 import com.yap.app.domain.PromptAvailability
 import com.yap.app.domain.PromptScaffoldInput
@@ -53,7 +55,11 @@ class ChatPromptBuilder(
         persona: Persona,
         mood: Mood?,
         activity: ActivityState?,
-        now: Long
+        now: Long,
+        /** 0.14：会话级备忘录（短期在前、长期在后）；`null`/空整段省略。 */
+        sessionMemory: SessionMemory? = null,
+        /** 0.14：最近一次心理活动（「你刚才心里想：…」）；`null` 整段省略。 */
+        mentalActivity: MentalActivity? = null
     ): String {
         val card = PersonaFields.card(persona)
         val world = PersonaFields.world(persona)
@@ -123,6 +129,30 @@ class ChatPromptBuilder(
             )
         }
 
+        // 0.14：心理活动 → 备忘录。都插在心情之后、话风之前，属于**可变区域**，
+        // 不进人设（人设是「他是谁」，这些是「他刚才在想什么 / 最近记住了什么」）。
+        val afterMood = if (mood != null && mood.label.isNotBlank()) MOOD_SECTION else PersonaPromptScaffold.Section.STATE
+        if (mentalActivity != null && mentalActivity.thought.isNotBlank()) {
+            insertAfterSection(
+                sections,
+                afterMood,
+                "# 你刚才心里想的\n- 你刚才心里想：${mentalActivity.thought.take(MentalActivity.MAX_THOUGHT_CHARS)}"
+            )
+        }
+        val memo = buildList {
+            val short = sessionMemory?.shortSummary?.trim().orEmpty()
+            val long = sessionMemory?.longSummary?.trim().orEmpty()
+            if (short.isNotBlank()) add("- 最近你记得：$short")
+            if (long.isNotBlank()) add("- 更早之前：$long")
+        }
+        if (memo.isNotEmpty()) {
+            insertAfterSection(
+                sections,
+                if (mentalActivity != null && mentalActivity.thought.isNotBlank()) MENTAL_SECTION else afterMood,
+                "# 你的备忘录\n" + memo.joinToString("\n")
+            )
+        }
+
         // 「你能做什么」：规范 §1.3 固定在关系之后、边界之前；内容来自工具注册表。
         insertAfterSection(sections, PersonaPromptScaffold.Section.RELATIONSHIP, capabilities)
 
@@ -136,9 +166,13 @@ class ChatPromptBuilder(
         activity: ActivityState?,
         history: List<Message>,
         now: Long,
-        historyLimit: Int = LlmDefaults.MAX_HISTORY_MESSAGES
+        historyLimit: Int = LlmDefaults.MAX_HISTORY_MESSAGES,
+        sessionMemory: SessionMemory? = null,
+        mentalActivity: MentalActivity? = null
     ): List<LlmMessage> {
-        val system = LlmMessage.system(systemPrompt(persona, mood, activity, now))
+        val system = LlmMessage.system(
+            systemPrompt(persona, mood, activity, now, sessionMemory, mentalActivity)
+        )
         val selected = history.takeLast(historyLimit.coerceAtLeast(1))
         // 上下文窗口（1M）只是**上限**：真的超了就从最老的历史开始丢，保证一次请求不会无限大。
         val budget = LlmDefaults.CONTEXT_WINDOW_TOKENS - LlmUsage.estimate(system.content)
@@ -166,10 +200,12 @@ class ChatPromptBuilder(
         activity: ActivityState?,
         history: List<Message>,
         now: Long,
-        historyLimit: Int = 20
+        historyLimit: Int = 20,
+        sessionMemory: SessionMemory? = null,
+        mentalActivity: MentalActivity? = null
     ): List<LlmMessage> {
         val system = buildString {
-            append(systemPrompt(persona, mood, activity, now))
+            append(systemPrompt(persona, mood, activity, now, sessionMemory, mentalActivity))
             append("\n\n")
             append(PROACTIVE_INSTRUCTION)
         }
@@ -274,6 +310,15 @@ class ChatPromptBuilder(
             - 只输出这一句话本身：不要引号、不要旁白、不要解释、不要换行。
             - 20–60 字，短一点也行。
         """.trimIndent()
+
+        /** 心情段的标题（`MoodRules.promptSection` 的固定标题）。 */
+        const val MOOD_SECTION = "# 你的心情"
+
+        /** 心理活动段的标题（备忘录要插在它之后；两段都只在有内容时出现）。 */
+        const val MENTAL_SECTION = "# 你刚才心里想的"
+
+        /** 会话备忘录段的标题。 */
+        const val MEMO_SECTION = "# 你的备忘录"
 
         private val HH_MM = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
         private val YYYY_MM_DD = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT)

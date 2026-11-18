@@ -121,7 +121,8 @@ public final class MoodJudgementService {
         let session = sessionId.flatMap { (try? stores.sessions.byId($0)) ?? nil }
             ?? ((try? stores.sessions.session(forPersona: persona.id)) ?? nil)
         let recent = session.map { current in
-            (try? stores.messages.recent(
+            // 0.14：拉黑期间的消息永久不进模型上下文（情绪判定也不该看到）。
+            (try? stores.messages.recentVisible(
                 sessionId: current.id, limit: MoodJudgementRules.recentMessageLimit
             )) ?? []
         } ?? []

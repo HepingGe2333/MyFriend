@@ -106,6 +106,14 @@ fun main(args: Array<String>) {
             if (services.autoTriggers != null) "已启用（每条聊天后：每 4 条判心情、每 20 条评估进化；不依赖客户端连接）"
             else "未启用（没有 LLM 配置）"
     )
+    println(
+        "  体验功能（0.14）：" +
+            if (services.mentalActivityService != null && services.sessionMemoryService != null) {
+                "已启用（拉黑两轮确认、心理活动每 3 分钟/3 轮、会话记忆每 5/30 条；聊天后 + 每拍心跳都跑）"
+            } else {
+                "部分启用（没有 LLM：拉黑与到期解除仍然生效，心理活动/会话记忆跳过）"
+            }
+    )
     printSecurityNotice(options)
     if (rateLimiter.enabled) {
         println(
@@ -119,7 +127,7 @@ fun main(args: Array<String>) {
     println("  GET  /v1/state?since=&personaId=")
     println("  GET  /v1/sessions")
     println("  GET  /v1/sessions/{id}/messages?beforeBlock=&afterBlock=")
-    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta/tool → done；真调 LLM + 工具回路）")
+    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta/tool/message.created → done；真调 LLM + 工具回路）")
     println("  POST /v1/sessions/{id}/messages/import   （批量历史导入，≤200 条/批，≤8 MiB）")
     println("  GET  /v1/events?since=&timeoutSeconds=")
     println("  GET  /v1/backup                    （v6 备份，与客户端 v6 同形；chunked 流式）")
@@ -450,7 +458,7 @@ private fun printUsage() {
           GET  /v1/state?since=&personaId=  全量/增量状态快照（personas/sessions/messages/心情/在场）
           GET  /v1/sessions                 会话列表（lastMessageAt / unread / lastBlockIndex）
           GET  /v1/sessions/{id}/messages   一页一块的消息分页（beforeBlock 前翻 / afterBlock 后翻）
-          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta/tool → done（真调 LLM + 工具回路）
+          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta/tool/message.created → done
           GET/POST /v1/stickers, DELETE /v1/stickers/{id}          表情包（spec/stickers）
           GET/POST /v1/personas/{id}/diary, DELETE …/{noteId}      日记板（spec/diary）
           GET  /v1/backup                    v6 备份（与客户端同形，chunked 流式）

@@ -19,6 +19,8 @@ import com.yap.app.domain.AgentCore
 import com.yap.app.domain.AgentWindow
 import com.yap.app.domain.AudioVideoKind
 import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.BlockPlan
+import com.yap.app.domain.BlockPolicy
 import com.yap.app.domain.MediaTool
 import com.yap.app.domain.DeferReply
 import com.yap.app.domain.Diary
@@ -135,6 +137,8 @@ class ToolExecutor @Inject constructor(
             "sticker" -> sticker(invocation, persona)
             "listen" -> listen(invocation, sessionId)
             "watch" -> watch(invocation, sessionId)
+            "block_user" -> blockUser(invocation, persona, sessionId, now)
+            "send_message" -> sendMessageFallback(invocation)
             "think" -> think(invocation)
             else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_UNKNOWN, arg = name))
         }
@@ -187,6 +191,78 @@ class ToolExecutor @Inject constructor(
             }
         )
     }
+
+    // ---------------------------------------------------------------- 拉黑 / 连发
+
+    /**
+     * `block_user`：两轮确认（`spec/experience/README.md` §2）。
+     *
+     * 第一次只写提议；只有「之后的一轮、中间至少一条用户消息」再 confirm 才能生效。
+     * 提议存 `personas.blockProposalJson`，10 分钟过期；确认成功后写 `blockedUntil`。
+     */
+    private suspend fun blockUser(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Long
+    ): ToolExecution {
+        runCatching { personaDao.clearExpiredBlocks(now) }
+        val fresh = personaDao.getById(persona.id)
+            ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_PERSONA_NOT_FOUND))
+        val existing = BlockPolicy.decode(fresh.blockProposalJson)
+        val confirm = invocation.booleanArgument("confirm") == true
+        // 模型没写 hours 时按 12 小时；写了 0 / 99 仍由 BlockPolicy 夹到 1–24。
+        val hours = invocation.optionalIntArgument("hours") ?: BlockPolicy.DEFAULT_HOURS
+        val reason = invocation.argument("reason")
+        val userMessages = runCatching { messageDao.countUserMessages(sessionId) }.getOrDefault(0)
+        return when (val plan = BlockPolicy.plan(existing, confirm, hours, reason, now, userMessages)) {
+            is BlockPlan.Pending -> {
+                personaDao.setBlockProposal(persona.id, BlockPolicy.encode(plan.proposal))
+                success(
+                    invocation = invocation,
+                    title = ToolTraceTitle.BLOCK_USER,
+                    subtitle = "${plan.proposal.hours}h",
+                    detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
+                    modelSummary = "pending_confirmation",
+                    modelText = "pending_confirmation：拉黑提议已记下（${plan.proposal.hours} 小时），但还没有生效。" +
+                        "必须等对方之后再发至少一条消息，你才能在下一轮调用 confirm=true；不要在同一个回复里确认。"
+                )
+            }
+            is BlockPlan.Apply -> {
+                personaDao.applyBlock(persona.id, plan.until, plan.reason.ifBlank { null })
+                success(
+                    invocation = invocation,
+                    title = ToolTraceTitle.BLOCK_USER_APPLIED,
+                    subtitle = "${plan.unitsUntil(now)}h",
+                    detail = appContext.getString(R.string.tool_trace_block_user_applied_detail),
+                    modelSummary = "blocked",
+                    modelText = "已生效：你把对方拉黑了，直到 ${plan.until}。到期自动解除；期间不看、不回复对方的消息。" +
+                        "不要把这件事反复解释给对方听。"
+                )
+            }
+            is BlockPlan.Reject -> success(
+                invocation = invocation,
+                title = ToolTraceTitle.BLOCK_USER,
+                subtitle = null,
+                detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
+                modelSummary = plan.code,
+                modelText = when (plan.code) {
+                    BlockPolicy.REJECT_NEED_MORE_MESSAGES ->
+                        "现在还不能确认：中间还没有新的用户消息。等下一轮再说；如果这轮已经说了什么，就正常把话说完。"
+                    BlockPolicy.REJECT_EXPIRED ->
+                        "那个拉黑提议已经过期了。如果还是想拉黑，先重新提一次（不要 confirm），等下一轮再确认。"
+                    else ->
+                        "还没有可以确认的拉黑提议。先调用一次 block_user（不要 confirm）提交提议。"
+                }
+            )
+        }
+    }
+
+    /** ChatRepository 会在聊天回合里拦截 `send_message`；这里只兜底主动回合。 */
+    private fun sendMessageFallback(invocation: ToolInvocation): ToolExecution = failure(
+        invocation,
+        UserError.Domain(DomainErrorCode.TOOL_FAILED, arg = "send_message")
+    )
 
     // ---------------------------------------------------------------- 深思
 
@@ -1199,6 +1275,9 @@ class ToolExecutor @Inject constructor(
             )
         )
     }
+
+    private fun BlockPlan.Apply.unitsUntil(now: Long): Long =
+        ((until - now).coerceAtLeast(0L) + 3_599_999L) / 3_600_000L
 
     private data class WebAccess(
         val provider: String,

@@ -41,13 +41,17 @@ class LlmProactiveTextSource(
         }
         val stored = store.persona(persona.personaId) ?: return ""
         val session = latestSession(persona.personaId)
-        val history = session?.let { store.latestMessages(it.id, HISTORY_LIMIT) }.orEmpty()
+        // 0.14：被拉黑的消息不进上下文；会话备忘录与最近念头一起带上（他记得住、也想得起来）。
+        val history = session?.let { store.latestMessages(it.id, HISTORY_LIMIT, includeBlocked = false) }.orEmpty()
         val messages = promptBuilder.proactiveMessages(
             persona = stored,
             mood = store.mood(persona.personaId),
             activity = ActivityState.decode(stored.activityJson),
             history = history,
-            now = now
+            now = now,
+            sessionMemory = session?.let { store.sessionMemory(it.id) },
+            mentalActivity = store.latestMentalActivity(persona.personaId)
+                ?.takeIf { now - it.at <= MENTAL_ACTIVITY_CONTEXT_MS }
         )
         val completion = try {
             llm.complete(config, messages, maxTokens = MAX_OUTPUT_TOKENS)
@@ -88,6 +92,9 @@ class LlmProactiveTextSource(
 
         /** 主动消息只给它看最近几条，避免把整段聊天再读一遍。 */
         const val HISTORY_LIMIT: Int = 20
+
+        /** 心理活动注入主动消息的时效（与聊天一致：半小时）。 */
+        const val MENTAL_ACTIVITY_CONTEXT_MS: Long = 30 * 60 * 1000L
 
         /** 主动消息要短：输出上限足够写几句，限制主要靠提示词。 */
         const val MAX_OUTPUT_TOKENS: Int = 300

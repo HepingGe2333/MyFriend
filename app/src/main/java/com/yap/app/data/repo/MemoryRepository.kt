@@ -153,9 +153,11 @@ class MemoryRepository @Inject constructor(
             maxChars = MAX_MEMORY_CONTEXT_CHARS,
             vectorScores = candidates.vectorScores
         )
-        val pickedEntities = picked.mapNotNull { byId[it.id] }
-        touchRecalled(pickedEntities, now)
-        return pickedEntities
+        // 0.14 记忆审计：候选并集来自五条路，同一条内容可能从不同来源被挑中两次；
+        // 这批记忆最终逐条写进提示词，重复的一条会白占预算，也会让模型以为「他说了两遍」。
+        val unique = deduplicated(picked.mapNotNull { byId[it.id] })
+        touchRecalled(unique, now)
+        return unique
     }
 
     /**
@@ -576,7 +578,14 @@ class MemoryRepository @Inject constructor(
                 if (items.isEmpty()) return@forEach
                 append("\n**${labels[drawer]}**\n")
                 items.sortedByDescending { it.importance }.forEach { memory ->
-                    append("- ${memory.content}")
+                    // 0.14 审计：单条记忆进提示词只留前 300 字（库里的原文不截）。
+                    // 一条几千字的记忆会把 7000 字上下文预算吃掉一半，挤掉更相关的事。
+                    val content = if (memory.content.length > MAX_PROMPT_LINE_CHARS) {
+                        memory.content.take(MAX_PROMPT_LINE_CHARS) + "…"
+                    } else {
+                        memory.content
+                    }
+                    append("- $content")
                     if (memory.pinned) append("（对你很重要）")
                     append("\n")
                 }
@@ -585,6 +594,7 @@ class MemoryRepository @Inject constructor(
     }
 
     private val memoryOrder = listOf(MemoryDrawer.USER, MemoryDrawer.SELF, MemoryDrawer.EVENT)
+
 
     suspend fun maybeExtractMemories(sessionId: String, force: Boolean = false): Result<MemoryExtractionResult> {
         return extractionMutex.withLock {
@@ -598,7 +608,7 @@ class MemoryRepository @Inject constructor(
                 val personaName = persona.name.ifBlank { "他" }
                 // 总条数只用来判断「距离上次抽取够不够 N 条」，单独 COUNT 即可；
                 // 正文只取最近 40 行（下面实际只用最后 20 句），不把整段历史读进内存。
-                val currentCount = messageDao.countInSession(sessionId)
+                val currentCount = messageDao.countVisibleInSession(sessionId)
                 val recentRows = messageDao.recentBySession(sessionId, MessageWindows.EXTRACTION_ROWS)
                 val conversational = MessageWindows.lastN(recentRows, MessageWindows.EXTRACTION_ROWS) {
                     it.role != MessageRole.SYSTEM && it.content.isNotBlank()
@@ -855,9 +865,24 @@ class MemoryRepository @Inject constructor(
         val happenedAt: Long? = null
     )
 
-    private companion object {
+    companion object {
         const val MEMORY_INTERVAL = 6
         const val MAX_MEMORY_CONTEXT_CHARS = 7000
+        const val MAX_PROMPT_LINE_CHARS = 300
+
+        /** 0.14 审计：按归一化内容去重，保留先出现（相关度更高）的那条。 */
+        fun deduplicated(memories: List<MemoryEntity>): List<MemoryEntity> {
+            val seen = HashSet<String>(memories.size)
+            val result = ArrayList<MemoryEntity>(memories.size)
+            memories.forEach { memory ->
+                val key = memory.content.trim().lowercase()
+                    .replace(Regex("\\s+"), "")
+                    .replace(Regex("[，。！？,.!?；;]"), "")
+                if (key.isEmpty()) return@forEach
+                if (seen.add(key)) result += memory
+            }
+            return result
+        }
 
         /** 同一条记忆至少隔 6 小时才写一次「被想起来」，避免每轮对话都写库。 */
         const val RECALL_TOUCH_INTERVAL_MILLIS = 6 * 3_600_000L

@@ -70,6 +70,8 @@ class HeartbeatController @Inject constructor(
     private val messageDao: MessageDao,
     /** 他的日记板：到点的提醒在这里变成念头（`spec/diary/README.md`）。 */
     private val diaryRepository: DiaryRepository,
+    /** 0.14 心理活动：活跃窗口里每 3 分钟/3 轮一次；后台心跳负责「时间到了」那一半。 */
+    private val mentalActivityRepository: MentalActivityRepository,
     /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
     private val agentCore: AgentCoreClient,
     /**
@@ -107,6 +109,16 @@ class HeartbeatController @Inject constructor(
 
         val persona = pickPersona(settings.activePersonaId)
             ?: return stop(Reason.NO_PERSONA, why = "还没有可以对话的人格")
+        // 0.14：拉黑期间不主动、不想、不打扰。
+        if (com.yap.app.domain.BlockPolicy.isBlocked(persona.blockedUntil, now)) {
+            return stop(Reason.BUSY, why = "拉黑期间不主动")
+        }
+        // 心理活动与「想不想开口」无关：活跃窗口里即使不掷骰子，也可以自己在心里想一句。
+        // 内部会按 3 分钟 / 3 轮 / 激动 / 心情变化自行判断；失败安静跳过。
+        runCatching {
+            val sessionId = sessionDao.latestForPersona(persona.id)?.id
+            if (sessionId != null) mentalActivityRepository.ensureAsync(sessionId, now, justSent = false)
+        }
 
         // 日记里到点的提醒先变成「念头」，再走下面那套「想不想开口」的判定。
         // 放在睡觉/在忙的判断**之前**：提醒到点是他心里的一件事，不该因为他睡了就被丢掉；

@@ -238,6 +238,120 @@ class ToolExecutorTest {
     }
 
     @Test
+    fun `recall searches the whole memory list instead of only the newest five hundred`() {
+        // 0.14 修掉的检索 bug：老实现 `memories(limit = 500)` 会把更老的记忆静默丢掉。
+        store.saveMemory(personaId, memoryId = null) { _, _ ->
+            com.yap.agentd.store.Memory(
+                id = "",
+                personaId = personaId,
+                content = "最老的一条线索：你们第一次见面在下雨天",
+                importance = 30,
+                tags = listOf("初见"),
+                createdAt = 0,
+                updatedAt = 0
+            )
+        }
+        repeat(520) { index ->
+            store.saveMemory(personaId, memoryId = null) { _, _ ->
+                com.yap.agentd.store.Memory(
+                    id = "",
+                    personaId = personaId,
+                    content = "后来的第 $index 件小事",
+                    importance = 20,
+                    createdAt = 0,
+                    updatedAt = 0
+                )
+            }
+        }
+        val hit = run("recall", """{"query":"下雨天"}""")
+        assertTrue("老记忆也要能翻到：${hit.contentForModel}", hit.contentForModel.contains("下雨天"))
+        assertEquals("想起了 1 条", hit.summary)
+    }
+
+    @Test
+    fun `recall splits a multi word query into tokens`() {
+        store.saveMemory(personaId, memoryId = null) { _, _ ->
+            com.yap.agentd.store.Memory(
+                id = "",
+                personaId = personaId,
+                content = "那家店在城南，你怕冷，我们冬天去过",
+                importance = 50,
+                createdAt = 0,
+                updatedAt = 0
+            )
+        }
+        // 整句「那家店 好久没去」当子串是匹配不到的；按词元拆开就能命中。
+        val hit = run("recall", """{"query":"那家店 好久没去"}""")
+        assertTrue(hit.contentForModel.contains("那家店在城南"))
+        assertEquals("想起了 1 条", hit.summary)
+    }
+
+    @Test
+    fun `recall dedupes identical memories and prefers more token hits`() {
+        repeat(2) {
+            store.saveMemory(personaId, memoryId = null) { _, _ ->
+                com.yap.agentd.store.Memory(
+                    id = "",
+                    personaId = personaId,
+                    content = "你喜欢喝热美式",
+                    importance = 40,
+                    createdAt = 0,
+                    updatedAt = 0
+                )
+            }
+        }
+        store.saveMemory(personaId, memoryId = null) { _, _ ->
+            com.yap.agentd.store.Memory(
+                id = "",
+                personaId = personaId,
+                content = "热美式加一份燕麦奶，你早上喝",
+                importance = 40,
+                createdAt = 0,
+                updatedAt = 0
+            )
+        }
+        val hit = run("recall", """{"query":"热美式 燕麦奶"}""")
+        assertEquals("重复内容只算一条 + 另一条 = 2 条", "想起了 2 条", hit.summary)
+        val lines = hit.contentForModel.lines().filter { it.startsWith("- ") }
+        assertEquals(2, lines.size)
+        assertTrue("命中两个词元的排前面", lines.first().contains("燕麦奶"))
+    }
+
+    @Test
+    fun `recall truncates very long content so one memory cannot flood the prompt`() {
+        store.saveMemory(personaId, memoryId = null) { _, _ ->
+            com.yap.agentd.store.Memory(
+                id = "",
+                personaId = personaId,
+                content = "关键词 " + "很长的内容".repeat(1_000),
+                importance = 50,
+                createdAt = 0,
+                updatedAt = 0
+            )
+        }
+        val hit = run("recall", """{"query":"关键词"}""")
+        assertTrue("输出要被截断", hit.contentForModel.length < 2_500)
+        assertTrue(hit.contentForModel.contains("关键词"))
+    }
+
+    @Test
+    fun `recall never reads another persona's memories and rejects blank queries`() {
+        store.saveMemory(FileStore.SEED_PERSONA_2_ID, memoryId = null) { _, _ ->
+            com.yap.agentd.store.Memory(
+                id = "",
+                personaId = FileStore.SEED_PERSONA_2_ID,
+                content = "别人格的一条秘密",
+                importance = 90,
+                createdAt = 0,
+                updatedAt = 0
+            )
+        }
+        val hit = run("recall", """{"query":"秘密"}""")
+        assertTrue("不能越权：${hit.contentForModel}", hit.contentForModel.contains("没翻到什么"))
+        assertFalse(run("recall", """{"query":"   "}""").ok)
+    }
+
+    @Test
     fun `remember clamps importance and rejects empty content`() {
         run("remember", """{"content":"一件小事","importance":99}""")
         assertEquals(100, store.memories(personaId).single().importance)

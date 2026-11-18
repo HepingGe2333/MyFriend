@@ -8,6 +8,7 @@ import com.yap.agentd.search.SearchException
 import com.yap.agentd.search.SearchRequest
 import com.yap.agentd.search.SearchLimits
 import com.yap.agentd.search.WebSearchService
+import com.yap.agentd.store.BlockProposal
 import com.yap.agentd.store.DiaryNote
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.MediaUrl
@@ -45,8 +46,36 @@ class ToolExecutor(
     private val clock: Clock = Clock.systemDefaultZone()
 ) {
 
-    /** 一次工具调用的上下文（哪个人格、哪段会话）。 */
-    data class Context(val personaId: String, val sessionId: String, val userMessageId: String? = null)
+    /**
+     * 一次工具调用的上下文（哪个人格、哪段会话）。
+     *
+     * [outgoing] 只在**这一轮生成**内共享：`send_message` 每调一次发一条，靠它限制「一轮最多 4 条」。
+     * 每次生成都会新建一个 [Context]，所以上一次聊天的计数不会漏到下一次。
+     */
+    data class Context(
+        val personaId: String,
+        val sessionId: String,
+        val userMessageId: String? = null,
+        val outgoing: OutgoingMessages = OutgoingMessages()
+    )
+
+    /** 一轮里已经发出的短消息（`send_message`）；跨工具调用共享，线程模型是「单轮内串行」。 */
+    class OutgoingMessages(private val max: Int = MAX_MESSAGES_PER_TURN) {
+        private val sent = ArrayList<String>()
+
+        fun canSend(): Boolean = sent.size < max
+
+        fun remaining(): Int = (max - sent.size).coerceAtLeast(0)
+
+        fun add(text: String): Boolean {
+            if (!canSend()) return false
+            sent += text
+            return true
+        }
+
+        /** 本轮已经发出的消息（按发送顺序；`ChatService` 按它逐条落库）。 */
+        fun all(): List<String> = sent.toList()
+    }
 
     /**
      * 一次工具调用的结果。
@@ -63,6 +92,8 @@ class ToolExecutor(
         val contentForModel: String,
         val staySilent: Boolean = false,
         val attachments: List<String> = emptyList(),
+        /** `send_message` 真的发出去的那一条（其它工具为 null）；生成器按顺序收集成多条消息。 */
+        val sentMessage: String? = null,
         /** `toolTraceJson` 里的一行（客户端 `ToolTraceItem` 同形）。 */
         val trace: ToolTrace
     )
@@ -112,6 +143,8 @@ class ToolExecutor(
                 ServerToolCatalog.WEB_SEARCH -> webSearch(args)
                 ServerToolCatalog.WEB_FETCH -> webFetch(args)
                 ServerToolCatalog.STICKER -> sticker(args, context)
+                ServerToolCatalog.SEND_MESSAGE -> sendMessage(args, context)
+                ServerToolCatalog.BLOCK_USER -> blockUser(args, context)
                 else -> failure(name, "不认识的工具：$name", "没有这个工具")
             }
         } catch (missing: StorePersonaNotFoundException) {
@@ -380,23 +413,46 @@ class ToolExecutor(
         )
     }
 
+    /**
+     * `recall`：按关键词/标签翻长期记忆。
+     *
+     * 0.14 修掉的三个检索 bug：
+     * 1. **只取最近 500 条**（原实现 `memories(limit = 500)`）：老记忆会被静默丢掉，
+     *    现在扫全量（记忆索引常驻内存，扫一遍不读盘）；
+     * 2. **整句当子串**：问「那家店 怕冷」永远匹配不到任何一条，现在按空白/标点拆成词元，
+     *    命中任意一个就计分（整句命中额外加权）；
+     * 3. **只按重要度排序**：命中多的应该排在前面，同分再看重要度与新旧；重复内容去重，
+     *    超长结果按总字数截断，避免把一条记忆塞满整个提示词。
+     */
     private fun recall(args: JsonValue.Obj, context: Context): Outcome {
-        val query = args.stringOrNull("query").orEmpty().trim()
+        val query = args.stringOrNull("query").orEmpty().trim().take(MAX_RECALL_QUERY_CHARS)
         if (query.isEmpty()) return failure(ServerToolCatalog.RECALL, "缺少 query", "没写要找什么")
         val limit = (args.intOrNull("limit") ?: RECALL_DEFAULT_LIMIT).coerceIn(1, 12)
-        // 服务端这一层没有向量检索：按关键词/子串在一份记忆里翻（够用，且完全可测）。
-        val hits = store.memories(context.personaId, limit = 500)
-            .filter { memory ->
-                memory.content.contains(query, ignoreCase = true) ||
-                    memory.tags.any { it.contains(query, ignoreCase = true) }
-            }
-            .sortedByDescending { it.importance }
+        val tokens = tokenizeQuery(query)
+        val hits = store.memories(context.personaId, limit = Int.MAX_VALUE)
+            .asSequence()
+            .filter { it.content.isNotBlank() }
+            .map { memory -> memory to matchScore(memory, tokens, query) }
+            .filter { it.second > 0 }
+            .sortedWith(
+                compareByDescending<Pair<com.yap.agentd.store.Memory, Int>> { it.second }
+                    .thenByDescending { it.first.importance }
+                    .thenByDescending { it.first.updatedAt }
+            )
+            // 去重：内容完全一样的两条（抽取/导入常见）只留一条。
+            .distinctBy { it.first.content.trim() }
             .take(limit)
-        val text = if (hits.isEmpty()) {
-            "（没翻到什么）"
-        } else {
-            hits.joinToString("\n") { "- ${it.content.take(80)}" }
+            .map { it.first }
+            .toList()
+        val lines = ArrayList<String>()
+        var used = 0
+        for (memory in hits) {
+            val line = "- ${memory.content.replace('\n', ' ').take(MAX_RECALL_LINE_CHARS)}"
+            if (used + line.length > MAX_RECALL_RESULT_CHARS) break
+            lines += line
+            used += line.length
         }
+        val text = if (lines.isEmpty()) "（没翻到什么）" else lines.joinToString("\n")
         return Outcome(
             name = ServerToolCatalog.RECALL,
             ok = true,
@@ -407,6 +463,165 @@ class ToolExecutor(
                 title = "想了想",
                 subtitle = query.take(30),
                 detail = text,
+                ok = true
+            )
+        )
+    }
+
+    /** 查询拆词：空白与中英文标点都当分隔符；单字词元保留（中文人名/地名常常只有一个字有用）。 */
+    private fun tokenizeQuery(query: String): List<String> = query
+        .split(Regex("[\\s,，、。;；:：!！?？/\\\\|()（）\\[\\]【】]+"))
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .distinct()
+        .take(MAX_RECALL_TOKENS)
+
+    /** 命中打分：整句命中 3 分，每个词元正文命中 2 分、标签命中 1 分。 */
+    private fun matchScore(memory: com.yap.agentd.store.Memory, tokens: List<String>, query: String): Int {
+        var score = 0
+        if (memory.content.contains(query, ignoreCase = true)) score += 3
+        if (memory.tags.any { it.contains(query, ignoreCase = true) }) score += 2
+        for (token in tokens) {
+            if (memory.content.contains(token, ignoreCase = true)) score += 2
+            if (memory.tags.any { it.contains(token, ignoreCase = true) }) score += 1
+        }
+        return score
+    }
+
+    // ------------------------------------------------------------------ send_message / block_user（0.14）
+
+    /**
+     * `send_message`：一轮里逐条发短消息（`spec/experience/README.md` §4）。
+     *
+     * 每调用一次就是**一条独立 assistant 消息**（由 `ChatService` 落库并逐条发 `message.created`）。
+     * 超过 120 字的截断而不是失败：模型偶尔会多写一句，截断至少还能发出去半句；
+     * 超过 4 条则必须失败，否则「连发」会变成刷屏。
+     */
+    private fun sendMessage(args: JsonValue.Obj, context: Context): Outcome {
+        val raw = args.stringOrNull("text") ?: args.stringOrNull("message")
+        val text = raw.orEmpty().trim()
+        if (text.isEmpty()) {
+            return failure(ServerToolCatalog.SEND_MESSAGE, "text 不能为空", "没写要发什么")
+        }
+        val clamped = text.take(MAX_SEND_MESSAGE_CHARS)
+        if (!context.outgoing.add(clamped)) {
+            return failure(
+                ServerToolCatalog.SEND_MESSAGE,
+                "这一轮已经发了 $MAX_MESSAGES_PER_TURN 条，别再拆了；剩下的话留到下一轮说",
+                "发得太密了"
+            )
+        }
+        val index = context.outgoing.all().size
+        return Outcome(
+            name = ServerToolCatalog.SEND_MESSAGE,
+            ok = true,
+            summary = "发出第 $index 条",
+            contentForModel = "已经发出去了（这一轮第 $index 条）。这就是你要说的话本身，不要再用普通文字重复它。",
+            sentMessage = clamped,
+            trace = ToolTrace(
+                name = ServerToolCatalog.SEND_MESSAGE,
+                title = "发了消息",
+                subtitle = clamped.take(30),
+                detail = clamped,
+                ok = true
+            )
+        )
+    }
+
+    /**
+     * `block_user`：两轮确认之后才真的拉黑（`spec/experience/README.md` §2）。
+     *
+     * - 第一次（没有 `confirm`）：只记一条 10 分钟有效的提议，**不生效**；
+     * - 之后的一轮（中间至少有一条用户消息）带 `confirm=true`：写 `blockedUntil`；
+     * - 同一轮里连调两次不算「之后的轮次」：提议记着那一轮的用户消息 id，id 相同就拒绝；
+     * - 没有 `unblock`：到点自动解除（用户也不能手动解除）。
+     */
+    private fun blockUser(args: JsonValue.Obj, context: Context): Outcome {
+        val persona = store.persona(context.personaId)
+            ?: return failure(ServerToolCatalog.BLOCK_USER, "找不到这个人格", "拉黑失败")
+        val now = clock.millis()
+        store.expireBlockProposals(now)
+        if (persona.isBlockedAt(now)) {
+            val until = persona.blockedUntil ?: now
+            return failure(
+                ServerToolCatalog.BLOCK_USER,
+                "你已经在拉黑对方了（到 $until 自动解除），不需要再拉一次",
+                "已经在拉黑"
+            )
+        }
+        val hours = (args.intOrNull("hours") ?: BlockProposal.MIN_HOURS)
+            .coerceIn(BlockProposal.MIN_HOURS, BlockProposal.MAX_HOURS)
+        val reason = args.stringOrNull("reason").orEmpty().trim().take(FileStore.MAX_BLOCK_REASON_CHARS)
+        val confirm = args.boolOrNull("confirm") ?: false
+        val userMessageId = context.userMessageId.orEmpty()
+
+        if (!confirm) {
+            store.saveBlockProposal(
+                BlockProposal(
+                    personaId = context.personaId,
+                    sessionId = context.sessionId,
+                    userMessageId = userMessageId,
+                    hours = hours,
+                    reason = reason,
+                    proposedAt = now
+                )
+            )
+            return Outcome(
+                name = ServerToolCatalog.BLOCK_USER,
+                ok = true,
+                summary = "提议拉黑 $hours 小时（还没生效）",
+                contentForModel = "pending_confirmation：这是第一次提到拉黑，还没有生效。对方如果继续说话，" +
+                    "下一轮你再调用一次 block_user（confirm=true）才会真的拉黑 $hours 小时；10 分钟没确认就作废。",
+                trace = ToolTrace(
+                    name = ServerToolCatalog.BLOCK_USER,
+                    title = "想清静一会儿",
+                    subtitle = "$hours 小时（待确认）",
+                    detail = reason,
+                    ok = true
+                )
+            )
+        }
+
+        val proposal = store.blockProposal(context.personaId)
+            ?: return failure(
+                ServerToolCatalog.BLOCK_USER,
+                "没有待确认的拉黑提议：先在不带 confirm 的情况下调用一次，下一轮再确认",
+                "没有待确认的提议"
+            )
+        if (proposal.isExpired(now)) {
+            store.clearBlockProposal(context.personaId)
+            return failure(
+                ServerToolCatalog.BLOCK_USER,
+                "上次的拉黑提议已经超过 10 分钟作废了；真要拉黑请重新提议一次",
+                "提议过期了"
+            )
+        }
+        if (proposal.userMessageId.isNotBlank() && proposal.userMessageId == userMessageId) {
+            return failure(
+                ServerToolCatalog.BLOCK_USER,
+                "拉黑不能在同一轮里确认：要等对方再发一条消息，下一轮你再确认",
+                "还差一轮"
+            )
+        }
+        val until = now + hours * 60L * 60L * 1000L
+        val updated = store.blockPersona(
+            personaId = context.personaId,
+            until = until,
+            reason = reason.ifBlank { proposal.reason }
+        )
+        store.clearBlockProposal(context.personaId)
+        return Outcome(
+            name = ServerToolCatalog.BLOCK_USER,
+            ok = true,
+            summary = "拉黑了 $hours 小时",
+            contentForModel = "已经把对方拉黑了 ${hours} 小时（到 $until 自动解除）。这段时间对方发来的消息你看不到，" +
+                "也不该再回复；这一轮说完你要说的话就结束，不要解释系统规则。",
+            sentMessage = null,
+            trace = ToolTrace(
+                name = ServerToolCatalog.BLOCK_USER,
+                title = "拉黑了对方",
+                subtitle = "$hours 小时",
+                detail = updated.blockReason,
                 ok = true
             )
         )
@@ -565,6 +780,18 @@ class ToolExecutor(
         else -> null
     }
 
+    private fun JsonValue.Obj.boolOrNull(key: String): Boolean? = when (val value = fields[key]) {
+        is JsonValue.Bool -> value.value
+        is JsonValue.Str -> value.value.trim().lowercase().let {
+            when (it) {
+                "true", "1", "yes", "是" -> true
+                "false", "0", "no", "否" -> false
+                else -> null
+            }
+        }
+        else -> null
+    }
+
     private fun JsonValue.Obj.longOrNull(key: String): Long? = when (val value = fields[key]) {
         is JsonValue.Num -> value.asLong
         is JsonValue.Str -> value.value.trim().toLongOrNull()
@@ -584,8 +811,26 @@ class ToolExecutor(
         /** `defer_reply` 的「再晚就作废」窗口（与客户端 `DeferReply` 一致：+30 分钟）。 */
         const val DEFER_WINDOW_MS: Long = 30 * 60 * 1000L
 
+        /** 一条「连发」消息的字数上限（规范 §4：≤120 字）。 */
+        const val MAX_SEND_MESSAGE_CHARS = 120
+
+        /** 一轮最多发几条（规范 §4：最多 4 条/轮）。 */
+        const val MAX_MESSAGES_PER_TURN = 4
+
         const val DIARY_DEFAULT_LIMIT = 20
         const val RECALL_DEFAULT_LIMIT = 5
+
+        /** recall 的查询最长多少字（再长也不会是「关键词」，只会把匹配变慢）。 */
+        const val MAX_RECALL_QUERY_CHARS = 200
+
+        /** recall 最多拆几个词元。 */
+        const val MAX_RECALL_TOKENS = 12
+
+        /** recall 每条结果截断到多少字。 */
+        const val MAX_RECALL_LINE_CHARS = 80
+
+        /** recall 结果总字数上限（别让一次回忆塞满提示词）。 */
+        const val MAX_RECALL_RESULT_CHARS = 2_000
         const val STICKER_DEFAULT_LIMIT = 12
 
         /** 与 `ToolsRoutes` 共用同一套环境变量（key 永不出现在模型参数里）。 */

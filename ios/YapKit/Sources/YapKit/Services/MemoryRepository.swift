@@ -103,8 +103,12 @@ public final class MemoryRepository {
             vectorScores: candidates.vectorScores
         )
         let pickedEntities = picked.compactMap { byId[$0.id] }
-        touchRecalled(pickedEntities, now: now)
-        return pickedEntities
+        // 0.14 记忆审计：候选并集来自五条路（索引 / LIKE / 标签 / 时间 / 向量），
+        // 同一条内容可能因为不同来源被挑中两次；而这批记忆最终要逐条写进提示词，
+        // 重复的一条会白占两行预算、还会让模型以为「这件事他说了两遍」。
+        let unique = Self.deduplicated(pickedEntities)
+        touchRecalled(unique, now: now)
+        return unique
     }
 
     /// 召回候选集：只负责「把可能相关的东西捞上来」，不排序（排序在 MemoryScreening 里做）。
@@ -507,6 +511,28 @@ public final class MemoryRepository {
 
     // MARK: - 提示词渲染
 
+    /// 单条记忆进提示词时的字数上限（0.14 审计：超长截断）。
+    ///
+    /// 记忆本身可以到 2000 字（那是用户/模型写的原文），但提示词里的每一行都只是**索引**：
+    /// 一条几千字的记忆会把 7 000 字的上下文预算吃掉一半，挤掉其它更相关的事。
+    /// 截断只影响提示词，不改库里的正文。
+    public static let maxPromptLineChars = 300
+
+    /// 按内容去重（保留先出现的那条：picked 已经按相关度排过序）。
+    static func deduplicated(_ memories: [MemoryEntity]) -> [MemoryEntity] {
+        var seen = Set<String>()
+        var result: [MemoryEntity] = []
+        for memory in memories {
+            let key = memory.content
+                .replacingOccurrences(of: "\\s+", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            if key.isEmpty { continue }
+            if seen.insert(key).inserted { result.append(memory) }
+        }
+        return result
+    }
+
     /// 按抽屉讲给模型听，比按数据库的 category 更接近「他记得的事」。
     public func formatForPrompt(_ memories: [MemoryEntity]) -> String {
         if memories.isEmpty { return "" }
@@ -523,7 +549,11 @@ public final class MemoryRepository {
             if items.isEmpty { continue }
             text += "\n**\(labels[drawer] ?? "")**\n"
             for memory in items.sorted(by: { $0.importance > $1.importance }) {
-                text += "- \(memory.content)"
+                // 0.14 超长截断：提示词里的每一条都只留前 300 字（见 `maxPromptLineChars`）。
+                let content = memory.content.count > Self.maxPromptLineChars
+                    ? String(memory.content.prefix(Self.maxPromptLineChars)) + "…"
+                    : memory.content
+                text += "- \(content)"
                 if memory.pinned { text += "（对你很重要）" }
                 text += "\n"
             }
