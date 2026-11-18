@@ -184,6 +184,8 @@ fun StickerPanel(
     onPick: (StickerEntity) -> Unit,
     onImport: () -> Unit,
     onClose: () -> Unit,
+    /** 长按删除一个表情（服务端模式下会先删服务端，失败由调用方提示）。 */
+    onDelete: ((StickerEntity) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val accent = LocalAccentColor.current
@@ -254,7 +256,9 @@ fun StickerPanel(
                 items(stickers, key = { it.id }) { sticker ->
                     StickerThumbnail(
                         thumbnail = thumbnails[sticker.id],
-                        onClick = { onPick(sticker) }
+                        onClick = { onPick(sticker) },
+                        // 长按删除：面板里没有别的长按语义，不会和「点选即发送」抢。
+                        onLongClick = onDelete?.let { delete -> { delete(sticker) } }
                     )
                 }
             }

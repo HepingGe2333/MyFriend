@@ -1820,4 +1820,5 @@
     <string name="draft_default_prompt">You are a friend the user talks to. Speak naturally and warmly, and remember what he tells you.</string>
     <!-- 0.13 stay silent (spec/mood §4): only ever shown in an expanded trace; normally no bubble at all -->
     <string name="tool_trace_stay_silent">Read, no reply</string>
+    <string name="chat_sticker_delete_failed">Couldn\'t delete it, try again in a moment</string>
 </resources>

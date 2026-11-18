@@ -562,8 +562,14 @@ is still 2 MiB), **8 MiB for `POST /v1/sessions/{id}/messages/import`** and **25
 | `DELETE` | `/v1/presets/{id}` | Delete a preset (404 when absent). |
 | `GET` | `/v1/settings` | Whitelisted global settings (no API keys/secrets, ever). |
 | `POST` | `/v1/settings` | Merge whitelisted fields; unknown keys (including `apiKey`) are ignored. |
-| `GET` | `/v1/backup` | Export a v5 backup JSON (personas/sessions/messages/memories/presets/settings/media, **no secrets**). **0.12.1: streamed** (`Transfer-Encoding: chunked`, no `Content-Length`) — the whole backup is never built in memory. |
-| `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}`; validate everything first, then write. **0.12.1: the request body is streamed to a temp file and parsed incrementally** (body cap 256 MiB). |
+| `GET` | `/v1/backup` | Export a **v6** backup JSON, client-shaped (personas/sessions/messages/memories/presets/settings/apiConfigs/media/stickers/diaryNotes/agentIntents, **no secrets**). **Streamed** (`Transfer-Encoding: chunked`, no `Content-Length`) — the whole backup is never built in memory. |
+| `POST` | `/v1/backup` | `{mode:"merge"|"replace",data:{…}}` or a raw client v6 file (`?mode=replace`); validate everything first, then write. The request body is streamed to a temp file and parsed incrementally (body cap 256 MiB). |
+| `GET` | `/v1/stickers?personaId=&limit=` | Sticker list (`{serverTime,stickers[]}`); `file`/`fileName` are the bare name, `mediaId`/`url` fetch the bytes. |
+| `POST` | `/v1/stickers` | `{mime,data(base64),personaId?,width,height,frames,source,createdBy}` or `{mediaId}` (already uploaded `kind=STICKER`). |
+| `DELETE` | `/v1/stickers/{id}` | Delete the row and its file; unknown id ⇒ 404. |
+| `GET` | `/v1/personas/{id}/diary?limit=&since=` | Diary notes (`{personaId,notes[]}`), newest first. |
+| `POST` | `/v1/personas/{id}/diary` | Create (no `id`) or update; `remindAt` / `remindInMinutes` (1–43200) or `remindAt:null` to clear. |
+| `DELETE` | `/v1/personas/{id}/diary/{noteId}` | Hard delete; wrong persona/unknown id ⇒ 404. |
 | `POST` | `/v1/push/register` | `{platform:"ios"|"android",token,bundleId?}`; idempotent per `platform+token`. |
 | `DELETE` | `/v1/push/register` | Unregister by body `{token,platform?}` or query `?token=&platform=`; idempotent. |
 | `GET` | `/v1/events?since=&timeoutSeconds=&limit=` | Incremental events (`message.created`, `mood.changed`, `presence.changed`). Long poll, 25 s max by default. |
@@ -610,7 +616,7 @@ curl -s -X POST "http://127.0.0.1:8788/v1/personas/seed-linshen/memories" \
 curl -s "http://127.0.0.1:8788/v1/personas/seed-linshen/memories?limit=20"
 curl -s -X POST "http://127.0.0.1:8788/v1/presets" \
   -H 'Content-Type: application/json' -d '{"name":"夏夜","worldJson":"{}"}'
-# 13. backup (v5, no secrets) and merge/replace import
+# 13. backup (v6, client-shaped, no secrets) and merge/replace import
 #     GET is a chunked stream (no Content-Length); curl writes it straight to a file
 curl -s "http://127.0.0.1:8788/v1/backup" > backup.json
 #     POST streams the body to a staging file server-side; build the envelope without
@@ -650,7 +656,7 @@ of `/v1` (1 MiB JSON body cap, with three deliberate exceptions: `POST /v1/media
 through the single `FileStore` lock, so a read-modify-write update (for example merging fields into
 one persona) cannot lose a concurrent request's field. Errors are
 `404 not_found` for unknown ids, `400 missing_field` / `invalid_argument` / `invalid_json` for bad
-input, `409 unsupported_backup_version` when an import is newer than v5, and `405
+input, `409 unsupported_backup_version` when an import is newer than v6, and `405
 method_not_allowed` for a known path with the wrong verb.
 
 **Personas, memories and presets.** These endpoints accept the client field names directly.
@@ -673,7 +679,8 @@ method_not_allowed` for a known path with the wrong verb.
   key route**: `apiKey`, `apiKeys`, `secrets` and friends are ignored by the write path and can
   never appear in a response or backup.
 
-**Backup v5.** `GET /v1/backup` returns:
+**Backup.** `GET /v1/backup` returns (v5 shape shown; 0.13 writes the client's v6 shape — see
+[Backup v6](#backup-v6-interoperable-with-the-clients)):
 
 ```json
 {
@@ -715,7 +722,7 @@ verified, so a corrupted/base64-mismatched entry rejects the whole import with `
 before anything is written. `replace` also deletes old media files (the backup is the new state);
 `merge` keeps existing media and overlays entries with the same id (a same-id/different-sha conflict
 is rejected). `POST /v1/backup` accepts up to 256 MiB of body (streamed to disk, see the streaming
-section below), so media-heavy v5 backups **can** be imported over HTTP as of 0.12.1.
+section below), so media-heavy backups **can** be imported over HTTP as of 0.12.1.
 
 ### Batch history import (0.12.1)
 
@@ -823,7 +830,7 @@ covers the transport details: chunked framing replayed from a raw socket, absenc
 base64 rejected without writing media, and unknown sections skipped.
 
 > Format-version note: the client's `BACKUP_FORMAT_VERSION` is **5** and the M3–M6 write-path task
-> asks for v5, so this implementation reads/writes v5. The design document's endpoint table still
+> asked for v5; 0.13 bumps it to v6 to stay aligned with the clients. v1–v5 imports still work. The design document's endpoint table still
 > says "v6"; if that becomes the intended contract, bump the client constant, this constant and the
 > accepted version together (never silently accept both and guess).
 
@@ -1167,7 +1174,7 @@ proving `AgentdServer` dispatches the new paths behind the same `--token`.
 `CrudRoutesTest` (23) covers sessions (`POST`, one-per-persona, read/upTo), persona create/update/
 delete with unknown-field preservation and cascade cleanup, memory/preset/settings CRUD, 400/404/405,
 concurrent updates of one persona (no lost fields), and restart persistence. `BackupApiTest` (12)
-covers v5 export contents/no secrets, replace/merge semantics, export→import→export equality,
+covers export contents/no secrets, replace/merge semantics, export→import→export equality,
 version-6 → 409, reference validation before any write, and restart. `PushRoutesTest` (8) covers
 registration/idempotency/unregistration/persistence, the `PushSender` invocation after a proactive
 message, no-token silence, and a throwing sender that must not break the tick. The 0.13 batch adds
@@ -1245,10 +1252,15 @@ push endpoint / local-file bridge is still to be wired (see "What this service d
   config the stream is `accepted` then `error`, and no assistant message is persisted. Text that was
   already streamed before an upstream failure **is** persisted (and then `error` is sent) — the same
   "generation survives a client disconnect" path as before.
-- **Tool loop is explicitly not done.** The `# 你能做什么` section is an honest empty list ("you have
-  no tools, no internet, don't pretend you checked"). Adding the tool loop (`web_search`,
-  `remember`, `defer_reply`, `stay_silent`) is the next step; the section is generated in one place
-  so switching to a tool registry is a local change (`ChatPromptBuilder.CAPABILITIES`).
+- **The tool loop runs on the server** (0.13). `LlmReplyGenerator` speaks OpenAI
+  function-calling: the `tools[]` array comes from `tools/ServerToolCatalog`, the model's
+  `tool_calls` are executed by `tools/ToolExecutor`, the results are fed back as `role=tool`
+  messages, and the round repeats **at most 3 times** (the last round is sent without tools so the
+  model has to answer with what it already has). Every call emits `event: tool`
+  (`running` → `done` + a one-line summary) and is persisted as `messages.toolTraceJson` in the
+  client's `ToolTraceItem` shape. `# 你能做什么` is generated from the same registry, so the prompt
+  can never promise a tool the server cannot execute. See
+  [Standalone operation, tool loop, stickers/diary and backup v6](#standalone-operation-tool-loop-stickersdiary-and-backup-v6-013).
 
 ### Proactive messages (`ProactiveScheduler` + LLM)
 
@@ -1282,8 +1294,9 @@ Rules are the same as the client's (`PersonaEvolutionRules`): only `traits` / `l
 `behaviors` / `quirks`; at most 3 changes per evaluation (≤2 add, ≤1 remove); confidence ≥ 0.6;
 value ≤ 40 chars; no duplicate adds / no removing values that do not exist; empty patch is best.
 Patches expire after **7 days** (`410 patch_expired` and the row is deleted).
-`pending_patches.json` is server-side review state and is **not part of a v5 backup** (backups carry
-personas/sessions/messages/memories/presets/settings/media; an unaccepted proposal is disposable). Unknown patch → 404
+`pending_patches.json` is server-side review state and is **not part of a v6 backup** (backups carry
+personas/sessions/messages/memories/presets/settings/media/stickers/diaryNotes/agentIntents; an
+unaccepted proposal is disposable). Unknown patch → 404
 `patch_not_found`; a missing LLM config on an explicit evaluate is `503 llm_not_configured` (not a
 silent "no changes"). `accept` keeps the client's field shape: a string column stays
 `"[\"…\"]"`, an actual JSON array stays an array. Nothing outside the four fields is touched
@@ -1304,9 +1317,12 @@ patch with no noticeable change is **not written**. Failure or no config falls b
 step per hour toward `0 / 2 / 3` — and still answers `200` with `"source": "decay"` (the spec asks
 for a quiet fallback, not an error). `"source"` is `llm` / `decay` / `unchanged`.
 
-**Not wired yet:** the automatic "every 4 user messages / 24 h" trigger. The pure rule
-(`MoodService.shouldEvaluate`, tested) is ready, but calling the model after every chat message
-costs money and needs a background queue decision.
+**Automatic trigger (0.13):** `automation/AutoTriggers` runs **after every chat turn**
+(`ChatService` → `onChatCompleted`), independent of any client connection: mood is judged every
+**4 user messages** (or after 24 h with new messages), persona evolution every **20** (or 24 h).
+The cursors live in `auto_state.json`, so a restart does not re-judge the same history. Failures
+never break the chat: a mood failure falls back to time decay, and evolution with no LLM config
+leaves its cursor alone (so the backlog is evaluated once a key exists).
 
 ### curl examples
 
@@ -1327,6 +1343,149 @@ curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/evolution/<patchI
 
 # mood: judge from the recent conversation (falls back to decay without a config)
 curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/mood/evaluate
+```
+
+## Standalone operation, tool loop, stickers/diary and backup v6 (0.13)
+
+The point of 0.13 is that **`agentd` is a service, not a helper the client has to keep alive**: with
+no client connected at all it still runs the whole product loop, and its backup file is the *same
+file* the Android/iOS clients write.
+
+### What runs without a client
+
+| Driver | Cadence | What it does | Where the state lives |
+| --- | --- | --- | --- |
+| **proactive heartbeat** (`ProactiveTicker.start()`, started by `Main`) | every 60 s | decides whether he reaches out (sleep/DND/cooldown/daily cap/activity gate), writes the message with the model, appends `message.created` | `proactive_state.json`, `sessions/*/blocks/*.jsonl` |
+| **diary reminders** (same tick) | every 60 s, each note fires once | `diaryNotes[]` rows whose `remindAt <= now` become one proactive message; `remindedAt` is stamped so it never repeats; more than 24 h late ⇒ cleared **without** a message | `diary_notes.json` |
+| **deferred intents** (same tick) | every 60 s, each intent fires once | `defer_reply` left a `PENDING` row; when `earliestAt <= now` it becomes a proactive message (body by the model, fallback line if generation fails); `latestAt + 24 h` ⇒ `EXPIRED` | `agent_intents.json` |
+| **automatic mood** (`AutoTriggers`, after every chat turn) | every **4** user messages, or 24 h with new messages | asks the model for `{label,valence,arousal,dominance,intensity,reason}`, clamps to ±2, writes `moods.json` | `auto_state.json` (cursor) |
+| **automatic evolution** (same hook) | every **20** user messages, or 24 h with new messages | writes a **pending** patch (`pending_patches.json`); the persona itself is only changed by `accept` | `auto_state.json` (cursor) |
+
+A client only *syncs*: `GET /v1/state`, `GET /v1/sessions/{id}/messages`, `GET /v1/events`. Nothing
+above requires a foreground app, a foreground service, or a push token.
+
+Two deliberate limits: reminders and deferred intents **do not consume** the proactive daily cap
+(they are user-scheduled, not him feeling chatty), and the automatic hooks run **in the request
+thread after `done`** — at most one extra model call every 4/20 messages, in exchange for a
+completely deterministic, testable path.
+
+### Tool loop (`tools/ServerToolCatalog` + `tools/ToolExecutor`)
+
+```
+round 1: messages + tools[]  → text and/or tool_calls
+         each call: emit `tool running` → execute → emit `tool done` → append assistant(tool_calls) + tool(result)
+round 2: ask again …                 (max 3 rounds; the 3rd is sent WITHOUT tools)
+round 3: the model has to answer with what it already has
+```
+
+| Tool | What the server really does | Limits / notes |
+| --- | --- | --- |
+| `stay_silent` | ends the turn: **no assistant message**, session marked read, `done.silent = true` | never leaves a trace bubble in the UI; not for avoiding a serious topic |
+| `defer_reply` | writes a `PENDING` intent (`earliestAt = now + minutes`, `latestAt = +30 min`) | minutes clamped to 5–720; the heartbeat turns it into a message later |
+| `set_mood` | `moods.json` with `label/valence/arousal/dominance/intensity/reason` | ranges clamped (`-2..2`, `0..5`, `1..5`) |
+| `set_activity` | `personas.activityJson` (`kind/activity/until/availability`) | minutes clamped 15–480; expires on read |
+| `diary` | `add` / `list` / `remove` on `diary_notes.json` | content ≤ 2000 chars; `remindAt` or `remindInMinutes` (1–43200) |
+| `remember` | new row in `memories.json` | importance 1–5 → 0–100 |
+| `recall` | keyword/tag search over that persona's memories (no embeddings) | returns the hits back to the model |
+| `web_search` | `WebSearchService.search` with the **server** provider/base/key | count 1–12; the key never appears in model arguments |
+| `web_fetch` | `WebSearchService.webFetch` (public http(s) only, `WebUrlPolicy`) | text capped at 8000 chars by the search layer |
+| `sticker` | `send` attaches an existing sticker to the assistant message; `list` shows "my stickers" | `make` is **not** advertised and answers "not supported" if the model tries |
+
+Things that are deliberately *not* in the table (`think`, `update_persona`, `set_quiet_hours`,
+`listen`, `watch`): the server either cannot execute them (audio/video understanding, image
+compositing) or has a dedicated route already (evolution patches). The prompt lists exactly the
+registered tools — `ServerToolCatalogTest` fails if that ever drifts.
+
+Limits and failure behaviour: `MAX_TOOL_ROUNDS = 3`, a 2-minute wall-clock deadline for the whole
+loop (a slow search cannot hold the turn forever), every tool **returns** a result instead of
+throwing (a bad argument becomes `ok:false` and the model can correct itself), and the execution
+never depends on the client socket — a disconnected client still gets tool effects persisted.
+
+`messages.toolTraceJson` uses the client's `ToolTraceItem` shape
+(`[{name,title,subtitle?,detail,ok}]`), written at call time, so the "he searched for two pages"
+card renders on both clients without translation.
+
+### Stickers and diary
+
+New server tables (plain JSON, same atomic-write rules as everything else):
+
+```text
+stickers.json      {"stickers":[{id,ownerUserId,personaId,file,mime,width,height,frames,bytes,source,createdBy,createdAt}]}
+diary_notes.json   {"notes":[{id,personaId,content,createdAt,remindAt,remindedAt,updatedAt}]}
+agent_intents.json {"intents":[{id,personaId,sessionId,kind,earliestAt,latestAt,note,hint,status,createdAt,sentAt}]}
+auto_state.json    {"states":[{personaId,moodCursor,moodEvaluatedAt,evolutionCursor,evolutionEvaluatedAt,userMessagesSeen}]}
+```
+
+Sticker bytes use the media table (`kind=STICKER`): `Sticker.id` is the media id for
+server-created rows, and `file` is the bare file name (the same string the backup uses as
+`fileName`). Imported client rows may have a different `id` than the media row; the importer
+normalises it by `fileName`, and `FileStore.stickerMediaId` resolves it either way.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `GET` | `/v1/stickers?personaId=&limit=` | `{"serverTime","stickers":[…]}`; newest first; `file`/`fileName` are the bare name, `mediaId`/`url` fetch the bytes |
+| `POST` | `/v1/stickers` | one request with `{mime,data(base64),personaId?,width,height,frames,source,createdBy}` → `{"created":true,"sticker":{…}}`; or `{"mediaId":"…"}` for an already uploaded `kind=STICKER` media |
+| `DELETE` | `/v1/stickers/{id}` | `{"deleted":true,"id":…}`; row + file removed; unknown ⇒ 404 |
+| `GET` | `/v1/personas/{id}/diary?limit=&since=` | `{"personaId","notes":[…]}`; newest first; `since` filters on `updatedAt` |
+| `POST` | `/v1/personas/{id}/diary` | `{id?,content,remindAt?|remindInMinutes?}` → `{"note":{…}}`; no `id` = create, `remindAt:null` clears the reminder; changing the content does **not** reset `remindedAt` |
+| `DELETE` | `/v1/personas/{id}/diary/{noteId}` | `{"deleted":true,"id":…}`; wrong persona ⇒ 404 |
+
+Why the base64 upload is capped: the JSON parser refuses any single string longer than 256 KiB
+(security hardening in `:agentcore`), so inline uploads cover files up to ≈192 KiB — which is what
+a compressed 320 px emoji actually weighs. Bigger files use `POST /v1/media?kind=STICKER` (raw
+bytes, 4 MiB route) and then `POST /v1/stickers {"mediaId":…}`.
+
+### Backup v6 (interoperable with the clients)
+
+`GET /v1/backup` now writes **the client's v6 shape** (`formatVersion: 6`), because a backup you
+cannot hand to the other side is not a backup. The mapping (`store/BackupV6.kt`) is mechanical but
+was the core of this task:
+
+| Server state | v6 section | Field mapping worth knowing |
+| --- | --- | --- |
+| `personas.json` + `moods.json` + `media.json` | `personas[]` | `avatarUrl` → `avatarUri` (bare file name of the media); `moods.json` → `mood/moodIntensity/moodReason/moodUpdatedAt`; client columns (`traits`, `likes`, `behaviors`, `personaCardJson`, `worldJson`, `speechStyleJson`, `activityJson`, …) are stored verbatim in the persona's extra fields and written back; `nameEn` is written as a server extension |
+| `sessions.json` | `sessions[]` | `unread` → `unreadCount`; `apiConfigId/model/pinned/summary/summarizedUpTo/summaryAt/*Override/lastPersonaVersion` come from the session's extra fields |
+| `sessions/*/blocks/*.jsonl` | `messages[]` | `attachments` (`/v1/media/<id>`) → `attachmentsJson` (`[{"uri":"<fileName>","mime":…,"kind":…}]`); `toolTraceJson` preserved; `status: COMPLETE`, `updatedAt = createdAt` |
+| `memories.json` | `memories[]` | `tags` is written as a **JSON string** (the client's Room column shape), not an array |
+| `media.json` + `media/<id>.<ext>` | `media[]` | `fileName` (bare name), base64 `data` inline once; `sha256` is an extra key the clients ignore |
+| `stickers.json` | `stickers[]` | `file` **and** `fileName` (Android/iOS aliases), bytes only in `media[]` |
+| `diary_notes.json` | `diaryNotes[]` | seven columns, `remindAt`/`remindedAt` omitted when null |
+| `agent_intents.json` | `agentIntents[]` | `PENDING`/`SENT`/`EXPIRED` |
+| `settings.json` | `settings` | the client's nine whitelist keys are always written (defaults filled in); server-only keys (`userAvatarUri`, `autoTranslatePersona`) are appended as extensions |
+| `proactiveRules[]` / `memoryConsolidations[]` | same | written as empty arrays (the server does not maintain them); `pending_patches.json` is not exported |
+
+`POST /v1/backup` accepts **both** envelopes:
+
+```bash
+# A. the historical envelope (mode must come before data, because the body is parsed as a stream)
+printf '{"mode":"replace","data":' > /tmp/body.json && cat backup-v6.json >> /tmp/body.json && printf '}' >> /tmp/body.json
+curl -X POST http://127.0.0.1:8788/v1/backup -H 'Content-Type: application/json' --data-binary @/tmp/body.json
+
+# B. the raw client export, exactly as downloaded from the phone (mode defaults to merge)
+curl -X POST "http://127.0.0.1:8788/v1/backup?mode=replace"   -H 'Content-Type: application/json' --data-binary @fixtures/backup/android-export-v6.json
+```
+
+`v1`–`v5` files still import (unknown/absent sections become empty). The import resolves every
+`avatarUri` / `attachmentsJson[].uri` / `stickers[].fileName` back to a real `media` row, so history
+attachments and avatars keep working after a restore. `BackupV6Test` imports both client v6
+fixtures, re-exports, re-imports and compares every section byte-for-byte.
+
+### curl examples
+
+```bash
+# stickers: upload one (base64), list, delete
+curl -s -X POST http://127.0.0.1:8788/v1/stickers -H 'Content-Type: application/json'   -d "{\"personaId\":\"seed-linshen\",\"mime\":\"image/gif\",\"width\":1,\"height\":1,\"frames\":1,\"data\":\"$(base64 < emoji.gif)\"}"
+curl -s 'http://127.0.0.1:8788/v1/stickers?personaId=seed-linshen&limit=30'
+curl -s -X DELETE http://127.0.0.1:8788/v1/stickers/<stickerId>
+
+# diary: write one with a reminder, list, remove
+curl -s -X POST http://127.0.0.1:8788/v1/personas/seed-linshen/diary   -H 'Content-Type: application/json' -d '{"content":"记得周四给妈妈打电话","remindInMinutes":60}'
+curl -s http://127.0.0.1:8788/v1/personas/seed-linshen/diary
+curl -s -X DELETE http://127.0.0.1:8788/v1/personas/seed-linshen/diary/<noteId>
+
+# one heartbeat: proactive decision + due diary reminders + due deferred intents
+curl -s -X POST http://127.0.0.1:8788/v1/proactive/tick -d '{}'
+# -> {"now":…,"fired":1,"decisions":[{"personaId":…,"sessionId":…,"messageId":…,"reason":"diary_reminder"}],"skipped":[…]}
 ```
 
 ## Errors
@@ -1350,7 +1509,7 @@ Every error is an object with a Chinese `message` and a stable `code`, plus a 4x
 | 404 | `not_found` | Unknown route / media / persona (the path is not echoed back). |
 | 405 | `method_not_allowed` | Known route with the wrong method. |
 | 408 | `request_timeout` | The request body did not arrive within `READ_TIMEOUT_MS`. |
-| 409 | `unsupported_backup_version` / `media_in_use` | Import of a `formatVersion` other than 5 is refused instead of half-imported; `DELETE /v1/media/{id}` is refused while the file is referenced (`references` count in the body) unless `?force=1`. |
+| 409 | `unsupported_backup_version` / `media_in_use` | Import of a `formatVersion` outside 1–6 is refused instead of half-imported; `DELETE /v1/media/{id}` is refused while the file is referenced (`references` count in the body) unless `?force=1`. |
 | 411 | `length_required` | Request used `Transfer-Encoding: chunked`; only `Content-Length` bodies are accepted. |
 | 413 | `content_too_large` | Declared or accumulated body exceeds the route cap (1 MiB JSON, 4 MiB media upload, 8 MiB message import, 256 MiB backup import), or a media file exceeds 2 MiB. |
 | 429 | `rate_limited` | This source exceeded its token bucket; the response carries `Retry-After: <seconds>` (see “Rate limiting”). |
@@ -1406,16 +1565,19 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   remains “trusted network / behind a proxy only”.
 - **No SQL/Room.** Since 0.12.0 it *does* persist server-authoritative state (personas, sessions,
   block-paged messages, memories, presets, mood/presence, push tokens, usage, API config metadata,
-  image files + media metadata) as JSON/JSONL/binaries under `--data`, and expose v5 backup
-  export/import. It still does not touch the clients' Room database, migrate existing client data
+  image files + media metadata, stickers, diary notes, deferred intents, automatic-trigger cursors)
+  as JSON/JSONL/binaries under `--data`, and expose v6 backup export/import. It still does not touch the clients' Room database, migrate existing client data
   automatically, or store "thoughts" — and media is not decoded/re-encoded. Earlier versions only
   exposed deterministic pure functions; see
   [Server-authoritative mode](#server-authoritative-mode-服务端权威模式-0120).
-- **LLM calls since 0.13 (text only).** `POST /v1/sessions/{id}/messages` streams a real model
-  answer (`LlmReplyGenerator`), proactive ticks write a model-generated opener, and
-  evolution/mood endpoints call the model for one JSON object. There is still **no tool loop**, no
-  client-supplied prompts, and no automatic (timer-driven) evolution/mood evaluation; see
-  [LLM, proactive messages, persona evolution and mood](#llm-proactive-messages-persona-evolution-and-mood-013).
+- **LLM calls since 0.13 include the tool loop.** `POST /v1/sessions/{id}/messages` streams a real
+  model answer, the server executes the model's tool calls (search/fetch/memory/diary/sticker/mood/
+  activity/defer/stay-silent) and feeds the results back, proactive ticks write a model-generated
+  opener, evolution/mood are judged automatically after every chat turn, and diary reminders /
+  deferred intents fire from the heartbeat. Still missing: image/audio/video understanding
+  (`listen`/`watch`), sticker `make` (image compositing), `update_persona`/`set_quiet_hours` as
+  tools, and client-supplied prompts. See
+  [Standalone operation, tool loop, stickers/diary and backup v6](#standalone-operation-tool-loop-stickersdiary-and-backup-v6-013).
 - Android does not start it as an embedded service; remote mode is a development build switch.
   iOS does not call this service by default either: its in-process decisions run the same Kotlin
   `:agentcore` code, and remote mode (also a build/launch switch) points at this service. The old
@@ -1490,7 +1652,43 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   `URL_REJECTED`, and proactive tick persistence/dedupe/`503`. All upstreams are local
   `com.sun.net.httpserver` fakes; the proactive cases use a temporary `--data` directory.
 
-`:agentd:test` is 473 tests in total after 0.13 (392 in 0.12.1) — the authoritative-mode suites above plus the
-`search/` (52) and `proactive/` (68) suites added in the same release. The 43 new tests for
-M3–M6 server write paths are `CrudRoutesTest`, `BackupApiTest` and `PushRoutesTest`; the 28
-media tests (M5 upload/download) are `MediaApiTest` and `MediaServerTest`.
+`:agentd:test` is **556 tests** in total after the 0.13 standalone/tool/backup work (473 before this
+round) — the authoritative-mode suites above plus the `search/` (52) and `proactive/` (68) suites
+added in the same release. The 43 tests for the M3–M6 server write paths are `CrudRoutesTest`,
+`BackupApiTest` and `PushRoutesTest`; the 28 media tests (M5 upload/download) are `MediaApiTest`
+and `MediaServerTest`.
+
+The 83 tests added in this round:
+
+- `ServerToolCatalogTest` (6) — the registry **is** the `tools[]` array and the `# 你能做什么`
+  section (both directions), every schema's `required` points at real properties, no networking ⇒
+  no web tools, and no tool is advertised that the server cannot run (`think`/`update_persona`/
+  `set_quiet_hours`/`listen`/`watch`/`sticker.make`).
+- `ToolExecutorTest` (24) — each tool's real effect: `stay_silent` writes nothing, `defer_reply`
+  clamps minutes and writes a `PENDING` intent, `set_mood` writes all four dimensions (and clamps),
+  `set_activity` normalises `kind`/`availability` and clamps minutes, `diary` add/list/remove,
+  `remember`/`recall`, `web_search`/`web_fetch` against a local fake (key only from the server env,
+  URL policy honoured), `sticker` send/list/unknown-id/`make`, broken JSON and unknown tools never
+  throw, and the trace JSON matches `ToolTraceItem`.
+- `ToolLoopTest` (10) — real `LlmClient` + fake SSE server: a tool call is executed and its result
+  fed back (`role=tool`, `tool_call_id`), streamed arguments split across frames are reassembled,
+  `toolTraceJson`/sticker attachments are persisted, `stay_silent` leaves no assistant message and
+  marks read, at most 3 rounds (the 3rd without `tools[]`), the wall-clock deadline stops the loop,
+  `toolEnabled=false` sends no tools, and an unknown tool becomes a failed tool result.
+- `StickerDiaryApiTest` (10) — sticker CRUD shapes (root `stickers`, `file`/`fileName`/`mediaId`/
+  `url`, persona filter, newest-first, `mediaId` registration, mime/size/base64/404/405) and diary
+  CRUD (root `notes`, seven columns, `remindInMinutes` → absolute `remindAt`, content edits keep
+  `remindedAt`, `remindAt:null` clears, `limit`/`since`, persona isolation, restart).
+- `AutoTriggersTest` (10) — mood after 4 messages and evolution after 20, both **without any client
+  connection**, separate cursors, 24 h fallback, no LLM config leaves the evolution cursor alone,
+  upstream failure does not throw, counters survive a restart, and the chat service runs the hooks
+  only when an LLM is configured.
+- `DiaryReminderTest` (11) — a due reminder becomes exactly one proactive message, future reminders
+  wait, >24 h is cleared without a message, reminders survive a restart and still fire once, a
+  persona without a session is skipped, deferred intents fire once / wait / expire / survive a
+  restart, and user-scheduled reminders are not blocked by the activity gate.
+- `BackupV6Test` (12) — client key sets (top level and per section), both v6 fixtures import with
+  every section intact (avatar/attachment/sticker resolution, summary, tool trace, diary, mood),
+  v5 still imports, bare file and `{mode,data}` envelope both work, merge semantics, client backup
+  survives **import → export → import → export** byte-for-byte, server-created content round-trips,
+  v7 is still rejected, and a broken media makes the import transactional.

@@ -89,6 +89,11 @@ public final class HeartbeatController {
     ///
     /// 默认空实现：测试与老调用点不用改；App 层接上 `DebugSeeding.log`。
     private let log: (String) -> Void
+    /// 服务端模式判定（0.13）：他在服务端那边活着时，本机这一拍什么都不做。
+    ///
+    /// 用闭包而不是 Bool 参数：模式可以在运行中切换，每一拍都要问「此刻是不是」。
+    /// 默认 `false` 让测试与老调用点不用改；App 层接的是 `serverModeActive`。
+    private let isServerMode: () -> Bool
     /// agent 决策层（0.11.0）：每日主动上限的**基础值**走它（心情修正仍在本机）。
     private let agentCore: any AgentCoreClient
     private let lock = NSLock()
@@ -115,6 +120,7 @@ public final class HeartbeatController {
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         roll: @escaping () -> Double = { Double.random(in: 0..<1) },
         isLowPower: @escaping () -> Bool = { false },
+        isServerMode: @escaping () -> Bool = { false },
         log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
@@ -127,6 +133,7 @@ public final class HeartbeatController {
         self.now = now
         self.roll = roll
         self.isLowPower = isLowPower
+        self.isServerMode = isServerMode
         self.log = log
     }
 
@@ -146,6 +153,8 @@ public final class HeartbeatController {
     private func beatInternal(now: Int64? = nil, roll: Double? = nil) async -> Beat {
         guard beginBeat() else { return Beat(why: "上一拍还没跑完") }
         defer { endBeat() }
+        // 服务端模式：他在服务端那边活着，本机这一拍什么都不做（连设置/库都不读）。
+        if isServerMode() { return Beat(why: LocalAutonomy.serverModeWhy) }
         let at = now ?? self.now()
         let dice = roll ?? self.roll()
         let settings = settings.load()

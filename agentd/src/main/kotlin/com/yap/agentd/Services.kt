@@ -1,5 +1,6 @@
 package com.yap.agentd
 
+import com.yap.agentd.automation.AutoTriggers
 import com.yap.agentd.evolution.EvolutionService
 import com.yap.agentd.llm.LlmAccess
 import com.yap.agentd.llm.LlmProactiveTextSource
@@ -71,8 +72,7 @@ class AgentdServices(
     val effectiveReplyGenerator: ReplyGenerator = replyGenerator
         ?: (if (store != null && llm != null) LlmReplyGenerator(store, llm) else EchoReplyGenerator())
 
-    /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
-    val chatService: ChatService? = store?.let { ChatService(it, effectiveReplyGenerator) }
+
 
     /** 人格进化（`/v1/personas/{id}/evolution/…`）；没有 LLM 或没有存储时为 null（路由回 503）。 */
     val evolutionService: EvolutionService? =
@@ -80,6 +80,19 @@ class AgentdServices(
 
     /** 多维情绪判定（`/v1/personas/{id}/mood/evaluate`）；同上。 */
     val moodService: MoodService? = if (store != null && llm != null) MoodService(store, llm) else null
+
+    /**
+     * 每条聊天结束后的自动判定（每 4 条判心情、每 20 条评估进化）。
+     *
+     * 0.13 的「不依赖客户端连接」就落在这里：阈值与游标都在服务端（`auto_state.json`），
+     * 客户端连不连、在不在前台都不影响。没有 LLM 时为 null（不会假装判定过）。
+     */
+    val autoTriggers: AutoTriggers? =
+        if (store != null && llm != null) AutoTriggers(store, moodService, evolutionService) else null
+
+    /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
+    val chatService: ChatService? =
+        store?.let { ChatService(it, effectiveReplyGenerator, autoTriggers = autoTriggers) }
 
     /**
      * `POST /v1/proactive/tick` 的判定状态；`null` 表示没有状态存储（路由回 503）。

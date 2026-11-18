@@ -64,6 +64,8 @@ final class AppEnvironment: ObservableObject {
     /// 表情包（0.13）：导入 / 制作 / 发送 / 收藏。本地模式落 `Application Support/stickers`，
     /// 服务端模式上传成 `/v1/media/<id>`（`kind=STICKER`）。
     let stickers: StickerService
+    /// 服务端表情/日记的拉取缓存与写路径（0.13）：服务端模式下他随身带的东西在服务端。
+    let serverCatalog: ServerCatalogService?
     /// 历史压缩（滚动摘要）的落库编排。
     let historyCompression: HistoryCompressionService
     /// 人格进化（0.13）：人格页「他最近的变化」读它、接受/拒绝也调它
@@ -120,6 +122,8 @@ final class AppEnvironment: ObservableObject {
     private(set) var serverLlmConfigPushMessage: String?
     /// 媒体落地同步正在跑（避免每次进聊天页都并发一批下载）。
     private var isMediaSyncRunning = false
+    /// 上次表情/日记缓存刷新的时间（进程内节流，不落库）。
+    private var lastServerCatalogSyncAt: Int64 = 0
     /// 首次同步的进度（设置页显示成一行；跑完/失败后清空）。
     @Published private(set) var serverBootstrapProgress: ServerBootstrapProgress?
     /// 首次同步失败的原因（设置页一条提示；重试成功后清掉）。
@@ -164,6 +168,9 @@ final class AppEnvironment: ObservableObject {
     // MARK: - 构造
 
     init() {
+        // 装配期就要在闭包里问「此刻是不是服务端模式」：局部别名在 init 前半段可读
+        //（`envBox.env` 在装配完成后（见 init 末尾）才赋值，闭包真正调用时已经就绪）。
+        let envBoxRef = envBox
         var bootError: String?
         var stores: DatabaseStores?
         do {
@@ -289,7 +296,9 @@ final class AppEnvironment: ObservableObject {
                         isSessionOpen: chatBox.chat?.isSessionOpen(session.id) ?? false
                     )
                 }
-            }
+            },
+            // 服务端模式：他在服务端那边独立运行，本机不启动自主决策（连一拍都不跑）。
+            isServerMode: { envBoxRef.env?.serverModeActive ?? false }
         )
         self.agentLoop = agentLoop
 
@@ -309,6 +318,8 @@ final class AppEnvironment: ObservableObject {
             // 低电量模式下把前台账拍放宽到 2 分钟（`ForegroundPulse.intervalMillis` 与
             // 概率换算用的是同一个数）：省电优先，但也别让「他」彻底不说话。
             isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled },
+            // 服务端模式：本机这一拍什么都不做（双份主动消息的另一半就在这里被挡掉）。
+            isServerMode: { envBoxRef.env?.serverModeActive ?? false },
             // 每一拍的结论都进日志：真机上「他从不主动」全靠这一行定位
             //（`ProactiveDiagnosis` 给出七道闸里到底哪一道关着）。
             log: { DebugSeeding.log($0) }
@@ -347,7 +358,23 @@ final class AppEnvironment: ObservableObject {
         )
         // 服务端模式下的活动上报：init 里不能捕获 self，用局部转发变量在装配完成后赋值。
         let box = envBox
-        // 表情包（0.13）：服务端模式的「上传 / 下载」闭包在装配时注入。
+        // 表情/日记（0.13）：服务端模式下「他随身带的东西」在服务端，本机只做缓存。
+        // `provider` 每次现问一次 `env`（模式可运行中切换），不把客户端拍死在装配时。
+        let serverCatalog = ServerCatalogService(
+            stores: fallbackStores,
+            provider: { [box] in
+                guard let env = box.env,
+                      env.serverModeActive,
+                      env.serverConfig.isUsable else { return nil }
+                return ServerAPIClient(
+                    config: env.serverConfig,
+                    session: URLSession(configuration: AppEnvironment.sessionConfiguration())
+                )
+            },
+            log: { DebugSeeding.log($0) }
+        )
+        self.serverCatalog = serverCatalog
+        // 表情包（0.13）：服务端模式的「上传 / 下载 / 建行 / 删除」闭包在装配时注入。
         // Kit 层不知道现在是不是服务端模式，所以这里每次调用都重新问一次 `env`（模式可切换）。
         let stickerService = StickerService(
             stores: fallbackStores,
@@ -374,6 +401,8 @@ final class AppEnvironment: ObservableObject {
                 )
                 return try await api.mediaData(uri: uri)
             },
+            // 服务端模式下新建/删除表情要先过服务端（本机只是缓存）。
+            serverCatalog: serverCatalog,
             log: { DebugSeeding.log($0) }
         )
         self.stickers = stickerService
@@ -418,6 +447,8 @@ final class AppEnvironment: ObservableObject {
             resolveConfig: resolveCompressionConfig,
             evolution: personaEvolution,
             moodJudgement: moodJudgement,
+            // 服务端模式：抽记忆/压摘要/进化/情绪都由服务端独立完成，本机不再各跑一遍。
+            isServerMode: { envBoxRef.env?.serverModeActive ?? false },
             log: { DebugSeeding.log($0) }
         )
         self.webTools = webTools
@@ -666,6 +697,8 @@ final class AppEnvironment: ObservableObject {
         )
         serverModeActive = true
         DebugSeeding.log("[server] 服务端模式已启用：\(loaded.baseURL?.absoluteString ?? "-")")
+        // 表情/日记：连上就拉一次（之后由 5 分钟增量同步的节流路径刷新）。
+        Task { await syncServerCatalog(force: true) }
         // 重启进程后待发队列里可能有上次没发出去的消息：先把气泡补回界面。
         let restored = chatGateway.recoverPendingMessages()
         if restored > 0 { DebugSeeding.log("[server] 恢复了 \(restored) 条待发消息") }
@@ -752,6 +785,28 @@ final class AppEnvironment: ObservableObject {
 
     /// 同步一次服务端状态（启动 / 回前台 / 事件流空闲时）。
     @discardableResult
+    /// 拉一次服务端的表情 / 日记缓存（带节流：它们不是实时内容，10 分钟一次足够）。
+    ///
+    /// 失败只记日志：聊天同步不能被「表情列表没拉到」拖住。
+    func syncServerCatalog(force: Bool = false) async {
+        guard serverModeActive, let catalog = serverCatalog else { return }
+        let now = DomainClock.nowMillis
+        if !force, lastServerCatalogSyncAt > 0, now - lastServerCatalogSyncAt < 10 * 60_000 {
+            return
+        }
+        lastServerCatalogSyncAt = now
+        let stickers = await catalog.syncStickers()
+        let writes = serverWrites
+        let pairs: [(localId: String, serverId: String)] =
+            ((try? stores.personas.all()) ?? []).map { persona in
+                (localId: persona.id, serverId: writes?.resolvedServerPersonaId(persona.id) ?? persona.id)
+            }
+        let notes = await catalog.syncDiary(personaIds: pairs)
+        if stickers > 0 || notes > 0 {
+            DebugSeeding.log("[server] 表情/日记缓存已更新：表情 \(stickers) · 日记 \(notes)")
+        }
+    }
+
     func syncServerNow() async -> ServerSyncOutcome? {
         guard let sync = serverSync else { return nil }
         let outcome = await sync.syncNow()
@@ -761,6 +816,8 @@ final class AppEnvironment: ObservableObject {
             DebugSeeding.log("[server] 同步完成：会话 \(report.sessions) / 消息 \(report.messages)")
             // 同步可能有新消息带附件：让落地同步也跑一拍（正在跑就跳过）。
             if report.messages > 0 { scheduleServerMediaSync() }
+            // 表情/日记跟着状态一起刷新（有节流；失败只记日志）。
+            await syncServerCatalog()
         case .failed(let message, let attempts):
             DebugSeeding.log("[server] 同步失败（\(attempts) 次）：\(message)")
         case .skipped(let reason):
@@ -1797,6 +1854,11 @@ final class AppEnvironment: ObservableObject {
     /// - Returns: 这次有没有真的动过（BGTask 的 `success` 用它）。
     @discardableResult
     func runBackgroundTick() async -> Bool {
+        // 服务端模式：主动由服务端负责，本机不跑心跳（否则会出现双份主动消息）。
+        guard LocalAutonomy.shouldRunLocalTick(serverModeActive: serverModeActive) else {
+            DebugSeeding.log("[bg] 服务端模式：跳过本机心跳（主动由服务端负责）")
+            return false
+        }
         guard resolvedChatConfig() != nil else {
             DebugSeeding.log("[bg] 还没有 API 配置，这次不想事情 · \(proactiveDiagnosis().logLine())")
             return false
@@ -1812,6 +1874,11 @@ final class AppEnvironment: ObservableObject {
     /// 每日整理一次（`BGProcessingTask` 与「补算」共用）。失败不抛：只写日志。
     @discardableResult
     func runDailyConsolidation() async -> Bool {
+        // 服务端模式：每日整理由服务端负责；本机再整理一遍只会烧一次模型调用。
+        guard LocalAutonomy.localAutonomyAllowed(serverModeActive: serverModeActive) else {
+            DebugSeeding.log("[bg] 服务端模式：跳过本机每日整理")
+            return false
+        }
         // 「昨日整理」一天只该有一次：BGProcessingTask 与回前台补算会撞车
         //（两次整理 = 两次模型调用 + 两条 memory_consolidations 记录）。
         guard !isConsolidating else {

@@ -14,7 +14,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * 备份 v5 导出/导入 + 事务性 + 重启持久化测试。
+ * 备份 v6 导出/导入 + 事务性 + 重启持久化测试。
  *
  * 重点不是「字段能写进去」，而是：
  * - 导出里绝不含 secrets / API Key；
@@ -85,7 +85,7 @@ class BackupApiTest {
     // ------------------------------------------------------------------ 导出
 
     @Test
-    fun `backup export is v5 and contains no secrets`() {
+    fun `backup export is v6 and contains no secrets`() {
         store.setApiKey("cfg-1", "sk-very-secret")
         store.setSetting("apiKey", JsonValue.Str("sk-in-settings"))
         seedContent()
@@ -97,7 +97,7 @@ class BackupApiTest {
 
         val backup = export()
         assertEquals(FileStore.BACKUP_FORMAT_NAME, backup.str("format"))
-        assertEquals(5, backup.int("formatVersion"))
+        assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(AgentdApi.VERSION, backup.str("appVersion"))
         assertTrue(backup.bool("apiKeysOmitted"))
         assertEquals(5, backup.objects("personas").size)
@@ -106,7 +106,10 @@ class BackupApiTest {
         assertEquals(1, backup.objects("memories").size)
         assertEquals(1, backup.objects("presets").size)
         assertFalse(backup.fields.containsKey("secrets"))
-        assertFalse(backup.fields.containsKey("apiConfigs"))
+        // v6 起 apiConfigs 也在备份里（只有元数据，没有 key）；密钥形状的字段一个都不能有。
+        assertTrue(backup.fields.containsKey("apiConfigs"))
+        assertTrue(backup.fields.containsKey("stickers"))
+        assertTrue(backup.fields.containsKey("diaryNotes"))
         val text = call("GET", "/v1/backup").body
         assertFalse("备份不能出现 API Key：$text", text.contains("sk-very-secret"))
         assertFalse("备份不能出现 settings 里的密钥：$text", text.contains("sk-in-settings"))
@@ -122,7 +125,8 @@ class BackupApiTest {
         assertEquals("W", persona.str("worldJson"))
         assertEquals(listOf("稳"), persona.strings("traits"))
         val memory = backup.objects("memories").single()
-        assertEquals(listOf("tag"), memory.strings("tags"))
+        // 客户端 `BackupMemory.tags` 是 JSON 字符串（Room 列形状），不是数组。
+        assertEquals(listOf("tag"), jsonStringArray(memory.str("tags")))
         assertEquals("DARK", backup.obj("settings").str("themeMode"))
         assertFalse(backup.obj("settings").fields.containsKey("apiKey"))
     }
@@ -243,7 +247,7 @@ class BackupApiTest {
     @Test
     fun `a newer backup version is 409 and writes nothing`() {
         val before = store.personas().size
-        val data = TestSupport.parse("""{"formatVersion":6,"personas":[]}""")
+        val data = TestSupport.parse("""{"formatVersion":7,"personas":[]}""")
         val response = import("replace", data)
         assertEquals(409, response.status)
         assertEquals("unsupported_backup_version", errorCode(response))
@@ -326,5 +330,10 @@ class BackupApiTest {
         assertEquals(200, import("merge", data).status)
         assertEquals("LIGHT", store.publicSettings().str("themeMode"))
         assertEquals(1.4, (store.publicSettings().fields["fontScale"] as JsonValue.Num).asDouble, 0.0001)
+    }
+    /** 备份 v6 里 `tags` 是 JSON 字符串：读回来断言用。 */
+    private fun jsonStringArray(raw: String): List<String> {
+        val parsed = com.yap.app.core.json.Json.parse(raw) as JsonValue.Arr
+        return parsed.items.map { (it as JsonValue.Str).value }
     }
 }

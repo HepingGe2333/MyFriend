@@ -204,6 +204,40 @@ final class ServerAPIClientSSETests: XCTestCase {
         XCTAssertFalse(error.message.isEmpty)
     }
 
+    // 0.13：服务端「他选择不说话」时 done 带 `silent: true` 且没有 assistantMessageId。
+    func testSilentDoneWithoutAssistantMessageIsAccepted() async throws {
+        let text = ServerTestSupport.sseFrame(
+            "delta", #"{"text":""}"#
+        ) + ServerTestSupport.sseFrame(
+            "done", #"{"assistantMessageId":"","silent":true}"#
+        )
+        ServerURLProtocolStub.enqueue(.sse(text))
+        let client = ServerTestSupport.client()
+
+        let events = try await collect(client.sendMessage(
+            sessionId: "s1", clientMessageId: "c", content: "在吗"
+        ))
+
+        XCTAssertEqual(events.last, .done(assistantMessageId: "", usage: ServerChatUsage()))
+    }
+
+    func testEmptyDoneWithoutSilentFlagIsStillInvalid() async {
+        ServerURLProtocolStub.enqueue(.sse(
+            ServerTestSupport.sseFrame("done", #"{"assistantMessageId":""}"#)
+        ))
+        let client = ServerTestSupport.client()
+        do {
+            _ = try await collect(client.sendMessage(
+                sessionId: "s1", clientMessageId: "c", content: "hi"
+            ))
+            XCTFail("没有 silent 标记的空 done 仍是坏数据")
+        } catch let error as ServerAPIError {
+            XCTAssertEqual(error.code, ServerAPIError.Code.invalidSSE)
+        } catch {
+            XCTFail("错误类型不对：\(error)")
+        }
+    }
+
     func testMalformedKnownEventThrowsInvalidSSE() async {
         ServerURLProtocolStub.enqueue(.sse(
             ServerTestSupport.sseFrame("delta", "not-json")

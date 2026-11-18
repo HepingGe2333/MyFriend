@@ -1128,6 +1128,16 @@ interface StickerDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(sticker: StickerEntity): Long
 
+    /**
+     * 服务端缓存刷新用的「有就覆盖」写入（0.13）。
+     *
+     * 为什么不能只用 [insert]（IGNORE）：服务端那一行可能先是「字节没落盘、file 指向
+     * `/v1/media/<id>`」，下一轮下载成功后要用本地文件路径覆盖同一 id；IGNORE 会让它永远
+     * 停在服务端引用上。
+     */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(sticker: StickerEntity): Long
+
     @Query("UPDATE stickers SET personaId = :personaId WHERE id = :id")
     suspend fun setPersona(id: String, personaId: String?)
 

@@ -526,7 +526,7 @@ class MediaApiTest {
         store.updatePersona(personaId) { persona, _ -> persona.copy(avatarUrl = url) }
 
         val backup = exportBackup()
-        assertEquals(5, backup.int("formatVersion"))
+        assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(0, backup.int("mediaSkipped"))
         val exported = backup.objects("media").single()
         assertEquals(id, exported.str("id"))

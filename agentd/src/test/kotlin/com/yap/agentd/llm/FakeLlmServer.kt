@@ -133,6 +133,37 @@ internal class FakeLlmServer(
         fun error(message: String): String =
             """data: {"error":{"message":${jsonString(message)}}}""" + "\n\n"
 
+        /**
+         * 一段 `tool_calls` 分片（OpenAI 流式形状）。
+         *
+         * 参数会被拆成多片：调用方先用 `id`/`name` 发第一片，再用 [toolArgs] 续参数。
+         */
+        fun toolCall(
+            index: Int,
+            id: String? = null,
+            name: String? = null,
+            arguments: String? = null
+        ): String {
+            val functionFields = buildString {
+                if (name != null) append("\"name\":${jsonString(name)}")
+                if (arguments != null) {
+                    if (isNotEmpty()) append(',')
+                    append("\"arguments\":${jsonString(arguments)}")
+                }
+            }
+            val fields = buildString {
+                append("{\"index\":").append(index)
+                if (id != null) append(",\"id\":").append(jsonString(id))
+                append(",\"type\":\"function\"")
+                // 两个右括号：一个关 `function`，一个关整个 tool_call 对象。
+                append(",\"function\":{").append(functionFields).append("}}")
+            }
+            return "data: {\"choices\":[{\"delta\":{\"tool_calls\":[$fields]}}]}\n\n"
+        }
+
+        /** 续一段工具参数（同 index、不带 id/name）。 */
+        fun toolArgs(index: Int, arguments: String): String = toolCall(index, arguments = arguments)
+
         val DONE: String = "data: [DONE]\n\n"
 
         /** 完整（非流式）completion 响应体。 */

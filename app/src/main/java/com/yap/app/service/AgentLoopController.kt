@@ -7,12 +7,15 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import com.yap.app.BuildConfig
 import com.yap.app.data.prefs.SettingsRepository
+import com.yap.app.data.remote.ServerModeRepository
 import com.yap.app.data.repo.AgentTickWorker
+import com.yap.app.domain.LocalAutonomy
 import com.yap.app.domain.ProactiveDiagnostics
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -39,7 +42,12 @@ import javax.inject.Singleton
 class AgentLoopController @Inject constructor(
     @ApplicationContext private val context: Context,
     private val settingsRepository: SettingsRepository,
-    private val scheduler: com.yap.app.data.repo.ProactiveScheduler
+    private val scheduler: com.yap.app.data.repo.ProactiveScheduler,
+    /**
+     * 0.13：服务端模式下他在服务端那边活着，本机必须停掉心跳/兜底（否则双份主动消息）。
+     * 这里观察它的可用性，切回本地模式时立刻恢复。
+     */
+    private val serverMode: ServerModeRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -48,14 +56,18 @@ class AgentLoopController @Inject constructor(
         scope.launch { applyFromSettings() }
     }
 
-    /** 观察设置，自动跟随开关（App 启动时装一次即可）。 */
+    /** 观察设置与服务端模式，自动跟随（App 启动时装一次即可）。 */
     fun observe() {
         scope.launch {
             runCatching {
-                settingsRepository.settings
-                    .map { it.agentLoopEnabled }
+                combine(
+                    settingsRepository.settings.map { it.agentLoopEnabled },
+                    serverMode.state.map { it.usable }
+                ) { agentLoopEnabled, serverModeActive -> agentLoopEnabled to serverModeActive }
                     .distinctUntilChanged()
-                    .collect { apply(it) }
+                    .collect { (agentLoopEnabled, serverModeActive) ->
+                        apply(agentLoopEnabled, serverModeActive)
+                    }
             }.onFailure { error ->
                 // 观察流本身断了（例如 DataStore 读失败）时至少留下一条日志：
                 // 没有它，「开关拨了没反应」在真机上完全不可见。
@@ -77,24 +89,28 @@ class AgentLoopController @Inject constructor(
      */
     private suspend fun applyFromSettings() {
         val enabled = runCatching { settingsRepository.settings.first().agentLoopEnabled }.getOrNull()
-        apply(enabled)
+        apply(enabled, serverMode.isEnabled())
     }
 
-    private suspend fun apply(enabled: Boolean?) {
-        // 规则排期与他是死是活无关，始终维持。
+    private suspend fun apply(enabled: Boolean?, serverModeActive: Boolean = serverMode.isEnabled()) {
+        // 规则排期与他是死是活无关，始终维持（Worker 自己会在服务端模式下跳过）。
         runCatching { scheduler.ensureScheduled() }
-        when (ProactiveDiagnostics.loopSwitch(enabled)) {
-            ProactiveDiagnostics.LoopSwitch.RUN -> {
+        when (LocalAutonomy.proactiveGate(agentLoopEnabled = enabled, serverModeEnabled = serverModeActive)) {
+            LocalAutonomy.Gate.RUN -> {
                 runCatching { AgentLoopService.start(context) }
                 enqueuePeriodic()
             }
 
-            ProactiveDiagnostics.LoopSwitch.STOP -> {
+            LocalAutonomy.Gate.STOP -> {
                 runCatching { AgentLoopService.stop(context) }
                 runCatching { WorkManager.getInstance(context).cancelUniqueWork(WORK_NAME) }
+                if (BuildConfig.DEBUG && serverModeActive) {
+                    // 服务端模式下停掉本机循环是预期行为，留一行日志免得被误判成「他不主动」。
+                    Log.d(LOG_TAG, "服务端模式：已停止本机心跳/兜底（主动由服务端负责）")
+                }
             }
 
-            ProactiveDiagnostics.LoopSwitch.KEEP -> {
+            LocalAutonomy.Gate.KEEP -> {
                 // 读不到设置：不动服务、不动兜底。下一次设置变化或下一轮唤起会再判断。
                 Log.w(LOG_TAG, "读不到常驻循环开关，保持当前状态（不当成关闭）")
             }

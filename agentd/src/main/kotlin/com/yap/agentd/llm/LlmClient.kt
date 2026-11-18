@@ -39,9 +39,24 @@ class LlmClient(
      *
      * @throws LlmException 配置/网络/上游/空回复
      */
-    fun stream(config: LlmConfig, messages: List<LlmMessage>, onDelta: (String) -> Unit): LlmUsage {
+    fun stream(config: LlmConfig, messages: List<LlmMessage>, onDelta: (String) -> Unit): LlmUsage =
+        chat(config, messages, tools = null, onDelta = onDelta).usage
+
+    /**
+     * 一次生成（可带工具表），返回文字 + 用量 + 模型想调用的工具。
+     *
+     * `tools` 是**已经序列化好的 OpenAI tools 数组**（`[{"type":"function",…}]`）：
+     * 传字符串而不是模型，是为了让工具表只有一处真源（`tools/ServerToolCatalog`），
+     * 而这一层不需要认识任何一个工具名。
+     */
+    fun chat(
+        config: LlmConfig,
+        messages: List<LlmMessage>,
+        tools: String?,
+        onDelta: (String) -> Unit
+    ): LlmTurn {
         if (messages.isEmpty()) throw LlmException(LlmErrorKind.INVALID_CONFIG, "没有可发送的消息")
-        val request = buildRequest(config, messages, stream = true)
+        val request = buildRequest(config, messages, stream = true, tools = tools)
         val response = send(config, request)
         val body = response.body()
         try {
@@ -52,11 +67,11 @@ class LlmClient(
             if (!contentType.contains("text/event-stream")) {
                 // 有些网关忽略 stream=true，直接回一整份 completion：按非流式解析，仍然逐段下发。
                 val completion = parseCompletion(readLimited(body, MAX_COMPLETION_BODY_BYTES))
-                if (completion.text.isBlank()) {
+                if (completion.text.isBlank() && completion.toolCalls.isEmpty()) {
                     throw LlmException(LlmErrorKind.EMPTY_REPLY, "模型没有生成任何内容（空回复）。")
                 }
-                onDelta(completion.text)
-                return completion.usage
+                if (completion.text.isNotBlank()) onDelta(completion.text)
+                return completion
             }
             return consumeSse(body) { delta -> onDelta(delta) }
         } finally {
@@ -78,7 +93,12 @@ class LlmClient(
 
     // ------------------------------------------------------------------ 请求
 
-    private fun buildRequest(config: LlmConfig, messages: List<LlmMessage>, stream: Boolean): HttpRequest {
+    private fun buildRequest(
+        config: LlmConfig,
+        messages: List<LlmMessage>,
+        stream: Boolean,
+        tools: String? = null
+    ): HttpRequest {
         val uri = try {
             URI.create(config.endpoint())
         } catch (invalid: IllegalArgumentException) {
@@ -90,7 +110,7 @@ class LlmClient(
         if (uri.scheme != "http" && uri.scheme != "https") {
             throw LlmException(LlmErrorKind.INVALID_CONFIG, "LLM 地址必须是 http:// 或 https://")
         }
-        val payload = buildPayload(config, messages, stream)
+        val payload = buildPayload(config, messages, stream, tools)
         val builder = HttpRequest.newBuilder(uri)
             .timeout(requestTimeout)
             .header("Content-Type", "application/json")
@@ -134,11 +154,12 @@ class LlmClient(
      * 行长度上限 [MAX_LINE_CHARS]：上游异常时可能吐出一整行几十 MB 的 base64/错误页，
      * 不能让它把内存吃掉。
      */
-    private fun consumeSse(body: InputStream, onDelta: (String) -> Unit): LlmUsage {
+    private fun consumeSse(body: InputStream, onDelta: (String) -> Unit): LlmTurn {
         var usage = LlmUsage.ZERO
         var emitted = false
         var sawDone = false
         val promptSeed = StringBuilder()
+        val toolCalls = ToolCallAccumulator()
         try {
             BufferedReader(InputStreamReader(body, StandardCharsets.UTF_8), 8 * 1024).use { reader ->
                 while (true) {
@@ -156,6 +177,7 @@ class LlmClient(
                         promptSeed.append(chunk.text)
                         onDelta(chunk.text)
                     }
+                    toolCalls.merge(chunk.toolCalls)
                     if (chunk.usage != LlmUsage.ZERO) usage = chunk.usage
                 }
             }
@@ -167,19 +189,59 @@ class LlmClient(
                 cause = io
             )
         }
-        if (!emitted) {
+        val calls = toolCalls.build()
+        // 一个字都没写、也没有工具调用，才是空回复（只调工具不说话的回合是合法的）。
+        if (!emitted && calls.isEmpty()) {
             val reason = if (sawDone) "服务端只发了 [DONE]，没有内容" else "流里没有任何文字分片"
             throw LlmException(LlmErrorKind.EMPTY_REPLY, "模型没有生成任何内容（$reason）。")
         }
-        val completion = LlmUsage.estimate(promptSeed.toString())
-        return if (usage.promptTokens > 0 || usage.completionTokens > 0) {
+        val estimated = LlmUsage.estimate(promptSeed.toString())
+        val finalUsage = if (usage.promptTokens > 0 || usage.completionTokens > 0) {
             usage
         } else {
-            LlmUsage(promptTokens = 0, completionTokens = completion)
+            LlmUsage(promptTokens = 0, completionTokens = estimated)
         }
+        return LlmTurn(promptSeed.toString(), finalUsage, calls)
     }
 
-    private data class StreamChunk(val text: String?, val usage: LlmUsage)
+    private data class StreamChunk(
+        val text: String?,
+        val usage: LlmUsage,
+        val toolCalls: List<LlmToolCallFragment> = emptyList()
+    )
+
+    /**
+     * 流式 `tool_calls` 的累加器。
+     *
+     * OpenAI 把一个工具调用**拆成多个分片**：第一片给 `index/id/function.name`，之后每片只追加
+     * `function.arguments` 的一段字符串。所以不能「看到一个就用一个」，必须按 `index` 攒起来、
+     * 流结束时再拼成完整参数。`id` 缺失时用序号补一个（有些网关不回 id，而回灌时必须有）。
+     */
+    private class ToolCallAccumulator {
+        private val order = ArrayList<Int>()
+        private val ids = HashMap<Int, String>()
+        private val names = HashMap<Int, String>()
+        private val arguments = HashMap<Int, StringBuilder>()
+
+        fun merge(fragments: List<LlmToolCallFragment>) {
+            for (fragment in fragments) {
+                if (order.none { it == fragment.index }) order.add(fragment.index)
+                fragment.id?.takeIf { it.isNotBlank() }?.let { ids[fragment.index] = it }
+                fragment.name?.takeIf { it.isNotBlank() }?.let { names[fragment.index] = it }
+                if (fragment.arguments.isNotEmpty()) {
+                    arguments.getOrPut(fragment.index) { StringBuilder() }.append(fragment.arguments)
+                }
+            }
+        }
+
+        fun build(): List<LlmToolCall> = order.map { index ->
+            LlmToolCall(
+                id = ids[index] ?: "call_$index",
+                name = names[index].orEmpty(),
+                arguments = arguments[index]?.toString() ?: "{}"
+            )
+        }.filter { it.name.isNotBlank() }
+    }
 
     private fun parseStreamChunk(payload: String): StreamChunk {
         val root = try {
@@ -205,10 +267,13 @@ class LlmClient(
         val content = string(delta?.fields?.get("content"))
             ?: string(choice.fields["text"])
             ?: string((choice.fields["message"] as? JsonValue.Obj)?.fields?.get("content"))
-        return StreamChunk(text = content, usage = usage)
+        // 工具调用：流式在 `delta.tool_calls`，非流式（网关忽略 stream）在 `message.tool_calls`。
+        val fragments = parseToolCallFragments(delta?.fields?.get("tool_calls"))
+            .ifEmpty { parseToolCallFragments((choice.fields["message"] as? JsonValue.Obj)?.fields?.get("tool_calls")) }
+        return StreamChunk(text = content, usage = usage, toolCalls = fragments)
     }
 
-    private fun parseCompletion(raw: String): LlmCompletion {
+    private fun parseCompletion(raw: String): LlmTurn {
         val root = try {
             Json.parse(raw) as? JsonValue.Obj
         } catch (_: JsonParseException) {
@@ -223,11 +288,49 @@ class LlmClient(
         }
         val choice = (root.fields["choices"] as? JsonValue.Arr)?.items?.firstOrNull() as? JsonValue.Obj
             ?: throw LlmException(LlmErrorKind.INVALID_RESPONSE, "响应里没有 choices", detail = raw.take(300))
-        val text = string((choice.fields["message"] as? JsonValue.Obj)?.fields?.get("content"))
+        val message = choice.fields["message"] as? JsonValue.Obj
+        val text = string(message?.fields?.get("content"))
             ?: string(choice.fields["text"])
             ?: ""
+        val fragments = parseToolCallFragments(message?.fields?.get("tool_calls"))
+        val calls = fragments.mapIndexed { position, fragment ->
+            LlmToolCall(
+                id = fragment.id?.takeIf { it.isNotBlank() } ?: "call_$position",
+                name = fragment.name.orEmpty(),
+                arguments = fragment.arguments.ifEmpty { "{}" }
+            )
+        }.filter { it.name.isNotBlank() }
         val usage = parseUsage(root)
-        return LlmCompletion(text, if (usage != LlmUsage.ZERO) usage else LlmUsage(completionTokens = LlmUsage.estimate(text)))
+        return LlmTurn(
+            text,
+            if (usage != LlmUsage.ZERO) usage else LlmUsage(completionTokens = LlmUsage.estimate(text)),
+            calls
+        )
+    }
+
+    /** 工具调用的一个分片（流式下参数会被拆成多段）。 */
+    internal data class LlmToolCallFragment(
+        val index: Int,
+        val id: String?,
+        val name: String?,
+        val arguments: String
+    )
+
+    private fun parseToolCallFragments(value: JsonValue?): List<LlmToolCallFragment> {
+        val array = value as? JsonValue.Arr ?: return emptyList()
+        val result = ArrayList<LlmToolCallFragment>(array.items.size)
+        array.items.forEachIndexed { position, item ->
+            val obj = item as? JsonValue.Obj ?: return@forEachIndexed
+            val function = obj.fields["function"] as? JsonValue.Obj
+            val index = (obj.fields["index"] as? JsonValue.Num)?.asInt ?: position
+            result += LlmToolCallFragment(
+                index = index,
+                id = string(obj.fields["id"]),
+                name = string(function?.fields?.get("name")),
+                arguments = string(function?.fields?.get("arguments")).orEmpty()
+            )
+        }
+        return result
     }
 
     private fun parseUsage(root: JsonValue.Obj): LlmUsage {
@@ -294,14 +397,37 @@ class LlmClient(
         return String(bytes, StandardCharsets.UTF_8)
     }
 
-    private fun buildPayload(config: LlmConfig, messages: List<LlmMessage>, stream: Boolean): String {
+    private fun buildPayload(
+        config: LlmConfig,
+        messages: List<LlmMessage>,
+        stream: Boolean,
+        tools: String? = null
+    ): String {
         val messageArray = messages.mapTo(mutableListOf<JsonValue>()) { message ->
-            JsonValue.Obj(
-                linkedMapOf(
-                    "role" to JsonValue.Str(message.role),
-                    "content" to JsonValue.Str(message.content)
-                )
+            val fields = linkedMapOf<String, JsonValue>(
+                "role" to JsonValue.Str(message.role),
+                "content" to JsonValue.Str(message.content)
             )
+            if (message.toolCalls.isNotEmpty()) {
+                fields["tool_calls"] = JsonValue.Arr(
+                    message.toolCalls.mapTo(mutableListOf<JsonValue>()) { call ->
+                        JsonValue.Obj(
+                            linkedMapOf(
+                                "id" to JsonValue.Str(call.id),
+                                "type" to JsonValue.Str("function"),
+                                "function" to JsonValue.Obj(
+                                    linkedMapOf(
+                                        "name" to JsonValue.Str(call.name),
+                                        "arguments" to JsonValue.Str(call.arguments)
+                                    )
+                                )
+                            )
+                        )
+                    }
+                )
+            }
+            if (message.toolCallId != null) fields["tool_call_id"] = JsonValue.Str(message.toolCallId)
+            JsonValue.Obj(fields)
         }
         val fields = linkedMapOf<String, JsonValue>(
             "model" to JsonValue.Str(config.model),
@@ -316,6 +442,18 @@ class LlmClient(
             fields["stream_options"] = JsonValue.Obj(
                 linkedMapOf("include_usage" to JsonValue.Bool(true))
             )
+        }
+        if (!tools.isNullOrBlank()) {
+            // 工具表是调用方序列化好的数组；坏 JSON 不静默吞掉（那会变成「模型怎么不调工具」的悬案）。
+            val parsed = try {
+                Json.parse(tools)
+            } catch (invalid: JsonParseException) {
+                throw LlmException(LlmErrorKind.INVALID_CONFIG, "工具表不是合法 JSON：${invalid.message}")
+            }
+            if (parsed !is JsonValue.Arr) {
+                throw LlmException(LlmErrorKind.INVALID_CONFIG, "工具表必须是 JSON 数组")
+            }
+            fields["tools"] = parsed
         }
         return Json.stringify(JsonValue.Obj(fields))
     }

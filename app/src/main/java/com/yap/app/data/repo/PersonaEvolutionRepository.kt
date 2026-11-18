@@ -165,6 +165,9 @@ class PersonaEvolutionRepository @Inject constructor(
      */
     override fun ensureAsync(personaId: String, now: Long) {
         if (personaId.isBlank()) return
+        // 0.13 服务端模式：进化评估由服务端独立触发（它有自己的一轮回复与节流），
+        // 客户端不再代为发起——否则同一条回复会被两端各评估一次。
+        if (serverWrites.isEnabled()) return
         if (!inFlight.compareAndSet(false, true)) return
         scope.launch {
             try {

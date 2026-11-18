@@ -111,7 +111,7 @@ public extension ServerAPIClient {
 
     // MARK: - 备份
 
-    /// `GET /v1/backup`：导出服务端的备份对象（v5 JSON 文本）。
+    /// `GET /v1/backup`：导出服务端的备份对象（v6 同形 JSON 文本，0.13 起）。
     ///
     /// 先解成 `JSONValue` 再序列化回字符串：服务端回来的是「备份对象本身」而不是字符串，
     /// 直接拿 `Data` 会多一条绕过错误映射的原始请求路径。字段/数值都保真（`.int` 不转浮点）。

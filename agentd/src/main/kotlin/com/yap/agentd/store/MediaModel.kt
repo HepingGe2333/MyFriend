@@ -125,9 +125,28 @@ data class MediaItem(
     val mime: String,
     val bytes: Long,
     val sha256: String,
-    val createdAt: Long
+    val createdAt: Long,
+    /**
+     * 客户端备份里的**裸文件名**（v6 的 `media[].fileName`，也就是 `personas.avatarUri` /
+     * `messages.attachmentsJson[].uri` / `stickers[].fileName` 的关联键）。
+     *
+     * 为什么服务端要存它：备份是「按文件名关联」的，服务端上传时不知道原名，
+     * 但**导入客户端备份时知道**。存下来之后，「导入 → 落库 → 再导出」才能保留原名，
+     * 客户端换回来时那些 `uri` 仍然对得上。`null` = 服务端自己收的媒体，导出时
+     * 用 `<id>.<ext>` 现造一个（见 [exportFileName]）。
+     */
+    val fileName: String? = null
 ) {
     val url: String get() = MediaUrl.url(id)
+
+    /** 导出/关联用的裸文件名；只允许「字母数字._-」，否则退回 `<id>.<ext>`（防路径注入）。 */
+    val exportFileName: String
+        get() {
+            val stored = fileName?.trim().orEmpty()
+            if (stored.isNotEmpty() && FILE_NAME_PATTERN.matches(stored)) return stored
+            val extension = MediaMime.extension(mime) ?: "bin"
+            return "$id.$extension"
+        }
 
     fun toJson(): JsonValue.Obj = StoreJson.obj(
         "id" to StoreJson.str(id),
@@ -136,10 +155,14 @@ data class MediaItem(
         "mime" to StoreJson.str(mime),
         "bytes" to StoreJson.num(bytes),
         "sha256" to StoreJson.str(sha256),
-        "createdAt" to StoreJson.num(createdAt)
+        "createdAt" to StoreJson.num(createdAt),
+        "fileName" to StoreJson.nullableStr(fileName)
     )
 
     companion object {
+        /** 裸文件名的安全规则（不含目录分隔符、不以点开头）。 */
+        val FILE_NAME_PATTERN = Regex("[A-Za-z0-9_][A-Za-z0-9._-]{0,120}")
+
         fun fromJson(value: JsonValue.Obj, where: String): MediaItem {
             val id = value.reqString("id", where)
             if (!MediaUrl.isValidId(id)) throw StoreCorruptionException("$where 的 id 不合法")
@@ -162,7 +185,8 @@ data class MediaItem(
                 mime = mime,
                 bytes = bytes,
                 sha256 = sha256,
-                createdAt = value.reqLong("createdAt", where)
+                createdAt = value.reqLong("createdAt", where),
+                fileName = value.optString("fileName", where)?.trim()?.takeIf { it.isNotEmpty() }
             )
         }
     }

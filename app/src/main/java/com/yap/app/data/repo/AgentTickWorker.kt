@@ -6,6 +6,8 @@ import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import com.yap.app.BuildConfig
+import com.yap.app.data.remote.ServerModeRepository
+import com.yap.app.domain.LocalAutonomy
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 
@@ -20,10 +22,16 @@ import dagger.assisted.AssistedInject
 class AgentTickWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val agentLoop: AgentLoop
+    private val agentLoop: AgentLoop,
+    /** 0.13：服务端模式下不再由本机兜底「想一下」。 */
+    private val serverMode: ServerModeRepository
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        if (!LocalAutonomy.shouldRunLocalTick(serverMode.isEnabled())) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "服务端模式：跳过本机兜底 tick")
+            return Result.success()
+        }
         val outcome = runCatching { agentLoop.tick() }
         if (BuildConfig.DEBUG) {
             val failure = outcome.exceptionOrNull()

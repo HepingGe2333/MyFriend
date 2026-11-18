@@ -1768,4 +1768,5 @@
     <string name="draft_default_prompt">你是用户身边的一位朋友，用自然、真诚的语气陪他聊天，记得他告诉过你的事。</string>
     <!-- 0.13 已读不回（spec/mood §4）：只在这条工具调用成功时可能进痕迹；正常情况不产生任何气泡 -->
     <string name="tool_trace_stay_silent">只读不回</string>
+    <string name="chat_sticker_delete_failed">没删掉，等一下再试</string>
 </resources>

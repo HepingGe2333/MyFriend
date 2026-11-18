@@ -124,6 +124,18 @@ class FileStore(
         const val MEDIA_METADATA_FILE = "media.json"
         const val EVENTS_FILE = "events.jsonl"
 
+        /** 0.13：表情包（`spec/stickers`）。字节在 `media/`，这里只有元数据。 */
+        const val STICKERS_FILE = "stickers.json"
+
+        /** 0.13：日记板（`spec/diary`）。 */
+        const val DIARY_NOTES_FILE = "diary_notes.json"
+
+        /** 0.13：`defer_reply` 留下的念头队列（到点由心跳变成主动消息）。 */
+        const val INTENTS_FILE = "agent_intents.json"
+
+        /** 0.13：自动判定的游标（每 4 条用户消息判心情、每 20 条评估进化）。 */
+        const val AUTO_STATE_FILE = "auto_state.json"
+
         /**
          * 备份里媒体二进制的上限：单个文件 8 MiB、全部合计 128 MiB（按**原始字节**算）。
          *
@@ -133,8 +145,14 @@ class FileStore(
         const val MAX_BACKUP_MEDIA_FILE_BYTES = 8L * 1024 * 1024
         const val MAX_BACKUP_MEDIA_TOTAL_BYTES = 128L * 1024 * 1024
 
-        /** 当前导出的备份格式版本（与客户端 `BACKUP_FORMAT_VERSION` 对齐）。 */
-        const val BACKUP_FORMAT_VERSION = 5
+        /**
+         * 当前导出的备份格式版本（与客户端 `BACKUP_FORMAT_VERSION` 对齐）。
+         *
+         * 0.13 起是 **6**：顶层加 `stickers[]` / `diaryNotes[]`，`media[]` 的 kind 扩到
+         * `STICKER`/`AUDIO`/`VIDEO` 并改用 `fileName` 关联，段内字段名全部换成客户端 v6 的
+         * （`unreadCount` / `attachmentsJson` / `toolTraceJson` …）。v1–v5 仍然可以导入。
+         */
+        const val BACKUP_FORMAT_VERSION = 6
         /** 跨版本/跨端备份格式标记；不随品牌更名，否则旧备份无法导入。 */
         const val BACKUP_FORMAT_NAME = "myfriend.backup"
 
@@ -162,6 +180,9 @@ class FileStore(
          * `media-<n>.bin`，提交时再原子移进 `media/`。崩溃留下的残渣在下次打开时清掉。
          */
         const val STAGING_DIR = ".staging"
+
+        const val MODE_MERGE = "merge"
+        const val MODE_REPLACE = "replace"
 
         /** 一条消息批量导入接口的单批上限（与 `CrudRoutes` 的校验共用一份）。 */
         const val MAX_IMPORT_MESSAGES = 200
@@ -240,6 +261,18 @@ class FileStore(
     private val pendingPatches = LinkedHashMap<String, PendingPatch>()
     /** key = `platform|token`，保证「同一 token 重复注册」幂等。 */
     private val pushTokens = LinkedHashMap<String, PushRegistration>()
+
+    /** 表情包元数据（`stickers.json`）；字节走 [media]，`Sticker.id` 就是媒体 id。 */
+    private val stickers = LinkedHashMap<String, Sticker>()
+
+    /** 日记板（`diary_notes.json`）。 */
+    private val diaryNotes = LinkedHashMap<String, DiaryNote>()
+
+    /** `defer_reply` 的念头队列（`agent_intents.json`）。 */
+    private val intents = LinkedHashMap<String, StoredIntent>()
+
+    /** 自动判定游标（`auto_state.json`）。 */
+    private val autoStates = LinkedHashMap<String, AutoState>()
 
     /**
      * 媒体元数据索引（`data/media.json`）。二进制在 [mediaDir] 里，文件名 `<id>.<ext>`。
@@ -605,7 +638,21 @@ class FileStore(
      * - 写文件是 `*.tmp` → `ATOMIC_MOVE`；清单 `media.json` 同样原子重写；
      * - 整段在写锁内，两次并发上传同内容只会有一个 `created = true`、一个文件。
      */
-    fun saveMedia(kind: String, personaId: String?, mime: String, data: ByteArray): MediaSaveResult =
+    fun saveMedia(
+        kind: String,
+        personaId: String?,
+        mime: String,
+        data: ByteArray,
+        /** 客户端备份里的裸文件名（备份导入用）；`null` = 服务端自己收的媒体。 */
+        fileName: String? = null,
+        /**
+         * 同 `sha256` 已存在时是否复用旧文件。
+         *
+         * 默认 true（上传去重：同一张图只落一份）。**表情新建时传 false**：两个表情可以是
+         * 同一张 GIF 的两次导入，它们必须是两条独立的记录（id 不同），否则后一个会覆盖前一个。
+         */
+        dedupe: Boolean = true
+    ): MediaSaveResult =
         lock.withLock {
             require(MediaKind.isValid(kind)) { "不支持的媒体用途：$kind" }
             require(MediaMime.isValid(mime)) { "不支持的媒体类型：$mime" }
@@ -614,12 +661,22 @@ class FileStore(
                 if (!isValidId(persona)) throw IllegalArgumentException("非法的 personaId")
                 requirePersonaLocked(persona)
             }
+            val safeName = fileName?.trim()?.takeIf {
+                it.isNotEmpty() && MediaItem.FILE_NAME_PATTERN.matches(it)
+            }
             val sha = sha256Hex(data)
-            media.values.firstOrNull { it.sha256 == sha }?.let { existing ->
+            if (dedupe) media.values.firstOrNull { it.sha256 == sha }?.let { existing ->
                 // 元数据在、文件被手工删掉时顺手补回：否则「上传成功但下载 404」很难排查。
                 // 仍是 200（内容没有产生第二份），只是把丢失的字节写回去。
                 if (!Files.exists(mediaFile(existing))) {
                     writeBytesLocked(mediaFile(existing), data)
+                }
+                // 备份导入带来原名时补上：换端之后那些 `attachmentsJson[].uri` 还要对得上。
+                if (existing.fileName == null && safeName != null) {
+                    val renamed = existing.copy(fileName = safeName)
+                    media[renamed.id] = renamed
+                    persistMediaLocked()
+                    return@withLock MediaSaveResult(renamed, created = false)
                 }
                 return@withLock MediaSaveResult(existing, created = false)
             }
@@ -630,7 +687,8 @@ class FileStore(
                 mime = mime,
                 bytes = data.size.toLong(),
                 sha256 = sha,
-                createdAt = clock()
+                createdAt = clock(),
+                fileName = safeName
             )
             writeBytesLocked(mediaFile(item), data)
             media[item.id] = item
@@ -981,6 +1039,7 @@ class FileStore(
      * @param clientMessageId 用户消息的幂等键（assistant 消息为 null）。
      * @param replyTo assistant 消息指回的用户消息 id。
      * @param promptTokens / completionTokens 那一次生成的用量（重放 `done` 时用）。
+     * @param toolTraceJson 这一轮工具回路的痕迹（客户端同形 JSON 文本，可空）。
      */
     fun appendMessage(
         sessionId: String,
@@ -992,7 +1051,8 @@ class FileStore(
         replyTo: String? = null,
         readAt: Long? = null,
         promptTokens: Int? = null,
-        completionTokens: Int? = null
+        completionTokens: Int? = null,
+        toolTraceJson: String? = null
     ): Message = lock.withLock {
         if (!MessageRole.isValid(role)) throw IllegalArgumentException("非法的角色：$role")
         val session = requireSessionLocked(sessionId)
@@ -1024,7 +1084,8 @@ class FileStore(
             clientMessageId = clientMessageId,
             replyTo = replyTo,
             promptTokens = promptTokens,
-            completionTokens = completionTokens
+            completionTokens = completionTokens,
+            toolTraceJson = toolTraceJson?.takeIf { it.isNotBlank() }
         )
         appendLineLocked(blockFile(sessionId, block.index), StoreJson.stringify(message.toJson()))
 
@@ -1527,12 +1588,389 @@ class FileStore(
         true
     }
 
+    // ================================================================== 表情包（stickers）
+    //
+    // `spec/stickers/README.md`：表情是「压缩过的 GIF」，字节与图片走同一套媒体表，
+    // 元数据单独一行。这样备份 v6 里 `stickers[].fileName` 与 `media[]` 的 `kind=STICKER`
+    // 条目天然对得上，不需要第二套 id 映射。
+
+    /** 表情列表（按 `createdAt` 升序；路由/工具按需倒序取最近的）。 */
+    fun stickers(personaId: String? = null, limit: Int = Int.MAX_VALUE): List<Sticker> = lock.withLock {
+        stickers.values
+            .filter { personaId == null || it.personaId == personaId }
+            .sortedWith(compareBy({ it.createdAt }, { it.id }))
+            .take(limit.coerceAtLeast(0))
+    }
+
+    fun sticker(stickerId: String): Sticker? = lock.withLock { stickers[stickerId] }
+
+    /**
+     * 新建一个表情：字节落进媒体表（`kind=STICKER`），元数据落 `stickers.json`。
+     *
+     * 上限按 `spec/stickers` 的 512 KB 在**解码后**挡一次（base64 的 4/3 膨胀不参与判断）。
+     * 同 sha256 的图已存在时复用媒体文件（`saveMedia` 的行为），但表情行仍然新建
+     * （两个表情可以是同一张图的两次导入，用户看到的是两条记录）。
+     */
+    fun createSticker(
+        personaId: String?,
+        mime: String,
+        data: ByteArray,
+        width: Int = 0,
+        height: Int = 0,
+        frames: Int = 1,
+        source: String = Sticker.SOURCE_IMPORTED,
+        createdBy: String = Sticker.CREATED_BY_USER,
+        ownerUserId: String? = null
+    ): Sticker = lock.withLock {
+        val type = mime.trim().lowercase()
+        require(type in Sticker.MIMES) { "表情只支持 GIF/PNG/WebP（收到 $type）" }
+        require(data.isNotEmpty()) { "表情文件是空的" }
+        require(data.size <= Sticker.MAX_FILE_BYTES) {
+            "表情文件最大 ${Sticker.MAX_FILE_BYTES / 1024} KB（收到 ${data.size / 1024} KB）"
+        }
+        val persona = personaId?.trim()?.takeIf { it.isNotEmpty() }
+        if (persona != null) {
+            if (!isValidId(persona)) throw IllegalArgumentException("非法的 personaId")
+            requirePersonaLocked(persona)
+        }
+        val saved = saveMedia(
+            kind = MediaKind.STICKER,
+            personaId = persona,
+            mime = type,
+            data = data,
+            dedupe = false
+        )
+        val extension = MediaMime.extension(type) ?: "gif"
+        val now = nextTimestampLocked()
+        val row = Sticker(
+            id = saved.item.id,
+            ownerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() },
+            personaId = persona,
+            file = "${saved.item.id}.$extension",
+            mime = type,
+            width = width.coerceIn(0, Sticker.MAX_EDGE_PX * 8),
+            height = height.coerceIn(0, Sticker.MAX_EDGE_PX * 8),
+            frames = frames.coerceIn(1, Sticker.MAX_FRAMES),
+            bytes = data.size.toLong(),
+            source = Sticker.normalizeSource(source),
+            createdBy = Sticker.normalizeCreatedBy(createdBy),
+            createdAt = now
+        )
+        stickers[row.id] = row
+        persistStickersLocked()
+        row
+    }
+
+    /**
+     * 把一个**已上传的**媒体登记成表情（`POST /v1/stickers {"mediaId":"…"}`）。
+     *
+     * 用途：客户端先 `POST /v1/media?kind=STICKER` 再建行；也用于把用户发来的表情
+     * 收进「我的表情」（`sticker` 工具的 `save` 语义）。
+     */
+    fun registerSticker(
+        mediaId: String,
+        personaId: String? = null,
+        width: Int = 0,
+        height: Int = 0,
+        frames: Int = 1,
+        source: String = Sticker.SOURCE_IMPORTED,
+        createdBy: String = Sticker.CREATED_BY_USER,
+        ownerUserId: String? = null
+    ): Sticker = lock.withLock {
+        val item = media[mediaId] ?: throw IllegalArgumentException("媒体不存在：$mediaId")
+        if (item.mime !in Sticker.MIMES) {
+            throw IllegalArgumentException("这个媒体不是表情能用的类型：${item.mime}")
+        }
+        val persona = personaId?.trim()?.takeIf { it.isNotEmpty() } ?: item.personaId
+        if (persona != null) {
+            if (!isValidId(persona)) throw IllegalArgumentException("非法的 personaId")
+            requirePersonaLocked(persona)
+        }
+        val existing = stickers[mediaId]
+        if (existing != null) return@withLock existing
+        val extension = MediaMime.extension(item.mime) ?: "gif"
+        val row = Sticker(
+            id = item.id,
+            ownerUserId = ownerUserId?.trim()?.takeIf { it.isNotEmpty() },
+            personaId = persona,
+            file = "${item.id}.$extension",
+            mime = item.mime,
+            width = width,
+            height = height,
+            frames = frames,
+            bytes = item.bytes,
+            source = Sticker.normalizeSource(source),
+            createdBy = Sticker.normalizeCreatedBy(createdBy),
+            createdAt = nextTimestampLocked()
+        )
+        stickers[row.id] = row
+        persistStickersLocked()
+        row
+    }
+
+    /** 删一个表情：行 + 媒体文件一起删（消息里对它的引用会变成 404，这是客户端的 GC 语义）。 */
+    fun deleteSticker(stickerId: String): Boolean = lock.withLock {
+        if (stickers.remove(stickerId) == null) return@withLock false
+        persistStickersLocked()
+        deleteMedia(stickerId, force = true)
+        true
+    }
+
+    /** 表情的原始字节（走媒体表，与 `GET /v1/media/{id}` 同一份文件）。 */
+    fun stickerBytes(stickerId: String): ByteArray? = stickerMediaId(stickerId)?.let { mediaBytes(it) }
+
+    /**
+     * 表情对应的媒体 id。
+     *
+     * 正常情况就是表情 id（服务端建行时 `id = 媒体 id`）。**导入客户端 v6 备份**时两者可能不同：
+     * 客户端那一行写的是 `id=sticker-fixture-1`，字节挂在 `media[]` 里另一条
+     * （`id=media-sticker-1`、`fileName=sticker-fixture.gif`）。导入会把表情 id 归一成媒体 id
+     * （见 `commitBackupStreamed`），这里再兜一层：按 `file`（裸文件名）找一遍。
+     */
+    fun stickerMediaId(stickerId: String): String? = lock.withLock {
+        if (media.containsKey(stickerId)) return@withLock stickerId
+        val sticker = stickers[stickerId] ?: return@withLock null
+        media.values.firstOrNull { it.exportFileName == sticker.file }?.id
+    }
+
+    // ================================================================== 日记板（diary）
+    //
+    // `spec/diary/README.md`：他自己的备忘录。增删查 + 到点提醒（只触发一次）。
+
+    /** 某个人的日记（按 `createdAt` 倒序 = 最近的在前）。 */
+    fun diaryNotes(personaId: String, limit: Int = 20, since: Long = 0L): List<DiaryNote> = lock.withLock {
+        diaryNotes.values
+            .filter { it.personaId == personaId && it.updatedAt > since }
+            .sortedWith(compareByDescending<DiaryNote> { it.createdAt }.thenByDescending { it.id })
+            .take(limit.coerceAtLeast(0))
+    }
+
+    fun diaryNote(personaId: String, noteId: String): DiaryNote? = lock.withLock {
+        diaryNotes[noteId]?.takeIf { it.personaId == personaId }
+    }
+
+    /**
+     * 新建或更新一条日记。
+     *
+     * @param noteId `null` = 新建（id 由服务端生成）；给了 id 就必须属于 [personaId]，
+     *   否则抛 [StoreDiaryNoteNotFoundException]（路由翻 404）。
+     * @param content `null` = 不改（更新时）；新建时必须给。
+     * @param remindAt 新的提醒时刻；`null` + [clearReminder]=false 表示不改，
+     *   [clearReminder]=true 表示清掉提醒。
+     */
+    fun upsertDiaryNote(
+        personaId: String,
+        noteId: String?,
+        content: String?,
+        remindAt: Long?,
+        clearReminder: Boolean = false
+    ): DiaryNote = lock.withLock {
+        requirePersonaLocked(personaId)
+        val now = nextTimestampLocked()
+        if (noteId == null) {
+            val text = content?.trim().orEmpty()
+            if (text.isEmpty()) throw IllegalArgumentException("日记内容不能为空")
+            if (text.length > DiaryNote.MAX_CONTENT_CHARS) {
+                throw IllegalArgumentException("日记内容最长 ${DiaryNote.MAX_CONTENT_CHARS} 个字符")
+            }
+            val note = DiaryNote(
+                id = newId(),
+                personaId = personaId,
+                content = text,
+                createdAt = now,
+                remindAt = remindAt,
+                remindedAt = null,
+                updatedAt = now
+            )
+            diaryNotes[note.id] = note
+            persistDiaryNotesLocked()
+            return@withLock note
+        }
+        if (!isValidId(noteId)) throw IllegalArgumentException("非法的日记 id")
+        val existing = diaryNotes[noteId]?.takeIf { it.personaId == personaId }
+            ?: throw StoreDiaryNoteNotFoundException(noteId)
+        val text = content?.trim()?.takeIf { it.isNotEmpty() } ?: existing.content
+        if (text.length > DiaryNote.MAX_CONTENT_CHARS) {
+            throw IllegalArgumentException("日记内容最长 ${DiaryNote.MAX_CONTENT_CHARS} 个字符")
+        }
+        // 提醒时间真的改了才清 `remindedAt`：否则「改正文」会把已经提醒过的标记抹掉、明天再提醒一次。
+        val nextRemindAt = when {
+            clearReminder -> null
+            remindAt != null -> remindAt
+            else -> existing.remindAt
+        }
+        val reminderChanged = nextRemindAt != existing.remindAt
+        val updated = existing.copy(
+            content = text,
+            remindAt = nextRemindAt,
+            remindedAt = if (reminderChanged) null else existing.remindedAt,
+            updatedAt = now
+        )
+        diaryNotes[updated.id] = updated
+        persistDiaryNotesLocked()
+        updated
+    }
+
+    fun deleteDiaryNote(personaId: String, noteId: String): Boolean = lock.withLock {
+        val existing = diaryNotes[noteId]?.takeIf { it.personaId == personaId } ?: return@withLock false
+        diaryNotes.remove(existing.id)
+        persistDiaryNotesLocked()
+        true
+    }
+
+    /**
+     * 到点且还没提醒过的日记（跨人格，按 `remindAt` 升序）。
+     *
+     * 只看 `remindAt <= now`：过期太久的（>24h）由 [expireOverdueDiaryReminders] 清标记，
+     * **不补发**——「周四提醒你打电话」，周六才发出来只会让人莫名其妙。
+     */
+    fun dueDiaryReminders(now: Long, limit: Int = 50): List<DiaryNote> = lock.withLock {
+        diaryNotes.values
+            .filter { it.isDue(now) && now - (it.remindAt ?: 0L) <= DiaryNote.CATCH_UP_WINDOW_MS }
+            .sortedWith(compareBy({ it.remindAt ?: 0L }, { it.id }))
+            .take(limit.coerceAtLeast(0))
+    }
+
+    /** 写 `remindedAt`（防重复）。返回更新后的行；不存在返回 null。 */
+    fun markDiaryReminded(noteId: String, at: Long): DiaryNote? = lock.withLock {
+        val existing = diaryNotes[noteId] ?: return@withLock null
+        val updated = existing.copy(remindedAt = at, updatedAt = maxOf(existing.updatedAt, at))
+        diaryNotes[noteId] = updated
+        persistDiaryNotesLocked()
+        updated
+    }
+
+    /**
+     * 把过期太久（>24h）的提醒标记成「已提醒」，但不产生消息。
+     *
+     * 返回清理条数。这样同一行不会在每次心跳里被反复捡起来。
+     */
+    fun expireOverdueDiaryReminders(now: Long): Int = lock.withLock {
+        val doomed = diaryNotes.values.filter {
+            val remindAt = it.remindAt ?: return@filter false
+            it.remindedAt == null && remindAt <= now && now - remindAt > DiaryNote.CATCH_UP_WINDOW_MS
+        }
+        if (doomed.isEmpty()) return@withLock 0
+        for (note in doomed) {
+            diaryNotes[note.id] = note.copy(remindedAt = now, updatedAt = maxOf(note.updatedAt, now))
+        }
+        persistDiaryNotesLocked()
+        doomed.size
+    }
+
+    // ================================================================== 念头（agent_intents）
+    //
+    // `defer_reply` 的服务端落点：模型说「过一会儿再说」之后，到点由心跳变成主动消息。
+
+    fun saveIntent(intent: StoredIntent): StoredIntent = lock.withLock {
+        intents[intent.id] = intent
+        persistIntentsLocked()
+        intent
+    }
+
+    fun intent(intentId: String): StoredIntent? = lock.withLock { intents[intentId] }
+
+    fun pendingIntents(personaId: String? = null): List<StoredIntent> = lock.withLock {
+        intents.values
+            .filter { it.status == StoredIntent.STATUS_PENDING }
+            .filter { personaId == null || it.personaId == personaId }
+            .sortedWith(compareBy({ it.earliestAt }, { it.id }))
+    }
+
+    /** 到点（`earliestAt <= now`）的念头，按时间升序。 */
+    fun dueIntents(now: Long, limit: Int = 20): List<StoredIntent> = lock.withLock {
+        intents.values
+            .filter { it.isDue(now) }
+            .sortedWith(compareBy({ it.earliestAt }, { it.id }))
+            .take(limit.coerceAtLeast(0))
+    }
+
+    fun markIntentSent(intentId: String, at: Long): Boolean = lock.withLock {
+        val existing = intents[intentId] ?: return@withLock false
+        intents[intentId] = existing.copy(status = StoredIntent.STATUS_SENT, sentAt = at)
+        persistIntentsLocked()
+        true
+    }
+
+    /** 过窗口太久的念头作废（不补发）；返回作废条数。 */
+    fun expireIntents(now: Long): Int = lock.withLock {
+        val doomed = intents.values.filter { it.isExpired(now) }
+        if (doomed.isEmpty()) return@withLock 0
+        for (intent in doomed) {
+            intents[intent.id] = intent.copy(status = StoredIntent.STATUS_EXPIRED)
+        }
+        persistIntentsLocked()
+        doomed.size
+    }
+
+    // ================================================================== 自动判定游标（auto_state）
+
+    fun autoState(personaId: String): AutoState = lock.withLock {
+        autoStates[personaId] ?: AutoState(personaId = personaId)
+    }
+
+    /** 记一条用户消息（自动判定的计数）；累计条数与游标分开存，重启后仍然准。 */
+    fun recordUserMessageForAuto(personaId: String): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(userMessagesSeen = previous.userMessagesSeen + 1)
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    fun recordMoodAutoEval(personaId: String, at: Long): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(moodCursor = previous.userMessagesSeen, moodEvaluatedAt = at)
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    fun recordEvolutionAutoEval(personaId: String, at: Long): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(evolutionCursor = previous.userMessagesSeen, evolutionEvaluatedAt = at)
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    /** 记一次 `stay_silent`（连续沉默轮数 +1）。 */
+    fun recordSilentTurn(personaId: String): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: AutoState(personaId = personaId)
+        val updated = previous.copy(consecutiveSilent = previous.consecutiveSilent + 1)
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    /** 真的回了一句：连续沉默轮数清零。 */
+    fun recordAssistantReply(personaId: String): AutoState = lock.withLock {
+        val previous = autoStates[personaId] ?: return@withLock AutoState(personaId = personaId)
+        if (previous.consecutiveSilent == 0) return@withLock previous
+        val updated = previous.copy(consecutiveSilent = 0)
+        autoStates[personaId] = updated
+        persistAutoStateLocked()
+        updated
+    }
+
+    /** 磁盘上真实的用户消息条数（游标丢失/首次运行时用它对齐，避免重复判定一整个历史）。 */
+    fun countUserMessages(personaId: String): Long = lock.withLock {
+        var total = 0L
+        for (session in sessions.values) {
+            if (session.personaId != personaId) continue
+            for (block in blocksForLocked(session.id)) {
+                total += readBlockLocked(session.id, block.index).count { it.role == MessageRole.USER }
+            }
+        }
+        total
+    }
+
     // ================================================================== 备份（流式导出）
 
     /**
-     * 流式导出备份 v5（`GET /v1/backup`）——**不构造整份 `JsonValue` 树、不构造整份字符串**。
+     * 流式导出备份 v6（`GET /v1/backup`）——**不构造整份 `JsonValue` 树、不构造整份字符串**。
      *
-     * 为什么必须流式：v5 备份里的 `media[].data` 是 base64（单张 ≤8 MiB、合计 ≤128 MiB），
+     * 为什么必须流式：备份里的 `media[].data` 是 base64（单张 ≤8 MiB、合计 ≤128 MiB），
      * 0.12.0 的实现把整份备份先拼成 `JsonValue.Obj`、再 `stringify` 成 `String`、再
      * `toByteArray` 写 socket —— 10 万条消息 + 500 张图时峰值是几百 MB。现在改成：
      *
@@ -1552,13 +1990,35 @@ class FileStore(
      */
     fun writeBackup(appVersion: String, exportedAt: Long, out: Appendable) {
         val snapshot = lock.withLock {
+            val mediaFiles = media.values.associate { it.id to it.exportFileName }
+            val mediaInfo = media.values.associate { it.id to (it.exportFileName to it.mime) }
             ExportSnapshot(
-                personas = personas.map { it.toJson() },
-                sessions = sessions.values.map { it.toJson() },
+                personas = personas.map { persona ->
+                    BackupV6.persona(
+                        persona = persona,
+                        mood = moods[persona.id],
+                        avatarFileName = mediaFiles[MediaUrl.idOf(persona.avatarUrl)]
+                    )
+                },
+                sessions = sessions.values.map { BackupV6.session(it) },
                 sessionIds = sessions.keys.toList(),
-                memories = memories.values.sortedBy { it.createdAt }.map { it.toJson() },
-                presets = presets.values.map { it.toJson() },
-                settings = publicSettingsLocked(),
+                sessionPersonas = sessions.values.associate { it.id to it.personaId },
+                mediaInfo = mediaInfo,
+                memories = memories.values.sortedBy { it.createdAt }.map { BackupV6.memory(it) },
+                presets = presets.values.map { preset ->
+                    BackupV6.preset(preset, mediaFiles[MediaUrl.idOf(preset.avatarUri)])
+                },
+                apiConfigs = apiConfigs.values.map { BackupV6.apiConfig(it) },
+                stickers = stickers.values
+                    .sortedWith(compareBy({ it.createdAt }, { it.id }))
+                    .map { BackupV6.sticker(it) },
+                diaryNotes = diaryNotes.values
+                    .sortedWith(compareBy({ it.createdAt }, { it.id }))
+                    .map { BackupV6.diaryNote(it) },
+                intents = intents.values
+                    .sortedWith(compareBy({ it.createdAt }, { it.id }))
+                    .map { BackupV6.intent(it) },
+                settings = BackupV6.settings(publicSettingsLocked()),
                 media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList()
             )
         }
@@ -1577,24 +2037,38 @@ class FileStore(
         writer.bool(true)
         writer.key("personas")
         writer.value(jsonArray(snapshot.personas))
+        writer.key("memories")
+        writer.value(jsonArray(snapshot.memories))
         writer.key("sessions")
         writer.value(jsonArray(snapshot.sessions))
         writer.key("messages")
         writer.startArray()
-        writeMessagesStreamed(writer, snapshot.sessionIds)
+        writeMessagesStreamed(writer, snapshot)
         writer.endArray()
-        writer.key("memories")
-        writer.value(jsonArray(snapshot.memories))
-        writer.key("presets")
-        writer.value(jsonArray(snapshot.presets))
         writer.key("media")
         writer.startArray()
         val mediaSkipped = writeMediaStreamed(writer, snapshot.media)
         writer.endArray()
-        writer.key("mediaSkipped")
-        writer.number(mediaSkipped)
+        writer.key("stickers")
+        writer.value(jsonArray(snapshot.stickers))
+        writer.key("diaryNotes")
+        writer.value(jsonArray(snapshot.diaryNotes))
+        writer.key("presets")
+        writer.value(jsonArray(snapshot.presets))
+        // 服务端不维护客户端的三段「过程流水」：照客户端形状写空数组，键集才一致。
+        writer.key("proactiveRules")
+        writer.value(jsonArray(emptyList()))
+        writer.key("agentIntents")
+        writer.value(jsonArray(snapshot.intents))
+        writer.key("memoryConsolidations")
+        writer.value(jsonArray(emptyList()))
+        writer.key("apiConfigs")
+        writer.value(jsonArray(snapshot.apiConfigs))
         writer.key("settings")
         writer.value(snapshot.settings)
+        // 服务端扩展（客户端忽略）：这次导出因为超过单文件/总量上限而跳过的媒体数。
+        writer.key("mediaSkipped")
+        writer.number(mediaSkipped)
         writer.endObject()
     }
 
@@ -1603,8 +2077,16 @@ class FileStore(
         val personas: List<JsonValue>,
         val sessions: List<JsonValue>,
         val sessionIds: List<String>,
+        /** `sessionId → personaId`：v6 的 `messages[].personaId` 要用（服务端的消息里没有这一格）。 */
+        val sessionPersonas: Map<String, String>,
+        /** `mediaId → (裸文件名, mime)`：把附件引用翻译成 v6 的 `attachmentsJson`。 */
+        val mediaInfo: Map<String, Pair<String, String>>,
         val memories: List<JsonValue>,
         val presets: List<JsonValue>,
+        val apiConfigs: List<JsonValue>,
+        val stickers: List<JsonValue>,
+        val diaryNotes: List<JsonValue>,
+        val intents: List<JsonValue>,
         val settings: JsonValue.Obj,
         val media: List<MediaItem>
     )
@@ -1616,18 +2098,48 @@ class FileStore(
      * 每个会话一个惰性游标（一次一块 = 最多 [BLOCK_SIZE] 条），用优先队列做 k 路归并。
      * 内存上限 ≈ 会话数 × 1 条消息，与历史长度无关。
      */
-    private fun writeMessagesStreamed(writer: JsonStreamWriter, sessionIds: List<String>) {
+    private fun writeMessagesStreamed(writer: JsonStreamWriter, snapshot: ExportSnapshot) {
         val queue = PriorityQueue(compareBy<MessageHead> { it.message.createdAt }.thenBy { it.message.id })
-        for (sessionId in sessionIds) {
+        for (sessionId in snapshot.sessionIds) {
             val cursor = SessionMessageCursor(sessionId)
             cursor.advance()?.let { queue.add(MessageHead(it, cursor)) }
         }
         while (queue.isNotEmpty()) {
             val head = queue.poll()
+            val message = head.message
+            val personaId = snapshot.sessionPersonas[message.sessionId].orEmpty()
             writer.element()
-            writer.value(head.message.toJson())
+            writer.value(BackupV6.message(message, personaId, attachmentsJson(message, snapshot.mediaInfo)))
             head.cursor.advance()?.let { queue.add(MessageHead(it, head.cursor)) }
         }
+    }
+
+    /**
+     * 服务端附件（`/v1/media/<id>`）→ 客户端 v6 的 `attachmentsJson`（裸文件名 + mime）。
+     *
+     * 找不到媒体的附件**直接不写**（客户端 `BackupAttachmentsPortable.portable` 同一规则：
+     * 换台手机也恢复不出来的引用不该留在备份里）。
+     */
+    private fun attachmentsJson(message: Message, mediaInfo: Map<String, Pair<String, String>>): String? {
+        if (message.attachments.isEmpty()) return null
+        val items = ArrayList<JsonValue>()
+        for (attachment in message.attachments) {
+            val id = MediaUrl.idOf(attachment) ?: continue
+            val (fileName, mime) = mediaInfo[id] ?: continue
+            val fields = linkedMapOf<String, JsonValue>(
+                "uri" to StoreJson.str(fileName),
+                "mime" to StoreJson.str(mime)
+            )
+            media[id]?.let { item ->
+                when (item.kind) {
+                    MediaKind.AUDIO -> fields["kind"] = StoreJson.str("AUDIO")
+                    MediaKind.VIDEO -> fields["kind"] = StoreJson.str("VIDEO")
+                    MediaKind.STICKER -> fields["kind"] = StoreJson.str("STICKER")
+                }
+            }
+            items += JsonValue.Obj(fields)
+        }
+        return if (items.isEmpty()) null else StoreJson.stringify(JsonValue.Arr(items))
     }
 
     private class MessageHead(val message: Message, val cursor: SessionMessageCursor)
@@ -1663,6 +2175,9 @@ class FileStore(
      * 先流式计算一次 sha256（与 `media.json` 的元数据比对），再流式编码；两步都只占 8–24 KiB
      * 缓冲。读不出/超限/sha 对不上的条目**跳过并计数**（`mediaSkipped`），不让一张图毁掉整份
      * 备份，也不让导入端因为坏条目整份拒绝。
+     *
+     * 字段是 v6 的 `id/kind/personaId/fileName/mime/bytes/data`；多写一个 `sha256`
+     * （客户端会忽略）是为了服务端自己再导入时还能校验字节。
      */
     private fun writeMediaStreamed(writer: JsonStreamWriter, items: List<MediaItem>): Int {
         var total = 0L
@@ -1710,18 +2225,18 @@ class FileStore(
             writer.stringValue(item.kind)
             writer.key("personaId")
             if (item.personaId == null) writer.nullValue() else writer.stringValue(item.personaId)
+            writer.key("fileName")
+            writer.stringValue(item.exportFileName)
             writer.key("mime")
             writer.stringValue(item.mime)
             writer.key("bytes")
             writer.number(item.bytes)
-            writer.key("sha256")
-            writer.stringValue(item.sha256)
-            writer.key("createdAt")
-            writer.number(item.createdAt)
             writer.key("data")
             writer.beginLongString()
             appendBase64(writer, file)
             writer.endLongString()
+            writer.key("sha256")
+            writer.stringValue(item.sha256)
             writer.endObject()
         }
         return skipped
@@ -1758,13 +2273,30 @@ class FileStore(
      * 所以**整份备份从不进内存**。约束：`mode` 必须出现在 `data` 之前（我们自己的导出与
      * 0.12.x 客户端的 `JSON.stringify` 都保持这个顺序），否则 400 —— 见 README 的「风险」。
      */
-    fun importBackupRequest(input: Reader): BackupImportResult {
+    fun importBackupRequest(input: Reader, bareMode: String = MODE_MERGE): BackupImportResult {
         val reader = BackupJsonReader(input)
         reader.beginObject()
+        val firstKey = reader.nextKey() ?: throw BackupValidationException("备份文件是空的")
+        // 裸备份文件（客户端导出的 `android-export-v6.json` 原样 POST）：第一个键就是
+        // `format` / `formatVersion` / `personas`…，此时用 [bareMode] 作为导入模式。
+        if (firstKey != "mode" && firstKey != "data") {
+            if (bareMode != MODE_MERGE && bareMode != MODE_REPLACE) {
+                throw BackupValidationException("mode 只能是 merge 或 replace")
+            }
+            val staging = root.resolve(STAGING_DIR).resolve("import-${UUID.randomUUID()}")
+            Files.createDirectories(staging)
+            try {
+                val parsed = parseBackupBody(reader, staging, firstKey)
+                return lock.withLock { commitBackupStreamed(bareMode, parsed) }
+            } finally {
+                deleteRecursively(staging)
+                runCatching { Files.deleteIfExists(root.resolve(STAGING_DIR)) }
+            }
+        }
         var mode: String? = null
         var result: BackupImportResult? = null
-        while (true) {
-            val key = reader.nextKey() ?: break
+        var key: String? = firstKey
+        while (key != null) {
             when (key) {
                 "mode" -> {
                     mode = (reader.readValue() as? JsonValue.Str)?.value
@@ -1780,6 +2312,7 @@ class FileStore(
 
                 else -> reader.skipValue()
             }
+            key = reader.nextKey() ?: break
         }
         reader.expectEnd()
         return result ?: throw BackupValidationException("缺少字段 data（备份对象）")
@@ -1823,13 +2356,34 @@ class FileStore(
         val media: List<StreamedMedia>,
         /** sessionId → 该会话的导出消息（每行一个 `Message` JSON）。 */
         val messageSpools: Map<String, Path>,
-        val messageCount: Int
+        val messageCount: Int,
+        /** 0.13（v6）：表情行；字节在 [media] 里（`kind=STICKER`）。 */
+        val stickers: List<Sticker> = emptyList(),
+        /** 0.13（v6）：日记板。 */
+        val diaryNotes: List<DiaryNote> = emptyList(),
+        /** `defer_reply` 的念头（服务端 v6 起也写进备份）。 */
+        val intents: List<StoredIntent> = emptyList()
     )
 
     /** 备份里一条已解码到暂存文件的媒体（提交时原子移进 `media/`）。 */
     private class StreamedMedia(val item: MediaItem, val staged: Path)
 
     private fun parseBackupStream(reader: BackupJsonReader, staging: Path): StreamedBackup {
+        reader.beginObject()
+        return parseBackupBody(reader, staging, null)
+    }
+
+    /**
+     * 解析备份对象的主体（`{` 已经读掉）。
+     *
+     * @param firstKey 已经读出来的第一个键（裸备份文件由 [importBackupRequest] 先读一个键来判断
+     *   「这是 `{mode,data}` 信封还是一份裸备份」；对象**已经 begin**，所以这里不能再 begin 一次）。
+     */
+    private fun parseBackupBody(
+        reader: BackupJsonReader,
+        staging: Path,
+        firstKey: String?
+    ): StreamedBackup {
         val where = "backup"
         val now = clock()
         var format: String? = null
@@ -1840,6 +2394,9 @@ class FileStore(
         val presets = ArrayList<Preset>()
         var settings: JsonValue.Obj? = null
         val media = ArrayList<StreamedMedia>()
+        val stickers = ArrayList<Sticker>()
+        val diary = ArrayList<DiaryNote>()
+        val intents = ArrayList<StoredIntent>()
         val messageSpools = LinkedHashMap<String, Path>()
         val spoolWriters = LinkedHashMap<String, BufferedWriter>()
         val messageIds = HashSet<String>()
@@ -1855,9 +2412,10 @@ class FileStore(
         }
 
         try {
-            reader.beginObject()
+            var pendingKey: String? = firstKey
             while (true) {
-                val key = reader.nextKey() ?: break
+                val key = pendingKey ?: reader.nextKey() ?: break
+                pendingKey = null
                 when (key) {
                     "format" -> format = (reader.readValue() as? JsonValue.Str)?.value
                     "formatVersion" -> version = (reader.readValue() as? JsonValue.Num)?.asInt
@@ -1922,6 +2480,19 @@ class FileStore(
                         settings = settingsFromBackup(raw)
                     }
 
+                    // v6 的两段：表情行与日记板。缺失/空数组都是正常的（v1–v5 没有它们）。
+                    "stickers" -> readBackupSection(reader, "stickers") { obj, index ->
+                        stickers += parseBackupSticker(obj, "$where.stickers[$index]")
+                    }
+
+                    "diaryNotes" -> readBackupSection(reader, "diaryNotes") { obj, index ->
+                        diary += parseBackupDiaryNote(obj, "$where.diaryNotes[$index]", now)
+                    }
+
+                    "agentIntents" -> readBackupSection(reader, "agentIntents") { obj, index ->
+                        parseBackupIntent(obj, "$where.agentIntents[$index]", now)?.let { intents += it }
+                    }
+
                     else -> reader.skipValue()
                 }
             }
@@ -1933,13 +2504,19 @@ class FileStore(
             throw BackupValidationException("不是 Yap 备份（format=$format）")
         }
         if (version == null) throw BackupValidationException("备份缺少 formatVersion")
-        if (version != BACKUP_FORMAT_VERSION) throw UnsupportedBackupVersionException(version)
+        // v1–v5 仍可读（老备份别丢），只有比本服务新的版本才拒绝（列 7 起）。
+        if (version < 1 || version > BACKUP_FORMAT_VERSION) {
+            throw UnsupportedBackupVersionException(version)
+        }
 
         requireUniqueIds("personas", personas.map { it.id })
         requireUniqueIds("sessions", sessions.map { it.id })
         requireUniqueIds("memories", memories.map { it.id })
         requireUniqueIds("presets", presets.map { it.id })
         requireUniqueIds("media", media.map { it.item.id })
+        requireUniqueIds("stickers", stickers.map { it.id })
+        requireUniqueIds("diaryNotes", diary.map { it.id })
+        requireUniqueIds("agentIntents", intents.map { it.id })
 
         return StreamedBackup(
             personas = personas,
@@ -1949,7 +2526,10 @@ class FileStore(
             settings = settings,
             media = media,
             messageSpools = messageSpools,
-            messageCount = messageCount
+            messageCount = messageCount,
+            stickers = stickers,
+            diaryNotes = diary,
+            intents = intents
         )
     }
 
@@ -1998,6 +2578,7 @@ class FileStore(
         var declaredBytes: Long? = null
         var declaredSha: String? = null
         var createdAt: Long? = null
+        var fileName: String? = null
         var actualBytes = 0L
         var dataSeen = false
 
@@ -2014,6 +2595,12 @@ class FileStore(
                 "bytes" -> declaredBytes = (reader.readValue() as? JsonValue.Num)?.asLong
                 "sha256" -> declaredSha = (reader.readValue() as? JsonValue.Str)?.value?.trim()?.lowercase()
                 "createdAt" -> createdAt = (reader.readValue() as? JsonValue.Num)?.asLong
+                // v6：客户端备份里的裸文件名（与 avatarUri / attachmentsJson[].uri / stickers[].fileName 对齐）。
+                "fileName" -> {
+                    val raw = (reader.readValue() as? JsonValue.Str)?.value?.trim().orEmpty()
+                    // 只接受裸文件名；带目录/协议的一律丢掉（备份不该把设备路径带进来）。
+                    fileName = raw.takeIf { MediaItem.FILE_NAME_PATTERN.matches(it) }
+                }
                 "data" -> {
                     if (dataSeen) throw BackupValidationException("$where 的 data 出现了两次")
                     dataSeen = true
@@ -2052,7 +2639,8 @@ class FileStore(
             mime = mimeValue,
             bytes = actualBytes,
             sha256 = actualSha,
-            createdAt = createdAt ?: now
+            createdAt = createdAt ?: now,
+            fileName = fileName
         )
         return StreamedMedia(item, staged)
     }
@@ -2116,6 +2704,19 @@ class FileStore(
             }
         }
 
+        // v6 的两段跨表引用：表情与日记都必须挂在存在的人格下（与记忆同一规则）。
+        for (sticker in parsed.stickers) {
+            val personaId = sticker.personaId
+            if (personaId != null && finalPersonas[personaId] == null) {
+                throw BackupValidationException("表情 ${sticker.id} 引用了不存在的人格 $personaId")
+            }
+        }
+        for (note in parsed.diaryNotes) {
+            if (finalPersonas[note.personaId] == null) {
+                throw BackupValidationException("日记 ${note.id} 引用了不存在的人格 ${note.personaId}")
+            }
+        }
+
         // 受影响会话：导入的会话 + 导入消息落在的会话（replace 时是所有最终会话）。
         val affectedSessions = LinkedHashSet<String>()
         if (mode == "replace") {
@@ -2144,6 +2745,10 @@ class FileStore(
             moods.clear()
             presence.clear()
             proactiveStates.clear()
+            stickers.clear()
+            diaryNotes.clear()
+            intents.clear()
+            autoStates.clear()
         } else {
             for (sessionId in affectedSessions) {
                 deleteRecursively(sessionDir(sessionId))
@@ -2167,12 +2772,35 @@ class FileStore(
         }
         persistMediaLocked()
 
+        // 「裸文件名 → 媒体 id」：v6 的 avatarUri / attachmentsJson[].uri / stickers[].fileName
+        // 全靠它接回服务端的 `/v1/media/<id>`。先来先得（同名文件以先导入的为准）。
+        val mediaByFileName = LinkedHashMap<String, String>()
+        for (item in media.values.sortedWith(compareBy({ it.createdAt }, { it.id }))) {
+            mediaByFileName.putIfAbsent(item.exportFileName, item.id)
+        }
+
+        // 人格头像：客户端备份给的是裸文件名，换成 `/v1/media/<id>`；解析不了就保留原名（不报错）。
+        for ((personaId, persona) in finalPersonas) {
+            val raw = BackupV6.extraStringOrNull(persona.extraFields, "avatarUri") ?: continue
+            val mediaId = mediaByFileName[raw] ?: continue
+            val extras = LinkedHashMap(persona.extraFields)
+            extras.remove("avatarUri")
+            finalPersonas[personaId] = persona.copy(
+                avatarUrl = MediaUrl.url(mediaId),
+                extraFields = extras
+            )
+        }
+
         // 只重写受影响会话的块文件：消息按 (createdAt, id) 重排后按 BLOCK_SIZE 重新切块。
         for (sessionId in affectedSessions) {
             val template = finalSessions.getValue(sessionId)
             val merged = LinkedHashMap<String, Message>()
             existingPerSession[sessionId]?.forEach { merged[it.id] = it }
-            for (message in readMessageSpool(parsed.messageSpools[sessionId])) merged[message.id] = message
+            for (message in readMessageSpool(parsed.messageSpools[sessionId])) {
+                merged[message.id] = message.copy(
+                    attachments = message.attachments.mapNotNull { resolveAttachment(it, mediaByFileName) }
+                )
+            }
             val ordered = merged.values.sortedWith(MESSAGE_ORDER)
             val metas = writeSessionBlocksLocked(sessionId, ordered)
             blockCache[sessionId] = metas.toMutableList()
@@ -2197,6 +2825,38 @@ class FileStore(
         presets.clear()
         presets.putAll(finalPresets)
 
+        // 人格上带回来的心情（客户端把「此刻的心情」当人格的一部分）：写回 `moods.json`。
+        for (persona in parsed.personas) {
+            val label = BackupV6.extraStringOrNull(persona.extraFields, "mood")?.takeIf { it.isNotBlank() }
+                ?: continue
+            val intensity = BackupV6.extraInt(persona.extraFields, "moodIntensity") ?: 2
+            moods[persona.id] = Mood(
+                personaId = persona.id,
+                label = label,
+                intensity = intensity.coerceIn(0, 5),
+                updatedAt = BackupV6.extraLong(persona.extraFields, "moodUpdatedAt") ?: persona.updatedAt,
+                valence = Mood.defaultValence(label),
+                arousal = Mood.defaultArousal(intensity),
+                dominance = Mood.defaultDominance(),
+                reason = BackupV6.extraString(persona.extraFields, "moodReason").take(Mood.MAX_REASON_CHARS)
+            )
+        }
+
+        // v6 的表情 / 日记 / 念头：merge 按 id 覆盖，replace 已经清空。
+        for (sticker in parsed.stickers) {
+            // 客户端 v6 的 `stickers[].id` 与 `media[]` 的 `id` 是两套编号，靠 `fileName` 关联。
+            // 服务端内部约定「表情 id = 媒体 id」，所以这里按文件名归一一次；找不到字节就原样保留
+            // （一条没有文件的表情行，比让整份备份失败好）。
+            val mediaId = mediaByFileName[sticker.file]
+            val normalized = if (mediaId != null && mediaId != sticker.id) sticker.copy(id = mediaId) else sticker
+            stickers[normalized.id] = normalized
+        }
+        for (note in parsed.diaryNotes) diaryNotes[note.id] = note
+        for (intent in parsed.intents) {
+            // 念头是易失的：人格已经不在了就丢掉，不让它把整份导入顶回去。
+            if (finalPersonas[intent.personaId] != null) intents[intent.id] = intent
+        }
+
         // 合并设置的语义：备份里给了 settings 才改；只接白名单键。
         if (parsed.settings != null) {
             val merged = LinkedHashMap<String, JsonValue>()
@@ -2218,6 +2878,9 @@ class FileStore(
         persistProactiveStateLocked()
         persistMemoriesLocked()
         persistPresetsLocked()
+        persistStickersLocked()
+        persistDiaryNotesLocked()
+        persistIntentsLocked()
         writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
         lastTimestamp = maxOf(lastTimestamp, computeLastTimestampLocked())
         for (memory in memories.values) lastTimestamp = maxOf(lastTimestamp, memory.updatedAt)
@@ -2231,8 +2894,27 @@ class FileStore(
             memories = parsed.memories.size,
             presets = parsed.presets.size,
             media = parsed.media.size,
-            settings = parsed.settings != null
+            settings = parsed.settings != null,
+            stickers = parsed.stickers.size,
+            diaryNotes = parsed.diaryNotes.size
         )
+    }
+
+    /**
+     * 备份里的一条附件引用 → 服务端的 `/v1/media/<id>`。
+     *
+     * 三种输入都认：已经是 `/v1/media/<id>`（服务端 v5 备份）、裸媒体 id、
+     * v6 的裸文件名（`attachmentsJson[].uri`）。都解析不出来就丢掉这条附件
+     * （客户端 `BackupAttachmentsPortable.portable` 同样的取舍：恢复不出来的引用不写进历史）。
+     */
+    private fun resolveAttachment(reference: String, mediaByFileName: Map<String, String>): String? {
+        val text = reference.trim()
+        if (text.isEmpty()) return null
+        MediaUrl.idOf(text)?.let { id ->
+            if (media.containsKey(id)) return MediaUrl.url(id)
+        }
+        val byName = mediaByFileName[text] ?: return null
+        return MediaUrl.url(byName)
     }
 
     private fun requireUniqueIds(section: String, ids: List<String>) {
@@ -2372,6 +3054,17 @@ class FileStore(
     // 字段级校验（persona / session / message / memory / preset / tags）在流式导入里复用；
     // 0.12.1 起不再有「整份 JsonValue 备份」那条路径，所以这里只有逐条解析。
 
+    /**
+     * 备份里的一行人格。
+     *
+     * 两种形状都认：
+     * - **服务端 v5**：`avatarUrl` 是 `/v1/media/<id>`，客户端字段在 `extraFields`；
+     * - **客户端 v6**：`avatarUri` 是**裸文件名**（真正字节在 `media[]` 里），多出
+     *   `traits/likes/behaviors/personaCardJson/mood/...` 等列。
+     *
+     * `avatarUri` 先原样留在 `extraFields` 里；[commitBackupStreamed] 在媒体表就绪后用
+     * 「文件名 → 媒体 id」把它解析成 `avatarUrl`（那时候才知道媒体 id 是什么）。
+     */
     private fun parseBackupPersona(obj: JsonValue.Obj, where: String, now: Long): Persona {
         val id = obj.reqString("id", where)
         if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
@@ -2380,12 +3073,14 @@ class FileStore(
         val createdAt = obj.optLong("createdAt", where) ?: now
         val updatedAt = obj.optLong("updatedAt", where) ?: createdAt
         val isDefault = obj.optBool("isDefault", where) ?: false
+        val avatarUrl = obj.optString("avatarUrl", where)?.takeIf { it.isNotBlank() }
+            ?: MediaUrl.canonical(obj.optString("avatarUri", where)?.takeIf { MediaUrl.idOf(it) != null })
         return Persona(
             id = id,
             name = name,
             nameEn = obj.optString("nameEn", where) ?: "",
             description = obj.optString("description", where) ?: "",
-            avatarUrl = obj.optString("avatarUrl", where),
+            avatarUrl = avatarUrl,
             isDefault = isDefault,
             createdAt = createdAt,
             updatedAt = updatedAt,
@@ -2411,7 +3106,10 @@ class FileStore(
             lastBlockIndex = obj.optInt("lastBlockIndex", where) ?: -1,
             // 兼容客户端备份的 `unreadCount`。
             unread = obj.optInt("unread", where) ?: obj.optInt("unreadCount", where) ?: 0,
-            messageCount = obj.optLong("messageCount", where) ?: 0
+            messageCount = obj.optLong("messageCount", where) ?: 0,
+            // 客户端 v6 的会话列（summary / pinned / apiConfigId / overrides…）：原样留着，
+            // 再导出时字段一个不少。
+            extraFields = obj.fields.filterKeys { it !in Session.RESERVED_KEYS }
         )
     }
 
@@ -2426,10 +3124,11 @@ class FileStore(
         val createdAt = obj.optLong("createdAt", where) ?: now
         val blockIndex = obj.optInt("blockIndex", where) ?: 0
         if (blockIndex < 0) throw BackupValidationException("$where 的 blockIndex 不能是负数")
-        val attachments = if (obj.fields.containsKey("attachments")) {
-            obj.stringList("attachments", where)
-        } else {
-            emptyList()
+        val attachments = when {
+            obj.fields.containsKey("attachments") -> obj.stringList("attachments", where)
+            // 客户端 v6：附件是 `attachmentsJson`（`[{"uri":"裸文件名","mime":..}]`）。
+            // 这里先取出裸文件名，等媒体表就绪后在提交阶段解析成 `/v1/media/<id>`。
+            else -> parseAttachmentsJson(obj.fields["attachmentsJson"], where)
         }
         return Message(
             id = id,
@@ -2444,8 +3143,34 @@ class FileStore(
             clientMessageId = obj.optString("clientMessageId", where),
             replyTo = obj.optString("replyTo", where),
             promptTokens = obj.optInt("promptTokens", where),
-            completionTokens = obj.optInt("completionTokens", where)
+            completionTokens = obj.optInt("completionTokens", where),
+            toolTraceJson = obj.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() }
         )
+    }
+
+    /**
+     * 客户端 `attachmentsJson` → 附件引用列表。
+     *
+     * 这一阶段只做「形状」：`uri` 先原样返回（可能是裸文件名，也可能是历史设备路径），
+     * 提交阶段再由 [resolveAttachment] 用「文件名 → 媒体 id」换成服务端的 `/v1/media/<id>`。
+     * 坏 JSON 不抛异常（一条脏附件不该让整份备份失败）。
+     */
+    private fun parseAttachmentsJson(value: JsonValue?, where: String): List<String> {
+        val text = when (value) {
+            null, JsonValue.Null -> return emptyList()
+            is JsonValue.Str -> value.value.trim()
+            is JsonValue.Arr -> StoreJson.stringify(value)
+            else -> throw BackupValidationException("$where 的 attachmentsJson 必须是字符串")
+        }
+        if (text.isEmpty()) return emptyList()
+        val parsed = runCatching { com.yap.app.core.json.Json.parse(text) }.getOrNull() ?: return emptyList()
+        val items = (parsed as? JsonValue.Arr)?.items ?: return emptyList()
+        val result = ArrayList<String>()
+        for (item in items) {
+            val uri = ((item as? JsonValue.Obj)?.fields?.get("uri") as? JsonValue.Str)?.value?.trim()
+            if (!uri.isNullOrEmpty()) result += uri
+        }
+        return result
     }
 
     private fun parseBackupMemory(obj: JsonValue.Obj, where: String, now: Long): Memory {
@@ -2490,6 +3215,93 @@ class FileStore(
             worldJson = obj.optString("worldJson", where)?.takeIf { it.isNotBlank() },
             speechStyleJson = obj.optString("speechStyleJson", where)?.takeIf { it.isNotBlank() },
             extraFields = obj.fields.filterKeys { it !in Preset.RESERVED_KEYS }
+        )
+    }
+
+    /**
+     * v6 的表情行（客户端 `BackupSticker`）。
+     *
+     * `fileName` / `file` 两个字段取非空的那个（Android 写 `fileName`，iOS 写 `file`）；
+     * 文件本体在 `media[]` 里，导入后 `Sticker.id` 就是那条媒体的 id。
+     * 这里**不校验文件在不在**：允许「只有元数据没有字节」的坏备份被降级成一条没有文件的
+     * 表情行——那比让整份备份失败好（客户端也会跳过没有字节的行）。
+     */
+    private fun parseBackupSticker(obj: JsonValue.Obj, where: String): Sticker {
+        val id = obj.reqString("id", where)
+        if (!MediaUrl.isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val name = (obj.optString("fileName", where) ?: obj.optString("file", where))
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: "$id.gif"
+        if (!MediaItem.FILE_NAME_PATTERN.matches(name)) {
+            throw BackupValidationException("$where 的 fileName 不是裸文件名")
+        }
+        val mime = obj.optString("mime", where)?.trim()?.lowercase()?.ifEmpty { null }
+            ?: MediaMime.GIF
+        if (!MediaMime.isValid(mime)) throw BackupValidationException("$where 的 mime 不合法：$mime")
+        val personaId = obj.optString("personaId", where)?.trim()?.takeIf { it.isNotEmpty() }
+        if (personaId != null && !isValidId(personaId)) {
+            throw BackupValidationException("$where 的 personaId 不合法")
+        }
+        return Sticker(
+            id = id,
+            ownerUserId = obj.optString("ownerUserId", where)?.trim()?.takeIf { it.isNotEmpty() },
+            personaId = personaId,
+            file = name,
+            mime = mime,
+            width = (obj.optInt("width", where) ?: 0).coerceAtLeast(0),
+            height = (obj.optInt("height", where) ?: 0).coerceAtLeast(0),
+            frames = (obj.optInt("frames", where) ?: 1).coerceAtLeast(1),
+            bytes = (obj.optLong("bytes", where) ?: 0L).coerceAtLeast(0),
+            source = Sticker.normalizeSource(obj.optString("source", where)),
+            createdBy = Sticker.normalizeCreatedBy(obj.optString("createdBy", where)),
+            createdAt = obj.optLong("createdAt", where) ?: 0L
+        )
+    }
+
+    private fun parseBackupDiaryNote(obj: JsonValue.Obj, where: String, now: Long): DiaryNote {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        val content = obj.optString("content", where).orEmpty()
+        if (content.length > DiaryNote.MAX_CONTENT_CHARS) {
+            throw BackupValidationException("$where 的 content 超过 ${DiaryNote.MAX_CONTENT_CHARS} 字")
+        }
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        return DiaryNote(
+            id = id,
+            personaId = personaId,
+            content = content,
+            createdAt = createdAt,
+            remindAt = obj.optLong("remindAt", where),
+            remindedAt = obj.optLong("remindedAt", where),
+            updatedAt = obj.optLong("updatedAt", where) ?: createdAt
+        )
+    }
+
+    /** v6 的 `agentIntents[]`；`status` 认不出时退成 `PENDING`（宁可多问一句，不要静默丢念头）。 */
+    private fun parseBackupIntent(obj: JsonValue.Obj, where: String, now: Long): StoredIntent? {
+        val id = obj.optString("id", where)?.trim().orEmpty()
+        if (!isValidId(id)) return null
+        val personaId = obj.optString("personaId", where)?.trim().orEmpty()
+        if (!isValidId(personaId)) return null
+        val createdAt = obj.optLong("createdAt", where) ?: now
+        val status = obj.optString("status", where)?.trim()?.uppercase()
+            ?.takeIf { it in setOf(StoredIntent.STATUS_PENDING, StoredIntent.STATUS_SENT, StoredIntent.STATUS_EXPIRED) }
+            ?: StoredIntent.STATUS_PENDING
+        return StoredIntent(
+            id = id,
+            personaId = personaId,
+            sessionId = obj.optString("sessionId", where)?.takeIf { isValidId(it) },
+            kind = obj.optString("kind", where)?.trim()?.ifEmpty { null } ?: StoredIntent.KIND_REACH_OUT,
+            earliestAt = obj.optLong("earliestAt", where) ?: createdAt,
+            latestAt = obj.optLong("latestAt", where) ?: 0L,
+            note = obj.optString("note", where).orEmpty(),
+            hint = obj.optString("hint", where).orEmpty(),
+            status = status,
+            createdAt = createdAt,
+            sentAt = obj.optLong("sentAt", where)
         )
     }
 
@@ -2572,6 +3384,8 @@ class FileStore(
             Files.exists(root.resolve(PRESETS_FILE)) ||
             Files.exists(root.resolve(PUSH_TOKENS_FILE)) ||
             Files.exists(root.resolve(MEDIA_METADATA_FILE)) ||
+            Files.exists(root.resolve(STICKERS_FILE)) ||
+            Files.exists(root.resolve(DIARY_NOTES_FILE)) ||
             Files.exists(eventsFile) ||
             Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() } ||
             Files.newDirectoryStream(mediaDir).use { it.iterator().hasNext() }
@@ -2653,6 +3467,22 @@ class FileStore(
         loadOptionalObjectList(root.resolve(PUSH_TOKENS_FILE), "tokens") { obj, where ->
             val token = PushRegistration.fromJson(obj, where)
             pushTokens[pushTokenKey(token.platform, token.token)] = token
+        }
+        loadOptionalObjectList(root.resolve(STICKERS_FILE), "stickers") { obj, where ->
+            val sticker = Sticker.fromJson(obj, where)
+            stickers[sticker.id] = sticker
+        }
+        loadOptionalObjectList(root.resolve(DIARY_NOTES_FILE), "notes") { obj, where ->
+            val note = DiaryNote.fromJson(obj, where)
+            diaryNotes[note.id] = note
+        }
+        loadOptionalObjectList(root.resolve(INTENTS_FILE), "intents") { obj, where ->
+            val intent = StoredIntent.fromJson(obj, where)
+            intents[intent.id] = intent
+        }
+        loadOptionalObjectList(root.resolve(AUTO_STATE_FILE), "states") { obj, where ->
+            val state = AutoState.fromJson(obj, where)
+            autoStates[state.personaId] = state
         }
         if (Files.exists(root.resolve(SECRETS_FILE))) {
             // 0600 是承诺，不是建议：打开时再收紧一次（有人复制/解压可能带上更宽的权限）。
@@ -3047,6 +3877,42 @@ class FileStore(
         StoreJson.obj(
             "patches" to StoreJson.arr(
                 pendingPatches.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistStickersLocked() = writeJsonLocked(
+        root.resolve(STICKERS_FILE),
+        StoreJson.obj(
+            "stickers" to StoreJson.arr(
+                stickers.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistDiaryNotesLocked() = writeJsonLocked(
+        root.resolve(DIARY_NOTES_FILE),
+        StoreJson.obj(
+            "notes" to StoreJson.arr(
+                diaryNotes.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistIntentsLocked() = writeJsonLocked(
+        root.resolve(INTENTS_FILE),
+        StoreJson.obj(
+            "intents" to StoreJson.arr(
+                intents.values.sortedWith(compareBy({ it.createdAt }, { it.id })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistAutoStateLocked() = writeJsonLocked(
+        root.resolve(AUTO_STATE_FILE),
+        StoreJson.obj(
+            "states" to StoreJson.arr(
+                autoStates.values.sortedBy { it.personaId }.map { it.toJson() }
             )
         )
     )

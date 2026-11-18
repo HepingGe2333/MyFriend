@@ -23,6 +23,9 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     private let evolution: PersonaEvolutionService?
     /// 自动情绪判定（0.13 schema v17）。同样可选。
     private let moodJudgement: MoodJudgementService?
+    /// 服务端模式判定（0.13）：服务端独立运行，本机不再跑「回复后的后台自主逻辑」。
+    /// 用闭包是因为模式运行中可切换；默认 `false` 让测试与老调用点不用改。
+    private let isServerMode: () -> Bool
     private let lock = NSLock()
     private var extracting: Set<String> = []
 
@@ -33,6 +36,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         resolveConfig: @escaping (ChatSessionEntity) -> CompressionConfig?,
         evolution: PersonaEvolutionService? = nil,
         moodJudgement: MoodJudgementService? = nil,
+        isServerMode: @escaping () -> Bool = { false },
         log: @escaping (String) -> Void = { _ in }
     ) {
         self.stores = stores
@@ -41,10 +45,18 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
         self.resolveConfig = resolveConfig
         self.evolution = evolution
         self.moodJudgement = moodJudgement
+        self.isServerMode = isServerMode
         self.log = log
     }
 
+    /// 服务端模式：本机的后台自主逻辑（抽记忆/压摘要/进化/情绪）一律不跑。
+    ///
+    /// 为什么连「压摘要」也停：服务端模式下上下文由服务端维护，本机压一遍既花一次模型调用，
+    /// 又会和下一次同步进来的块对不上。
+    private var localAutonomyAllowed: Bool { !isServerMode() }
+
     public func memoryExtractionNeeded(sessionId: String, personaId: String) {
+        guard localAutonomyAllowed else { return }
         let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return }
         guard enter(trimmed) else { return }
@@ -74,6 +86,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     }
 
     public func historyCompressionNeeded(sessionId: String) {
+        guard localAutonomyAllowed else { return }
         compression.ensureAsync(sessionId: sessionId)
     }
 
@@ -86,6 +99,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     /// （`CloudPersonaEvolution`）走的是同一个服务对象、同一道闸，
     /// 所以两条触发路径同时命中、或者刚切完模式，都不会评估两次。
     public func personaEvolutionNeeded(sessionId: String, personaId: String) {
+        guard localAutonomyAllowed else { return }
         guard let evolution else { return }
         let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSession.isEmpty else { return }
@@ -125,6 +139,7 @@ public final class ChatBackgroundService: ChatBackgroundTasks {
     /// 三种失败都不报错、不打扰用户：没装服务（安静跳过）、没配 API（按时间衰减）、
     /// 模型输出坏 JSON（服务内部按时间衰减并写日志）。
     public func moodJudgementNeeded(sessionId: String, personaId: String) {
+        guard localAutonomyAllowed else { return }
         guard let moodJudgement else { return }
         let trimmedSession = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedSession.isEmpty else { return }

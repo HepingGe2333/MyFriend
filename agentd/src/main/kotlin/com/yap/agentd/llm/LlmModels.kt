@@ -79,14 +79,48 @@ data class LlmConfig(
         )
 }
 
-/** OpenAI 兼容的一条消息（`role` 只有 system/user/assistant）。 */
-data class LlmMessage(val role: String, val content: String) {
+/**
+ * 模型要求的一次工具调用（OpenAI function calling）。
+ *
+ * [arguments] 保留**原始 JSON 文本**：模型经常给 `{"minutes":"30"}` 这种「数字写成字符串」
+ * 的形状，先解析再序列化会把这类宽容处理藏进传输层；工具执行器自己用宽松解析。
+ */
+data class LlmToolCall(val id: String, val name: String, val arguments: String) {
+    /** 宽松解析参数；坏 JSON 返回 null（执行器据此回一条「参数不是合法 JSON」的工具结果）。 */
+    fun argumentsObject(): com.yap.app.core.json.JsonValue.Obj? {
+        val text = arguments.trim().ifEmpty { "{}" }
+        return runCatching {
+            com.yap.app.core.json.Json.parse(text) as? com.yap.app.core.json.JsonValue.Obj
+        }.getOrNull()
+    }
+}
+
+/**
+ * OpenAI 兼容的一条消息（`role` 可以是 system/user/assistant/tool）。
+ *
+ * 工具回路需要两种额外形状：
+ * - assistant 消息带 `toolCalls`（模型说「我要调用这些工具」）；
+ * - tool 消息带 `toolCallId` + 工具结果正文（把结果回灌给模型）。
+ *
+ * 这两个字段都有默认值，所以老调用方（`LlmMessage.system/user/assistant`）一行都不用改。
+ */
+data class LlmMessage(
+    val role: String,
+    val content: String,
+    val toolCalls: List<LlmToolCall> = emptyList(),
+    val toolCallId: String? = null
+) {
     companion object {
         fun system(content: String): LlmMessage = LlmMessage("system", content)
 
         fun user(content: String): LlmMessage = LlmMessage("user", content)
 
-        fun assistant(content: String): LlmMessage = LlmMessage("assistant", content)
+        fun assistant(content: String, toolCalls: List<LlmToolCall> = emptyList()): LlmMessage =
+            LlmMessage("assistant", content, toolCalls = toolCalls)
+
+        /** 工具结果回灌（`role=tool`，必须带对应的 `tool_call_id`）。 */
+        fun tool(content: String, toolCallId: String): LlmMessage =
+            LlmMessage("tool", content, toolCallId = toolCallId)
 
         /** 历史消息的角色映射；`SYSTEM` 只可能来自导入数据，按 system 透传。 */
         fun fromStoreRole(role: String, content: String): LlmMessage = when (role.uppercase()) {
@@ -96,6 +130,13 @@ data class LlmMessage(val role: String, val content: String) {
         }
     }
 }
+
+/** 一轮模型输出：文字 + 用量 + 它想调用的工具（没有工具时 `toolCalls` 为空）。 */
+data class LlmTurn(
+    val text: String,
+    val usage: LlmUsage = LlmUsage.ZERO,
+    val toolCalls: List<LlmToolCall> = emptyList()
+)
 
 /** 一次生成的 token 用量；服务端只累加，不猜（缺 usage 时按字数粗估，见 [estimate]）。 */
 data class LlmUsage(val promptTokens: Int = 0, val completionTokens: Int = 0) {

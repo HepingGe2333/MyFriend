@@ -8,6 +8,12 @@ import com.yap.app.domain.Diary
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.UserError
 import com.yap.app.network.userError
+import com.yap.app.data.remote.ServerModeRepository
+import com.yap.app.data.remote.ServerWriteGateway
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -24,7 +30,10 @@ import javax.inject.Singleton
 @Singleton
 class DiaryRepository @Inject constructor(
     private val diaryDao: DiaryNoteDao,
-    private val intentRepository: AgentIntentRepository
+    private val intentRepository: AgentIntentRepository,
+    /** 0.13：服务端模式下日记板是服务端的东西（写路径要走 `/v1/personas/{id}/diary`）。 */
+    private val serverMode: ServerModeRepository,
+    private val serverWrites: ServerWriteGateway
 ) {
 
     companion object {
@@ -53,6 +62,29 @@ class DiaryRepository @Inject constructor(
     ): Result<DiaryNoteEntity> = runCatching {
         val clean = Diary.cleanContent(content) ?: userError(DomainErrorCode.TOOL_CONTENT_MISSING)
         val remindAt = Diary.resolveRemindAt(remindAtMillis, remindInMinutes, now)
+        // 服务端模式：先写服务端（服务端分配 id 与时间），成功后再落本机缓存。
+        // 失败原样上抛：日记是「他记下的一件事」，不能让用户以为写进去了、其实只在缓存里。
+        if (serverMode.isEnabled()) {
+            val saved = serverWrites.saveDiary(
+                personaId = personaId,
+                payload = buildJsonObject {
+                    put("content", clean)
+                    if (remindAt != null) put("remindAt", remindAt) else put("remindAt", JsonNull)
+                }
+            ).getOrThrow()
+            val note = DiaryNoteEntity(
+                id = saved.id.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString(),
+                // 本机缓存存**本地**人格 id（服务端 id 只在请求里用）：否则按当前人格查不到。
+                personaId = personaId,
+                content = saved.content.takeIf { it.isNotBlank() } ?: clean,
+                createdAt = saved.createdAt.takeIf { it > 0L } ?: now,
+                remindAt = saved.remindAt,
+                remindedAt = saved.remindedAt,
+                updatedAt = saved.updatedAt.takeIf { it > 0L } ?: now
+            )
+            diaryDao.insert(note)
+            return@runCatching note
+        }
         val note = DiaryNoteEntity(
             id = UUID.randomUUID().toString(),
             personaId = personaId,
@@ -70,10 +102,18 @@ class DiaryRepository @Inject constructor(
     suspend fun recent(personaId: String, limit: Int? = null): List<Diary.Entry> =
         diaryDao.recent(personaId, Diary.limitOf(limit)).map { it.toEntry() }
 
-    /** 按 id 删（硬删除；只能删自己人格的笔记）。返回是否真的删掉了。 */
+    /**
+     * 按 id 删（硬删除；只能删自己人格的笔记）。返回是否真的删掉了。
+     *
+     * 服务端模式：先删服务端（404 = 已经没了，当成功），再删本机缓存。
+     * 服务端失败返回 false（界面提示一句），绝不「只删本机」让下一次同步把它捞回来。
+     */
     suspend fun remove(personaId: String, noteId: String?): Boolean {
         val id = noteId?.trim().orEmpty()
         if (id.isBlank()) return false
+        if (serverMode.isEnabled()) {
+            if (serverWrites.deleteDiary(personaId, id).isFailure) return false
+        }
         return diaryDao.delete(id, personaId) > 0
     }
 
@@ -90,6 +130,8 @@ class DiaryRepository @Inject constructor(
      * @return 这一拍真正生成念头的条数
      */
     suspend fun remindDue(now: Long = System.currentTimeMillis()): Int {
+        // 服务端模式：提醒由服务端自己负责（它独立运行），客户端再变一次念头就是双份提醒。
+        if (serverMode.isEnabled()) return 0
         val last = lastRemindCheckAt.get()
         if (now - last < REMIND_CHECK_INTERVAL_MS) return 0
         lastRemindCheckAt.set(now)

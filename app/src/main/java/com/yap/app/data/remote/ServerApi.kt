@@ -539,6 +539,52 @@ class ServerApi(
             "memories"
         )
 
+    // ------------------------------------------------------------------ 0.13：表情包 / 日记板（§3.7）
+
+    /**
+     * `GET /v1/stickers?personaId=&limit=`：服务端表情列表（按 createdAt 倒序，最近在前）。
+     *
+     * 用 [requestObjectList] 而不是强类型反序列化：服务端可能回 `{ "stickers": […] }`，
+     * 也可能在别的版本里回裸数组；拿 [JsonObject] 再逐条宽松解码，字段增减不会让整次同步失败。
+     */
+    suspend fun stickers(personaId: String? = null, limit: Int? = null): List<ServerStickerRow> =
+        requestObjectList(
+            url("v1", "stickers") { builder ->
+                if (!personaId.isNullOrBlank()) builder.addQueryParameter("personaId", personaId)
+                if (limit != null) builder.addQueryParameter("limit", limit.coerceIn(1, MAX_STICKER_LIMIT).toString())
+            },
+            "stickers"
+        ).mapNotNull { row ->
+            runCatching { json.decodeFromJsonElement<ServerStickerRow>(row) }.getOrNull()
+        }
+
+    /** `POST /v1/stickers`：元数据 + base64（或 `mediaId`）；响应里带服务端分配 id 的整行。 */
+    suspend fun createSticker(payload: JsonObject): ServerStickerRow? =
+        postJson<ServerStickerCreated>(url("v1", "stickers"), payload).sticker
+
+    /** `DELETE /v1/stickers/{id}`：服务端不存在时抛 404（由网关决定是否当「已经没了」）。 */
+    suspend fun deleteSticker(stickerId: String) = delete(url("v1", "stickers", stickerId))
+
+    /** `GET /v1/personas/{id}/diary?limit=&since=`：一个日记分页。 */
+    suspend fun diary(personaId: String, limit: Int? = null, since: Long = 0L): List<ServerDiaryRow> =
+        requestObjectList(
+            url("v1", "personas", personaId, "diary") { builder ->
+                if (limit != null) builder.addQueryParameter("limit", limit.coerceIn(1, MAX_DIARY_LIMIT).toString())
+                if (since > 0L) builder.addQueryParameter("since", since.toString())
+            },
+            "notes"
+        ).mapNotNull { row ->
+            runCatching { json.decodeFromJsonElement<ServerDiaryRow>(row) }.getOrNull()
+        }
+
+    /** `POST /v1/personas/{id}/diary`：不带 `id` 新建、带 `id` 更新；响应是 `{"note":…}`。 */
+    suspend fun saveDiary(personaId: String, payload: JsonObject): ServerDiaryRow? =
+        postJson<ServerDiarySaved>(url("v1", "personas", personaId, "diary"), payload).note
+
+    /** `DELETE /v1/personas/{id}/diary/{noteId}`：跨人格隔离由服务端保证。 */
+    suspend fun deleteDiary(personaId: String, noteId: String) =
+        delete(url("v1", "personas", personaId, "diary", noteId))
+
     /** `GET /v1/settings`：服务端公开设置（不含 API Key）。 */
     suspend fun settings(): JsonObject =
         requestJson(requestBuilder(url("v1", "settings")).get().build())
@@ -893,6 +939,12 @@ class ServerApi(
 
         /** `GET /v1/personas/{id}/memories` 的单页上限（服务端 `MAX_MEMORY_LIMIT`）。 */
         const val MEMORY_PAGE_LIMIT = 500
+
+        /** `GET /v1/stickers` 的 `limit` 上限（服务端 `MAX_STICKER_LIMIT`）。 */
+        const val MAX_STICKER_LIMIT = 100
+
+        /** `GET /v1/personas/{id}/diary` 的 `limit` 上限（服务端 `MAX_DIARY_LIMIT`）。 */
+        const val MAX_DIARY_LIMIT = 50
 
         /** 备份导出专用上限：64 MiB（聊天越多备份越大，普通 JSON 仍按 2 MiB）。 */
         const val MAX_BACKUP_RESPONSE_BYTES = 64L * 1024 * 1024

@@ -78,6 +78,9 @@ public final class StickerService {
     private let serverUploader: ((Data, String?) async throws -> String)?
     /// 服务端模式：按 `/v1/media/<id>` 取回字节（制作/收藏服务端表情时用）；nil = 本地模式。
     private let serverDownloader: ((String) async throws -> Data)?
+    /// 服务端模式下表情**行**的写入（0.13）：新增/删除先过服务端，本机只是缓存。
+    /// nil = 本地模式（或只上传媒体、不建行）。
+    private let serverCatalog: StickerServerCatalog?
     /// 服务端模式的用户 id（本地模式为 nil）。
     private let ownerUserId: () -> String?
     private let now: () -> Int64
@@ -89,6 +92,7 @@ public final class StickerService {
         session: URLSession = .shared,
         serverUploader: ((Data, String?) async throws -> String)? = nil,
         serverDownloader: ((String) async throws -> Data)? = nil,
+        serverCatalog: StickerServerCatalog? = nil,
         ownerUserId: @escaping () -> String? = { nil },
         now: @escaping () -> Int64 = { DomainClock.nowMillis },
         log: @escaping (String) -> Void = { _ in }
@@ -98,6 +102,7 @@ public final class StickerService {
         self.session = session
         self.serverUploader = serverUploader
         self.serverDownloader = serverDownloader
+        self.serverCatalog = serverCatalog
         self.ownerUserId = ownerUserId
         self.now = now
         self.log = log
@@ -401,6 +406,45 @@ public final class StickerService {
             guard let inspected = StickerGIF.inspect(data: data) else {
                 throw StickerError.unreadableImage
             }
+            // 服务端模式：收藏也是「新增一个表情」，先 `POST /v1/stickers` 建行，
+            // 否则这条收藏只活在本机缓存里，下次同步就没了。
+            if let catalog = serverCatalog {
+                let createdBy = message.role == .assistant
+                    ? StickerCreator.model.rawValue
+                    : StickerCreator.user.rawValue
+                let row: ServerStickerRow
+                do {
+                    row = try await catalog.createSticker(
+                        data: data,
+                        width: inspected.width,
+                        height: inspected.height,
+                        frames: inspected.frames,
+                        source: StickerSource.fromUserMessage.rawValue,
+                        createdBy: createdBy,
+                        personaId: message.personaId
+                    )
+                } catch {
+                    log("[sticker] 服务端收藏表情失败：\(error.localizedDescription)")
+                    throw StickerError.writeFailed
+                }
+                let sticker = StickerEntity(
+                    id: row.localId,
+                    ownerUserId: row.ownerUserId ?? owner,
+                    personaId: message.personaId,
+                    file: row.mediaRef ?? attachment.uri,
+                    mime: "image/gif",
+                    width: inspected.width,
+                    height: inspected.height,
+                    frames: inspected.frames,
+                    bytes: data.count,
+                    source: row.source.isEmpty ? StickerSource.fromUserMessage.rawValue : row.source,
+                    createdBy: row.createdBy.isEmpty ? createdBy : row.createdBy,
+                    createdAt: row.createdAt > 0 ? row.createdAt : now()
+                )
+                guard !sticker.id.isEmpty else { throw StickerError.writeFailed }
+                try stores.stickers.upsert(sticker)
+                return StickerSaveResult(sticker: sticker, alreadySaved: false)
+            }
             let sticker = StickerEntity(
                 id: UUID().uuidString,
                 ownerUserId: owner,
@@ -471,8 +515,19 @@ public final class StickerService {
     /// 用户删的是「收藏」，不是「历史」。引用判断按文件名在 `attachmentsJson` 里查
     /// （手动删除才走这里，一次 LIKE 扫描的代价可以接受）。
     @discardableResult
-    public func delete(id: String) throws -> Bool {
+    public func delete(id: String) async throws -> Bool {
         guard let sticker = try stores.stickers.byId(id) else { return false }
+        // 服务端模式：先删服务端（404 = 已经没了），再删本机缓存。
+        if let catalog = serverCatalog {
+            do {
+                try await catalog.deleteSticker(id: id)
+            } catch let error as ServerAPIError where error.status == 404 || error.code == "not_found" {
+                // 已经没了：继续删本机缓存。
+            } catch {
+                log("[sticker] 服务端删除失败：\(error.localizedDescription)")
+                throw StickerError.writeFailed
+            }
+        }
         let fileName = (sticker.file as NSString).lastPathComponent
         let referenced = !fileName.isEmpty && (try? stores.messages.count(
             where: "attachmentsJson LIKE ?", [.text("%\(fileName)%")]
@@ -493,6 +548,48 @@ public final class StickerService {
         personaId: String?,
         createdBy: StickerCreator
     ) async throws -> StickerEntity {
+        // 服务端模式：表情是服务端的东西 —— 先 `POST /v1/stickers`（元数据 + base64），
+        // 拿到服务端 id 再写本机缓存行。服务端失败就整次失败，绝不悄悄只存本机
+        //（否则下一次同步它就不见了，用户会以为「我明明收藏过」）。
+        if let catalog = serverCatalog {
+            let row: ServerStickerRow
+            do {
+                row = try await catalog.createSticker(
+                    data: result.data,
+                    width: result.width,
+                    height: result.height,
+                    frames: result.frames,
+                    source: source.rawValue,
+                    createdBy: createdBy.rawValue,
+                    personaId: personaId
+                )
+            } catch {
+                log("[sticker] 服务端建表情失败：\(error.localizedDescription)")
+                throw StickerError.writeFailed
+            }
+            let entity = StickerEntity(
+                id: row.localId,
+                ownerUserId: row.ownerUserId,
+                personaId: row.personaId ?? personaId,
+                file: row.mediaRef ?? row.file,
+                mime: row.mime.isEmpty ? "image/gif" : row.mime,
+                width: max(row.width, 0),
+                height: max(row.height, 0),
+                frames: max(row.frames, 1),
+                bytes: max(row.bytes, 0),
+                source: row.source.isEmpty ? source.rawValue : row.source,
+                createdBy: row.createdBy.isEmpty ? createdBy.rawValue : row.createdBy,
+                createdAt: row.createdAt > 0 ? row.createdAt : now()
+            )
+            guard !entity.id.isEmpty, !entity.file.isEmpty else { throw StickerError.writeFailed }
+            do {
+                try stores.stickers.upsert(entity)
+            } catch {
+                log("[sticker] 落库失败：\(error.localizedDescription)")
+                throw StickerError.writeFailed
+            }
+            return entity
+        }
         let id = UUID().uuidString
         let file: String
         if let uploader = serverUploader {

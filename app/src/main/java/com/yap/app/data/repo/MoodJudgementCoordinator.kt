@@ -46,7 +46,9 @@ class MoodJudgementCoordinator @Inject constructor(
     private val settingsRepository: SettingsRepository,
     private val apiConfigRepository: ApiConfigRepository,
     private val registry: AiProviderRegistry,
-    private val moodRepository: MoodRepository
+    private val moodRepository: MoodRepository,
+    /** 0.13：服务端模式下情绪判定由服务端独立负责，客户端不再自行判一次。 */
+    private val serverMode: com.yap.app.data.remote.ServerModeRepository
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -56,6 +58,8 @@ class MoodJudgementCoordinator @Inject constructor(
     /** 聊天发完一条用户消息后调用：条件满足才在后台判定一次。 */
     fun ensureAsync(personaId: String, now: Long = System.currentTimeMillis()) {
         if (personaId.isBlank()) return
+        // 服务端模式：情绪由服务端判（并同步下来），本机不再重复判一次。
+        if (serverMode.isEnabled()) return
         if (!inFlight.compareAndSet(false, true)) return
         scope.launch {
             try {

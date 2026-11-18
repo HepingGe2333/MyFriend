@@ -143,7 +143,9 @@ class ProactiveDiagnosticsWiringContractTest {
             controller.contains(".getOrDefault(false)")
         )
         assertTrue("读失败要能区分出来", controller.contains(".getOrNull()"))
-        assertTrue("读失败时保持现状", controller.contains("ProactiveDiagnostics.LoopSwitch.KEEP"))
+        // 0.13：服务端模式下必须额外停本地循环，所以闸门从 `ProactiveDiagnostics.loopSwitch`
+        // 换成了 `LocalAutonomy.proactiveGate`（三态语义不变：读不出来仍然 KEEP）。
+        assertTrue("读失败时保持现状", controller.contains("LocalAutonomy.Gate.KEEP"))
         assertTrue("读失败要留日志", controller.contains("Log.w("))
     }
 

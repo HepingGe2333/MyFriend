@@ -817,6 +817,23 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
+     * 长按删掉一个表情（面板里唯一的长按动作）。
+     *
+     * 服务端模式下由仓储先 `DELETE /v1/stickers/{id}`，成功后才删本机缓存；失败提示一句
+     * 「没删掉」——不能让用户以为删了、下次同步又回来。
+     */
+    fun deleteSticker(stickerId: String) {
+        viewModelScope.launch {
+            val result = stickerRepository.delete(stickerId)
+            if (result.isFailure) {
+                ephemeral.update {
+                    it.copy(snackbar = context.getString(R.string.chat_sticker_delete_failed))
+                }
+            }
+        }
+    }
+
+    /**
      * 点选一张表情**直接发出去**（规范：点选即发送，不进入文字草稿）。
      *
      * 与服务端模式的发送共用同一套编排（压缩/上传/SSE），区别只是附件是 `kind=STICKER`。

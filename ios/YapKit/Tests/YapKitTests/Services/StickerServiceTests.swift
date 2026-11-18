@@ -284,7 +284,8 @@ final class StickerServiceTests: XCTestCase {
         let fileURL = try XCTUnwrap(storage.fileURL(for: sticker.file))
         _ = try service.send(stickerId: sticker.id, personaId: personaId, sessionId: sessionId)
 
-        XCTAssertTrue(try service.delete(id: sticker.id))
+        let removed = try await service.delete(id: sticker.id)
+        XCTAssertTrue(removed)
         XCTAssertNil(try temp.stores.stickers.byId(sticker.id))
         XCTAssertTrue(
             FileManager.default.fileExists(atPath: fileURL.path),
@@ -295,7 +296,8 @@ final class StickerServiceTests: XCTestCase {
     func testDeleteRemovesUnreferencedFile() async throws {
         let sticker = try await service.importSticker(data: StickerTestMedia.animatedGIF())
         let fileURL = try XCTUnwrap(storage.fileURL(for: sticker.file))
-        XCTAssertTrue(try service.delete(id: sticker.id))
+        let removed = try await service.delete(id: sticker.id)
+        XCTAssertTrue(removed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 

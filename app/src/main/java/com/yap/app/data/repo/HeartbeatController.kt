@@ -71,7 +71,12 @@ class HeartbeatController @Inject constructor(
     /** 他的日记板：到点的提醒在这里变成念头（`spec/diary/README.md`）。 */
     private val diaryRepository: DiaryRepository,
     /** agent 决策（每日主动上限）：默认进程内，可切 agentd，失败自动回退。 */
-    private val agentCore: AgentCoreClient
+    private val agentCore: AgentCoreClient,
+    /**
+     * 服务端模式：他此时在服务端那边活着（主动消息/情绪/日记提醒都由服务端自己跑）。
+     * 客户端的心跳必须停下，否则就是双份主动消息、双份情绪判定。
+     */
+    private val serverMode: com.yap.app.data.remote.ServerModeRepository
 ) {
 
     /**
@@ -94,6 +99,8 @@ class HeartbeatController @Inject constructor(
         now: Long = System.currentTimeMillis(),
         roll: Double = Random.nextDouble()
     ): Beat {
+        // 服务端模式：这一拍什么都不做。放在最前面，连设置/库都不读。
+        if (serverMode.isEnabled()) return stop(Reason.SERVER_MODE, why = "服务端模式：主动由服务端负责")
         val settings = runCatching { settingsRepository.settings.first() }.getOrNull()
             ?: return stop(Reason.SETTINGS_UNREADABLE, why = "读不到设置")
         if (!settings.agentLoopEnabled) return stop(Reason.LOOP_DISABLED, why = "常驻循环已关闭")

@@ -556,6 +556,13 @@ public final class ServerChatGateway {
             )
             return finished ? .toolFinished(item) : .toolStarted(item)
         case .done(let assistantMessageId, let usage):
+            // 0.13：`silent: true` 的那一轮没有 assistant 消息（服务端只标已读）。
+            // 出队并给界面一个「他这回没说话」的事件，而不是让用户看到一个空气泡。
+            if assistantMessageId.isEmpty {
+                try? outbox.remove(clientMessageId: entry.clientMessageId)
+                log("这一轮他选择了不说话（已读，无气泡）")
+                return .noReply(.stayedSilent)
+            }
             guard let message = try finishAssistantMessage(
                 entry: entry,
                 assistantMessageId: assistantMessageId,

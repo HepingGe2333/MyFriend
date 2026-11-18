@@ -86,7 +86,12 @@ class AgentLoop @Inject constructor(
     private val blockWriter: MessageBlockWriter,
     @ApplicationContext private val context: Context,
     /** 他的日记板：主动 tick 也要把到点提醒变成念头（与心跳同一条路径，靠原子占位去重）。 */
-    private val diaryRepository: DiaryRepository
+    private val diaryRepository: DiaryRepository,
+    /**
+     * 服务端模式：主动思考/主动消息由服务端独立负责。客户端即使被别的入口（WorkManager 兜底、
+     * 主动规则 Worker、历史遗留的服务实例）叫到，也必须在这里停住——这是最后一道闸。
+     */
+    private val serverMode: com.yap.app.data.remote.ServerModeRepository
 ) {
 
     /**
@@ -125,6 +130,10 @@ class AgentLoop @Inject constructor(
     suspend fun lastTickAt(): Long? = runCatching { tickDao.lastTickAt() }.getOrNull()
 
     suspend fun tick(now: Long = System.currentTimeMillis()): Outcome {
+        // 服务端模式：不启动本地自主决策（连锁都不抢）。等切回本地模式，下一次心跳自然恢复。
+        if (serverMode.isEnabled()) {
+            return Outcome(IDLE_MAX, false, "服务端模式：主动由服务端负责（客户端只同步）")
+        }
         if (!tickLock.tryEnter()) {
             return Outcome(IDLE_MAX, false, "上一次思考还没结束，这一拍跳过")
         }

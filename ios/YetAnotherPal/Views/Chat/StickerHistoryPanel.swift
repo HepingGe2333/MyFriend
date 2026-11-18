@@ -230,8 +230,11 @@ struct StickerHistoryPanel: View {
     }
 
     private func delete(_ sticker: StickerEntity) {
-        _ = try? env.stickers.delete(id: sticker.id)
-        Task { await reload() }
+        // 服务端模式下删除要先过服务端（可能失败：服务端没连上时不能假装删掉了）。
+        Task {
+            _ = try? await env.stickers.delete(id: sticker.id)
+            await reload()
+        }
     }
 
     private func message(for error: Error) -> String {

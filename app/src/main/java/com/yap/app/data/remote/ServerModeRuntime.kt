@@ -1,5 +1,6 @@
 package com.yap.app.data.remote
 
+import com.yap.app.data.repo.ServerCatalogSync
 import com.yap.app.util.AppForegroundTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
@@ -63,7 +64,9 @@ class ServerModeRuntime @Inject constructor(
     private val localStore: ServerLocalStore,
     private val bootstrap: ServerBootstrapManager,
     /** 0.13：连接成功后把本机模型配置推给**本机部署**的服务端（远程地址不推，见策略类）。 */
-    private val llmConfig: ServerLlmConfigPusher
+    private val llmConfig: ServerLlmConfigPusher,
+    /** 0.13：服务端表情/日记的拉取缓存（只在服务端模式下工作，失败不影响聊天同步）。 */
+    private val catalogSync: ServerCatalogSync
 ) {
     /** 上一次看到的服务端地址：换地址＝换服务端，旧游标/队列必须清掉。 */
     private var lastBaseUrl: String? = null
@@ -93,6 +96,8 @@ class ServerModeRuntime @Inject constructor(
                     bootstrap.runIfNeeded(baseUrl)
                     // 启动/回前台/刚切换到服务端模式：先补一次状态与离线队列。
                     syncManager.syncNow()
+                    // 0.13：表情/日记是「他随身带的东西」，跟着状态一起刷新（有节流，失败静默）。
+                    runCatching { catalogSync.syncAll(force = true) }
                     if (gateway.isAvailable()) {
                         runCatching { gateway.resendPending() }
                     }
@@ -106,6 +111,7 @@ class ServerModeRuntime @Inject constructor(
                                 // 标记没写就会真的再试一轮，写过就立刻返回。
                                 bootstrap.runIfNeeded(baseUrl)
                                 syncManager.syncNow()
+                                runCatching { catalogSync.syncAll() }
                             }
                         }
                         while (currentCoroutineContext().isActive) {

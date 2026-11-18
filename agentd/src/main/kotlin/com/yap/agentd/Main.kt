@@ -95,7 +95,16 @@ fun main(args: Array<String>) {
     printLlmNotice(llmResolver)
     println(
         "  主动心跳：" +
-            if (services.proactiveTicker?.isRunning == true) "已启动（60 秒一拍，LLM 生成正文）" else "未启用（没有状态存储）"
+            if (services.proactiveTicker?.isRunning == true) {
+                "已启动（60 秒一拍：主动开口 / 日记提醒 / defer_reply 念头；LLM 生成正文）"
+            } else {
+                "未启用（没有状态存储）"
+            }
+    )
+    println(
+        "  自动判定：" +
+            if (services.autoTriggers != null) "已启用（每条聊天后：每 4 条判心情、每 20 条评估进化；不依赖客户端连接）"
+            else "未启用（没有 LLM 配置）"
     )
     printSecurityNotice(options)
     if (rateLimiter.enabled) {
@@ -110,11 +119,13 @@ fun main(args: Array<String>) {
     println("  GET  /v1/state?since=&personaId=")
     println("  GET  /v1/sessions")
     println("  GET  /v1/sessions/{id}/messages?beforeBlock=&afterBlock=")
-    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta → done；真调 LLM 流式生成）")
+    println("  POST /v1/sessions/{id}/messages   （SSE：accepted → delta/tool → done；真调 LLM + 工具回路）")
     println("  POST /v1/sessions/{id}/messages/import   （批量历史导入，≤200 条/批，≤8 MiB）")
     println("  GET  /v1/events?since=&timeoutSeconds=")
-    println("  GET  /v1/backup                    （v5 备份，chunked 流式）")
-    println("  POST /v1/backup                    （{mode,data}，body 流式落盘后增量解析）")
+    println("  GET  /v1/backup                    （v6 备份，与客户端 v6 同形；chunked 流式）")
+    println("  POST /v1/backup                    （{mode,data} 或裸 v6 文件，body 流式落盘后增量解析）")
+    println("  GET/POST /v1/stickers · DELETE /v1/stickers/{id}   （表情包，spec/stickers）")
+    println("  GET/POST /v1/personas/{id}/diary · DELETE …/{noteId}（日记板，spec/diary）")
     println("  POST /v1/media?kind=&mime=&personaId=   （原始图片字节，≤2 MiB）")
     println("  GET  /v1/media/{id}                     （原始字节 + ETag/304）")
     println("  DELETE /v1/media/{id}?force=1")
@@ -439,7 +450,11 @@ private fun printUsage() {
           GET  /v1/state?since=&personaId=  全量/增量状态快照（personas/sessions/messages/心情/在场）
           GET  /v1/sessions                 会话列表（lastMessageAt / unread / lastBlockIndex）
           GET  /v1/sessions/{id}/messages   一页一块的消息分页（beforeBlock 前翻 / afterBlock 后翻）
-          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta → done（真调 LLM 流式）
+          POST /v1/sessions/{id}/messages   发送消息：SSE accepted → delta/tool → done（真调 LLM + 工具回路）
+          GET/POST /v1/stickers, DELETE /v1/stickers/{id}          表情包（spec/stickers）
+          GET/POST /v1/personas/{id}/diary, DELETE …/{noteId}      日记板（spec/diary）
+          GET  /v1/backup                    v6 备份（与客户端同形，chunked 流式）
+          POST /v1/backup                    {mode,data} 或裸 v6 文件
           POST /v1/proactive/tick            立即跑一次主动判定（生产由服务端心跳驱动）
           POST /v1/personas/{id}/evolution/evaluate   人格进化评估 → 待审补丁
           GET  /v1/personas/{id}/evolution/pending    待审补丁

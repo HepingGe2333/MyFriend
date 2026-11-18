@@ -419,7 +419,8 @@ fun ChatScreen(
                             PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                         )
                     },
-                    onClose = viewModel::closeStickerPanel
+                    onClose = viewModel::closeStickerPanel,
+                    onDelete = { sticker -> viewModel.deleteSticker(sticker.id) }
                 )
             }
             Composer(

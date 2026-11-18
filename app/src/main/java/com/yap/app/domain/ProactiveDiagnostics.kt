@@ -29,6 +29,12 @@ object ProactiveDiagnostics {
         /** 用户把「常驻后台」关了（默认是开的）。 */
         LOOP_DISABLED("LOOP_DISABLED", "常驻循环开关是关的，他只在应用打开时存在"),
 
+        /**
+         * 服务端模式：他在服务端那边活着（主动消息/情绪/日记提醒都由服务端独立负责）。
+         * 客户端这一拍什么都不做，否则会出现「双份主动消息」。
+         */
+        SERVER_MODE("SERVER_MODE", "服务端模式：主动由服务端负责，客户端只同步"),
+
         /** 还没有可对话的人格：种子没播完，或者人格被删光了。 */
         NO_PERSONA("NO_PERSONA", "还没有可以对话的人格"),
 
@@ -112,6 +118,7 @@ object ProactiveDiagnostics {
         if (text.isEmpty()) return Reason.UNKNOWN
         return when {
             text == "读不到设置" -> Reason.SETTINGS_UNREADABLE
+            text.contains("服务端模式") -> Reason.SERVER_MODE
             text.contains("常驻循环已关闭") -> Reason.LOOP_DISABLED
             text.contains("还没有可以对话的人格") -> Reason.NO_PERSONA
             text.contains("他在睡觉") -> Reason.SLEEPING
@@ -138,6 +145,7 @@ object ProactiveDiagnostics {
         if (text.isEmpty()) return Reason.UNKNOWN
         return when {
             text.contains("常驻循环已关闭") -> Reason.LOOP_DISABLED
+            text.contains("服务端模式") -> Reason.SERVER_MODE
             text.contains("还没有可以对话的人格") -> Reason.NO_PERSONA
             text.contains("他在睡觉") -> Reason.SLEEPING
             text.contains("还没有可用的 API 配置") -> Reason.NO_CONFIG

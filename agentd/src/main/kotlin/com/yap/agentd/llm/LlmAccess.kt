@@ -26,6 +26,18 @@ class LlmAccess(
         client.stream(config, messages, onDelta)
 
     /**
+     * 带工具表的一次生成（工具回路用）：返回文字 + 用量 + 模型想调用的工具。
+     *
+     * [tools] 是序列化好的 OpenAI tools 数组（见 `tools/ServerToolCatalog.toOpenAiToolsJson`）。
+     */
+    fun chat(
+        config: LlmConfig,
+        messages: List<LlmMessage>,
+        tools: String?,
+        onDelta: (String) -> Unit = {}
+    ): LlmTurn = client.chat(config, messages, tools, onDelta)
+
+    /**
      * 非流式语义的生成（内部仍走流式客户端，只是收集起来）。
      *
      * @param temperature/maxTokens 覆盖默认值：进化评估要稳（0.3 / 900），主动消息要短

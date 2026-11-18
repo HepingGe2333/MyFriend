@@ -132,7 +132,7 @@ class BackupStreamTest {
                 val body = decodeChunked(raw.substring(headerEnd + 4))
                 val parsed = TestSupport.parse(body)
                 assertEquals(FileStore.BACKUP_FORMAT_NAME, parsed.str("format"))
-                assertEquals(5, parsed.int("formatVersion"))
+                assertEquals(FileStore.BACKUP_FORMAT_VERSION, parsed.int("formatVersion"))
                 assertEquals(2, parsed.objects("messages").size)
             }
         } finally {

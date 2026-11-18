@@ -7,6 +7,8 @@ import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import com.yap.app.data.prefs.SettingsRepository
+import com.yap.app.data.remote.ServerModeRepository
+import com.yap.app.domain.LocalAutonomy
 import com.yap.app.domain.ProactiveDiagnostics
 import com.yap.app.service.AgentLoopController
 import dagger.assisted.Assisted
@@ -28,12 +30,19 @@ class ProactiveWorker @AssistedInject constructor(
     private val scheduler: ProactiveScheduler,
     private val agentLoop: AgentLoop,
     private val settingsRepository: SettingsRepository,
-    private val controller: AgentLoopController
+    private val controller: AgentLoopController,
+    /** 0.13：服务端模式下主动由服务端负责，这里连规则都不跑（否则是双份主动消息）。 */
+    private val serverMode: ServerModeRepository
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
         return runCatching {
             val now = System.currentTimeMillis()
+            // 服务端模式：本机不跑任何自主逻辑（规则/上网/想一下全停），只让同步继续。
+            if (!LocalAutonomy.shouldRunLocalTick(serverMode.isEnabled())) {
+                scheduler.ensureScheduled()
+                return@runCatching Result.success(workDataOf(KEY_FIRED to 0))
+            }
             runCatching { repository.browseIdlePersonas(now) }
             // 读失败时**不要猜开关状态**：以前是 `getOrDefault(false)`，一次 DataStore 抖动
             // 就会被当成「循环关了」，于是绕过模型直接按规则发消息（1.2 的老行为）。

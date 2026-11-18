@@ -36,7 +36,9 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
   retained legacy string is the compatibility format name `myfriend.backup`.
 
 
-### 0.13 in progress (dev/0.13.0, unreleased)
+## 0.13.0
+
+Release: 0.13.0 / build 20 (Android and iOS); the server runs independently and backup v6 interoperates with clients.
 
 - **Current time injected every turn**: chat/proactive/tool loops read the local time (date + weekday + HH:mm + UTC
   offset) per request; never cached, never appended twice.

@@ -2,10 +2,13 @@ package com.yap.app.data.repo
 
 import android.content.Context
 import android.net.Uri
+import android.util.Base64
 import com.yap.app.data.local.StickerDao
 import com.yap.app.data.local.StickerEntity
 import com.yap.app.data.local.MessageDao
 import com.yap.app.data.local.MessageRole
+import com.yap.app.data.remote.ServerModeRepository
+import com.yap.app.data.remote.ServerWriteGateway
 import com.yap.app.data.remote.StickerMediaBytes
 import com.yap.app.data.remote.StickerUrlDownloader
 import com.yap.app.domain.AttachmentsCodec
@@ -25,6 +28,8 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import java.util.UUID
 import javax.inject.Inject
@@ -49,6 +54,9 @@ class StickerRepository @Inject constructor(
     private val messageDao: MessageDao,
     private val mediaBytes: StickerMediaBytes,
     private val downloader: StickerUrlDownloader,
+    /** 0.13：服务端模式下表情是服务端的东西，新增/删除要先过服务端（本机只是缓存）。 */
+    private val serverMode: ServerModeRepository,
+    private val serverWrites: ServerWriteGateway,
     @ApplicationContext private val context: Context
 ) : StickerWorkspace {
 
@@ -202,10 +210,14 @@ class StickerRepository @Inject constructor(
     // ---------------------------------------------------------------- 落盘 + 落库
 
     /**
-     * 压缩 → 写 `files/stickers/<id>.gif` → 插一行。
+     * 压缩 → （服务端模式下先建服务端行）→ 写 `files/stickers/<id>.gif` → 插一行。
      *
      * 写文件与插行都在 [MediaFileGc.withFileIoLock]（媒体文件临界区）里：
      * 与聊天图片、头像共用同一把锁，「写一半被杀掉」「刚写的文件被 GC 当成孤儿」都不会发生。
+     *
+     * 服务端模式（0.13）：表情是**服务端的东西**，先 `POST /v1/stickers` 拿到服务端 id，
+     * 再用这个 id 落本地缓存文件与行。服务端失败就整次失败（返回 null，界面提示「没存下来」）——
+     * 绝不悄悄只存本机，否则下次同步时这个表情会「凭空消失」。
      */
     private suspend fun saveInternal(
         source: StickerSource,
@@ -214,8 +226,36 @@ class StickerRepository @Inject constructor(
         personaId: String?
     ): StickerEntity? {
         val build = StickerPipeline.build(source) ?: return null
-        val id = UUID.randomUUID().toString()
         val now = System.currentTimeMillis()
+        // 服务端模式：先建服务端行（服务端分配 id）；失败直接放弃，不写本地半份数据。
+        val serverRow = if (serverMode.isEnabled()) {
+            // 服务端只认自己的 id：本地人格 id 先换成服务端 id 再 POST，否则会 404。
+            val serverPersonaId = personaId?.let {
+                runCatching { serverWrites.serverPersonaId(it) }.getOrElse { _ -> it }
+            }
+            // 大表情不能走 inline base64（服务端 JSON 单字符串 256 KiB 上限，base64 后
+            // 原文件只剩 ~192 KiB）：先 `POST /v1/media?kind=STICKER`，再用 mediaId 建行。
+            val mediaId = if (build.bytes.size > INLINE_BASE64_LIMIT_BYTES) {
+                serverWrites.uploadStickerMedia(build.bytes, serverPersonaId).getOrNull() ?: return null
+            } else {
+                null
+            }
+            serverWrites.createSticker(
+                payload = serverStickerPayload(
+                    bytes = if (mediaId == null) build.bytes else null,
+                    mediaId = mediaId,
+                    kind = kind,
+                    createdBy = createdBy,
+                    width = build.width,
+                    height = build.height,
+                    frames = build.frames,
+                    personaId = serverPersonaId
+                )
+            ).getOrNull() ?: return null
+        } else {
+            null
+        }
+        val id = serverRow?.localId()?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val dir = MediaStorage.stickerDirectory(context)
         return MediaFileGc.withFileIoLock {
             val target = File(dir, "$id.gif")
@@ -237,17 +277,18 @@ class StickerRepository @Inject constructor(
             }
             val entity = StickerEntity(
                 id = id,
-                ownerUserId = null,
+                ownerUserId = serverRow?.ownerUserId,
+                // 本机缓存一律存**本地**人格 id（服务端 id 只用于请求）。
                 personaId = personaId,
                 file = Uri.fromFile(target).toString(),
-                mime = RenderMime.GIF,
+                mime = serverRow?.mime?.takeIf { it.isNotBlank() } ?: RenderMime.GIF,
                 width = build.width,
                 height = build.height,
                 frames = build.frames,
                 bytes = build.byteCount,
-                source = kind.name,
-                createdBy = createdBy.name,
-                createdAt = now
+                source = serverRow?.source?.takeIf { it.isNotBlank() } ?: kind.name,
+                createdBy = serverRow?.createdBy?.takeIf { it.isNotBlank() } ?: createdBy.name,
+                createdAt = serverRow?.createdAt?.takeIf { it > 0L } ?: now
             )
             val inserted = runCatching { stickerDao.insert(entity) }.getOrDefault(-1L)
             if (inserted == -1L) {
@@ -258,9 +299,65 @@ class StickerRepository @Inject constructor(
         }
     }
 
+    /**
+     * 删一个表情（面板/设置里的「删掉」）。
+     *
+     * 服务端模式先 `DELETE /v1/stickers/{id}`，成功（或服务端说 404 = 已经没了）后才删本机缓存行。
+     * 本机文件**不删**：聊天历史里已经发出去的那条消息仍然引用同一个文件，删了会让旧消息变成
+     * 一张打不开的图（iOS 侧也是同一规则）。表情文件 ≤512 KB，留给媒体清理就好。
+     */
+    suspend fun delete(id: String): Result<Boolean> = withContext(Dispatchers.IO) {
+        runCatching {
+            val stickerId = id.trim()
+            if (stickerId.isEmpty()) return@runCatching false
+            if (serverMode.isEnabled()) {
+                // 失败原样上抛：用户点删除时要能知道「服务端没删掉」。
+                serverWrites.deleteSticker(stickerId).getOrThrow()
+            } else if (stickerDao.getById(stickerId) == null) {
+                return@runCatching false
+            }
+            stickerDao.delete(stickerId) > 0
+        }
+    }
+
+    /** 服务端建表情的请求体：一条请求带元数据 + base64（服务端契约 §2）。 */
+    private fun serverStickerPayload(
+        bytes: ByteArray?,
+        mediaId: String?,
+        kind: StickerSourceKind,
+        createdBy: StickerCreator,
+        width: Int,
+        height: Int,
+        frames: Int,
+        personaId: String?
+    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+        if (!personaId.isNullOrBlank()) put("personaId", personaId)
+        put("mime", RenderMime.GIF)
+        if (mediaId != null) {
+            // 服务端契约：`mediaId` 表示「字节已经通过 /v1/media 传过了」。
+            put("mediaId", mediaId)
+        } else if (bytes != null) {
+            put("data", Base64.encodeToString(bytes, Base64.NO_WRAP))
+            put("bytes", bytes.size)
+        }
+        put("width", width)
+        put("height", height)
+        put("frames", frames)
+        put("source", kind.name)
+        put("createdBy", createdBy.name)
+    }
+
     companion object {
         /** 历史面板第一屏：「最近 30 个」（`spec/stickers/README.md`）。 */
         const val RECENT_LIMIT = 30
+
+        /**
+         * 服务端 inline base64 的**原文件**上限（保守取 180 KiB）。
+         *
+         * 服务端的 JSON 解析器对单个字符串有 256 KiB 硬上限，base64 膨胀 4/3，
+         * 原文件最多约 192 KiB；超过就改走 `/v1/media` + `mediaId`。
+         */
+        const val INLINE_BASE64_LIMIT_BYTES = 180 * 1024
     }
 }
 

@@ -247,16 +247,6 @@ class ChatRepository @Inject constructor(
      * 异步、不 await：判定再慢也晚不了一毫秒回话，失败按时间衰减、用户看不到。
      */
     private val moodJudgement: MoodJudgementCoordinator,
-    /**
-     * 服务端模式的人格进化触发：一轮助手回复 `done` / 落库之后按同一套节流评估一次。
-     * 与 [personaEvolution] 共用同一个游标与单飞锁，切模式不会重复评估。
-     */
-    private val serverEvolution: ServerEvolutionTrigger,
-    /**
-     * 服务端模式的多维情绪判定（0.13）：一轮回复落库后调 `/v1/personas/{id}/mood/evaluate`，
-     * 结果写本地缓存供 UI/离线使用。按 4 条用户消息节流，失败静默。
-     */
-    private val serverMood: ServerMoodEvaluator,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
@@ -447,7 +437,6 @@ class ChatRepository @Inject constructor(
         // 服务端只回附件引用（/v1/media/<id>），不带 mime/kind/duration；语音/视频的这部分
         // 元数据只有客户端知道。等用户消息落库后补写一次，否则服务端模式里「语音」会渲染成图片。
         var serverUserMessageId: String? = null
-        var assistantMessageId: String? = null
         val result = serverChat.send(
             sessionId = sessionId,
             content = content.ifEmpty { IMAGE_ONLY_CONTENT },
@@ -456,9 +445,6 @@ class ChatRepository @Inject constructor(
                 when (event) {
                     is com.yap.app.data.remote.ServerSendEvent.Accepted ->
                         serverUserMessageId = event.userMessageId
-
-                    is com.yap.app.data.remote.ServerSendEvent.Done ->
-                        assistantMessageId = event.assistantMessageId
 
                     else -> Unit
                 }
@@ -474,25 +460,9 @@ class ChatRepository @Inject constructor(
                 )
             }
         }
-        // 人格进化（0.13）：服务端这一轮回复已经落进 Room（gateway 在 done 之后拉过一次当前块），
-        // 现在按与本地模式完全相同的节流（20 条用户消息 / 24 小时）回顾一次。
-        // 只在 done 时触发：流断了但服务端还在生成时没有落库，等下一次发送/同步补上。
-        if (result.done) {
-            val roundKey = assistantMessageId.orEmpty().ifBlank { result.clientMessageId }
-            val now = System.currentTimeMillis()
-            runCatching {
-                serverEvolution.onReplyDone(
-                    personaId = personaId.orEmpty(),
-                    roundKey = roundKey,
-                    now = now
-                )
-            }
-            // 情绪（0.13）：按 4 条用户消息节流、单飞、失败静默；服务端没配 LLM 时直接跳过。
-            // 与进化同一个时机（回复已落库），但不共用游标：情绪比人格变化频繁得多。
-            runCatching {
-                serverMood.onReplyDone(personaId = personaId.orEmpty(), now = now)
-            }
-        }
+        // 0.13 起：服务端模式下**情绪判定与人格进化由服务端自己做**（它独立运行，有自己的
+        // 节流与模型），客户端不再在回复后触发评估——否则同一条回复会被两端各判一次。
+        // 客户端只保留「手动评估/接受/拒绝」这类用户显式动作（人格编辑页）。
         return result
     }
 
@@ -741,12 +711,17 @@ class ChatRepository @Inject constructor(
                 )
             )
         }
-        // 人格进化：条件到了（20 条用户消息 / 隔了 24 小时）就在后台回顾一次，
-        // 结果只写进「待审的变化」，不会直接改他的人设，也不会拖慢这条消息的发送。
-        runCatching { personaEvolution.ensureAsync(session.personaId, now) }
-        // 自动情绪判定：条件到了（4 条用户消息 / 24 小时）就在后台判一次，
-        // 结果写进多维心情、下一轮提示词里生效；没有 API 配置或失败时按时间衰减。
-        runCatching { moodJudgement.ensureAsync(session.personaId, now) }
+        // 0.13 服务端模式：情绪判定与人格进化都由服务端独立负责，客户端不再触发。
+        // 这里再挡一次是必要的：本地发送路径在服务端模式下通常不会被走到，但导入/补数据等
+        // 路径仍可能落一条用户消息，不能让它们把「自动情绪/进化」带起来（=双份判定）。
+        if (!isServerMode()) {
+            // 人格进化：条件到了（20 条用户消息 / 隔了 24 小时）就在后台回顾一次，
+            // 结果只写进「待审的变化」，不会直接改他的人设，也不会拖慢这条消息的发送。
+            runCatching { personaEvolution.ensureAsync(session.personaId, now) }
+            // 自动情绪判定：条件到了（4 条用户消息 / 24 小时）就在后台判一次，
+            // 结果写进多维心情、下一轮提示词里生效；没有 API 配置或失败时按时间衰减。
+            runCatching { moodJudgement.ensureAsync(session.personaId, now) }
+        }
     }
 
     fun generateAssistant(sessionId: String): Flow<GenerationEvent> = flow {
@@ -1051,7 +1026,8 @@ class ChatRepository @Inject constructor(
             }
             // 这一轮聊完了：让他在后台把「已经聊过去的那一段」收成一段记忆。
             // 异步、不 await：压缩再慢也晚不了一毫秒回话，失败也当没发生。
-            historyCompressor.ensureAsync(sessionId)
+            // 服务端模式下上下文由服务端维护，本机不再压缩（否则两边各花一次模型调用）。
+            if (!isServerMode()) historyCompressor.ensureAsync(sessionId)
             // 记忆内置开启；抽不抽由人格的「抽记忆频率」决定（会话可覆盖）。
             val count = messageDao.countInSession(sessionId)
             val freshSession = sessionDao.getById(sessionId)

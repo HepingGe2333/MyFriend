@@ -364,6 +364,32 @@ object AppModule {
     fun provideServerApiProvider(mode: com.yap.app.data.remote.ServerModeRepository):
         com.yap.app.data.remote.ServerApiProvider = mode
 
+    /** 表情/日记拉取要按本机人格找服务端 id：生产实现复用写网关的映射。 */
+    @Provides
+    @Singleton
+    fun provideServerPersonaIdMapper(
+        gateway: com.yap.app.data.remote.ServerWriteGateway
+    ): com.yap.app.data.remote.ServerPersonaIdMapper = gateway
+
+    /** 表情/日记拉取要知道本机有哪些人格（生产实现只读 `PersonaDao`）。 */
+    @Provides
+    @Singleton
+    fun provideServerCatalogPersonas(
+        dao: com.yap.app.data.local.PersonaDao
+    ): com.yap.app.data.remote.ServerCatalogPersonas =
+        object : com.yap.app.data.remote.ServerCatalogPersonas {
+            override suspend fun localPersonaIds(): List<String> =
+                dao.getAll().map { it.id }
+        }
+
+    /** 表情/日记拉取时的字节落盘：复用 `ServerMediaStore` 的幂等/原子写入。 */
+    @Provides
+    @Singleton
+    fun provideServerCatalogMedia(
+        store: com.yap.app.data.remote.ServerMediaStore
+    ): com.yap.app.data.remote.ServerCatalogMedia =
+        com.yap.app.data.remote.ServerStickerMedia(store)
+
     @Provides
     @Singleton
     fun provideServerPresenceStore(impl: DataStoreServerPresenceStore): ServerPresenceStore = impl

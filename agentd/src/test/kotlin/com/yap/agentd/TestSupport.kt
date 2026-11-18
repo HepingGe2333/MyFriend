@@ -36,6 +36,20 @@ object TestSupport {
         fun advance(millis: Long) {
             now += millis
         }
+
+        /**
+         * 同一个假时钟的 `java.time.Clock` 视图。
+         *
+         * 服务里有的类收 `java.time.Clock`（`AutoTriggers` / `LlmReplyGenerator`），
+         * 有的收 `() -> Long`（`FileStore`）；测试要的是**同一份时间**，所以给一个适配器。
+         */
+        fun asClock(zone: java.time.ZoneId = java.time.ZoneId.of("Asia/Shanghai")): java.time.Clock =
+            object : java.time.Clock() {
+                override fun getZone(): java.time.ZoneId = zone
+                override fun withZone(newZone: java.time.ZoneId?): java.time.Clock = this
+                override fun instant(): java.time.Instant = java.time.Instant.ofEpochMilli(now)
+                override fun millis(): Long = now
+            }
     }
 
     fun parse(text: String): JsonValue.Obj = Json.parse(text) as JsonValue.Obj
@@ -79,3 +93,24 @@ fun JsonValue.Obj.strings(key: String): List<String> = arr(key).map { item ->
 }
 
 fun JsonValue.Obj.stringAt(key: String): String? = (fields[key] as? JsonValue.Str)?.value
+
+/**
+ * 收集 SSE 事件的 sink（工具回路/聊天测试共用）。
+ *
+ * 为什么放进公用文件：`ChatSseTest` / `MediaApiTest` / `ToolLoopTest` 都要「按类型取事件」，
+ * 每个类各抄一份只会让新增断言时忘了同步 `text()`。
+ */
+class RecordingSink : SseSink {
+    val events = mutableListOf<SseEvent>()
+
+    override fun emit(event: SseEvent) {
+        events += event
+    }
+
+    fun types(): List<String> = events.map { it.type }
+
+    /** 所有 delta 拼起来的文字（客户端看到的那一段）。 */
+    fun text(): String = events.filterIsInstance<SseEvent.Delta>().joinToString("") { it.text }
+
+    inline fun <reified T : SseEvent> firstOf(): T = events.filterIsInstance<T>().first()
+}

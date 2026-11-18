@@ -463,18 +463,18 @@ class ServerPersonaEvolutionTest {
     // ------------------------------------------------------------------ 6. 接线（读源码）
 
     /**
-     * 单测能钉住「触发/节流/接受」的行为，但钉不住「聊天主路径真的调了它」。
-     * 这条按项目惯例读源码：服务端发送在 `done` 之后必须调 [ServerEvolutionTrigger]。
+     * 单测能钉住「触发/节流/接受」的行为，但钉不住「聊天主路径有没有偷偷多触发一次」。
+     * 这条按项目惯例读源码：0.13 起服务端独立运行，客户端在 `done` 之后**不再**调
+     * [ServerEvolutionTrigger]（否则同一条回复会被两端各评估一次）。
      */
     @Test
-    fun `服务端发送在 done 之后触发进化`() {
+    fun `服务端发送在 done 之后不再触发进化`() {
         val source = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
         val block = source
             .substringAfter("suspend fun sendServerMessage(")
             .substringBefore("private suspend fun patchServerAttachments(")
-        assertTrue("sendServerMessage 里要判断 result.done", block.contains("result.done"))
-        assertTrue(
-            "done 之后要交给 ServerEvolutionTrigger（与本地模式共用同一个评估入口）",
+        assertFalse(
+            "客户端不再代服务端触发进化评估（服务端自己会做）",
             block.contains("serverEvolution.onReplyDone(")
         )
     }

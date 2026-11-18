@@ -90,6 +90,9 @@ public final class AgentLoop {
     /// 当前界面语言：主动消息也用缓存里的译文拼提示词（`spec/persona-translation`）。
     /// 触发翻译在视图层，这一层只读缓存。
     private let translationLanguage: () -> String
+    /// 服务端模式判定（0.13）：他在服务端那边独立运行，本机不启动自主决策。
+    /// 闭包是因为模式运行中可切换；默认 `false` 让测试与老调用点不用改。
+    private let isServerMode: () -> Bool
 
     public init(
         stores: DatabaseStores,
@@ -108,7 +111,8 @@ public final class AgentLoop {
         browseOnce: ((String, Int64) -> BrowseOutcome?)? = nil,
         browsingDigest: @escaping (String) -> String? = { _ in nil },
         onMessageDelivered: ((MessageEntity, ChatSessionEntity) -> Void)? = nil,
-        translationLanguage: (() -> String)? = nil
+        translationLanguage: (() -> String)? = nil,
+        isServerMode: @escaping () -> Bool = { false }
     ) {
         self.stores = stores
         self.settings = settings
@@ -127,6 +131,7 @@ public final class AgentLoop {
         self.browsingDigest = browsingDigest
         self.onMessageDelivered = onMessageDelivered
         self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
+        self.isServerMode = isServerMode
     }
 
     /// 最近一次思考的时间（任何人格）：服务刚被拉起时用来说明「是不是想得太近了」。
@@ -136,6 +141,10 @@ public final class AgentLoop {
 
     /// 想一次。
     public func tick(config: CompletionConfig?, model: String, now: Int64? = nil) async -> Outcome {
+        // 服务端模式：不启动本地自主决策（这道闸放在抢锁之前：连锁都不抢）。
+        if isServerMode() {
+            return Outcome(nextDelayMinutes: Self.idleMax, acted: false, summary: LocalAutonomy.serverModeWhy + "（客户端只同步）")
+        }
         // 串行化用 `AsyncMutex`：等待的 tick 挂起而不是占住线程，系统锁也不会被带过 await。
         // 0.11.1 审计 P2-18：等锁响应取消（BGTask 到期时不再白跑一整拍 LLM）。
         do {

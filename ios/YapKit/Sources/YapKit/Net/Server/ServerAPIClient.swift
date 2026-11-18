@@ -499,9 +499,13 @@ public final class ServerAPIClient {
                 summary: payload.summary
             )
         case "done":
-            guard let payload = try? decoder.decode(SSEDonePayload.self, from: data),
-                  !payload.assistantMessageId.isEmpty else {
+            guard let payload = try? decoder.decode(SSEDonePayload.self, from: data) else {
                 throw invalidEvent(name)
+            }
+            // 「不说话」的 done：没有 assistant 消息，但这一轮正常结束（客户端按已读处理）。
+            if payload.assistantMessageId.isEmpty {
+                guard payload.silent == true else { throw invalidEvent(name) }
+                return .done(assistantMessageId: "", usage: payload.usage ?? ServerChatUsage())
             }
             return .done(
                 assistantMessageId: payload.assistantMessageId,
@@ -692,6 +696,9 @@ private struct SSEToolPayload: Decodable {
 private struct SSEDonePayload: Decodable {
     var assistantMessageId: String
     var usage: ServerChatUsage?
+    /// 0.13：这一轮他选择不说话（`stay_silent`）时服务端会带 `silent: true`，
+    /// 且 `assistantMessageId` 是空串（库里没有 assistant 消息）。老服务端不出现这个键。
+    var silent: Bool?
 }
 
 private struct SSEErrorPayload: Decodable {

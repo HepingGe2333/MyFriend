@@ -12,6 +12,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.yap.app.data.remote.ServerModeRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.withTimeoutOrNull
@@ -36,10 +37,18 @@ import java.util.concurrent.TimeUnit
 class MemoryConsolidationWorker @AssistedInject constructor(
     @Assisted appContext: Context,
     @Assisted params: WorkerParameters,
-    private val consolidator: MemoryConsolidator
+    private val consolidator: MemoryConsolidator,
+    /** 0.13：服务端模式下记忆归服务端，每日整理不在本机跑（用户手动点的那次仍然执行）。 */
+    private val serverMode: ServerModeRepository
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        // 服务端模式：自动整理停掉（否则本机会用「缓存里的旧记忆」整理一遍，
+        // 既花一次模型调用，又会和下一次同步打架）。手动点「现在整理一次」是用户显式动作，
+        // 按「保留手动操作」的要求继续跑。
+        if (serverMode.isEnabled() && !tags.contains(TAG_MANUAL)) {
+            return Result.success(workDataOf(KEY_STATUS to STATUS_SERVER_MODE))
+        }
         // 1.9：整理记忆是内置行为，没有开关可读；到点就整理，失败明天再来。
         // 一次整理要问模型，必须给个上限：卡住时宁可说「这次没整理完」，也别让界面一直转。
         val results = runCatching {
@@ -105,6 +114,12 @@ class MemoryConsolidationWorker @AssistedInject constructor(
         const val STATUS_DISABLED = "disabled"
         const val STATUS_FAILED = "failed"
 
+        /** 服务端模式：自动整理由服务端负责，本机这一轮什么都没做。 */
+        const val STATUS_SERVER_MODE = "server_mode"
+
+        /** 手动「现在整理一次」的标记（Worker 靠它区分「用户点的」与「每天自动的」）。 */
+        const val TAG_MANUAL = "memory-consolidation-manual"
+
         /** 每天几点整理（本地时间）：凌晨 4 点，人基本都睡了，也避开用电高峰。 */
         const val CONSOLIDATION_HOUR = 4
 
@@ -156,6 +171,7 @@ class MemoryConsolidationWorker @AssistedInject constructor(
             // 界面上就成了永远转不完的「整理中…」。没网时它自己会失败，并说一句人话。
             val request = OneTimeWorkRequestBuilder<MemoryConsolidationWorker>()
                 .addTag(TAG)
+                .addTag(TAG_MANUAL)
                 .build()
             runCatching {
                 WorkManager.getInstance(context).enqueueUniqueWork(

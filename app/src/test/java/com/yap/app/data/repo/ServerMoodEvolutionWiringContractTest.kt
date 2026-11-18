@@ -1,5 +1,6 @@
 package com.yap.app.data.repo
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -13,14 +14,17 @@ import java.io.File
 class ServerMoodEvolutionWiringContractTest {
 
     @Test
-    fun `服务端回复完成后同时触发进化与情绪`() {
+    fun `服务端回复完成后客户端不再代服务端做情绪与进化`() {
+        // 0.13 起「服务端独立运行」：情绪/进化由服务端自己在一轮回复后判定，
+        // 客户端只同步结果。同一条回复被两端各判一次就是双份判定，因此这里反过来断言：
+        // 服务端发送完成后**不能**再调客户端的评估触发。
         val source = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
         val block = source
             .substringAfter("suspend fun sendServerMessage(")
             .substringBefore("private suspend fun patchServerAttachments(")
-        assertTrue("只在一轮回复落库后触发", block.contains("if (result.done)"))
-        assertTrue(block.contains("serverEvolution.onReplyDone("))
-        assertTrue("情绪判定也要在 done 之后触发", block.contains("serverMood.onReplyDone("))
+        assertTrue("要写清为什么不再触发", block.contains("服务端"))
+        assertFalse("不再触发服务端进化评估", block.contains("serverEvolution.onReplyDone("))
+        assertFalse("不再触发服务端情绪判定", block.contains("serverMood.onReplyDone("))
     }
 
     @Test

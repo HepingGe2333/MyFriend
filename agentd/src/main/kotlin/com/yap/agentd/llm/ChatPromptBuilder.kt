@@ -34,10 +34,14 @@ import java.util.Locale
  * 为什么不自己拼中文：规范要求两端逐字一致，多写一份就一定漂。段落拼接用
  * `"\n\n"` 切分（脚手架保证段内没有空行），插入后按原顺序 join 回去。
  *
- * 工具回路还没做（TODO）：所以「你能做什么」是**诚实的空清单**——不能联网、不能查资料，
- * 不要假装查过。等工具循环落地后，这一段改成从工具注册表生成（§1.3），位置不变。
+ * 「你能做什么」**由 `tools/ServerToolCatalog.capabilityPrompt()` 生成**（§1.3）：
+ * 工具清单只有一处真源，所以「提示词说有」与「服务端真能执行」不会漂。
  */
-class ChatPromptBuilder(private val zone: ZoneId = ZoneId.systemDefault()) {
+class ChatPromptBuilder(
+    private val zone: ZoneId = ZoneId.systemDefault(),
+    /** 「你能做什么」段；测试可以传一段固定文本，生产永远来自工具注册表。 */
+    private val capabilities: String = com.yap.agentd.tools.ServerToolCatalog.capabilityPrompt()
+) {
 
     /**
      * 完整系统提示词（聊天用）。
@@ -119,8 +123,8 @@ class ChatPromptBuilder(private val zone: ZoneId = ZoneId.systemDefault()) {
             )
         }
 
-        // 「你能做什么」：规范 §1.3 固定在关系之后、边界之前。
-        insertAfterSection(sections, PersonaPromptScaffold.Section.RELATIONSHIP, CAPABILITIES)
+        // 「你能做什么」：规范 §1.3 固定在关系之后、边界之前；内容来自工具注册表。
+        insertAfterSection(sections, PersonaPromptScaffold.Section.RELATIONSHIP, capabilities)
 
         return sections.joinToString("\n\n")
     }
@@ -261,19 +265,6 @@ class ChatPromptBuilder(private val zone: ZoneId = ZoneId.systemDefault()) {
     }
 
     companion object {
-        /**
-         * 「你能做什么」：工具回路还没做，所以这里是空清单 + 不撒谎的说明。
-         *
-         * TODO(0.14)：接入工具循环后，改成由服务端工具注册表生成（`spec/persona-guidance` §1.3），
-         * 顺序按注册顺序、联网关闭时整条不出现；段位置保持「关系之后、边界之前」不变。
-         */
-        val CAPABILITIES: String = """
-            # 你能做什么
-            - 你现在没有可用的工具：不能联网搜索、不能打开链接、不能查资料、不能记事。
-            - 对方可能发图片或文件，但你暂时看不到内容，不要假装看见了。
-            - 不要假装查过，也不要编造实时信息（新闻、价格、天气）；不知道就说「不清楚」，需要的话让对方自己看一眼。
-        """.trimIndent()
-
         /** 主动消息的额外指令（只写一句、不空泛）。 */
         val PROACTIVE_INSTRUCTION: String = """
             # 现在的情况
