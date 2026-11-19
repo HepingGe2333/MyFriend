@@ -104,6 +104,10 @@ class ChatPromptBuilder(
             if (profile.behaviors.isNotEmpty()) add("- 习惯：" + profile.behaviors.joinToString("、"))
             if (profile.quirks.isNotBlank()) add("- 设定：" + profile.quirks.replace('\n', '；').take(300))
             if (card.schedule.isNotBlank()) add("- 作息：" + card.schedule.take(120))
+            // 0.14.1：`set_quiet_hours` 写下的安静时段（跨夜由 QuietHours 判断，这里只展示）。
+            PersonaFields.quietHours(persona)?.let { quiet ->
+                add("- 安静时段：${quiet.text()}（这段时间不主动打扰，除非被叫醒）")
+            }
             if (card.doing.isNotBlank()) add("- 平时这个时候：" + card.doing.take(120))
             if (card.caresAbout.isNotBlank()) add("- 最近在意：" + card.caresAbout.take(120))
         }

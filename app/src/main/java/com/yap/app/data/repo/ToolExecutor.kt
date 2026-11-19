@@ -195,10 +195,11 @@ class ToolExecutor @Inject constructor(
     // ---------------------------------------------------------------- 拉黑 / 连发
 
     /**
-     * `block_user`：两轮确认（`spec/experience/README.md` §2）。
+     * `block_user`：两轮确认（`spec/experience/README.md` §9）。
      *
-     * 第一次只写提议；只有「之后的一轮、中间至少一条用户消息」再 confirm 才能生效。
-     * 提议存 `personas.blockProposalJson`，10 分钟过期；确认成功后写 `blockedUntil`。
+     * 第一次只写提议；只有「之后的一轮、`userMessageId` 已经不同」再 confirm 才能生效。
+     * 提议存 `personas.blockProposalJson`（7 个固定字段），10 分钟过期；确认成功后写
+     * `blockedUntil`。回灌给模型的就是 §9 的两行 JSON 之一，与服务端逐字一致。
      */
     private suspend fun blockUser(
         invocation: ToolInvocation,
@@ -209,13 +210,35 @@ class ToolExecutor @Inject constructor(
         runCatching { personaDao.clearExpiredBlocks(now) }
         val fresh = personaDao.getById(persona.id)
             ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_PERSONA_NOT_FOUND))
+        // 已经在拉黑期：与服务端同一条拒绝（不需要再提一次，也不该刷新到期时间）。
+        if (BlockPolicy.isBlocked(fresh.blockedUntil, now)) {
+            return success(
+                invocation = invocation,
+                title = ToolTraceTitle.BLOCK_USER_APPLIED,
+                subtitle = null,
+                detail = appContext.getString(R.string.tool_trace_block_user_applied_detail),
+                modelSummary = "already_blocked",
+                modelText = BlockPolicy.rejectedJson(BlockPolicy.REJECT_ALREADY_BLOCKED)
+            )
+        }
         val existing = BlockPolicy.decode(fresh.blockProposalJson)
         val confirm = invocation.booleanArgument("confirm") == true
         // 模型没写 hours 时按 12 小时；写了 0 / 99 仍由 BlockPolicy 夹到 1–24。
         val hours = invocation.optionalIntArgument("hours") ?: BlockPolicy.DEFAULT_HOURS
         val reason = invocation.argument("reason")
-        val userMessages = runCatching { messageDao.countUserMessages(sessionId) }.getOrDefault(0)
-        return when (val plan = BlockPolicy.plan(existing, confirm, hours, reason, now, userMessages)) {
+        // 「之后的一轮」用本轮最新的用户消息 id 判断：同一轮里连着调两次，id 相同。
+        val userMessageId = runCatching { messageDao.latestUser(sessionId)?.id }.getOrNull().orEmpty()
+        return when (
+            val plan = BlockPolicy.plan(
+                existing = existing,
+                confirm = confirm,
+                hours = hours,
+                reason = reason,
+                now = now,
+                personaId = persona.id,
+                userMessageId = userMessageId
+            )
+        ) {
             is BlockPlan.Pending -> {
                 personaDao.setBlockProposal(persona.id, BlockPolicy.encode(plan.proposal))
                 success(
@@ -224,8 +247,7 @@ class ToolExecutor @Inject constructor(
                     subtitle = "${plan.proposal.hours}h",
                     detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
                     modelSummary = "pending_confirmation",
-                    modelText = "pending_confirmation：拉黑提议已记下（${plan.proposal.hours} 小时），但还没有生效。" +
-                        "必须等对方之后再发至少一条消息，你才能在下一轮调用 confirm=true；不要在同一个回复里确认。"
+                    modelText = BlockPolicy.pendingJson(plan.proposal)
                 )
             }
             is BlockPlan.Apply -> {
@@ -233,11 +255,10 @@ class ToolExecutor @Inject constructor(
                 success(
                     invocation = invocation,
                     title = ToolTraceTitle.BLOCK_USER_APPLIED,
-                    subtitle = "${plan.unitsUntil(now)}h",
+                    subtitle = "${plan.hours}h",
                     detail = appContext.getString(R.string.tool_trace_block_user_applied_detail),
                     modelSummary = "blocked",
-                    modelText = "已生效：你把对方拉黑了，直到 ${plan.until}。到期自动解除；期间不看、不回复对方的消息。" +
-                        "不要把这件事反复解释给对方听。"
+                    modelText = BlockPolicy.blockedJson(plan.until)
                 )
             }
             is BlockPlan.Reject -> success(
@@ -246,14 +267,8 @@ class ToolExecutor @Inject constructor(
                 subtitle = null,
                 detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
                 modelSummary = plan.code,
-                modelText = when (plan.code) {
-                    BlockPolicy.REJECT_NEED_MORE_MESSAGES ->
-                        "现在还不能确认：中间还没有新的用户消息。等下一轮再说；如果这轮已经说了什么，就正常把话说完。"
-                    BlockPolicy.REJECT_EXPIRED ->
-                        "那个拉黑提议已经过期了。如果还是想拉黑，先重新提一次（不要 confirm），等下一轮再确认。"
-                    else ->
-                        "还没有可以确认的拉黑提议。先调用一次 block_user（不要 confirm）提交提议。"
-                }
+                // 拒绝不是「用户可见的动作」：轨迹不标红，模型拿到稳定 code 自己决定下一轮再说。
+                modelText = BlockPolicy.rejectedJson(plan.code)
             )
         }
     }
@@ -1275,9 +1290,6 @@ class ToolExecutor @Inject constructor(
             )
         )
     }
-
-    private fun BlockPlan.Apply.unitsUntil(now: Long): Long =
-        ((until - now).coerceAtLeast(0L) + 3_599_999L) / 3_600_000L
 
     private data class WebAccess(
         val provider: String,

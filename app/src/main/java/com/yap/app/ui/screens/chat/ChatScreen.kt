@@ -340,7 +340,7 @@ fun ChatScreen(
                 presence = state.presence,
                 config = state.config,
                 session = state.session,
-                typing = state.isGenerating && state.hasStarted,
+                typing = state.typing,
                 onBack = onBack,
                 onProfile = { showProfileSheet = true },
                 onOpenMenu = { showMenu = true }
@@ -372,7 +372,6 @@ fun ChatScreen(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             selectedMessage = message
                         },
-                        onRetry = viewModel::regenerate,
                         onViewImage = { viewingImage = it },
                         loadStickerFrames = viewModel::loadStickerFrames,
                         resolveMedia = viewModel::playableFile,
@@ -541,7 +540,6 @@ fun ChatScreen(
         }
         MessageActionSheet(
             message = message,
-            isLastAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == message.id,
             onDismiss = { selectedMessage = null },
             canSaveSticker = messageHasSticker,
             onSaveSticker = {
@@ -556,10 +554,6 @@ fun ChatScreen(
             onEdit = {
                 selectedMessage = null
                 editMessage = message
-            },
-            onRegenerate = {
-                selectedMessage = null
-                viewModel.regenerate()
             },
             onDelete = {
                 selectedMessage = null
@@ -898,7 +892,6 @@ private fun ChatMessageList(
     /** 「回到底部」按钮：直接回到最新一屏（只保留最新一块）。 */
     onShowLatest: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
-    onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
     onSuggestion: (String) -> Unit,
     /** 按需解一张表情的帧（本地文件 / 服务端媒体都走这条）。 */
@@ -1086,7 +1079,6 @@ private fun ChatMessageList(
                                 userAvatarUri = state.settings.userAvatarUri,
                                 userAvatarFallbackUri = state.settings.userAvatarLocalUri,
                                 highlighted = item.message.id == focusMessageId,
-                                isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
                                 // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
                                 // 否则每条用户消息都挂一个小字，会像回执系统而不像一个人。
                                 // 0.11.0（审计 P2-10）：「最后一条助手消息」由 ViewModel 一次算好
@@ -1098,7 +1090,6 @@ private fun ChatMessageList(
                                     lastAssistantAt = state.lastAssistantAt
                                 ),
                                 onLongPress = { onLongPress(item.message) },
-                                onRetry = onRetry,
                                 onViewImage = onViewImage,
                                 loadStickerFrames = loadStickerFrames,
                                 resolveMedia = resolveMedia,
@@ -1107,8 +1098,10 @@ private fun ChatMessageList(
                         }
                     }
                 }
-                if (state.isGenerating && state.hasStarted) {
+                if (state.typing || state.streamingText.isNotBlank()) {
                     // 首字到达前（以及连发之间）只显示输入指示，不画带「…」的占位气泡。
+                    // 服务端模式：只有前台收到 typing.started 才为 true（§8）；离线同步不补动画。
+                    // 老服务端若仍走 delta，也保留暂存气泡的兼容显示（新服务端 message.created 直接入 Room）。
                     if (state.streamingText.isBlank()) {
                         item(key = "typing") { TypingRow() }
                     } else {
@@ -1338,10 +1331,8 @@ private fun MessageBubble(
     userAvatarFallbackUri: String? = null,
     /** 从检索结果定位过来时短暂亮一下（见 ChatScreen 的 focusedMessageId）。 */
     highlighted: Boolean = false,
-    isLatestAssistant: Boolean,
     showRead: Boolean = false,
     onLongPress: () -> Unit,
-    onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
     /** 表情要逐帧播放，所以这里要一个「异步解帧」的口子（Coil 的动图支持在额外依赖里）。 */
     loadStickerFrames: suspend (String) -> com.yap.app.domain.StickerSource?,
@@ -1577,17 +1568,6 @@ private fun MessageBubble(
                                 // 报错里也可能带链接；长按同样要叫得出菜单，不然这段文字像块死区。
                                 onLongPress = onLongPress
                             )
-                        }
-                    }
-                    if (isLatestAssistant) {
-                        TextButton(
-                            onClick = onRetry,
-                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = contentColor)
-                            Spacer(Modifier.width(5.dp))
-                            Text(stringResource(R.string.chat_regenerate), style = MaterialTheme.typography.labelSmall, color = contentColor)
                         }
                     }
                 }
@@ -2615,11 +2595,9 @@ private fun PersonaPickerSheet(
 @Composable
 private fun MessageActionSheet(
     message: MessageEntity,
-    isLastAssistant: Boolean,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
-    onRegenerate: () -> Unit,
     onDelete: () -> Unit,
     /** 这条消息里有表情时为 true：菜单多一项「添加到我的表情」。 */
     canSaveSticker: Boolean,
@@ -2661,9 +2639,8 @@ private fun MessageActionSheet(
             }
             if (message.role == MessageRole.USER) {
                 SheetActionRow(Icons.Outlined.Edit, stringResource(R.string.chat_edit_and_resend), onClick = onEdit)
-            } else if (isLastAssistant) {
-                SheetActionRow(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), onClick = onRegenerate)
             }
+            // §10：不再提供「重新生成」——失败只提示，用户自己决定要不要再说一句。
             SheetActionRow(
                 Icons.Outlined.DeleteOutline,
                 stringResource(R.string.chat_delete_message),

@@ -69,7 +69,18 @@ class AgentdServices(
      * 是否允许客户端通过 `POST /v1/llm-config` 推送模型配置（仅本机部署为 true）。
      * 远程部署必须由部署者用 `--llm-*`/`YAP_LLM_*` 配置，绝不接受客户端推来的 key。
      */
-    val allowClientLlmConfig: Boolean = false
+    val allowClientLlmConfig: Boolean = false,
+    /**
+     * 0.14.1：客户端「在不在前台」的近似（最近一次 `/v1/ 路径` 请求）。路由与 [delivery] 共用一份。
+     */
+    val presence: com.yap.agentd.delivery.ClientPresence = com.yap.agentd.delivery.ClientPresence(),
+    /**
+     * 0.14.1：消息投递队列与 typing 指示器（`spec/experience` §8）。
+     *
+     * `null` = **不启用**：消息落库即发 `message.created`（0.14 的旧行为）。单测默认走这条，
+     * 生产由 `Main` 装配真实时钟/线程；时序测试显式构造一个带假时钟与假 sleeper 的实例。
+     */
+    val delivery: com.yap.agentd.delivery.MessageDelivery? = null
 ) {
     /** 实际生效的生成器：显式注入 > 有 LLM 时用真实现 > 回显（测试/冒烟）。 */
     val effectiveReplyGenerator: ReplyGenerator = replyGenerator
@@ -109,7 +120,13 @@ class AgentdServices(
     /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
     val chatService: ChatService? =
         store?.let {
-            ChatService(it, effectiveReplyGenerator, autoTriggers = autoTriggers, experience = experienceService)
+            ChatService(
+                it,
+                effectiveReplyGenerator,
+                autoTriggers = autoTriggers,
+                experience = experienceService,
+                delivery = delivery
+            )
         }
 
     /**
@@ -125,7 +142,8 @@ class AgentdServices(
             pushSender = pushSender,
             texts = llm?.let { access -> LlmProactiveTextSource(store, access) }
                 ?: ProactiveTextSource.DEFAULT,
-            experience = experienceService
+            experience = experienceService,
+            delivery = delivery
         )
     }
 }

@@ -73,6 +73,9 @@ public struct ServerEventPollReport: Equatable, Sendable {
     public var newMessages: [ServerMessage]
     public var moodChanged: Bool
     public var presenceChanged: Bool
+    /// 这次轮询里 `typing.started` / `typing.stopped`（或 `message.created` 收起输入）
+    /// 改变了哪个会话的输入状态；界面据此立刻刷新「正在输入…」。
+    public var typingChanged: Bool
     /// 这次长轮询是不是空手而归（服务端等满了 25 秒）。
     public var timedOutEmpty: Bool
 
@@ -81,12 +84,14 @@ public struct ServerEventPollReport: Equatable, Sendable {
         newMessages: [ServerMessage] = [],
         moodChanged: Bool = false,
         presenceChanged: Bool = false,
+        typingChanged: Bool = false,
         timedOutEmpty: Bool = false
     ) {
         self.cursor = cursor
         self.newMessages = newMessages
         self.moodChanged = moodChanged
         self.presenceChanged = presenceChanged
+        self.typingChanged = typingChanged
         self.timedOutEmpty = timedOutEmpty
     }
 }
@@ -112,8 +117,11 @@ public actor ServerEventService {
     private let isForeground: @Sendable () -> Bool
     private let now: () -> Int64
     private let log: (String) -> Void
-    /// 活状态变化的回调（心情/在场）。在 actor 内部同步调用，实现方自己要 hop 到主线程。
+    /// 活状态变化的回调（心情/在场/输入中）。在 actor 内部同步调用，实现方自己要 hop 到主线程。
     private let onLiveState: (@Sendable (ServerLiveState) -> Void)?
+    /// 一轮轮询处理完的回调（App 层据此立刻刷新聊天页：新消息直接上屏、收起输入指示）。
+    /// 在 actor 内部同步调用，实现方自己要 hop 到主线程。
+    private let onEventReport: (@Sendable (ServerEventPollReport) -> Void)?
 
     private var live = ServerLiveState()
     private var running = false
@@ -128,6 +136,7 @@ public actor ServerEventService {
         isSessionOpen: @escaping @Sendable (String) -> Bool = { _ in false },
         isForeground: @escaping @Sendable () -> Bool = { true },
         onLiveState: (@Sendable (ServerLiveState) -> Void)? = nil,
+        onEventReport: (@Sendable (ServerEventPollReport) -> Void)? = nil,
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) },
         log: @escaping (String) -> Void = { _ in }
     ) {
@@ -140,6 +149,7 @@ public actor ServerEventService {
         self.isSessionOpen = isSessionOpen
         self.isForeground = isForeground
         self.onLiveState = onLiveState
+        self.onEventReport = onEventReport
         self.now = now
         self.log = log
     }
@@ -174,11 +184,13 @@ public actor ServerEventService {
             for event in page.events {
                 switch event.type {
                 case ServerEventType.messageCreated:
-                    // 这条事件属于哪个本地会话？本机没有对应会话就跳过（不凭空造空会话）。
-                    if let serverMessage = Self.message(from: event),
-                       let localSessionId = sessions.existingLocalSessionId(
-                           serverSessionId: serverMessage.sessionId
-                       ) {
+                    // 0.14.1 §8：一条事件可能带多条消息（服务端连发），**按服务端给的顺序**
+                    // 落库；界面收到回调后一次重读，看到的就是同一顺序。
+                    for serverMessage in Self.messages(from: event) {
+                        // 这条事件属于哪个本地会话？本机没有对应会话就跳过（不凭空造空会话）。
+                        guard let localSessionId = sessions.existingLocalSessionId(
+                            serverSessionId: serverMessage.sessionId
+                        ) else { continue }
                         let message = serverMessage
                         let personaId = event.personaId
                             ?? ((try? stores.sessions.byId(localSessionId)) ?? nil)?.personaId
@@ -213,6 +225,31 @@ public actor ServerEventService {
                         ) {
                             notifications.append(notification)
                         }
+                        // 「消息到了」就等于「不再输入了」：哪怕服务端的 typing.stopped
+                        // 晚到/丢了，输入指示也必须立刻收起（规范 §8）。
+                        if live.typing.removeValue(forKey: localSessionId) != nil {
+                            report.typingChanged = true
+                        }
+                    }
+                case ServerEventType.typingStarted:
+                    // 只有前台且服务端真的推了 typing 事件才显示（规范 §8）。
+                    // 离线期间落库的消息不会走这里，所以同步回来的历史不会补打字动画。
+                    guard isForeground(),
+                          let localSessionId = Self.typingSessionId(
+                              from: event,
+                              sessions: sessions
+                          ) else { continue }
+                    live.typing[localSessionId] = at
+                    live.updatedAt = at
+                    report.typingChanged = true
+                case ServerEventType.typingStopped:
+                    guard let localSessionId = Self.typingSessionId(
+                        from: event,
+                        sessions: sessions
+                    ) else { continue }
+                    if live.typing.removeValue(forKey: localSessionId) != nil {
+                        live.updatedAt = at
+                        report.typingChanged = true
                     }
                 case ServerEventType.moodChanged:
                     if let mood = Self.mood(from: event) {
@@ -250,9 +287,13 @@ public actor ServerEventService {
             report.cursor = state.cursor()
         }
 
-        if report.moodChanged || report.presenceChanged {
+        if report.moodChanged || report.presenceChanged || report.typingChanged {
             live.updatedAt = at
             onLiveState?(live)
+        }
+        if report.moodChanged || report.presenceChanged || report.typingChanged
+            || !report.newMessages.isEmpty {
+            onEventReport?(report)
         }
 
         // 通知放在事务外：通知中心是异步的，让它跟着数据库事务一起回滚没有意义。
@@ -298,6 +339,18 @@ public actor ServerEventService {
         running = false
     }
 
+    /// 清空「正在输入」（进后台 / 停事件流时调）。
+    ///
+    /// 为什么必须清：typing 是**瞬时**状态。App 进后台再回来时，服务端可能早已把
+    /// 那批消息投递完了；如果本地还留着 `typing.started`，用户会看到一条离线消息
+    /// 前面凭空演一次「正在输入…」—— 正是规范 §8 明确禁止的「补打字动画」。
+    public func clearTyping() {
+        guard !live.typing.isEmpty else { return }
+        live.typing.removeAll()
+        live.updatedAt = now()
+        onLiveState?(live)
+    }
+
     // MARK: 事件 → 模型
 
     /// 三类事件的名字（服务端 `StoreEventType`）。
@@ -305,12 +358,41 @@ public actor ServerEventService {
         public static let messageCreated = "message.created"
         public static let moodChanged = "mood.changed"
         public static let presenceChanged = "presence.changed"
+        /// 0.14.1 §8：服务端入队后先发 `typing.started`，到 `visibleAt` 发
+        /// `message.created`，全部发完发 `typing.stopped`。
+        public static let typingStarted = "typing.started"
+        public static let typingStopped = "typing.stopped"
     }
 
-    /// 从 `{message:{…}}` 解出一条消息；形状不对返回 nil（跳过这一条而不是整页失败）。
+    /// 从 `{message:{…}}` / `{messages:[…]}` 解出这一条事件里的消息；形状不对就跳过
+    /// 这一条而不是整页失败。顺序保持服务端给的顺序（多条连发必须按序上屏）。
+    static func messages(from event: ServerEvent) -> [ServerMessage] {
+        guard let object = event.payloadObject else { return [] }
+        if let messageValue = object["message"] {
+            return decode(ServerMessage.self, from: messageValue).map { [$0] } ?? []
+        }
+        if case .array(let values)? = object["messages"] {
+            return values.compactMap { decode(ServerMessage.self, from: $0) }
+        }
+        return []
+    }
+
+    /// 兼容旧调用：一条事件只带一条消息时取第一条。
     static func message(from event: ServerEvent) -> ServerMessage? {
-        guard let object = event.payloadObject, let messageValue = object["message"] else { return nil }
-        return decode(ServerMessage.self, from: messageValue)
+        messages(from: event).first
+    }
+
+    /// typing 事件属于哪个本地会话：事件顶层的 `sessionId`（或 payload 里的）是服务端 id。
+    static func typingSessionId(
+        from event: ServerEvent,
+        sessions: ServerSessionResolver
+    ) -> String? {
+        var raw = event.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty, let object = event.payloadObject {
+            if case .string(let value)? = object["sessionId"] { raw = value }
+        }
+        guard !raw.isEmpty else { return nil }
+        return sessions.existingLocalSessionId(serverSessionId: raw) ?? raw
     }
 
     static func mood(from event: ServerEvent) -> ServerMood? {

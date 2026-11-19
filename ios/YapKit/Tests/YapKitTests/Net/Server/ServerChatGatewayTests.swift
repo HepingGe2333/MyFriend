@@ -64,6 +64,62 @@ final class ServerChatGatewayTests: XCTestCase {
         }
     }
 
+    /// 0.14.1 §8：新服务端不再发 delta，而是 `typing.started` → `message.created`（可多条）
+    /// → `typing.stopped` → `done`。客户端必须直接上屏，`done` 不能把正文覆盖成空。
+    private static func sseDelayedResponse() -> ServerURLProtocolStub.Response {
+        func message(_ id: String, _ content: String, _ createdAt: Int64) -> String {
+            // SSE 的 `data:` 只加在第一行：JSON 必须是一行，否则后续行会被当成 SSE 字段。
+            "{\"message\":{\"id\":\"\(id)\",\"sessionId\":\"s1\",\"blockIndex\":1,"
+                + "\"role\":\"ASSISTANT\",\"content\":\"\(content)\",\"createdAt\":\(createdAt),"
+                + "\"readAt\":null,\"attachments\":[],\"source\":\"CHAT\","
+                + "\"clientMessageId\":null,\"replyTo\":\"u1\","
+                + "\"promptTokens\":null,\"completionTokens\":null}}"
+        }
+        let body = ServerTestSupport.sseFrame(
+            "accepted", #"{"userMessageId":"u1","createdAt":1700}"#
+        )
+            + ServerTestSupport.sseFrame("typing.started", #"{"sessionId":"s1","personaId":"p1","at":1700}"#)
+            + ServerTestSupport.sseFrame("message.created", message("a1", "第一句", 1700))
+            + ServerTestSupport.sseFrame("message.created", message("a2", "第二句", 1701))
+            + ServerTestSupport.sseFrame("typing.stopped", #"{"sessionId":"s1","personaId":"p1","at":1702}"#)
+            + ServerTestSupport.sseFrame(
+                "done", #"{"assistantMessageId":"a2","usage":{"promptTokens":12,"completionTokens":34}}"#
+            )
+        return .sse(body)
+    }
+
+    func testMessageCreatedSSEDisplaysMessagesAndDoneKeepsContent() async throws {
+        ServerURLProtocolStub.enqueue(Self.sseDelayedResponse())
+        let gateway = gateway()
+
+        guard case .started(let stream) = gateway.sendChecked(sessionId: "s1", text: "在吗") else {
+            return XCTFail("应当直接开始")
+        }
+        let result = await collect(stream)
+        XCTAssertNil(result.error)
+
+        // 每条 message.created 都变成 `.appended`（界面立刻上屏，按顺序）。
+        let appended = result.events.compactMap { event -> MessageEntity? in
+            if case .appended(let message) = event { return message }
+            return nil
+        }
+        XCTAssertEqual(appended.map(\.id), ["a1", "a2"])
+        XCTAssertEqual(appended.map(\.content), ["第一句", "第二句"])
+
+        // `done` 不能拿空 delta 把第二条覆盖成空气泡。
+        let done = result.events.compactMap { event -> ChatCompletion? in
+            if case .done(let completion) = event { return completion }
+            return nil
+        }
+        XCTAssertEqual(done.first?.message.id, "a2")
+        XCTAssertEqual(done.first?.message.content, "第二句")
+
+        let stored = try temp.stores.messages.bySession("s1")
+        XCTAssertEqual(stored.map(\.id), ["u1", "a1", "a2"])
+        XCTAssertEqual(stored.map(\.content), ["在吗", "第一句", "第二句"])
+        XCTAssertEqual(gateway.pendingEntries(sessionId: "s1").count, 0)
+    }
+
     // MARK: - 发送成功
 
     func testSendStreamsDeltasPersistsMessagesAndDequeues() async throws {

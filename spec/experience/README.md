@@ -51,3 +51,37 @@
 ## 7. 两端一致
 
 - 同一套规则、同一套提示词模板、同一 schema 版本（v18）、同样的延迟/连发/拉黑/记忆行为；契约测试逐条对齐。
+
+## 8. 服务端消息队列与打字延迟（0.14.1）
+
+- 服务端权威模式下，**延迟由服务端在入队时决定**：每条要发出的 assistant 消息入队时计算
+  `visibleAt = now + clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4.0)`；客户端不再自己加延迟。
+- 前台在线：入队即发 `typing.started`（带 personaId/sessionId），到 `visibleAt` 发 `message.created`，
+  全部发完发 `typing.stopped`；客户端只有在前台且收到 typing 事件时才显示「正在输入…」。
+- 客户端离线：消息照常落库（带 `visibleAt`），连上后同步**直接显示**，不补打字动画、不再延迟。
+- 队列持久化（重启不丢），按会话 FIFO；同一会话同一时间只有一条正在「输入」。
+- 客户端收到的 `message.created` 一律直接上屏；服务端模式移除客户端打字延迟。
+
+## 9. 拉黑协议（统一）
+
+`blockProposalJson` 规范（两端与服务端同一字段名/语义）：
+
+```json
+{"proposalId":"…","personaId":"…","hours":6,"reason":"…","userMessageId":"…",
+ "proposedAt":1700000000000,"expiresAt":1700000600000}
+```
+
+- 提议 10 分钟过期；确认必须来自之后的一轮且 `userMessageId` 不同；
+- 工具返回统一：`{"status":"pending_confirmation","expiresAt":…}` 或 `{"status":"blocked","blockedUntil":…}`；
+- `blockedUntil` 毫秒时间戳；到期即视为解除。
+
+## 10. 不再提供「重新生成」
+
+- 移除所有用户可见的「重新生成」入口（长按菜单、失败行内按钮、快捷键），不保留内部替代；
+- 失败只提示，用户自己决定是否再说一句。
+
+## 11. 备份对称
+
+- 服务端备份必须与客户端 v6 键集一致，并**保留客户端独有段**（`proactiveRules[]`、
+  `memoryConsolidations[]` 等）原样往返：导入时存入 `client_extras`，导出时原样带回。
+- 客户端独有字段不得被服务端扩展键替代；服务端专有数据放可选 `extensions`，客户端忽略。

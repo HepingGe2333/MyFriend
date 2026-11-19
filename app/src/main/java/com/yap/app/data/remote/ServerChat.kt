@@ -94,6 +94,9 @@ sealed class ServerSendEvent {
     data class Delta(val text: String) : ServerSendEvent()
     /** 连发中的一条完整消息（0.14 SSE `message.created`）。 */
     data class MessageCreated(val message: ServerMessage) : ServerSendEvent()
+    /** 0.14.1：服务端开始/结束打字（§8）；界面只据此显示输入指示，不自己加延迟。 */
+    data class TypingStarted(val sessionId: String, val personaId: String) : ServerSendEvent()
+    data class TypingStopped(val sessionId: String, val personaId: String) : ServerSendEvent()
     data class Tool(val name: String, val status: String, val summary: String?) : ServerSendEvent()
     data class Done(val assistantMessageId: String, val usage: ServerUsage) : ServerSendEvent()
     data class Error(val code: String, val message: String) : ServerSendEvent()
@@ -118,6 +121,14 @@ data class ServerSendResult(
 interface ServerChatSink {
     suspend fun applyPage(page: ServerMessagePage): ServerSyncApplyResult
     suspend fun recordUsage(sessionId: String, usage: ServerUsage, at: Long = System.currentTimeMillis())
+
+    /**
+     * 0.14.1：SSE 里的一条完整 assistant 消息**收到就落库**（§8「message.created 直接上屏」）。
+     *
+     * 非 suspend 是刻意的：SSE 回调在 OkHttp 线程，不能在那里等待 Room。生产实现把它投进
+     * 按到达顺序消费的队列；默认空实现让只测编排的假实现不必关心落库细节。
+     */
+    fun enqueueMessage(message: ServerMessage) = Unit
 }
 
 /**
@@ -306,8 +317,18 @@ class ServerChatGateway(
 
                     is ServerChatEvent.Delta -> onEvent(ServerSendEvent.Delta(event.text))
 
-                    is ServerChatEvent.MessageCreated ->
+                    is ServerChatEvent.MessageCreated -> {
+                        // §8：收到就落库（多条按到达顺序），界面靠 Room 立即上屏；
+                        // 不再等 done 之后拉整页，也不在客户端补延迟/打字动画。
+                        sink.enqueueMessage(event.message)
                         onEvent(ServerSendEvent.MessageCreated(event.message))
+                    }
+
+                    is ServerChatEvent.TypingStarted ->
+                        onEvent(ServerSendEvent.TypingStarted(event.sessionId, event.personaId))
+
+                    is ServerChatEvent.TypingStopped ->
+                        onEvent(ServerSendEvent.TypingStopped(event.sessionId, event.personaId))
 
                     is ServerChatEvent.Tool -> onEvent(
                         ServerSendEvent.Tool(event.name, event.status, event.summary)

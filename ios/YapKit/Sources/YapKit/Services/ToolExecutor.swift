@@ -120,7 +120,8 @@ public final class ToolExecutor: ToolRunning {
     public func run(
         _ invocation: ToolInvocation,
         persona: PersonaEntity,
-        sessionId: String
+        sessionId: String,
+        userMessageId: String? = nil
     ) async -> ToolResult {
         let name = invocation.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let at = now()
@@ -158,7 +159,10 @@ public final class ToolExecutor: ToolRunning {
         case "send_message":
             return sendMessage(invocation)
         case "block_user":
-            return blockUser(invocation, persona: persona, sessionId: sessionId, now: at)
+            return blockUser(
+                invocation, persona: persona, sessionId: sessionId,
+                userMessageId: userMessageId, now: at
+            )
         default:
             // 不认识就明确说，不假装做过：模型要能知道这条路走不通。
             return failure(invocation, String(format: String(localized: "不认识这个工具：%@"), name))
@@ -199,6 +203,7 @@ public final class ToolExecutor: ToolRunning {
         _ invocation: ToolInvocation,
         persona: PersonaEntity,
         sessionId: String,
+        userMessageId: String?,
         now: Int64
     ) -> ToolResult {
         // 过期解除在读取时完成（`state` 顺手清列），这里只需要确认现状。
@@ -210,15 +215,15 @@ public final class ToolExecutor: ToolRunning {
 
         if !confirm {
             let proposal = block.propose(
-                personaId: persona.id, sessionId: sessionId,
-                hours: hours, reason: reason, now: now
+                personaId: persona.id,
+                hours: hours, reason: reason, userMessageId: userMessageId, now: now
             )
             return pendingResult(invocation, proposal: proposal)
         }
 
         switch block.confirm(
-            personaId: persona.id, sessionId: sessionId,
-            hours: requestedHours, reason: reason, now: now
+            personaId: persona.id,
+            hours: requestedHours, reason: reason, userMessageId: userMessageId, now: now
         ) {
         case .accepted:
             let until = (try? stores.personas.byId(persona.id))?.blockedUntil ?? 0
@@ -229,8 +234,7 @@ public final class ToolExecutor: ToolRunning {
                 subtitle: state.map { PluralText.format("拉黑 %d 小时", hoursUntil($0.until, now: now)) }
                     ?? String(localized: "已拉黑"),
                 detail: String(localized: "已生效，到期自动解除。"),
-                modelText: "已生效：你把对方拉黑了，直到 \(until)。到期自动解除；"
-                    + "期间不看、不回复对方的消息。不要把这件事反复解释给对方听。"
+                modelText: Self.blockResultJSON(status: "blocked", key: "blockedUntil", value: until)
             )
         case .waitingForNextRound:
             let proposal = block.pendingProposal(personaId: persona.id, now: now)
@@ -261,16 +265,24 @@ public final class ToolExecutor: ToolRunning {
         }
     }
 
-    /// 第一次调用（或重复调用）的结论：`pending_confirmation`（规范 §2 的稳定字符串）。
+    /// 第一次调用（或重复调用）的结论：`pending_confirmation`（规范 §9 的稳定字符串）。
     private func pendingResult(_ invocation: ToolInvocation, proposal: BlockProposal) -> ToolResult {
         success(
             invocation,
             title: String(localized: "拉黑提议"),
             subtitle: PluralText.format("拉黑 %d 小时", proposal.hours),
             detail: String(localized: "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。"),
-            modelText: "pending_confirmation：拉黑提议已记下（\(proposal.hours) 小时），但还没有生效。"
-                + "必须等对方之后再发至少一条消息，你才能在下一轮调用 confirm=true；不要在同一个回复里确认。"
+            modelText: Self.blockResultJSON(
+                status: "pending_confirmation", key: "expiresAt", value: proposal.expiresAt
+            )
         )
+    }
+
+    /// 工具回灌给模型的统一 JSON（`spec/experience/README.md` §9）：
+    /// `{"status":"pending_confirmation","expiresAt":…}` / `{"status":"blocked","blockedUntil":…}`。
+    static func blockResultJSON(status: String, key: String, value: Int64) -> String {
+        let escaped = status.replacingOccurrences(of: "\"", with: "\\\"")
+        return "{\"status\":\"\(escaped)\",\"\(key)\":\(value)}"
     }
 
     /// 还剩几小时（向上取整，用于给模型一句人话）；已经到期返回 0。

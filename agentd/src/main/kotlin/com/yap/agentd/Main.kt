@@ -63,12 +63,17 @@ fun main(args: Array<String>) {
         )
     )
     val llm = LlmAccess(client = LlmClient(), resolver = llmResolver)
+    // 0.14.1（§8）：服务端消息队列 + typing。presence 与路由共用同一份（最近一次 /v1/ 请求）。
+    val presence = com.yap.agentd.delivery.ClientPresence()
+    val delivery = com.yap.agentd.delivery.MessageDelivery(store, presence = presence)
     val services = AgentdServices(
         store = store,
-        replyGenerator = LlmReplyGenerator(store, llm),
+        replyGenerator = LlmReplyGenerator(store, llm, tools = toolExecutor(store, options.ffmpegPath)),
         llm = llm,
         // 只有本机部署才接受客户端推送的模型配置；远程部署必须用 --llm-*/YAP_LLM_*。
-        allowClientLlmConfig = isLoopbackHost(options.host)
+        allowClientLlmConfig = isLoopbackHost(options.host),
+        presence = presence,
+        delivery = delivery
     )
     val server: AgentdServer.StartedServer = try {
         AgentdServer.start(options.host, options.port, options.token, rateLimiter, services)
@@ -80,8 +85,11 @@ fun main(args: Array<String>) {
     // 主动心跳：与任何客户端连接无关，服务端自己每 60 秒判定一次（§3.4）。
     // 掷中后由 LLM 写一句正文再落库，并发 `message.created` 事件（客户端前台/下次同步能收到）。
     services.proactiveTicker?.start()
+    // 0.14.1：投递队列的崩溃恢复线程（前台投递由请求线程完成，它只补发没来得及发的那几条）。
+    services.delivery?.start()
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            services.delivery?.stop()
             services.proactiveTicker?.stop()
             server.stop(0)
             println("yap-agentd 已停止")
@@ -113,6 +121,12 @@ fun main(args: Array<String>) {
             } else {
                 "部分启用（没有 LLM：拉黑与到期解除仍然生效，心理活动/会话记忆跳过）"
             }
+    )
+    // 0.14.1：`watch` 要系统 ffmpeg；没有就明确说「看不了视频」，而不是等模型调用时才失败。
+    val ffmpeg = com.yap.agentd.media.FfmpegFrameExtractor(options.ffmpegPath)
+    println(
+        "  视频解码：ffmpeg " +
+            (ffmpeg.resolvedBinary()?.let { "可用（$it）" } ?: "不可用（服务器没有视频解码器，watch 会明确说看不了）")
     )
     printSecurityNotice(options)
     if (rateLimiter.enabled) {
@@ -183,6 +197,13 @@ internal data class Options(
     val llmBaseUrl: String? = null,
     val llmKey: String? = null,
     val llmModel: String? = null,
+    /**
+     * 0.14.1：系统 `ffmpeg` 的路径（`watch` 抽视频关键帧用）。
+     *
+     * `null` = 按 `YAP_FFMPEG` → `PATH` 里的 `ffmpeg` 自己找；找不到时 `watch` 明确回
+     * 「服务器没有视频解码器，看不了视频」，绝不伪造帧。
+     */
+    val ffmpegPath: String? = null,
     val help: Boolean = false
 )
 
@@ -206,6 +227,7 @@ internal fun parseOptions(
     var llmBaseUrl: String? = null
     var llmKey: String? = null
     var llmModel: String? = null
+    var ffmpegPath: String? = null
     var index = 0
     while (index < args.size) {
         val arg = args[index]
@@ -305,6 +327,18 @@ internal fun parseOptions(
                 index += 1
             }
 
+            arg == "--ffmpeg" -> {
+                ffmpegPath = args.getOrNull(index + 1)?.trim()?.takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--ffmpeg 后面要跟 ffmpeg 可执行文件路径（或留空用 PATH）")
+                index += 2
+            }
+
+            arg.startsWith("--ffmpeg=") -> {
+                ffmpegPath = arg.substringAfter("--ffmpeg=").trim().takeIf { it.isNotEmpty() }
+                    ?: throw IllegalArgumentException("--ffmpeg= 后面要跟 ffmpeg 可执行文件路径")
+                index += 1
+            }
+
             arg == "--llm-model" -> {
                 llmModel = args.getOrNull(index + 1)?.trim()?.takeIf { it.isNotEmpty() }
                     ?: throw IllegalArgumentException("--llm-model 后面要跟模型名，例如 deepseek-chat")
@@ -333,6 +367,7 @@ internal fun parseOptions(
     if (llmBaseUrl == null) llmBaseUrl = env[LlmConfigResolver.ENV_LLM_BASE_URL]?.trim()?.takeIf { it.isNotEmpty() }
     if (llmKey == null) llmKey = env[LlmConfigResolver.ENV_LLM_KEY]?.trim()?.takeIf { it.isNotEmpty() }
     if (llmModel == null) llmModel = env[LlmConfigResolver.ENV_LLM_MODEL]?.trim()?.takeIf { it.isNotEmpty() }
+    if (ffmpegPath == null) ffmpegPath = env["YAP_FFMPEG"]?.trim()?.takeIf { it.isNotEmpty() }
     val envRateLimit = envInt(env, ENV_RATE_LIMIT)
     val envRateBurst = envInt(env, ENV_RATE_BURST)
     val perMinute = rateLimit ?: envRateLimit ?: RateLimiter.DEFAULT_PER_MINUTE
@@ -358,6 +393,7 @@ internal fun parseOptions(
         llmBaseUrl = llmBaseUrl,
         llmKey = llmKey,
         llmModel = llmModel,
+        ffmpegPath = ffmpegPath,
         help = help
     )
 }
@@ -424,6 +460,16 @@ private fun printSecurityNotice(options: Options) {
     }
 }
 
+/** 生产用的工具执行器：`listen`/`watch` 的抽帧器按 `--ffmpeg` / `YAP_FFMPEG` 解析。 */
+private fun toolExecutor(store: FileStore, ffmpegPath: String?): com.yap.agentd.tools.ToolExecutor =
+    com.yap.agentd.tools.ToolExecutor(
+        store = store,
+        media = com.yap.agentd.media.MediaUnderstanding(
+            store,
+            extractor = com.yap.agentd.media.FfmpegFrameExtractor(ffmpegPath)
+        )
+    )
+
 private fun printUsage() {
     println(
         """
@@ -433,6 +479,7 @@ private fun printUsage() {
           agentd [--host 127.0.0.1] [--port 8788] [--data ./agentd-data]
                  [--token <共享密钥>] [--rate-limit 60] [--rate-burst 30]
                  [--llm-base-url <地址>] [--llm-key <API key>] [--llm-model <模型名>]
+                 [--ffmpeg <可执行文件路径>]
 
         选项：
           --host <地址>            监听地址，默认 127.0.0.1（只给本机/同进程用）
@@ -451,6 +498,9 @@ private fun printUsage() {
                                    客户端推送的 api_configs.json + secrets.json；远程部署只用这里的配置。
           --llm-key <API key>      API key（环境变量 YAP_LLM_KEY）；本机网关可以不给
           --llm-model <模型名>     模型名，例如 deepseek-chat（环境变量 YAP_LLM_MODEL）
+          --ffmpeg <路径>          系统 ffmpeg 可执行文件（watch 抽视频关键帧用）；
+                                   默认按 YAP_FFMPEG → PATH 查找，找不到时 watch 会明确说
+                                   「服务器没有视频解码器，看不了视频」，不会伪造帧。
           --help, -h               打印这段说明
 
         接口：

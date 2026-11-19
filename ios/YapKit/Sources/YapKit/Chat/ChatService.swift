@@ -120,14 +120,26 @@ public struct ChatCompletion: Equatable, Sendable {
 /// 聊天服务只负责「按协议呼出去、把结果回灌」。默认实现老老实实说自己做不了，
 /// 这样模型和用户都不会被一个静默空结果骗过去。
 public protocol ToolRunning: AnyObject {
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult
+    /// - Parameter userMessageId: 这一轮那条用户消息的 id（工具据此判断「是不是下一轮」，
+    ///   例如 `block_user` 的两轮确认；没有用户消息时为 nil）。
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult
 }
 
 /// 默认工具执行器：iOS 还没接入任何工具。
 public final class UnavailableToolRunner: ToolRunning {
     public init() {}
 
-    public func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    public func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         let name = invocation.name
         return ToolResult(
             invocation: invocation,
@@ -326,7 +338,7 @@ public final class ChatService {
         return runningGenerations[sessionId] != nil
     }
 
-    // MARK: - 发送 / 重新生成 / 停止
+    // MARK: - 发送 / 停止
 
     /// `send` 的结果：要么已经开始生成，要么**压根没落库**。
     ///
@@ -389,32 +401,6 @@ public final class ChatService {
             return .started(SendOutcome.emptyStream())
         }
         return .started(generate(sessionId: sessionId))
-    }
-
-    /// 重新生成：删掉最后一条助手消息（如果有），然后重新跑一轮。
-    ///
-    /// 与 Android `prepareRegeneration` 一致：只删「最后一条是助手消息」的那一条，
-    /// 没有可回复的用户消息就直接报错。
-    public func regenerate(sessionId: String) -> AsyncThrowingStream<ChatEvent, Error> {
-        do {
-            guard try stores.sessions.byId(sessionId) != nil else {
-                throw ApiException(statusCode: nil, message: String(localized: "会话不存在"))
-            }
-            if let latest = try stores.messages.latest(sessionId: sessionId), latest.role == .assistant {
-                try stores.messages.delete(id: latest.id)
-                try refreshPreview(sessionId: sessionId)
-            }
-            let hasUser = try stores.messages
-                .fetch(where: "sessionId = ? AND role = ?", [.text(sessionId), .text(MessageRole.user.stored)],
-                       orderBy: "createdAt DESC", limit: 1)
-                .isEmpty == false
-            guard hasUser else {
-                throw ApiException(statusCode: nil, message: String(localized: "没有可以重新生成的消息"))
-            }
-        } catch {
-            return Self.failedStream(error)
-        }
-        return generate(sessionId: sessionId)
     }
 
     /// 停止当前这一轮。
@@ -961,7 +947,10 @@ public final class ChatService {
                         continue
                     }
                     executed.insert(fingerprint)
-                    let result = await tools.run(call, persona: persona, sessionId: sessionId)
+                    let result = await tools.run(
+                        call, persona: persona, sessionId: sessionId,
+                        userMessageId: currentUserMessage?.id
+                    )
                     // 0.14 §4：`send_message` 的产物由**这里**落库（工具只交出文本），
                     // 这样才能按「打字延迟 / 连发间隔」控制每一条出现的时机。
                     if let outbound = result.outboundText,

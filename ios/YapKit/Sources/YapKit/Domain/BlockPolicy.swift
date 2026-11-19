@@ -12,21 +12,47 @@ import Foundation
 // 他想清楚了、而且对方确实又说了一句（而不是他对着空气生闷气）。
 
 /// 一次「想拉黑」的提议（还没生效）。
+///
+/// 0.14.1（`spec/experience/README.md` §9）：字段与**服务端 DTO 逐字一致**。
+/// 提议落库的 JSON 形状就是这一组键（没有 `sessionId` / `createdAt` 这类本地别名）：
+///
+/// ```json
+/// {"proposalId":"…","personaId":"…","hours":6,"reason":"…","userMessageId":"…",
+///  "proposedAt":1700000000000,"expiresAt":1700000600000}
+/// ```
+///
+/// 「确认必须来自之后的一轮」不再靠会话里数消息，而是靠 `userMessageId`：
+/// 提议时的那条用户消息 id 与确认时的不同，才算下一轮（同一轮连调两次 id 相同）。
 public struct BlockProposal: Equatable, Sendable, Codable {
+    /// 这次提议的 id（服务端/客户端都按它去重与排查）。
+    public var proposalId: String
     public var personaId: String
-    public var sessionId: String
     /// 到期小时后写进 `personas.blockedUntil`。
     public var hours: Int
     public var reason: String
+    /// 提议时那条用户消息的 id；没有（例如主动轮）时为空串。
+    public var userMessageId: String
     /// 提议的时刻（毫秒时间戳）。
-    public var createdAt: Int64
+    public var proposedAt: Int64
+    /// 提议过期时刻（毫秒时间戳）：`proposedAt + 10 分钟`。
+    public var expiresAt: Int64
 
-    public init(personaId: String, sessionId: String, hours: Int, reason: String, createdAt: Int64) {
+    public init(
+        proposalId: String = UUID().uuidString,
+        personaId: String,
+        hours: Int,
+        reason: String,
+        userMessageId: String = "",
+        proposedAt: Int64,
+        expiresAt: Int64? = nil
+    ) {
+        self.proposalId = proposalId
         self.personaId = personaId
-        self.sessionId = sessionId
         self.hours = BlockPolicy.clampHours(hours)
         self.reason = String(reason.trimmingCharacters(in: .whitespacesAndNewlines).prefix(120))
-        self.createdAt = createdAt
+        self.userMessageId = userMessageId.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.proposedAt = proposedAt
+        self.expiresAt = expiresAt ?? (proposedAt + BlockPolicy.proposalTTLMillis)
     }
 }
 
@@ -87,9 +113,9 @@ public enum BlockPolicy {
         return BlockState(until: until, reason: trimmed.isEmpty ? nil : trimmed)
     }
 
-    /// 提议是否还能被确认（10 分钟窗口）。
+    /// 提议是否还能被确认（`expiresAt` 之前有效；服务端下发的这个字段就是权威窗口）。
     public static func isProposalFresh(_ proposal: BlockProposal, now: Int64) -> Bool {
-        now >= proposal.createdAt && now - proposal.createdAt < proposalTTLMillis
+        now >= proposal.proposedAt && now < proposal.expiresAt
     }
 
     /// 确认的结论：能不能生效、不能生效时是哪一种原因。
@@ -108,17 +134,22 @@ public enum BlockPolicy {
     ///
     /// - Parameters:
     ///   - proposal: 这条人格当前挂着的提议（没有就是 nil）。
-    ///   - userMessagesAfterProposal: 提议**之后**会话里新增的用户消息条数。
+    ///   - userMessageId: 这次确认所在的那一轮的用户消息 id（没有就 nil）。
     ///   - now: 现在。
+    ///
+    /// 「之后的一轮」= `userMessageId` 与提议时那条不同。同一轮里连调两次工具，
+    /// 当前用户消息 id 没变，因此照样只是「还差一轮」——这正是规范 §9 的判定。
     public static func confirmation(
         proposal: BlockProposal?,
-        userMessagesAfterProposal: Int,
+        userMessageId: String?,
         now: Int64
     ) -> Confirmation {
         guard let proposal else { return .needsProposal }
         guard isProposalFresh(proposal, now: now) else { return .expiredProposal }
-        // 「之后的一轮」= 中间至少有一条用户消息。同一轮里再调一次不算数。
-        guard userMessagesAfterProposal > 0 else { return .waitingForNextRound }
+        let current = userMessageId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !current.isEmpty, current != proposal.userMessageId else {
+            return .waitingForNextRound
+        }
         return .accepted
     }
 

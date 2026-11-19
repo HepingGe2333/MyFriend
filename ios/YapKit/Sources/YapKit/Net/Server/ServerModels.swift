@@ -410,6 +410,9 @@ public struct ServerChatUsage: Codable, Equatable, Sendable {
 public enum ServerChatEvent: Equatable, Sendable {
     case accepted(userMessageId: String, createdAt: Int64)
     case delta(text: String)
+    /// 0.14.1 §8：服务端到 `visibleAt` 时推的完整消息（可能一条，也可能连发多条）。
+    /// 客户端收到就**直接上屏**，不再等 delta、也不再自己加延迟。
+    case messageCreated(ServerMessage)
     case tool(name: String, status: String, summary: String?)
     case done(assistantMessageId: String, usage: ServerChatUsage)
     case error(ServerAPIError)
@@ -419,6 +422,7 @@ public enum ServerChatEvent: Equatable, Sendable {
         switch self {
         case .accepted: return "accepted"
         case .delta: return "delta"
+        case .messageCreated: return "message.created"
         case .tool: return "tool"
         case .done: return "done"
         case .error: return "error"

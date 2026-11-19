@@ -143,11 +143,13 @@ data class PersonaEntity(
     /** 拉黑原因（只给模型/调试看，不展示给对方）。 */
     val blockReason: String? = null,
     /**
-     * 还没生效的 `block_user` 提议（JSON，含 at/hours/reason/afterUserCount）。
+     * 还没生效的 `block_user` 提议（JSON；`spec/experience/README.md` §9 的七个固定字段：
+     * `proposalId/personaId/hours/reason/userMessageId/proposedAt/expiresAt`）。
      *
-     * 规范要求两轮确认：第一次调用只写这里，10 分钟过期；只有之后（中间至少有一条
-     * 用户消息）再 `confirm=true` 才写 [blockedUntil]。单独一列比另建表更轻，
-     * 也不会出现「提议表有孤儿人格」。
+     * 规范要求两轮确认：第一次调用只写这里，10 分钟过期；只有之后的一轮（`userMessageId`
+     * 已经不同）再 `confirm=true` 才写 [blockedUntil]。单独一列比另建表更轻，
+     * 也不会出现「提议表有孤儿人格」。老库里的 0.14.0 形状（at/afterUserCount）由
+     * `BlockPolicy.decode` 兼容读取。
      */
     val blockProposalJson: String? = null
 )

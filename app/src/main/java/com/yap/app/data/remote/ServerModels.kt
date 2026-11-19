@@ -43,7 +43,14 @@ data class ServerPersona(
     val updatedAt: Long = 0,
     /** 0.14 拉黑：服务端权威的到期时间；null = 未拉黑。 */
     val blockedUntil: Long? = null,
-    val blockReason: String? = null
+    val blockReason: String? = null,
+    /**
+     * 0.14.1 拉黑提议（§9 的七个固定字段，字符串形式）。
+     *
+     * 与服务端 `personas.blockProposalJson` 逐字一致；有未过期提议时才非空。
+     * 客户端只把它镜像到本地缓存（本地模式下工具仍由本机执行时也能接着确认）。
+     */
+    val blockProposalJson: String? = null
 )
 
 /** 会话列表 / 快照里的一行会话。 */
@@ -76,7 +83,14 @@ data class ServerMessage(
     val clientMessageId: String? = null,
     val replyTo: String? = null,
     /** 0.14：拉黑期间收到的用户消息；服务端也会永久排除在模型上下文之外。 */
-    val blocked: Boolean = false
+    val blocked: Boolean = false,
+    /**
+     * 0.14.1 §8：服务端决定的可见时刻（毫秒时间戳；没有延迟时等于 [createdAt]）。
+     *
+     * **只用于协议镜像**：客户端收到 `message.created` 一律直接上屏、历史/同步路径也直接给，
+     * 绝不按它自己再延迟一次（延迟由服务端在入队时算好）。
+     */
+    val visibleAt: Long = 0
 )
 
 /** 心情：服务端推进，客户端只展示。 */

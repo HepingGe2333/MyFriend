@@ -1,5 +1,6 @@
 package com.yap.agentd
 
+import com.yap.agentd.store.BlockProposal
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.Message
 import com.yap.agentd.store.MessageRole
@@ -66,6 +67,12 @@ class BlockUserTest {
             ToolExecutor.Context(personaId = personaId, sessionId = sessionId, userMessageId = userMessageId)
         )
 
+    /** 只为了从 `/v1/state` 读人格 DTO（拉黑提议的 wire 形状）。 */
+    private fun services(): AgentdServices = AgentdServices(
+        store = store,
+        replyGenerator = ReplyGenerator { _, _ -> ReplyOutcome(Usage.ZERO) }
+    )
+
     // ------------------------------------------------------------------ 两轮确认
 
     @Test
@@ -74,14 +81,29 @@ class BlockUserTest {
         val outcome = blockUser(turn, """{"hours":2,"reason":"想清静一会儿"}""")
 
         assertTrue("第一次是「提议」，工具本身不算失败", outcome.ok)
-        assertTrue("规范要求的标记", outcome.contentForModel.contains("pending_confirmation"))
-        assertTrue(outcome.contentForModel.contains("还没有生效"))
+        // 规范 §9：工具回灌的是固定 JSON（不多不少两个键），不是一段中文。
+        val json = TestSupport.parse(outcome.contentForModel)
+        assertEquals("pending_confirmation", json.str("status"))
+        assertEquals(clock.now + BlockProposal.TTL_MS, json.long("expiresAt"))
         assertNull("第一次不能生效", store.persona(personaId)!!.blockedUntil)
         assertFalse(store.isBlocked(personaId, clock.now))
         val proposal = store.blockProposal(personaId)
         assertNotNull("要留下待确认的提议", proposal)
         assertEquals(turn, proposal!!.userMessageId)
         assertEquals(2, proposal.hours)
+        assertTrue("proposalId 必须存在", proposal.proposalId.isNotBlank())
+        assertEquals(clock.now + BlockProposal.TTL_MS, proposal.expiresAt)
+        // blockProposalJson 的 7 个字段与服务端内部模型同形。
+        assertEquals(
+            listOf("proposalId", "personaId", "hours", "reason", "userMessageId", "proposedAt", "expiresAt"),
+            proposal.toJson().fields.keys.toList()
+        )
+        // DTO 暴露给客户端（GET /v1/state 的 personas[]）。
+        val state = TestSupport.parse(AuthorityRoutes.handle(services(), "GET", "/v1/state", null).body)
+        val persona = state.objects("personas").single { it.str("id") == personaId }
+        val proposalJson = TestSupport.parse(persona.str("blockProposalJson"))
+        assertEquals(proposal.proposalId, proposalJson.str("proposalId"))
+        assertEquals(proposal.expiresAt, proposalJson.long("expiresAt"))
     }
 
     @Test
@@ -90,8 +112,8 @@ class BlockUserTest {
         blockUser(turn, """{"hours":2}""")
         val confirm = blockUser(turn, """{"hours":2,"confirm":true}""")
 
-        assertFalse("同一轮里不能确认", confirm.ok)
-        assertTrue(confirm.contentForModel.contains("同一轮") || confirm.summary.contains("还差一轮"))
+        assertEquals("还差一轮", confirm.summary)
+        assertEquals("need_more_user_messages", TestSupport.parse(confirm.contentForModel).str("code"))
         assertNull(store.persona(personaId)!!.blockedUntil)
     }
 
@@ -104,6 +126,7 @@ class BlockUserTest {
         val confirm = blockUser(second, """{"hours":3,"confirm":true}""")
 
         assertTrue(confirm.ok)
+        assertEquals("blocked", TestSupport.parse(confirm.contentForModel).str("status"))
         val persona = store.persona(personaId)!!
         assertNotNull(persona.blockedUntil)
         assertEquals("需要安静", persona.blockReason)
@@ -116,7 +139,7 @@ class BlockUserTest {
     fun `confirm without a proposal is refused`() {
         val turn = userTurn(1)
         val outcome = blockUser(turn, """{"hours":2,"confirm":true}""")
-        assertFalse(outcome.ok)
+        assertEquals("no_pending_proposal", TestSupport.parse(outcome.contentForModel).str("code"))
         assertNull(store.persona(personaId)!!.blockedUntil)
     }
 
@@ -128,7 +151,7 @@ class BlockUserTest {
         val second = userTurn(2)
         val confirm = blockUser(second, """{"hours":2,"confirm":true}""")
 
-        assertFalse("过期提议不能生效", confirm.ok)
+        assertEquals("过期提议不能生效", "proposal_expired", TestSupport.parse(confirm.contentForModel).str("code"))
         assertNull(store.persona(personaId)!!.blockedUntil)
         assertNull("过期提议要清掉", store.blockProposal(personaId))
     }

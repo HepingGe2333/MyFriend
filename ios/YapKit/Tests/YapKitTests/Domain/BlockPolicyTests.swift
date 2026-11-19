@@ -45,29 +45,34 @@ final class BlockPolicyTests: XCTestCase {
 
     func testConfirmationNeedsProposal() {
         XCTAssertEqual(
-            BlockPolicy.confirmation(proposal: nil, userMessagesAfterProposal: 3, now: now),
+            BlockPolicy.confirmation(proposal: nil, userMessageId: "u-9", now: now),
             .needsProposal
         )
     }
 
     func testConfirmationWithinSameRoundOnlyWaits() {
         let proposal = BlockProposal(
-            personaId: "p", sessionId: "s", hours: 6, reason: "太累了", createdAt: now
+            personaId: "p", hours: 6, reason: "太累了", userMessageId: "u-1", proposedAt: now
         )
         XCTAssertEqual(
-            BlockPolicy.confirmation(proposal: proposal, userMessagesAfterProposal: 0, now: now),
+            BlockPolicy.confirmation(proposal: proposal, userMessageId: "u-1", now: now),
             .waitingForNextRound,
-            "同一轮里再调一次（中间没有用户消息）不算确认"
+            "同一轮里再调一次（用户消息 id 没变）不算确认"
+        )
+        XCTAssertEqual(
+            BlockPolicy.confirmation(proposal: proposal, userMessageId: nil, now: now),
+            .waitingForNextRound,
+            "拿不到当前用户消息 id 时也只能等"
         )
     }
 
     func testConfirmationSucceedsAfterAUserMessage() {
         let proposal = BlockProposal(
-            personaId: "p", sessionId: "s", hours: 6, reason: "太累了", createdAt: now
+            personaId: "p", hours: 6, reason: "太累了", userMessageId: "u-1", proposedAt: now
         )
         XCTAssertEqual(
             BlockPolicy.confirmation(
-                proposal: proposal, userMessagesAfterProposal: 1, now: now + 60_000
+                proposal: proposal, userMessageId: "u-2", now: now + 60_000
             ),
             .accepted
         )
@@ -75,14 +80,14 @@ final class BlockPolicyTests: XCTestCase {
 
     func testProposalExpiresAfterTenMinutes() {
         let proposal = BlockProposal(
-            personaId: "p", sessionId: "s", hours: 6, reason: "", createdAt: now
+            personaId: "p", hours: 6, reason: "", userMessageId: "u-1", proposedAt: now
         )
         XCTAssertTrue(BlockPolicy.isProposalFresh(proposal, now: now + BlockPolicy.proposalTTLMillis - 1))
         XCTAssertFalse(BlockPolicy.isProposalFresh(proposal, now: now + BlockPolicy.proposalTTLMillis))
         XCTAssertEqual(
             BlockPolicy.confirmation(
                 proposal: proposal,
-                userMessagesAfterProposal: 1,
+                userMessageId: "u-2",
                 now: now + BlockPolicy.proposalTTLMillis
             ),
             .expiredProposal,
@@ -92,11 +97,46 @@ final class BlockPolicyTests: XCTestCase {
 
     func testProposalReasonIsTrimmedAndCapped() {
         let proposal = BlockProposal(
-            personaId: "p", sessionId: "s", hours: 6,
-            reason: "  " + String(repeating: "烦", count: 200) + "  ", createdAt: now
+            personaId: "p", hours: 6,
+            reason: "  " + String(repeating: "烦", count: 200) + "  ",
+            userMessageId: " u-1 ", proposedAt: now
         )
         XCTAssertEqual(proposal.reason.count, 120)
         XCTAssertFalse(proposal.reason.hasPrefix(" "))
+        XCTAssertEqual(proposal.userMessageId, "u-1", "用户消息 id 去空白")
+        XCTAssertEqual(proposal.expiresAt, now + BlockPolicy.proposalTTLMillis)
+    }
+
+    // MARK: - 与服务端 DTO 的 JSON 形状
+
+    func testProposalJSONMatchesServerDTO() throws {
+        let proposal = BlockProposal(
+            proposalId: "proposal-1",
+            personaId: "p",
+            hours: 6,
+            reason: "太累了",
+            userMessageId: "u-1",
+            proposedAt: now
+        )
+        let data = try JSONEncoder().encode(proposal)
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(object.keys),
+            ["proposalId", "personaId", "hours", "reason", "userMessageId", "proposedAt", "expiresAt"],
+            "字段名必须与服务端 DTO 逐字一致（规范 §9）"
+        )
+        XCTAssertEqual(object["proposalId"] as? String, "proposal-1")
+        XCTAssertEqual(object["personaId"] as? String, "p")
+        XCTAssertEqual(object["hours"] as? Int, 6)
+        XCTAssertEqual(object["userMessageId"] as? String, "u-1")
+        XCTAssertEqual(object["proposedAt"] as? Int64, now)
+        XCTAssertEqual(object["expiresAt"] as? Int64, now + BlockPolicy.proposalTTLMillis)
+
+        // 服务端下发的 JSON 能原样解回来（含 expiresAt 权威窗口）。
+        let decoded = try JSONDecoder().decode(BlockProposal.self, from: data)
+        XCTAssertEqual(decoded, proposal)
     }
 
     // MARK: - 界面 / 提示词

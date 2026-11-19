@@ -102,10 +102,11 @@ class ExperienceBackupTest {
         val blocked = backup.objects("messages").first { it.str("content") == "被拉黑时发的那条" }
         assertTrue(blocked.bool("blocked"))
 
-        assertEquals(1, backup.objects("mentalActivities").size)
-        assertEquals("他刚才那句话让我心里软了一下", backup.objects("mentalActivities").single().str("thought"))
-        assertEquals(1, backup.objects("sessionMemory").size)
-        assertEquals("你提过下周去哈尔滨。", backup.objects("sessionMemory").single().str("shortSummary"))
+        val extensions = backup.obj("extensions")
+        assertEquals(1, extensions.objects("mentalActivities").size)
+        assertEquals("他刚才那句话让我心里软了一下", extensions.objects("mentalActivities").single().str("thought"))
+        assertEquals(1, extensions.objects("sessionMemory").size)
+        assertEquals("你提过下周去哈尔滨。", extensions.objects("sessionMemory").single().str("shortSummary"))
         // 顶层仍然是合法的 v6 备份（客户端只认它认识的段）。
         assertEquals(6, backup.int("formatVersion"))
         assertEquals(FileStore.BACKUP_FORMAT_NAME, backup.str("format"))
@@ -167,8 +168,7 @@ class ExperienceBackupTest {
             store.writeBackup("test", clock.now, this)
         }
         val stripped = Json.parse(plainBackup) as JsonValue.Obj
-        stripped.fields.remove("mentalActivities")
-        stripped.fields.remove("sessionMemory")
+        stripped.fields.remove("extensions")
         (stripped.fields["personas"] as JsonValue.Arr).items.forEach { item ->
             val obj = item as JsonValue.Obj
             obj.fields.remove("blockedUntil")

@@ -129,6 +129,40 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertFalse(bundle.messages.isEmpty)
     }
 
+    // MARK: - 0.14.1 §11：服务端 extensions 忽略、客户端自有段原样往返
+
+    /// 服务端备份里可能带客户端不认识的 `extensions`（服务端专有数据）。
+    /// 客户端必须：能读、不报错、不把未知键写回下一次导出；同时保留
+    /// `proactiveRules[]` / `memoryConsolidations[]` 这些客户端自有段。
+    func testServerBackupWithExtensionsKeepsClientOnlySectionsAndIgnoresExtensions() throws {
+        var raw = try fixtureText("android-export-v6.json")
+        // 顶层 extensions（服务端专有），以及 persona 里的服务端扩展字段。
+        raw = raw.replacingOccurrences(
+            of: #"{"format":"myfriend.backup""#,
+            with: #"{"extensions":{"serverOnly":{"tenant":"t-1"}},"format":"myfriend.backup""#,
+            options: [], range: raw.range(of: #"{"format":"myfriend.backup""#)
+        )
+        raw = raw.replacingOccurrences(
+            of: #""personas":[{"id""#,
+            with: #""personas":[{"extensions":{"serverOnly":true},"id""#
+        )
+
+        let bundle = try decodeSuccess(raw)
+        XCTAssertEqual(bundle.proactiveRules.count, 1, "客户端自有段不能被服务端扩展键替代")
+        XCTAssertEqual(bundle.memoryConsolidations.count, 1)
+        XCTAssertFalse(bundle.personas.isEmpty)
+        XCTAssertFalse(bundle.stickers.isEmpty)
+
+        // 再导出：extensions 不落回文件，自有段还在。
+        let reEncoded = try BackupCodec.encode(bundle)
+        XCTAssertFalse(reEncoded.contains(#""extensions""#), "服务端 extensions 客户端忽略")
+        XCTAssertTrue(reEncoded.contains(#""proactiveRules""#))
+        XCTAssertTrue(reEncoded.contains(#""memoryConsolidations""#))
+        let second = try decodeSuccess(reEncoded)
+        XCTAssertEqual(second.proactiveRules, bundle.proactiveRules)
+        XCTAssertEqual(second.memoryConsolidations, bundle.memoryConsolidations)
+    }
+
     // MARK: - Android v2 → iOS（旧样本，只读；缺失时跳过）
 
     func testAndroidV2FixtureDecodesWhenPresent() throws {

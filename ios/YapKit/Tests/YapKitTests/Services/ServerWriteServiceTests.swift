@@ -418,6 +418,72 @@ final class ServerWriteServiceTests: XCTestCase {
         XCTAssertNotNil(data["media"] as? [Any])
     }
 
+    /// 0.14.1 §11：导入服务端备份时，客户端自有段（主动节奏 / 整理记录）不丢；
+    /// 服务端专有的 `extensions` 被忽略；服务端形状的列（avatarUrl / 0–100 重要度 /
+    /// unread / attachments 数组）在本地缓存里被正确换算。
+    func testImportServerBackupKeepsClientOnlySectionsAndIgnoresExtensions() async throws {
+        let personaId = "11111111-1111-1111-1111-111111111111"
+        let sessionId = "22222222-2222-2222-2222-222222222222"
+        let raw = """
+        {"format":"myfriend.backup","formatVersion":6,"appVersion":"0.14.1","exportedAt":1,
+         "apiKeysOmitted":true,
+         "personas":[{"id":"\(personaId)","name":"林深","avatarUrl":"/v1/media/avatar-1",
+           "createdAt":1,"updatedAt":1}],
+         "memories":[{"id":"m-1","personaId":"\(personaId)","content":"你怕冷",
+           "importance":80,"tags":["哈尔滨","怕冷"],"createdAt":1,"updatedAt":1}],
+         "sessions":[{"id":"\(sessionId)","personaId":"\(personaId)","title":"夜里散步",
+           "unread":3,"createdAt":1,"updatedAt":1}],
+         "messages":[{"id":"msg-1","sessionId":"\(sessionId)","personaId":"\(personaId)",
+           "role":"USER","content":"在吗","createdAt":1,"updatedAt":1,
+           "attachments":["/v1/media/chat-1"]}],
+         "media":[],"stickers":[],"diaryNotes":[],"presets":[],
+         "client_extras":{
+           "proactiveRules":[{"id":"r-1","personaId":"\(personaId)","kind":"DAILY",
+             "timeOfDayMinutes":1290,"enabled":true,"nextTriggerAt":2,"createdAt":1,"updatedAt":1}],
+           "memoryConsolidations":[{"id":"c-1","personaId":"\(personaId)","at":1,
+             "kept":4,"merged":2,"archived":1,"forgotten":0,"summary":"合并重复"}],
+           "futureClientSection":[{"x":1}]
+         },
+         "extensions":{"serverOnly":{"tenant":"t-1"}},
+         "apiConfigs":[]}
+        """
+        ServerURLProtocolStub.enqueue(.json(
+            #"{"mode":"replace","imported":{"personas":1,"sessions":1,"messages":1,"memories":1,"presets":0,"settings":false}}"#
+        ))
+
+        _ = try await service(withBackup: true).importBackup(text: raw, mode: .replace)
+
+        // 客户端自有段从 `client_extras` 提到顶层后真的进了本地库。
+        XCTAssertEqual(try temp.stores.proactiveRules.count(), 1, "proactiveRules 不能丢")
+        XCTAssertEqual(try temp.stores.memoryConsolidations.count(), 1, "memoryConsolidations 不能丢")
+        XCTAssertEqual(try temp.stores.proactiveRules.all(orderBy: "id ASC").first?.id, "r-1")
+        XCTAssertEqual(
+            try temp.stores.memoryConsolidations.byPersona(personaId).first?.id, "c-1"
+        )
+
+        // 服务端形状的列在本地缓存里被换算。
+        XCTAssertNotNil((try? temp.stores.personas.byId(personaId)) ?? nil)
+        let memory = try XCTUnwrap(try temp.stores.memories.byId("m-1"))
+        XCTAssertEqual(memory.importance, 4, "服务端 0–100 → 本地 1–5")
+        XCTAssertEqual(memory.tags, #"["哈尔滨","怕冷"]"#, "tags 数组 → JSON 文本")
+        XCTAssertEqual(try temp.stores.sessions.byId(sessionId)?.unreadCount, 3, "unread → unreadCount")
+        XCTAssertNotNil(try temp.stores.messages.byId("msg-1"), "消息本身要进缓存")
+
+        // 再导出（客户端 v6）仍然带着这两段，且没有服务端 extensions / client_extras。
+        let reExported = try BackupService(
+            stores: temp.stores,
+            settings: settings,
+            appVersion: "test",
+            avatarFileExists: { _ in false },
+            mediaDirectory: mediaDirectory
+        ).export()
+        let object = try XCTUnwrap(JSONValueParser.object(from: reExported))
+        XCTAssertEqual(object["proactiveRules"]?.arrayValue?.count, 1)
+        XCTAssertEqual(object["memoryConsolidations"]?.arrayValue?.count, 1)
+        XCTAssertNil(object["extensions"], "服务端专有数据客户端忽略")
+        XCTAssertNil(object["client_extras"], "内部容器不该出现在本地导出里")
+    }
+
     func testImportBackupFailureDoesNotTouchLocalCache() async throws {
         let text = try BackupService(
             stores: temp.stores, settings: settings, appVersion: "test",

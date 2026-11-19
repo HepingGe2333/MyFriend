@@ -54,7 +54,7 @@ class HumanTimingTest {
     }
 
     @Test
-    fun regenerateDelayIsShortButNotZero() {
+    fun editResendDelayIsShortButNotZero() {
         assertTrue(HumanTiming.REGENERATE_MS in 200L..800L)
     }
 }

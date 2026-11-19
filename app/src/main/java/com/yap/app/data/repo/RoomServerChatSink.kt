@@ -4,9 +4,15 @@ import com.yap.app.data.local.ApiUsageDao
 import com.yap.app.data.local.ApiUsageEntity
 import com.yap.app.data.local.ChatSessionDao
 import com.yap.app.data.remote.ServerChatSink
+import com.yap.app.data.remote.ServerMessage
 import com.yap.app.data.remote.ServerMessagePage
 import com.yap.app.data.remote.ServerSyncApplyResult
 import com.yap.app.data.remote.ServerUsage
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +32,43 @@ class RoomServerChatSink @Inject constructor(
     private val sessionDao: ChatSessionDao,
     private val usageDao: ApiUsageDao
 ) : ServerChatSink {
+
+    /**
+     * SSE `message.created` 的落库队列（0.14.1 §8）。
+     *
+     * SSE 回调在 OkHttp 线程且不是 suspend，所以这里只做 `trySend`；真正写 Room 在这条
+     * 单消费者协程里按**到达顺序**执行——连发多条时界面上的顺序不会乱。
+     */
+    private val incoming = Channel<ServerMessage>(Channel.UNLIMITED)
+
+    init {
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            for (message in incoming) {
+                // 单条失败不影响后续消息：下一条继续落，最终 done 后还有一次整页兜底。
+                runCatching { applySingle(message) }
+            }
+        }
+    }
+
+    /**
+     * 收到一条 `message.created` 就立刻落库（不等 done）。
+     *
+     * 与 [applyPage] 一样按块编号写入；同 id 重复到达是幂等的（done 之后的整页会再 upsert 一次）。
+     */
+    override fun enqueueMessage(message: ServerMessage) {
+        if (message.id.isBlank() || message.sessionId.isBlank()) return
+        incoming.trySend(message)
+    }
+
+    private suspend fun applySingle(message: ServerMessage) {
+        stateSink.applyPage(
+            ServerMessagePage(
+                sessionId = message.sessionId,
+                blockIndex = message.blockIndex.coerceAtLeast(0),
+                messages = listOf(message)
+            )
+        )
+    }
 
     override suspend fun applyPage(page: ServerMessagePage): ServerSyncApplyResult =
         stateSink.applyPage(page)

@@ -406,7 +406,7 @@ class LlmClient(
         val messageArray = messages.mapTo(mutableListOf<JsonValue>()) { message ->
             val fields = linkedMapOf<String, JsonValue>(
                 "role" to JsonValue.Str(message.role),
-                "content" to JsonValue.Str(message.content)
+                "content" to contentOf(message)
             )
             if (message.toolCalls.isNotEmpty()) {
                 fields["tool_calls"] = JsonValue.Arr(
@@ -456,6 +456,59 @@ class LlmClient(
             fields["tools"] = parsed
         }
         return Json.stringify(JsonValue.Obj(fields))
+    }
+
+    /**
+     * 一条消息的 `content`：普通消息是字符串；带 [LlmMessage.parts] 的 user 消息是 content 数组
+     * （`text` / `image_url` / `input_audio`，OpenAI 兼容多模态格式）。
+     *
+     * 为什么仍然保留字符串形态：99% 的消息没有媒体，JSON 更小、也兼容所有网关；只有真的
+     * `listen`/`watch` 过才升级成数组。
+     */
+    private fun contentOf(message: LlmMessage): JsonValue {
+        if (message.parts.isEmpty()) return JsonValue.Str(message.content)
+        val items = mutableListOf<JsonValue>()
+        if (message.content.isNotBlank()) {
+            items += JsonValue.Obj(
+                linkedMapOf(
+                    "type" to JsonValue.Str("text"),
+                    "text" to JsonValue.Str(message.content)
+                )
+            )
+        }
+        for (part in message.parts) {
+            when (part) {
+                is LlmContentPart.Text -> if (part.text.isNotBlank()) {
+                    items += JsonValue.Obj(
+                        linkedMapOf(
+                            "type" to JsonValue.Str("text"),
+                            "text" to JsonValue.Str(part.text)
+                        )
+                    )
+                }
+
+                is LlmContentPart.ImageUrl -> items += JsonValue.Obj(
+                    linkedMapOf(
+                        "type" to JsonValue.Str("image_url"),
+                        "image_url" to JsonValue.Obj(linkedMapOf("url" to JsonValue.Str(part.url)))
+                    )
+                )
+
+                is LlmContentPart.InputAudio -> items += JsonValue.Obj(
+                    linkedMapOf(
+                        "type" to JsonValue.Str("input_audio"),
+                        "input_audio" to JsonValue.Obj(
+                            linkedMapOf(
+                                "data" to JsonValue.Str(part.base64),
+                                "format" to JsonValue.Str(part.format)
+                            )
+                        )
+                    )
+                )
+            }
+        }
+        // 只有 parts、没有文字：content 数组里至少有一项（否则上游会当成空消息）。
+        return JsonValue.Arr(items)
     }
 
     companion object {

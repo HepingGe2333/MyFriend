@@ -691,6 +691,12 @@ final class AppEnvironment: ObservableObject {
             onLiveState: { [weak self] state in
                 Task { @MainActor in self?.serverLiveState = state }
             },
+            // 0.14.1 §8：`message.created` 一到就重读缓存直接上屏（不等 20 秒的消息轮询）。
+            // typing 状态在上面 `onLiveState` 里已经发布，聊天页据此收起/显示输入指示。
+            onEventReport: { [weak self] report in
+                guard !report.newMessages.isEmpty else { return }
+                Task { @MainActor in self?.serverDataVersion &+= 1 }
+            },
             log: { DebugSeeding.log($0) }
         )
         serverChat = chatGateway
@@ -888,6 +894,11 @@ final class AppEnvironment: ObservableObject {
     func stopServerEvents() {
         serverEventTask?.cancel()
         serverEventTask = nil
+        // 0.14.1 §8：输入指示是瞬时状态，进后台就清掉。否则回前台时
+        // 离线同步下来的消息前面会凭空演一次「正在输入…」。
+        if let events = serverEvents {
+            Task { await events.clearTyping() }
+        }
         // 增量同步的 5 分钟一拍也是前台才做的事：进后台一起停。
         stopServerSyncPulse()
     }

@@ -36,6 +36,16 @@ sealed class ServerChatEvent {
     /** 工具调用进度（服务端只转发，客户端只展示）。 */
     data class Tool(val name: String, val status: String, val summary: String?) : ServerChatEvent()
 
+    /**
+     * 他正在输入（0.14.1 §8）：服务端在一条消息入队时发一次。
+     *
+     * 客户端只据此显示输入指示——服务端权威模式下**不再自己加延迟**。
+     */
+    data class TypingStarted(val sessionId: String, val personaId: String) : ServerChatEvent()
+
+    /** 这一轮发完（§8）：收掉输入指示。 */
+    data class TypingStopped(val sessionId: String, val personaId: String) : ServerChatEvent()
+
     /** assistant 消息已落库；[assistantMessageId] 是服务端权威 id。 */
     data class Done(val assistantMessageId: String, val usage: ServerUsage) : ServerChatEvent()
 
@@ -135,6 +145,23 @@ class ServerSseParser(private val json: Json = ServerApi.DEFAULT_JSON) {
                 name = data.string("name"),
                 status = data.string("status"),
                 summary = data.stringOrNull("summary")
+            )
+        }
+
+        // 0.14.1：typing 事件的 sessionId/personaId 在 data 顶层（§8 契约）。
+        "typing.started" -> {
+            val data = objectOf(name, payload)
+            ServerChatEvent.TypingStarted(
+                sessionId = data.string("sessionId"),
+                personaId = data.string("personaId")
+            )
+        }
+
+        "typing.stopped" -> {
+            val data = objectOf(name, payload)
+            ServerChatEvent.TypingStopped(
+                sessionId = data.string("sessionId"),
+                personaId = data.string("personaId")
             )
         }
 

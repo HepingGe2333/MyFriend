@@ -459,7 +459,7 @@ public final class ServerAPIClient {
             switch event {
             case .done, .error:
                 return true
-            case .accepted, .delta, .tool:
+            case .accepted, .delta, .messageCreated, .tool:
                 continue
             }
         }
@@ -488,6 +488,12 @@ public final class ServerAPIClient {
                 throw invalidEvent(name)
             }
             return .delta(text: payload.text)
+        case "message.created":
+            guard let payload = try? decoder.decode(SSEMessageCreatedPayload.self, from: data),
+                  !payload.message.id.isEmpty else {
+                throw invalidEvent(name)
+            }
+            return .messageCreated(payload.message)
         case "tool":
             guard let payload = try? decoder.decode(SSEToolPayload.self, from: data),
                   !payload.name.isEmpty else {
@@ -685,6 +691,10 @@ private struct SSEAcceptedPayload: Decodable {
 
 private struct SSEDeltaPayload: Decodable {
     var text: String
+}
+
+private struct SSEMessageCreatedPayload: Decodable {
+    var message: ServerMessage
 }
 
 private struct SSEToolPayload: Decodable {

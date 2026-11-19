@@ -450,11 +450,24 @@ class ToolExecutorTest {
     }
 
     @Test
-    fun `sticker send of an unknown id fails and make is reported as unsupported`() {
+    fun `sticker send of an unknown id fails and make really composes a new gif`() {
         assertFalse(run("sticker", """{"action":"send","stickerId":"nope"}""").ok)
-        val make = run("sticker", """{"action":"make","url":"https://example.com/a.gif"}""")
-        assertFalse(make.ok)
-        assertTrue(make.contentForModel.contains("还不能现做表情"))
+
+        // `make` 0.14.1 起真的可用：没有底图时用内置空白底 + 文字（纯色底 meme）。
+        val make = run("sticker", """{"action":"make","text":"好耶","position":"CENTER"}""")
+        assertTrue(make.contentForModel, make.ok)
+        assertTrue("结果要回灌 id", make.contentForModel.contains("做好了（id="))
+        val created = store.stickers(personaId).maxByOrNull { it.createdAt }!!
+        assertEquals("image/gif", created.mime)
+        assertEquals("MODEL_MADE", created.source)
+        val bytes = store.stickerBytes(created.id)
+        assertNotNull(bytes)
+        assertTrue("必须是 GIF89a", String(bytes!!, 0, 6, Charsets.US_ASCII) == "GIF89a")
+        assertTrue("长边不超过 320", maxOf(created.width, created.height) in 1..320)
+        assertTrue("体积不超过 512 KB", bytes.size <= 512 * 1024)
+
+        // 不存在的 base 要明确失败，而不是假装做过。
+        assertFalse(run("sticker", """{"action":"make","baseStickerId":"nope","text":"x"}""").ok)
     }
 
     @Test

@@ -677,33 +677,6 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertTrue(assistant.content.hasPrefix("第一句"), "半截正文要保住：\(assistant.content)")
     }
 
-    // MARK: - 重新生成
-
-    func testRegenerateDeletesLastAssistantAndRunsAgain() async throws {
-        try seedReadySession()
-        StubURLProtocol.enqueue(.sse(textDeltas: ["第一次回复"]))
-        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
-        XCTAssertEqual(try messages().count, 2)
-
-        StubURLProtocol.enqueue(.sse(textDeltas: ["第二次回复"]))
-        let events = try await collect(service.regenerate(sessionId: sessionId))
-        XCTAssertEqual(doneEvent(events)?.message.content, "第二次回复")
-        let stored = try messages()
-        XCTAssertEqual(stored.count, 2, "旧回复被删掉，不该留下两条助手消息")
-        XCTAssertEqual(stored.map(\.content), ["在吗", "第二次回复"])
-    }
-
-    func testRegenerateWithoutUserMessageFails() async throws {
-        try seedReadySession()
-        var thrown: Error?
-        do {
-            _ = try await collect(service.regenerate(sessionId: sessionId))
-        } catch {
-            thrown = error
-        }
-        XCTAssertEqual((thrown as? ApiException)?.message, "没有可以重新生成的消息")
-    }
-
     // MARK: - 后台任务
 
     /// 回完话之后异步触发「抽记忆 / 压摘要」，但不阻塞回复。
@@ -1039,7 +1012,12 @@ private final class RecordingTools: ToolRunning {
     var resultFor: ((ToolInvocation) -> ToolResult)?
     private(set) var callCount = 0
 
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         callCount += 1
         if let resultFor { return resultFor(invocation) }
         return ToolResult(invocation: invocation, ok: true, summary: "做完了", contentForModel: "结果")

@@ -300,12 +300,17 @@ public final class ServerWriteService {
     /// 服务端成功而本地失败时抛 `cacheUpdateFailed` —— 服务端已经接回来了，
     /// 下次同步会补齐本地缓存，界面要如实说明这一点。
     public func importBackup(text: String, mode: ImportMode) async throws -> ImportSummary {
-        let serverResult = try await client.importBackup(text: text, mode: mode)
+        _ = try await client.importBackup(text: text, mode: mode)
         guard let backup else {
             throw ServerWriteError.localCacheUnavailable
         }
+        // 服务端备份 → 本地 v6 形状（`ServerBackupAdapter`）：头像列名、记忆重要度单位、
+        // 附件数组、未读数、`client_extras` 里的客户端独有段都在这里对齐；
+        // `extensions` 明确忽略（规范 §11）。不是 JSON 对象时退回原文，交给
+        // `BackupService` 给出「这个文件读不出来」的中文原因。
+        let localText = ServerBackupAdapter.toLocalBackupJSON(text) ?? text
         do {
-            return try backup.importBackup(text: text, mode: mode)
+            return try backup.importBackup(text: localText, mode: mode)
         } catch {
             throw ServerWriteError.cacheUpdateFailed(error.localizedDescription)
         }

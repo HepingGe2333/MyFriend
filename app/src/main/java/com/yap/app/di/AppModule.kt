@@ -534,8 +534,10 @@ object AppModule {
         remoteProvider: ServerRemoteProvider,
         localStore: ServerLocalStore,
         sink: ServerEventSink,
-        notifier: ServerEventNotifier
-    ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier)
+        notifier: ServerEventNotifier,
+        /** 0.14.1：typing 事件只更新瞬时输入指示，不落库（§8）。 */
+        typing: com.yap.app.data.remote.ServerTypingState
+    ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier, typing)
 
     /**
      * 人格进化「接受 / 拒绝」的本地读写端口（0.13）。

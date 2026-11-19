@@ -175,6 +175,23 @@ class StickerWiringContractTest {
     }
 
     @Test
+    fun `长按删除表情在服务端与本地都还在`() {
+        // 0.14.1 回归检查：§10 移除「重新生成」时不该顺手把表情删除的入口/分支删掉。
+        val repository = source("src/main/java/com/yap/app/data/repo/StickerRepository.kt")
+        val delete = repository.substring(repository.indexOf("suspend fun delete(id: String)"))
+            .substringBefore("\n    /**")
+        assertTrue("服务端模式要先 DELETE /v1/stickers/{id}", delete.contains("serverWrites.deleteSticker(stickerId)"))
+        assertTrue("成功后删本机缓存行", delete.contains("stickerDao.delete(stickerId)"))
+        assertTrue("本地模式找不到行时不报成功", delete.contains("stickerDao.getById(stickerId) == null"))
+
+        val viewModel = source("src/main/java/com/yap/app/ui/screens/chat/ChatViewModel.kt")
+        assertTrue("ViewModel 仍有删除入口", viewModel.contains("fun deleteSticker(stickerId: String)"))
+        assertTrue("失败要提示一句", viewModel.contains("R.string.chat_sticker_delete_failed"))
+        val screen = source("src/main/java/com/yap/app/ui/screens/chat/ChatScreen.kt")
+        assertTrue("面板长按删除仍接线", screen.contains("onDelete = { sticker -> viewModel.deleteSticker(sticker.id) }"))
+    }
+
+    @Test
     fun `删除全部数据时表情行与文件一起清`() {
         assertTrue(chatRepository.contains("stickerRepository.wipeAll()"))
         assertTrue(repository.contains("MediaStorage.clearStickers(context)"))

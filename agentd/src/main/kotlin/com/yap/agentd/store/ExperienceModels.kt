@@ -23,49 +23,69 @@ import com.yap.app.core.json.JsonValue
 /**
  * 一次**还没生效**的拉黑提议（`block_user` 的两轮确认）。
  *
- * `spec/experience/README.md` §2：第一次调用只返回 `pending_confirmation`，不生效；
- * 必须在**之后的一轮**（中间至少有一条用户消息）再调用 `confirm=true` 才生效。
- * 「之后的一轮」用 [userMessageId] 判断：每轮聊天都有一条新的用户消息，id 不同即证明中间
- * 有过一条用户消息；光看时间差判断不了「是不是同一轮里连着调了两次」。
+ * `spec/experience/README.md` §9 把 `blockProposalJson` 的字段定死了：
+ * `proposalId / personaId / hours / reason / userMessageId / proposedAt / expiresAt`。
+ * 这七个键就是**两端与服务端共用的 wire 形状**（`GET /v1/state` 的
+ * `personas[].blockProposalJson` 原样是这段 JSON 的字符串），因此：
+ * - 不再有 `sessionId`（一人格一会话，personaId 就够定位；服务端不再需要它做确认判断）；
+ * - 不再有 `afterUserCount`（确认规则就是「`userMessageId` 不同」= 之后的一轮）。
  *
- * 10 分钟过期：超过 [TTL_MS] 的提议直接丢弃，下一次调用又回到「第一次」。
+ * 10 分钟过期：`expiresAt = proposedAt + TTL_MS`，超时的提议直接丢弃，下一次调用又回到
+ * 「第一次」。**未过期时再次提议不续期**：返回同一条（同 proposalId/proposedAt/expiresAt），
+ * 否则模型可以一直拖着不确认、把提议无限延长。
  */
 data class BlockProposal(
+    /** 提议 id；同一条提议在过期前重复提议不会变。 */
+    val proposalId: String,
     val personaId: String,
-    val sessionId: String,
-    /** 提议时那条用户消息的 id（用来判断「中间有没有新的用户消息」）。 */
+    /** 提议时那条用户消息的 id（用来判断「是不是之后的一轮」）。 */
     val userMessageId: String,
     /** 拉黑时长（小时），1–24。 */
     val hours: Int,
     val reason: String,
     val proposedAt: Long
 ) {
-    fun isExpired(now: Long): Boolean = now - proposedAt > TTL_MS
+    /** 规范 §9 的 `expiresAt`：10 分钟后作废；由 [proposedAt] 派生，不单独存。 */
+    val expiresAt: Long get() = proposedAt + TTL_MS
 
+    /**
+     * `expiresAt` 是**作废时刻**：`now >= expiresAt` 即过期（与客户端 `now < expiresAt` 有效一致）。
+     * 时钟回拨（`now < proposedAt`）不当作过期，避免把刚建的提议误删。
+     */
+    fun isExpired(now: Long): Boolean = now >= expiresAt
+
+    /** 规范 §9 的固定 7 字段（客户端 `blockProposalJson` 同一份）。 */
     fun toJson(): JsonValue.Obj = obj(
+        "proposalId" to str(proposalId),
         "personaId" to str(personaId),
-        "sessionId" to str(sessionId),
-        "userMessageId" to str(userMessageId),
         "hours" to num(hours),
         "reason" to str(reason),
-        "proposedAt" to num(proposedAt)
+        "userMessageId" to str(userMessageId),
+        "proposedAt" to num(proposedAt),
+        "expiresAt" to num(expiresAt)
     )
 
     companion object {
-        /** 未确认的提议多久后作废（规范 §2：10 分钟）。 */
+        /** 未确认的提议多久后作废（规范 §9：10 分钟）。 */
         const val TTL_MS: Long = 10 * 60 * 1000L
 
         /** 拉黑时长的取值范围（规范 §2：1–24 小时）。 */
         const val MIN_HOURS = 1
         const val MAX_HOURS = 24
 
+        /** `reason` 的字数上限（与客户端 `BlockPolicy.MAX_REASON_CHARS` 一致）。 */
+        const val MAX_REASON_CHARS = 120
+
         fun fromJson(value: JsonValue.Obj, where: String): BlockProposal = BlockProposal(
+            // 老的 block_proposals.json 没有 proposalId：读回时补一个稳定的 id（磁盘上是被
+            // 覆盖重写的，不影响 wire 契约；真的丢了就当成一条新提议也无伤大雅）。
+            proposalId = value.optString("proposalId", where)
+                ?.takeIf { it.isNotBlank() } ?: java.util.UUID.randomUUID().toString(),
             personaId = value.reqString("personaId", where),
-            sessionId = value.optString("sessionId", where).orEmpty(),
             userMessageId = value.optString("userMessageId", where).orEmpty(),
             hours = (value.optLong("hours", where) ?: MIN_HOURS.toLong()).toInt()
                 .coerceIn(MIN_HOURS, MAX_HOURS),
-            reason = value.optString("reason", where).orEmpty(),
+            reason = value.optString("reason", where).orEmpty().take(MAX_REASON_CHARS),
             proposedAt = value.optLong("proposedAt", where) ?: 0L
         )
     }

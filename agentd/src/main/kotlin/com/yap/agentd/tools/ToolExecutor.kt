@@ -1,6 +1,12 @@
 package com.yap.agentd.tools
 
+import com.yap.agentd.evolution.PersonaEvolutionRules
+import com.yap.agentd.llm.LlmContentPart
 import com.yap.agentd.llm.LlmUsage
+import com.yap.agentd.media.MediaLookup
+import com.yap.agentd.media.MediaUnderstanding
+import com.yap.agentd.persona.PersonaFields
+import com.yap.agentd.persona.QuietHours
 import com.yap.agentd.proactive.ActivityAvailability
 import com.yap.agentd.proactive.ActivityState
 import com.yap.agentd.search.Providers
@@ -13,10 +19,14 @@ import com.yap.agentd.store.DiaryNote
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.MediaUrl
 import com.yap.agentd.store.MessageRole
+import com.yap.agentd.store.PendingPatch
 import com.yap.agentd.store.Sticker
 import com.yap.agentd.store.StoredIntent
 import com.yap.agentd.store.StoreJson
 import com.yap.agentd.store.StorePersonaNotFoundException
+import com.yap.agentd.sticker.StickerComposeException
+import com.yap.agentd.sticker.StickerComposer
+import com.yap.agentd.sticker.StickerSources
 import com.yap.app.core.json.Json
 import com.yap.app.core.json.JsonValue
 import com.yap.app.domain.ToolArgClamp
@@ -43,7 +53,14 @@ class ToolExecutor(
     private val store: FileStore,
     private val search: WebSearchService = WebSearchService(),
     private val env: (String) -> String? = { System.getenv(it) },
-    private val clock: Clock = Clock.systemDefaultZone()
+    private val clock: Clock = Clock.systemDefaultZone(),
+    /**
+     * 0.14.1：`listen` / `watch` 的媒体解析层（音频 base64、视频抽帧）。
+     *
+     * 默认用系统 `ffmpeg`（`--ffmpeg` / `YAP_FFMPEG`，见 [com.yap.agentd.media.FfmpegFrameExtractor]）；
+     * 没有解码器时 `watch` 会明确失败。测试注入假抽取器/假媒体服务。
+     */
+    private val media: MediaUnderstanding = MediaUnderstanding(store)
 ) {
 
     /**
@@ -94,6 +111,13 @@ class ToolExecutor(
         val attachments: List<String> = emptyList(),
         /** `send_message` 真的发出去的那一条（其它工具为 null）；生成器按顺序收集成多条消息。 */
         val sentMessage: String? = null,
+        /**
+         * 0.14.1：要给模型看的**多模态内容**（`listen` 的音频 / `watch` 的关键帧）。
+         *
+         * `role=tool` 的结果只能放字符串，所以生成器会把它们作为一条额外的 user 消息回灌
+         * （见 `LlmReplyGenerator`）；工具本身仍然返回正常的文字结果。
+         */
+        val modelParts: List<LlmContentPart> = emptyList(),
         /** `toolTraceJson` 里的一行（客户端 `ToolTraceItem` 同形）。 */
         val trace: ToolTrace
     )
@@ -145,6 +169,10 @@ class ToolExecutor(
                 ServerToolCatalog.STICKER -> sticker(args, context)
                 ServerToolCatalog.SEND_MESSAGE -> sendMessage(args, context)
                 ServerToolCatalog.BLOCK_USER -> blockUser(args, context)
+                ServerToolCatalog.UPDATE_PERSONA -> updatePersona(args, context)
+                ServerToolCatalog.SET_QUIET_HOURS -> setQuietHours(args, context)
+                ServerToolCatalog.LISTEN -> listen(args, context)
+                ServerToolCatalog.WATCH -> watch(args, context)
                 else -> failure(name, "不认识的工具：$name", "没有这个工具")
             }
         } catch (missing: StorePersonaNotFoundException) {
@@ -529,80 +557,92 @@ class ToolExecutor(
     }
 
     /**
-     * `block_user`：两轮确认之后才真的拉黑（`spec/experience/README.md` §2）。
+     * `block_user`：两轮确认之后才真的拉黑（`spec/experience/README.md` §2/§9）。
      *
      * - 第一次（没有 `confirm`）：只记一条 10 分钟有效的提议，**不生效**；
-     * - 之后的一轮（中间至少有一条用户消息）带 `confirm=true`：写 `blockedUntil`；
+     * - 之后的一轮（新的 `userMessageId`）带 `confirm=true`：写 `blockedUntil`；
      * - 同一轮里连调两次不算「之后的轮次」：提议记着那一轮的用户消息 id，id 相同就拒绝；
+     * - 确认时以提议里的 `hours` 为准（confirm 那次调用里的 `hours` 不参与计算）；
      * - 没有 `unblock`：到点自动解除（用户也不能手动解除）。
+     *
+     * 回灌给模型的正文是**规范 §9 定死的 JSON**（字段一个不多一个不少）：
+     * `{"status":"pending_confirmation","expiresAt":…}` / `{"status":"blocked","blockedUntil":…}`；
+     * 拒绝时是 `{"status":"rejected","code":"…"}`（code 与客户端 `BlockPolicy.REJECT_*` 同名）。
      */
     private fun blockUser(args: JsonValue.Obj, context: Context): Outcome {
         val persona = store.persona(context.personaId)
             ?: return failure(ServerToolCatalog.BLOCK_USER, "找不到这个人格", "拉黑失败")
         val now = clock.millis()
-        store.expireBlockProposals(now)
         if (persona.isBlockedAt(now)) {
             val until = persona.blockedUntil ?: now
-            return failure(
+            return rejected(
                 ServerToolCatalog.BLOCK_USER,
-                "你已经在拉黑对方了（到 $until 自动解除），不需要再拉一次",
-                "已经在拉黑"
+                code = "already_blocked",
+                message = "你已经在拉黑对方了（到 $until 自动解除），不需要再拉一次",
+                summary = "已经在拉黑"
             )
         }
-        val hours = (args.intOrNull("hours") ?: BlockProposal.MIN_HOURS)
+        val requestedHours = (args.intOrNull("hours") ?: BlockProposal.MIN_HOURS)
             .coerceIn(BlockProposal.MIN_HOURS, BlockProposal.MAX_HOURS)
-        val reason = args.stringOrNull("reason").orEmpty().trim().take(FileStore.MAX_BLOCK_REASON_CHARS)
+        val reason = args.stringOrNull("reason").orEmpty().trim().take(BlockProposal.MAX_REASON_CHARS)
         val confirm = args.boolOrNull("confirm") ?: false
         val userMessageId = context.userMessageId.orEmpty()
 
         if (!confirm) {
-            store.saveBlockProposal(
-                BlockProposal(
-                    personaId = context.personaId,
-                    sessionId = context.sessionId,
-                    userMessageId = userMessageId,
-                    hours = hours,
-                    reason = reason,
-                    proposedAt = now
-                )
+            // 未过期就复用同一条（不续期）；过期/没有才新建（过期的顺手清掉）。
+            val stored = store.blockProposal(context.personaId)
+            if (stored != null && stored.isExpired(now)) store.clearBlockProposal(context.personaId)
+            val existing = stored?.takeIf { !it.isExpired(now) }
+            val proposal = existing ?: BlockProposal(
+                proposalId = UUID.randomUUID().toString(),
+                personaId = context.personaId,
+                userMessageId = userMessageId,
+                hours = requestedHours,
+                reason = reason,
+                proposedAt = now
             )
+            if (existing == null) store.saveBlockProposal(proposal)
             return Outcome(
                 name = ServerToolCatalog.BLOCK_USER,
                 ok = true,
-                summary = "提议拉黑 $hours 小时（还没生效）",
-                contentForModel = "pending_confirmation：这是第一次提到拉黑，还没有生效。对方如果继续说话，" +
-                    "下一轮你再调用一次 block_user（confirm=true）才会真的拉黑 $hours 小时；10 分钟没确认就作废。",
+                summary = "提议拉黑 ${proposal.hours} 小时（还没生效）",
+                contentForModel = statusJson("pending_confirmation", "expiresAt", proposal.expiresAt),
                 trace = ToolTrace(
                     name = ServerToolCatalog.BLOCK_USER,
                     title = "想清静一会儿",
-                    subtitle = "$hours 小时（待确认）",
-                    detail = reason,
+                    subtitle = "${proposal.hours} 小时（待确认）",
+                    detail = proposal.reason,
                     ok = true
                 )
             )
         }
 
         val proposal = store.blockProposal(context.personaId)
-            ?: return failure(
+            ?: return rejected(
                 ServerToolCatalog.BLOCK_USER,
-                "没有待确认的拉黑提议：先在不带 confirm 的情况下调用一次，下一轮再确认",
-                "没有待确认的提议"
+                code = "no_pending_proposal",
+                message = "没有待确认的拉黑提议：先在不带 confirm 的情况下调用一次，下一轮再确认",
+                summary = "没有待确认的提议"
             )
         if (proposal.isExpired(now)) {
             store.clearBlockProposal(context.personaId)
-            return failure(
+            return rejected(
                 ServerToolCatalog.BLOCK_USER,
-                "上次的拉黑提议已经超过 10 分钟作废了；真要拉黑请重新提议一次",
-                "提议过期了"
+                code = "proposal_expired",
+                message = "上次的拉黑提议已经超过 10 分钟作废了；真要拉黑请重新提议一次",
+                summary = "提议过期了"
             )
         }
         if (proposal.userMessageId.isNotBlank() && proposal.userMessageId == userMessageId) {
-            return failure(
+            return rejected(
                 ServerToolCatalog.BLOCK_USER,
-                "拉黑不能在同一轮里确认：要等对方再发一条消息，下一轮你再确认",
-                "还差一轮"
+                code = "need_more_user_messages",
+                message = "拉黑不能在同一轮里确认：要等对方再发一条消息，下一轮你再确认",
+                summary = "还差一轮"
             )
         }
+        // 确认以提议里的时长为谁（提议才是「说好的那件事」）；理由用这次的，没写就沿用它。
+        val hours = proposal.hours.coerceIn(BlockProposal.MIN_HOURS, BlockProposal.MAX_HOURS)
         val until = now + hours * 60L * 60L * 1000L
         val updated = store.blockPersona(
             personaId = context.personaId,
@@ -614,8 +654,7 @@ class ToolExecutor(
             name = ServerToolCatalog.BLOCK_USER,
             ok = true,
             summary = "拉黑了 $hours 小时",
-            contentForModel = "已经把对方拉黑了 ${hours} 小时（到 $until 自动解除）。这段时间对方发来的消息你看不到，" +
-                "也不该再回复；这一轮说完你要说的话就结束，不要解释系统规则。",
+            contentForModel = statusJson("blocked", "blockedUntil", until),
             sentMessage = null,
             trace = ToolTrace(
                 name = ServerToolCatalog.BLOCK_USER,
@@ -626,6 +665,43 @@ class ToolExecutor(
             )
         )
     }
+
+    /** 规范 §9 的统一工具回灌：`{"status": …, "<key>": …}`（只有这两个键）。 */
+    private fun statusJson(status: String, key: String, value: Long): String = Json.stringify(
+        JsonValue.Obj(
+            linkedMapOf(
+                "status" to StoreJson.str(status),
+                key to StoreJson.num(value)
+            )
+        )
+    )
+
+    /**
+     * 被拒绝的拉黑确认：`{"status":"rejected","code":"…"}`（code 是稳定字符串，不翻译）。
+     *
+     * `ok = true`：这不是「工具坏了」，而是一次成功的协议级拒绝（客户端 `block_user` 同样走
+     * success()，两端 trace 一致，用户看不到红色失败痕迹）。模型看 content 里的 `status` 自己纠正。
+     */
+    private fun rejected(name: String, code: String, message: String, summary: String): Outcome = Outcome(
+        name = name,
+        ok = true,
+        summary = summary,
+        contentForModel = Json.stringify(
+            JsonValue.Obj(
+                linkedMapOf(
+                    "status" to StoreJson.str("rejected"),
+                    "code" to StoreJson.str(code)
+                )
+            )
+        ),
+        trace = ToolTrace(
+            name = name,
+            title = "没做成",
+            subtitle = summary,
+            detail = message,
+            ok = false
+        )
+    )
 
     // ------------------------------------------------------------------ web_search / web_fetch
 
@@ -739,13 +815,281 @@ class ToolExecutor(
                 )
             }
 
-            "make" -> failure(
-                ServerToolCatalog.STICKER,
-                "服务端还不能现做表情（只能发已有的）",
-                "做不了新表情"
-            )
+            "make" -> makeSticker(args, context)
 
-            else -> failure(ServerToolCatalog.STICKER, "action 只能是 send/list", "表情参数不对")
+            else -> failure(ServerToolCatalog.STICKER, "action 只能是 send/list/make", "表情参数不对")
+        }
+    }
+
+    // ------------------------------------------------------------------ update_persona / set_quiet_hours（0.14.1）
+
+    /**
+     * `update_persona`：模型想改自己的「四组值」或「称呼」时调用。
+     *
+     * 走的**不是直接写库**，而是与人格进化完全相同的待审补丁（`pending_patches.json`）：
+     * - 只允许 `traits` / `likes` / `behaviors` / `quirks`（增删，一次 ≤3 条，规则与进化一致）
+     *   以及 `address`（他怎么叫对方，≤20 字）；
+     * - **用户手写的人设正文一律不碰**：名字、描述、世界、话风、关系细节都不在这些字段里；
+     * - 用户点「接受」时才会 `version + 1` 写进人格（`accept` 由 `EvolutionService` 回放）。
+     *
+     * 为什么用待审补丁而不是直接生效（`spec/experience` 没有规定这一点，这里与现有进化保持一致）：
+     * 模型「觉得自己变了」是主观判断，0.13 起的人格进化已经建立了「提议 → 用户点头 → 写库」的
+     * 通路，`update_persona` 只是换了个入口（模型主动提，而不是评估器批量提），没必要再造一条
+     * 直接改人设的路径；用户对「他是谁」始终有最终决定权。
+     */
+    private fun updatePersona(args: JsonValue.Obj, context: Context): Outcome {
+        val persona = store.persona(context.personaId)
+            ?: return failure(ServerToolCatalog.UPDATE_PERSONA, "找不到这个人格", "改不了人设")
+        val now = clock.millis()
+        val current = PersonaFields.current(persona)
+        val reason = args.stringOrNull("reason").orEmpty().trim().take(PERSONA_REASON_MAX_CHARS)
+        val changes = buildList {
+            for (value in args.stringListOrEmpty("addTraits")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.TRAITS, PersonaEvolutionRules.Op.ADD, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("removeTraits")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.TRAITS, PersonaEvolutionRules.Op.REMOVE, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("addLikes")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.LIKES, PersonaEvolutionRules.Op.ADD, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("removeLikes")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.LIKES, PersonaEvolutionRules.Op.REMOVE, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("addBehaviors")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.BEHAVIORS, PersonaEvolutionRules.Op.ADD, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("removeBehaviors")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.BEHAVIORS, PersonaEvolutionRules.Op.REMOVE, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("addQuirks")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.QUIRKS, PersonaEvolutionRules.Op.ADD, value, reason, 1.0))
+            }
+            for (value in args.stringListOrEmpty("removeQuirks")) {
+                add(PersonaEvolutionRules.Change(PersonaEvolutionRules.Field.QUIRKS, PersonaEvolutionRules.Op.REMOVE, value, reason, 1.0))
+            }
+        }
+        // 规则层是不可信的模型输出的唯一闸门：条数/长度/去重/是否存在都在这里过滤。
+        val sanitized = PersonaEvolutionRules.sanitize(changes, current)
+        val requestedAddress = args.stringOrNull("address").orEmpty().trim().take(PersonaFields.MAX_ADDRESS_CHARS)
+        val address = requestedAddress.takeIf { it.isNotEmpty() && it != PersonaFields.address(persona) }
+        if (sanitized.isEmpty() && address == null) {
+            return failure(
+                ServerToolCatalog.UPDATE_PERSONA,
+                "这次没有真正需要改的地方（要么和现在一样、要么超出允许的字段/条数）；" +
+                    "允许改的只有 traits/likes/behaviors/quirks 与 address（称呼），名字和正文不要动",
+                "没有可改的"
+            )
+        }
+        store.dropExpiredPendingPatches(context.personaId, now)
+        val patchJson = PersonaEvolutionRules.encodePatch(sanitized, address)
+        val existing = store.pendingPatches(context.personaId, now).firstOrNull { it.patchJson == patchJson }
+        val patch = existing ?: store.putPendingPatch(
+            PendingPatch(
+                id = UUID.randomUUID().toString(),
+                personaId = context.personaId,
+                sessionId = context.sessionId,
+                patchJson = patchJson,
+                summary = PersonaEvolutionRules.summary(sanitized, address).take(PERSONA_SUMMARY_MAX_CHARS),
+                reason = reason.ifBlank { DEFAULT_PERSONA_REASON },
+                createdAt = now,
+                expiresAt = now + com.yap.agentd.evolution.EvolutionService.PENDING_TTL_MS
+            )
+        )
+        val summary = PersonaEvolutionRules.summary(sanitized, address)
+        return Outcome(
+            name = ServerToolCatalog.UPDATE_PERSONA,
+            ok = true,
+            summary = "提请了人设改动（待确认）",
+            contentForModel = "已经提了一条待审的改动（patchId=${patch.id}）：$summary。" +
+                "对方点头之后才会真的写进你的人设，现在先照常说话，别解释这个流程。",
+            trace = ToolTrace(
+                name = ServerToolCatalog.UPDATE_PERSONA,
+                title = "想改改自己",
+                subtitle = summary.take(PERSONA_SUMMARY_MAX_CHARS),
+                detail = reason,
+                ok = true
+            )
+        )
+    }
+
+    /**
+     * `set_quiet_hours`：写人格的安静时段（`quietSleepMinutes` / `quietWakeMinutes`，当天第几分钟）。
+     *
+     * 为什么直接写库（而不是待审）：安静时段是**行为开关**（到点不主动开口），不是「他是谁」；
+     * 而且 `SleepPolicy` 只认这两个分钟数，模型说错时间最多让他早睡/晚睡一会儿，用户随时能在
+     * 客户端改回来（备份也带着这两列）。写入时 `version + 1`，与其它人格写入保持同一条版本线。
+     *
+     * 跨夜正确性：这里只存分钟数并校验「开始 != 结束」，`[start, end)` 是否跨午夜由
+     * [QuietHours.contains] / `SleepPolicy.window` 判断（23:30–08:00 覆盖 00:00–07:59）。
+     */
+    private fun setQuietHours(args: JsonValue.Obj, context: Context): Outcome {
+        val persona = store.persona(context.personaId)
+            ?: return failure(ServerToolCatalog.SET_QUIET_HOURS, "找不到这个人格", "设不了安静时段")
+        val start = args.stringOrNull("start")
+        val end = args.stringOrNull("end")
+        val hours = QuietHours.of(start, end)
+            ?: return failure(
+                ServerToolCatalog.SET_QUIET_HOURS,
+                "start / end 需要是 HH:MM（例如 23:30 / 08:00），且不能相同",
+                "时间写得不对"
+            )
+        val version = PersonaFields.version(persona) + 1
+        val extras = PersonaFields.withVersion(
+            PersonaFields.withQuietHours(persona.extraFields, hours),
+            version
+        )
+        store.updatePersona(context.personaId) { existing, _ -> existing.copy(extraFields = extras) }
+        return Outcome(
+            name = ServerToolCatalog.SET_QUIET_HOURS,
+            ok = true,
+            summary = "安静时段：${hours.text()}",
+            contentForModel = "好：你的安静时段是 ${hours.text()}（本地时间，跨夜也算对）。" +
+                "这段时间你不会主动找他；他发来的消息你照样看得到，想回也随时能回。",
+            trace = ToolTrace(
+                name = ServerToolCatalog.SET_QUIET_HOURS,
+                title = "定了安静时段",
+                subtitle = hours.text(),
+                detail = "",
+                ok = true
+            )
+        )
+    }
+
+    /**
+     * `sticker.make`（0.14.1）：基底图 + 叠图 + 叠字 → 一张符合 `spec/stickers` 上限的新表情。
+     *
+     * 素材三选一：`baseStickerId`（已有的表情）/ `url`（公开图片，过 `WebUrlPolicy`）/ 都没有时用
+     * 内置空白底（纯色底 + 大字，meme 风格）。`overlayStickerId` 是可选叠图。
+     * 生成结果走媒体表（`kind=STICKER`），所以 `stickerId`/`mediaId` 就是 `/v1/media/<id>` 的 id；
+     * 结果回灌「做好了（id=…）」，模型可以接着用 `sticker send` 发出去。
+     */
+    private fun makeSticker(args: JsonValue.Obj, context: Context): Outcome {
+        val baseStickerId = args.stringOrNull("baseStickerId")?.trim().orEmpty()
+        val url = args.stringOrNull("url")?.trim().orEmpty()
+        val overlayStickerId = args.stringOrNull("overlayStickerId")?.trim().orEmpty()
+        val text = args.stringOrNull("text")
+        val position = args.stringOrNull("position")?.trim()?.uppercase() ?: "CENTER"
+        val base = when {
+            baseStickerId.isNotEmpty() -> StickerSources.fromSticker(store, baseStickerId)
+                ?: return failure(ServerToolCatalog.STICKER, "没有这个表情：$baseStickerId", "没这个表情")
+
+            url.isNotEmpty() -> try {
+                StickerSources.fromUrl(url)
+            } catch (invalid: StickerComposeException) {
+                return failure(ServerToolCatalog.STICKER, invalid.message ?: "图片用不了", "图下载不了")
+            }
+
+            else -> null
+        }
+        val overlay = if (overlayStickerId.isEmpty()) {
+            null
+        } else {
+            StickerSources.fromSticker(store, overlayStickerId)
+                ?: return failure(ServerToolCatalog.STICKER, "没有这个表情：$overlayStickerId", "没这个表情")
+        }
+        val composed = try {
+            StickerComposer.compose(base, overlay, text, position)
+        } catch (failed: StickerComposeException) {
+            return failure(ServerToolCatalog.STICKER, failed.message ?: "做不出来", "做不了新表情")
+        }
+        val sticker = store.createSticker(
+            personaId = context.personaId,
+            mime = "image/gif",
+            data = composed.gif,
+            width = composed.width,
+            height = composed.height,
+            frames = composed.frames,
+            source = Sticker.SOURCE_MODEL_MADE,
+            createdBy = Sticker.CREATED_BY_MODEL
+        )
+        val summary = "做好了表情（${composed.frames} 帧，${composed.gif.size / 1024} KB）"
+        return Outcome(
+            name = ServerToolCatalog.STICKER,
+            ok = true,
+            summary = summary,
+            contentForModel = "做好了（id=${sticker.id}）：${composed.width}x${composed.height}，" +
+                "${composed.frames} 帧，${composed.gif.size / 1024} KB。" +
+                "它已经在你的表情里了；想发出去就再调用 sticker send（stickerId=${sticker.id}）。",
+            trace = ToolTrace(
+                name = ServerToolCatalog.STICKER,
+                title = "做了个表情",
+                subtitle = "${composed.width}x${composed.height} · ${composed.frames} 帧",
+                detail = text?.take(80).orEmpty(),
+                ok = true
+            )
+        )
+    }
+
+    // ------------------------------------------------------------------ listen / watch（0.14.1）
+
+    /**
+     * `listen`（`spec/audio-video`）：把会话里最近/指定的一条语音 base64 后作为 `input_audio`
+     * 交给模型。**不伪造转写**：模型听不了时上游会报错（`LlmReplyGenerator` 会把它翻成
+     * 「这个模型听不了语音」），这里只负责把真实字节送过去。
+     */
+    private fun listen(args: JsonValue.Obj, context: Context): Outcome {
+        val audioId = args.stringOrNull("audioId") ?: args.stringOrNull("mediaId")
+        return when (val lookup = media.listen(context.sessionId, audioId)) {
+            is MediaLookup.Failure -> failure(ServerToolCatalog.LISTEN, lookup.reason, "没听到")
+            is MediaLookup.Audio -> {
+                val payload = lookup.payload
+                Outcome(
+                    name = ServerToolCatalog.LISTEN,
+                    ok = true,
+                    summary = "听了一遍语音（${payload.bytes / 1024} KB）",
+                    contentForModel = "我听了一遍你发来的这段语音（${payload.bytes / 1024} KB）。" +
+                        "听到的内容就在下一条消息里；别复述「我调用了工具」。",
+                    modelParts = listOf(LlmContentPart.InputAudio(payload.base64, payload.format)),
+                    trace = ToolTrace(
+                        name = ServerToolCatalog.LISTEN,
+                        title = "听语音",
+                        subtitle = "${payload.format} · ${payload.bytes / 1024} KB",
+                        detail = "",
+                        ok = true
+                    )
+                )
+            }
+
+            is MediaLookup.Video -> failure(ServerToolCatalog.LISTEN, "这不是语音", "没听到")
+        }
+    }
+
+    /**
+     * `watch`（`spec/audio-video`）：用系统 `ffmpeg` 抽 ≤8 帧 JPEG，作为多个 `image_url` 交给模型。
+     *
+     * 没有 ffmpeg 时 [MediaLookup.Failure] 的原因是固定的一句「服务器没有视频解码器，看不了视频」，
+     * 工具失败、模型据此老实说看不了（绝不伪造帧）。
+     */
+    private fun watch(args: JsonValue.Obj, context: Context): Outcome {
+        val videoId = args.stringOrNull("videoId") ?: args.stringOrNull("mediaId")
+        return when (val lookup = media.watch(context.sessionId, videoId)) {
+            is MediaLookup.Failure -> failure(ServerToolCatalog.WATCH, lookup.reason, "没看成")
+            is MediaLookup.Video -> {
+                val frames = lookup.frames
+                val parts = frames.jpegs.map { jpeg ->
+                    LlmContentPart.ImageUrl(
+                        "data:image/jpeg;base64," + java.util.Base64.getEncoder().encodeToString(jpeg)
+                    )
+                }
+                Outcome(
+                    name = ServerToolCatalog.WATCH,
+                    ok = true,
+                    summary = "看了 ${frames.frameCount} 帧",
+                    contentForModel = "我看了这段视频的 ${frames.frameCount} 帧画面（只抽了关键帧、没有声音）。" +
+                        "看到的内容就在下一条消息里；别复述「我调用了工具」。",
+                    modelParts = parts,
+                    trace = ToolTrace(
+                        name = ServerToolCatalog.WATCH,
+                        title = "看视频",
+                        subtitle = "${frames.frameCount} 帧",
+                        detail = "",
+                        ok = true
+                    )
+                )
+            }
+
+            is MediaLookup.Audio -> failure(ServerToolCatalog.WATCH, "这不是视频", "没看成")
         }
     }
 
@@ -832,6 +1176,12 @@ class ToolExecutor(
         /** recall 结果总字数上限（别让一次回忆塞满提示词）。 */
         const val MAX_RECALL_RESULT_CHARS = 2_000
         const val STICKER_DEFAULT_LIMIT = 12
+
+        /** `update_persona` 的 reason 上限与补丁摘要上限。 */
+        const val PERSONA_REASON_MAX_CHARS = 120
+        const val PERSONA_SUMMARY_MAX_CHARS = 160
+
+        const val DEFAULT_PERSONA_REASON = "这几轮聊下来，他觉得自己有点变化（需要你点头才会写进人设）。"
 
         /** 与 `ToolsRoutes` 共用同一套环境变量（key 永不出现在模型参数里）。 */
         const val ENV_SEARCH_PROVIDER = "YAP_AGENTD_SEARCH_PROVIDER"

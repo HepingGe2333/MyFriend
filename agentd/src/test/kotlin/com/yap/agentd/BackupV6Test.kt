@@ -104,11 +104,12 @@ class BackupV6Test {
             "format", "formatVersion", "appVersion", "exportedAt", "apiKeysOmitted",
             "personas", "memories", "sessions", "messages", "media", "stickers", "diaryNotes",
             "presets", "proactiveRules", "agentIntents",
-            // 0.14：服务端扩展段（客户端 ignoreUnknownKeys 会忽略，但服务端往返要保留）。
-            "mentalActivities", "sessionMemory",
+            // 0.14.1：服务端专有数据统一进 `extensions`（客户端 ignoreUnknownKeys 忽略，
+            // 服务端自己往返要保留）；顶层不再有 mentalActivities / sessionMemory / mediaSkipped。
+            "extensions",
             "memoryConsolidations", "apiConfigs", "settings"
         )
-        assertEquals(expected, backup.fields.keys.toList().filter { it != "mediaSkipped" })
+        assertEquals(expected, backup.fields.keys.toList())
         assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(6, backup.int("formatVersion"))
         assertEquals(FileStore.BACKUP_FORMAT_NAME, backup.str("format"))

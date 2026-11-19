@@ -81,6 +81,31 @@ sealed class SseEvent {
         override fun data(): JsonValue.Obj = StoreJson.obj("message" to message.toJson())
     }
 
+    /**
+     * 0.14.1（`spec/experience` §8）：服务端开始「打字」——一轮的第一条 assistant 消息入队时发一次。
+     *
+     * 与 `GET /v1/events` 的 `typing.started` 事件**同名同字段**；客户端只在前台收到它时显示
+     * 「正在输入…」，离线不补。
+     */
+    data class TypingStarted(val sessionId: String, val personaId: String, val at: Long) : SseEvent() {
+        override val type: String get() = "typing.started"
+        override fun data(): JsonValue.Obj = StoreJson.obj(
+            "sessionId" to StoreJson.str(sessionId),
+            "personaId" to StoreJson.str(personaId),
+            "at" to StoreJson.num(at)
+        )
+    }
+
+    /** 0.14.1：这一轮的消息都发完了（每轮一次 `typing.started` / 一次 `typing.stopped`）。 */
+    data class TypingStopped(val sessionId: String, val personaId: String, val at: Long) : SseEvent() {
+        override val type: String get() = "typing.stopped"
+        override fun data(): JsonValue.Obj = StoreJson.obj(
+            "sessionId" to StoreJson.str(sessionId),
+            "personaId" to StoreJson.str(personaId),
+            "at" to StoreJson.num(at)
+        )
+    }
+
     data class Error(val code: String, val message: String) : SseEvent() {
         override val type: String get() = "error"
         override fun data(): JsonValue.Obj = StoreJson.obj(

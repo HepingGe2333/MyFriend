@@ -33,15 +33,39 @@ import Foundation
 public struct ServerLiveState: Equatable, Sendable {
     public var mood: ServerMood?
     public var presence: ServerPresence?
+    /// 此刻「他正在输入」的会话：本地会话 id → 收到 `typing.started` 的时刻。
+    ///
+    /// 只在**前台**且服务端真的推送了 typing 事件时才有值；离线同步回来的消息
+    /// **不会**写这里（所以历史消息不会再补一遍打字动画，规范 §8）。
+    /// 带时间戳是为了兜底：万一 `typing.stopped` 丢了，超过 `typingMaxAgeMillis` 自动失效。
+    public var typing: [String: Int64]
     public var updatedAt: Int64
 
-    public init(mood: ServerMood? = nil, presence: ServerPresence? = nil, updatedAt: Int64 = 0) {
+    public init(
+        mood: ServerMood? = nil,
+        presence: ServerPresence? = nil,
+        typing: [String: Int64] = [:],
+        updatedAt: Int64 = 0
+    ) {
         self.mood = mood
         self.presence = presence
+        self.typing = typing
         self.updatedAt = updatedAt
     }
 
-    public var isEmpty: Bool { mood == nil && presence == nil }
+    public var isEmpty: Bool { mood == nil && presence == nil && typing.isEmpty }
+
+    /// 这个会话此刻要不要显示「正在输入…」。
+    public static let typingMaxAgeMillis: Int64 = 60_000
+
+    public func isTyping(
+        sessionId: String,
+        now: Int64 = DomainClock.nowMillis,
+        maxAgeMillis: Int64 = ServerLiveState.typingMaxAgeMillis
+    ) -> Bool {
+        guard let startedAt = typing[sessionId] else { return false }
+        return now - startedAt <= maxAgeMillis
+    }
 
     /// 界面要显示的心情（服务端权威，本地不再按时间冲淡）。
     ///
@@ -534,6 +558,7 @@ public actor ServerSyncService {
             live = ServerLiveState(
                 mood: snapshot.mood ?? live.mood,
                 presence: snapshot.presence ?? live.presence,
+                typing: live.typing,
                 updatedAt: at
             )
 

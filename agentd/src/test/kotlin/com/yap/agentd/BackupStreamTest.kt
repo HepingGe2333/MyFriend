@@ -161,7 +161,7 @@ class BackupStreamTest {
                 )
             }
             assertEquals(direct.str("appVersion"), streamed.str("appVersion"))
-            assertEquals(direct.int("mediaSkipped"), streamed.int("mediaSkipped"))
+            assertEquals(direct.obj("extensions").int("mediaSkipped"), streamed.obj("extensions").int("mediaSkipped"))
         } finally {
             server.stop()
         }

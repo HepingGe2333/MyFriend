@@ -37,8 +37,6 @@ struct ChatDateDivider: View {
 struct ChatBubbleRow: View {
 
     let message: MessageEntity
-    /// 只有「最后一条助手消息」才给「重新生成」——`ChatService.regenerate` 删的也是最后一条。
-    let isLatestAssistant: Bool
     /// 1.9：这条用户消息要不要在右下角显示「已读」（见 `ChatViewModel.showsReadBadge`）。
     let showsRead: Bool
     let bubbleStyle: BubbleStyle
@@ -52,7 +50,6 @@ struct ChatBubbleRow: View {
     /// 长按「添加到我的表情」（0.13 表情包）。
     let onAddSticker: () -> Void
     let onCopy: () -> Void
-    let onRegenerate: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.colorScheme) private var scheme
@@ -144,10 +141,6 @@ struct ChatBubbleRow: View {
             if !message.content.isEmpty {
                 ChatMarkdownView(text: message.content, isOutgoing: usesAccentFill, onOpenLink: onOpenLink)
             }
-            if message.status == .error {
-                errorBox
-                    .padding(.top, message.content.isEmpty ? 0 : 8)
-            }
             if !traces.isEmpty && message.status == .complete {
                 tracesSection
                     .padding(.top, 6)
@@ -201,46 +194,6 @@ struct ChatBubbleRow: View {
 
     private var traceTint: Color {
         usesAccentFill ? Color.white.opacity(0.75) : MFTheme.subtleText(scheme)
-    }
-
-    // MARK: 失败
-
-    private var errorBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                Text(L("生成失败"))
-                    .font(.caption.weight(.medium))
-            }
-            .foregroundStyle(usesAccentFill ? Color.white : Color.red)
-
-            if let detail = message.errorMessage, !detail.isEmpty {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle((usesAccentFill ? Color.white : Color.red).opacity(0.85))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if isLatestAssistant {
-                Button(action: onRegenerate) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
-                        Text(L("重新生成")).font(.caption)
-                    }
-                    .foregroundStyle(usesAccentFill ? Color.white : MFTheme.defaultAccent)
-                    .padding(.top, 2)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            usesAccentFill ? Color.white.opacity(0.12) : Color.red.opacity(0.10),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
     }
 
     // MARK: 动作痕迹
@@ -306,11 +259,6 @@ struct ChatBubbleRow: View {
         if hasStickerAttachment {
             Button(action: onAddSticker) {
                 Label(L("添加到我的表情"), systemImage: "face.smiling")
-            }
-        }
-        if isLatestAssistant {
-            Button(action: onRegenerate) {
-                Label(L("重新生成"), systemImage: "arrow.clockwise")
             }
         }
         Button(role: .destructive, action: onDelete) {

@@ -456,7 +456,7 @@ interface MessageDao {
      * 用户消息第一次被模型「看到」时写已读。
      *
      * 只填 readAt 为空的那几条：重复生成、重试都不会把时间改成「刚刚」，
-     * 否则界面上的「已读」会随着每一次重新生成往后跳。
+     * 否则界面上的「已读」会随着每一次编辑重发往后跳。
      */
     @Query("UPDATE messages SET readAt = :now WHERE sessionId = :sessionId AND role = 'USER' AND readAt IS NULL AND blocked = 0")
     suspend fun markUserMessagesRead(sessionId: String, now: Long): Int

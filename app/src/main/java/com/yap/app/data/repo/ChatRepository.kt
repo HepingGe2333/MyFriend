@@ -860,7 +860,9 @@ class ChatRepository @Inject constructor(
         var lastSaved: MessageEntity? = null
         var messagesThisRound = 0
         // 首条消息的「正在输入」只付一次；连发之间改用更短的 gap（规范 §4/§5）。
-        var typingDelayApplied = false
+        // 0.14.1 §8：服务端权威模式下**延迟由服务端在入队时决定**，客户端一行都不加。
+        // 把标记预置成 true，等于跳过下面所有 ExperienceRhythm 延迟（不到达/不连发）。
+        var typingDelayApplied = isServerMode()
         try {
             val conversation = wireMessages.toMutableList()
             val executed = mutableSetOf<String>()
@@ -1431,16 +1433,6 @@ class ChatRepository @Inject constructor(
             }
         }
         return message
-    }
-
-    suspend fun prepareRegeneration(sessionId: String): Result<Unit> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
-        val latest = messageDao.latestInSession(sessionId)
-        if (latest?.role == MessageRole.ASSISTANT) {
-            blockWriter.deleteMessage(latest)
-            refreshPreview(session)
-        }
-        if (messageDao.latestUser(sessionId) == null) userError(DomainErrorCode.NOTHING_TO_REGENERATE)
     }
 
     suspend fun editUserMessage(sessionId: String, messageId: String, newContent: String): Result<Unit> = runCatching {

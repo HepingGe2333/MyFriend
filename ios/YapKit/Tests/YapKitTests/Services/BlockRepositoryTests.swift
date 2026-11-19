@@ -27,33 +27,32 @@ final class BlockRepositoryTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func addUserMessage(id: String, at: Int64) throws {
-        try stores.messages.upsert(MessageEntity(
-            id: id, sessionId: sessionId, personaId: personaId,
-            role: .user, content: "在吗", createdAt: at, updatedAt: at
-        ))
-    }
-
     /// 提议写在 `personas.blockProposalJson`（Android 18.json 的同一列）：
     /// 换个仓储实例（≈ 重启进程）也还能读到、还能确认。
     func testProposalIsPersistedOnPersonaRow() throws {
         let first = BlockRepository(stores: stores, now: { self.now })
         let proposal = first.propose(
-            personaId: personaId, sessionId: sessionId, hours: 4, reason: "先冷静一下"
+            personaId: personaId, hours: 4, reason: "先冷静一下", userMessageId: "u-1"
         )
         XCTAssertEqual(proposal.hours, 4)
         XCTAssertNotNil(try stores.personas.byId(personaId)?.blockProposalJson)
+        XCTAssertFalse(proposal.proposalId.isEmpty)
+        XCTAssertEqual(proposal.expiresAt, now + BlockPolicy.proposalTTLMillis)
 
         let second = BlockRepository(stores: stores, now: { self.now + 60_000 })
         let pending = try XCTUnwrap(second.pendingProposal(personaId: personaId))
         XCTAssertEqual(pending.reason, "先冷静一下")
 
-        // 对方又发了一条 → 下一轮确认生效。
-        try addUserMessage(id: "u-1", at: now + 120_000)
+        // 同一轮里再确认（用户消息 id 没变）→ 不算。
+        XCTAssertEqual(
+            second.confirm(personaId: personaId, hours: 4, userMessageId: "u-1"),
+            .waitingForNextRound
+        )
+        // 对方又发了一条（新的 userMessageId）→ 下一轮确认生效。
         let confirmRepo = BlockRepository(stores: stores, now: { self.now + 180_000 })
         XCTAssertEqual(
             confirmRepo.confirm(
-                personaId: personaId, sessionId: sessionId, hours: 4, reason: nil
+                personaId: personaId, hours: 4, reason: nil, userMessageId: "u-2"
             ),
             .accepted
         )
@@ -80,7 +79,9 @@ final class BlockRepositoryTests: XCTestCase {
     /// 过期的提议在读取时就被丢掉（不需要等下一次写入）。
     func testExpiredProposalIsDroppedOnRead() throws {
         let repository = BlockRepository(stores: stores, now: { self.now })
-        repository.propose(personaId: personaId, sessionId: sessionId, hours: 8, reason: nil)
+        repository.propose(
+            personaId: personaId, hours: 8, reason: nil, userMessageId: "u-1"
+        )
         let later = BlockRepository(
             stores: stores, now: { self.now + BlockPolicy.proposalTTLMillis }
         )

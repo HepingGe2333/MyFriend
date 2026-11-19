@@ -147,7 +147,12 @@ class ChatService(
      * 0.14 的体验功能：每条聊天后记一轮「他说了几轮」、按 5/30 条更新会话记忆、
      * 在心情激动/变化大时补一次心理活动。失败同样只记日志。
      */
-    private val experience: com.yap.agentd.experience.ExperienceService? = null
+    private val experience: com.yap.agentd.experience.ExperienceService? = null,
+    /**
+     * 0.14.1：服务端消息队列与 typing 指示器（`spec/experience` §8）。
+     * `null` = 不启用延迟（落库即发 `message.created`，0.14 的旧行为；测试默认走这条）。
+     */
+    private val delivery: com.yap.agentd.delivery.MessageDelivery? = null
 ) {
 
     /** 同一 `(sessionId, clientMessageId)` 的并发生成只允许一个；生成完把锁从表里摘掉。 */
@@ -286,6 +291,10 @@ class ChatService(
         // 有附件但没有文字（sticker.send）：仍然落一条带附件的空正文消息（与 0.13 一致）。
         val textsToPersist = if (replyTexts.isEmpty()) listOf("") else replyTexts
         val multiMessage = outcome.messages.isNotEmpty() || textsToPersist.size > 1
+        // 0.14.1（§8）：延迟由服务端在**入队时**决定。离线/未启用/失败时是 `null` = 立即上屏。
+        // 失败时不延迟：已经流出去的半句话要立刻落库并发事件，不能排进队列等 4 秒。
+        val visibleAts = if (failed) null else delivery?.visibleAts(session.personaId, textsToPersist)
+        val delayed = visibleAts != null
         // 关键点：这里不检查 socket 是否还活着 —— 客户端断开也要落库。
         val persisted = ArrayList<Message>(textsToPersist.size)
         for ((index, text) in textsToPersist.withIndex()) {
@@ -300,16 +309,33 @@ class ChatService(
                 // 用量记在最后一条：`done` 与幂等重放都读它。
                 promptTokens = if (isLast) usage.promptTokens else null,
                 completionTokens = if (isLast) usage.completionTokens else null,
-                toolTraceJson = if (isLast) outcome.toolTraceJson else null
+                toolTraceJson = if (isLast) outcome.toolTraceJson else null,
+                visibleAt = visibleAts?.getOrNull(index),
+                // 延迟投递的消息先不写 `message.created` 事件（到点由 MessageDelivery 补发）；
+                // 立即路径保持现状（落库即发事件）。
+                emitEvent = !delayed
             )
         }
         store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
         // 真的说了一句 → 连续沉默清零（`stay_silent` 的「不超过 2 轮」由它兜底）。
         store.recordAssistantReply(session.personaId)
         if (!failed) {
-            // 0.14 连发：逐条 `message.created`（带完整消息 DTO），最后只发一个 `done`。
-            // 单条回复保持旧形状（只有 delta + done），老客户端不用改也能正常显示。
-            if (multiMessage) persisted.forEach { sink.emit(SseEvent.MessageCreated(it)) }
+            if (delayed) {
+                // 前台在线：typing.started → 到 visibleAt 的 message.created → typing.stopped（每轮各一次）。
+                // 写 socket 失败由 SafeSink 吞掉；投递队列本身已经持久化，进程被 kill 也能补发。
+                try {
+                    delivery!!.present(sessionId, session.personaId, persisted, sink)
+                } catch (failure: Exception) {
+                    System.err.println(
+                        "[agentd] 延迟投递失败，改为立即下发：${failure::class.simpleName}: ${failure.message}"
+                    )
+                    persisted.forEach { sink.emit(SseEvent.MessageCreated(it)) }
+                }
+            } else if (multiMessage) {
+                // 0.14 连发：逐条 `message.created`（带完整消息 DTO），最后只发一个 `done`。
+                // 单条回复保持旧形状（只有 delta + done），老客户端不用改也能正常显示。
+                persisted.forEach { sink.emit(SseEvent.MessageCreated(it)) }
+            }
             sink.emit(SseEvent.Done(persisted.last().id, usage))
         }
         afterChat(session.personaId, sessionId)

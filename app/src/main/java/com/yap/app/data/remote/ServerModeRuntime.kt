@@ -66,7 +66,9 @@ class ServerModeRuntime @Inject constructor(
     /** 0.13：连接成功后把本机模型配置推给**本机部署**的服务端（远程地址不推，见策略类）。 */
     private val llmConfig: ServerLlmConfigPusher,
     /** 0.13：服务端表情/日记的拉取缓存（只在服务端模式下工作，失败不影响聊天同步）。 */
-    private val catalogSync: ServerCatalogSync
+    private val catalogSync: ServerCatalogSync,
+    /** 0.14.1：服务端模式关掉/换服务端时，把「正在输入」的瞬时状态一起收掉。 */
+    private val typing: ServerTypingState
 ) {
     /** 上一次看到的服务端地址：换地址＝换服务端，旧游标/队列必须清掉。 */
     private var lastBaseUrl: String? = null
@@ -81,11 +83,16 @@ class ServerModeRuntime @Inject constructor(
             }
                 .distinctUntilChanged()
                 .collectLatest { (usable, foreground, config) ->
-                    if (!usable) return@collectLatest
+                    if (!usable) {
+                        // 关掉服务端模式：旧连接的输入指示不该留在界面上。
+                        typing.clearAll()
+                        return@collectLatest
+                    }
                     val baseUrl = config.baseUrl
                     if (lastBaseUrl != null && lastBaseUrl != baseUrl) {
                         // 换服务端：旧游标/映射/待发队列全部失效，必须先清掉再同步。
                         localStore.resetForNewServer()
+                        typing.clearAll()
                     }
                     lastBaseUrl = baseUrl
                     // 0.13：连接成功 = 「可以把本机模型配置交给它」的时机。独立协程、不等待：

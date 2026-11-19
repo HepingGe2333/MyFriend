@@ -59,6 +59,9 @@ class RoomServerEventSink @Inject constructor(
             ServerEventApplied()
         }
 
+        // typing 是瞬时状态，由 `ServerEventPoller` 直接交给 `ServerTypingState`，不落库。
+        is ServerEventChange.TypingStarted, is ServerEventChange.TypingStopped -> ServerEventApplied()
+
         is ServerEventChange.Unknown -> ServerEventApplied()
     }
 

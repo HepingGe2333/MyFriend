@@ -51,6 +51,22 @@ class MainOptionsTest {
     }
 
     @Test
+    fun `ffmpeg flag and environment are parsed with command line precedence`() {
+        assertNull("默认不钉死路径（按 PATH 找 ffmpeg）", parse().ffmpegPath)
+        assertEquals("/opt/ffmpeg/bin/ffmpeg", parse("--ffmpeg", "/opt/ffmpeg/bin/ffmpeg").ffmpegPath)
+        assertEquals("/usr/local/bin/ffmpeg", parse("--ffmpeg=/usr/local/bin/ffmpeg").ffmpegPath)
+        assertEquals(
+            "/env/ffmpeg",
+            parse(env = mapOf("YAP_FFMPEG" to "/env/ffmpeg")).ffmpegPath
+        )
+        assertEquals(
+            "命令行优先于环境变量",
+            "/cli/ffmpeg",
+            parse("--ffmpeg", "/cli/ffmpeg", env = mapOf("YAP_FFMPEG" to "/env/ffmpeg")).ffmpegPath
+        )
+    }
+
+    @Test
     fun `llm flags and environment are parsed with command line precedence`() {
         assertNull("默认没有服务端 LLM 配置", parse().llmBaseUrl)
         assertNull(parse().llmKey)

@@ -149,6 +149,21 @@ class FileStore(
         const val SESSION_MEMORY_FILE = "session_memory.json"
 
         /**
+         * 0.14.1：**客户端独有**的备份段（`proactiveRules[]` / `memoryConsolidations[]` 以及
+         * 客户端将来新增的未知顶层段）原样存在这里，导出时原样带回（`spec/experience` §11）。
+         *
+         * 为什么单独一个文件而不是塞进 `settings.json`：它是**备份的透传数据**，不是服务端设置；
+         * 单独文件也方便运维看懂「这些不是服务端的，是客户端带来的」。
+         */
+        const val CLIENT_EXTRAS_FILE = "client_extras.json"
+
+        /** 一份备份里最多透传多少个客户端独有段（挡住「用未知段把数据目录撑爆」）。 */
+        const val MAX_CLIENT_EXTRAS_SECTIONS = 64
+
+        /** 透传的客户端段总大小上限（序列化后）；超出的段整段跳过，不影响导入。 */
+        const val MAX_CLIENT_EXTRAS_BYTES = 8L * 1024 * 1024
+
+        /**
          * 备份里媒体二进制的上限：单个文件 8 MiB、全部合计 128 MiB（按**原始字节**算）。
          *
          * 超限的媒体在导出时**跳过并计数**（`mediaSkipped`），不让一份备份因为一张大图
@@ -201,6 +216,12 @@ class FileStore(
 
         /** 一份备份里允许的最大消息条数（挡住「用 1 亿条消息的备份把内存/磁盘打满」）。 */
         const val MAX_BACKUP_MESSAGES = 1_000_000
+
+        /** 0.14.1：`message_queue.json`（延迟投递队列，重启不丢）。 */
+        const val MESSAGE_QUEUE_FILE = "message_queue.json"
+
+        /** 队列里最多保留多少条待投递（单人部署的正常量级是 0–4 条）。 */
+        const val MAX_PENDING_DELIVERIES = 1000
 
         /** 消息（`createdAt` 相同则按 id）的稳定顺序：块内、分页、备份都按它排。 */
         val MESSAGE_ORDER: Comparator<Message> = compareBy({ it.createdAt }, { it.id })
@@ -294,6 +315,15 @@ class FileStore(
 
     /** 0.14：会话记忆（`session_memory.json`，key = sessionId）。 */
     private val sessionMemories = LinkedHashMap<String, SessionMemory>()
+
+    /**
+     * 0.14.1：客户端独有的备份段（`proactiveRules` / `memoryConsolidations` / 未知顶层段），
+     * **原样**往返（导入时抓下来、导出时原样写回）。键 → 原始 `JsonValue`。
+     */
+    private val clientExtras = LinkedHashMap<String, JsonValue>()
+
+    /** 0.14.1：待投递消息（`message_queue.json`，key = deliveryId）。 */
+    private val deliveries = LinkedHashMap<String, PendingDelivery>()
 
     /** 会话用户消息计数缓存：`sessionId → (总用户消息, 其中 blocked)`（见 `countUserMessagesInSession`）。 */
     private val userMessageCounts = HashMap<String, Pair<Long, Long>>()
@@ -879,6 +909,11 @@ class FileStore(
     // ================================================================== 读：块与消息
 
     /** 一个会话的块表（按 `index` 升序；允许编号空洞）。 */
+    /** 客户端独有的备份段（只读快照；值保持原始 JSON，不解析）。 */
+    fun clientExtras(): Map<String, JsonValue> = lock.withLock { LinkedHashMap(clientExtras) }
+
+    fun clientExtrasSection(name: String): JsonValue? = lock.withLock { clientExtras[name] }
+
     fun blocks(sessionId: String): List<BlockMeta> = lock.withLock {
         requireSessionLocked(sessionId)
         blocksForLocked(sessionId).toList()
@@ -1146,7 +1181,16 @@ class FileStore(
         promptTokens: Int? = null,
         completionTokens: Int? = null,
         toolTraceJson: String? = null,
-        blocked: Boolean = false
+        blocked: Boolean = false,
+        /** 0.14.1：这条消息「该出现在屏幕上」的时刻；`null` = 立即（`visibleAt = createdAt`）。 */
+        visibleAt: Long? = null,
+        /**
+         * 0.14.1：是否在落库时立刻发 `message.created` 事件。
+         *
+         * 延迟投递的消息先不写事件（`false`），由 `MessageDelivery` 到点补发；离线/立即投递保持
+         * `true`（现状）。事件游标是单调的，晚发只会让客户端晚看到一次，不会乱序。
+         */
+        emitEvent: Boolean = true
     ): Message = lock.withLock {
         if (!MessageRole.isValid(role)) throw IllegalArgumentException("非法的角色：$role")
         val session = requireSessionLocked(sessionId)
@@ -1180,7 +1224,8 @@ class FileStore(
             promptTokens = promptTokens,
             completionTokens = completionTokens,
             toolTraceJson = toolTraceJson?.takeIf { it.isNotBlank() },
-            blocked = blocked && role == MessageRole.USER
+            blocked = blocked && role == MessageRole.USER,
+            visibleAt = visibleAt ?: createdAt
         )
         appendLineLocked(blockFile(sessionId, block.index), StoreJson.stringify(message.toJson()))
 
@@ -1211,14 +1256,92 @@ class FileStore(
             }
         }
 
+        if (emitEvent) {
+            appendEventLocked(
+                type = EventType.MESSAGE_CREATED,
+                at = createdAt,
+                sessionId = sessionId,
+                personaId = session.personaId,
+                payload = linkedMapOf("message" to message.toJson())
+            )
+        }
+        message
+    }
+
+    // ------------------------------------------------------------------ 0.14.1：投递队列与 typing 事件
+
+    /**
+     * 补发一条 `message.created`（延迟投递到点时由 [com.yap.agentd.delivery.MessageDelivery] 调用）。
+     *
+     * `at` 用**投递时刻**而不是消息的 createdAt：事件流是「什么时候发生的」，客户端只看消息 id。
+     */
+    fun appendMessageCreatedEvent(
+        sessionId: String,
+        personaId: String,
+        message: Message,
+        at: Long = serverTime()
+    ): StoredEvent = lock.withLock {
         appendEventLocked(
             type = EventType.MESSAGE_CREATED,
-            at = createdAt,
+            at = at,
             sessionId = sessionId,
-            personaId = session.personaId,
+            personaId = personaId,
             payload = linkedMapOf("message" to message.toJson())
         )
-        message
+    }
+
+    /**
+     * 发一条 typing 事件（`typing.started` / `typing.stopped`）。
+     *
+     * 它只是给前台客户端的指示器，不落消息；`payload` 是空对象（字段在事件的
+     * `sessionId` / `personaId` / `at` 上，与 `/v1/events` 的其它事件同形）。
+     */
+    fun appendTypingEvent(sessionId: String, personaId: String, type: String, at: Long = serverTime()): StoredEvent =
+        lock.withLock {
+            require(type == EventType.TYPING_STARTED || type == EventType.TYPING_STOPPED) {
+                "不是 typing 事件：$type"
+            }
+            appendEventLocked(
+                type = type,
+                at = at,
+                sessionId = sessionId,
+                personaId = personaId,
+                payload = linkedMapOf()
+            )
+        }
+
+    /** 一批待投递消息入队（同一把锁 + 原子重写 `message_queue.json`）。 */
+    fun enqueueDeliveries(entries: List<PendingDelivery>): List<PendingDelivery> = lock.withLock {
+        if (entries.isEmpty()) return@withLock emptyList()
+        val added = ArrayList<PendingDelivery>(entries.size)
+        for (entry in entries) {
+            if (deliveries.size >= MAX_PENDING_DELIVERIES) {
+                // 极端情况（客户端长期不在线 + 消息爆量）：丢掉最早的，保证新消息还能投递。
+                val oldest = deliveries.values.minByOrNull { it.enqueuedAt } ?: break
+                deliveries.remove(oldest.id)
+            }
+            deliveries[entry.id] = entry
+            added += entry
+        }
+        persistDeliveriesLocked()
+        added
+    }
+
+    fun pendingDeliveries(): List<PendingDelivery> = lock.withLock {
+        deliveries.values.sortedWith(compareBy({ it.visibleAt }, { it.enqueuedAt }))
+    }
+
+    /** 到点（`visibleAt <= cutoff`）的待投递条目，按 `visibleAt` 升序。 */
+    fun dueDeliveries(cutoff: Long): List<PendingDelivery> = lock.withLock {
+        deliveries.values
+            .filter { it.visibleAt <= cutoff }
+            .sortedWith(compareBy({ it.visibleAt }, { it.enqueuedAt }))
+    }
+
+    fun completeDelivery(deliveryId: String): Boolean = lock.withLock {
+        if (deliveries.remove(deliveryId) == null) return@withLock false
+        persistDeliveriesLocked()
+        true
     }
 
     /**
@@ -1241,7 +1364,10 @@ class FileStore(
         at: Long,
         today: String,
         dailyCap: Int,
-        minGapMs: Long
+        minGapMs: Long,
+        /** 0.14.1：`visibleAt` / `emitEvent` 透传（延迟投递的主动消息先不写事件）。 */
+        visibleAt: Long? = null,
+        emitEvent: Boolean = true
     ): Message? = lock.withLock {
         requirePersonaLocked(personaId)
         val state = effectiveProactiveStateLocked(personaId, today)
@@ -1255,7 +1381,9 @@ class FileStore(
             sessionId = sessionId,
             role = MessageRole.ASSISTANT,
             content = content,
-            source = MessageSource.PROACTIVE
+            source = MessageSource.PROACTIVE,
+            visibleAt = visibleAt,
+            emitEvent = emitEvent
         )
         recordProactiveFiredLocked(personaId, at, today)
         message
@@ -1689,6 +1817,12 @@ class FileStore(
         deleteRecursively(sessionDir(sessionId))
         // 0.14：会话没了，它的备忘录也没有意义了。
         if (sessionMemories.remove(sessionId) != null) persistSessionMemoryLocked()
+        // 0.14.1：会话没了，它排队等发的消息也不该再补发（消息行本身随会话一起没了）。
+        val doomedDeliveries = deliveries.values.filter { it.sessionId == sessionId }.map { it.id }
+        if (doomedDeliveries.isNotEmpty()) {
+            for (id in doomedDeliveries) deliveries.remove(id)
+            persistDeliveriesLocked()
+        }
         persistSessionsLocked()
         true
     }
@@ -2297,7 +2431,8 @@ class FileStore(
                     .sortedBy { it.sessionId }
                     .map { BackupV6.sessionMemory(it) },
                 settings = BackupV6.settings(publicSettingsLocked()),
-                media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList()
+                media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList(),
+                clientExtras = LinkedHashMap(clientExtras)
             )
         }
 
@@ -2333,25 +2468,40 @@ class FileStore(
         writer.value(jsonArray(snapshot.diaryNotes))
         writer.key("presets")
         writer.value(jsonArray(snapshot.presets))
-        // 服务端不维护客户端的三段「过程流水」：照客户端形状写空数组，键集才一致。
+        // 客户端独有的两段（`spec/experience` §11）：**原样**写回导入时存下的值；
+        // 服务端从没收到过就写空数组（键集仍与客户端 v6 一致）。
         writer.key("proactiveRules")
-        writer.value(jsonArray(emptyList()))
+        writer.value(snapshot.clientExtras["proactiveRules"] ?: jsonArray(emptyList()))
         writer.key("agentIntents")
         writer.value(jsonArray(snapshot.intents))
-        // 0.14 的可加段：客户端 v6 的 `ignoreUnknownKeys` 会忽略它们，服务端自己再导入时原样带回。
-        writer.key("mentalActivities")
-        writer.value(jsonArray(snapshot.mentalActivities))
-        writer.key("sessionMemory")
-        writer.value(jsonArray(snapshot.sessionMemories))
+        // 服务端专有数据统一放可选的 `extensions`：客户端 `ignoreUnknownKeys` 会忽略它，
+        // 服务端自己再导入时读回来。旧的顶层 `mentalActivities` / `sessionMemory` /
+        // `mediaSkipped` 仍然**接受导入**（0.14.0 的备份文件不能被新版本读丢）。
+        writer.key("extensions")
+        writer.startObject()
+        writer.key("mediaSkipped")
+        writer.number(mediaSkipped)
+        if (snapshot.mentalActivities.isNotEmpty()) {
+            writer.key("mentalActivities")
+            writer.value(jsonArray(snapshot.mentalActivities))
+        }
+        if (snapshot.sessionMemories.isNotEmpty()) {
+            writer.key("sessionMemory")
+            writer.value(jsonArray(snapshot.sessionMemories))
+        }
+        writer.endObject()
         writer.key("memoryConsolidations")
-        writer.value(jsonArray(emptyList()))
+        writer.value(snapshot.clientExtras["memoryConsolidations"] ?: jsonArray(emptyList()))
         writer.key("apiConfigs")
         writer.value(jsonArray(snapshot.apiConfigs))
         writer.key("settings")
         writer.value(snapshot.settings)
-        // 服务端扩展（客户端忽略）：这次导出因为超过单文件/总量上限而跳过的媒体数。
-        writer.key("mediaSkipped")
-        writer.number(mediaSkipped)
+        // 客户端将来新增的未知顶层段：导入时抓下来，导出时原样带回（不解析、不替换）。
+        for ((key, value) in snapshot.clientExtras) {
+            if (key == "proactiveRules" || key == "memoryConsolidations") continue
+            writer.key(key)
+            writer.value(value)
+        }
         writer.endObject()
     }
 
@@ -2374,7 +2524,9 @@ class FileStore(
         val mentalActivities: List<JsonValue> = emptyList(),
         val sessionMemories: List<JsonValue> = emptyList(),
         val settings: JsonValue.Obj,
-        val media: List<MediaItem>
+        val media: List<MediaItem>,
+        /** 0.14.1：客户端独有的备份段（原样透传）。 */
+        val clientExtras: Map<String, JsonValue> = emptyMap()
     )
 
     private fun jsonArray(items: List<JsonValue>): JsonValue.Arr = JsonValue.Arr(items.toMutableList())
@@ -2652,7 +2804,9 @@ class FileStore(
         /** 0.14：心理活动（服务端扩展段，客户端忽略）。 */
         val mentalActivities: List<MentalActivity> = emptyList(),
         /** 0.14：会话记忆（服务端扩展段，客户端忽略）。 */
-        val sessionMemories: List<SessionMemory> = emptyList()
+        val sessionMemories: List<SessionMemory> = emptyList(),
+        /** 0.14.1：客户端独有的顶层段（`proactiveRules` / `memoryConsolidations` / 未知段），原样透传。 */
+        val clientExtras: Map<String, JsonValue> = emptyMap()
     )
 
     /** 备份里一条已解码到暂存文件的媒体（提交时原子移进 `media/`）。 */
@@ -2689,11 +2843,30 @@ class FileStore(
         val intents = ArrayList<StoredIntent>()
         val mentalActivities = ArrayList<MentalActivity>()
         val sessionMemories = ArrayList<SessionMemory>()
+        val clientExtras = LinkedHashMap<String, JsonValue>()
+        var clientExtrasBytes = 0L
         val messageSpools = LinkedHashMap<String, Path>()
         val spoolWriters = LinkedHashMap<String, BufferedWriter>()
         val messageIds = HashSet<String>()
         var messageCount = 0
         var mediaTotal = 0L
+
+        // 客户端独有段抓取：原样保留 JSON 值；超量只跳过该段（它不是服务端数据，不该让导入失败）。
+        fun captureClientExtra(name: String, value: JsonValue) {
+            if (name.isBlank()) return
+            if (name !in clientExtras && clientExtras.size >= MAX_CLIENT_EXTRAS_SECTIONS) {
+                System.err.println("[agentd] 备份里的客户端独有段超过 $MAX_CLIENT_EXTRAS_SECTIONS 个，跳过 $name")
+                return
+            }
+            val size = runCatching { StoreJson.stringify(value).toByteArray(StandardCharsets.UTF_8).size.toLong() }
+                .getOrDefault(0L)
+            if (size <= 0L || clientExtrasBytes + size > MAX_CLIENT_EXTRAS_BYTES) {
+                System.err.println("[agentd] 备份里的客户端独有段 $name 超过 ${MAX_CLIENT_EXTRAS_BYTES / (1024 * 1024)} MiB，跳过")
+                return
+            }
+            clientExtrasBytes += size
+            clientExtras[name] = value
+        }
 
         fun spoolFor(sessionId: String): BufferedWriter = spoolWriters.getOrPut(sessionId) {
             // 文件名用 sessionId 的 sha256 前缀（sessionId 本身已经过正则校验，这里再隔离一层）。
@@ -2709,6 +2882,12 @@ class FileStore(
                 val key = pendingKey ?: reader.nextKey() ?: break
                 pendingKey = null
                 when (key) {
+                    // 已知但服务端不建模的顶层元数据/服务端段：**必须先读掉**，否则会掉进
+                    // 下面的 `else` 被当成「客户端独有段」透传，导出时就出现重复键
+                    // （0.14.1 的备份对称测试正是这样抓到它的）。
+                    "appVersion", "exportedAt", "apiKeysOmitted", "apiConfigs", "mediaSkipped" ->
+                        reader.readValue()
+
                     "format" -> format = (reader.readValue() as? JsonValue.Str)?.value
                     "formatVersion" -> version = (reader.readValue() as? JsonValue.Num)?.asInt
                         ?: throw BackupValidationException("备份的 formatVersion 必须是整数")
@@ -2794,7 +2973,19 @@ class FileStore(
                         sessionMemories += parseBackupSessionMemory(obj, "$where.sessionMemory[$index]")
                     }
 
-                    else -> reader.skipValue()
+                    // 0.14.1：客户端独有的段 —— 不解析、不替换，原样存进 `client_extras.json`。
+                    "proactiveRules", "memoryConsolidations" -> captureClientExtra(key, reader.readValue())
+
+                    // 服务端专有数据（0.14.1 起写在这里；旧的顶层同名字段仍然可读）。
+                    "extensions" -> readServerExtensions(
+                        value = reader.readValue(),
+                        where = "$where.extensions",
+                        mentalActivities = mentalActivities,
+                        sessionMemories = sessionMemories
+                    )
+
+                    // 客户端将来新增的其它段：同样原样透传（不认识的段不能一导入就丢）。
+                    else -> captureClientExtra(key, reader.readValue())
                 }
             }
         } finally {
@@ -2818,6 +3009,20 @@ class FileStore(
         requireUniqueIds("stickers", stickers.map { it.id })
         requireUniqueIds("diaryNotes", diary.map { it.id })
         requireUniqueIds("agentIntents", intents.map { it.id })
+        // `extensions` 与旧的顶层字段可能同时出现（0.14.0 的文件 + 新文件各一份）：
+        // 按 id/sessionId 去重，保留先出现的（不因为「同一份数据写了两次」拒绝整份导入）。
+        if (mentalActivities.size > 1) {
+            val unique = LinkedHashMap<String, MentalActivity>()
+            for (activity in mentalActivities) unique.putIfAbsent(activity.id, activity)
+            mentalActivities.clear()
+            mentalActivities += unique.values
+        }
+        if (sessionMemories.size > 1) {
+            val unique = LinkedHashMap<String, SessionMemory>()
+            for (memory in sessionMemories) unique.putIfAbsent(memory.sessionId, memory)
+            sessionMemories.clear()
+            sessionMemories += unique.values
+        }
         requireUniqueIds("mentalActivities", mentalActivities.map { it.id })
         requireUniqueIds("sessionMemory", sessionMemories.map { it.sessionId })
 
@@ -2834,7 +3039,8 @@ class FileStore(
             diaryNotes = diary,
             intents = intents,
             mentalActivities = mentalActivities,
-            sessionMemories = sessionMemories
+            sessionMemories = sessionMemories,
+            clientExtras = clientExtras
         )
     }
 
@@ -2851,6 +3057,49 @@ class FileStore(
                 ?: throw BackupValidationException("备份 $name 第 ${index + 1} 项不是对象")
             consume(obj, index)
             index += 1
+        }
+    }
+
+    /**
+     * 0.14.1：服务端专有的 `extensions` 段（客户端忽略它，服务端自己读回来）。
+     *
+     * 只有两个可加数组有意义：`mentalActivities[]` / `sessionMemory[]`；`mediaSkipped` 是导出统计，
+     * 导入时重算，直接忽略。未来新增的服务端键也走 `else -> 忽略`（前向兼容：新服务端的备份
+     * 被旧服务端读时不会因为不认识的键整份失败）。
+     */
+    private fun readServerExtensions(
+        value: JsonValue,
+        where: String,
+        mentalActivities: MutableList<MentalActivity>,
+        sessionMemories: MutableList<SessionMemory>
+    ) {
+        val obj = value as? JsonValue.Obj
+            ?: throw BackupValidationException("备份的 extensions 必须是对象")
+        for ((name, raw) in obj.fields) {
+            when (name) {
+                "mediaSkipped" -> Unit
+                "mentalActivities" -> {
+                    val items = raw as? JsonValue.Arr
+                        ?: throw BackupValidationException("$where.mentalActivities 必须是数组")
+                    items.items.forEachIndexed { index, item ->
+                        val element = item as? JsonValue.Obj
+                            ?: throw BackupValidationException("$where.mentalActivities 第 ${index + 1} 项不是对象")
+                        mentalActivities += parseBackupMentalActivity(element, "$where.mentalActivities[$index]")
+                    }
+                }
+
+                "sessionMemory" -> {
+                    val items = raw as? JsonValue.Arr
+                        ?: throw BackupValidationException("$where.sessionMemory 必须是数组")
+                    items.items.forEachIndexed { index, item ->
+                        val element = item as? JsonValue.Obj
+                            ?: throw BackupValidationException("$where.sessionMemory 第 ${index + 1} 项不是对象")
+                        sessionMemories += parseBackupSessionMemory(element, "$where.sessionMemory[$index]")
+                    }
+                }
+
+                else -> Unit
+            }
         }
     }
 
@@ -3073,6 +3322,7 @@ class FileStore(
             mentalActivities.clear()
             sessionMemories.clear()
             blockProposals.clear()
+            deliveries.clear()
         } else {
             for (sessionId in affectedSessions) {
                 deleteRecursively(sessionDir(sessionId))
@@ -3224,6 +3474,11 @@ class FileStore(
         persistMentalActivitiesLocked()
         persistSessionMemoryLocked()
         persistBlockProposalsLocked()
+        // 0.14.1：客户端独有段的透传。replace = 备份就是新状态（旧透传清掉）；
+        // merge = 按段覆盖，没提到的段保留（与其它 merge 语义一致）。
+        if (mode == "replace") clientExtras.clear()
+        clientExtras.putAll(parsed.clientExtras)
+        persistClientExtrasLocked()
         writeJsonLocked(root.resolve(SETTINGS_FILE), StoreJson.obj("settings" to settings))
         lastTimestamp = maxOf(lastTimestamp, computeLastTimestampLocked())
         for (memory in memories.values) lastTimestamp = maxOf(lastTimestamp, memory.updatedAt)
@@ -3885,6 +4140,19 @@ class FileStore(
             val memory = SessionMemory.fromJson(obj, where)
             sessionMemories[memory.sessionId] = memory
         }
+        loadOptionalObjectList(root.resolve(MESSAGE_QUEUE_FILE), "deliveries") { obj, where ->
+            val entry = PendingDelivery.fromJson(obj, where)
+            deliveries[entry.id] = entry
+        }
+        readJsonFile(root.resolve(CLIENT_EXTRAS_FILE))?.let { json ->
+            val where = "${root.resolve(CLIENT_EXTRAS_FILE)}"
+            val obj = json as? JsonValue.Obj ?: throw StoreCorruptionException("$where 不是 JSON 对象")
+            val sections = obj.fields["sections"] as? JsonValue.Obj ?: return@let
+            for ((key, value) in sections.fields) {
+                if (key.isBlank()) continue
+                clientExtras[key] = value
+            }
+        }
         if (Files.exists(root.resolve(SECRETS_FILE))) {
             // 0600 是承诺，不是建议：打开时再收紧一次（有人复制/解压可能带上更宽的权限）。
             setPosixPermissions(root.resolve(SECRETS_FILE), "rw-------")
@@ -4343,6 +4611,22 @@ class FileStore(
             "memories" to StoreJson.arr(
                 sessionMemories.values.sortedBy { it.sessionId }.map { it.toJson() }
             )
+        )
+    )
+
+    private fun persistDeliveriesLocked() = writeJsonLocked(
+        root.resolve(MESSAGE_QUEUE_FILE),
+        StoreJson.obj(
+            "deliveries" to StoreJson.arr(
+                deliveries.values.sortedWith(compareBy({ it.visibleAt }, { it.enqueuedAt })).map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistClientExtrasLocked() = writeJsonLocked(
+        root.resolve(CLIENT_EXTRAS_FILE),
+        StoreJson.obj(
+            "sections" to JsonValue.Obj(LinkedHashMap(clientExtras))
         )
     )
 

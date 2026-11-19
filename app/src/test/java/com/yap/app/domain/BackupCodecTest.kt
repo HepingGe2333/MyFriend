@@ -678,6 +678,78 @@ class BackupCodecTest {
         assertNull(entity.toBackupPreset().avatarUri)
     }
 
+    // ------------------------------------------------------------------
+    // 0.14.1 §11：客户端独有段与服务端夹层
+    // ------------------------------------------------------------------
+
+    @Test
+    fun `v6 往返保留主动规则 念头 与整理记录`() {
+        val original = sampleBundle()
+        val once = decodeSuccess(BackupCodec.encode(original)).bundle
+        assertEquals(listOf("rule-1"), once.proactiveRules.map { it.id })
+        assertEquals(listOf("intent-1"), once.agentIntents.map { it.id })
+        assertEquals(listOf("run-1"), once.memoryConsolidations.map { it.id })
+        assertEquals("晚上问问今天怎么样", once.proactiveRules.single().hint)
+        assertEquals("把两件关于加班的事并成了一件", once.memoryConsolidations.single().summary)
+
+        // 导入之后马上再导出（换手机最常见的一条路径）：这些段一条都不能掉。
+        val twice = decodeSuccess(BackupCodec.encode(once)).bundle
+        assertEquals(once.proactiveRules, twice.proactiveRules)
+        assertEquals(once.agentIntents, twice.agentIntents)
+        assertEquals(once.memoryConsolidations, twice.memoryConsolidations)
+    }
+
+    @Test
+    fun `服务端 client_extras 里的独有段也接得回来`() {
+        val original = sampleBundle()
+        val root = kotlinx.serialization.json.Json
+            .parseToJsonElement(BackupCodec.encode(original))
+            .let { it as kotlinx.serialization.json.JsonObject }
+        val extras = kotlinx.serialization.json.buildJsonObject {
+            listOf("proactiveRules", "agentIntents", "memoryConsolidations").forEach { key ->
+                root[key]?.let { put(key, it) }
+            }
+        }
+        val serverShape = kotlinx.serialization.json.JsonObject(
+            root.toMutableMap().apply {
+                remove("proactiveRules")
+                remove("agentIntents")
+                remove("memoryConsolidations")
+                put("client_extras", extras)
+            }
+        )
+
+        val decoded = decodeSuccess(serverShape.toString()).bundle
+
+        assertEquals(listOf("rule-1"), decoded.proactiveRules.map { it.id })
+        assertEquals(listOf("intent-1"), decoded.agentIntents.map { it.id })
+        assertEquals(listOf("run-1"), decoded.memoryConsolidations.map { it.id })
+    }
+
+    @Test
+    fun `服务端 extensions 是客户端不认识的段 解码时忽略`() {
+        val root = kotlinx.serialization.json.Json
+            .parseToJsonElement(BackupCodec.encode(sampleBundle()))
+            .let { it as kotlinx.serialization.json.JsonObject }
+        val withExtensions = kotlinx.serialization.json.JsonObject(
+            root.toMutableMap().apply {
+                put(
+                    "extensions",
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("serverOnly", kotlinx.serialization.json.JsonPrimitive(true))
+                        put("denseVector", kotlinx.serialization.json.JsonPrimitive("AAAA"))
+                    }
+                )
+            }
+        )
+
+        val decoded = decodeSuccess(withExtensions.toString())
+        assertEquals("persona-1", decoded.bundle.personas.single().id)
+        assertEquals(1, decoded.bundle.proactiveRules.size)
+        // 再导出也不会把 extensions 带进客户端 v6（客户端段只写自己认识的键）。
+        assertFalse(BackupCodec.encode(decoded.bundle).contains("extensions"))
+    }
+
     @Test
     fun decodedBundleCarriesTechniqueMetadata() {
         val decoded = decodeSuccess(BackupCodec.encode(sampleBundle()))

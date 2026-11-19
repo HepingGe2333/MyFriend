@@ -293,7 +293,12 @@ private final class ToolStub: ToolRunning {
     var results: [ToolResult] = []
     private(set) var callCount = 0
 
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         callCount += 1
         if results.isEmpty {
             return ToolResult(invocation: invocation, ok: true, summary: "做完了", contentForModel: "结果")

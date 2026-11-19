@@ -240,7 +240,15 @@ public enum TypingDelay {
     }
 
     /// 首条消息显示前的延迟（秒）：`clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4.0)`。
-    public static func seconds(charCount: Int, mood: MoodState) -> Double {
+    ///
+    /// - Parameter serverAuthoritative: 服务端权威模式（0.14.1 §8）。延迟已经由服务端在
+    ///   入队时按同一个公式算进 `visibleAt`，客户端**不能再加一次**，所以这里直接返回 0。
+    public static func seconds(
+        charCount: Int,
+        mood: MoodState,
+        serverAuthoritative: Bool = false
+    ) -> Double {
+        guard !serverAuthoritative else { return 0 }
         let length = Double(min(max(charCount, 0), lengthCap))
         let value = baseSeconds + length * perCharSeconds + moodAdjustment(mood)
         return min(max(value, minSeconds), maxSeconds)

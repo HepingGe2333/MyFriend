@@ -78,7 +78,13 @@ object EventType {
     const val MOOD_CHANGED = "mood.changed"
     const val PRESENCE_CHANGED = "presence.changed"
 
-    val ALL = listOf(MESSAGE_CREATED, MOOD_CHANGED, PRESENCE_CHANGED)
+    /** 0.14.1（`spec/experience` §8）：服务端开始「打字」——入队即发，客户端显示「正在输入…」。 */
+    const val TYPING_STARTED = "typing.started"
+
+    /** 0.14.1：这一轮的消息都发完了（每轮一次 started / 一次 stopped）。 */
+    const val TYPING_STOPPED = "typing.stopped"
+
+    val ALL = listOf(MESSAGE_CREATED, MOOD_CHANGED, PRESENCE_CHANGED, TYPING_STARTED, TYPING_STOPPED)
 }
 
 // ---------------------------------------------------------------------- meta.json
@@ -507,7 +513,16 @@ data class Message(
      * 它是**永久**标记：拉黑解除后这些消息仍然不出现在模型上下文里（读取方按它过滤），
      * 客户端据此显示红色感叹号与「对方已将你拉黑」。assistant 消息永远是 false。
      */
-    val blocked: Boolean = false
+    val blocked: Boolean = false,
+    /**
+     * 0.14.1（`spec/experience` §8）：这条消息**应该出现在屏幕上**的时刻（毫秒）。
+     *
+     * 服务端权威模式下由服务端在入队时算好（`visibleAt = now + clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4)`）；
+     * `null` 表示「没有延迟」——落库时补成 `createdAt`，所以 DTO 里**总是**有这一格。
+     * 客户端收到 `message.created` 一律直接上屏（服务端已经替它等过了），不要再加本地延迟；
+     * 同步/历史路径（`GET …/messages`、`/v1/state`）永远不延迟返回。
+     */
+    val visibleAt: Long? = null
 ) {
     fun toJson(): JsonValue.Obj = obj(
         "id" to str(id),
@@ -526,7 +541,9 @@ data class Message(
         // 可加字段：老数据目录没有这一格（null），不升存储版本号。
         "toolTraceJson" to nullableStr(toolTraceJson),
         // 0.14 可加字段：false 也写（客户端可以只看 false/true，不必再猜「缺省是什么意思」）。
-        "blocked" to StoreJson.bool(blocked)
+        "blocked" to StoreJson.bool(blocked),
+        // 0.14.1 可加字段：总是写（没有延迟时等于 createdAt），客户端只看这一格决定上屏时刻。
+        "visibleAt" to StoreJson.num(visibleAt ?: createdAt)
     )
 
     companion object {
@@ -545,7 +562,8 @@ data class Message(
             promptTokens = value.optInt("promptTokens", where),
             completionTokens = value.optInt("completionTokens", where),
             toolTraceJson = value.optString("toolTraceJson", where)?.takeIf { it.isNotBlank() },
-            blocked = value.fields.containsKey("blocked") && value.reqBool("blocked", where)
+            blocked = value.fields.containsKey("blocked") && value.reqBool("blocked", where),
+            visibleAt = value.optLong("visibleAt", where)
         )
     }
 }
@@ -809,6 +827,46 @@ data class StoredEvent(
             sessionId = value.optString("sessionId", where),
             personaId = value.optString("personaId", where),
             payload = value.optObj("payload", where) ?: JsonValue.Obj()
+        )
+    }
+}
+
+// ---------------------------------------------------------------------- message_queue.json（0.14.1）
+
+/**
+ * 一条「已经落库、但还没到点发出去」的 assistant 消息（`spec/experience` §8 的服务端队列）。
+ *
+ * 为什么消息本身已经落库还要排队：延迟是**发送时刻**的语义，不是存储的语义 ——
+ * 历史/同步接口永远直接返回（客户端离线重连后不该再等一次），只有 `message.created` 事件
+ * 与 SSE 流按 `visibleAt` 发。队列持久化只为了「进程在等待期间被 kill」时不丢这次投递：
+ * 重启后 [MessageDelivery] 会按原 `visibleAt` 补发（消息行本来就在库里，最坏也只是事件重复，
+ * 客户端按消息 id 去重）。
+ */
+data class PendingDelivery(
+    val id: String,
+    val sessionId: String,
+    val personaId: String,
+    val messageId: String,
+    val visibleAt: Long,
+    val enqueuedAt: Long
+) {
+    fun toJson(): JsonValue.Obj = obj(
+        "id" to str(id),
+        "sessionId" to str(sessionId),
+        "personaId" to str(personaId),
+        "messageId" to str(messageId),
+        "visibleAt" to num(visibleAt),
+        "enqueuedAt" to num(enqueuedAt)
+    )
+
+    companion object {
+        fun fromJson(value: JsonValue.Obj, where: String): PendingDelivery = PendingDelivery(
+            id = value.reqString("id", where),
+            sessionId = value.reqString("sessionId", where),
+            personaId = value.reqString("personaId", where),
+            messageId = value.reqString("messageId", where),
+            visibleAt = value.reqLong("visibleAt", where),
+            enqueuedAt = value.optLong("enqueuedAt", where) ?: 0L
         )
     }
 }

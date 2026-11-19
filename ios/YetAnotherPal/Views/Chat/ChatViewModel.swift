@@ -45,8 +45,18 @@ final class ChatViewModel: ObservableObject {
     // MARK: - 生成中
 
     @Published private(set) var isGenerating = false
+    /// 服务端模式：他那边正在输入（只由前台事件流的 `typing.started/stopped` 驱动）。
+    ///
+    /// 0.14.1 §8：客户端不再自己加延迟，「正在输入…」只是服务端入队后的一个事实展示；
+    /// 离线同步回来的消息不会点亮它。
+    @Published private(set) var remoteTyping = false
     /// 已经点了停止、正在等这一轮收尾（避免连点）。
     @Published private(set) var isStopping = false
+    /// 界面上要不要显示「正在输入… / 三点气泡」。
+    ///
+    /// 本地模式看流式生成（`isGenerating`）；服务端模式看 typing 事件（`remoteTyping`）。
+    var showsTypingIndicator: Bool { isGenerating || (remoteTyping && env?.serverModeActive == true) }
+
     /// 流式正文的**全文**（`ChatEvent.delta` 传的是全文，不是增量）。
     @Published private(set) var streamingText = ""
     @Published private(set) var streamingTraces: [ToolTraceItem] = []
@@ -139,6 +149,7 @@ final class ChatViewModel: ObservableObject {
         // 只追加「窗口最后一条之后」的新消息：已加载的历史不该因为重新出现页面被挤掉（P2-5）。
         reloadMessages(preservingLoadedRange: true)
         refreshContext()
+        refreshServerTyping()
         loaded = true
         restartPulses()
         // 服务端模式：内容在服务端，进页面先去拉一次「最新一块」（并按需标已读、补发队列）。
@@ -159,6 +170,7 @@ final class ChatViewModel: ObservableObject {
     /// `ChatService` 自己会把结果落库（此时会话已不是「开着」的，未读会 +1，首页能看到）。
     func leave() {
         isVisible = false
+        remoteTyping = false
         env?.chat.setOpenSession(nil)
         pulseTask?.cancel()
         pulseTask = nil
@@ -177,7 +189,7 @@ final class ChatViewModel: ObservableObject {
     /// - Parameter preservingLoadedRange: `true` 只把「窗口最后一条之后」的新消息追加进来，
     ///   已加载的历史一条都不少（心跳写消息、流式结束、页面重新出现都走它）；
     ///   `false` 以「最近一屏（不小于已加载条数）」重置窗口 —— 删除消息 / 清空上下文 /
-    ///   重新生成这类**会改动历史**的动作必须走它，否则窗口里会留着已经不存在的消息。
+    ///   删除消息这类**会改动历史**的动作必须走它，否则窗口里会留着已经不存在的消息。
     func reloadMessages(preservingLoadedRange: Bool = false) {
         guard let env else { return }
 
@@ -480,6 +492,24 @@ final class ChatViewModel: ObservableObject {
         presence = env.presence.current(personaId: persona.id)
     }
 
+    /// 服务端模式：按**当前**的 typing 事件状态刷新输入指示。
+    ///
+    /// 只在前台 + 页面可见时显示（规范 §8「客户端只有在前台且收到 typing 事件时才显示」）。
+    /// 由 `ChatScreen` 在 `serverLiveState` / `serverDataVersion` 变化时调用。
+    func refreshServerTyping() {
+        guard let env, env.serverModeActive else {
+            remoteTyping = false
+            return
+        }
+        let foreground = isVisible && sceneActive
+        remoteTyping = ServerTypingPolicy.showsTypingIndicator(
+            serverMode: true,
+            isForeground: foreground,
+            isSessionOpen: isVisible,
+            hasTypingEvent: env.serverLiveState.isTyping(sessionId: sessionId)
+        )
+    }
+
     // MARK: - 轮询（0.11.0 审计 P2-3）
 
     /// 页面可见性与前台状态变了：按新的计划重启两条轮询。
@@ -488,11 +518,13 @@ final class ChatViewModel: ObservableObject {
     func setSceneActive(_ active: Bool) {
         guard sceneActive != active else { return }
         sceneActive = active
+        if !active { remoteTyping = false }
         if active {
             // 回到前台：这段时间他可能自己写了点什么（心跳 / 主动唤醒），先核一次再排下一拍。
             reloadMessages(preservingLoadedRange: true)
             refreshContext()
         }
+        refreshServerTyping()
         restartPulses()
     }
 
@@ -781,25 +813,6 @@ final class ChatViewModel: ObservableObject {
     }
 
 
-    /// 重新生成：`ChatService` 会删掉最后一条助手消息再跑一轮。
-    func regenerate() {
-        guard let env, !isGenerating else { return }
-        // 服务端模式这一版没有「重新生成」接口（服务端只在收到消息后生成），
-        // 与其让用户点一个注定失败的按钮，不如明确说一句。
-        guard !env.serverModeActive else {
-            showToast(L("服务端模式下重新生成还没做"))
-            return
-        }
-        guard env.resolvedChatConfig() != nil else {
-            hasApiConfig = false
-            showToast(L("先去设置里配一个 API"))
-            return
-        }
-        let stream = env.chat.regenerate(sessionId: sessionId)
-        reloadMessages()
-        consume(stream)
-    }
-
     /// 停止：交给 `ChatService`，它会把已经说出来的半句落成 `STOPPED` 消息再结束流。
     ///
     /// 不直接 `cancel` 自己这一路消费：那样等于把「落成半句」也一起掐掉，
@@ -868,6 +881,8 @@ final class ChatViewModel: ObservableObject {
             }
         case .done:
             // 落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
+            // 服务端模式下 `done` 之前一定已经收到了 `message.created`：输入指示该收了。
+            remoteTyping = false
             // 0.12 续 7：他这一轮说了话 → 上一轮的「他睡着了」提示立刻作废。
             lastNoReply = nil
             // 云端模式的人格进化只认「真的完成了一轮回复」（停止/失败/没说话都不算）。
@@ -878,8 +893,9 @@ final class ChatViewModel: ObservableObject {
             streamingText = ""
             streamingTraces = []
         case .appended:
-            // 0.14 连发：这一轮又落了一条独立消息，立刻重读让它逐条出现
-            //（而不是等这一轮结束一起冒出来）。
+            // 0.14 连发 / 0.14.1 服务端 `message.created`：这一轮又落了一条独立消息，
+            // 立刻重读让它逐条出现；「消息到了」同时收起服务端输入指示。
+            remoteTyping = false
             reloadMessages(preservingLoadedRange: true)
         }
     }
@@ -1050,11 +1066,6 @@ final class ChatViewModel: ObservableObject {
         guard message.role == .user, message.readAt != nil, !isGenerating else { return false }
         guard let last = messages.last else { return false }
         return last.id == message.id
-    }
-
-    /// 最后一条助手消息的 id：只有它才值得「重新生成」（`ChatService` 删的也是最后一条）。
-    var latestAssistantId: String? {
-        messages.last(where: { $0.role == .assistant })?.id
     }
 
     private static func isSameDay(_ lhs: Int64, _ rhs: Int64) -> Bool {

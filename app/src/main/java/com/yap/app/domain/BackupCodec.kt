@@ -30,6 +30,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -597,6 +598,11 @@ object BackupCodec {
 
         val warnings = mutableListOf<BackupWarning>()
 
+        // 0.14.1 §11：服务端备份可能把「客户端独有段」放进 `client_extras`（服务端只负责原样
+        // 往返，不认识这些内容）。客户端导入时把它们当成顶层段读，不能因为放在夹层里就丢掉
+        // 主动规则/整理记录/念头。顶层段优先（服务端显式导出时更权威）。
+        val clientExtras = root["client_extras"] as? JsonObject
+
         val format = root.textOrNull("format")
         if (format != null && format != BACKUP_FORMAT_NAME) {
             return BackupDecodeResult.Failure(BackupFailure.WrongFormat(format))
@@ -615,13 +621,15 @@ object BackupCodec {
         val sessions = decodeList(root, "sessions", BackupSection.SESSION, warnings, BackupSession.serializer()) { it.id }
         val messages = decodeList(root, "messages", BackupSection.MESSAGE, warnings, BackupMessage.serializer()) { it.id }
         val presets = decodeList(root, "presets", BackupSection.PRESET, warnings, BackupPreset.serializer()) { it.id }
+        // 客户端独有段从「顶层 + client_extras」合并后的根上读；顶层优先，缺的才看夹层。
+        val clientOnlyRoot = mergeClientExtras(root, clientExtras)
         val rules =
-            decodeList(root, "proactiveRules", BackupSection.PROACTIVE_RULE, warnings, BackupProactiveRule.serializer()) { it.id }
+            decodeList(clientOnlyRoot, "proactiveRules", BackupSection.PROACTIVE_RULE, warnings, BackupProactiveRule.serializer()) { it.id }
         val intents =
-            decodeList(root, "agentIntents", BackupSection.AGENT_INTENT, warnings, BackupAgentIntent.serializer()) { it.id }
+            decodeList(clientOnlyRoot, "agentIntents", BackupSection.AGENT_INTENT, warnings, BackupAgentIntent.serializer()) { it.id }
         val consolidations =
             decodeList(
-                root,
+                clientOnlyRoot,
                 "memoryConsolidations",
                 BackupSection.CONSOLIDATION,
                 warnings,
@@ -738,6 +746,25 @@ object BackupCodec {
             }
         }
         return decoded.filter { idOf(it).isNotBlank() }
+    }
+
+    /**
+     * 顶层 + `client_extras` 合并：顶层非空段优先，缺失/null 的段才从夹层取。
+     *
+     * 合并后的对象只用于客户端独有段（proactiveRules/agentIntents/memoryConsolidations）；
+     * 其它段仍从顶层读，避免服务端夹层里意外出现的同名字段覆盖权威数据。
+     */
+    private fun mergeClientExtras(root: JsonObject, clientExtras: JsonObject?): JsonObject {
+        if (clientExtras == null || clientExtras.isEmpty()) return root
+        val merged = LinkedHashMap<String, JsonElement>(root)
+        clientExtras.forEach { (key, value) ->
+            val current = root[key]
+            // 空数组也算「顶层没写」：服务端可能把段名占位成 []、真数据放在 client_extras 里。
+            val missing = current == null || current is JsonNull ||
+                (current is JsonArray && current.isEmpty())
+            if (missing) merged[key] = value
+        }
+        return JsonObject(merged)
     }
 
     /**

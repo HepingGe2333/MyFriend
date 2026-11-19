@@ -272,12 +272,11 @@
     <string name="chat_clear_context_action">Clear</string>
     <string name="chat_copy">Copy</string>
     <string name="chat_copied">Copied</string>
-    <string name="chat_regenerate">Try again</string>
     <string name="chat_your_message">Your message</string>
     <string name="chat_reply">His reply</string>
     <string name="chat_empty_message">Empty message</string>
     <string name="chat_edit_title">Edit message</string>
-    <string name="chat_edit_save">Save and start over</string>
+    <string name="chat_edit_save">Save and resend</string>
     <string name="chat_edit_and_resend">Edit and ask again</string>
     <string name="chat_delete_message">Delete this message</string>
     <string name="chat_delete_message_title">Delete this message?</string>
@@ -368,7 +367,6 @@
     <!-- ChatViewModel: snackbars and errors -->
     <string name="chat_image_load_failed">Couldn\'t read that photo. Try another one.</string>
     <string name="chat_send_failed">Couldn\'t send that</string>
-    <string name="chat_regenerate_failed">Couldn\'t try again</string>
     <string name="chat_edit_failed">Couldn\'t save the edit</string>
     <string name="chat_delete_failed">Couldn\'t delete it</string>
     <string name="chat_context_cleared">Cleared</string>
@@ -1306,7 +1304,7 @@
     <string name="error_message_empty">The message can\'t be empty</string>
     <string name="error_message_too_long">The message is too long</string>
     <string name="error_title_empty">The title can\'t be empty</string>
-    <string name="error_nothing_to_regenerate">Nothing to regenerate</string>
+    <string name="error_nothing_to_regenerate">Nothing to resend</string>
     <string name="error_only_user_message_editable">Only your own messages can be edited</string>
     <string name="error_nothing_to_reply">No message for him to reply to yet</string>
     <string name="error_no_conversation_yet">This persona has no conversation yet</string>

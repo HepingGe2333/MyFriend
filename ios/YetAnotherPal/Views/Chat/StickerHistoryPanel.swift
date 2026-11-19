@@ -24,6 +24,8 @@ struct StickerHistoryPanel: View {
     @State private var pickedItems: [PhotosPickerItem] = []
     @State private var importing = false
     @State private var showFileImporter = false
+    /// 导入/删除失败时弹的那一句。删除失败时表情**保留**在面板里，不做乐观移除。
+    @State private var errorTitle: String = L("表情没能导入")
     @State private var errorText: String?
 
     private var visibleStickers: [StickerEntity] {
@@ -72,7 +74,7 @@ struct StickerHistoryPanel: View {
             importFile(result)
         }
         .alert(
-            L("表情没能导入"),
+            errorTitle,
             isPresented: Binding(
                 get: { errorText != nil },
                 set: { if !$0 { errorText = nil } }
@@ -222,6 +224,7 @@ struct StickerHistoryPanel: View {
 
     private func startImporting() {
         importing = true
+        errorTitle = L("表情没能导入")
         errorText = nil
     }
 
@@ -229,11 +232,22 @@ struct StickerHistoryPanel: View {
         stickers = (try? env.stickers.all()) ?? []
     }
 
+    /// 删除一个表情（长按 → 上下文菜单）。
+    ///
+    /// 规范 `spec/stickers/README.md` §发送与历史 + 0.14.1：
+    /// - 服务端模式先 `DELETE /v1/stickers/{id}`（失败不能假装删掉了）；
+    /// - 本地模式删行 + 文件（文件仍被聊天消息引用时只删行）；
+    /// - 成功后**立刻**重新读面板，表情从「最近 / 全部」与发送列表消失；
+    /// - 失败时弹一句明确的原因并**保留**这个表情。
     private func delete(_ sticker: StickerEntity) {
-        // 服务端模式下删除要先过服务端（可能失败：服务端没连上时不能假装删掉了）。
-        Task {
-            _ = try? await env.stickers.delete(id: sticker.id)
-            await reload()
+        Task { @MainActor in
+            do {
+                _ = try await env.stickers.delete(id: sticker.id)
+                await reload()
+            } catch {
+                errorTitle = L("表情没能删除")
+                errorText = message(for: error)
+            }
         }
     }
 
@@ -242,7 +256,7 @@ struct StickerHistoryPanel: View {
             return localized
         }
         let text = (error as NSError).localizedDescription
-        return text.isEmpty ? L("表情没能导入") : text
+        return text.isEmpty ? errorTitle : text
     }
 }
 

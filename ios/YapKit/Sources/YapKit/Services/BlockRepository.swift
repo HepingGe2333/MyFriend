@@ -79,9 +79,9 @@ public final class BlockRepository {
     @discardableResult
     public func propose(
         personaId: String,
-        sessionId: String,
         hours: Int,
         reason: String?,
+        userMessageId: String?,
         now: Int64? = nil
     ) -> BlockProposal {
         let at = now ?? self.now()
@@ -90,10 +90,10 @@ public final class BlockRepository {
         }
         let proposal = BlockProposal(
             personaId: personaId,
-            sessionId: sessionId,
             hours: hours,
             reason: reason ?? "",
-            createdAt: at
+            userMessageId: userMessageId ?? "",
+            proposedAt: at
         )
         writeProposal(proposal, now: at)
         return proposal
@@ -104,11 +104,12 @@ public final class BlockRepository {
     /// 返回 `.accepted` 时已经写库；其余两种由调用方决定怎么跟模型解释。
     /// - Parameter hours: 只有「这次确认时显式给了时长」才用它；否则沿用提议里的时长
     ///  （与 Android 的 `BlockPolicy.plan` 一致：确认不会把 10 分钟窗口或时长悄悄改掉）。
+    /// - Parameter userMessageId: 这一轮那条用户消息的 id；与提议时的不同才算「之后的一轮」。
     public func confirm(
         personaId: String,
-        sessionId: String,
         hours: Int? = nil,
         reason: String? = nil,
+        userMessageId: String?,
         now: Int64? = nil
     ) -> BlockPolicy.Confirmation {
         let at = now ?? self.now()
@@ -119,11 +120,8 @@ public final class BlockRepository {
             return .expiredProposal
         }
         let proposal = stored
-        let messagesAfter = proposal.flatMap { pending in
-            (try? stores.messages.countUserMessages(sessionId: pending.sessionId, after: pending.createdAt))
-        } ?? 0
         let verdict = BlockPolicy.confirmation(
-            proposal: proposal, userMessagesAfterProposal: messagesAfter, now: at
+            proposal: proposal, userMessageId: userMessageId, now: at
         )
         guard verdict == .accepted, let proposal else { return verdict }
         guard let persona = personaRow(personaId) else { return .needsProposal }
@@ -139,7 +137,6 @@ public final class BlockRepository {
              .text(personaId)]
         )) ?? 0
         _ = persona
-        _ = sessionId
         return changed > 0 ? .accepted : .needsProposal
     }
 
