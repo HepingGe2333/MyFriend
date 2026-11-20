@@ -453,11 +453,11 @@ class DataResilienceContractTest {
         // `AppWiringGuardTests.testVersionIsConsistentForBothConfigurations` 钉同一组数字。
         val versionCode = Regex("""versionCode\s*=\s*(\d+)""").find(gradle)?.groupValues?.get(1)?.toInt()
             ?: error("build.gradle.kts 里找不到 versionCode")
-        assertEquals("versionCode 必须精确等于 20（0.13.0）", 20, versionCode)
+        assertEquals("versionCode 必须精确等于 21（0.14.0）", 21, versionCode)
         val versionName = Regex("""versionName\s*=\s*"([^"]+)"""")
             .find(gradle)?.groupValues?.get(1)
             ?: error("build.gradle.kts 里找不到 versionName")
-        assertEquals("versionName 必须精确等于 0.13.0", "0.13.0", versionName)
+        assertEquals("versionName 必须精确等于 0.14.0", "0.14.0", versionName)
 
         // 两端构建号相等 + 两处配置一致：Android 与 iOS 发布的必须是同一个版本。
         val iosProject = File(projectRoot(), "../ios").listFiles()
