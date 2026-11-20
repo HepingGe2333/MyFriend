@@ -376,3 +376,14 @@ python3 -m eval.experiment --stage memory --arch state_first --mood label3d --co
 每个方案重复 3–5 轮取中位数；报告含总分、通过率、7 个维度、平均字数、硬失败、token 用量。
 最新汇总见 `eval/reports/experiment-summary-*.md`。campus-chat 走本机代理
 `http://127.0.0.1:11435/v1`，key 从 `CAMPUS_API_KEY` / `PROXY_API_KEY` 读取，不写入报告。
+
+## Bench v2（多轮 / 工具 / judge）
+
+v1 已不足以区分方案（单轮、词表天花板、不执行工具）。v2 在 `eval/bench2/`：
+多轮对话模拟、工具/记忆/沉默状态、6 维 LLM judge、确定性硬检查、bootstrap CI。
+详见 `eval/bench2/README.md`。
+
+```bash
+python3 -m eval.bench2.run --variants baseline,state_first,guidance,compact --samples 2 --concurrency 10
+python3 -m unittest discover -s eval/bench2/tests -t .
+```
