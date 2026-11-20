@@ -70,6 +70,9 @@ public struct ImportSummary: Equatable, Sendable {
     /// v6：接回来的表情数 / 日记便条数。
     public var stickers: Int
     public var diaryNotes: Int
+    /// v7：接回来的心理活动数 / 会话备忘录段数（后台数据，通常不展示给用户）。
+    public var mentalActivities: Int
+    public var sessionMemory: Int
 
     public init(
         personas: Int = 0,
@@ -82,7 +85,9 @@ public struct ImportSummary: Equatable, Sendable {
         mode: ImportMode = .merge,
         presets: Int = 0,
         stickers: Int = 0,
-        diaryNotes: Int = 0
+        diaryNotes: Int = 0,
+        mentalActivities: Int = 0,
+        sessionMemory: Int = 0
     ) {
         self.personas = personas
         self.memories = memories
@@ -95,6 +100,8 @@ public struct ImportSummary: Equatable, Sendable {
         self.presets = presets
         self.stickers = stickers
         self.diaryNotes = diaryNotes
+        self.mentalActivities = mentalActivities
+        self.sessionMemory = sessionMemory
     }
 
     /// 「把他接回来了：3 个人格 · 128 条记忆 · 42 段对话 · 1580 句话」。
@@ -191,6 +198,10 @@ public final class BackupService {
     public static let exportConsolidationsPerPersona = 20
     /// 每个人格最多带多少条还没过期的念头。
     public static let exportIntentsPerPersona = 30
+    /// 每个人格最多带多少条**最近的心理活动**（v7）。
+    ///
+    /// 与服务端「只保留最近 50 条」同一个数字：这是工作记忆，不是需要全史的业务数据。
+    public static let exportMentalActivitiesPerPersona = 50
 
     private let stores: DatabaseStores
     private let settings: SettingsProviding
@@ -287,6 +298,15 @@ public final class BackupService {
                 where: "personaId = ?", [.text(persona.id)], orderBy: "createdAt DESC"
             )) ?? []
         }
+        // v7：心理活动（每人最近 50 条）与会话备忘录（每段会话一行，含主题与游标）。
+        let mentalActivities = personas.flatMap { persona in
+            Array(((try? stores.mentalActivities.recent(
+                personaId: persona.id, limit: Self.exportMentalActivitiesPerPersona
+            )) ?? []).prefix(Self.exportMentalActivitiesPerPersona))
+        }
+        let sessionMemory = sessions.compactMap { session in
+            ((try? stores.sessionMemory.bySession(session.id)) ?? nil).map(Self.toBackupSessionMemory)
+        }
         let currentSettings = settings.load()
 
         // v3：先把「本机真的还引用得到」的图片收集成候选（顺序固定：人格头像 → 我的头像 →
@@ -356,6 +376,8 @@ public final class BackupService {
                 )
             },
             diaryNotes: diaryNotes.map(Self.toBackupDiaryNote),
+            mentalActivities: mentalActivities.map(Self.toBackupMentalActivity),
+            sessionMemory: sessionMemory,
             apiConfigs: ((try? stores.apiConfigs.all(orderBy: "updatedAt DESC")) ?? [])
                 .map(Self.toBackupApiConfig),
             settings: currentSettings.toBackupSettings()
@@ -815,6 +837,47 @@ public final class BackupService {
         if mode == .merge {
             knownSessionIds.formUnion(((try? stores.sessions.all()) ?? []).map(\.id))
         }
+        // v7：心理活动与会话备忘录也要有「落脚点」：
+        // - 念头必须属于这次备份里真的有人格（合并模式下本机已有的人格也算）；
+        // - 备忘录必须挂在一段真的会存在的会话上（被合并的会话要跟着 `sessionIdRemap` 走）。
+        var importablePersonaIds = knownPersonaIds
+        if mode == .merge {
+            importablePersonaIds.formUnion(((try? stores.personas.all()) ?? []).map(\.id))
+        }
+        var orphanActivities = 0
+        let mentalActivities: [MentalActivityEntity] = bundle.mentalActivities.compactMap { item in
+            guard let entity = Self.toEntity(item) else { return nil }
+            guard importablePersonaIds.contains(entity.personaId) else {
+                orphanActivities += 1
+                return nil
+            }
+            return entity
+        }
+        if orphanActivities > 0 {
+            warnings.append(PluralText.format(
+                "有 %d 条心理活动没接回来（它属于的人不在这次备份里）", orphanActivities
+            ))
+        }
+        var orphanSessionMemory = 0
+        let sessionMemories: [SessionMemoryEntity] = bundle.sessionMemory.compactMap { item in
+            guard let entity = Self.toEntity(item, now: now()) else { return nil }
+            let sessionId = sessionIdRemap[entity.sessionId] ?? entity.sessionId
+            guard knownSessionIds.contains(sessionId),
+                  importablePersonaIds.contains(entity.personaId) else {
+                orphanSessionMemory += 1
+                return nil
+            }
+            var fixed = entity
+            fixed.sessionId = sessionId
+            return fixed
+        }
+        if orphanSessionMemory > 0 {
+            warnings.append(PluralText.format(
+                "有 %d 段会话备忘录没接回来（那段对话不在这次备份里）", orphanSessionMemory
+            ))
+        }
+        // v7：服务端诊断段（只读）。只在导入服务端备份时出现；客户端备份里永远是 nil。
+        let importedFailures = bundle.proactiveFailures ?? []
         // 「原本带着图片、这次没能接回来」的消息数：v1/v2 备份里没有 media，全部计入；
         // v3 备份里只有 media 缺失 / 坏掉的那几张会落到这里（老警告照旧，语义没变）。
         var lostAttachmentMessages = 0
@@ -856,6 +919,9 @@ public final class BackupService {
                     // v6：表情与日记便条也属于「他」，替换导入要先清干净。
                     try stores.stickers.deleteAll()
                     try stores.diaryNotes.deleteAll()
+                    // v7：心理活动与会话备忘录也属于「他」，替换导入要先清干净。
+                    try stores.mentalActivities.deleteAll()
+                    try stores.sessionMemory.deleteAll()
                     try stores.messages.deleteAll()
                     try stores.sessions.deleteAll()
                     try stores.memoryTerms.deleteAll()
@@ -908,6 +974,26 @@ public final class BackupService {
                 // v6：表情与日记便条。按 id upsert（与其它段同一条「合并」语义）。
                 if !stickers.isEmpty { try stores.stickers.upsert(stickers) }
                 if !diaryNotes.isEmpty { try stores.diaryNotes.upsert(diaryNotes) }
+                // v7：心理活动按 id upsert；会话备忘录在合并模式下「谁更新用谁」
+                //（同一段会话的两份备忘录互相覆盖会让「你的备忘录」来回跳）。
+                if !mentalActivities.isEmpty { try stores.mentalActivities.upsert(mentalActivities) }
+                for memory in sessionMemories {
+                    if mode == .merge,
+                       let local = (try? stores.sessionMemory.bySession(memory.sessionId)) ?? nil,
+                       local.updatedAt > memory.updatedAt {
+                        continue
+                    }
+                    try stores.sessionMemory.upsert(memory)
+                }
+                // v7：服务端诊断段落本机（replace = 照备份；merge = 按 id 追加、留最近 200 条）。
+                if !importedFailures.isEmpty {
+                    let failureStore = ProactiveFailureStore(database: stores.database, now: now)
+                    if mode == .replace {
+                        failureStore.replaceAll(importedFailures)
+                    } else {
+                        failureStore.append(importedFailures)
+                    }
+                }
 
                 // API 配置：只覆盖非敏感字段；已存在的配置把本机 Key 留着，新配置 Key 留空等用户填。
                 // 配置本身从不删除。
@@ -1015,7 +1101,9 @@ public final class BackupService {
             mode: mode,
             presets: presets.count,
             stickers: stickers.count,
-            diaryNotes: diaryNotes.count
+            diaryNotes: diaryNotes.count,
+            mentalActivities: mentalActivities.count,
+            sessionMemory: sessionMemories.count
         )
     }
 
@@ -1201,7 +1289,12 @@ public final class BackupService {
             wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep,
             // v5：人设引导三列原样带走（JSON 本身就是跨端契约，不做二次解释）。
             worldJson: persona.worldJson, speechStyleJson: persona.speechStyleJson,
-            activityJson: persona.activityJson
+            activityJson: persona.activityJson,
+            languageTag: persona.languageTag,
+            // v7：拉黑状态与未确认提议（0.14 的行为，0.15 才进备份）。
+            blockedUntil: persona.blockedUntil,
+            blockReason: persona.blockReason,
+            blockProposalJson: persona.blockProposalJson
         )
     }
 
@@ -1222,7 +1315,11 @@ public final class BackupService {
             extractionEvery: persona.extractionEvery, sleepEnabled: persona.sleepEnabled,
             wakeThreshold: persona.wakeThreshold, dndOnSleep: persona.dndOnSleep,
             worldJson: persona.worldJson, speechStyleJson: persona.speechStyleJson,
-            activityJson: persona.activityJson
+            activityJson: persona.activityJson,
+            blockedUntil: persona.blockedUntil,
+            blockReason: persona.blockReason,
+            blockProposalJson: persona.blockProposalJson,
+            languageTag: persona.languageTag
         )
     }
 
@@ -1312,7 +1409,7 @@ public final class BackupService {
             status: message.status.stored, errorMessage: message.errorMessage,
             model: message.model, edited: message.edited,
             attachmentsJson: attachmentsJson, toolTraceJson: message.toolTraceJson,
-            readAt: message.readAt
+            readAt: message.readAt, blocked: message.blocked
         )
     }
 
@@ -1329,7 +1426,7 @@ public final class BackupService {
             status: MessageStatus(stored: message.status), errorMessage: message.errorMessage,
             model: message.model, edited: message.edited,
             attachmentsJson: attachmentsJson, toolTraceJson: message.toolTraceJson,
-            readAt: message.readAt
+            readAt: message.readAt, blocked: message.blocked
         )
     }
 
@@ -1408,6 +1505,96 @@ public final class BackupService {
             id: run.id, personaId: run.personaId, at: run.at, kept: run.kept,
             merged: run.merged, archived: run.archived, forgotten: run.forgotten,
             summary: run.summary, modelName: run.modelName
+        )
+    }
+
+    // MARK: - v7：心理活动 / 会话备忘录
+
+    /// 心理活动 → 备份：字段名与服务端 `extensions.mentalActivities[]` 逐字一致。
+    static func toBackupMentalActivity(_ activity: MentalActivityEntity) -> BackupMentalActivity {
+        BackupMentalActivity(
+            id: activity.id, personaId: activity.personaId, sessionId: activity.sessionId,
+            at: activity.at, thought: activity.thought,
+            moodLabel: activity.moodLabel, moodIntensity: activity.moodIntensity,
+            moodValence: activity.moodValence, moodArousal: activity.moodArousal,
+            moodDominance: activity.moodDominance
+        )
+    }
+
+    /// 备份 → 心理活动。`id` / `personaId` 缺一个就丢（没有归属的念头谁也不该看到）。
+    static func toEntity(_ activity: BackupMentalActivity) -> MentalActivityEntity? {
+        let id = activity.id.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personaId = activity.personaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, !personaId.isEmpty else { return nil }
+        let thought = activity.thought.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !thought.isEmpty else { return nil }
+        let sessionId = activity.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MentalActivityEntity(
+            id: id,
+            sessionId: (sessionId?.isEmpty == false) ? sessionId : nil,
+            personaId: personaId,
+            at: activity.at,
+            thought: thought,
+            moodLabel: activity.moodLabel,
+            moodIntensity: activity.moodIntensity,
+            moodValence: activity.moodValence,
+            moodArousal: activity.moodArousal,
+            moodDominance: activity.moodDominance
+        )
+    }
+
+    /// 会话备忘录 → 备份。
+    ///
+    /// 本地只有三个计数（`shortUserCount` / `longUserCount` / `topicUserCount`），
+    /// 服务端的两个「检查过」游标（`longCheckedUserMessages` / `topicCheckedUserMessages`）
+    /// 本机没有列可以存：导出写 0（= 还没检查过），导入时忽略。
+    /// 代价只是服务端下次会多重算一次节流判断（不会重写已经正确的摘要），
+    /// 换机也不会出现「摘要被清空」。
+    static func toBackupSessionMemory(_ memory: SessionMemoryEntity) -> BackupSessionMemory {
+        BackupSessionMemory(
+            sessionId: memory.sessionId,
+            personaId: memory.personaId,
+            shortSummary: memory.shortSummary,
+            shortUpdatedAt: memory.shortUpdatedAt,
+            shortUserMessages: memory.shortUserCount,
+            longSummary: memory.longSummary,
+            longUpdatedAt: memory.longUpdatedAt,
+            longUserMessages: memory.longUserCount,
+            longCheckedUserMessages: 0,
+            topics: memory.topics.map {
+                BackupTopicSegment(timeLabel: $0.timeLabel, summary: $0.summary)
+            },
+            topicUpdatedAt: memory.topicUpdatedAt,
+            topicUserMessages: memory.topicUserCount,
+            topicCheckedUserMessages: 0
+        )
+    }
+
+    /// 备份 → 会话备忘录。主题数组转成本地 `topicsJson`（与 `SessionMemoryV2` 同一编解码）。
+    static func toEntity(_ memory: BackupSessionMemory, now at: Int64) -> SessionMemoryEntity? {
+        let sessionId = memory.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let personaId = memory.personaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sessionId.isEmpty, !personaId.isEmpty else { return nil }
+        let topics = memory.topics.map {
+            MemoryContract.TopicSegment(timeLabel: $0.timeLabel, summary: $0.summary)
+        }
+        let updatedAt = max(
+            max(memory.shortUpdatedAt ?? 0, memory.longUpdatedAt ?? 0),
+            max(memory.topicUpdatedAt ?? 0, 0)
+        )
+        return SessionMemoryEntity(
+            sessionId: sessionId,
+            personaId: personaId,
+            shortSummary: memory.shortSummary,
+            longSummary: memory.longSummary,
+            shortUserCount: memory.shortUserMessages,
+            longUserCount: memory.longUserMessages,
+            shortUpdatedAt: memory.shortUpdatedAt,
+            longUpdatedAt: memory.longUpdatedAt,
+            topicsJson: SessionMemoryV2.encodeTopics(topics),
+            topicUserCount: memory.topicUserMessages,
+            topicUpdatedAt: memory.topicUpdatedAt,
+            updatedAt: updatedAt > 0 ? updatedAt : at
         )
     }
 

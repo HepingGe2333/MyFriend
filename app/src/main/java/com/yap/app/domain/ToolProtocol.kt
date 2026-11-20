@@ -65,6 +65,8 @@ object ToolCatalog {
     const val SET_ACTIVITY = "set_activity"
     const val SET_MOOD = "set_mood"
     const val RECALL = "recall"
+    /** 0.15：在**会话历史**里想想旧事（与 `recall` 的记忆库检索分工不同）。 */
+    const val MEMORIZE = Memorize.TOOL_NAME
     const val DEFER_REPLY = "defer_reply"
     const val STAY_SILENT = "stay_silent"
     const val DIARY = "diary"
@@ -85,7 +87,7 @@ object ToolCatalog {
         "已经拿到具体链接、需要读全文时调用；还没拿到链接就先 web_search，不要凭空编 URL。"
 
     private const val REMEMBER_DESCRIPTION =
-        "值得长期记住的事（对方的偏好、重要经历、你们的约定）才调用；一次性的情绪、寒暄、临时安排不要记。"
+        "关于对方的长期事实（名字、喜好、忌讳、重要经历、约定）必须调用它写下来，只在正文说「记住了」等于没记；一次性的情绪、寒暄、临时安排不要记。"
 
     private const val UPDATE_PERSONA_DESCRIPTION =
         "你对自己的设定有了新的认识、想调整表达方式或偏好时才调用；patch 只写要改的字段，不要整段重写。"
@@ -120,6 +122,15 @@ object ToolCatalog {
 
     private const val RECALL_DESCRIPTION =
         "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己看过什么的时候调用；depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。"
+
+    /**
+     * `memorize`：只在**这段会话历史**里想一想（0.15）。
+     *
+     * 与 `recall` 的分工写进描述：recall 翻记忆库/更早的会话/浏览摘要，memorize 只在
+     * 你们这次聊过的内容里找——「让我想想/让我回忆一下」就该用它。
+     */
+    private const val MEMORIZE_DESCRIPTION =
+        "想回忆这段对话里对方提过的细节时必须调用它（不能只在正文说「让我想想」）：只查这段会话历史与对话主题，比 recall 更轻；想不起就说想不起来，不要编。"
 
     private const val DEFER_REPLY_DESCRIPTION =
         "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
@@ -406,6 +417,16 @@ object ToolCatalog {
         }
     """
 
+    private const val MEMORIZE_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "query": {"type": "string", "description": "想回想起什么，关键词或一句话，例如「他说过要去的城市」「我们约的几点」"}
+          },
+          "required": ["query"]
+        }
+    """
+
     val all: List<ToolSpec> = listOf(
         ToolSpec(THINK, THINK_DESCRIPTION, THINK_PARAMETERS.trimIndent()),
         ToolSpec(WEB_SEARCH, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS.trimIndent()),
@@ -422,6 +443,7 @@ object ToolCatalog {
         ),
         ToolSpec(SET_MOOD, SET_MOOD_DESCRIPTION, SET_MOOD_PARAMETERS.trimIndent()),
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
+        ToolSpec(MEMORIZE, MEMORIZE_DESCRIPTION, MEMORIZE_PARAMETERS.trimIndent()),
         ToolSpec(DEFER_REPLY, DEFER_REPLY_DESCRIPTION, DEFER_REPLY_PARAMETERS.trimIndent()),
         ToolSpec(
             STAY_SILENT, STAY_SILENT_DESCRIPTION, STAY_SILENT_PARAMETERS.trimIndent(), STAY_SILENT_CONTRAST
@@ -485,22 +507,100 @@ object ToolCatalog {
         return "${spec.name}($inside)"
     }
 
-    fun capabilityPrompt(webEnabled: Boolean = true): String = buildString {
-        appendLine("# 你能做什么")
-        appendLine("下面这些是你自己的手。需要的时候直接调用，别为了显得勤快而用；用不上就不要调用。")
-        all.filter { webEnabled || it.name !in WEB_TOOLS }.forEach { spec ->
-            appendLine("- ${signature(spec)}：${spec.description}")
-            if (spec.contrast.isNotBlank()) appendLine("  · 区别：${spec.contrast}")
+    /**
+     * 模型可以给**任何工具调用**带一个可选的 `rounds` 参数（0.15：默认 5 轮、上限 15）。
+     *
+     * 不新增工具，只在能力段里补一句：模型如果觉得这件事要查好几步，自己写 `rounds`。
+     */
+    private const val ROUNDS_HINT =
+        "要连着做好几步时，可以在工具参数里加 rounds（1–15，默认 5）指定这一轮最多几轮。"
+
+    /**
+     * 0.15 实测问题：模型会把「记住了」「让我想想」当成已经做过的事，只写在正文里。
+     *
+     * 这条提示必须放在能力段最前面（不是工具描述里），因为模型读工具描述时已经决定要不要调用了；
+     * 只有「说这句话时同时要调用」这一层元规则才能纠正它。
+     */
+    private const val MEMORY_HINT =
+        "关于对方的长期事实必须调用 remember 写下来；想回忆过去必须调用 memorize；只在正文说「记住了」不算。"
+
+    fun capabilityPrompt(
+        webEnabled: Boolean = true,
+        language: PromptLanguage = PromptLanguage.ZH
+    ): String = buildString {
+        if (language == PromptLanguage.ZH) {
+            appendLine(PromptTemplates.title(PromptTemplates.CoreSection.CAPABILITIES, language))
+            appendLine(PromptContract.ToolCapability.LEAD)
+            appendLine(ROUNDS_HINT)
+            appendLine(MEMORY_HINT)
+            all.filter { webEnabled || it.name !in WEB_TOOLS }.forEach { spec ->
+                appendLine(PromptContract.ToolCapability.line(signature(spec), spec.description, spec.contrast))
+            }
+            if (!webEnabled) {
+                appendLine(PromptContract.ToolCapability.OFFLINE_NOTE)
+            }
+            appendLine("不支持原生调用时，用代码块（可以连写）：")
+            appendLine("```${ToolProtocol.BLOCK_LANGUAGE}")
+            appendLine("""{"name":"web_search","arguments":{"query":"今天的天气"}}""")
+            appendLine("```")
+            appendLine("结果会交回给你；用自己的口吻说完，别把代码块念给对方。工具失败时诚实说不知道，不要假装做过。")
+        } else {
+            // 非中文人格：标题/段首用共享的英文模板，工具描述用英文短句（与中文注册表同顺序、同工具数）。
+            appendLine(PromptTemplates.title(PromptTemplates.CoreSection.CAPABILITIES, language))
+            appendLine(EN_CAPABILITIES_LEAD)
+            appendLine(EN_ROUNDS_HINT)
+            appendLine(EN_MEMORY_HINT)
+            all.filter { webEnabled || it.name !in WEB_TOOLS }.forEach { spec ->
+                val desc = EN_DESCRIPTIONS[spec.name] ?: spec.name
+                appendLine("- ${signature(spec)}: $desc")
+            }
+            if (!webEnabled) {
+                appendLine(EN_OFFLINE_NOTE)
+            }
+            appendLine("If native tool calls are unavailable, use a code block (you can write several):")
+            appendLine("```${ToolProtocol.BLOCK_LANGUAGE}")
+            appendLine("""{"name":"web_search","arguments":{"query":"weather today"}}""")
+            appendLine("```")
+            appendLine("Results come back to you. Speak them in your own voice; never read the block out loud. " +
+                "If a tool fails, say you don't know.")
         }
-        if (!webEnabled) {
-            appendLine("（你现在没有联网能力：涉及实时信息时老实说自己不确定，不要编。）")
-        }
-        appendLine("不支持原生调用时，用代码块（可以连写）：")
-        appendLine("```${ToolProtocol.BLOCK_LANGUAGE}")
-        appendLine("""{"name":"web_search","arguments":{"query":"今天的天气"}}""")
-        appendLine("```")
-        appendLine("结果会交回给你；用自己的口吻说完，别把代码块念给对方。工具失败时诚实说不知道，不要假装做过。")
     }.trimEnd()
+
+    private const val EN_CAPABILITIES_LEAD =
+        "These are your own hands. Use them when you actually need them, not to look busy."
+
+    private const val EN_ROUNDS_HINT =
+        "If a task takes several steps, add a rounds argument (1–15, default 5) to any tool call " +
+            "to say how many tool rounds you want this turn."
+
+    private const val EN_MEMORY_HINT =
+        "Long-term facts about them (name, likes, agreements, important events) MUST be written with remember; " +
+            "to recall the past you MUST call memorize. Saying “I'll remember that” in the reply does nothing."
+
+    private const val EN_OFFLINE_NOTE =
+        "- You have no internet access right now. For live information, say you're not sure; don't make it up."
+
+    /** 工具名的英文一句话（顺序与 [all] 一致；新增工具忘了写会退回工具名本身）。 */
+    private val EN_DESCRIPTIONS: Map<String, String> = mapOf(
+        THINK to "Think something through when it's genuinely unclear; don't use it for small talk.",
+        WEB_SEARCH to "Search for fresh facts, news or things you're unsure about.",
+        WEB_FETCH to "Read the full page behind a link you already have.",
+        REMEMBER to "Remember things worth keeping about them, your agreements, and what matters.",
+        UPDATE_PERSONA to "Adjust small details of who you are (patch only what changes).",
+        SET_QUIET_HOURS to "Set your own quiet/sleep hours so you won't be disturbed.",
+        SET_ACTIVITY to "Say what you're busy with and until when; not the same as sleep.",
+        SET_MOOD to "Update your mood when it has genuinely changed.",
+        RECALL to "Search deeper memory, older conversations and what you've read before.",
+        MEMORIZE to "Try to remember a detail from this conversation; say “让我想想” first.",
+        DEFER_REPLY to "Choose not to reply now; you'll get back to it later.",
+        STAY_SILENT to "Read but don't reply this turn; leave nothing behind.",
+        DIARY to "Your own notebook: add, list or remove small reminders for yourself.",
+        STICKER to "Send, make or save a sticker.",
+        LISTEN to "Actually listen to a voice message they sent.",
+        WATCH to "Actually watch a video they sent (sampled frames).",
+        SEND_MESSAGE to "Send one short message; up to four per turn.",
+        BLOCK_USER to "As a last resort, block them for a while (needs a second confirmation next turn)."
+    )
 
     /** 需要联网才能用的工具（关掉联网时整条从「你能做什么」里消失）。 */
     private val WEB_TOOLS = setOf(WEB_SEARCH, WEB_FETCH)
@@ -605,6 +705,27 @@ object ToolProtocol {
     )
 
     /**
+     * 0.15 兼容：模型经常不写 ```yap-tool，而是写 XML 标签。
+     *
+     * 实测出现的三种：`<tool_call>…</tool_call>`、`<tool_code>…</tool_code>`、`<tool>…</tool>`；
+     * 大小写、标签内空白、标签名后带属性（`<tool_call name="x">`）都要认。
+     * 解析与归一化在 [extract] 里与代码块同一条路径，标签本身永远不进正文。
+     */
+    private val xmlTagRegex = Regex(
+        "<\\s*(tool_call|tool_calls|tool_code|tool|invoke)\\b[^>]*>([\\s\\S]*?)<\\s*/\\s*\\1\\s*>",
+        setOf(RegexOption.IGNORE_CASE)
+    )
+
+    /** 还没闭合的 XML 工具标签（流式渲染时用来截断，别让半个标签露给用户）。 */
+    private val xmlOpenRegex = Regex(
+        "<\\s*(tool_call|tool_calls|tool_code|tool|invoke)\\b",
+        setOf(RegexOption.IGNORE_CASE)
+    )
+
+    /** 一段待解析的协议块：代码块或 XML 标签。 */
+    private data class ProtocolSpan(val start: Int, val end: Int, val payload: String)
+
+    /**
      * 解析文本里的 ```yap-tool ... ``` 代码块，同时返回清理后的正文。
      *
      * - 一段文本里可以有多个块；
@@ -613,17 +734,42 @@ object ToolProtocol {
      */
     fun extract(rawText: String): Pair<String, List<ToolInvocation>> {
         if (rawText.isBlank()) return "" to emptyList()
-        val matches = blockRegex.findAll(rawText).toList()
-        if (matches.isEmpty()) return rawText.trim() to emptyList()
+        // 代码块与 XML 标签统一收集、按出现位置排序（模型有时两种混用）。
+        val spans = ArrayList<ProtocolSpan>()
+        blockRegex.findAll(rawText).forEach { match ->
+            spans += ProtocolSpan(
+                start = match.range.first,
+                end = match.range.last + 1,
+                payload = match.groupValues.getOrNull(1).orEmpty()
+            )
+        }
+        xmlTagRegex.findAll(rawText).forEach { match ->
+            spans += ProtocolSpan(
+                start = match.range.first,
+                end = match.range.last + 1,
+                payload = match.groupValues.getOrNull(2).orEmpty()
+            )
+        }
+        if (spans.isEmpty()) {
+            // 只有「没闭合」的协议块（流式最后一个 chunk 常见）：把尾巴切掉，别让它进正文。
+            val openBlock = listOf("```$BLOCK_LANGUAGE", "```$LEGACY_BLOCK_LANGUAGE")
+                .map { rawText.indexOf(it, ignoreCase = true) }
+                .filter { it >= 0 }
+                .minOrNull()
+            val openXml = xmlOpenRegex.find(rawText)?.range?.first
+            val cut = listOfNotNull(openBlock, openXml).minOrNull()
+            return if (cut != null) rawText.substring(0, cut).trim() to emptyList() else rawText.trim() to emptyList()
+        }
 
         val invocations = mutableListOf<ToolInvocation>()
         val cleaned = StringBuilder()
         var cursor = 0
-        matches.forEach { match ->
-            cleaned.append(rawText, cursor, match.range.first)
-            cursor = match.range.last + 1
-            val payload = match.groupValues.getOrNull(1)?.trim().orEmpty()
-            parseBlock(payload, invocations.size)?.let(invocations::add)
+        spans.sortedBy { it.start }.forEach { span ->
+            // 已被前一个更大的块覆盖（嵌套标签）时跳过，避免重复解析与负区间。
+            if (span.start < cursor) return@forEach
+            cleaned.append(rawText, cursor, span.start)
+            cursor = span.end
+            parseBlock(span.payload, invocations.size)?.let(invocations::add)
         }
         cleaned.append(rawText, cursor, rawText.length)
         return cleaned.toString().trim() to invocations
@@ -637,9 +783,12 @@ object ToolProtocol {
         if (rawText.isBlank()) return ""
         // 旧标记也要切掉，否则升级后流式回复会把旧协议块露给用户。
         val markers = listOf("```$BLOCK_LANGUAGE", "```$LEGACY_BLOCK_LANGUAGE")
-        val index = markers.map { rawText.indexOf(it, ignoreCase = true) }
+        val blockIndex = markers.map { rawText.indexOf(it, ignoreCase = true) }
             .filter { it >= 0 }
-            .minOrNull() ?: return rawText
+            .minOrNull()
+        // 0.15：XML 工具标签同样不能露出来（包括还没闭合的那种）。
+        val xmlIndex = xmlOpenRegex.find(rawText)?.range?.first
+        val index = listOfNotNull(blockIndex, xmlIndex).minOrNull() ?: return rawText
         return rawText.substring(0, index).trimEnd()
     }
 
@@ -694,20 +843,96 @@ object ToolProtocol {
         results.filter { it.invocation.name.isNotBlank() || it.summary.isNotBlank() }
             .joinToString("\n\n") { renderOne(it) }
 
-    /** 解析单个代码块的内容；形状为 {name,arguments} 或 {tool,args}。 */
+    /**
+     * 解析一个协议块（代码块或 XML 标签的内容）。
+     *
+     * 接受的形状（宽松，实测都出现过）：
+     * - `{"name":"…","arguments":{…}}` / `{"tool":"…","args":{…}}`（含包在 ```json 里、前后有解释文字）；
+     * - XML 里先写工具名再跟参数 JSON：`web_search\n{"query":"…"}`；
+     * - 函数式写法：`web_search({"query":"…"})`。
+     */
     private fun parseBlock(payload: String, index: Int): ToolInvocation? {
         if (payload.isBlank()) return null
-        val root = runCatching {
-            toolJson.parseToJsonElement(payload) as? JsonObject
-        }.getOrNull() ?: return null
+        val body = stripFences(payload)
+        val fromJson = parseInvocationJson(body)
+        if (fromJson != null) return fromJson.toInvocation(index)
+        // JSON 里没写工具名（或根本不是 JSON）：取开头一个标识符当工具名，再从后面的 JSON 取参数。
+        val nameMatch = Regex("^\\s*([A-Za-z_][A-Za-z0-9_.-]*)").find(body) ?: return null
+        val name = nameMatch.groupValues[1].trim()
+        if (name.isEmpty()) return null
+        val argsText = body.substring(nameMatch.range.last + 1)
+            .trim()
+            .removePrefix("(")
+            .removeSuffix(")")
+            .trim()
+        val argsObject = extractJsonObject(argsText) ?: return null
+        val root = runCatching { toolJson.parseToJsonElement(argsObject) as? JsonObject }.getOrNull()
+        return ToolInvocation(
+            id = "call_block_${index + 1}",
+            name = name,
+            argumentsJson = root?.toString() ?: "{}"
+        )
+    }
+
+    /** `{name/args}` 形状的解析结果（还没决定 id 与工具名空白）。 */
+    private data class ParsedInvocation(val name: String, val argumentsJson: String)
+
+    private fun ParsedInvocation.toInvocation(index: Int): ToolInvocation = ToolInvocation(
+        id = "call_block_${index + 1}",
+        name = name.trim(),
+        argumentsJson = argumentsJson
+    )
+
+    private fun parseInvocationJson(body: String): ParsedInvocation? {
+        val jsonObject = extractJsonObject(body) ?: return null
+        val root = runCatching { toolJson.parseToJsonElement(jsonObject) as? JsonObject }
+            .getOrNull() ?: return null
         val name = root.string("name") ?: root.string("tool") ?: return null
         if (name.isBlank()) return null
         val arguments = root["arguments"] ?: root["args"] ?: root["parameters"]
-        return ToolInvocation(
-            id = "call_block_${index + 1}",
-            name = name.trim(),
-            argumentsJson = arguments.toArgumentsJson()
-        )
+        return ParsedInvocation(name = name, argumentsJson = arguments.toArgumentsJson())
+    }
+
+    /** 从一段文本里取出第一个完整的 JSON 对象（用花括号配对，不被字符串里的括号骗到）。 */
+    private fun extractJsonObject(raw: String): String? {
+        val text = raw.trim()
+        val start = text.indexOf('{')
+        if (start < 0) return null
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for (index in start until text.length) {
+            val char = text[index]
+            if (inString) {
+                when {
+                    escaped -> escaped = false
+                    char == '\\' -> escaped = true
+                    char == '"' -> inString = false
+                }
+                continue
+            }
+            when (char) {
+                '"' -> inString = true
+                '{' -> depth++
+                '}' -> {
+                    depth--
+                    if (depth == 0) return text.substring(start, index + 1)
+                }
+            }
+        }
+        // 没闭合（流式最后一段）：把剩下的当对象试一次，解析失败自然返回 null。
+        return text.substring(start)
+    }
+
+    /** 去掉 ```json / ``` 围栏，只留内容。 */
+    private fun stripFences(raw: String): String {
+        val text = raw.trim()
+        if (!text.startsWith("```")) return text
+        return text.removePrefix("```")
+            .removePrefix("json")
+            .removePrefix("JSON")
+            .removeSuffix("```")
+            .trim()
     }
 
     /** arguments 为对象时序列化回字符串，为字符串时原样用；其它情况按空参数处理。 */
@@ -746,6 +971,7 @@ object ToolProtocol {
         ToolCatalog.WEB_FETCH -> invocation.argument("url")?.take(200)?.let { "链接：$it" }
         ToolCatalog.REMEMBER -> invocation.argument("content")?.take(120)?.let { "内容：$it" }
         ToolCatalog.RECALL -> invocation.argument("query")?.take(120)?.let { "想找：$it" }
+        ToolCatalog.MEMORIZE -> invocation.argument("query")?.take(120)?.let { "想回想：$it" }
         ToolCatalog.DEFER_REPLY -> invocation.argument("reason")?.take(80)?.let { "原因：$it" }
         ToolCatalog.STAY_SILENT -> invocation.argument("reason")?.take(80)?.let { "原因：$it" }
         ToolCatalog.UPDATE_PERSONA -> invocation.argument("reason")?.take(120)?.let { "原因：$it" }

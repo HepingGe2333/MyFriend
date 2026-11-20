@@ -240,7 +240,8 @@ class BackupStreamTest {
         } finally {
             server.stop()
         }
-        assertEquals("失败时数据目录里不能多出文件", before, Files.list(root).use { stream -> stream.count() })
+        val afterFiles = Files.list(root).use { stream -> stream.map { it.fileName.toString() }.sorted().toList() }
+        org.junit.Assert.assertEquals("失败时数据目录里不能多出文件：$afterFiles", before, afterFiles.size.toLong())
     }
 
     @Test

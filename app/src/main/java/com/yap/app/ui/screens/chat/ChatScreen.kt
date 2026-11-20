@@ -101,6 +101,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -1936,6 +1937,37 @@ private fun bubbleShape(style: BubbleStyle, outgoing: Boolean): RoundedCornerSha
     BubbleStyle.OUTLINED -> RoundedCornerShape(18.dp)
 }
 
+/**
+ * 0.15：拉黑倒计时（输入区上方一行）。
+ *
+ * 每秒刷新一次，`blockedUntil` 到期后整行消失（[BlockCountdown.isActive] 为 false 时不再渲染）。
+ * 文案只有两种（小时+分钟 / 分钟），避免「0 小时 12 分」这种读起来像 bug 的写法。
+ */
+@Composable
+private fun BlockedCountdownBanner(blockedUntil: Long?) {
+    if (blockedUntil == null || blockedUntil <= 0L) return
+    var now by remember(blockedUntil) { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(blockedUntil) {
+        while (com.yap.app.domain.BlockCountdown.isActive(blockedUntil, System.currentTimeMillis())) {
+            now = System.currentTimeMillis()
+            kotlinx.coroutines.delay(1_000)
+        }
+        now = System.currentTimeMillis()
+    }
+    val parts = com.yap.app.domain.BlockCountdown.parts(blockedUntil, now) ?: return
+    val text = if (parts.hours > 0) {
+        stringResource(R.string.chat_blocked_remaining_hours, parts.hours, parts.minutes)
+    } else {
+        stringResource(R.string.chat_blocked_remaining_minutes, parts.minutes)
+    }
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.error,
+        modifier = Modifier.padding(start = 6.dp, end = 6.dp, bottom = 8.dp)
+    )
+}
+
 @Composable
 private fun Composer(
     state: ChatUiState,
@@ -1974,6 +2006,9 @@ private fun Composer(
                 .imePadding()
                 .padding(start = 12.dp, end = 12.dp, top = 8.dp, bottom = 10.dp)
         ) {
+            // 0.15 拉黑：输入区上方实时显示「你已被拉黑，还剩 X 小时 Y 分」，到期自动消失。
+            // 每秒只重算一次文本，不写库；bubble 上的红叹号仍由消息自己的 blocked 标记决定。
+            BlockedCountdownBanner(blockedUntil = state.persona?.blockedUntil)
             // 0.12 续 7：这一轮他被睡眠静默了，就在输入框正上方说清楚为什么没有回复。
             // 不是消息气泡、不写库；他醒了或回了话，[ChatUiState.sleepHint] 自己变空。
             state.sleepHint?.let { hint ->

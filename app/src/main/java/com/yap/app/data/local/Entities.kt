@@ -142,6 +142,16 @@ data class PersonaEntity(
     val blockedUntil: Long? = null,
     /** 拉黑原因（只给模型/调试看，不展示给对方）。 */
     val blockReason: String? = null,
+
+    // ---- 0.15 人格提示词语言（schema v19） --------------------------------------
+    /**
+     * 这个人格用什么语言思考和说话（BCP-47 主标签：`zh` / `en` / `ja` …）。
+     *
+     * 与界面语言无关：用户把 App 切成英文，中文人格仍然说中文。
+     * null = 没选过，按产品默认中文（[com.yap.app.domain.PromptLanguage.ZH]）。
+     * 只影响提示词里的规则段与语言指令；人设正文是用户自己写的数据，不在这里翻译。
+     */
+    val languageTag: String? = null,
     /**
      * 还没生效的 `block_user` 提议（JSON；`spec/experience/README.md` §9 的七个固定字段：
      * `proposalId/personaId/hours/reason/userMessageId/proposedAt/expiresAt`）。
@@ -735,5 +745,13 @@ data class SessionMemoryEntity(
     val longUserCount: Int = 0,
     val shortUpdatedAt: Long? = null,
     val longUpdatedAt: Long? = null,
-    val updatedAt: Long
+    val updatedAt: Long,
+    // ---- 0.15 对话主题总结（schema v19，docs/design/context-memory-v2.md） --------
+    /** 主题总结 JSON：`[{"time":"2026-11-18 晚上","summary":"…"}]`，最多 12 段。 */
+    val topicsJson: String? = null,
+    /** 上次滚主题总结时的可见用户消息数。 */
+    @ColumnInfo(defaultValue = "0")
+    val topicUserCount: Int = 0,
+    /** 上次滚主题总结的时间。 */
+    val topicUpdatedAt: Long? = null
 )

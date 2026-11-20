@@ -19,10 +19,13 @@ class AttachmentsCodecTest {
         )
 
         val encoded = AttachmentsCodec.encode(items)
-        // 默认值（image/jpeg）不写进 JSON，因此这里只校验关键字段。
+        // 默认值（image/jpeg）仍不写，但 0.15 起**新写入的附件一律显式写 kind**。
         assertTrue(encoded!!.contains("a.jpg"))
         assertTrue(encoded.contains("1200"))
-        assertEquals(items, AttachmentsCodec.decode(encoded))
+        val decoded = AttachmentsCodec.decode(encoded)
+        assertEquals("普通图片写回时补显式 IMAGE", MessageAttachment.KIND_IMAGE, decoded.single().kind)
+        assertEquals(items.single().uri, decoded.single().uri)
+        assertEquals(items.single().mime, decoded.single().mime)
     }
 
     @Test
@@ -77,11 +80,11 @@ class AttachmentsCodecTest {
     fun oldStickerKindIsPreservedAndNewImageJsonOmitsNulls() {
         val sticker = MessageAttachment(uri = "file:///stickers/s.gif", mime = "image/gif", kind = "STICKER")
         assertEquals(sticker, AttachmentsCodec.decode(AttachmentsCodec.encode(listOf(sticker))!!).first())
-        // 普通图片：encodeDefaults=false，所以 kind=null 不写进 JSON（与 0.12 逐字一致）
+        // 0.15：普通图片也要显式写 kind（读旧数据时 kind=null 仍等价 IMAGE）。
         val plain = MessageAttachment(uri = "file:///tmp/a.jpg")
         val encoded = AttachmentsCodec.encode(listOf(plain))!!
-        assertTrue(!encoded.contains("kind"))
-        assertTrue(!encoded.contains("durationMs"))
+        assertTrue("新写入的普通图片要显式写 IMAGE：$encoded", encoded.contains("\"kind\":\"IMAGE\""))
+        assertTrue("没有时长就不写 durationMs", !encoded.contains("durationMs"))
     }
 
     @Test

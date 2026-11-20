@@ -65,7 +65,7 @@ class ServerMediaStoreTest {
                 ftypBytes("isom") + moovAtTail + "vide".toByteArray(Charsets.US_ASCII)
             )
         )
-        assertNull("认不出来的字节返回 null（调用方按普通图片兜底）", ServerMediaSniffer.mimeOf(ByteArray(4)))
+        assertNull("认不出来的字节返回 null（0.15 起调用方拒绝，不再按普通图片兜底）", ServerMediaSniffer.mimeOf(ByteArray(4)))
         assertNull(ServerMediaSniffer.mimeOf(null))
     }
 
@@ -114,7 +114,7 @@ class ServerMediaStoreTest {
         val calls = mutableListOf<Pair<String, Int>>()
         val materializer = ServerMediaMaterializer(directories) { ref, maxBytes ->
             calls += ref to maxBytes
-            jpegBytes()
+            ServerMediaDownload(jpegBytes())
         }
 
         val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/abc")))
@@ -140,7 +140,7 @@ class ServerMediaStoreTest {
 
     @Test
     fun `幂等 目标文件已存在就不再调用下载器`() = runBlocking {
-        val first = ServerMediaMaterializer(directories) { _, _ -> jpegBytes() }
+        val first = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(jpegBytes()) }
             .materialize(listOf(ServerAttachmentRef("/v1/media/once")))
         val firstUri = first.attachmentFor("/v1/media/once")!!.uri
 
@@ -162,7 +162,7 @@ class ServerMediaStoreTest {
         var downloads = 0
         val materializer = ServerMediaMaterializer(directories) { _, _ ->
             downloads++
-            jpegBytes()
+            ServerMediaDownload(jpegBytes())
         }
 
         val result = materializer.materialize(
@@ -225,7 +225,7 @@ class ServerMediaStoreTest {
     fun `超过真实用途上限的字节不落盘`() = runBlocking {
         // 用途未知 → 按 64 MiB 取回；嗅探出是图片后按 2 MiB 复检，3 MiB 的“图片”必须拒绝。
         val oversized = jpegBytes() + ByteArray(3 * 1024 * 1024)
-        val materializer = ServerMediaMaterializer(directories) { _, _ -> oversized }
+        val materializer = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(oversized) }
         val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/big")))
 
         assertEquals(1, result.failed)
@@ -241,7 +241,7 @@ class ServerMediaStoreTest {
             durationMs = 3_000
         )
         // 字节是 mp4 容器（m4a 也是 ftyp），没有元数据时会退化成视频；有元数据就按语音落。
-        val materializer = ServerMediaMaterializer(directories) { _, _ -> ftypBytes("isom", "vide") }
+        val materializer = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(ftypBytes("isom", "vide")) }
         val result = materializer.materialize(
             listOf(ServerAttachmentRef("/v1/media/voice1", existing = existing))
         )
@@ -257,7 +257,7 @@ class ServerMediaStoreTest {
     fun `默认图片元数据不挡 magic 的音视频判定`() = runBlocking {
         // 上一轮同步留下的默认 image/jpeg（只是缺省值，不是证据）。
         val existing = MessageAttachment(uri = "/v1/media/vid1", mime = "image/jpeg")
-        val materializer = ServerMediaMaterializer(directories) { _, _ -> ftypBytes("M4A ") }
+        val materializer = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(ftypBytes("M4A ")) }
         val result = materializer.materialize(
             listOf(ServerAttachmentRef("/v1/media/vid1", existing = existing))
         )
@@ -269,7 +269,7 @@ class ServerMediaStoreTest {
 
     @Test
     fun `GIF 按表情落 stickers 目录`() = runBlocking {
-        val materializer = ServerMediaMaterializer(directories) { _, _ -> gifBytes() }
+        val materializer = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(gifBytes()) }
         val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/st1")))
 
         val media = result.attachmentFor("/v1/media/st1")!!
@@ -282,7 +282,7 @@ class ServerMediaStoreTest {
         var limit = -1
         val materializer = ServerMediaMaterializer(directories) { _, maxBytes ->
             limit = maxBytes
-            jpegBytes()
+            ServerMediaDownload(jpegBytes())
         }
         val result = materializer.materialize(
             listOf(
@@ -317,6 +317,121 @@ class ServerMediaStoreTest {
         assertEquals(0, downloads)
         assertEquals(1, result.skipped)
         assertEquals("file://" + local.toURI().path, result.attachmentFor("/v1/media/local")!!.uri)
+    }
+
+    // ------------------------------------------------------------------ 0.15：sha256 校验
+
+    @Test
+    fun `下载哈希与服务端声明一致时通过 并记录到附件上`() = runBlocking {
+        val bytes = jpegBytes()
+        val sha = com.yap.app.domain.MediaHashes.sha256Hex(bytes)
+        val materializer = ServerMediaMaterializer(directories) { _, _ ->
+            ServerMediaDownload(bytes, sha)
+        }
+        val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/hash-ok")))
+
+        assertEquals(1, result.downloaded)
+        assertEquals(0, result.failed)
+        assertEquals(0, result.hashMismatches)
+        val media = result.attachmentFor("/v1/media/hash-ok")!!
+        assertTrue(media.local)
+        assertEquals("附件要记录校验过的 sha256", sha, media.sha256)
+        assertEquals(File(root, "media/chat-hash-ok.jpg").readText(Charsets.ISO_8859_1), String(bytes, Charsets.ISO_8859_1))
+    }
+
+    @Test
+    fun `下载哈希与服务端声明不一致时删临时文件 记失败 不落库`() = runBlocking {
+        val bytes = jpegBytes()
+        val wrong = com.yap.app.domain.MediaHashes.sha256Hex(ByteArray(3))
+        val materializer = ServerMediaMaterializer(directories) { _, _ ->
+            ServerMediaDownload(bytes, wrong)
+        }
+        val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/hash-bad")))
+
+        assertEquals(0, result.downloaded)
+        assertEquals(1, result.failed)
+        assertEquals("哈希不一致要单独计数（便于诊断）", 1, result.hashMismatches)
+        val media = result.attachmentFor("/v1/media/hash-bad")!!
+        assertFalse("失败项不落库，只保留服务端引用", media.local)
+        assertEquals("/v1/media/hash-bad", media.uri)
+        assertNull(media.sha256)
+        // 目标文件与任何临时文件都不能留下。
+        assertTrue("磁盘不该留下坏字节", directories.all().all { dir -> dir.listFiles().isNullOrEmpty() })
+    }
+
+    @Test
+    fun `期望哈希与下载字节不一致时同样拒绝`() = runBlocking {
+        val bytes = jpegBytes()
+        val expected = com.yap.app.domain.MediaHashes.sha256Hex(byteArrayOf(9, 9, 9))
+        val materializer = ServerMediaMaterializer(directories) { _, _ -> ServerMediaDownload(bytes) }
+        val result = materializer.materialize(
+            listOf(ServerAttachmentRef("/v1/media/expected", expectedSha256 = expected))
+        )
+
+        assertEquals(1, result.failed)
+        assertEquals(1, result.hashMismatches)
+        assertTrue(directories.chatImages.listFiles().isNullOrEmpty())
+    }
+
+    @Test
+    fun `旧服务端没有哈希时照旧落盘（旧数据兼容）`() = runBlocking {
+        val materializer = ServerMediaMaterializer(directories) { _, _ ->
+            ServerMediaDownload(jpegBytes(), sha256 = null)
+        }
+        val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/no-hash")))
+
+        assertEquals(1, result.downloaded)
+        assertEquals(0, result.hashMismatches)
+        val media = result.attachmentFor("/v1/media/no-hash")!!
+        assertTrue(media.local)
+        assertEquals(
+            "没有服务端哈希时记录本地重算值",
+            com.yap.app.domain.MediaHashes.sha256Hex(jpegBytes()),
+            media.sha256
+        )
+    }
+
+    @Test
+    fun `本机记录哈希与文件不一致时删掉坏副本并重新下载`() = runBlocking {
+        val good = jpegBytes()
+        val goodSha = com.yap.app.domain.MediaHashes.sha256Hex(good)
+        // 先放一个内容与记录不符的坏文件（模拟本地副本被写坏/被截断）。
+        val local = File(directories.chatImages, "chat-repair.jpg").apply { writeBytes(ByteArray(4)) }
+        val existing = MessageAttachment(
+            uri = "file://" + local.toURI().path,
+            mime = "image/jpeg",
+            sha256 = goodSha
+        )
+        var downloads = 0
+        val materializer = ServerMediaMaterializer(directories) { _, _ ->
+            downloads++
+            ServerMediaDownload(good, goodSha)
+        }
+        val result = materializer.materialize(
+            listOf(ServerAttachmentRef("/v1/media/repair", existing = existing))
+        )
+
+        assertEquals("坏副本要触发一次重新下载", 1, downloads)
+        assertEquals(1, result.downloaded)
+        val media = result.attachmentFor("/v1/media/repair")!!
+        assertTrue(media.local)
+        assertEquals(goodSha, media.sha256)
+        assertEquals("文件内容要变回服务端那份", good.size, File(URI(media.uri)).length().toInt())
+    }
+
+    @Test
+    fun `未知类型拒绝而不是猜成普通图片`() = runBlocking {
+        // 既没有元数据、字节 magic 也认不出来：0.14 会把它当图片落进 files/media，
+        // 0.15 必须拒绝（计失败、不落盘）。
+        val materializer = ServerMediaMaterializer(directories) { _, _ ->
+            ServerMediaDownload(ByteArray(8) { 0x42 })
+        }
+        val result = materializer.materialize(listOf(ServerAttachmentRef("/v1/media/unknown")))
+
+        assertEquals(0, result.downloaded)
+        assertEquals(1, result.failed)
+        assertTrue(result.media.values.single().kind == null)
+        assertTrue("未知类型不能落任何文件", directories.all().all { dir -> dir.listFiles().isNullOrEmpty() })
     }
 
     // ------------------------------------------------------------------ 测试字节

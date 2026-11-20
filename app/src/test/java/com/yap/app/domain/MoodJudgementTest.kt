@@ -10,8 +10,9 @@ import org.junit.Test
 /**
  * 自动情绪判定的纯领域测试（`spec/mood/README.md` §2）。
  *
- * 四件事必须逐条钉住：**什么时候判**（每 4 条 / 24 小时）、**判出来的值怎么收**
- * （范围 + 单次幅度）、**什么时候不写**（没有明显变化）、**失败怎么办**（按时间衰减）。
+ * 四件事必须逐条钉住：**什么时候判**（0.15：每条用户消息后）、**判出来的值怎么收**
+ * （只做物理范围夹取，不再限制单次幅度）、**什么时候不写**（没有明显变化 / 手动改过）、
+ * **失败怎么办**（按时间衰减）。
  * 这些规则一旦松掉，表现不是崩溃，而是「他每天都是同一种情绪」或者「一句话就翻脸」。
  */
 class MoodJudgementTest {
@@ -30,43 +31,31 @@ class MoodJudgementTest {
     // ------------------------------------------------------------- 触发条件
 
     @Test
-    fun `攒够四条用户消息才判定`() {
-        assertFalse(MoodJudgement.shouldJudge(userMessages = 3, cursor = 0, lastRunAt = 0L, now = now))
-        assertTrue(MoodJudgement.shouldJudge(userMessages = 4, cursor = 0, lastRunAt = 0L, now = now))
+    fun `每条用户消息后都重新判定一次`() {
+        // 0.15：第一条消息就判，不再等攒够 4 条。
+        assertTrue(MoodJudgement.shouldJudge(userMessages = 1, cursor = 0, lastRunAt = 0L, now = now))
+        // 每多一条都判一次。
+        assertTrue(MoodJudgement.shouldJudge(userMessages = 4, cursor = 3, lastRunAt = now, now = now))
+        assertTrue(MoodJudgement.shouldJudge(userMessages = 8, cursor = 7, lastRunAt = now, now = now))
     }
 
     @Test
-    fun `已经判定过的部分不重复算`() {
-        assertFalse(MoodJudgement.shouldJudge(userMessages = 7, cursor = 4, lastRunAt = now, now = now))
-        assertTrue(MoodJudgement.shouldJudge(userMessages = 8, cursor = 4, lastRunAt = now, now = now))
-    }
-
-    @Test
-    fun `隔了二十四小时且有一条新消息也判定`() {
-        assertTrue(
-            MoodJudgement.shouldJudge(
-                userMessages = 5,
-                cursor = 4,
-                lastRunAt = now - MoodJudgement.INTERVAL_MS,
-                now = now
-            )
-        )
-        // 没有新消息：不判定（不能每小时醒来打一次模型）。
-        assertFalse(
-            MoodJudgement.shouldJudge(
-                userMessages = 4,
-                cursor = 4,
-                lastRunAt = now - MoodJudgement.INTERVAL_MS,
-                now = now
-            )
-        )
-        // 从没判定过时，24 小时不应该触发（第一次判定按 4 条走）。
-        assertFalse(MoodJudgement.shouldJudge(userMessages = 1, cursor = 0, lastRunAt = 0L, now = now))
+    fun `没有新消息就不重复判`() {
+        assertFalse(MoodJudgement.shouldJudge(userMessages = 7, cursor = 7, lastRunAt = now, now = now))
+        assertFalse(MoodJudgement.shouldJudge(userMessages = 0, cursor = 0, lastRunAt = 0L, now = now))
     }
 
     @Test
     fun `消息数倒退时按零算 不抛异常`() {
         assertFalse(MoodJudgement.shouldJudge(userMessages = 2, cursor = 10, lastRunAt = now, now = now))
+    }
+
+    @Test
+    fun `后台判定不能覆盖模型刚手动改过的心情`() {
+        // 判定开始时读到的 updatedAt = 100；落库前发现库里的更新了（set_mood 手动改过）→ 作废。
+        assertTrue(MoodJudgement.isStale(judgedFromUpdatedAt = 100L, currentUpdatedAt = 200L))
+        assertFalse("没有更新时正常写入", MoodJudgement.isStale(100L, 100L))
+        assertFalse("时钟倒退/脏数据按不更新处理", MoodJudgement.isStale(100L, 0L))
     }
 
     // ------------------------------------------------------------- 解析
@@ -105,18 +94,18 @@ class MoodJudgementTest {
     }
 
     @Test
-    fun `越界的值被夹到规范范围并由单次幅度收一次`() {
+    fun `只做物理范围夹取 不再限制单次变化幅度`() {
         val parsed = MoodJudgement.parse(
             """{"label":"心烦","valence":-9,"arousal":9,"dominance":-4,"intensity":12,"reason":"烦"}""",
             baseline,
             now
         )
         assertNotNull(parsed)
-        // 范围先夹（-2 / 5 / 0 / 5），再按「相对上一轮最多 2」收（valence 0→-2 刚好允许）。
+        // 只夹到规范范围：不再把 valence 从 0 压到 -2、arousal 从 2 压到 4。
         assertEquals(-2, parsed!!.valence)
-        assertEquals("arousal 从 2 最多到 4", 4, parsed.arousal)
-        assertEquals("dominance 从 3 最多到 1", 1, parsed.dominance)
-        assertEquals(4, parsed.intensity)
+        assertEquals("arousal 直接到 5，不再被上一轮 +2 卡住", 5, parsed.arousal)
+        assertEquals(0, parsed.dominance)
+        assertEquals(5, parsed.intensity)
     }
 
     @Test
@@ -246,8 +235,11 @@ class MoodJudgementTest {
         assertTrue(prompt.contains("\"dominance\""))
         assertTrue(prompt.contains("\"intensity\""))
         assertTrue(prompt.contains("\"reason\""))
-        assertTrue(prompt.contains("单次变化幅度不要超过 2"))
-        assertTrue(prompt.contains("-2 到 2"))
-        assertTrue(prompt.contains("0 到 5"))
+        assertTrue("-2 到 2", prompt.contains("-2 到 2"))
+        assertTrue("0 到 5", prompt.contains("0 到 5"))
+        // 0.15：先直觉、后数值；不再要求「单次变化不要超过 2」。
+        assertFalse(prompt.contains("单次变化幅度不要超过 2"))
+        assertTrue("要先写直觉再填数值", prompt.contains("先写直觉，再填数值"))
+        assertTrue("reason 是直觉的一句话", prompt.contains("一句直觉"))
     }
 }

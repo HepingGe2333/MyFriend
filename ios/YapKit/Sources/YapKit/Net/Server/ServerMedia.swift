@@ -171,6 +171,55 @@ public enum ServerMediaFileKind: String, CaseIterable, Sendable {
 
 // MARK: - 服务端媒体的元信息（kind / mime / 时长）
 
+/// 一次下载的结果：字节 + 服务端声明的哈希 / MIME（0.15）。
+///
+/// 为什么不让下载只返回 `Data`：`GET /v1/media/{id}` 的响应头里带着 `ETag`（服务端用
+/// 内容 sha256 做 ETag），落地前必须拿它和字节比对 —— 否则「中间网络/代理改了几个字节」
+/// 在本机看起来和正常下载一模一样，而备份/转发会把坏字节传给另一端。
+public struct ServerMediaDownload: Equatable, Sendable {
+    public var data: Data
+    /// 服务端声明的 sha256（64 位小写 hex）；没有这条头时 nil。
+    public var sha256: String?
+    /// 响应 Content-Type（缺省 nil）。
+    public var mime: String?
+
+    public init(data: Data, sha256: String? = nil, mime: String? = nil) {
+        self.data = data
+        self.sha256 = ServerMediaHash.normalized(sha256)
+        self.mime = mime
+    }
+}
+
+/// sha256 归一化：去引号、去空白、小写；不是 64 位 hex 就当没有（绝不因一条坏头拒绝下载）。
+public enum ServerMediaHash {
+
+    public static func normalized(_ raw: String?) -> String? {
+        var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if text.hasPrefix("W/") { text = String(text.dropFirst(2)) }
+        if text.hasPrefix("\"") && text.hasSuffix("\"") && text.count >= 2 {
+            text = String(text.dropFirst().dropLast())
+        }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard text.count == 64,
+              text.unicodeScalars.allSatisfy({ scalar in
+                  (scalar.value >= 48 && scalar.value <= 57)
+                      || (scalar.value >= 97 && scalar.value <= 102)
+              }) else { return nil }
+        return text
+    }
+
+    /// 字节的 sha256（64 位小写 hex）。
+    public static func hex(_ data: Data) -> String {
+        ImageContentHash.sha256Hex(data)
+    }
+
+    /// 两个哈希是否一致（都先归一化；任一侧缺失 → false，调用方自己决定是否跳过校验）。
+    public static func matches(_ lhs: String?, _ rhs: String?) -> Bool {
+        guard let left = normalized(lhs), let right = normalized(rhs) else { return false }
+        return left == right
+    }
+}
+
 /// 服务端媒体 id → 附件元信息。
 ///
 /// 背景（0.13 音视频）：服务端消息只下发 `["/v1/media/<id>"]`，不带 kind/mime。
@@ -186,13 +235,26 @@ public final class ServerMediaMetaStore {
         public var durationMs: Int?
         public var width: Int
         public var height: Int
+        /// 0.15：上传时服务端算的 sha256（64 位小写 hex）。
+        ///
+        /// 下载落地时拿它和实际字节比对（服务端下载响应的 `ETag` 也是同一个值）。
+        /// 老数据没有这一项 → nil，跳过校验（旧数据兼容）。
+        public var sha256: String?
 
-        public init(kind: String, mime: String, durationMs: Int? = nil, width: Int = 0, height: Int = 0) {
+        public init(
+            kind: String,
+            mime: String,
+            durationMs: Int? = nil,
+            width: Int = 0,
+            height: Int = 0,
+            sha256: String? = nil
+        ) {
             self.kind = kind
             self.mime = mime
             self.durationMs = durationMs
             self.width = width
             self.height = height
+            self.sha256 = sha256
         }
     }
 
@@ -212,7 +274,10 @@ public final class ServerMediaMetaStore {
     }
 
     /// 上传成功后记一行（失败只忽略：元信息丢了最多是气泡退化，不该让发送失败）。
-    public func record(_ attachment: MessageAttachment, mediaId: String) {
+    ///
+    /// - Parameter sha256: 服务端返回的内容哈希（0.15）。下载落地时用它校验字节，
+    ///   老调用点不传就是 nil（= 这条记录没有哈希，下载时跳过校验）。
+    public func record(_ attachment: MessageAttachment, mediaId: String, sha256: String? = nil) {
         let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else { return }
         let kind = attachment.normalizedKind
@@ -223,7 +288,8 @@ public final class ServerMediaMetaStore {
             mime: attachment.mime,
             durationMs: attachment.durationMs,
             width: attachment.width,
-            height: attachment.height
+            height: attachment.height,
+            sha256: ServerMediaHash.normalized(sha256)
         )
         guard let data = try? JSONEncoder().encode(meta),
               let json = String(data: data, encoding: .utf8) else { return }
@@ -334,6 +400,15 @@ public extension ServerAPIClient {
     /// 304（ETag 命中）对客户端等价于「缓存还能用」：`ServerMediaCache` 自己按文件存在
     /// 做了同样的事，所以这里不做条件请求，直接读全文。
     func mediaData(mediaId: String) async throws -> Data {
+        try await mediaDownload(mediaId: mediaId).data
+    }
+
+    /// 下载 + 服务端声明的哈希 / MIME（0.15）。
+    ///
+    /// 哈希来自响应头 `ETag`（agentd 用内容 sha256 做 ETag；`If-None-Match` 命中时是 304，
+    /// 但这里永远发无条件请求，所以拿到的一定是完整字节）。头缺失/格式不对 → `sha256 = nil`，
+    /// 调用方跳过校验（老服务端兼容）。
+    func mediaDownload(mediaId: String) async throws -> ServerMediaDownload {
         let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty else {
             throw ServerAPIError(code: ServerAPIError.Code.invalidArgument, message: "媒体 id 不能为空")
@@ -349,7 +424,20 @@ public extension ServerAPIClient {
         guard (200..<300).contains(response.statusCode) else {
             throw Self.error(from: data, status: response.statusCode)
         }
-        return data
+        let headers = response.allHeaderFields
+        let etag = headers.first { key, _ in
+            (key as? String)?.caseInsensitiveCompare("ETag") == .orderedSame
+        }?.value as? String
+        let contentType = headers.first { key, _ in
+            (key as? String)?.caseInsensitiveCompare("Content-Type") == .orderedSame
+        }?.value as? String
+        return ServerMediaDownload(
+            data: data,
+            sha256: etag,
+            mime: contentType?.split(separator: ";").first.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        )
     }
 
     /// 按 `attachmentsJson` 里的写法（`/v1/media/<id>` 等）下载。

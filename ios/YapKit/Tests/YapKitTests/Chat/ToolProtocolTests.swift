@@ -218,7 +218,7 @@ final class ToolProtocolTests: XCTestCase {
     func testCapabilityPromptContainsRequiredLines() {
         let prompt = ToolCatalog.capabilityPrompt(webEnabled: true)
         XCTAssertTrue(prompt.hasPrefix(ToolCatalog.capabilitySection), "0.13 的段标题是「# 你能做什么」")
-        XCTAssertTrue(prompt.contains("- think(question)："))
+        XCTAssertTrue(prompt.contains("- think(question, rounds?)："))
         XCTAssertTrue(prompt.contains("- web_search(query, count?)："))
         XCTAssertTrue(prompt.contains("- web_fetch(url)："))
         XCTAssertTrue(prompt.contains("- remember(content, drawer, importance)："))
@@ -286,10 +286,10 @@ final class ToolProtocolTests: XCTestCase {
         //（`spec/audio-video/README.md`；不是转写、不是猜）。
         // 0.13 多维情绪/可以不回再加一个 `stay_silent`：这一轮只标已读、不回
         //（`spec/mood/README.md` §4；与 `defer_reply` 的分工见工具描述）。
-        XCTAssertEqual(ToolCatalog.all.count, 17)
+        XCTAssertEqual(ToolCatalog.all.count, 18)
         XCTAssertEqual(ToolCatalog.all.map(\.name), [
             "think", "web_search", "web_fetch", "remember",
-            "update_persona", "set_quiet_hours", "set_activity", "set_mood", "recall",
+            "update_persona", "set_quiet_hours", "set_activity", "set_mood", "recall", "memorize",
             "defer_reply", "stay_silent", "diary", "sticker", "listen", "watch",
             // 0.14 体验版：连发与「他自己决定暂时不理对方」
             //（`spec/experience/README.md` §4/§2）。
@@ -306,7 +306,7 @@ final class ToolProtocolTests: XCTestCase {
         // OpenAI tools 数组形状
         let json = ToolCatalog.toOpenAiToolsJson()
         let array = try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [[String: Any]]
-        XCTAssertEqual(array?.count, 17)
+        XCTAssertEqual(array?.count, 18)
         XCTAssertEqual(array?.first?["type"] as? String, "function")
         let function = array?.first?["function"] as? [String: Any]
         XCTAssertEqual(function?["name"] as? String, "think")

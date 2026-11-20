@@ -194,12 +194,26 @@ public final class NoBackgroundTasks: ChatBackgroundTasks {
 
 public final class ChatService {
 
-    /// 一次回复里最多连着用几轮工具，用完就必须说话（Android `MAX_TOOL_ROUNDS`）。
-    public static let maxToolRounds = 3
+    /// 一次回复里默认最多连着用几轮工具，用完就必须说话。
+    ///
+    /// 0.15 起转发共享契约：默认 5、模型可以用 `think.rounds` 指定、硬上限 15
+    ///（`ExperienceContract.clampToolRounds`；与 Android / agentd 同一份数字）。
+    public static let maxToolRounds = ExperienceContract.DEFAULT_TOOL_ROUNDS
     /// 自动记忆的间隔兜底值：人格上没填（老数据）时用这个（§三：`extractionEvery` 默认 6）。
     public static let memoryInterval = PersonaFieldLimits.extractionEveryDefault
     /// 消息长度上限（Android 的 `require(content.length <= 32_000)`）。
     public static let maxMessageLength = 32_000
+
+    /// 这一轮的工具轮数上限：默认 5；模型在 `think.rounds` 里自报时夹到 1..15。
+    ///
+    /// 纯函数（不碰网络/时钟），所以「默认 5 / 模型指定 / 上限 15」能被直接钉住，
+    /// 不用构造一整条聊天链路。`nil`/0/负数 = 没指定（保持默认），不把一次坏参数变成「只能 1 轮」。
+    public static func toolRoundLimit(requested: Int?) -> Int {
+        guard let requested, requested > 0 else {
+            return ExperienceContract.shared.clampToolRounds(requested: nil)
+        }
+        return ExperienceContract.shared.clampToolRounds(requested: requested)
+    }
 
     private let stores: DatabaseStores
     private let apiKeys: ApiKeyStore
@@ -717,10 +731,22 @@ public final class ChatService {
             // `MoodRepository` 会顺手做两件事（与 Android 一致）：让时间冲淡、把「已经问过心情」记下来。
             let moodState = mood.current(personaId: persona.id, now: timestamp)
             let nudge = mood.reflectionNudge(personaId: persona.id, now: timestamp)
+            // 0.15：提示词语言是**人格属性**，与页面语言无关（`languageTag`，schema v19）。
+            let personaLanguage = PersonaLanguagePrompt.language(for: persona)
             // 0.14 §3：「你刚才心里想：…」——最近一次心理活动（不新鲜 / 没有就是空串）。
-            let mentalActivityBlock = mind.promptLine(personaId: persona.id, now: timestamp)
-            // 0.14 §6：「你的备忘录」——短期在前、长期在后（可变区域，不写进人设）。
-            let memoBlock = memo.promptBlock(sessionId: sessionId)
+            // 0.15：非中文人格用对应语言的注入行（念头本身是数据，不翻译）。
+            let mentalActivityBlock: String
+            if personaLanguage == .zh {
+                mentalActivityBlock = mind.promptLine(personaId: persona.id, now: timestamp)
+            } else if let latest = mind.latest(personaId: persona.id),
+                      timestamp - latest.at <= MentalActivityPolicy.promptFreshnessMillis {
+                let line = PersonaLanguagePrompt.mentalActivityLine(
+                    thought: latest.thought, language: personaLanguage
+                )
+                mentalActivityBlock = line.isEmpty ? "" : "\n\n" + line
+            } else {
+                mentalActivityBlock = ""
+            }
             // 拉黑提示：让他知道「这段时间我没理他」不是「他没说话」。
             let blockNote = block.state(personaId: persona.id, now: timestamp).map {
                 "\n\n" + BlockPolicy.promptNote($0, now: timestamp)
@@ -729,49 +755,75 @@ public final class ChatService {
             // 提示词翻译（`spec/persona-translation/README.md`）：用**已有缓存**里的译文拼提示词。
             // 触发（kick）在进聊天时由视图层做，所以这一轮不会被翻译拖慢：
             // 第一次进来通常还没译文（用原文），翻译落地后下一轮回复就用译文。
-            let language = translationLanguage()
-            let speakingPersona = PersonaTranslation.applyingCached(to: persona, lang: language)
+            let translationLang = translationLanguage()
+            let speakingPersona = PersonaTranslation.applyingCached(to: persona, lang: translationLang)
 
             // 人设引导（`spec/persona-guidance/README.md` §1）：世界 → 此刻状态 → 话风 → 关系，
             // 四段都从人格上那三个 JSON 列读出来；坏 JSON / 空字段都安静地整节不出现。
             let world = WorldPreset.decode(speakingPersona.worldJson)
             let speechStyle = SpeechStyle.decode(speakingPersona.speechStyleJson)
             let activity = PersonaActivity.decode(speakingPersona.activityJson, now: timestamp)
-            let system = PromptBuilder.systemPrompt(SystemPromptInput(
+            // 0.15 上下文装配 v2（`docs/design/context-memory-v2.md`）：
+            // 完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 对话主题 → 最近历史。
+            //
+            // 人设与前五段分开渲染：人设/工具用 `PromptBuilder.personaAndToolsPrompt`，
+            // 记忆/状态/主题由 `ContextAssemblerV2` 按固定顺序插进去，预算与裁剪也归它。
+            let sessionMemo = memo.memory(sessionId: sessionId)
+            let fixedPrompt = PromptBuilder.personaAndToolsPrompt(SystemPromptInput(
                 personaText: personaText?(speakingPersona)
                     ?? PromptBuilder.personaSection(speakingPersona),
                 personaName: speakingPersona.name,
                 worldBlock: PromptBuilder.worldSection(world),
-                stateBlock: PromptBuilder.stateSection(
+                speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
+                relationshipBlock: PromptBuilder.relationshipSection(persona: speakingPersona),
+                boundaryBlock: PersonaLanguagePrompt.boundariesSection(language: personaLanguage),
+                antiAIPrompt: PersonaLanguagePrompt.antiAISection(language: personaLanguage),
+                moodNudgeBlock: nudge ?? "",
+                proactiveCapability: ProactiveCapabilityPrompt.text,
+                toolsCapability: PersonaLanguagePrompt.capabilitiesSection(
+                    webEnabled: config.webToolsEnabled, language: personaLanguage
+                ),
+                // 「用对方的语言回答」= 人格语言（不是页面语言）。
+                languageDirective: PersonaLanguagePrompt.languageSection(language: personaLanguage)
+            ))
+            // 长期记忆：稳定事实（记忆库）+ 会话长期摘要 + 「更早记得的」滚动摘要，合计 ≤500。
+            // 短期记忆：这几轮定下的计划/待办（≤200）。
+            let longTerm = [
+                memoriesBlock,
+                sessionMemo?.longSummary ?? "",
+                HistoryCompression.memoryBlock(
+                    summary: session.historySummary,
+                    summarizedUpTo: session.historySummarizedUpTo
+                )
+            ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n")
+            let currentState = [
+                PromptBuilder.stateSection(
                     now: timestamp,
                     activity: activity,
                     presenceDetail: presenceDetail?(persona.id)
                 ),
-                speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
-                relationshipBlock: PromptBuilder.relationshipSection(persona: speakingPersona),
-                memoriesBlock: memoriesBlock,
-                earlierMemoryBlock: HistoryCompression.memoryBlock(
-                    summary: session.historySummary, summarizedUpTo: session.historySummarizedUpTo
-                ),
-                // 0.14：备忘录与「刚才心里想」都在心情之前（与 `SystemPromptInput` 的字段顺序一致）。
-                memoBlock: memoBlock,
-                mentalActivityBlock: mentalActivityBlock,
-                moodBlock: MoodPrompt.line(moodState),
-                moodPaceBlock: MoodBehavior.promptLine(moodState, now: timestamp) + blockNote,
-                moodNudgeBlock: nudge ?? "",
-                proactiveCapability: ProactiveCapabilityPrompt.text,
-                toolsCapability: ToolCatalog.capabilityPrompt(webEnabled: config.webToolsEnabled),
-                // 「用对方的语言回答」：整段指令由 App 层按界面语言给（系统语言 / per-app language）。
-                languageDirective: languageDirective?() ?? ""
+                PersonaLanguagePrompt.moodSection(moodState, language: personaLanguage),
+                MoodBehavior.promptLine(moodState, now: timestamp) + blockNote,
+                mentalActivityBlock
+            ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n\n")
+            let assembled = ContextAssemblerV2.assemble(ContextV2Input(
+                personaAndTools: fixedPrompt,
+                longTermMemory: longTerm,
+                shortTermMemory: sessionMemo?.shortSummary ?? "",
+                currentState: currentState,
+                topics: sessionMemo?.topics ?? [],
+                history: history,
+                contextWindowTokens: PromptBuilder.contextTokenBudget(configured: nil),
+                maxOutputTokens: config.inferenceParams().maxOutputTokens ?? ApiDefaults.maxOutputTokens,
+                practicalChars: PromptBuilder.contextCharBudget,
+                language: personaLanguage
             ))
-
-            // 上下文预算按模型窗口算（`spec/api-defaults`：1M 上限，配置显式值优先）：
-            // 默认 1M 时等价于产品上限 28 000 字；配了更小的窗口才会真的少带历史。
-            var conversation = PromptBuilder.wireMessages(
-                system: system, history: history,
-                contextTokens: PromptBuilder.contextTokenBudget(configured: nil)
-            )
+            var conversation = [WireMessage(role: "system", content: assembled.system)] + assembled.history
             var round = 0
+            // 模型可以在 `think` 里说明这轮要几步工具；没说明就按默认 5，硬上限 15。
+            var toolRoundLimit = ExperienceContract.shared.clampToolRounds(requested: nil)
             var executed = Set<String>()
             var finalBody = ""
 
@@ -848,7 +900,7 @@ public final class ChatService {
                     }
                     // 已经连着沉默两轮：这次不认，逼他说一句（哪怕很短）。
                     round += 1
-                    if round > Self.maxToolRounds {
+                    if round > toolRoundLimit {
                         // 他还是坚持不说：按「模型没有返回任何文字」走失败流，
                         // 至少让用户可以重试，而不是静默地把这一轮吞掉。
                         throw ApiException(
@@ -911,11 +963,21 @@ public final class ChatService {
                     return
                 }
 
-                if calls.isEmpty || round >= Self.maxToolRounds {
+                if calls.isEmpty || round >= toolRoundLimit {
                     finalBody = body.isEmpty ? (calls.isEmpty ? buffer.trimmingCharacters(in: .whitespacesAndNewlines) : "") : body
                     break
                 }
                 round += 1
+                // 模型自报的轮数（`think.rounds`）：只用来放宽/收窄这一次的上限，不越过 15。
+                if let thinkCall = calls.first(where: {
+                    $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.think
+                }) {
+                    // `rounds` 可能是数字或数字字符串（模型两种都写过）：用工具参数的宽容解析，
+                    // 0/没给都当「没指定」（保持默认 5），不把一次坏参数变成「只能 1 轮」。
+                    toolRoundLimit = Self.toolRoundLimit(
+                        requested: thinkCall.intArgument("rounds", default: 0)
+                    )
+                }
                 var results: [ToolResult] = []
                 for call in calls {
                     if Task.isCancelled { throw CancellationError() }

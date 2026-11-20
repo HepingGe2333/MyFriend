@@ -27,6 +27,9 @@ object ServerToolCatalog {
     const val DIARY = "diary"
     const val REMEMBER = "remember"
     const val RECALL = "recall"
+
+    /** 0.15：在**会话历史原文**里检索（主题段 + 关键词 + 时间衰减）。 */
+    const val MEMORIZE = "memorize"
     const val WEB_SEARCH = "web_search"
     const val WEB_FETCH = "web_fetch"
     const val STICKER = "sticker"
@@ -96,6 +99,15 @@ object ServerToolCatalog {
 
     private const val RECALL_DESCRIPTION =
         "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己记过什么的时候调用；日常闲聊不要调用。"
+
+    private const val MEMORIZE_DESCRIPTION =
+        "你想「回忆一下」很久以前这段对话里聊过什么时调用：按关键词在聊天记录里往前翻，" +
+            "会按时间远近与话题给回那段时间的摘要和关键原句。说「让我想想/我记得你说过」之前先调它，" +
+            "别凭空编对方说过的话。"
+
+    private const val MEMORIZE_CONTRAST =
+        "和 recall 的区别：recall 翻的是你**记下来的事**（长期记忆库），" +
+            "memorize 翻的是**聊天记录本身**（当时的原话与话题）。"
 
     private const val WEB_SEARCH_DESCRIPTION =
         "需要最新事实、新闻、价格、版本号、你不确定的信息时调用；纯聊天、或你本来就知道的常识不要调用。"
@@ -245,6 +257,17 @@ object ServerToolCatalog {
         }
     """
 
+    private const val MEMORIZE_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "query": {"type": "string", "description": "想找什么，关键词或一句话，例如「怕冷」「上次说的那家店」"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 8, "description": "最多想起几条，默认 3"}
+          },
+          "required": ["query"]
+        }
+    """
+
     private const val WEB_SEARCH_PARAMETERS = """
         {
           "type": "object",
@@ -361,6 +384,7 @@ object ServerToolCatalog {
         ToolSpec(DIARY, DIARY_DESCRIPTION, DIARY_PARAMETERS.trimIndent(), DIARY_CONTRAST),
         ToolSpec(REMEMBER, REMEMBER_DESCRIPTION, REMEMBER_PARAMETERS.trimIndent(), REMEMBER_CONTRAST),
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
+        ToolSpec(MEMORIZE, MEMORIZE_DESCRIPTION, MEMORIZE_PARAMETERS.trimIndent(), MEMORIZE_CONTRAST),
         ToolSpec(WEB_SEARCH, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS.trimIndent()),
         ToolSpec(WEB_FETCH, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS.trimIndent()),
         ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
@@ -415,6 +439,17 @@ object ServerToolCatalog {
         lines += "- 对方可能发图片：图片本身你没有逐像素看，但表情会以附件形式发出；" +
             "语音用 listen、视频用 watch 才谈得上「听过/看过」，没调用就不要说听过看过。"
         lines += "- 只有真的调用过工具，才能说「我查了」「我记住了」；没调用就说不知道。"
+        // 0.15 评测发现的真实问题：模型会说「我记住了」却不调 remember。
+        if (specs.any { it.name == REMEMBER }) {
+            lines += "- 对方明确让你记住某件事（「记住…」「别忘了…」「以后要…」）时，**必须调用 `remember`**，" +
+                "再说一句短的确认；只回「好，我记住了」= 什么也没记住。"
+        }
+        if (specs.any { it.name == RECALL || it.name == MEMORIZE }) {
+            lines += "- 想不起以前聊过的事时，先调用 `memorize`（翻聊天记录）或 `recall`（翻你记下的长期记忆），" +
+                "别凭空编对方说过的话。"
+        }
+        lines += "- 不要写旁白或动作（「沉默了一会儿」「顿了顿」「笑了笑」「（他沉默）」），只写说出口的话。"
+        lines += "- 工具调用要按约定格式给：直接调用工具，不要在正文里写 `<tool_call>` / `<tool_code>` / `<tool>` 这类标签。"
         return lines.joinToString("\n")
     }
 

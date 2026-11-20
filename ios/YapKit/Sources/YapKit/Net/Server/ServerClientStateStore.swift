@@ -95,6 +95,23 @@ public final class ServerSyncStateStore {
         public static func mediaMeta(_ mediaId: String) -> String {
             "server.media.meta.\(mediaId)"
         }
+
+        /// 本地落盘文件的 sha256（0.15）：`server.media.localhash.<mediaId>`。
+        ///
+        /// 为什么记它而不是只靠文件名里的短哈希：文件名只带前 16 位（够区分内容，不够校验）。
+        /// 下载落地时把服务端声明的 sha256 记在这里，下次「已有文件就复用」之前先复核一遍
+        /// —— 本机文件被别的路径改坏/截断时能发现并重新下载，而不是把坏字节当缓存。
+        /// 老数据没有这一行 → 复用不校验（旧数据兼容）。
+        public static func mediaLocalHash(_ mediaId: String) -> String {
+            "server.media.localhash.\(mediaId)"
+        }
+
+        /// 服务端主动消息失败记录（0.15）：整段 JSON 数组存一行。
+        ///
+        /// 为什么不是一张新表：这是**诊断数据**（服务端专有，客户端只读），
+        /// 不需要按字段查询，也不需要与 Android 的 Room schema 对齐；
+        /// 与 `ServerMediaMetaStore` 同一个取舍（`server_sync_state` 本来就是 key-value）。
+        public static let proactiveFailures = "server.proactive_failures"
     }
 
     private let database: SQLiteDatabase

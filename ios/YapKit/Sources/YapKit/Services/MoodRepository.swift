@@ -45,6 +45,9 @@ public final class MoodRepository {
         label: String,
         intensity: Int? = nil,
         reason: String? = nil,
+        valence: Int? = nil,
+        arousal: Int? = nil,
+        dominance: Int? = nil,
         now: Int64? = nil
     ) -> MoodState? {
         let at = now ?? self.now()
@@ -53,7 +56,14 @@ public final class MoodRepository {
         let word = MoodLexicon.normalize(label)
         let strength = min(max(intensity ?? max(previous.intensity, 2), 1), 5)
         let cleanReason = String((reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
-        let dimensions = MoodDimensions.fromLegacy(label: word, intensity: strength)
+        // 0.15：模型可以连三维一起给（「有点委屈，愉快度 -2」比只给一个词准）；
+        // 给了几维就信几维，缺的维度按词表推。**不限制同一轮再改**：以最后一次为准。
+        let legacy = MoodDimensions.fromLegacy(label: word, intensity: strength)
+        let dimensions = MoodDimensions(
+            valence: valence.map(MoodDimensions.clampValence) ?? legacy.valence,
+            arousal: arousal.map(MoodDimensions.clampArousal) ?? legacy.arousal,
+            dominance: dominance.map(MoodDimensions.clampDominance) ?? legacy.dominance
+        )
         let next = MoodState(
             label: word, intensity: strength, reason: cleanReason,
             updatedAt: at, dimensions: dimensions

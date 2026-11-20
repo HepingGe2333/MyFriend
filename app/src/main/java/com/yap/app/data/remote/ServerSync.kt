@@ -6,6 +6,7 @@ import com.yap.app.data.local.MessageRole
 import com.yap.app.data.local.MessageStatus
 import com.yap.app.data.local.PersonaEntity
 import com.yap.app.domain.AttachmentsCodec
+import com.yap.app.domain.MediaHashes
 import com.yap.app.domain.MessageAttachment
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -388,11 +389,14 @@ object ServerMergePlan {
                 ?: local?.mime
                 ?: DEFAULT_ATTACHMENT_MIME
             val serverMediaId = entry?.serverMediaId ?: ServerMediaRef.idOf(raw)
+            // 0.15：下载校验过的 sha256 记在附件上（下次命中本地文件时复检坏副本）。
+            val sha256 = MediaHashes.normalize(entry?.sha256) ?: local?.sha256
             if (local != null && (local.isAudioOrVideo || local.isSticker)) {
                 local.copy(
                     uri = uri,
                     mime = local.mime.ifBlank { mime },
-                    serverMediaId = serverMediaId ?: local.serverMediaId
+                    serverMediaId = serverMediaId ?: local.serverMediaId,
+                    sha256 = sha256
                 )
             } else {
                 MessageAttachment(
@@ -402,7 +406,8 @@ object ServerMergePlan {
                     height = local?.height ?: 0,
                     kind = entry?.kind ?: local?.kind,
                     durationMs = local?.durationMs,
-                    serverMediaId = serverMediaId ?: local?.serverMediaId
+                    serverMediaId = serverMediaId ?: local?.serverMediaId,
+                    sha256 = sha256
                 )
             }
         }

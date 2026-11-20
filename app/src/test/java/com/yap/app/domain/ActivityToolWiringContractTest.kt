@@ -78,7 +78,10 @@ class ActivityToolWiringContractTest {
     fun `提示词与人格展示都读 activityJson`() {
         val chat = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
         assertTrue(chat.contains("PersonaActivityCodec.decode(persona.activityJson)"))
-        assertTrue(chat.contains("PromptBuilder.system("))
+        // 0.15 上下文装配 v2 把「完整设定」与「当前状态」拆开拼，两者都经过 PromptBuilder。
+        assertTrue(
+            chat.contains("PromptBuilder.system(") || chat.contains("PromptBuilder.personaAndTools(")
+        )
         val cardRepo = source("src/main/java/com/yap/app/data/repo/PersonaCardRepository.kt")
         assertTrue(cardRepo.contains("PromptBuilder.base("))
         val editor = source("src/main/java/com/yap/app/ui/screens/persona/PersonaEditorScreen.kt")

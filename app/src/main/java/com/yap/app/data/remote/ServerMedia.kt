@@ -1,6 +1,9 @@
 package com.yap.app.data.remote
 
 import com.yap.app.domain.AudioVideoKind
+import com.yap.app.domain.MediaKinds
+import com.yap.app.domain.MediaTypeRejection
+import com.yap.app.domain.MediaTypes
 import com.yap.app.domain.AudioVideoPolicy
 import com.yap.app.domain.MediaRejection
 import com.yap.app.domain.MessageAttachment
@@ -8,6 +11,7 @@ import kotlinx.serialization.Serializable
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import java.io.File
 import java.net.URI
+import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -31,6 +35,61 @@ data class ServerMedia(
     /** 同内容已存在时服务端会复用旧条目；缺省按「新建」处理。 */
     val created: Boolean = true
 )
+
+/**
+ * 一次 `/v1/media/{id}` 下载的**完整结果**：字节 + 服务端声明的哈希。
+ *
+ * [sha256] 来自响应头 `ETag`（服务端按内容寻址，ETag 就是 `"<sha256>"`）。
+ * 也可以由调用方在别处拿到（上传响应、`/v1/backup` 的 `media[].sha256`）后填进
+ * `ServerAttachmentRef.expectedSha256`；两者都参与校验，见 `ServerMediaMaterializer`。
+ */
+data class ServerMediaDownload(
+    val bytes: ByteArray,
+    /** 服务端声明的 sha256（64 位小写 hex）；没有/格式不对时是 null。 */
+    val sha256: String? = null
+) {
+    // ByteArray 的 data class equals 是引用比较；测试里按内容断言更直观。
+    override fun equals(other: Any?): Boolean {
+        if (this === other) return true
+        if (other !is ServerMediaDownload) return false
+        return bytes.contentEquals(other.bytes) && sha256 == other.sha256
+    }
+
+    override fun hashCode(): Int = 31 * bytes.contentHashCode() + (sha256?.hashCode() ?: 0)
+}
+
+/**
+ * 服务端媒体 DTO 的类型校验（0.15）。
+ *
+ * 规则：**声明的 kind/mime 必须能对上，不认识就拒绝**。
+ * - kind 非空 → 必须是 `CHAT_IMAGE/PERSONA_AVATAR/USER_AVATAR/STICKER/AUDIO/VIDEO`；
+ * - mime 非空 → 必须能判定出语义族；两者都有时还必须同族；
+ * - 服务端旧版本可能只回其中一个（历史响应缺 mime），缺失的一侧不拦——那是兼容，不是猜：
+ *   真正决定落盘目录的是「已有附件元数据 / 字节嗅探 / 强制用途」，DTO 的职责只是别撒谎。
+ *
+ * @return 拒绝原因；`null` 表示这个 DTO 的类型声明可用。
+ */
+fun serverMediaTypeRejection(kind: String?, mime: String?): MediaTypeRejection? {
+    val rawKind = kind?.trim().orEmpty()
+    if (rawKind.isNotEmpty()) {
+        if (MediaTypes.familyOfKind(rawKind) == null) return MediaTypeRejection.UNKNOWN_KIND
+        if (rawKind.uppercase(Locale.ROOT) !in MediaKinds.serverKinds) {
+            // 附件 kind（IMAGE/AVATAR）不能被服务端当成「用途」：用途只有六种细分值。
+            return MediaTypeRejection.UNKNOWN_KIND
+        }
+        // 服务端旧版本/某些代理只回 kind 不回 mime：缺失的一侧不拦（兼容，不是猜）。
+        // 真正决定落盘目录的是「已有附件元数据 / 字节嗅探 / 强制用途」，DTO 只负责别撒谎。
+        if (mime.isNullOrBlank()) return null
+        // kind 明确时走统一判定（头像收 image/png 这类「族不同但白名单允许」的情况在那边处理）。
+        return MediaTypes.rejection(rawKind, mime)
+    }
+    val canonical = MediaTypes.canonicalMime(mime) ?: return null
+    return if (MediaTypes.familyOfMime(canonical) == null) {
+        MediaTypeRejection.UNSUPPORTED_MIME
+    } else {
+        null
+    }
+}
 
 /**
  * 客户端可以上传的媒体用途（与 `agentd` 的 `MediaKind` 逐字一致）。

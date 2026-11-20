@@ -9,6 +9,7 @@ import com.yap.agentd.proactive.ActivityState
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.tools.ServerToolCatalog
 import com.yap.agentd.tools.ToolExecutor
+import com.yap.app.domain.ExperienceContract
 import java.time.Clock
 
 /**
@@ -22,10 +23,12 @@ import java.time.Clock
  * 第 1 轮：messages + tools[] → 模型可能同时给文字和 tool_calls
  *          → 每个 tool_call 真的执行（[ToolExecutor]），emit `tool` 事件
  *          → assistant(tool_calls) + tool(结果) 追加进 messages
- * 第 2 轮：再问一次 …… 最多 [MAX_TOOL_ROUNDS] 轮
+ * 第 2 轮：再问一次 …… 最多 5 轮（模型/调用方可指定，硬上限 15）
  * ```
- * 三条刻意的边界：
- * - **最多 3 轮**：再多只会在「查了又查」上烧钱；第 3 轮之后不再给 tools，逼它用现有信息说话；
+ * 四条刻意的边界：
+ * - **默认 5 轮、上限 15 轮**（0.15，`ExperienceContract.clampToolRounds`）：默认值覆盖
+ *   「查一下 → 再确认一下 → 顺手记一笔 → 说话」；模型/调用方可以按任务复杂度要更多，
+ *   但最后一轮不再给 tools，逼它用现有信息说话；
  * - **超时停止**：整个回路共享 [deadlineMs]（默认 2 分钟），到点就带着已生成的文字收尾；
  * - **`stay_silent` 立即结束**：这一轮不落 assistant 消息（由 `ChatService` 处理），
  *   也不继续问模型（「不想说话」再问一次只会得到一句敷衍）。
@@ -43,7 +46,14 @@ class LlmReplyGenerator(
     private val promptBuilder: ChatPromptBuilder = defaultPromptBuilder(clock.zone, toolEnabled),
     private val tools: ToolExecutor = ToolExecutor(store, clock = clock),
     /** 工具回路的硬超时（毫秒）；到点停止继续问模型，用已经拿到的文字收尾。 */
-    private val deadlineMs: Long = DEFAULT_DEADLINE_MS
+    private val deadlineMs: Long = DEFAULT_DEADLINE_MS,
+    /**
+     * 0.15：服务端/测试指定的工具轮数（`null` = 用 `ExperienceContract.DEFAULT_TOOL_ROUNDS`）。
+     *
+     * 优先级：`ReplyRequest.requestedToolRounds`（模型/调用方这一轮指定的）> 本参数 > 默认 5；
+     * 最终一律过 `ExperienceContract.clampToolRounds` 夹到 1..15。
+     */
+    private val toolRounds: Int? = null
 ) : ReplyGenerator {
 
     override fun generate(request: ReplyRequest, emit: (SseEvent) -> Unit): ReplyOutcome {
@@ -51,6 +61,8 @@ class LlmReplyGenerator(
         val config = llm.config()
         val persona = store.persona(request.personaId)
             ?: throw IllegalStateException("会话引用了不存在的人格：${request.personaId.take(64)}")
+        // 0.15：工具轮数的唯一口径（默认 5 / 模型可指定 / 上限 15）。
+        val maxRounds = ExperienceContract.clampToolRounds(request.requestedToolRounds ?: toolRounds)
         val now = clock.millis()
         val systemMessages = promptBuilder.chatMessages(
             persona = persona,
@@ -76,11 +88,11 @@ class LlmReplyGenerator(
 
         var round = 0
         var sentMultimodal = false
-        while (round < MAX_TOOL_ROUNDS) {
+        while (round < maxRounds) {
             round += 1
             if (clock.millis() > deadline) break
             // 最后一轮不再给 tools：让它只能用已经查到的信息说话，而不是无限查下去。
-            val useTools = toolEnabled && round < MAX_TOOL_ROUNDS
+            val useTools = toolEnabled && round < maxRounds
             val turn = try {
                 llm.chat(
                     config = config,
@@ -197,12 +209,11 @@ class LlmReplyGenerator(
             }
 
         /**
-         * 工具回路最多几轮。
+         * 工具回路的默认轮数（0.15 起 5 轮，唯一口径在 `:agentcore`）。
          *
-         * 3 = 「查一下 → 再确认一下 → 说话」。超过 3 轮基本都是模型在原地打转，
-         * 而每一轮都是一次完整的 completion（`max_tokens` 16384），成本肉眼可见。
+         * 保留这个常量只是为了老调用方/测试，值不再自己写死一份。
          */
-        const val MAX_TOOL_ROUNDS: Int = 3
+        const val MAX_TOOL_ROUNDS: Int = ExperienceContract.DEFAULT_TOOL_ROUNDS
 
         /** 整个工具回路的硬超时：2 分钟（单次请求的超时仍是 5 分钟，见 `LlmClient`）。 */
         const val DEFAULT_DEADLINE_MS: Long = 2 * 60 * 1000L

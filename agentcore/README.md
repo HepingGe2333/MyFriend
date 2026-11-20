@@ -12,7 +12,7 @@ agentcore/
 │                                         each iOS target exports a static AgentCoreKit.framework
 └── src/
     ├── commonMain/kotlin/com/yap/app/
-    │   ├── domain/                       47 files — every decision both platforms must share
+    │   ├── domain/                       52 files — every decision both platforms must share
     │   └── core/json/Json.kt              1 file — recursive-descent JSON parser/encoder
     ├── jvmMain/kotlin/com/yap/app/domain/
     │   ├── AgentTickLock.kt               java.util.concurrent.atomic
@@ -23,8 +23,8 @@ agentcore/
     │   └── PlatformTime.jvm.kt            actual: System.currentTimeMillis / TimeZone
     ├── iosMain/kotlin/com/yap/app/domain/
     │   └── PlatformTime.ios.kt            actual: NSDate / NSTimeZone
-    ├── commonTest/                        4 files / 42 tests (pure Kotlin; run on JVM)
-    └── jvmTest/                           2 files / 18 tests (JDK APIs + spec/agent-core cases)
+    ├── commonTest/                        5 files / 67 tests (pure Kotlin; run on JVM)
+    └── jvmTest/                           9 files / 112 tests (JDK APIs + spec/agent-core cases)
 ```
 
 Package names now use the renamed `com.yap` namespace, matching `:app` and the iOS `YapKit` module.
@@ -107,10 +107,28 @@ interface AgentCore {
 `InProcessAgentCore` only shapes inputs/outputs and delegates to the existing pure functions
 (`SleepPolicy`, `DeferReply`, `ProactiveLevel`/`MoodBehavior`, `ToolArgClamp`). No rule is duplicated.
 
+## 0.15 shared experience contract (`ExperienceContract`)
+
+0.15 把 Android / iOS 各自实现、靠人肉对齐的五组**纯规则**下沉到 `commonMain`。这些文件只新增、
+不删除任何现有类；`app/`、`ios/`、`agentd/` 的迁移由后续 agent 做，迁移时以这里的常量/公式为准。
+
+| File | What it now owns | Replaces / aligns with |
+| --- | --- | --- |
+| `ExperienceContract.kt` | 上下文预算（1M 窗口 − 16,384 输出，1 token ≈ 2 字符）、六段预算 `plan()`（完整设定+工具 / 长期 / 短期 / 状态 / 主题 / 剩余历史）、打字延迟与连发间隔（均值正比于长度 + ±35% 注入随机）、工具轮数（默认 5、上限 15、`clampToolRounds`） | Android `ApiDefaults` / `ExperienceRhythm` / `ChatRepository.MAX_TOOL_ROUNDS`；iOS `ApiDefaults` / `TypingDelay` / `ChatService.maxToolRounds` |
+| `BlockProtocol.kt` | 拉黑 §9 的七字段 `Proposal` 编解码、`pending_confirmation` / `blocked` / `rejected` 三种返回形状、10 分钟过期判断 | Android `BlockPolicy` / `BlockProposal`；agentd 的拉黑协议 |
+| `PromptContract.kt` | 段标题（六段人设来自 `PersonaPromptScaffold`，新增工具能力 / 心情 / 反 AI / 备忘录 / 心理活动）、工具行格式、心情三维、边界、时间格式（`HH:mm` / `yyyy-MM-dd` / `UTC±HH:mm`） | Android `PromptBuilder` / `ToolProtocol` / `MoodDimensions` / `SessionMemory`；iOS `PromptBuilder` / `ToolProtocol` / `AntiAIPrompt` |
+| `PromptLanguage.kt` | `PromptLanguage`（ZH/EN/…）、`directive()`（按**人格**语言，不跟界面语言）、六个核心段的双语标题与模板、`moodLine` / `mentalActivityLine` | 页面语言驱动的 `LanguageDirective`（保留，迁移后再切） |
+| `MemoryContract.kt` | 检索线索（最近用户消息 ≤300 字）、长期 ≤500 / 短期 ≤200 / 主题每段 ≤120 × 12、`# 你的备忘录` + `## 长期记忆` / `## 短期记忆` / `## 对话主题` 注入、单条记忆 ≤300 字 × 14 条 | Android `MemoryRepository` / `SessionMemoryPolicy`；iOS `MemoryRepository` / `ChatService` |
+
+Swift 侧同一个 Kotlin 对象导出为 `.shared`；**Kotlin/Native 不导出默认参数**，所以带默认值的
+函数在 Swift 里要显式传全部参数（例如 `typingDelayMillis(length:moodAdjustment:random:)`，
+`plan(contextWindowTokens:maxOutputTokens:)`）。`jvmTest/SharedContractParityTest` 会逐字比对
+现有实现里的标题/数字，迁移完成后改为引用共享常量也能通过。
+
 ## Build & test
 
 ```bash
-# JVM tests (commonTest + jvmTest) — still the single entry point, 60 tests
+# JVM tests (commonTest + jvmTest) — still the single entry point, 179 tests
 ./gradlew :agentcore:test
 
 # JVM jar + all iOS framework slices (no test execution)
@@ -125,8 +143,8 @@ scripts that call `:agentcore:test` keep working. Test source sets:
 
 | Source set | Files | Tests | Content |
 | --- | --- | --- | --- |
-| `commonTest` | 4 | 42 | URL-policy hardening table, JSON/codec limits, and the KMP rewrite guards (`KmpCommonDecisionsTest`: vector encoding/topK, sleep clock text, defer clamp, Chinese time hints) |
-| `jvmTest` | 2 | 18 | `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json` contract through `AgentCore`, protocol pinning, JSON codec round-trips, malformed-response rejection) + `LocalTimeMathParityTest` (calendar arithmetic vs `java.util.Calendar`, default zone and DST) |
+| `commonTest` | 5 | 67 | URL-policy hardening table, JSON/codec limits, and the KMP rewrite guards (`KmpCommonDecisionsTest`: vector encoding/topK, sleep clock text, defer clamp, Chinese time hints) |
+| `jvmTest` | 9 | 112 | `AgentCoreSpecTest` (the shared `spec/agent-core/cases/*.json` contract through `AgentCore`, protocol pinning, JSON codec round-trips, malformed-response rejection) + `LocalTimeMathParityTest` (calendar arithmetic vs `java.util.Calendar`, default zone and DST) + the 0.15 contract tests (`ExperienceContractTest`, `BlockProtocolTest`, `PromptContractTest`, `PromptLanguageContractTest`, `MemoryContractTest`) + `SharedContractParityTest` (source-level parity with the still-unmigrated Android/iOS/agentd implementations) |
 
 ## iOS framework (`AgentCoreKit`)
 

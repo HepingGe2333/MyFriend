@@ -1258,6 +1258,12 @@ interface SessionMemoryDao {
     @Query("UPDATE session_memory SET longSummary = :longSummary, longUserCount = :count, longUpdatedAt = :at, updatedAt = :at WHERE sessionId = :sessionId")
     suspend fun updateLong(sessionId: String, longSummary: String, count: Int, at: Long)
 
+    @Query("UPDATE session_memory SET topicsJson = :topicsJson, topicUserCount = :count, topicUpdatedAt = :at, updatedAt = :at WHERE sessionId = :sessionId")
+    suspend fun updateTopics(sessionId: String, topicsJson: String, count: Int, at: Long)
+
+    @Query("UPDATE session_memory SET topicsJson = NULL, topicUserCount = 0, topicUpdatedAt = NULL WHERE sessionId = :sessionId")
+    suspend fun clearTopics(sessionId: String)
+
     @Query("DELETE FROM session_memory WHERE sessionId = :sessionId")
     suspend fun deleteBySession(sessionId: String)
 

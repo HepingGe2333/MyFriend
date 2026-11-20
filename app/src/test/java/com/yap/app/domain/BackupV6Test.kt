@@ -25,9 +25,11 @@ class BackupV6Test {
     // ------------------------------------------------------------------
 
     @Test
-    fun `格式版本是 v6 且五种媒体 kind 都登记`() {
-        assertEquals(6, BACKUP_FORMAT_VERSION)
-        assertEquals(6, BackupBundle().formatVersion)
+    fun `格式版本是 v7 且五种媒体 kind 都登记`() {
+        // 0.15 把版本抬到 7（v7 增量见 BackupCodecTest / BackupV7Test）：
+        // 这里只继续钉「媒体 kind 表与上限」，版本号本身是 v7 测试的一部分。
+        assertEquals(7, BACKUP_FORMAT_VERSION)
+        assertEquals(7, BackupBundle().formatVersion)
         assertEquals(
             setOf(
                 BackupMediaKind.PERSONA_AVATAR,
@@ -451,7 +453,7 @@ class BackupV6Test {
             val success = result as? BackupDecodeResult.Success
             assertTrue("样本 ${file.name} 读不出来：$result", success != null)
             val bundle = success!!.bundle
-            assertEquals("读旧备份也按当前格式返回", 6, bundle.formatVersion)
+            assertEquals("读旧备份也按当前格式返回", 7, bundle.formatVersion)
             assertFalse("样本 ${file.name} 不该带密钥字段", BackupCodec.containsSecretField(raw))
             if (Regex(""".*-v[1-5]\.json""").matches(file.name)) {
                 assertTrue("${file.name} 是老格式，不该凭空多出 stickers", bundle.stickers.isEmpty())

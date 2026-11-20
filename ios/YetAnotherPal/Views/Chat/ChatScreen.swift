@@ -196,9 +196,16 @@ struct ChatScreen: View {
         // 服务端模式：首次全量同步 / 每 5 分钟增量同步写库之后，聊天页也要立刻看到
         //（否则要等它自己 4 秒一拍，或者「进来时还没同步完」就会一直空着）。
         .onChange(of: env.serverDataVersion) { _ in
-            // 0.14.1 §8：`message.created` 一到就重读缓存直接上屏；同一条事件也会让
-            // 服务端撤掉 typing（`ServerEventService` 已经把输入状态清掉）。
-            model.reloadMessages(preservingLoadedRange: true)
+            // 0.15：服务端模式不再「每次收到消息就整页重读」——事件流的新消息先经转发
+            // 钩子逐条追加，再用缓存里的 `pageAfter` 兜住同步/落地路径；两者都过
+            // `ServerBubbleFeed` 去重，同一条只上屏一次。本地模式保持原来的整页重读。
+            if env.serverModeActive {
+                model.applyServerIncomingBubbles(env.serverIncomingBubbles)
+                model.pullNewerServerMessagesFromCache()
+                model.refreshContext()
+            } else {
+                model.reloadMessages(preservingLoadedRange: true)
+            }
             model.refreshServerTyping()
         }
         // 服务端模式：typing.started / typing.stopped 只改输入指示，不动消息列表。
@@ -661,6 +668,8 @@ struct ChatScreen: View {
                 .fill(Color.primary.opacity(0.06))
                 .frame(height: 0.5)
 
+            blockCountdownBar
+
             sendFailureBar
 
             sleepHintBar
@@ -703,6 +712,38 @@ struct ChatScreen: View {
             .padding(.bottom, 10)
         }
         .background(.regularMaterial)
+    }
+
+    /// 拉黑期间输入框上方的倒计时（`spec/experience/README.md` §2）。
+    ///
+    /// 文案是 `until` 与 `now` 的纯函数（`BlockCountdown.text`）：这里用 `TimelineView`
+    /// 每秒重画一次，所以真的会走字，而不是停在进页面那一刻；到期后函数返回 nil，
+    /// 这一行自己消失（拉黑到期自动解除，没有「解除」按钮、也没有确认弹窗）。
+    ///
+    /// 页面不在时 `TimelineView` 自己停，不需要在 ViewModel 里再养一条定时器。
+    @ViewBuilder
+    private var blockCountdownBar: some View {
+        if let until = model.blockUntil {
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                let now = Int64((context.date.timeIntervalSince1970 * 1000).rounded())
+                if let text = BlockCountdown.text(until: until, now: now) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "hand.raised")
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                        Text(text)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.primary.opacity(0.04))
+                    .accessibilityLabel(Text(text))
+                }
+            }
+        }
     }
 
     /// 发送被拒（没落库）时的提示：草稿与图片都还在，点一下就能重试。

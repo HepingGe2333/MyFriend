@@ -17,56 +17,82 @@ final class MessageRhythmTests: XCTestCase {
         )
     }
 
-    // MARK: - 打字延迟（§5）
+    // MARK: - 打字延迟（0.15：均值 + ±35% 随机波动）
 
-    func testTypingDelayUsesTheSpecifiedFormula() {
-        // 0.4 + 40×0.025 = 1.4 秒（唤醒度 2.5 时修正为 0）。
+    /// 固定随机源：0.5 = 不抖动（正好等于均值）。
+    private let neutral: () -> Double = { 0.5 }
+
+    func testTypingDelayUsesSharedMean() {
+        // 共享契约：clamp(0.3 + 字数×0.018, 0.3, 2.2) + 心情修正，再乘 ±35%。
+        // 唤醒度 2 → (2.5 − 2) × 0.15 = +0.075 秒。
         let base = TypingDelay.seconds(
             charCount: 40,
             mood: MoodState(label: "平静", intensity: 2,
-                            dimensions: MoodDimensions(valence: 0, arousal: 2, dominance: 3))
+                            dimensions: MoodDimensions(valence: 0, arousal: 2, dominance: 3)),
+            random: neutral
         )
-        XCTAssertEqual(base, 1.4 + 0.075, accuracy: 0.0001,
-                       "唤醒度 2 比基准 2.5 低半格 → +0.075 秒")
+        let expected = ExperienceContract.shared.typingBaseSeconds(length: 40)
+            + TypingDelay.moodAdjustment(mood(arousal: 2))
+        XCTAssertEqual(base, expected, accuracy: 0.0001)
 
-        // `MoodDimensions.arousal` 是整数，基准 2.5 用「2 级与 3 级的中点」表达：
-        // 这里直接验证公式本体（0.4 + 40×0.025 = 1.4），修正项在下面的用例里单测。
-        let neutral = TypingDelay.seconds(charCount: 40, mood: mood(arousal: 2))
-            - TypingDelay.moodAdjustment(mood(arousal: 2))
-        XCTAssertEqual(neutral, 1.4, accuracy: 0.0001, "公式本体：0.4 + 40×0.025")
+        // 均值为 0 心情修正时，就是共享契约的均值本体。
+        let calm = mood(arousal: 2)
+        let meanOnly = TypingDelay.seconds(charCount: 40, mood: calm, random: neutral)
+            - TypingDelay.moodAdjustment(calm)
+        XCTAssertEqual(meanOnly,
+                       ExperienceContract.shared.typingBaseSeconds(length: 40),
+                       accuracy: 0.0001, "公式本体必须与共享契约同式")
     }
 
-    func testTypingDelayIsClamped() {
-        let shortest = TypingDelay.seconds(charCount: 0, mood: mood(arousal: 5))
-        XCTAssertGreaterThanOrEqual(shortest, TypingDelay.minSeconds)
-        XCTAssertEqual(shortest, TypingDelay.minSeconds, accuracy: 0.0001)
+    func testTypingDelayJittersWithinThirtyFivePercent() {
+        let mean = ExperienceContract.shared.typingBaseSeconds(length: 60)
+            + TypingDelay.moodAdjustment(mood(arousal: 2))
+        let fastest = TypingDelay.seconds(charCount: 60, mood: mood(arousal: 2), random: { 0 })
+        let slowest = TypingDelay.seconds(charCount: 60, mood: mood(arousal: 2), random: { 1 })
+        XCTAssertEqual(fastest, mean * 0.65, accuracy: 0.0001)
+        XCTAssertEqual(slowest, mean * 1.35, accuracy: 0.0001)
+        // 坏随机源按 0.5（均值）处理，不能让节奏跑飞。
+        let nan = TypingDelay.seconds(charCount: 60, mood: mood(arousal: 2), random: { .nan })
+        XCTAssertEqual(nan, mean, accuracy: 0.0001)
+        let outOfRange = TypingDelay.seconds(charCount: 60, mood: mood(arousal: 2), random: { 9 })
+        XCTAssertEqual(outOfRange, mean * 1.35, accuracy: 0.0001)
+    }
 
-        // 字数上限 120 → 0.4 + 3.0 + 最慢修正 0.375 = 3.775 秒（还没触到 4.0 的上界）。
-        let longest = TypingDelay.seconds(charCount: 10_000, mood: mood(arousal: 0))
-        XCTAssertEqual(longest, 3.775, accuracy: 0.0001)
-        XCTAssertLessThanOrEqual(longest, TypingDelay.maxSeconds)
+    func testTypingDelayIsPositiveAndMeanGrowsWithLength() {
+        let shortest = TypingDelay.seconds(charCount: 0, mood: mood(arousal: 5), random: neutral)
+        XCTAssertGreaterThanOrEqual(shortest, ExperienceContract.TYPING_MIN_SECONDS)
+        XCTAssertLessThanOrEqual(shortest, ExperienceContract.TYPING_MAX_SECONDS)
+        XCTAssertLessThan(
+            TypingDelay.seconds(charCount: 5, mood: mood(), random: neutral),
+            TypingDelay.seconds(charCount: 100, mood: mood(), random: neutral)
+        )
+    }
+
+    func testServerAuthoritativeModeAddsNoLocalDelay() {
+        XCTAssertEqual(
+            TypingDelay.seconds(charCount: 40, mood: MoodState(),
+                                serverAuthoritative: true, random: neutral), 0
+        )
     }
 
     func testLowArousalIsSlowerAndHighArousalIsFaster() {
-        let low = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 0))
-        let mid = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 2))
-        let high = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 5))
+        let low = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 0), random: neutral)
+        let mid = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 2), random: neutral)
+        let high = TypingDelay.seconds(charCount: 30, mood: mood(arousal: 5), random: neutral)
         XCTAssertGreaterThan(low, mid)
         XCTAssertGreaterThan(mid, high)
     }
 
-    func testTiredLabelSlowsTypingFurther() {
-        let calm = TypingDelay.seconds(charCount: 20, mood: mood(label: "平静", arousal: 2))
-        let tired = TypingDelay.seconds(charCount: 20, mood: mood(label: "有点累", arousal: 2))
-        XCTAssertGreaterThan(tired, calm)
-    }
-
-    func testTypingDelayWithoutDimensionsStillWorks() {
-        let value = TypingDelay.seconds(
-            charCount: 20, mood: MoodState(label: "平静", intensity: 3)
+    func testMoodAdjustmentIsClampedToSharedLimit() {
+        for arousal in -5...12 {
+            let adjustment = TypingDelay.moodAdjustment(mood(arousal: arousal))
+            XCTAssertLessThanOrEqual(abs(adjustment),
+                                     ExperienceContract.MAX_MOOD_ADJUSTMENT_SECONDS + 0.0001)
+        }
+        XCTAssertGreaterThan(
+            TypingDelay.moodAdjustment(mood(label: "有点累", arousal: 2)),
+            TypingDelay.moodAdjustment(mood(label: "平静", arousal: 2))
         )
-        XCTAssertGreaterThanOrEqual(value, TypingDelay.minSeconds)
-        XCTAssertLessThanOrEqual(value, TypingDelay.maxSeconds)
     }
 
     func testNanosNeverNegative() {
@@ -75,21 +101,43 @@ final class MessageRhythmTests: XCTestCase {
         XCTAssertEqual(TypingDelay.nanos(seconds: 1.5), 1_500_000_000)
     }
 
-    // MARK: - 连发间隔（§4）
+    // MARK: - 连发间隔（0.15：共享契约 + 随机波动）
 
-    func testGapStaysWithinEightHundredMillisToTwoPointFiveSeconds() {
-        for count in [1, 20, 60, 119, 120, 10_000] {
-            for arousal in [0, 2, 5] {
-                let gap = MessageRhythm.gapSeconds(charCount: count, mood: mood(arousal: arousal))
-                XCTAssertGreaterThanOrEqual(gap, MessageRhythm.minGapSeconds, "count=\(count)")
-                XCTAssertLessThanOrEqual(gap, MessageRhythm.maxGapSeconds, "count=\(count)")
-            }
-        }
-        // 短句更利落。
-        XCTAssertLessThan(
-            MessageRhythm.gapSeconds(charCount: 2, mood: mood()),
-            MessageRhythm.gapSeconds(charCount: 120, mood: mood())
-        )
+    func testGapUsesSharedBurstCurve() {
+        // 均值 0.2 + 字数×0.012，夹到 0.2–1.5；随机 0.5 时不抖动。
+        let short = MessageRhythm.gapSeconds(charCount: 2, mood: mood(), random: neutral)
+        let long = MessageRhythm.gapSeconds(charCount: 120, mood: mood(), random: neutral)
+        XCTAssertEqual(short,
+                       ExperienceContract.shared.burstGapBaseSeconds(length: 2)
+                           + MessageRhythm.gapSeconds(charCount: 2, mood: mood(), random: { 0.5 })
+                           - ExperienceContract.shared.burstGapBaseSeconds(length: 2),
+                       accuracy: 0.0001)
+        XCTAssertLessThan(short, long, "短句更利落")
+        // 抖动后的上界 = 均值上限 × 1.35。
+        let slowest = MessageRhythm.gapSeconds(charCount: 10_000, mood: mood(), random: { 1 })
+        XCTAssertEqual(slowest,
+                       ExperienceContract.BURST_GAP_MAX_SECONDS * 1.35, accuracy: 0.0001)
+        let fastest = MessageRhythm.gapSeconds(charCount: 0, mood: mood(), random: { 0 })
+        XCTAssertGreaterThanOrEqual(fastest, ExperienceContract.BURST_GAP_MIN_SECONDS * 0.65 - 0.0001)
+    }
+
+    func testGapMoodAdjustmentMovesSameDirectionAsTyping() {
+        let slow = MessageRhythm.gapSeconds(charCount: 40, mood: mood(arousal: 0), random: neutral)
+        let fast = MessageRhythm.gapSeconds(charCount: 40, mood: mood(arousal: 5), random: neutral)
+        XCTAssertGreaterThan(slow, fast)
+    }
+
+    // MARK: - 工具轮数（0.15）
+
+    func testToolRoundsDefaultsAndClamp() {
+        let contract = ExperienceContract.shared
+        XCTAssertEqual(contract.clampToolRounds(requested: nil), 5)
+        XCTAssertEqual(contract.clampToolRounds(requested: 0), 1)
+        XCTAssertEqual(contract.clampToolRounds(requested: -3), 1)
+        XCTAssertEqual(contract.clampToolRounds(requested: 3), 3)
+        XCTAssertEqual(contract.clampToolRounds(requested: 15), 15)
+        XCTAssertEqual(contract.clampToolRounds(requested: 99), 15)
+        XCTAssertEqual(ChatService.maxToolRounds, ExperienceContract.DEFAULT_TOOL_ROUNDS)
     }
 
     // MARK: - 每条字数（§4）

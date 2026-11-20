@@ -36,7 +36,13 @@ data class PersonaDraft(
     /** 世界预设 JSON；null/空表示没有世界预设（退回纯人设）。 */
     val worldJson: String? = null,
     /** 话风 JSON；null/空表示没学过话风。 */
-    val speechStyleJson: String? = null
+    val speechStyleJson: String? = null,
+    /**
+     * 0.15：这个人的提示词语言（`zh` / `en` …）；null = 产品默认中文。
+     *
+     * 与界面语言无关：用户换成英文界面，中文人格仍然说中文。
+     */
+    val languageTag: String? = null
 )
 
 data class ApiConfigDraft(

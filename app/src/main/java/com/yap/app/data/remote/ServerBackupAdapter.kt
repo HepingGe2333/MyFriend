@@ -56,6 +56,16 @@ object ServerBackupAdapter {
             val missing = current == null || (current is JsonArray && current.isEmpty())
             if (missing) fields[key] = value
         }
+        // 0.15（v7）：服务端把心理活动与会话备忘录放在 `extensions` 里（客户端导出写在顶层）。
+        // 这里把这两段提到顶层，本地导入才能真正落到 `mental_activities` / `session_memory`。
+        // `proactiveFailures` 是服务端诊断数据（客户端没有本地表），按要求继续忽略。
+        val extensions = root["extensions"] as? JsonObject
+        extensions?.forEach { (key, value) ->
+            if (key !in SERVER_CLIENT_SECTIONS) return@forEach
+            val current = fields[key]
+            val missing = current == null || (current is JsonArray && current.isEmpty())
+            if (missing) fields[key] = value
+        }
 
         root["personas"]?.let { fields["personas"] = mapArray(it) { persona ->
             val out = LinkedHashMap(persona)
@@ -111,6 +121,9 @@ object ServerBackupAdapter {
     }
 
     private val SECTIONS = setOf("personas", "memories", "sessions", "messages", "presets")
+
+    /** 服务端 `extensions` 里**客户端 v7 会导入**的两段（其余如 `proactiveFailures` 忽略）。 */
+    private val SERVER_CLIENT_SECTIONS = setOf("mentalActivities", "sessionMemory")
 
     private fun mapArray(element: JsonElement, transform: (JsonObject) -> JsonObject): JsonArray {
         val array = runCatching { element.jsonArray }.getOrNull() ?: return JsonArray(emptyList())

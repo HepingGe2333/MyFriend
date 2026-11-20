@@ -17,6 +17,12 @@ import Foundation
 // 3. **坏数据不崩**：字段缺失/类型不对就整段当没有（Android 的 `runCatching` 同样整段丢掉），
 //    `uri` 为空的条目再过滤掉。
 //
+// 0.15 起 `kind` 与 `mime` 是**必须明确**的协议字段（`MediaType`）：
+// - 新写入一律写 `kind`（普通图片写 `IMAGE`），不再留 null；
+// - 读入时显式 kind 必须是 `IMAGE` / `STICKER` / `AUDIO` / `VIDEO` 之一、且 mime 与它匹配，
+//   否则**拒绝这条附件**（整段按坏数据处理，绝不「猜成图片」）；
+// - 只有 0.13 及更早的数据（没写 kind）才按 mime 推断，属于兼容读取。
+//
 // 图片文件本身存在 App 沙盒（`Application Support/attachments/`），
 // `uri` 是 `file://` 绝对路径 —— 换机/重装就失效，所以二进制**不进备份**。
 // ---------------------------------------------------------------------------
@@ -85,7 +91,15 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         self.mime = mime
         self.width = width
         self.height = height
-        self.kind = kind
+        // 0.15：**显式传入的 kind 归一成规范大写**；没传就保持 nil。
+        //
+        // 为什么不在初始化时补成「按 mime 推断」：0.13 及更早的数据没有 kind，读进来
+        // 必须保持「没写」这个事实（`AttachmentsCodec.decode` 的 legacy 判定、
+        // 以及「旧数据重新编码一个字节都不多」这条兼容性测试都依赖它）。
+        // 新写入的显式 kind 由构造点负责（`image(uri:)` / `audio(...)` / `video(...)` /
+        // 表情附件 / 备份导出时的 `portableAttachments`）。
+        let explicit = kind?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.kind = explicit.isEmpty ? nil : (MediaType.parse(explicit)?.rawValue ?? explicit)
         self.durationMs = durationMs
         self.serverMediaId = serverMediaId
     }
@@ -112,6 +126,17 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
                           kind: videoKind, durationMs: max(0, durationMs))
     }
 
+    /// 一张普通图片（`kind=IMAGE`）。0.15 起新写入不再留 `kind = nil`。
+    public static func image(
+        uri: String,
+        mime: String = MessageAttachment.defaultMime,
+        width: Int = 0,
+        height: Int = 0
+    ) -> MessageAttachment {
+        MessageAttachment(uri: uri, mime: mime, width: width, height: height,
+                          kind: imageKind)
+    }
+
     /// `kind` 归一化（大写、去空白）；nil = 没写。
     public var normalizedKind: String? {
         let trimmed = kind?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
@@ -119,28 +144,34 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
     }
 
     public var isImage: Bool {
-        if normalizedKind == Self.audioKind || normalizedKind == Self.videoKind { return false }
-        return mime.hasPrefix("image/")
+        switch mediaType {
+        // 表情也是图片（渲染按 `isSticker` 先分流，但「这是一张图」这件事仍然成立）。
+        case .image, .sticker: return true
+        case .audio, .video, .avatar: return false
+        // 老数据没写 kind：mime 是图片就当图片。
+        case nil: return mime.lowercased().hasPrefix("image/")
+        }
     }
 
-    /// 一段语音：显式 `kind=AUDIO`，或者 mime 是 `audio/*`（老版本/外部数据只写 mime）。
+    /// 一段语音：显式 `kind=AUDIO` 优先；没写 kind 时按 mime 推断。
+    ///
+    /// 服务端媒体只带 mediaId 时，mime 会被补成默认的 `image/jpeg`，所以**显式 kind
+    /// 必须压过 mime** —— 这是 0.13 音视频能正常渲染的前提，0.15 的校验不会改变它。
     public var isAudio: Bool {
-        if normalizedKind == Self.audioKind { return true }
-        if normalizedKind == Self.stickerKind || normalizedKind == Self.imageKind
-            || normalizedKind == Self.videoKind {
-            return false
+        switch mediaType {
+        case .audio: return true
+        case .image, .sticker, .video, .avatar: return false
+        case nil: return mime.lowercased().hasPrefix("audio/")
         }
-        return mime.lowercased().hasPrefix("audio/")
     }
 
-    /// 一段视频：显式 `kind=VIDEO`，或者 mime 是 `video/*`。
+    /// 一段视频：显式 `kind=VIDEO` 优先；没写 kind 时按 mime 推断。
     public var isVideo: Bool {
-        if normalizedKind == Self.videoKind { return true }
-        if normalizedKind == Self.stickerKind || normalizedKind == Self.imageKind
-            || normalizedKind == Self.audioKind {
-            return false
+        switch mediaType {
+        case .video: return true
+        case .image, .sticker, .audio, .avatar: return false
+        case nil: return mime.lowercased().hasPrefix("video/")
         }
-        return mime.lowercased().hasPrefix("video/")
     }
 
     /// 语音或视频（两者共用「一段媒体」的气泡与上传链路）。
@@ -152,11 +183,13 @@ public struct MessageAttachment: Equatable, Codable, Sendable {
         return Double(durationMs) / 1000
     }
 
-    /// 是不是表情：显式 `kind=STICKER`，或者 mime 是 GIF（老版本/Android 只写 mime）。
+    /// 是不是表情：显式 `kind=STICKER` 优先；没写 kind 时只有 GIF 算表情。
     public var isSticker: Bool {
-        if normalizedKind == Self.stickerKind { return true }
-        guard normalizedKind == nil || normalizedKind == Self.imageKind else { return false }
-        return StickerLimits.isGIFMime(mime)
+        switch mediaType {
+        case .sticker: return true
+        case .image, .audio, .video, .avatar: return false
+        case nil: return StickerLimits.isGIFMime(mime)
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -237,11 +270,15 @@ public enum AttachmentsCodec {
     }
 
     /// 按 mime 推附件种类（解码老数据 / 外部数据时用）。
+    ///
+    /// 与 `MediaType.inferred(fromMime:)` 同一张表：这里只多一层「泛型 image/*」的宽松
+    /// （老代码依赖它把未知图片格式当 IMAGE），严格校验走 `MessageAttachment.kindCheck`。
     public static func kind(forMime mime: String) -> String? {
         switch mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
         case "audio/m4a", "audio/mp4", "audio/mpeg": return MessageAttachment.audioKind
         case "video/mp4", "video/quicktime": return MessageAttachment.videoKind
         case "image/jpeg", "image/png", "image/webp": return MessageAttachment.imageKind
+        case "image/gif": return MessageAttachment.stickerKind
         default: return nil
         }
     }
@@ -256,20 +293,62 @@ public enum AttachmentsCodec {
     }
 
     /// 解码；任何坏数据都返回空数组，**不抛异常、不崩**。
+    ///
+    /// 0.15 起多一道**类型校验**（`MessageAttachment.kindCheck`）：
+    /// - 显式 `kind` 不在 `IMAGE/STICKER/AUDIO/VIDEO` 里 → 整段作废；
+    /// - `mime` 为空、或与 `kind` 不匹配 → 整段作废；
+    /// - 没写 `kind` 的老数据按 mime 推断（`image/gif` → STICKER），认不出来也作废。
+    ///
+    /// 为什么仍然「整段作废」而不是只丢坏的那条：Android 的 `runCatching` 就是整段语义，
+    /// 两端读同一份 `attachmentsJson` 必须得到同一个结果（否则换端后同一条消息的图片
+    /// 会一边有一边没有）。
     public static func decode(_ raw: String?) -> [MessageAttachment] {
+        decodeReport(raw).attachments
+    }
+
+    /// 解码 + 拒绝计数（给「有一条附件没接回来」这类诊断用；界面路径用 `decode`）。
+    public struct DecodeReport: Equatable, Sendable {
+        public var attachments: [MessageAttachment]
+        /// 因为类型不合法被拒掉的条目数（>0 时整段为空）。
+        public var rejected: Int
+        /// 第一条被拒的原因（中文；排查用）。
+        public var rejectionReason: String?
+
+        public init(
+            attachments: [MessageAttachment] = [],
+            rejected: Int = 0,
+            rejectionReason: String? = nil
+        ) {
+            self.attachments = attachments
+            self.rejected = rejected
+            self.rejectionReason = rejectionReason
+        }
+    }
+
+    /// 带拒绝原因的解码。除类型校验外与 `decode` 完全一致。
+    public static func decodeReport(_ raw: String?) -> DecodeReport {
         let text = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let data = text.data(using: .utf8) else { return [] }
-        guard let root = try? JSONSerialization.jsonObject(with: data) else { return [] }
-        guard let array = root as? [Any] else { return [] }
+        guard !text.isEmpty, let data = text.data(using: .utf8) else { return DecodeReport() }
+        guard let root = try? JSONSerialization.jsonObject(with: data) else { return DecodeReport() }
+        guard let array = root as? [Any] else { return DecodeReport() }
 
         var result: [MessageAttachment] = []
         for element in array {
-            guard let object = element as? [String: Any] else { return [] }
-            guard let attachment = decodeOne(object) else { return [] }
+            guard let object = element as? [String: Any] else { return DecodeReport(rejected: 1) }
+            guard let attachment = decodeOne(object) else { return DecodeReport(rejected: 1) }
+            switch attachment.kindCheck {
+            case .explicit, .legacy:
+                break
+            case .invalid(let why):
+                return DecodeReport(rejected: 1, rejectionReason: why)
+            }
             result.append(attachment)
         }
         // `uri` 全是空白的条目没有意义（Android 同样过滤）。
-        return result.filter { !$0.uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        let filtered = result.filter {
+            !$0.uri.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return DecodeReport(attachments: filtered, rejected: 0, rejectionReason: nil)
     }
 
     /// 解一条；`nil` = 这条是坏数据，整段作废（与 Kotlin 的整段 `runCatching` 一致）。

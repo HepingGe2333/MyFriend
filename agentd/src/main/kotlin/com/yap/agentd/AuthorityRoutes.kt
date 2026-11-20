@@ -61,6 +61,9 @@ object AuthorityRoutes {
     /** 一页一块：`limitBlocks` 只接受 1（契约 §3.2 没有 offset，也没有多块一页）。 */
     const val ONLY_LIMIT_BLOCKS = 1
 
+    /** `/v1/state` 里最多带多少条主动失败记录（诊断用，不该让同步响应变大）。 */
+    const val STATE_FAILURE_LIMIT = 20
+
     /** 这条路径是否归本对象处理（未知子路径也归，好回统一的 404）。 */
     fun matches(method: String, rawPath: String): Boolean {
         val path = rawPath.substringBefore('?')
@@ -258,10 +261,14 @@ object AuthorityRoutes {
             }
         }
         val snapshot = store.snapshot(since, personaId)
-        return Response(200, StoreJson.stringify(snapshotJson(store, snapshot)))
+        return Response(200, StoreJson.stringify(snapshotJson(store, snapshot, personaId)))
     }
 
-    private fun snapshotJson(store: FileStore, snapshot: StateSnapshot): JsonValue.Obj = StoreJson.obj(
+    private fun snapshotJson(
+        store: FileStore,
+        snapshot: StateSnapshot,
+        personaId: String?
+    ): JsonValue.Obj = StoreJson.obj(
         "serverTime" to StoreJson.num(snapshot.serverTime),
         // 人格多带一格可有可无的 `activity`（结构化活动对象，`null` = 没在忙）；
         // 磁盘上的 `activityJson` 原样保留，客户端爱用哪个用哪个。
@@ -272,7 +279,13 @@ object AuthorityRoutes {
         "presence" to (snapshot.presence?.toJson() ?: JsonValue.Null),
         "serverCursor" to StoreJson.num(snapshot.serverCursor),
         // 契约外的可加字段：首次同步只给最新一块，客户端据此知道要不要继续翻分页接口。
-        "hasMoreMessages" to StoreJson.bool(snapshot.messagesTruncated)
+        "hasMoreMessages" to StoreJson.bool(snapshot.messagesTruncated),
+        // 0.15 的可加字段：最近没发出去的主动消息（诊断用；客户端不认识就忽略）。
+        // 主动消息在服务端生成，用户看不到失败的那一刻——没有这一格只能去翻 stderr。
+        "proactiveFailures" to StoreJson.arr(
+            store.proactiveFailures(personaId = personaId, limit = STATE_FAILURE_LIMIT)
+                .map { it.toJson() }
+        )
     )
 
     // ------------------------------------------------------------------ POST /v1/personas/{id}/activity
@@ -561,11 +574,20 @@ object AuthorityRoutes {
 
             else -> throw AgentdApi.ApiFailure(400, "invalid_argument", "字段 replyTo 必须是字符串或 null")
         }
+        // 0.15：工具轮数（可选）。缺省 = 默认 5 轮；越界由 ExperienceContract.clampToolRounds 夹。
+        // 这里**不做 400**：轮数是性能旋钮，不是协议约束，脏值夹一下比整条消息失败更像正常对话。
+        val toolRounds = when (val raw = obj.fields["toolRounds"]) {
+            null, JsonValue.Null -> null
+            is JsonValue.Num -> raw.asInt
+            is JsonValue.Str -> raw.value.trim().toIntOrNull()
+            else -> null
+        }
         return SendMessageRequest(
             clientMessageId = clientMessageId,
             content = content,
             attachments = attachments,
-            replyTo = replyTo
+            replyTo = replyTo,
+            toolRounds = toolRounds
         )
     }
 

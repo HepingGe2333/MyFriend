@@ -24,6 +24,7 @@ import com.yap.agentd.store.Message
 import com.yap.agentd.store.MessageRole
 import com.yap.agentd.store.MessageSource
 import com.yap.agentd.store.Persona
+import com.yap.agentd.store.ProactiveFailure
 import com.yap.agentd.store.Session
 import com.yap.agentd.store.StoredIntent
 import com.yap.agentd.store.StoreJson
@@ -386,6 +387,7 @@ internal class ProactiveTicker(
         collected.set(fired)
         try {
             val tick = scheduler.tick(now)
+            recordGenerationFailures(tick.decisions, now)
             // 0.13：日记提醒与 defer_reply 的念头也在这里落库。它们**不参与**主动判定的
             // 冷却/每日上限（用户自己定的提醒不该被「今天说够了」挡掉），但同样不依赖客户端。
             deliverDiaryReminders(now, fired)
@@ -425,16 +427,23 @@ internal class ProactiveTicker(
                     content = text,
                     source = MessageSource.PROACTIVE,
                     visibleAt = visibleAt,
-                    emitEvent = visibleAt == null
+                    // 有投递层时事件交给它写（队列记录 + 立即/延迟投递）；没有投递层才落库即发事件。
+                    emitEvent = visibleAt == null && delivery == null
                 )
             } catch (failure: Exception) {
-                System.err.println(
-                    "[agentd] 日记提醒落库失败（${note.id}）：${failure::class.simpleName}: ${failure.message}"
+                recordFailure(
+                    personaId = note.personaId,
+                    sessionId = session.id,
+                    at = now,
+                    stage = ProactiveFailure.Stage.PERSISTENCE,
+                    reason = "diary_reminder_persist_failed",
+                    detail = "${failure::class.simpleName}: ${failure.message}",
+                    text = text
                 )
                 continue
             }
             store.markDiaryReminded(note.id, now)
-            enqueueIfDelayed(session.id, note.personaId, message, visibleAt != null, now)
+            deliverProactive(session.id, note.personaId, message, visibleAt != null, now)
             fired += FiredProactive(
                 personaId = note.personaId,
                 sessionId = session.id,
@@ -470,16 +479,22 @@ internal class ProactiveTicker(
                     content = text,
                     source = MessageSource.PROACTIVE,
                     visibleAt = visibleAt,
-                    emitEvent = visibleAt == null
+                    emitEvent = visibleAt == null && delivery == null
                 )
             } catch (failure: Exception) {
-                System.err.println(
-                    "[agentd] 延后回复落库失败（${intent.id}）：${failure::class.simpleName}: ${failure.message}"
+                recordFailure(
+                    personaId = intent.personaId,
+                    sessionId = session.id,
+                    at = now,
+                    stage = ProactiveFailure.Stage.PERSISTENCE,
+                    reason = "deferred_reply_persist_failed",
+                    detail = "${failure::class.simpleName}: ${failure.message}",
+                    text = text
                 )
                 continue
             }
             store.markIntentSent(intent.id, now)
-            enqueueIfDelayed(session.id, intent.personaId, message, visibleAt != null, now)
+            deliverProactive(session.id, intent.personaId, message, visibleAt != null, now)
             fired += FiredProactive(
                 personaId = intent.personaId,
                 sessionId = session.id,
@@ -515,6 +530,15 @@ internal class ProactiveTicker(
             )
         }.onFailure { failure ->
             System.err.println("[agentd] 推送适配器调用失败：${failure::class.simpleName}")
+            recordFailure(
+                personaId = personaId,
+                sessionId = sessionId,
+                at = createdAt,
+                stage = ProactiveFailure.Stage.PUSH,
+                reason = "push_failed",
+                detail = "${failure::class.simpleName}: ${failure.message}",
+                text = body
+            )
         }
     }
 
@@ -576,13 +600,35 @@ internal class ProactiveTicker(
     private fun plannedVisibleAt(personaId: String, text: String, now: Long): Long? =
         delivery?.visibleAts(personaId, listOf(text), now)?.firstOrNull()
 
-    /** 落库之后：在线走「排队 + typing.started」，离线什么都不用做（落库时已经发过事件）。 */
-    private fun enqueueIfDelayed(sessionId: String, personaId: String, message: Message, delayed: Boolean, at: Long) {
-        if (!delayed) return
-        runCatching { delivery!!.enqueueAsync(sessionId, personaId, listOf(message), enqueuedAt = at) }
-            .onFailure { failure ->
-                System.err.println("[agentd] 主动消息排队失败，已落库：${failure::class.simpleName}: ${failure.message}")
+    /**
+     * 落库之后把消息交给投递层（0.15）：
+     * - 客户端在线（`delayed = true`）：入队 + `typing.started`，到点由恢复线程发 `message.created`；
+     * - 客户端离线：**同样入队一条记录**，然后立即写 `message.created` 并完成条目
+     *   （`MessageDelivery.deliverNow`）——队列记录真实存在过，客户端下次启动同步即可见；
+     * - 没有投递层（测试/降级）：落库时已经发过事件，这里什么都不做。
+     *
+     * 投递失败只记日志 + `proactive_failures`（消息已经落库，不能回滚）。
+     */
+    private fun deliverProactive(sessionId: String, personaId: String, message: Message, delayed: Boolean, at: Long) {
+        val deliveryLayer = delivery ?: return
+        try {
+            if (delayed) {
+                deliveryLayer.enqueueAsync(sessionId, personaId, listOf(message), enqueuedAt = at)
+            } else {
+                deliveryLayer.deliverNow(sessionId, personaId, listOf(message), at)
             }
+        } catch (failure: Exception) {
+            System.err.println("[agentd] 主动消息投递失败，已落库：${failure::class.simpleName}: ${failure.message}")
+            recordFailure(
+                personaId = personaId,
+                sessionId = sessionId,
+                at = at,
+                stage = ProactiveFailure.Stage.DELIVERY,
+                reason = "delivery_failed",
+                detail = "${failure::class.simpleName}: ${failure.message}",
+                text = message.content
+            )
+        }
     }
 
     /**
@@ -597,18 +643,32 @@ internal class ProactiveTicker(
         val session = latestSessionFor(decision.targetPersonaId) ?: return
         val at = pending.createdAt
         val visibleAt = plannedVisibleAt(decision.targetPersonaId, pending.text, at)
-        val message = store.appendProactiveMessageIfAllowed(
-            sessionId = session.id,
-            personaId = decision.targetPersonaId,
-            content = pending.text,
-            at = at,
-            today = localDate(at),
-            dailyCap = decision.dailyCap,
-            minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong(),
-            visibleAt = visibleAt,
-            emitEvent = visibleAt == null
-        ) ?: return
-        enqueueIfDelayed(session.id, decision.targetPersonaId, message, visibleAt != null, at)
+        val message = try {
+            store.appendProactiveMessageIfAllowed(
+                sessionId = session.id,
+                personaId = decision.targetPersonaId,
+                content = pending.text,
+                at = at,
+                today = localDate(at),
+                dailyCap = decision.dailyCap,
+                minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong(),
+                visibleAt = visibleAt,
+                // 有投递层时事件由它写（队列记录 + 立即/延迟投递）；没有投递层才落库即发事件。
+                emitEvent = visibleAt == null && delivery == null
+            )
+        } catch (failure: Exception) {
+            recordFailure(
+                personaId = decision.targetPersonaId,
+                sessionId = session.id,
+                at = at,
+                stage = ProactiveFailure.Stage.PERSISTENCE,
+                reason = "proactive_persist_failed",
+                detail = "${failure::class.simpleName}: ${failure.message}",
+                text = pending.text
+            )
+            return
+        } ?: return
+        deliverProactive(session.id, decision.targetPersonaId, message, visibleAt != null, at)
         collected.get()?.add(
             FiredProactive(
                 personaId = decision.targetPersonaId,
@@ -635,7 +695,67 @@ internal class ProactiveTicker(
                 )
             }.onFailure { failure ->
                 System.err.println("[agentd] 推送适配器调用失败：${failure::class.simpleName}")
+                recordFailure(
+                    personaId = decision.targetPersonaId,
+                    sessionId = session.id,
+                    at = at,
+                    stage = ProactiveFailure.Stage.PUSH,
+                    reason = "push_failed",
+                    detail = "${failure::class.simpleName}: ${failure.message}",
+                    text = message.content
+                )
             }
+        }
+    }
+
+    /**
+     * 0.15：把「想开口但没生成出正文」的判定写进 `proactive_failures.json`。
+     *
+     * 为什么这也算失败：`GENERATION_FAILED` 的语义是「掷中了，但 LLM 没写出那句话」。
+     * 不记录的话，用户只会感觉「他今天很安静」，运维也看不出是没掷中还是模型挂了。
+     */
+    private fun recordGenerationFailures(decisions: List<ProactiveDecision>, now: Long) {
+        for (decision in decisions) {
+            if (decision.reason != com.yap.agentd.proactive.ProactiveReason.GENERATION_FAILED) continue
+            val session = latestSessionFor(decision.targetPersonaId)
+            recordFailure(
+                personaId = decision.targetPersonaId,
+                sessionId = session?.id,
+                at = now,
+                stage = ProactiveFailure.Stage.GENERATION,
+                reason = decision.reason.code,
+                detail = "掷中了（概率 ${"%.3f".format(java.util.Locale.ROOT, decision.probability)}），" +
+                    "但模型没有生成出正文（没配置/失败/空回复）；这一拍按规则不回落固定文案。",
+                text = decision.pending?.text.orEmpty()
+            )
+        }
+    }
+
+    /** 写一条主动失败记录；写失败只记日志（诊断不能反过来打挂心跳）。 */
+    private fun recordFailure(
+        personaId: String,
+        sessionId: String?,
+        at: Long,
+        stage: String,
+        reason: String,
+        detail: String,
+        text: String = ""
+    ) {
+        runCatching {
+            store.recordProactiveFailure(
+                ProactiveFailure(
+                    id = java.util.UUID.randomUUID().toString(),
+                    personaId = personaId,
+                    sessionId = sessionId,
+                    at = at,
+                    stage = stage,
+                    reason = reason,
+                    detail = detail.take(ProactiveFailure.MAX_DETAIL_CHARS),
+                    text = text.take(500)
+                )
+            )
+        }.onFailure { failure ->
+            System.err.println("[agentd] 主动失败记录写入失败：${failure::class.simpleName}: ${failure.message}")
         }
     }
 

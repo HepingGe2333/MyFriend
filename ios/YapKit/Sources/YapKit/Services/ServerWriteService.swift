@@ -361,6 +361,10 @@ public final class ServerWriteService {
         body["moodReason"] = persona.moodReason.map(JSONValue.string) ?? .null
         body["moodUpdatedAt"] = persona.moodUpdatedAt.map { .int($0) } ?? .null
         body["moodNudgedAt"] = persona.moodNudgedAt.map { .int($0) } ?? .null
+        // 0.15：人格的提示词语言。服务端把客户端字段原样存在 `extraFields` 里
+        //（`agentd/persona/PersonaFields.kt`），所以这是向后兼容的新增键：
+        // 老服务端忽略它，新服务端原样带回，换设备也能保持「他说英文」。
+        body["languageTag"] = persona.languageTag.map(JSONValue.string) ?? .null
         return body
     }
 
@@ -502,6 +506,8 @@ public final class ServerWriteService {
             persona.moodReason = try object.optionalText("moodReason") ?? existing.moodReason
             persona.moodUpdatedAt = try object.optionalInt64("moodUpdatedAt") ?? existing.moodUpdatedAt
             persona.moodNudgedAt = try object.optionalInt64("moodNudgedAt") ?? existing.moodNudgedAt
+            // 0.15：提示词语言（服务端的 extraFields 原样带回；老服务端没有这个键时保留本地值）。
+            persona.languageTag = try object.optionalText("languageTag") ?? existing.languageTag
             // 头像：服务端的 `avatarUrl` 是 `/v1/media/<id>`，本地 `avatarUri` 是 `file://`，
             // 两者不是同一个东西。M5 先把「头像上传/下发」留给后续（见交付报告），
             // 所以这里保留本地头像，不被服务端值覆盖成坏引用。

@@ -339,7 +339,7 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertTrue(system.contains("## 你可以主动联系对方"))
         // 0.13：工具那一段的标题改成「# 你能做什么」（内容由 ToolCatalog 生成）。
         XCTAssertTrue(system.contains(ToolCatalog.capabilitySection))
-        XCTAssertTrue(system.contains("- think(question)："))
+        XCTAssertTrue(system.contains("- think(question, rounds?)："))
         let personaIndex = try XCTUnwrap(system.range(of: "你是小满"))
         let capabilityIndex = try XCTUnwrap(system.range(of: "## 你可以主动联系对方"))
         XCTAssertTrue(personaIndex.lowerBound < capabilityIndex.lowerBound, "人格必须在能力说明之前")
@@ -375,12 +375,13 @@ final class ChatServiceTests: XCTestCase {
         let system = try systemPrompt()
         XCTAssertTrue(system.contains("## 你记得的事"))
         XCTAssertTrue(system.contains("他怕冷，冬天总穿两双袜子。"))
-        // 记忆块在人格之后、能力说明之前。
+        // 0.15 上下文 v2：完整设定+工具 → 长期记忆 → 短期 → 状态 → 主题 → 历史。
+        // 记忆块在人格/工具之后，但在「更早记得的」与历史之前。
+        XCTAssertTrue(system.contains(MemoryContract.Injection.LONG_TERM_TITLE),
+                      "记忆属于「长期记忆」段：\(system)")
         let personaIndex = try XCTUnwrap(system.range(of: "你是小满"))
         let memoryIndex = try XCTUnwrap(system.range(of: "## 你记得的事"))
-        let capabilityIndex = try XCTUnwrap(system.range(of: "## 你可以主动联系对方"))
-        XCTAssertTrue(personaIndex.lowerBound < memoryIndex.lowerBound)
-        XCTAssertTrue(memoryIndex.lowerBound < capabilityIndex.lowerBound)
+        XCTAssertTrue(personaIndex.lowerBound < memoryIndex.lowerBound, "记忆必须在人设之后")
     }
 
     /// 1.9：记忆**内置开启**，没有开关能把它关掉（§一）。
@@ -978,6 +979,86 @@ final class ChatServiceTests: XCTestCase {
         )
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data
+    }
+    // MARK: - 0.15 上下文 v2（固定顺序 / 预算 / 人格语言 / 工具轮数）
+
+    /// 固定顺序：完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 对话主题 → 历史。
+    func testContextV2AssemblesFixedSegmentOrder() async throws {
+        try seedReadySession()
+        let memo = SessionMemoryRepository(stores: stores, now: { 1 })
+        memo.applyLong(sessionId: sessionId, personaId: personaId,
+                       summary: "他换了工作", userCount: 20, at: 1)
+        memo.applyShort(sessionId: sessionId, personaId: personaId,
+                        summary: "最近在赶方案", userCount: 5, at: 1)
+        memo.applyTopics(sessionId: sessionId, personaId: personaId,
+                         topics: [MemoryContract.TopicSegment(
+                            timeLabel: "2026-11-18 晚", summary: "加班与改方案")],
+                         userCount: 15, at: 1)
+        try seedMemory("他怕冷。")
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        let system = try systemPrompt()
+        let long = try XCTUnwrap(system.range(of: MemoryContract.Injection.LONG_TERM_TITLE))
+        let short = try XCTUnwrap(system.range(of: MemoryContract.Injection.SHORT_TERM_TITLE))
+        let state = try XCTUnwrap(system.range(of: PersonaPromptScaffold.stateSection))
+        let topic = try XCTUnwrap(system.range(of: MemoryContract.Injection.TOPIC_TITLE))
+        let tools = try XCTUnwrap(system.range(of: ToolCatalog.capabilitySection))
+        XCTAssertLessThan(tools.lowerBound, long.lowerBound, "工具清单属于第 1 段，必须在长期记忆之前")
+        XCTAssertLessThan(long.lowerBound, short.lowerBound, "长期在短期之前")
+        XCTAssertLessThan(short.lowerBound, state.lowerBound, "短期在当前状态之前")
+        XCTAssertLessThan(state.lowerBound, topic.lowerBound, "当前状态在主题总结之前")
+        XCTAssertTrue(system.contains("他换了工作"))
+        XCTAssertTrue(system.contains("最近在赶方案"))
+        XCTAssertTrue(system.contains("- 2026-11-18 晚：加班与改方案"))
+        XCTAssertTrue(system.contains("他怕冷"))
+    }
+
+    /// 人格语言：`languageTag` 决定提示词语言，和页面语言（`languageDirective` 闭包）无关。
+    func testPersonaLanguageTagControlsPromptLanguageEvenWhenPageIsChinese() async throws {
+        try seedReadySession()
+        var persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        persona.languageTag = "en"
+        try stores.personas.upsert(persona)
+        StubURLProtocol.enqueue(.sse(textDeltas: ["Sure."]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "hi"))
+
+        let system = try systemPrompt()
+        XCTAssertTrue(system.contains("# Your mood"), "英文人格的心情段要用英文标题：\(system)")
+        XCTAssertTrue(system.contains("Think and speak in English."))
+        XCTAssertTrue(system.contains("# What you can do"), "工具描述按人格语言")
+        XCTAssertFalse(system.contains(MoodPrompt.sectionTitle), "不能同时出现中文心情段")
+    }
+
+    func testChinesePersonaKeepsChinesePrompt() async throws {
+        try seedReadySession()
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+        let system = try systemPrompt()
+        XCTAssertTrue(system.contains(MoodPrompt.sectionTitle))
+        XCTAssertTrue(system.contains("用中文思考和说话。"))
+        XCTAssertFalse(system.contains("# Your mood"))
+    }
+
+    /// 模型用 `think.rounds` 指定这一次最多几轮工具：默认 5、指定值夹到 1..15。
+    ///
+    /// 逻辑在 `ChatService.toolRoundLimit(requested:)`（纯函数）：整条聊天链路里唯一的
+    /// 一处「轮数上限」判定，测试不需要构造 SSE 与工具回路就能钉住三个分支。
+    func testModelSpecifiedToolRoundsIsClamped() {
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: nil), 5)
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: 0), 5, "0 = 没指定，不是「只能 1 轮」")
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: -2), 5)
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: 1), 1)
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: 8), 8)
+        XCTAssertEqual(ChatService.toolRoundLimit(requested: 40), 15, "上限 15")
+    }
+
+    /// 默认 5 轮（0.15）：旧值 3 轮会把「查 → 核对 → 记 → 说」截断。
+    func testDefaultToolRoundsIsFive() {
+        XCTAssertEqual(ChatService.maxToolRounds, 5)
+        XCTAssertEqual(ExperienceContract.shared.clampToolRounds(requested: nil), 5)
+        XCTAssertEqual(ExperienceContract.shared.clampToolRounds(requested: 15), 15)
+        XCTAssertEqual(ExperienceContract.shared.clampToolRounds(requested: 99), 15)
     }
 }
 

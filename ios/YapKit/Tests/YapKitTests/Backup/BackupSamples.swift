@@ -3,10 +3,10 @@ import Foundation
 
 /// iOS 侧的「黄金样本」。
 ///
-/// - `iosBundle()`：**v6**（0.13，schema v15，表情 / 语音 / 视频 / 日记便条）结构，写进
-///   `fixtures/backup/ios-export-v6.json`，Android 的 `BackupFixtureTest` 用它验证
-///   「iOS 导出的备份 Android 接得住」；`ios-export-v5.json` 从那以后是**只读输入**
-///   （证明 v5 仍然能读），不再重写；
+/// - `iosBundle()`：**v7**（0.15，schema v19）结构，写进 `fixtures/backup/ios-export-v7.json`，
+///   Android 的 `BackupFixtureTest` 用它验证「iOS 导出的备份 Android 接得住」；
+///   `ios-export-v6.json` 与更早的样本从那以后是**只读输入**（证明旧版本仍然能读），
+///   不再重写；
 /// - 值全部是 iOS 自己造的（名字、id 都不同），并且**每个可选字段都填上**：
 ///   「所有可选字段都非 nil」的样本能顺带检查「编码时字段一个不多一个不少」
 ///   （见 BackupCodecTests 的键集合断言）——漏字段是备份互通最隐蔽的 bug。
@@ -43,10 +43,15 @@ enum BackupSamples {
     static let configId = "ios-config-1"
     static let now: Int64 = 1_795_000_000_000
 
-    /// 完整样本（v3）：9 段全非空 + 设置段在内 + 人格的 9 个细分字段 + 2 张真图。
+    /// v7：对样本的 base64 字节算 sha256（不写死字符串：媒体内容一改，哈希自动跟着变）。
+    static func sha256Hex(_ base64: String) -> String {
+        ImageContentHash.sha256Hex(Data(base64Encoded: base64) ?? Data())
+    }
+
+    /// 完整样本（v7）：全部段非空 + 设置段在内 + 拉黑/心理活动/会话备忘录/媒体哈希。
     static func iosBundle() -> BackupBundle {
         BackupBundle(
-            appVersion: "0.12.0-ios",
+            appVersion: "0.15.0-ios",
             exportedAt: now,
             personas: [
                 BackupPersona(
@@ -86,7 +91,14 @@ enum BackupSamples {
                     // v5：人设引导三列，全部非空 —— 「所有可选字段都填上」这条规矩同样适用。
                     worldJson: #"{"description":"临港新城的老城区，事务所常年加班。","era":"当代，沿海城市，2026 年","obligations":["按节点交图"],"relationships":[{"name":"老周","note":"催图直接","relation":"合伙人"}],"schedule":[{"activity":"在旧书店理书","day":"工作日","end":"18:00","start":"09:00"}],"worldName":"临港新城·旧书店"}"#,
                     speechStyleJson: #"{"avoid":["长篇大论"],"habits":["句子很短"],"phrases":["在忙，晚点说","嗯，知道了"],"source":"model","tone":"简短直接，偏冷淡务实"}"#,
-                    activityJson: #"{"activity":"在整理新到的一批旧书","availability":"LIMITED","kind":"WORK","minutes":60,"startedAt":1795000000000,"until":1795003600000}"#
+                    activityJson: #"{"activity":"在整理新到的一批旧书","availability":"LIMITED","kind":"WORK","minutes":60,"startedAt":1795000000000,"until":1795003600000}"#,
+                    // v7：人格自己的提示词语言（0.15）。
+                    languageTag: "zh",
+                    // v7：拉黑状态（到期时间 / 原因 / 未确认提议）。样本里故意都填上：
+                    // 「所有可选字段都有值」才能查出编码时漏字段。
+                    blockedUntil: now + 6 * 3_600_000,
+                    blockReason: "想安静一会儿，别追问",
+                    blockProposalJson: #"{"proposalId":"ios-proposal-1","personaId":"ios-persona-1","hours":6,"reason":"你说了那句话","userMessageId":"ios-msg-1","proposedAt":1794999000000,"expiresAt":1794999600000}"#
                 )
             ],
             memories: [
@@ -180,6 +192,19 @@ enum BackupSamples {
                     errorMessage: "网络断开",
                     model: "deepseek-chat",
                     edited: false
+                ),
+                // v7：拉黑期间用户发来的消息（`blocked=true`，模型永久看不到）。
+                BackupMessage(
+                    id: "ios-msg-4",
+                    sessionId: sessionId,
+                    personaId: personaId,
+                    role: "USER",
+                    content: "你在吗？",
+                    createdAt: now - 6_900_000,
+                    updatedAt: now - 6_900_000,
+                    status: "COMPLETE",
+                    edited: false,
+                    blocked: true
                 )
             ],
             // v3：两张图（人格头像 jpeg + 聊天图片 png）。fileName 是关联键，
@@ -192,7 +217,8 @@ enum BackupSamples {
                     fileName: personaAvatarFileName,
                     mime: "image/jpeg",
                     bytes: 632,
-                    data: sampleJPEGBase64
+                    data: sampleJPEGBase64,
+                    sha256: sha256Hex(sampleJPEGBase64)
                 ),
                 BackupMedia(
                     id: "ios-media-2",
@@ -201,7 +227,8 @@ enum BackupSamples {
                     fileName: chatImageFileName,
                     mime: "image/png",
                     bytes: 75,
-                    data: samplePNGBase64
+                    data: samplePNGBase64,
+                    sha256: sha256Hex(samplePNGBase64)
                 ),
                 // v6：表情 / 语音 / 视频。kind 是新的三个取值，旧版本读到会跳过并计数。
                 BackupMedia(
@@ -211,7 +238,8 @@ enum BackupSamples {
                     fileName: stickerFileName,
                     mime: "image/gif",
                     bytes: 42,
-                    data: sampleGIFBase64
+                    data: sampleGIFBase64,
+                    sha256: sha256Hex(sampleGIFBase64)
                 ),
                 BackupMedia(
                     id: "ios-media-4",
@@ -220,7 +248,8 @@ enum BackupSamples {
                     fileName: audioFileName,
                     mime: "audio/m4a",
                     bytes: 16,
-                    data: sampleAudioBase64
+                    data: sampleAudioBase64,
+                    sha256: sha256Hex(sampleAudioBase64)
                 ),
                 BackupMedia(
                     id: "ios-media-5",
@@ -229,7 +258,8 @@ enum BackupSamples {
                     fileName: videoFileName,
                     mime: "video/mp4",
                     bytes: 16,
-                    data: sampleVideoBase64
+                    data: sampleVideoBase64,
+                    sha256: sha256Hex(sampleVideoBase64)
                 )
             ],
             presets: [
@@ -353,6 +383,53 @@ enum BackupSamples {
                     remindAt: now - 82_800_000,
                     remindedAt: now - 82_700_000,
                     updatedAt: now - 82_700_000
+                )
+            ],
+            // v7：心理活动（私密念头 + 当时心情快照）与会话备忘录（含 0.15 主题总结）。
+            mentalActivities: [
+                BackupMentalActivity(
+                    id: "ios-mental-1",
+                    personaId: personaId,
+                    sessionId: sessionId,
+                    at: now - 60_000,
+                    thought: "他刚才那句话让我有点想笑",
+                    moodLabel: "轻快",
+                    moodIntensity: 3,
+                    moodValence: 1,
+                    moodArousal: 3,
+                    moodDominance: 4
+                ),
+                BackupMentalActivity(
+                    id: "ios-mental-2",
+                    personaId: personaId,
+                    sessionId: nil,
+                    at: now - 300_000,
+                    thought: "待会儿想问问他那本书看完了没",
+                    moodLabel: "平静",
+                    moodIntensity: 2,
+                    moodValence: 0,
+                    moodArousal: 1,
+                    moodDominance: 2
+                )
+            ],
+            sessionMemory: [
+                BackupSessionMemory(
+                    sessionId: sessionId,
+                    personaId: personaId,
+                    shortSummary: "你聊到奶奶留下的旧书，他答应替你记着。",
+                    shortUpdatedAt: now - 120_000,
+                    shortUserMessages: 5,
+                    longSummary: "你们认识三年了，他一直在旧书店。",
+                    longUpdatedAt: now - 3_600_000,
+                    longUserMessages: 40,
+                    longCheckedUserMessages: 0,
+                    topics: [
+                        BackupTopicSegment(timeLabel: "2026-11-18 晚", summary: "奶奶的《诗经》与那行铅笔字"),
+                        BackupTopicSegment(timeLabel: "2026-11-19 早上", summary: "他说旧书店下周要盘点")
+                    ],
+                    topicUpdatedAt: now - 90_000,
+                    topicUserMessages: 30,
+                    topicCheckedUserMessages: 0
                 )
             ],
             apiConfigs: [

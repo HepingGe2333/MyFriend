@@ -12,7 +12,9 @@ import XCTest
 ///   base64），这里只读；它可能比 iOS 这一版晚到，所以缺失时跳过而不是红掉；
 /// - `ios-export-v4.json`：v4 的历史样本，只读（证明 v4 仍然能读）。
 /// - `ios-export-v5.json`：v5 的历史样本，只读（证明 v5 仍然能读）。
-/// - `ios-export-v6.json`：由**这个测试**生成（v6，带表情/语音/视频/日记便条），Android 侧会读它。
+/// - `ios-export-v6.json`：v6 历史样本（只读；0.13 的测试生成，现在用来证明旧版本仍能读）。
+/// - `ios-export-v7.json`：由**这个测试**生成（v7，0.15 的拉黑/心理活动/会话备忘录/媒体哈希），
+///   Android 侧会读它。
 /// - `android-export-v4.json` / `android-export-v5.json` / `android-export-v6.json`：
 ///   Android 的样本，只读；缺失时跳过。
 ///
@@ -147,7 +149,8 @@ final class BackupInteropTests: XCTestCase {
             with: #""personas":[{"extensions":{"serverOnly":true},"id""#
         )
 
-        let bundle = try decodeSuccess(raw)
+        // android-export-v6 是 v6 样本：按 v7 读会多一句格式提示，允许。
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
         XCTAssertEqual(bundle.proactiveRules.count, 1, "客户端自有段不能被服务端扩展键替代")
         XCTAssertEqual(bundle.memoryConsolidations.count, 1)
         XCTAssertFalse(bundle.personas.isEmpty)
@@ -396,7 +399,7 @@ final class BackupInteropTests: XCTestCase {
 
     // MARK: - iOS → Android
 
-    func testIOSExportV6IsWrittenForAndroidFixtureTest() throws {
+    func testIOSExportV7IsWrittenForAndroidFixtureTest() throws {
         let bundle = BackupSamples.iosBundle()
         let json = try BackupCodec.encode(bundle)
 
@@ -405,7 +408,7 @@ final class BackupInteropTests: XCTestCase {
         let decoded = try decodeSuccess(json)
         XCTAssertEqual(decoded, bundle)
         XCTAssertTrue(json.contains("\"format\":\"myfriend.backup\""))
-        XCTAssertTrue(json.contains("\"formatVersion\":6"), "v6 的格式版本必须写进文件")
+        XCTAssertTrue(json.contains("\"formatVersion\":7"), "v7 的格式版本必须写进文件")
         XCTAssertTrue(json.contains("\"webToolsProvider\":\"TAVILY\""),
                       "v4 导出必须带 provider（样本用的是非默认值，不能靠默认值蒙混）")
         XCTAssertTrue(json.contains("\"apiKeysOmitted\":true"))
@@ -416,10 +419,24 @@ final class BackupInteropTests: XCTestCase {
         XCTAssertTrue(json.contains("\"diaryNotes\""))
         XCTAssertTrue(json.contains("durationMs"), "语音时长必须跟着附件走（attachmentsJson 里）")
         XCTAssertTrue(json.contains("7000"), "语音时长 7 秒要写进 attachmentsJson")
+        // v7 的新字段：拉黑 / 语言 / 心理活动 / 会话备忘录（含 topics 与游标）/ 媒体哈希。
+        XCTAssertTrue(json.contains("\"blockedUntil\""))
+        XCTAssertTrue(json.contains("\"blockProposalJson\""))
+        XCTAssertTrue(json.contains("\"languageTag\""))
+        XCTAssertTrue(json.contains("\"blocked\":true"), "拉黑期间的消息必须带 blocked=true")
+        XCTAssertTrue(json.contains("\"mentalActivities\""))
+        XCTAssertTrue(json.contains("\"sessionMemory\""))
+        XCTAssertTrue(json.contains("\"topics\""))
+        XCTAssertTrue(json.contains("\"shortUserMessages\""))
+        XCTAssertTrue(json.contains("\"longCheckedUserMessages\""))
+        XCTAssertTrue(json.contains("\"sha256\""), "v7 的 media[] 必须带内容哈希")
+        // 服务端诊断段绝不进客户端备份。
+        XCTAssertFalse(json.contains("proactiveFailures"))
+        XCTAssertFalse(json.contains("\"extensions\""))
 
         let directory = try fixtureDirectory()
-        // v1–v5 的样本是**只读输入**，绝不重写；v6 只写这一个文件。
-        let target = directory.appendingPathComponent("ios-export-v6.json")
+        // v1–v6 的样本是**只读输入**，绝不重写；v7 只写这一个文件。
+        let target = directory.appendingPathComponent("ios-export-v7.json")
         try json.write(to: target, atomically: true, encoding: .utf8)
 
         let attributes = try FileManager.default.attributesOfItem(atPath: target.path)
@@ -429,15 +446,109 @@ final class BackupInteropTests: XCTestCase {
         let onDisk = try String(contentsOf: target, encoding: .utf8)
         XCTAssertEqual(onDisk, json)
         let reloaded = try decodeSuccess(onDisk)
-        XCTAssertEqual(reloaded, bundle)
+        XCTAssertEqual(reloaded, bundle, "解→编→解 必须幂等")
         XCTAssertEqual(reloaded.formatVersion, BackupCodec.formatVersion)
         XCTAssertEqual(reloaded.media.count, 5, "样本带两张真图 + 表情 + 语音 + 视频")
         XCTAssertEqual(reloaded.stickers.count, 1)
         XCTAssertEqual(reloaded.diaryNotes.count, 2)
+        XCTAssertEqual(reloaded.mentalActivities.count, 2)
+        XCTAssertEqual(reloaded.sessionMemory.count, 1)
+        XCTAssertEqual(reloaded.sessionMemory.first?.topics.count, 2)
         XCTAssertFalse(reloaded.personas.isEmpty)
         XCTAssertFalse(reloaded.sessions.isEmpty)
+        XCTAssertEqual(reloaded.messages.filter(\.blocked).count, 1)
+
+        // 再编码一次：与第一次逐字相同（往返幂等）。
+        XCTAssertEqual(try BackupCodec.encode(reloaded), json)
 
         print("ios fixture written: \(target.path) (\(size) bytes)")
+    }
+
+    // MARK: - Android v7 → iOS：拉黑 / 心理活动 / 会话备忘录 / 媒体哈希
+
+    /// Android 的 v7 样本：0.15 的四个新块都要读得出来（缺文件就跳过）。
+    func testAndroidV7FixtureDecodesWhenPresent() throws {
+        let url = try fixtureDirectory().appendingPathComponent("android-export-v7.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("android-export-v7.json 还不存在（Android 端尚未生成 v7 黄金样本）")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertFalse(BackupCodec.containsSecretField(raw), "v7 备份同样不能带密钥")
+        let bundle = try decodeSuccess(raw)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion)
+
+        // 拉黑三字段 + 语言。
+        let personas = bundle.personas
+        XCTAssertFalse(personas.isEmpty)
+        XCTAssertTrue(personas.contains { $0.languageTag == "zh" || $0.languageTag == "en" })
+        // 消息的 blocked（Android 每条都写 Bool）。
+        XCTAssertTrue(bundle.messages.contains { $0.blocked })
+        // 心理活动。
+        XCTAssertFalse(bundle.mentalActivities.isEmpty)
+        for activity in bundle.mentalActivities {
+            XCTAssertFalse(activity.thought.isEmpty)
+            XCTAssertTrue(personas.contains { $0.id == activity.personaId })
+        }
+        // 会话备忘录：topics 是数组、游标是 *UserMessages。
+        XCTAssertFalse(bundle.sessionMemory.isEmpty)
+        for memory in bundle.sessionMemory {
+            XCTAssertFalse(memory.topics.isEmpty)
+            XCTAssertFalse(memory.topics.contains { $0.summary.isEmpty })
+            XCTAssertTrue(personas.contains { $0.id == memory.personaId })
+        }
+        // 媒体：每个都带 sha256（Android v7 导出会给），且与 base64 解出来的字节一致。
+        XCTAssertFalse(bundle.media.isEmpty)
+        for media in bundle.media {
+            let sha = try XCTUnwrap(media.sha256, "v7 的 media 必须带 sha256：\(media.fileName)")
+            let bytes = try XCTUnwrap(BackupMediaTransfer.decode(media.data))
+            XCTAssertEqual(sha, ImageContentHash.sha256Hex(bytes), "sha256 与字节不一致：\(media.fileName)")
+            XCTAssertEqual(bytes.count, media.bytes)
+        }
+        // 附件显式 kind（IMAGE/AUDIO/VIDEO/STICKER），且 mime 与 kind 匹配。
+        for message in bundle.messages {
+            for attachment in AttachmentsCodec.decode(message.attachmentsJson) {
+                XCTAssertNotNil(attachment.kind, "v7 的附件必须显式写 kind")
+                XCTAssertNotNil(attachment.kindCheck.mediaType, "\(attachment.kind ?? "-") / \(attachment.mime)")
+            }
+        }
+        // 再导出：不出现服务端段，往返可读。
+        let reEncoded = try BackupCodec.encode(bundle)
+        XCTAssertFalse(reEncoded.contains("proactiveFailures"))
+        let second = try decodeSuccess(reEncoded)
+        XCTAssertEqual(second, bundle, "解→编→解 必须幂等")
+        XCTAssertEqual(try BackupCodec.encode(second), reEncoded, "第二次编码必须逐字相同")
+    }
+
+    // MARK: - 服务端 extensions v7 样本：三段都要落得下来
+
+    /// 服务端导出的 v7 形态：顶层没有心理活动/会话备忘录，它们在 `extensions` 里。
+    ///
+    /// 两条路径都要通：
+    /// 1. 直接 `BackupCodec.decode`（回退到 extensions）；
+    /// 2. `ServerBackupAdapter.toLocalBackupJSON`（把三段提到顶层）后再 decode。
+    func testServerExtensionsV7FixtureDecodesWhenPresent() throws {
+        let url = try fixtureDirectory().appendingPathComponent("server-export-v7-extensions.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("server-export-v7-extensions.json 还不存在（服务端/Android 端尚未生成）")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        // (1) 直接读：extensions 回退。
+        let direct = try decodeSuccess(raw)
+        XCTAssertFalse(direct.mentalActivities.isEmpty, "extensions.mentalActivities 要读出来")
+        XCTAssertFalse(direct.sessionMemory.isEmpty, "extensions.sessionMemory 要读出来")
+        XCTAssertEqual(direct.proactiveFailures?.count, 1, "extensions.proactiveFailures 要读出来")
+        // 客户端导出不写服务端专有段。
+        let reEncoded = try BackupCodec.encode(direct)
+        XCTAssertFalse(reEncoded.contains("extensions"))
+        XCTAssertFalse(reEncoded.contains("proactiveFailures"))
+
+        // (2) 走适配层：三段被提到顶层，服务端其它专有键仍然忽略。
+        let adapted = try XCTUnwrap(ServerBackupAdapter.toLocalBackupJSON(raw))
+        let local = try decodeSuccess(adapted)
+        XCTAssertEqual(local.mentalActivities, direct.mentalActivities)
+        XCTAssertEqual(local.sessionMemory, direct.sessionMemory)
+        XCTAssertEqual(local.proactiveFailures, direct.proactiveFailures)
+        XCTAssertFalse(adapted.contains("\"extensions\""), "适配层不再把 extensions 交给本地解码")
     }
 
     // MARK: - iOS v5 样本：仍然能读（只读输入）
@@ -497,6 +608,35 @@ final class BackupInteropTests: XCTestCase {
         for note in bundle.diaryNotes {
             XCTAssertTrue(personaIds.contains(note.personaId), "日记挂到了不存在的人格")
         }
+    }
+
+    // MARK: - iOS v6 样本：仍然能读（只读输入）
+
+    /// v6 样本是 0.13 生成的：读进来不许因为「缺 v7 字段」而报错，也不许凭空补 0.15 的数据。
+    func testIOSV6FixtureStillDecodes() throws {
+        let url = try fixtureDirectory().appendingPathComponent("ios-export-v6.json")
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw XCTSkip("ios-export-v6.json 不在仓库里")
+        }
+        let raw = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(raw.contains("\"formatVersion\":6"), "v6 样本必须仍然是 v6")
+        let bundle = try decodeSuccess(raw, allowWarnings: true)
+        XCTAssertEqual(bundle.formatVersion, BackupCodec.formatVersion, "读进来统一按本机版本记")
+        XCTAssertFalse(bundle.stickers.isEmpty)
+        XCTAssertFalse(bundle.diaryNotes.isEmpty)
+        // 0.15 的三样：v6 样本里没有 → 空 / nil / false。
+        XCTAssertTrue(bundle.mentalActivities.isEmpty)
+        XCTAssertTrue(bundle.sessionMemory.isEmpty)
+        XCTAssertNil(bundle.proactiveFailures)
+        XCTAssertTrue(bundle.personas.allSatisfy { $0.blockedUntil == nil && $0.blockedUntil == nil })
+        XCTAssertTrue(bundle.personas.allSatisfy { $0.languageTag == nil })
+        XCTAssertTrue(bundle.messages.allSatisfy { !$0.blocked })
+        // v6 的媒体没有 sha256：导入时跳过校验（旧数据兼容）。
+        XCTAssertTrue(bundle.media.allSatisfy { $0.sha256 == nil })
+        // 往返之后仍然能读（v6 读到 v7 再写出去，格式统一成 v7，内容不丢）。
+        let reEncoded = try BackupCodec.encode(bundle)
+        XCTAssertTrue(reEncoded.contains("\"formatVersion\":7"))
+        XCTAssertEqual(try decodeSuccess(reEncoded), bundle)
     }
 
     /// 写盘这一步是「给 Android 端用的」，但如果仓库被只读挂载（CI 上偶尔会），

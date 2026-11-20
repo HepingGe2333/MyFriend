@@ -155,7 +155,7 @@ class ServerBackupAdapterTest {
     }
 
     @Test
-    fun `服务端 extensions 被忽略 不进本机缓存`() {
+    fun `服务端 extensions 夹层不镜像 但 0_15 的两段要提到顶层`() {
         val raw = """
             {"format":"myfriend.backup","formatVersion":6,"apiKeysOmitted":true,
              "personas":[{"id":"p1","name":"林深","updatedAt":1}],
@@ -166,7 +166,10 @@ class ServerBackupAdapterTest {
         val local = ServerBackupAdapter.toLocalBackupJson(raw)!!
         val root = kotlinx.serialization.json.Json.parseToJsonElement(local).jsonObject
 
-        assertTrue("extensions 是服务端专有段，客户端不该镜像", !root.containsKey("extensions"))
+        assertTrue("extensions 夹层本身不该被镜像", !root.containsKey("extensions"))
+        // 0.15（v7）：`mentalActivities` 是客户端也会带的数据，必须提到顶层才落得了库。
+        assertTrue("心理活动要提到顶层", root.containsKey("mentalActivities"))
+        // 形状不对（对象而不是数组）的段仍然宽容忽略，不让整份失败。
         assertTrue((BackupCodec.decode(local) as BackupDecodeResult.Success).bundle.personas.isNotEmpty())
     }
 

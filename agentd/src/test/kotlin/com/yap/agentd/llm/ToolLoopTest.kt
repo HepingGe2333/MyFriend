@@ -31,7 +31,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * 钉住六件事：
  * 1. 工具调用被**真的执行**（`set_mood` 写进 moods.json），结果回灌给模型（第二轮请求里有 `role=tool`）；
  * 2. 流式 `tool_calls` 的参数被拆成多片时能拼回来；
- * 3. 最多 3 轮，第 3 轮不带 tools；超时按 deadline 停止；
+ * 3. 默认最多 5 轮（模型/调用方可指定、上限 15），最后一轮不带 tools；超时按 deadline 停止；
  * 4. `stay_silent` 不落 assistant 消息、只标已读（`done.silent=true`）；
  * 5. `sticker.send` 的附件挂到 assistant 消息上；
  * 6. `toolTraceJson` 按客户端 `ToolTraceItem` 形状落库。
@@ -231,10 +231,43 @@ class ToolLoopTest {
         }
     }
 
+    // ------------------------------------------------------------------ XML 工具标签（0.15）
+
+    @Test
+    fun `a tool call written as an XML tag is executed and never leaks to the client`() {
+        val counter = AtomicInteger()
+        FakeLlmServer { exchange ->
+            if (counter.getAndIncrement() == 0) {
+                // 评测里的真实形状：模型把工具调用写在正文里（DeepSeek 基线会这样）。
+                exchange.sse(
+                    listOf(
+                        FakeLlmServer.chunk("好，我先记一下。"),
+                        FakeLlmServer.chunk("<tool_call>"),
+                        FakeLlmServer.chunk("""{"name":"set_mood","arguments":{"label":"有点累","valence":-1}}"""),
+                        FakeLlmServer.chunk("</tool_call>"),
+                        FakeLlmServer.DONE
+                    )
+                )
+            } else {
+                exchange.sse(listOf(FakeLlmServer.chunk("嗯，今天有点乏。"), FakeLlmServer.DONE))
+            }
+        }.use { server ->
+            val sink = send(chatService(llmFor(server)))
+
+            assertTrue("XML 标签里的工具真的执行了", sink.types().contains("tool"))
+            assertEquals("有点累", store.mood(personaId)!!.label)
+            assertFalse("标签不能流到客户端", sink.text().contains("tool_call"))
+            assertFalse(sink.text().contains("<tool"))
+            assertTrue("标签外的文字照常下发", sink.text().contains("好，我先记一下。"))
+            // 第二轮把 tool 消息回灌给了模型（同一条工具回路）。
+            assertTrue(server.requests[1].body.contains("\"role\":\"tool\""))
+        }
+    }
+
     // ------------------------------------------------------------------ 轮数与超时
 
     @Test
-    fun `at most three rounds and the last one carries no tools`() {
+    fun `default five rounds and the last one carries no tools`() {
         val counter = AtomicInteger()
         FakeLlmServer { exchange ->
             val index = counter.getAndIncrement()
@@ -246,9 +279,9 @@ class ToolLoopTest {
             )
         }.use { server ->
             val sink = send(chatService(llmFor(server)))
-            assertEquals("最多 3 轮", 3, server.requests.size)
+            assertEquals("默认 5 轮（0.15 的 ExperienceContract.DEFAULT_TOOL_ROUNDS）", 5, server.requests.size)
             assertTrue("第一轮必须带工具表", server.requests[0].body.contains("\"tools\""))
-            assertFalse("第三轮不再给 tools", server.requests[2].body.contains("\"tools\""))
+            assertFalse("最后一轮不再给 tools", server.requests[4].body.contains("\"tools\""))
             val done = sink.firstOf<SseEvent.Done>()
             assertTrue("只调工具不说话 → silent done", done.silent)
             assertEquals("没有 assistant 消息", 1, store.blockMessages(sessionId, 0).size)

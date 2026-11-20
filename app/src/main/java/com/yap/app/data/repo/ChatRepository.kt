@@ -24,7 +24,6 @@ import com.yap.app.core.AgentCoreClient
 import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.domain.NotificationDeepLink
 import com.yap.app.domain.AttachmentsCodec
-import com.yap.app.domain.ApiDefaults
 import com.yap.app.domain.AudioVideoKind
 import com.yap.app.domain.AudioVideoText
 import com.yap.app.domain.BlockPolicy
@@ -40,7 +39,6 @@ import com.yap.app.domain.ChatExport
 import com.yap.app.domain.ExportFile
 import com.yap.app.domain.GenerationEvent
 import com.yap.app.domain.HistoryCompression
-import com.yap.app.domain.LanguageDirective
 import com.yap.app.domain.LlmLane
 import com.yap.app.domain.ImageContextBudget
 import com.yap.app.domain.InterruptedReply
@@ -56,6 +54,10 @@ import com.yap.app.domain.PersonaActivityCodec
 import com.yap.app.domain.PersonaProfile
 import com.yap.app.domain.PersonaPromptLocalization
 import com.yap.app.domain.PromptBuilder
+import com.yap.app.domain.ContextAssembly
+import com.yap.app.domain.PromptLanguage
+import com.yap.app.domain.PromptTemplates
+import com.yap.app.domain.ToolRounds
 import com.yap.app.domain.PersonaSwitchNotice
 import com.yap.app.domain.PersonaSwitchResult
 import com.yap.app.domain.DomainErrorCode
@@ -243,13 +245,15 @@ class ChatRepository @Inject constructor(
     private val presenceRepository: PresenceRepository,
     /** 0.14 心理活动（活跃窗口每 3 分钟/3 轮一次）；异步、失败不阻塞回复。 */
     private val mentalActivityRepository: MentalActivityRepository,
-    /** 0.14 会话备忘录（每 5/30 条更新）；异步、失败保留旧摘要。 */
+    /** 0.14/0.15 会话备忘录（短期 5 轮 / 长期 15–40 轮 / 主题总结）；异步、失败保留旧摘要。 */
     private val sessionMemoryRepository: SessionMemoryRepository,
+    /** 0.15：`memorize` 工具「想起来的事」留到下一轮上下文里注入一次。 */
+    private val memorizeRepository: MemorizeRepository,
     private val historyCompressor: HistoryCompressor,
     /** 人格进化评估（每 20 条用户消息或 24 小时一次，结果只进待审表）。 */
     private val personaEvolution: PersonaEvolutionRepository,
     /**
-     * 自动情绪判定（每 4 条用户消息或 24 小时一次，`spec/mood/README.md` §2）。
+     * 自动情绪判定（0.15：每条用户消息后一次，`spec/mood/README.md` §2）。
      *
      * 异步、不 await：判定再慢也晚不了一毫秒回话，失败按时间衰减、用户看不到。
      */
@@ -519,7 +523,9 @@ class ChatRepository @Inject constructor(
                 kind = meta.canonicalKind,
                 durationMs = meta.durationMs,
                 serverMediaId = attachment.serverMediaId
-                    ?: com.yap.app.data.remote.ServerMediaRef.idOf(meta.uri)
+                    ?: com.yap.app.data.remote.ServerMediaRef.idOf(meta.uri),
+                // 0.15：服务端返回/下载校验过的内容哈希跟着附件走。
+                sha256 = meta.sha256 ?: attachment.sha256
             )
         }
         messageDao.updateAttachments(id, AttachmentsCodec.encode(merged))
@@ -868,6 +874,8 @@ class ChatRepository @Inject constructor(
             val executed = mutableSetOf<String>()
             var finalBody = ""
             var round = 0
+            // 这一轮最多连着用几轮工具：默认 5，模型可以在参数里要更多，但硬顶 15（共享契约）。
+            var maxToolRounds = ToolRounds.DEFAULT
             var deferred = false
             // `stay_silent`：这一轮只标已读、不落任何 assistant 消息（与 defer 的区别是「什么都不留」）。
             var silenced = false
@@ -910,7 +918,13 @@ class ChatRepository @Inject constructor(
                     }
                 }
                 val (body, calls) = ToolProtocol.extract(buffer.toString())
-                if (calls.isEmpty() || round >= MAX_TOOL_ROUNDS) {
+                // 0.15：模型可以在任何一个工具参数里带 rounds（1–15，默认 5）。
+                // 取「这一轮见过的最大值」：先说要 8 轮、后面某个调用忘了带参数，不该把预算缩回 5。
+                calls.forEach { call ->
+                    // 数字（原生 tool_calls）与字符串（代码块）都认，见 ToolRounds.requested。
+                    maxToolRounds = ToolRounds.merge(maxToolRounds, ToolRounds.requested(call))
+                }
+                if (calls.isEmpty() || round >= maxToolRounds) {
                     finalBody = body.ifBlank { if (calls.isEmpty()) buffer.toString().trim() else "" }
                     break
                 }
@@ -1478,6 +1492,8 @@ class ChatRepository @Inject constructor(
     }
 
     suspend fun clearContext(sessionId: String): Result<Unit> = runCatching {
+        // 0.15：清空上下文也把「想起来、还没注入」的那段回忆一起丢掉。
+        runCatching { memorizeRepository.clearPending(sessionId) }
         // 先让「这段会话的后台写入」全部作废：生成收尾（NonCancellable）与历史压缩
         // 都可能排在删除事务之后，把半截回复或旧摘要写回来。世代号 + 取消双保险。
         sessionGeneration.bump(sessionId)
@@ -2065,7 +2081,6 @@ class ChatRepository @Inject constructor(
                 audios = if (isRound) roundAudios else emptyList()
             )
         }
-        val trimmed = trimHistory(history)
         // 心情只读一次库：提示词那一行和「今天话多话少」都由这一个状态换算得出，不再各自去查。
         val mood = moodRepository.current(persona.id)
         val moodLine = MoodPrompt.line(mood)
@@ -2079,9 +2094,12 @@ class ChatRepository @Inject constructor(
         // 0.12 人设引导：系统提示词按规范 §1 的五段顺序拼（身份 → 世界 → 此刻状态 → 话风 → 关系），
         // 记忆 / 念头 / 工具说明放在边界之前；边界与语言指令由 PromptBuilder 统一收尾。
         val now = System.currentTimeMillis()
-        // 0.14：刚想过的私密念头 + 他自己的会话备忘录（短期在前、长期在后）。
+        // 0.15：刚想过的私密念头 + 三段会话缓存（长期 / 短期 / 主题总结）。
         val mentalBlock = runCatching { mentalActivityRepository.promptBlock(persona.id, now) }.getOrDefault("")
-        val memoBlock = runCatching { sessionMemoryRepository.promptBlock(session.id) }.getOrDefault("")
+        val memo = runCatching { sessionMemoryRepository.snapshot(session.id) }
+            .getOrDefault(SessionMemoryRepository.Snapshot())
+        // 上一轮 `memorize` 想起来的事：只注入一次，取走即清空。
+        val memorized = runCatching { memorizeRepository.takePending(session.id) }.getOrNull().orEmpty()
         // 拉黑提示：即使这一轮不生成，主动/心理活动的上下文也能知道他「为什么不想理对方」。
         val blockNote = persona.blockedUntil
             ?.takeIf { BlockPolicy.isBlocked(it, now) }
@@ -2099,48 +2117,66 @@ class ChatRepository @Inject constructor(
         val stickerPromptBlock = runCatching {
             StickerPromptBlock.build(stickerRepository.recent(20).map { it.toRecord() })
         }.getOrDefault("")
-        val system = PromptBuilder.system(
-            PromptBuilder.Inputs(
-                name = persona.name,
-                age = card.identity.age,
-                role = card.identity.role,
-                relation = card.identity.relation,
-                address = card.voice.address,
-                card = card,
-                legacyPrompt = persona.prompt,
-                profileBlock = PersonaProfile.promptBlock(persona),
-                world = WorldPresetCodec.decode(persona.worldJson),
-                speech = SpeechStyleCodec.decode(persona.speechStyleJson),
-                activity = PersonaActivityCodec.decode(persona.activityJson),
-                now = now,
-                zone = ZoneId.systemDefault(),
-                moodBlock = moodLine,
-                moodDetail = moodReading,
-                asleep = asleep,
-                extraStatus = listOf(moodPace, presenceLine(persona.id)).filter { it.isNotBlank() }
-                    .joinToString("\n"),
-                // 「# 你能做什么」：从 ToolProtocol 的工具注册表生成，放在关系段之后。
-                capabilitiesSection = ToolCatalog.capabilityPrompt(webEnabled = config.webToolsEnabled),
-                variableBlocks = listOfNotNull(
+        // 0.15：提示词语言由**人格自己**决定（与界面语言无关）。
+        val personaLanguage = PromptLanguage.resolve(persona.languageTag)
+        val promptInputs = PromptBuilder.Inputs(
+            name = persona.name,
+            age = card.identity.age,
+            role = card.identity.role,
+            relation = card.identity.relation,
+            address = card.voice.address,
+            card = card,
+            legacyPrompt = persona.prompt,
+            profileBlock = PersonaProfile.promptBlock(persona),
+            world = WorldPresetCodec.decode(persona.worldJson),
+            speech = SpeechStyleCodec.decode(persona.speechStyleJson),
+            activity = PersonaActivityCodec.decode(persona.activityJson),
+            now = now,
+            zone = ZoneId.systemDefault(),
+            moodBlock = moodLine,
+            moodDetail = moodReading,
+            asleep = asleep,
+            extraStatus = listOf(moodPace, presenceLine(persona.id)).filter { it.isNotBlank() }
+                .joinToString("\n"),
+            // 「# 你能做什么」：从 ToolProtocol 的工具注册表生成；标题/描述按人格语言。
+            capabilitiesSection = ToolCatalog.capabilityPrompt(
+                webEnabled = config.webToolsEnabled,
+                language = personaLanguage
+            ),
+            languageSection = "\n\n" + PromptBuilder.languageSectionFor(persona.languageTag),
+            language = personaLanguage
+        )
+        // 0.15 上下文装配 v2（docs/design/context-memory-v2.md）：
+        // 完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 主题总结 → 附加块 → 剩余预算给原文。
+        val assembly = ContextAssembly.assemble(
+            ContextAssembly.Inputs(
+                personaAndTools = PromptBuilder.personaAndTools(promptInputs),
+                memo = ContextAssembly.Memo(
+                    longTerm = memo.longSummary,
+                    shortTerm = memo.shortSummary,
+                    topics = memo.topics
+                ),
+                currentState = PromptBuilder.currentStateBody(promptInputs),
+                extras = listOfNotNull(
+                    // 长期记忆库（他不是摘要，检索出来的是「他记得的具体事」）。
                     memoryRepository.formatForPrompt(memories).takeIf { memories.isNotEmpty() },
                     // 这一轮带语音/视频：给模型 mediaId 与类型，它才知道可以 listen/watch。
                     currentMediaBlock.takeIf { it.isNotBlank() },
                     memoryOfEarlier.takeIf { it.isNotBlank() },
-                    memoBlock.takeIf { it.isNotBlank() },
+                    // 上一轮 `memorize` 的 <回忆：…>（只注入一次）。
+                    memorized.takeIf { it.isNotBlank() },
                     mentalBlock.takeIf { it.isNotBlank() },
                     blockNote.takeIf { it.isNotBlank() },
                     // 「我的表情」：`sticker` 工具的 send 只认 id，模型必须看得到有哪些 id 可用。
                     stickerPromptBlock.takeIf { it.isNotBlank() },
                     "---\n" + ProactiveProtocol.CAPABILITY_PROMPT,
                     moodNudge.takeIf { it.isNotBlank() }
-                ),
-                // 语言指令跟着 App 语言走，脚手架保持中文。
-                languageSection = LanguageDirective.section(
-                    appContext.getString(R.string.prompt_language_directive),
-                    LanguageDirective.languageName()
                 )
             )
         )
+        val trimmed = ContextAssembly.trimHistory(history, assembly.historyCharLimit) { it.content.length }
+        // 0.15：人格语言不是中文时，段标题也换成英文（正文是用户写的数据，不翻译）。
+        val system = PromptBuilder.localizeSectionTitles(assembly.system, personaLanguage)
         return listOf(WireMessage("system", system)) + trimmed
     }
 
@@ -2178,18 +2214,6 @@ class ChatRepository @Inject constructor(
         presenceRepository.current(personaId).detail.trim()
     }.getOrDefault("")
 
-    private fun trimHistory(history: List<WireMessage>): List<WireMessage> {
-        if (history.isEmpty()) return history
-        val result = ArrayDeque<WireMessage>()
-        var chars = 0
-        for (message in history.asReversed()) {
-            if (result.isNotEmpty() && chars + message.content.length > CONTEXT_CHAR_BUDGET) break
-            result.addFirst(message)
-            chars += message.content.length
-        }
-        return result.toList()
-    }
-
     private suspend fun refreshPreview(session: ChatSessionEntity) {
         val latest = messageDao.latestInSession(session.id)
         val now = System.currentTimeMillis()
@@ -2222,8 +2246,6 @@ class ChatRepository @Inject constructor(
         name.replace(Regex("[\\\\/:*?\"<>|\\s]+"), "-").take(30).ifBlank { "chat" }
 
     private companion object {
-        /** 一次回复里最多连着用几轮工具，用完就必须说话。 */
-        const val MAX_TOOL_ROUNDS = 3
 
         /** 聊天导出的 schema 版本（与 `ExportBundle` 的默认值一致）。 */
         const val EXPORT_SCHEMA_VERSION = 1
@@ -2238,18 +2260,6 @@ class ChatRepository @Inject constructor(
          * 多一行「图片」会像系统占位符，破坏「他收到的是你拍的东西」这件事。
          */
         const val IMAGE_ONLY_CONTENT = "\u2063"
-
-        /**
-         * 一次聊天实际拼进消息的字符预算。
-         *
-         * 上限来自 1M 上下文窗口（`ApiDefaults.requestCharBudget`）：窗口减掉单次最大输出再折成字符，
-         * 同时叠加产品侧更保守的收紧值——真正决定体积的仍是「最近 N 条 + 摘要」，
-         * 1M 只是「不许越过」的那条线（`spec/api-defaults/README.md`）。
-         */
-        val CONTEXT_CHAR_BUDGET = ApiDefaults.requestCharBudget(PRACTICAL_CONTEXT_CHARS)
-
-        /** 产品侧收紧值：约 2.8 万字，够覆盖最近两百来条短消息，又不会把首字时间拖长。 */
-        private const val PRACTICAL_CONTEXT_CHARS = 28_000
 
         /**
          * 装配上下文时最多从库里读多少条消息。

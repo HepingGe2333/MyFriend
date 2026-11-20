@@ -171,7 +171,7 @@ class ToolProtocolTest {
         val prompt = ToolCatalog.capabilityPrompt()
 
         assertTrue(prompt.isNotBlank())
-        assertTrue("提示词是「段」而不是手册：≤ 3200 字，实际 ${prompt.length}", prompt.length <= 3200)
+        assertTrue("提示词是「段」而不是手册：≤ 3400 字，实际 ${prompt.length}", prompt.length <= 3400)
         assertTrue(prompt.contains(ToolProtocol.BLOCK_LANGUAGE))
         assertTrue(prompt.contains(ToolCatalog.THINK))
         // 新增的回忆工具必须出现在提示词里，否则模型根本不会想到它
@@ -338,8 +338,8 @@ class ToolProtocolTest {
 
     @Test
     fun catalogExposesSpecsByName() {
-        // 0.13：多了 stay_silent（已读不回，spec/mood §4）。
-        assertEquals(17, ToolCatalog.all.size)
+        // 0.13：多了 stay_silent（已读不回，spec/mood §4）；0.15 多了 memorize（会话历史回忆）。
+        assertEquals(18, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))
@@ -349,6 +349,10 @@ class ToolProtocolTest {
         assertTrue(recallSpec.parametersJson.contains("\"query\""))
         assertTrue(recallSpec.parametersJson.contains("\"depth\""))
         assertTrue(recallSpec.parametersJson.contains("\"required\": [\"query\"]"))
+        // 0.15：memorize 只有 query，且必须出现在能力段里
+        val memorizeSpec = ToolCatalog.all.first { it.name == ToolCatalog.MEMORIZE }
+        assertTrue(memorizeSpec.parametersJson.contains("\"query\""))
+        assertTrue(ToolCatalog.capabilityPrompt().contains(ToolCatalog.MEMORIZE))
     }
 
     @Test
@@ -371,6 +375,6 @@ class ToolProtocolTest {
         assertTrue("关掉联网后不能再出现这个工具行", !offline.contains("- ${ToolCatalog.WEB_SEARCH}："))
         assertTrue(offline.contains("没有联网能力"))
         // 这一段是「模型该知道的手」，不是手册：≤ 2600 字（内容由工具注册表生成，见 ToolCapabilitySectionTest）。
-        assertTrue("离线能力段不应无限膨胀（${offline.length} 字）", offline.length <= 3200)
+        assertTrue("离线能力段不应无限膨胀（${offline.length} 字）", offline.length <= 3400)
     }
 }

@@ -53,6 +53,13 @@ public enum ToolCatalog {
     public static let setActivity = "set_activity"
     public static let setMood = "set_mood"
     public static let recall = "recall"
+    /// 0.15：`memorize(query)` —— 在**会话历史**里想起以前说过的细节
+    /// （`docs/design/context-memory-v2.md`「过去的细节通过主题总结检索 + memorize 工具取回」）。
+    ///
+    /// 与 `recall` 的分工必须写清：`recall` 翻的是**长期记忆 / 聊天记录 / 他看过的资料**（跨会话），
+    /// `memorize` 翻的是**这一段会话自己的历史**（关键词 + 主题段 + 时间衰减）。
+    /// 模型说「让我想想」时用它。
+    public static let memorize = "memorize"
     /// 1.9：这一轮他选择先不说话（§四）。它不是「工具」，是**回复节奏**的一部分：
     /// 客户端拿到它就不再产生助手消息，只留一条到点的念头。
     public static let deferReply = "defer_reply"
@@ -97,10 +104,12 @@ public enum ToolCatalog {
         "第一次调用只提交提议（不生效）；等对方又发过至少一条消息之后，再调用 confirm=true 才生效。" +
         "不要在同一轮里连续确认；到期自动解除，没有 unblock 工具。"
 
-    private static let thinkDescription = "需要认真想清楚、比较几种可能、或者信息不足时调用；日常闲聊不要调用，也不要为了显得深刻而调用。"
+    private static let thinkDescription = "需要认真想清楚、比较几种可能、或者信息不足时调用；日常闲聊不要调用，也不要为了显得深刻而调用。" +
+        "如果这件事要连做几步（查资料 → 核对 → 记下来 → 再说），可以顺手给 rounds 说明你估计需要几步工具（1–15，默认 5）。"
     private static let webSearchDescription = "需要最新事实、新闻、价格、版本号、你不确定的信息时调用；纯聊天、或你本来就知道的常识不要调用。"
     private static let webFetchDescription = "已经拿到具体链接、需要读全文时调用；还没拿到链接就先 web_search，不要凭空编 URL。"
-    private static let rememberDescription = "值得长期记住的事（对方的偏好、重要经历、你们的约定）才调用；一次性的情绪、寒暄、临时安排不要记。"
+    private static let rememberDescription = "关于对方的长期事实（偏好、重要经历、你们之间的约定、重要的人）**必须调用 remember 写进去**——" +
+        "只在正文里说「记住了 / 我记下了」不算记住，下一轮你不会记得；一次性的情绪、寒暄、临时安排不要记。"
     private static let updatePersonaDescription = "你对自己的设定有了新的认识、想调整表达方式或偏好时才调用；patch 只写要改的字段，不要整段重写。"
     private static let setQuietHoursDescription = "你想按自己的作息休息、或想避开某些时段时调用；对方正需要陪伴时不要随便设。"
     /// 与 `set_quiet_hours` 的分工必须写清（规范 §4 明文要求）：
@@ -109,7 +118,11 @@ public enum ToolCatalog {
         "它只表示「我在做事、可能回得慢」，不是睡觉——睡觉请用 set_quiet_hours，两者可以同时存在。" +
         "写清楚做什么、大概多少分钟（15–480）、这段时间能不能回（availability 取 BUSY/LIMITED/FREE，默认 BUSY）；" +
         "同一件事不要反复调用，状态变了再更新。"
-    private static let setMoodDescription = "你此刻的心情跟刚才不一样了才调用（开心、累、烦躁、想念……）；一次只写此刻真实的那一个词，别为了有变化而编。"
+    private static let setMoodDescription = "你此刻的心情跟刚才不一样了才调用（开心、累、烦躁、想念……）；一次只写此刻真实的那一个词，别为了有变化而编。" +
+        "如果你想把感受说得更准，可以一起给三维（valence/arousal/dominance）；同一轮里心情又变了就再调一次，以最后一次为准。"
+    private static let memorizeDescription = "对方提起以前说过的事、你隐约记得但想不起细节时调用（「让我想想」）；" +
+        "它只翻你们这一段会话里的原话，按关键词、话题和时间远近找；" +
+        "要找跨会话的旧事或你记在长期记忆里的东西，用 recall；日常闲聊别为了显得记性好而调用。"
     private static let recallDescription = "想不起对方提过的事、要找很久以前聊过的内容、或想知道自己看过什么的时候调用；depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。"
     private static let deferReplyDescription = "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；" +
         "调用后这一轮不会发出任何消息，对方只会看到「已读」。不想回就别硬回，别用它来敷衍正在着急的人。"
@@ -171,7 +184,8 @@ public enum ToolCatalog {
     {
       "type": "object",
       "properties": {
-        "question": {"type": "string", "description": "要思考的问题，尽量具体"}
+        "question": {"type": "string", "description": "要思考的问题，尽量具体"},
+        "rounds": {"type": "integer", "minimum": 1, "maximum": 15, "description": "可选：这一轮你预计还要几步工具（1–15，默认 5）。只是给自己留余量，不是必须用满"}
       },
       "required": ["question"]
     }
@@ -253,7 +267,10 @@ public enum ToolCatalog {
       "properties": {
         "mood": {"type": "string", "description": "一个词的此刻心情，例如 雀跃 / 有点累 / 低落 / 平静"},
         "intensity": {"type": "integer", "minimum": 1, "maximum": 5, "description": "有多浓，1 很淡 5 满脑子都是"},
-        "reason": {"type": "string", "description": "为什么会这样，一句话，写给将来的自己看"}
+        "reason": {"type": "string", "description": "为什么会这样，一句话，写给将来的自己看"},
+        "valence": {"type": "integer", "minimum": -2, "maximum": 2, "description": "可选：愉快度，-2 很不悦 … 2 很愉快"},
+        "arousal": {"type": "integer", "minimum": 0, "maximum": 5, "description": "可选：唤醒度，0 很没劲 … 5 很激动"},
+        "dominance": {"type": "integer", "minimum": 0, "maximum": 5, "description": "可选：掌控感，0 被压住 … 5 掌控"}
       },
       "required": ["mood"]
     }
@@ -291,6 +308,16 @@ public enum ToolCatalog {
         "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "list 要几条，默认 20，最多 50"}
       },
       "required": ["action"]
+    }
+    """
+
+    private static let memorizeParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "query": {"type": "string", "description": "想想起什么，几个关键词或一句话，例如「怕冷」「上次说的那家店」「周末的计划」"}
+      },
+      "required": ["query"]
     }
     """
 
@@ -357,6 +384,7 @@ public enum ToolCatalog {
     private static let setQuietHoursSideEffect = "改你的作息（几点睡、几点醒），影响主动消息与夜里被叫醒的规则。"
     private static let setActivitySideEffect = "记下你接下来这段时间在做什么（15–480 分钟），影响语气与要不要主动开口。"
     private static let setMoodSideEffect = "改你此刻的心情，接下来几轮的语气跟着变。"
+    private static let memorizeSideEffect = "只在你们这段会话的历史里翻一遍，不改任何东西、不发消息；你会拿到几句当时的原话。"
     private static let recallSideEffect = "只翻你自己的记忆与旧聊天，不改任何东西；翻不到就是翻不到。"
     private static let deferReplySideEffect = "这一轮不会发出任何消息（对方只看到「已读」），过一会儿你再决定要不要开口。"
     private static let staySilentSideEffect = "这一轮不会发出任何消息（对方只看到「已读」），也不会留下过一会儿要开口的念头；下次对方再说话时照常回。"
@@ -384,6 +412,8 @@ public enum ToolCatalog {
                  sideEffect: setMoodSideEffect),
         ToolSpec(name: recall, description: recallDescription, parametersJson: recallParameters,
                  sideEffect: recallSideEffect),
+        ToolSpec(name: memorize, description: memorizeDescription, parametersJson: memorizeParameters,
+                 sideEffect: memorizeSideEffect),
         ToolSpec(name: deferReply, description: deferReplyDescription,
                  parametersJson: deferReplyParameters, sideEffect: deferReplySideEffect),
         ToolSpec(name: staySilent, description: staySilentDescription,
@@ -472,7 +502,9 @@ public enum ToolCatalog {
     public static func capabilityPrompt(webEnabled: Bool = true) -> String {
         var lines: [String] = [
             capabilitySection,
-            "你只能通过下面这些工具做事；工具做不到的事就说做不到，失败也照实说，不要假装做过。"
+            "你只能通过下面这些工具做事；工具做不到的事就说做不到，失败也照实说，不要假装做过。",
+            "关于对方的长期事实（偏好、经历、约定）必须调用 remember 写下来，只在正文里说「记住了」不算；"
+                + "想起对方以前说过的事必须调用 memorize 去翻，不要凭印象编。"
         ]
         for spec in enabled(webEnabled: webEnabled) {
             lines.append("- " + signature(spec) + "：" + spec.description)
@@ -668,6 +700,21 @@ public enum ToolProtocol {
     /// 只匹配闭合的块。未闭合的块交给 `visiblePrefix` 在流式阶段挡住。
     static let blockPattern = "```\\s*(?:\(acceptedLanguages.joined(separator: "|")))\\s*([\\s\\S]*?)```"
 
+    /// 0.15：模型也会用 XML 标签包工具调用（评测里实际出现过）：
+    /// `<tool_call>{…}</tool_call>` / `<tool_code>{…}</tool_code>` / `<tool>{…}</tool>`。
+    ///
+    /// 为什么要兼容而不是只认 `yap-tool`：真实模型（尤其 DeepSeek 系）会把工具调用写成它训练里
+    /// 见过的 XML 形状，协议块没被解析时，XML 与 JSON 就会原样印在气泡里给用户看。
+    /// 这里把它们**当成协议块**：解析成调用、从正文里整段移除（含未闭合的尾巴）。
+    static let xmlTagNames = ["tool_call", "tool_code", "tool"]
+
+    /// 闭合的 XML 工具块：起始标签 + 内容 + 同名结束标签（允许属性与空白）。
+    static let xmlBlockPattern =
+        "<\\s*(tool_call|tool_code|tool)\\b[^>]*>([\\s\\S]*?)<\\s*/\\s*\\1\\s*>"
+
+    /// 未闭合的 XML 起始标签（流式阶段 / 模型忘了闭合）：从它开始整段都不该显示给用户。
+    static let xmlOpenPattern = "<\\s*(tool_call|tool_code|tool)\\b"
+
     // MARK: 文本代码块
 
     /// 解析文本里的 ```yap-tool ... ``` 代码块，同时返回清理后的正文。
@@ -679,25 +726,64 @@ public enum ToolProtocol {
         if rawText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ("", [])
         }
-        guard containsBlock(in: rawText) else {
-            return (rawText.trimmingCharacters(in: .whitespacesAndNewlines), [])
-        }
-
-        // 逐块扫描：Swift 的 NSRegularExpression 不提供「边扫边拼」的便捷 API，
-        // 所以自己维护 cursor，把块之间的正文原样保留（包括换行）。
-        var cleaned = ""
-        var cursor = rawText.startIndex
+        var body = rawText
         var calls: [ToolInvocation] = []
-        var searchStart = rawText.startIndex
-        while let match = firstMatch(in: rawText, from: searchStart) {
-            cleaned += rawText[cursor..<match.range.lowerBound]
+        if containsBlock(in: body) {
+            // 逐块扫描：Swift 的 NSRegularExpression 不提供「边扫边拼」的便捷 API，
+            // 所以自己维护 cursor，把块之间的正文原样保留（包括换行）。
+            var cleaned = ""
+            var cursor = body.startIndex
+            var searchStart = body.startIndex
+            while let match = firstMatch(in: body, from: searchStart) {
+                cleaned += body[cursor..<match.range.lowerBound]
+                cursor = match.range.upperBound
+                searchStart = match.range.upperBound
+                let payload = match.payload.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let call = parseBlock(payload, index: calls.count) { calls.append(call) }
+            }
+            cleaned += body[cursor...]
+            body = cleaned
+        }
+        // 0.15：再收一遍 XML 标签形状（`<tool_call>` / `<tool_code>` / `<tool>`）。
+        let xml = extractXmlBlocks(from: body, startingIndex: calls.count)
+        body = xml.body
+        calls.append(contentsOf: xml.calls)
+        return (body.trimmingCharacters(in: .whitespacesAndNewlines), calls)
+    }
+
+    /// 把 XML 形状的工具块从正文里拆出来。
+    ///
+    /// - 闭合块：解析内容（JSON，或 JSON 前后有多余文字时取第一个 `{…}`）；
+    /// - 未闭合的尾巴：**整段丢掉**（宁可这一条消息少半句，也不能把 `<tool_call>` 印给用户看）；
+    /// - 解析失败也照样从正文移除：它本来就是协议内容，不是他说的话。
+    static func extractXmlBlocks(
+        from text: String,
+        startingIndex: Int
+    ) -> (body: String, calls: [ToolInvocation]) {
+        guard text.contains("<") else { return (text, []) }
+        var cleaned = ""
+        var cursor = text.startIndex
+        var calls: [ToolInvocation] = []
+        var searchStart = text.startIndex
+        guard let regex = try? Regex("(?i)" + xmlBlockPattern) else { return (text, []) }
+        while true {
+            let slice = text[searchStart...]
+            guard let match = slice.firstMatch(of: regex), match.output.count > 2,
+                  let payloadRange = match.output[2].range else { break }
+            cleaned += text[cursor..<match.range.lowerBound]
             cursor = match.range.upperBound
             searchStart = match.range.upperBound
-            let payload = match.payload.trimmingCharacters(in: .whitespacesAndNewlines)
-            if let call = parseBlock(payload, index: calls.count) { calls.append(call) }
+            let payload = String(text[payloadRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let call = parseBlock(payload, index: startingIndex + calls.count) {
+                calls.append(call)
+            }
         }
-        cleaned += rawText[cursor...]
-        return (cleaned.trimmingCharacters(in: .whitespacesAndNewlines), calls)
+        cleaned += text[cursor...]
+        // 未闭合的起始标签：从这里到结尾全部不显示（也不解析：半截 JSON 不该被执行）。
+        if let openRange = cleaned.range(of: xmlOpenPattern, options: [.regularExpression, .caseInsensitive]) {
+            cleaned = String(cleaned[cleaned.startIndex..<openRange.lowerBound])
+        }
+        return (cleaned, calls)
     }
 
     /// 流式渲染时用：把还没闭合的工具块尾巴切掉，别让协议块露给用户看。
@@ -711,6 +797,10 @@ public enum ToolProtocol {
             guard let range = rawText.range(of: marker, options: [.caseInsensitive]) else { continue }
             cut = min(cut ?? range.lowerBound, range.lowerBound)
         }
+        // 0.15：XML 形状的工具块同样不能露出来（流式时它可能只写了一半）。
+        if let xmlRange = rawText.range(of: xmlOpenPattern, options: [.regularExpression, .caseInsensitive]) {
+            cut = min(cut ?? xmlRange.lowerBound, xmlRange.lowerBound)
+        }
         guard let lowerBound = cut else { return rawText }
         return String(rawText[rawText.startIndex..<lowerBound])
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -718,8 +808,17 @@ public enum ToolProtocol {
 
     /// 解析单个代码块的内容；形状为 `{name,arguments}` 或 `{tool,args,parameters}`。
     static func parseBlock(_ payload: String, index: Int) -> ToolInvocation? {
-        if payload.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
-        guard let data = payload.data(using: .utf8),
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return nil }
+        // XML 标签里模型常加一句说明（`现在查一下 {"name":…}`）：取第一个 `{` 到最后一个 `}`。
+        var jsonText = trimmed
+        if !trimmed.hasPrefix("{"),
+           let start = trimmed.firstIndex(of: "{"),
+           let end = trimmed.lastIndex(of: "}"),
+           start < end {
+            jsonText = String(trimmed[start...end])
+        }
+        guard let data = jsonText.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return nil
         }
@@ -828,6 +927,8 @@ public enum ToolProtocol {
         case ToolCatalog.setActivity: return String(localized: "去忙了")
         case ToolCatalog.setMood: return String(localized: "心情变了")
         case ToolCatalog.recall: return String(localized: "回想了一下")
+        // 「（他想了想）」是给用户看的一句：他在努力想起以前说过的话，而不是在查资料。
+        case ToolCatalog.memorize: return String(localized: "（他想了想）")
         case ToolCatalog.deferReply: return String(localized: "决定先不回")
         // 这一轮他什么都没说：界面上不该出现任何占位气泡（规范 §4），
         // 这个标题只在「他最近在想什么」这类留痕里用得到。
@@ -903,6 +1004,8 @@ public enum ToolProtocol {
             return invocation.argument("content").map { "内容：\(String($0.prefix(120)))" }
         case ToolCatalog.recall:
             return invocation.argument("query").map { "想找：\(String($0.prefix(120)))" }
+        case ToolCatalog.memorize:
+            return invocation.argument("query").map { "想了想：\(String($0.prefix(120)))" }
         case ToolCatalog.deferReply:
             let minutes = invocation.intArgument("minutes", default: 45)
             return "过 \(minutes) 分钟再说"
@@ -996,7 +1099,10 @@ public enum ToolProtocol {
 
     /// 有没有闭合块：先粗判一次，常见路径（模型没调工具）不必走正则。
     static func containsBlock(in text: String) -> Bool {
-        text.range(of: blockPattern, options: [.regularExpression, .caseInsensitive]) != nil
+        if text.range(of: blockPattern, options: [.regularExpression, .caseInsensitive]) != nil {
+            return true
+        }
+        return text.range(of: xmlBlockPattern, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     struct BlockMatch {

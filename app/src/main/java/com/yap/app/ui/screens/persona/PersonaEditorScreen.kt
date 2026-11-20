@@ -93,6 +93,7 @@ import com.yap.app.R
 import com.yap.app.data.local.ApiConfigEntity
 import com.yap.app.domain.PersonaActivity
 import com.yap.app.domain.PersonaCard
+import com.yap.app.domain.PromptLanguage
 import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaTrait
 import com.yap.app.domain.ProactiveLevel
@@ -254,6 +255,10 @@ fun PersonaEditorScreen(
                     CategorySection(
                         category = state.form.category,
                         onCategory = { category -> viewModel.update { it.copy(category = category.take(30)) } }
+                    )
+                    PersonaLanguageSection(
+                        languageTag = state.form.languageTag,
+                        onSelect = { tag -> viewModel.update { it.copy(languageTag = tag) } }
                     )
                     ContactProfileSection(
                         form = state.form,
@@ -851,6 +856,42 @@ private fun AvatarSection(
             }
         }
     }
+}
+
+/**
+ * 0.15：人格自己的提示词语言。
+ *
+ * 与界面语言无关：这里选什么，他就用什么思考和说话；换 App 语言不会改变聊天对象的语言。
+ * 只列共享契约里有的语言（[PromptLanguage]），选「跟随默认」= 中文。
+ */
+@Composable
+private fun PersonaLanguageSection(languageTag: String, onSelect: (String) -> Unit) {
+    SectionLabel(stringResource(R.string.persona_editor_language_section))
+    Text(
+        stringResource(R.string.persona_editor_language_hint),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(horizontal = 4.dp)
+    )
+    Spacer(Modifier.height(8.dp))
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        TextPill(
+            text = stringResource(R.string.persona_editor_language_default),
+            selected = languageTag.isBlank(),
+            onClick = { onSelect("") }
+        )
+        PromptLanguage.entries.forEach { language ->
+            TextPill(
+                text = language.nativeName,
+                selected = PromptLanguage.parse(languageTag) == language,
+                onClick = { onSelect(language.code) }
+            )
+        }
+    }
+    Spacer(Modifier.height(6.dp))
 }
 
 @Composable

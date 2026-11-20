@@ -73,7 +73,6 @@
     <string name="wipe_confirm_action">Delete everything</string>
 
     <!-- Prompt scaffolding: one section telling him to answer in the other person\'s language. -->
-    <string name="prompt_language_directive">## Language\nThey are speaking to you in %1$s right now. Answer in the same language; proper nouns can stay as they are.</string>
 
     <!-- Time and dates: patterns and the words for today/yesterday live here -->
     <string name="common_today">Today</string>
@@ -1826,4 +1825,25 @@
     <!-- 0.13 stay silent (spec/mood §4): only ever shown in an expanded trace; normally no bubble at all -->
     <string name="tool_trace_stay_silent">Read, no reply</string>
     <string name="chat_sticker_delete_failed">Couldn\'t delete it, try again in a moment</string>
+
+    <!-- 0.15 memorization tool: one line "(he thought for a moment)" -->
+    <string name="tool_trace_memorize">Thought for a moment</string>
+    <string name="tool_trace_memorize_found">Thought for a moment: %1$s</string>
+    <string name="tool_trace_memorize_empty">Tried to remember, but couldn\'t</string>
+    <!-- 0.15 block countdown -->
+    <string name="chat_blocked_remaining_hours">You are blocked. %1$d h %2$d min left</string>
+    <string name="chat_blocked_remaining_minutes">You are blocked. %1$d min left</string>
+    <!-- 0.15 persona prompt language -->
+    <string name="persona_editor_language_section">Prompt language</string>
+    <string name="persona_editor_language_hint">The language he thinks and speaks in. Independent of the app language: switching the UI won\'t change him.</string>
+    <string name="persona_editor_language_default">Default (Chinese)</string>
+    <!-- 0.15 settings: generation test -->
+    <string name="settings_generation_section">Test generation</string>
+    <string name="settings_generation_hint">Send one test message with the current persona and API config to see whether he talks and how slow this turn is. It is never written to any conversation.</string>
+    <string name="settings_generation_button">Send a test message</string>
+    <string name="settings_generation_running">Waiting for him to speak…</string>
+    <string name="settings_generation_summary">Took %1$.1f s · %2$d chars</string>
+    <string name="settings_generation_tools_used">Called tools %1$d time(s)</string>
+    <string name="settings_generation_tools_none">No tool calls</string>
+    <string name="settings_generation_failed">It didn\'t go through. Check the API config or network and try again.</string>
 </resources>

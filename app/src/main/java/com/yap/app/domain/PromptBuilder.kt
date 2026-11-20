@@ -172,7 +172,15 @@ object PromptBuilder {
         /** 记忆、念头……放在边界之前。 */
         val variableBlocks: List<String> = emptyList(),
         /** 语言指令（`LanguageDirective.section`），放在边界之前。 */
-        val languageSection: String = ""
+        val languageSection: String = "",
+        /**
+         * 0.15：人格自己选定的提示词语言（`PromptLanguage`，与界面语言无关）。
+         *
+         * 只影响**规则段**（别像 AI / 边界 / 语言指令 / 工具说明）；身份、世界、话风这些
+         * 数据段是用户自己写的中文，原样保留——翻译它们属于人格翻译缓存的职责，
+         * 不能在这里偷偷改写成英文，否则模型会拿着半英半中的「他」说话。
+         */
+        val language: PromptLanguage = PromptLanguage.ZH
     )
 
     private const val LEGACY_MAX = 1600
@@ -216,17 +224,17 @@ object PromptBuilder {
         DayOfWeek.SUNDAY to "周日"
     )
 
-    /** 完整系统提示词：五段人设 + 可变部分 + 语言指令 + 边界。 */
+    /** 完整系统提示词：五段人设 + 可变部分 + 语言指令 + 边界（0.14 顺序，保留给旧调用方）。 */
     fun system(input: Inputs): String = buildString {
         append(base(input))
-        append("\n\n").append(antiAiSection())
+        append("\n\n").append(antiAiSection(input.language))
         input.variableBlocks.map { it.trim() }.filter { it.isNotBlank() }.forEach {
             append("\n\n").append(it)
         }
         if (input.languageSection.isNotBlank()) {
             append(input.languageSection.trimEnd())
         }
-        append("\n\n").append(boundaries())
+        append("\n\n").append(boundaries(input.language))
     }.trim()
 
     /** 只有五段人设（不含记忆/工具/边界）；给主动思考这类需要自己接尾巴的调用方用。 */
@@ -243,6 +251,94 @@ object PromptBuilder {
         return sections.joinToString("\n\n").trim()
     }
 
+    /**
+     * 0.15 上下文装配的第一段：**完整设定 + 工具**（身份/世界/话风/关系/工具/反 AI/语言/边界）。
+     *
+     * 与 [system] 的区别只有一处：「你此刻的状态」被拆出去，由 [ContextAssembly] 放在
+     * 长期/短期记忆之后（`docs/design/context-memory-v2.md` 的固定顺序）。
+     * 顺序、分隔符与 [system] 完全一致，所以两段拼起来与旧版 system 的差别只在状态段的位置。
+     */
+    fun personaAndTools(input: Inputs): String = buildString {
+        val sections = buildList {
+            add(identitySection(input))
+            add(worldSection(input.world))
+            add(speechSection(input))
+            add(relationshipSection(input))
+            input.capabilitiesSection.trim().takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        append(sections.joinToString("\n\n").trim())
+        append("\n\n").append(antiAiSection(input.language))
+        if (input.languageSection.isNotBlank()) {
+            append("\n\n").append(input.languageSection.trim().trimEnd())
+        }
+        append("\n\n").append(boundaries(input.language))
+    }.trim()
+
+    /**
+     * 0.15：语言小节按**人格自己的语言**生成（与界面语言无关）。
+     *
+     * 这是 0.15 最关键的一处「跟随人格」：以前这段来自 `R.string.prompt_language_directive`，
+     * 用户把界面切成英文，中文人格就开始用英文思考。现在语言是人格属性
+     * （`personas.languageTag`），指令由共享契约 [PromptTemplates.directiveForPersona] 给。
+     *
+     * @param personaTag 人格上的语言标签；空/认不出按中文
+     */
+    fun languageSectionFor(personaTag: String?): String {
+        val language = PromptLanguage.resolve(personaTag)
+        val title = if (language == PromptLanguage.ZH) PromptContract.Section.LANGUAGE else LANGUAGE_EN
+        return title + "\n- " + PromptTemplates.directiveForPersona(personaTag)
+    }
+
+    /** 英文人格的语言小节标题（中文标题来自共享契约，不在这里重复）。 */
+    private const val LANGUAGE_EN = "## Language"
+
+    /**
+     * 0.15：把已经拼好的提示词里的**段标题**换成英文（人格语言不是中文时）。
+     *
+     * 为什么用替换而不是给每段都加一个语言分支：段标题是提示词里最稳的字面量
+     * （共享契约 + 脚手架逐字固定），一次替换能同时覆盖「完整设定」「当前状态」
+     * 与 [ContextAssembly] 后面追加的记忆/主题段；正文（用户写的人设、模型的回忆）
+     * 一律不动——那是数据，翻译属于人格翻译缓存的职责。
+     *
+     * 只替换完整标题行（行首行尾），不会误伤正文里恰好出现的同样文字。
+     */
+    fun localizeSectionTitles(text: String, language: PromptLanguage): String {
+        if (language == PromptLanguage.ZH || text.isBlank()) return text
+        var result = text
+        SECTION_TITLES_EN.forEach { (zh, en) ->
+            result = result.replace(Regex("(?m)^" + Regex.escape(zh) + "$"), en)
+        }
+        return result
+    }
+
+    /** 段标题的中英对照（只覆盖有固定字面量的标题；数据段正文不翻译）。 */
+    private val SECTION_TITLES_EN: Map<String, String> = linkedMapOf(
+        Scaffold.SECTION_IDENTITY to "# Who you are",
+        Scaffold.SECTION_WORLD to "# The world you live in",
+        Scaffold.SECTION_STATE to "# Your state right now",
+        Scaffold.SECTION_VOICE to "# How you speak",
+        Scaffold.SECTION_RELATIONSHIP to "# Your relationship",
+        PromptContract.Section.MEMO to PromptTemplates.title(
+            PromptTemplates.CoreSection.MEMO,
+            PromptLanguage.EN
+        ),
+        MemoryContract.Injection.LONG_TERM_TITLE to "## Long-term memory",
+        MemoryContract.Injection.SHORT_TERM_TITLE to "## Short-term memory",
+        MemoryContract.Injection.TOPIC_TITLE to "## Topics",
+        PromptContract.Section.MENTAL_ACTIVITY to PromptTemplates.title(
+            PromptTemplates.CoreSection.MENTAL_ACTIVITY,
+            PromptLanguage.EN
+        )
+    )
+
+    /**
+     * 0.15 上下文装配的第四段：**当前状态**正文（不含 `# 你此刻的状态` 标题）。
+     *
+     * 标题由调用方（[ContextAssembly]）用共享契约 [PromptContract.Section.STATE] 补，
+     * 保证「状态段写什么」与「标题在哪里」各只有一份。
+     */
+    fun currentStateBody(input: Inputs): String = statusBody(input)
+
     /** 「别像 AI」段的标题（规范 §5；不在 `scaffold.json` 里，所以单独一段）。 */
     const val SECTION_ANTI_AI = "# 别像 AI"
 
@@ -254,10 +350,19 @@ object PromptBuilder {
      * 不重复口头禅），对所有人生效、也不该被用户填的话风覆盖。放在边界之前、人设之后，
      * 顺序上仍然「越靠前越强」，同时不改变脚手架六段的既有位置。
      */
-    fun antiAiSection(): String = buildString {
-        append(SECTION_ANTI_AI)
-        ANTI_AI_RULES.forEach { append("\n- ").append(it) }
-    }
+    fun antiAiSection(language: PromptLanguage = PromptLanguage.ZH): String =
+        // 0.15：人格语言不是中文时用共享的英文模板（与中文七条一一对应），
+        // 中文仍走下面的常量与 `PromptContract.AntiAi.RULES` 逐字对照测试。
+        if (language == PromptLanguage.ZH) {
+            buildString {
+                append(SECTION_ANTI_AI)
+                ANTI_AI_RULES.forEach { append("\n- ").append(it) }
+            }
+        } else {
+            PromptTemplates.render(PromptTemplates.CoreSection.ANTI_AI, language) +
+                "\n- No narration, stage directions, or descriptions of your actions/face " +
+                "(\"stayed silent for a while\", \"sighed\"). Just talk."
+        }
 
     private val ANTI_AI_RULES = listOf(
         "不要每句话都反问；不需要每轮都把话题抛回去。",
@@ -266,7 +371,10 @@ object PromptBuilder {
         "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
         "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
         "不主动给建议、清单或心理分析；不知道就说不知道。",
-        "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。"
+        "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。",
+        // 0.15 实测：模型反复写「沉默了一会儿」「叹了口气」这类旁白/舞台说明。
+        // 这一条放在最后（最隐蔽、也最破坏「像人」的一条）：他是在聊天，不是在演。
+        "不写动作、神态或心理描写的旁白（如「沉默了一会儿」「叹了口气」「苦笑」）；直接说话，不要舞台说明。"
     )
 
     /**
@@ -275,10 +383,15 @@ object PromptBuilder {
      * 逐条来自 [Scaffold.BOUNDARY_RULES]（旧版本这里是 6 条自己写的中文；规范定稿成 4 条之后，
      * 「常用语最多带一处」并进了 [Scaffold.VOICE_PHRASES]，「不替自己旁白」并进了第 2 条）。
      */
-    fun boundaries(): String = buildString {
-        append(Scaffold.SECTION_BOUNDARIES)
-        Scaffold.BOUNDARY_RULES.forEach { append("\n- ").append(it) }
-    }
+    fun boundaries(language: PromptLanguage = PromptLanguage.ZH): String =
+        if (language == PromptLanguage.ZH) {
+            buildString {
+                append(Scaffold.SECTION_BOUNDARIES)
+                Scaffold.BOUNDARY_RULES.forEach { append("\n- ").append(it) }
+            }
+        } else {
+            PromptTemplates.render(PromptTemplates.CoreSection.BOUNDARIES, language)
+        }
 
     // ------------------------------------------------------------------ 各段
 
@@ -328,7 +441,11 @@ object PromptBuilder {
      * 时间句只有 [Scaffold.STATE_LINE] 一种；`now <= 0`（调用方没给时间，例如人格卡预览）时
      * 干脆不写这一行，而不是硬凑出「现在是 。」——截断的时间点没有「此刻」可言。
      */
-    private fun statusSection(input: Inputs): String {
+    private fun statusSection(input: Inputs): String =
+        Scaffold.SECTION_STATE + "\n" + statusBody(input)
+
+    /** 状态段正文（不含标题）：时间 → 在做什么 → 心情 → 已经睡了 → 额外状态。 */
+    private fun statusBody(input: Inputs): String {
         val parts = buildList {
             clockLine(input.now, input.zone)?.let { add(it) }
             add(activityForPrompt(input.activity, input.now, input.zone))
@@ -343,7 +460,7 @@ object PromptBuilder {
             val extra = stripHeading(input.extraStatus)
             if (extra.isNotBlank()) add(extra)
         }
-        return Scaffold.SECTION_STATE + "\n" + parts.filter { it.isNotBlank() }.joinToString("\n")
+        return parts.filter { it.isNotBlank() }.joinToString("\n")
     }
 
     /**

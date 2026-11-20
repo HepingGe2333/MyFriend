@@ -111,7 +111,7 @@ class BackupV6Test {
         )
         assertEquals(expected, backup.fields.keys.toList())
         assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
-        assertEquals(6, backup.int("formatVersion"))
+        assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(FileStore.BACKUP_FORMAT_NAME, backup.str("format"))
     }
 
@@ -351,10 +351,10 @@ class BackupV6Test {
     }
 
     @Test
-    fun `unknown v7 backup is still rejected`() {
+    fun `unknown v8 backup is still rejected`() {
         val response = CrudRoutes.importBackupFromFile(
             store,
-            writeTemp("""{"formatVersion":7,"personas":[]}"""),
+            writeTemp("""{"formatVersion":8,"personas":[]}"""),
             "replace"
         )
         assertEquals(409, response.status)
@@ -364,7 +364,7 @@ class BackupV6Test {
     @Test
     fun `import is transactional for broken media`() {
         val broken = """{
-          "format":"myfriend.backup","formatVersion":6,
+          "format":"myfriend.backup","formatVersion":8,
           "personas":[{"id":"p1","name":"甲","createdAt":1,"updatedAt":1}],
           "media":[{"id":"m1","kind":"CHAT_IMAGE","fileName":"a.png","mime":"image/png","bytes":3,"data":"!!!"}]
         }"""

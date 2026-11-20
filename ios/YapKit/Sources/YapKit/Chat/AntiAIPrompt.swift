@@ -36,9 +36,18 @@ public enum AntiAIPrompt {
         "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。"
     ]
 
-    /// 拼好的整段（`# 别像 AI` + 六条）。
+    /// 0.15 追加的一条：**旁白 / 舞台说明**（评测里反复出现「沉默了一会儿」「他看着你」）。
+    ///
+    /// 为什么单独一条、不放 `rules` 里：`rules` 与 Android 的 `ANTI_AI_RULES` 逐字一致
+    ///（共享契约 `PromptContract.AntiAi.RULES` 也是七条）；这一条是 iOS 在这轮补的
+    /// 硬约束，等 Android 也补上之后再收进共享契约。
+    public static let noNarrationRule =
+        "不要写动作、旁白或舞台说明（「沉默了一会儿」「他顿了顿」「他看着你」），"
+        + "不要用括号写神态或心理描写；只说他会说出口的那句话。"
+
+    /// 拼好的整段（`# 别像 AI` + 七条 + 旁白禁止）。
     public static func text() -> String {
-        ([section] + rules.map { "- " + $0 }).joined(separator: "\n")
+        ([section] + rules.map { "- " + $0 } + ["- " + noNarrationRule]).joined(separator: "\n")
     }
 
     /// 「这一轮没有别的规则」时的空实现（测试与特殊场景用）。

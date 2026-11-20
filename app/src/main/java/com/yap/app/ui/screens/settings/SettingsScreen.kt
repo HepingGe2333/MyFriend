@@ -529,6 +529,9 @@ fun SettingsScreen(
 
                 UsageSection(totals = state.usage)
 
+                // 0.15「测试生成」：用当前人格/配置发一条测试消息，不写进任何会话。
+                GenerationTestSection()
+
                 SectionLabel(stringResource(R.string.settings_section_chat_background))
                 SettingCard {
                     SettingRow(

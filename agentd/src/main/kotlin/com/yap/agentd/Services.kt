@@ -117,6 +117,14 @@ class AgentdServices(
         ExperienceService(it, mentalActivityService, sessionMemoryService)
     }
 
+    /**
+     * 0.15（心情直觉化）：**每条用户消息之后**判一次心情。
+     *
+     * 与 [autoTriggers] 的关系：它每判一次都会推进 `auto_state.json` 的心情游标，
+     * 所以 0.13 的「每 4 条再判一次」不会再重复打模型（进化评估仍按 20 条走）。
+     */
+    val perMessageMood: MoodService? = moodService
+
     /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
     val chatService: ChatService? =
         store?.let {
@@ -125,7 +133,8 @@ class AgentdServices(
                 effectiveReplyGenerator,
                 autoTriggers = autoTriggers,
                 experience = experienceService,
-                delivery = delivery
+                delivery = delivery,
+                moodJudge = perMessageMood
             )
         }
 

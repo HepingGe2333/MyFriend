@@ -153,6 +153,44 @@ class MessageDelivery(
         store.appendTypingEvent(sessionId, personaId, EventType.TYPING_STARTED, enqueuedAt)
     }
 
+    /**
+     * 0.15：**离线也留队列记录**的立即投递。
+     *
+     * 后台消息（主动消息/日记提醒/延后回复）在客户端不在线时以前是「落库即发事件」，
+     * 队列里什么都没有；现在统一走「先入队、再立即写 `message.created` 并完成条目」：
+     * - 队列记录（`message_queue.json`）真实存在过，崩溃恢复线程/诊断能看到这一条；
+     * - `message.created` 事件照常写进 `events.jsonl`，客户端下次启动同步即可见；
+     * - 因为立即完成，队列不会堆积，行为与「落库即发事件」对客户端完全等价。
+     *
+     * 返回实际投递的条数（消息已被删除的条目会作废）。
+     */
+    fun deliverNow(
+        sessionId: String,
+        personaId: String,
+        messages: List<Message>,
+        now: Long = clock.millis()
+    ): Int {
+        if (messages.isEmpty()) return 0
+        val entries = messages.map { message ->
+            PendingDelivery(
+                id = UUID.randomUUID().toString(),
+                sessionId = sessionId,
+                personaId = personaId,
+                messageId = message.id,
+                visibleAt = message.visibleAt ?: message.createdAt,
+                enqueuedAt = now
+            )
+        }
+        store.enqueueDeliveries(entries)
+        var delivered = 0
+        for ((index, message) in messages.withIndex()) {
+            store.appendMessageCreatedEvent(sessionId, personaId, message, now)
+            store.completeDelivery(entries[index].id)
+            delivered += 1
+        }
+        return delivered
+    }
+
     // ------------------------------------------------------------------ 崩溃恢复
 
     /** 启动后台恢复线程（`Main` 在服务起来后调用；重复调用幂等）。 */

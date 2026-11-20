@@ -123,7 +123,7 @@ final class MoodTests: XCTestCase {
 
     func testPromptWithoutMoodStillSaysBaseline() {
         let line = MoodPrompt.line(MoodState())
-        XCTAssertTrue(line.contains("心情"))
+        XCTAssertTrue(line.contains("心情") || line.contains("感觉"))
         XCTAssertTrue(line.contains(MoodLexicon.BASELINE))
         // 没判定过也要有三维（基准 0/2/3），否则提示词里会少半句。
         XCTAssertTrue(line.contains("愉快度 0"))

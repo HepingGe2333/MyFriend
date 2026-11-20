@@ -21,7 +21,14 @@ data class ReplyRequest(
     /** 0.14：会话级「他的备忘录」（短期/长期摘要）；注入系统提示词的可变区域。 */
     val sessionMemory: com.yap.agentd.store.SessionMemory? = null,
     /** 0.14：最近一次心理活动（「你刚才心里想：…」）；过旧的不再注入。 */
-    val mentalActivity: com.yap.agentd.store.MentalActivity? = null
+    val mentalActivity: com.yap.agentd.store.MentalActivity? = null,
+    /**
+     * 0.15：这一轮工具回路最多几轮（模型/调用方指定）。
+     *
+     * `null` = 默认 5 轮；越界由 `ExperienceContract.clampToolRounds` 夹到 1..15
+     * （客户端传 0/负数/100 都不会打乱服务端）。
+     */
+    val requestedToolRounds: Int? = null
 )
 
 /**
@@ -103,7 +110,14 @@ data class SendMessageRequest(
     val clientMessageId: String,
     val content: String,
     val attachments: List<String> = emptyList(),
-    val replyTo: String? = null
+    val replyTo: String? = null,
+    /**
+     * 0.15：这一轮最多用几轮工具（`null` = 默认 5，夹到 1..15）。
+     *
+     * 为什么让调用方/模型能指定：复杂任务（查资料 → 读正文 → 核对 → 再说）5 轮够用，
+     * 但「帮我整理三天行程」这类可能要多查几次；默认值不能跟着上限一起放大。
+     */
+    val toolRounds: Int? = null
 ) {
     companion object {
         /** `clientMessageId` 的长度上限；它同时是幂等键。 */
@@ -152,7 +166,14 @@ class ChatService(
      * 0.14.1：服务端消息队列与 typing 指示器（`spec/experience` §8）。
      * `null` = 不启用延迟（落库即发 `message.created`，0.14 的旧行为；测试默认走这条）。
      */
-    private val delivery: com.yap.agentd.delivery.MessageDelivery? = null
+    private val delivery: com.yap.agentd.delivery.MessageDelivery? = null,
+    /**
+     * 0.15（心情直觉化）：每条用户消息之后判定一次心情。
+     *
+     * 时机是「落完用户消息、组提示词之前」：这一轮回复的语气必须反映**刚看到这句话之后**的心情。
+     * 失败只记日志（`MoodService` 自己会按时间衰减），绝不影响回复。
+     */
+    private val moodJudge: com.yap.agentd.mood.MoodService? = null
 ) {
 
     /** 同一 `(sessionId, clientMessageId)` 的并发生成只允许一个；生成完把锁从表里摘掉。 */
@@ -183,7 +204,7 @@ class ChatService(
                     return
                 }
                 // 用户消息在、回复不在：进程在两步之间被杀过，补生成一次。
-                generateAndPersist(sessionId, existing, safe)
+                generateAndPersist(sessionId, existing, safe, request.toolRounds)
                 return
             }
             val session = store.session(sessionId) ?: return
@@ -205,7 +226,7 @@ class ChatService(
                 safe.emit(SseEvent.Done("", Usage.ZERO, silent = true))
                 return
             }
-            generateAndPersist(sessionId, userMessage, safe)
+            generateAndPersist(sessionId, userMessage, safe, request.toolRounds)
         } finally {
             // 先在还持锁时判断有没有排队者，再把锁从表里摘掉：并发重复请求会等在同一个锁对象上，
             // 等到的那个看到回复已存在就走重放路径，不会第二次调生成器。
@@ -214,9 +235,25 @@ class ChatService(
         }
     }
 
-    private fun generateAndPersist(sessionId: String, userMessage: Message, sink: SafeSink) {
+    private fun generateAndPersist(
+        sessionId: String,
+        userMessage: Message,
+        sink: SafeSink,
+        toolRounds: Int? = null
+    ) {
         val session = store.session(sessionId) ?: return
         val now = store.serverTime()
+        // 0.15：每条用户消息之后重新判一次心情（在任何提示词组装之前），
+        // 失败按时间衰减、只记日志；同时推进自动判定游标，避免 AutoTriggers 再判一次。
+        moodJudge?.let { judge ->
+            runCatching { judge.evaluate(session.personaId, now) }
+                .onFailure { failure ->
+                    System.err.println(
+                        "[agentd] 每条消息的心情判定失败：${failure::class.simpleName}: ${failure.message}"
+                    )
+                }
+            runCatching { store.recordMoodAutoEval(session.personaId, now) }
+        }
         // 模型上下文**永久排除**拉黑期间的消息（解除后也不可见）：includeBlocked = false。
         val history = store.latestMessages(sessionId, historyLimit, includeBlocked = false)
         val request = ReplyRequest(
@@ -226,7 +263,8 @@ class ChatService(
             history = history,
             sessionMemory = store.sessionMemory(sessionId),
             mentalActivity = store.latestMentalActivity(session.personaId)
-                ?.takeIf { now - it.at <= MENTAL_ACTIVITY_CONTEXT_MS }
+                ?.takeIf { now - it.at <= MENTAL_ACTIVITY_CONTEXT_MS },
+            requestedToolRounds = toolRounds
         )
         val builder = StringBuilder()
         var outcome = ReplyOutcome(Usage.ZERO)
@@ -263,6 +301,8 @@ class ChatService(
                 .take(com.yap.agentd.tools.ToolExecutor.MAX_MESSAGES_PER_TURN)
             else -> splitIntoMessages(builder.toString())
         }
+        // 0.15：`remember` / `diary` / `defer_reply` 说明「接下来的安排变了」→ 短期缓存立刻更新。
+        val planChanged = outcome.toolsUsed.any { it in PLAN_CHANGING_TOOLS }
         if (outcome.suppressed) {
             // `stay_silent`（spec/mood §4）：这一轮**没有 assistant 消息**，只把会话标已读；
             // 客户端 UI 不显示任何占位气泡，只看到「已读」。用量照记（模型确实被调用了）。
@@ -271,12 +311,12 @@ class ChatService(
             }
             store.markSessionRead(sessionId)
             sink.emit(SseEvent.Done("", usage, silent = true))
-            afterChat(session.personaId, sessionId)
+            afterChat(session.personaId, sessionId, planChanged)
             return
         }
         if (failed && replyTexts.isEmpty()) {
             // 一个字都没生成出来：不落一条空 assistant 消息，避免污染历史。
-            afterChat(session.personaId, sessionId)
+            afterChat(session.personaId, sessionId, planChanged)
             return
         }
         if (replyTexts.isEmpty() && outcome.attachments.isEmpty()) {
@@ -285,7 +325,7 @@ class ChatService(
             store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
             store.markSessionRead(sessionId)
             sink.emit(SseEvent.Done("", usage, silent = true))
-            afterChat(session.personaId, sessionId)
+            afterChat(session.personaId, sessionId, planChanged)
             return
         }
         // 有附件但没有文字（sticker.send）：仍然落一条带附件的空正文消息（与 0.13 一致）。
@@ -338,7 +378,7 @@ class ChatService(
             }
             sink.emit(SseEvent.Done(persisted.last().id, usage))
         }
-        afterChat(session.personaId, sessionId)
+        afterChat(session.personaId, sessionId, planChanged)
     }
 
     /**
@@ -361,7 +401,7 @@ class ChatService(
      * 聊天结束后的自动动作（0.13 / 0.14）。**在任何情况下都不抛**：
      * 情绪判定失败要按时间衰减、进化评估失败只丢一条日志，聊天本身已经成功回完了。
      */
-    private fun afterChat(personaId: String, sessionId: String) {
+    private fun afterChat(personaId: String, sessionId: String, planChanged: Boolean = false) {
         val triggers = autoTriggers
         if (triggers != null) {
             runCatching { triggers.onChatCompleted(personaId) }
@@ -370,7 +410,7 @@ class ChatService(
                 }
         }
         val experienceService = experience ?: return
-        runCatching { experienceService.onChatCompleted(personaId, sessionId) }
+        runCatching { experienceService.onChatCompleted(personaId, sessionId, planChanged) }
             .onFailure { failure ->
                 System.err.println("[agentd] 体验功能触发失败：${failure::class.simpleName}: ${failure.message}")
             }
@@ -401,6 +441,13 @@ class ChatService(
 
         /** 心理活动注入下一轮的时效：太久以前的念头不再提（半小时）。 */
         const val MENTAL_ACTIVITY_CONTEXT_MS: Long = 30 * 60 * 1000L
+
+        /** 会让「接下来的计划」变化的工具：短期缓存看到它们就提前更新。 */
+        val PLAN_CHANGING_TOOLS: Set<String> = setOf(
+            com.yap.agentd.tools.ServerToolCatalog.REMEMBER,
+            com.yap.agentd.tools.ServerToolCatalog.DIARY,
+            com.yap.agentd.tools.ServerToolCatalog.DEFER_REPLY
+        )
 
         /** 空行（一个或多个，允许行内空白）。 */
         private val EMPTY_LINE = Regex("\\n[ \\t]*\\n")

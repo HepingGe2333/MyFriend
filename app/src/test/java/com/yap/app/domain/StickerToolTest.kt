@@ -332,7 +332,8 @@ class StickerToolTest {
         assertEquals(2, decoded.size)
         assertTrue(decoded[0].isSticker)
         assertEquals("STICKER", decoded[0].kind)
-        assertNull(decoded[1].kind)
+        // 0.15：新写入的普通图片显式写 IMAGE（读旧数据时才是 null，见下面 legacy）。
+        assertEquals(MessageAttachment.KIND_IMAGE, decoded[1].kind)
         val legacy = AttachmentsCodec.decode("""[{"uri":"file:///tmp/x.jpg","mime":"image/jpeg"}]""")
         assertEquals(1, legacy.size)
         assertNull("老数据没有 kind", legacy[0].kind)

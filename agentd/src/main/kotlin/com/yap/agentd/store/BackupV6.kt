@@ -347,6 +347,13 @@ internal object BackupV6 {
 
     fun sessionMemory(memory: SessionMemory): JsonValue.Obj = memory.toBackupJson()
 
+    /**
+     * 0.15：主动消息失败记录（服务端专有诊断段，客户端 `ignoreUnknownKeys` 会忽略）。
+     *
+     * 键名与磁盘文件 `proactive_failures.json` 完全一致，导入导出各一次都不丢字段。
+     */
+    fun proactiveFailure(failure: ProactiveFailure): JsonValue.Obj = failure.toJson()
+
     // ------------------------------------------------------------------ 小工具
 
     /** 数组或「JSON 数组字符串」（客户端 Room 列的形状）都归一成字符串数组。 */

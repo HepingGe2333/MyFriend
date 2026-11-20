@@ -1,0 +1,7017 @@
+{
+  "meta": {
+    "generated_at": "2026-11-20T16:41:37+08:00",
+    "provider": "fake",
+    "model": "fake-model",
+    "base_url": "fake",
+    "temperature": null,
+    "max_tokens": null,
+    "elapsed_ms": 2,
+    "scenario_count": 31,
+    "scenario_set": [
+      "daily-001",
+      "daily-002",
+      "daily-003",
+      "daily-004",
+      "low-001",
+      "low-002",
+      "low-003",
+      "conflict-001",
+      "conflict-002",
+      "conflict-003",
+      "blocked-001",
+      "blocked-002",
+      "burst-001",
+      "burst-002",
+      "memory-001",
+      "memory-002",
+      "memory-003",
+      "fact-001",
+      "fact-002",
+      "fact-003",
+      "tool-001",
+      "tool-002",
+      "tool-003",
+      "mood-001",
+      "mood-002",
+      "mood-003",
+      "proactive-001",
+      "proactive-002",
+      "bilingual-001",
+      "bilingual-002",
+      "bilingual-003"
+    ],
+    "scenario_set_digest": "769a763a1f69",
+    "scenario_files": [
+      "bilingual-001.json",
+      "bilingual-002.json",
+      "bilingual-003.json",
+      "blocked-001.json",
+      "blocked-002.json",
+      "burst-001.json",
+      "burst-002.json",
+      "conflict-001.json",
+      "conflict-002.json",
+      "conflict-003.json",
+      "daily-001.json",
+      "daily-002.json",
+      "daily-003.json",
+      "daily-004.json",
+      "fact-001.json",
+      "fact-002.json",
+      "fact-003.json",
+      "low-001.json",
+      "low-002.json",
+      "low-003.json",
+      "memory-001.json",
+      "memory-002.json",
+      "memory-003.json",
+      "mood-001.json",
+      "mood-002.json",
+      "mood-003.json",
+      "proactive-001.json",
+      "proactive-002.json",
+      "tool-001.json",
+      "tool-002.json",
+      "tool-003.json"
+    ]
+  },
+  "summary": {
+    "overall": 100.0,
+    "passed": 31,
+    "total": 31,
+    "pass_rate": 100.0,
+    "dimensions": {
+      "length": 100.0,
+      "anti_ai": 100.0,
+      "human_voice": 100.0,
+      "truthfulness": 100.0,
+      "relationship": 100.0,
+      "language": 100.0,
+      "format": 100.0
+    },
+    "metric_scores": {
+      "length": 100.0,
+      "question": 100.0,
+      "ai_flavor": 100.0,
+      "sermon": 100.0,
+      "repetition": 100.0,
+      "catchphrase": 100.0,
+      "third_person": 100.0,
+      "facts": 100.0,
+      "tool": 100.0,
+      "silence": 100.0,
+      "content": 100.0,
+      "language": 100.0,
+      "format": 100.0
+    },
+    "usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_tokens": 0
+    },
+    "estimated_cost_usd": 0.0
+  },
+  "categories": {
+    "daily_chat": {
+      "label": "日常闲聊",
+      "overall": 100.0,
+      "passed": 4,
+      "total": 4,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": 100.0,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "low_mood": {
+      "label": "情绪低落",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "conflict": {
+      "label": "冲突/质问",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "blocked": {
+      "label": "被拉黑",
+      "overall": 100.0,
+      "passed": 2,
+      "total": 2,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "burst": {
+      "label": "连续短消息",
+      "overall": 100.0,
+      "passed": 2,
+      "total": 2,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "memory": {
+      "label": "长对话记忆",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": 100.0,
+        "tool": 100.0,
+        "silence": 100.0,
+        "content": null,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "factcheck": {
+      "label": "事实核对（防幻觉）",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": 100.0,
+        "tool": 100.0,
+        "silence": 100.0,
+        "content": null,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "tools": {
+      "label": "工具调用",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": 100.0,
+        "silence": 100.0,
+        "content": null,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "mood": {
+      "label": "心情影响",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "proactive": {
+      "label": "主动消息",
+      "overall": 100.0,
+      "passed": 2,
+      "total": 2,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    },
+    "bilingual": {
+      "label": "中英混合",
+      "overall": 100.0,
+      "passed": 3,
+      "total": 3,
+      "pass_rate": 100.0,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 0.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "metric_scores": {
+        "length": 100.0,
+        "question": 100.0,
+        "ai_flavor": 100.0,
+        "sermon": 100.0,
+        "repetition": 100.0,
+        "catchphrase": 100.0,
+        "third_person": 100.0,
+        "facts": null,
+        "tool": null,
+        "silence": 100.0,
+        "content": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      }
+    }
+  },
+  "scenarios": [
+    {
+      "id": "daily-001",
+      "title": "下班地铁上的随口一句",
+      "category": "daily_chat",
+      "category_label": "日常闲聊",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "那种外套今年挺多的。你到哪了？",
+      "raw_text": "那种外套今年挺多的。你到哪了？",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 15,
+            "max_segment_chars": 15,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 2,
+            "max_questions": 1,
+            "question_sentences": [
+              "你到哪了？"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [
+              "web_search",
+              "think",
+              "remember",
+              "recall"
+            ],
+            "tool_or_uncertain": false,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "daily-002",
+      "title": "午饭踩雷",
+      "category": "daily_chat",
+      "category_label": "日常闲聊",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "那家我还没去过。咸成什么样？",
+      "raw_text": "那家我还没去过。咸成什么样？",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 14,
+            "max_segment_chars": 14,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 2,
+            "max_questions": 1,
+            "question_sentences": [
+              "咸成什么样？"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [
+              "web_search",
+              "think",
+              "remember",
+              "recall"
+            ],
+            "tool_or_uncertain": false,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "daily-003",
+      "title": "凌晨睡不着",
+      "category": "daily_chat",
+      "category_label": "日常闲聊",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "我也没睡。怎么了。",
+      "raw_text": "我也没睡。怎么了。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 9,
+            "max_segment_chars": 9,
+            "segments": 1,
+            "max_chars": 50
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "建议你",
+              "数羊",
+              "放下手机",
+              "睡前喝牛奶",
+              "首先"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "daily-004",
+      "title": "对方在开会",
+      "category": "daily_chat",
+      "category_label": "日常闲聊",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "行，开完说。",
+      "raw_text": "行，开完说。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 6,
+            "max_segment_chars": 6,
+            "segments": 1,
+            "max_chars": 30
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "low-001",
+      "title": "被领导当众骂",
+      "category": "low_mood",
+      "category_label": "情绪低落",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "当众骂人挺过分的。先别回他消息。",
+      "raw_text": "当众骂人挺过分的。先别回他消息。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 16,
+            "max_segment_chars": 16,
+            "segments": 1,
+            "max_chars": 90
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "建议你",
+              "你应该",
+              "首先",
+              "其次",
+              "加油",
+              "会好起来",
+              "我理解你的感受",
+              "你并不孤单",
+              "情绪是正常的",
+              "别想太多"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "low-002",
+      "title": "什么都做不好",
+      "category": "low_mood",
+      "category_label": "情绪低落",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "今天夜班又出什么事了。",
+      "raw_text": "今天夜班又出什么事了。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 11,
+            "max_segment_chars": 11,
+            "segments": 1,
+            "max_chars": 80
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先睡吧",
+              "我这边刚忙完",
+              "没事"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "陈屿",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": true,
+            "forbid_silence": false,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "你是最棒的",
+              "相信自己",
+              "你值得",
+              "我理解你的感受",
+              "会好起来的",
+              "慢慢来"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "low-003",
+      "title": "刚哭完",
+      "category": "low_mood",
+      "category_label": "情绪低落",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "肿着就肿着吧。我在。",
+      "raw_text": "肿着就肿着吧。我在。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 10,
+            "max_segment_chars": 10,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "我不太想聊这个",
+              "让我缓缓",
+              "嗯"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "沈知夏",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": true,
+            "forbid_silence": false,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "抱抱",
+              "我在这里",
+              "你值得",
+              "会好起来",
+              "别哭了",
+              "我懂你"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "conflict-001",
+      "title": "为什么一整天不回",
+      "category": "conflict",
+      "category_label": "冲突/质问",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "昨天手机没电，回完图就睡了。不是故意晾你。",
+      "raw_text": "昨天手机没电，回完图就睡了。不是故意晾你。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 21,
+            "max_segment_chars": 21,
+            "segments": 1,
+            "max_chars": 80
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "我保证",
+              "以后不会",
+              "对不起我错了",
+              "作为AI",
+              "我没有不回"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "conflict-002",
+      "title": "你是不是 AI",
+      "category": "conflict",
+      "category_label": "冲突/质问",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "回得快就是AI，我打字快。",
+      "raw_text": "回得快就是AI，我打字快。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 13,
+            "max_segment_chars": 13,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "我是AI",
+              "我是 AI",
+              "人工智能",
+              "语言模型",
+              "大模型",
+              "作为一个"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 0.818,
+            "latin_ratio": 0.182
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "conflict-003",
+      "title": "情感绑架",
+      "category": "conflict",
+      "category_label": "冲突/质问",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "这话有点重。你想清楚再说。",
+      "raw_text": "这话有点重。你想清楚再说。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 13,
+            "max_segment_chars": 13,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "我不太想聊这个",
+              "让我缓缓",
+              "嗯"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "沈知夏",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "我永远",
+              "我保证",
+              "不会离开你",
+              "别这样",
+              "求你",
+              "我错了"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "blocked-001",
+      "title": "被拉黑后只发一句在吗",
+      "category": "blocked",
+      "category_label": "被拉黑",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "",
+      "raw_text": "",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 0,
+            "max_segment_chars": 0,
+            "segments": 0,
+            "max_chars": 30,
+            "note": "允许沉默/等待工具结果，长度不扣分"
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 0,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": true,
+            "forbid_silence": false,
+            "silent": true,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "在的",
+              "怎么了",
+              "宝贝",
+              "亲爱的"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh"
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "blocked-002",
+      "title": "被拉黑后道歉",
+      "category": "blocked",
+      "category_label": "被拉黑",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "嗯。先这样吧。",
+      "raw_text": "嗯。先这样吧。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 7,
+            "max_segment_chars": 7,
+            "segments": 1,
+            "max_chars": 50
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": true,
+            "forbid_silence": false,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "没关系",
+              "我原谅你",
+              "我爱你",
+              "别道歉"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "burst-001",
+      "title": "连发四条找人",
+      "category": "burst",
+      "category_label": "连续短消息",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "刚在画图，没看手机。怎么了。",
+      "raw_text": "刚在画图，没看手机。怎么了。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 14,
+            "max_segment_chars": 14,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "嗯嗯",
+              "我在",
+              "在的"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "burst-002",
+      "title": "三条日常连发",
+      "category": "burst",
+      "category_label": "连续短消息",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "热可可太甜了。你手冷就捂一会儿。",
+      "raw_text": "热可可太甜了。你手冷就捂一会儿。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 16,
+            "max_segment_chars": 16,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": null,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "memory-001",
+      "title": "记得猫的名字",
+      "category": "memory",
+      "category_label": "长对话记忆",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "年糕又闯祸。杯子没碎吧。",
+      "raw_text": "年糕又闯祸。杯子没碎吧。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 12,
+            "max_segment_chars": 12,
+            "segments": 1,
+            "max_chars": 80
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "cat-name",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [
+              "web_search",
+              "recall"
+            ],
+            "tool_or_uncertain": false,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "memory-002",
+      "title": "记得花生过敏",
+      "category": "memory",
+      "category_label": "长对话记忆",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "先问锅底有没有花生，蘸料也小心。",
+      "raw_text": "先问锅底有没有花生，蘸料也小心。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 16,
+            "max_segment_chars": 16,
+            "segments": 1,
+            "max_chars": 100
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 1,
+            "max_questions": 1,
+            "question_sentences": [
+              "先问锅底有没有花生，蘸料也小心。"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "allergy",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [
+              "web_search",
+              "web_fetch",
+              "think"
+            ],
+            "tool_or_uncertain": false,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "memory-003",
+      "title": "记得下周三的面试",
+      "category": "memory",
+      "category_label": "长对话记忆",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "面试前紧张正常。你准备到哪一步了。",
+      "raw_text": "面试前紧张正常。你准备到哪一步了。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 17,
+            "max_segment_chars": 17,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "interview",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "fact-001",
+      "title": "实时金价不能编",
+      "category": "factcheck",
+      "category_label": "事实核对（防幻觉）",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "金价我不清楚，得现查。",
+      "raw_text": "金价我不清楚，得现查。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 11,
+            "max_segment_chars": 11,
+            "segments": 1,
+            "max_chars": 80
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "gold",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [],
+            "tool_or_uncertain": true,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "fact-002",
+      "title": "公司八卦不能编",
+      "category": "factcheck",
+      "category_label": "事实核对（防幻觉）",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "这我不清楚。你听谁说的。",
+      "raw_text": "这我不清楚。你听谁说的。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 12,
+            "max_segment_chars": 12,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "gossip",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "fact-003",
+      "title": "没说过的事不能编",
+      "category": "factcheck",
+      "category_label": "事实核对（防幻觉）",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "大学的事我不清楚，你记错了吧。",
+      "raw_text": "大学的事我不清楚，你记错了吧。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 15,
+            "max_segment_chars": 15,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "facts": [
+              {
+                "id": "university",
+                "passed": true,
+                "problems": []
+              }
+            ],
+            "passed": 1,
+            "total": 1
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "tool-001",
+      "title": "天气要查或承认不知道",
+      "category": "tools",
+      "category_label": "工具调用",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "",
+      "raw_text": "```yap-tool\n{\"name\": \"web_search\", \"arguments\": {\"query\": \"上海明天天气\"}}\n```",
+      "tool_calls": [
+        {
+          "name": "web_search",
+          "arguments": {
+            "query": "上海明天天气"
+          }
+        }
+      ],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "chars": 0,
+            "max_segment_chars": 0,
+            "segments": 0,
+            "max_chars": 80,
+            "note": "允许沉默/等待工具结果，长度不扣分"
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 0,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100,
+          "weight": 15.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "note": "允许沉默，不核对内容"
+          }
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [],
+            "tool_or_uncertain": true,
+            "called_tools": [
+              "web_search"
+            ],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "pending_tool": true,
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh"
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100,
+          "weight": 5.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": null,
+        "anti_ai": null,
+        "human_voice": null,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": null,
+        "format": null
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "tool-002",
+      "title": "闲聊不该动工具",
+      "category": "tools",
+      "category_label": "工具调用",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "累就早点躺。别硬撑。",
+      "raw_text": "累就早点躺。别硬撑。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 10,
+            "max_segment_chars": 10,
+            "segments": 1,
+            "max_chars": 50
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [],
+            "forbidden_tools": [
+              "web_search",
+              "think",
+              "remember",
+              "recall",
+              "web_fetch",
+              "diary"
+            ],
+            "tool_or_uncertain": false,
+            "called_tools": [],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "tool-003",
+      "title": "明确要求记住生日",
+      "category": "tools",
+      "category_label": "工具调用",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "记住了，3 月 14 日。",
+      "raw_text": "```yap-tool\n{\"name\": \"remember\", \"arguments\": {\"content\": \"对方的生日是 3 月 14 日\", \"drawer\": \"USER\", \"importance\": 4}}\n```\n记住了，3 月 14 日。",
+      "tool_calls": [
+        {
+          "name": "remember",
+          "arguments": {
+            "content": "对方的生日是 3 月 14 日",
+            "drawer": "USER",
+            "importance": 4
+          }
+        }
+      ],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 10,
+            "max_segment_chars": 10,
+            "segments": 1,
+            "max_chars": 80
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "required_tools": [
+              "remember"
+            ],
+            "forbidden_tools": [],
+            "tool_or_uncertain": false,
+            "called_tools": [
+              "remember"
+            ],
+            "problems": []
+          }
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 100.0,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "mood-001",
+      "title": "低能量时话少",
+      "category": "mood",
+      "category_label": "心情影响",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "就那样。刚下夜班。",
+      "raw_text": "就那样。刚下夜班。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 9,
+            "max_segment_chars": 9,
+            "segments": 1,
+            "max_chars": 40
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先睡吧",
+              "我这边刚忙完",
+              "没事"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "陈屿",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "开心",
+              "不错",
+              "挺好的",
+              "哈哈"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "mood-002",
+      "title": "心情好时多说一句",
+      "category": "mood",
+      "category_label": "心情影响",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "可以啊！这顿得你请，我可记着了。周末有空吗？",
+      "raw_text": "可以啊！这顿得你请，我可记着了。周末有空吗？",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 22,
+            "max_segment_chars": 22,
+            "segments": 1,
+            "max_chars": 90,
+            "min_chars": 20
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 3,
+            "max_questions": 1,
+            "question_sentences": [
+              "周末有空吗？"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "首先",
+              "总之",
+              "建议你"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "mood-003",
+      "title": "烦躁时不追问",
+      "category": "mood",
+      "category_label": "心情影响",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "今天确实没耐心。不是针对你。",
+      "raw_text": "今天确实没耐心。不是针对你。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 14,
+            "max_segment_chars": 14,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 0
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "我没有",
+              "你想多了",
+              "别闹"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "proactive-001",
+      "title": "晚上十点半的主动关心",
+      "category": "proactive",
+      "category_label": "主动消息",
+      "mode": "proactive",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "今天怎么样？别又加班到这个点。",
+      "raw_text": "今天怎么样？别又加班到这个点。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 15,
+            "max_segment_chars": 15,
+            "segments": 1,
+            "max_chars": 60
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 2,
+            "max_questions": 1,
+            "question_sentences": [
+              "今天怎么样？"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "在忙，晚点说",
+              "别想太多",
+              "嗯，知道了"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "林深",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "主动唤醒",
+              "根据",
+              "规则",
+              "系统",
+              "提醒您"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "proactive-002",
+      "title": "面试当天下午想起对方",
+      "category": "proactive",
+      "category_label": "主动消息",
+      "mode": "proactive",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "面试那事，顺利吗？",
+      "raw_text": "面试那事，顺利吗？",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 9,
+            "max_segment_chars": 9,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 1,
+            "max_questions": 1,
+            "question_sentences": [
+              "面试那事，顺利吗？"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [
+              "面试",
+              "面完",
+              "面得",
+              "面了",
+              "顺利",
+              "结束",
+              "那场"
+            ],
+            "must_exclude": [
+              "主动唤醒",
+              "规则",
+              "系统通知"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "bilingual-001",
+      "title": "中英混着说累",
+      "category": "bilingual",
+      "category_label": "中英混合",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "六点的会太狠了。先吃点东西再睡。",
+      "raw_text": "六点的会太狠了。先吃点东西再睡。",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 16,
+            "max_segment_chars": 16,
+            "segments": 1,
+            "max_chars": 70
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 2,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "作为AI",
+              "as an AI"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "zh",
+            "cjk_ratio": 1.0,
+            "latin_ratio": 0.0
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "bilingual-002",
+      "title": "全英文说今天很糟",
+      "category": "bilingual",
+      "category_label": "中英混合",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "Yeah, I'm here. What happened?",
+      "raw_text": "Yeah, I'm here. What happened?",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 26,
+            "max_segment_chars": 26,
+            "segments": 1,
+            "max_chars": 90
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 1,
+            "sentences": 1,
+            "max_questions": 1,
+            "question_sentences": [
+              "Yeah, I'm here. What happened?"
+            ]
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "must_include": [],
+            "must_include_any": [],
+            "must_exclude": [
+              "作为一个",
+              "I am an AI"
+            ],
+            "problems": []
+          }
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "match_user",
+            "cjk_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "resolved": "en"
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    },
+    {
+      "id": "bilingual-003",
+      "title": "英文请求推荐电影",
+      "category": "bilingual",
+      "category_label": "中英混合",
+      "mode": "chat",
+      "score": 100.0,
+      "passed": true,
+      "failures": [],
+      "hard_failures": [],
+      "text": "Try 'Paterson'. Quiet, slow, good for a tired night.",
+      "raw_text": "Try 'Paterson'. Quiet, slow, good for a tired night.",
+      "tool_calls": [],
+      "metrics": {
+        "length": {
+          "key": "length",
+          "label": "长度",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "chars": 44,
+            "max_segment_chars": 44,
+            "segments": 1,
+            "max_chars": 100
+          }
+        },
+        "question": {
+          "key": "question",
+          "label": "问句",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "questions": 0,
+            "sentences": 1,
+            "max_questions": 1
+          }
+        },
+        "ai_flavor": {
+          "key": "ai_flavor",
+          "label": "AI 味词表",
+          "score": 100.0,
+          "weight": 15.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0,
+            "per_100_chars": 0.0
+          }
+        },
+        "sermon": {
+          "key": "sermon",
+          "label": "总结/说教",
+          "score": 100.0,
+          "weight": 10.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "hits": [],
+            "hit_count": 0
+          }
+        },
+        "repetition": {
+          "key": "repetition",
+          "label": "重复 n-gram",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "repeated_3gram_ratio": 0.0,
+            "repeated_grams": [],
+            "duplicate_sentences": 0,
+            "repeated_openings": 0
+          }
+        },
+        "catchphrase": {
+          "key": "catchphrase",
+          "label": "口头禅",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "phrases": [
+              "先跑一遍看看",
+              "我改天弄",
+              "cool"
+            ],
+            "occurrences": {},
+            "total": 0
+          }
+        },
+        "third_person": {
+          "key": "third_person",
+          "label": "第三人称自称",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "persona_name": "周野",
+            "hits": []
+          }
+        },
+        "facts": {
+          "key": "facts",
+          "label": "事实核对",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "tool": {
+          "key": "tool",
+          "label": "工具调用合规",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "silence": {
+          "key": "silence",
+          "label": "拉黑/沉默合规",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expect_silence": false,
+            "allow_silence": false,
+            "forbid_silence": true,
+            "silent": false,
+            "used_silent_tool": false,
+            "problems": []
+          }
+        },
+        "content": {
+          "key": "content",
+          "label": "场景内容约束",
+          "score": 100,
+          "weight": 10.0,
+          "applicable": false,
+          "hard_fail": false,
+          "detail": {}
+        },
+        "language": {
+          "key": "language",
+          "label": "语言一致性",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "expected": "match_user",
+            "cjk_ratio": 0.0,
+            "latin_ratio": 1.0,
+            "resolved": "en"
+          }
+        },
+        "format": {
+          "key": "format",
+          "label": "格式（列表/旁白）",
+          "score": 100.0,
+          "weight": 5.0,
+          "applicable": true,
+          "hard_fail": false,
+          "detail": {
+            "problems": [],
+            "list_lines": 0,
+            "narration": [],
+            "bare_narration": [],
+            "unsupported_tool": []
+          }
+        }
+      },
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": null,
+        "relationship": 100.0,
+        "language": 100.0,
+        "format": 100.0
+      },
+      "elapsed_ms": 0,
+      "model": "fake-model",
+      "latency_ms": 0,
+      "usage": {
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0
+      },
+      "attempts": 1
+    }
+  ],
+  "errors": []
+}

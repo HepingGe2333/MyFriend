@@ -189,19 +189,24 @@ class MoodDimensionsTest {
     // ------------------------------------------------------------- 提示词
 
     @Test
-    fun `多维心情段按规范 §3 写出三个维度`() {
+    fun `多维心情段按 0_15 直觉优先的顺序写`() {
         val lines = MoodDimensions.promptLines(
             MoodReading(label = "有点累", intensity = 3, valence = -1, arousal = 1, dominance = 2, reason = "今天加班")
         )
         val text = lines.joinToString("\n")
-        assertTrue(text.contains("心情：有点累（强度 3/5）"))
-        assertTrue(text.contains("愉快度 -1"))
-        assertTrue(text.contains("唤醒度 1/5"))
-        assertTrue(text.contains("掌控感 2/5"))
-        assertTrue(text.contains("原因：今天加班"))
+        // 第一行必须是直觉结论（标签 + 强度），不是三维数值。
+        assertTrue("第一行是直觉结论", lines.first() == "心情：有点累（强度 3/5）。")
+        assertTrue("第二行是直觉理由", lines[1] == "一句直觉：今天加班")
         assertTrue(text.contains("- 这会影响你怎么说："))
         assertTrue(text.contains("不要直接报数值"))
         assertTrue(text.contains("用说话方式体现"))
+        // 三维仍然在（备注），但排在生成指导之后，并明确「不要念出来」。
+        assertTrue(text.contains("愉快度 -1 / 唤醒度 1/5 / 掌控感 2/5"))
+        assertTrue(text.contains("只是你自己的记录，不要念出来"))
+        assertTrue(
+            "三维不能当主表达：它必须在语气指导之后",
+            text.indexOf("愉快度") > text.indexOf("这会影响你怎么说")
+        )
     }
 
     @Test

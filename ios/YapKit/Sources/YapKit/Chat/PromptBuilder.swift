@@ -214,6 +214,27 @@ public enum PromptBuilder {
         return text
     }
 
+    /// 0.15 上下文装配 v2 的第 1 段：**完整设定 + 工具**（不含记忆/状态/主题/历史）。
+    ///
+    /// 为什么从 `systemPrompt` 里拆出来：v2 的固定顺序是
+    /// 「完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 主题总结 → 最近历史」，
+    /// 记忆与状态要插在人设之后、历史之前；把「人设 + 工具」做成独立一段，
+    /// 顺序就由 `ContextAssemblerV2` 一处决定，而不是在两个函数里各拼一半。
+    ///
+    /// 内容与 `systemPrompt` 完全一致（同一个渲染器），只是把六段可变内容清空。
+    public static func personaAndToolsPrompt(_ input: SystemPromptInput) -> String {
+        var fixed = input
+        fixed.stateBlock = ""
+        fixed.presenceBlock = ""
+        fixed.memoriesBlock = ""
+        fixed.earlierMemoryBlock = ""
+        fixed.memoBlock = ""
+        fixed.mentalActivityBlock = ""
+        fixed.moodBlock = ""
+        fixed.moodPaceBlock = ""
+        return systemPrompt(fixed)
+    }
+
     /// 「用对方的语言回答」这一节。
     ///
     /// 为什么放在最后一节：前面的段落都是「他是谁 / 他记得什么 / 他能做什么」，

@@ -154,6 +154,8 @@ class PersonaRepository @Inject constructor(
             quietWakeMinutes = draft.quietWakeMinutes?.let(SleepPolicy::normalizeMinutes),
             worldJson = draft.worldJson?.trim()?.takeIf { it.isNotBlank() },
             speechStyleJson = draft.speechStyleJson?.trim()?.takeIf { it.isNotBlank() },
+            // 0.15：人格自己的提示词语言；认不出的标签按「没选过」处理（回落中文）。
+            languageTag = com.yap.app.domain.PromptLanguage.parse(draft.languageTag)?.code,
             updatedAt = now
         )
         // M5：服务端模式下先让服务端接受这次保存，成功之后才允许写 Room 缓存。

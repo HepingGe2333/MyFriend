@@ -23,14 +23,14 @@ import javax.inject.Singleton
 /**
  * 服务端返回的心情 → 本地多维心情（纯映射，0.13）。
  *
- * 服务端 `MoodRoutes` 已经做过「单次变化 ≤2 / 越界夹取」，但客户端仍要自己再规整一次：
+ * 服务端 `MoodRoutes` 已经做过夹取，但客户端仍要自己再规整一次：
  * 旧版本服务端可能只给 label/intensity（三个维度缺省），而本地提示词依赖它们连续存在。
  * 这里复用 [MoodDimensions] 的同一套规则，绝不写第二份范围/夹取逻辑。
  */
 object ServerMoodMapping {
 
     /**
-     * @param previous 上一轮本地心情（用来限制单次变化幅度）
+     * @param previous 上一轮本地心情（服务端没给某个字段时沿用）
      * @return 可直接 `MoodRepository.setReading` 的值；服务端没给标签时返回 null（不写库）
      */
     fun toReading(server: ServerMood, previous: MoodReading, now: Long): MoodReading? {
@@ -47,7 +47,9 @@ object ServerMoodMapping {
         // 旧服务端没有三维字段时解出来是 0/2/3（DTO 默认值）：对 valence 来说 0 是合法值，
         // 但「缺字段」与「真的平静」在本地无法区分。这里按「服务端说了算」处理：
         // /v1/state 与 evaluate 的 Mood.toJson 一定带三维，缺字段只可能是更老的服务端。
-        return MoodDimensions.limitChange(previous, normalized)
+        // 0.15：取消「每维最多变 2」的限制，只做物理范围夹取（normalize 已做）。
+        // 服务端算出来的心情就是他的真实反应，客户端不再二次压平。
+        return normalized
     }
 }
 
@@ -60,7 +62,7 @@ object ServerMoodMapping {
  *   UI/离线/提示词继续读同一份 `Personas.mood*` 列。
  *
  * 四条纪律与本地判定完全一致：
- * 1. **每 4 条用户消息**（或 24 小时 + 有新消息）才判定一次，游标存在 SettingsRepository 的
+ * 1. **每条用户消息后**判定一次（0.15），游标存在 SettingsRepository 的
  *    同一组 `moodJudge*` 键里——切模式不会重复判定；
  * 2. **单飞**：同一时刻只发一次请求；
  * 3. **游标先推进**：失败也算这一轮过去了，不会变成每条消息一次请求；

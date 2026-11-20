@@ -1,6 +1,7 @@
 package com.yap.app.data.remote
 
 import com.yap.app.BuildConfig
+import com.yap.app.domain.MediaHashes
 import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.serialization.SerializationException
@@ -450,7 +451,19 @@ class ServerApi(
                 code = "invalid_response"
             )
         }
-        return media.copy(url = media.url.ifBlank { ServerMediaRef.canonical(media.id).orEmpty() })
+        // 0.15：DTO 的 kind/mime 必须能对上；未知类型**拒绝**（不猜成图片/不猜目录）。
+        // 旧服务端可能只回其中一个字段——缺失的一侧不拦，但写了就必须合法。
+        serverMediaTypeRejection(media.kind, media.mime)?.let { rejection ->
+            throw ServerApiException(
+                "server returned a media entry with an unsupported type (${rejection.code})",
+                code = "invalid_response"
+            )
+        }
+        return media.copy(
+            url = media.url.ifBlank { ServerMediaRef.canonical(media.id).orEmpty() },
+            // 哈希也归一：服务端旧版本/代理可能给的不是 64 位 hex，那种值等于「没有哈希」。
+            sha256 = MediaHashes.normalize(media.sha256).orEmpty()
+        )
     }
 
     /**
@@ -461,7 +474,22 @@ class ServerApi(
     suspend fun downloadMedia(
         mediaRef: String,
         maxBytes: Int = ServerMediaLimits.MAX_DOWNLOAD_BYTES
-    ): ByteArray {
+    ): ByteArray = downloadMediaWithMeta(mediaRef, maxBytes).bytes
+
+    /**
+     * 同 [downloadMedia]，但把服务端的 `ETag`（= 内容 sha256）一起带回来（0.15）。
+     *
+     * 服务端 `GET /v1/media/{id}` 的 ETag 就是 `"<sha256>"`（内容寻址、不可变）。
+     * 落盘端（`ServerMediaMaterializer`）用它对下载字节做一次校验：
+     * 不一致说明链路/代理/缓存坏了——宁可这条失败重试，也不能把坏字节写进库。
+     *
+     * 没有 ETag（旧服务端/中间代理剥掉了）时 [ServerMediaDownload.sha256] 是 null，
+     * 调用方按「服务端没给哈希」处理，行为与 0.14 一致。
+     */
+    suspend fun downloadMediaWithMeta(
+        mediaRef: String,
+        maxBytes: Int = ServerMediaLimits.MAX_DOWNLOAD_BYTES
+    ): ServerMediaDownload {
         val id = ServerMediaRef.idOf(mediaRef)
             ?: throw ServerApiException("not a media reference", code = "invalid_argument")
         val request = requestBuilder(url("v1", "media", id)).get().build()
@@ -487,7 +515,11 @@ class ServerApi(
                     output.write(chunk, 0, read)
                 }
             }
-            output.toByteArray()
+            // ETag 里可能带弱校验前缀（`W/"…"`）与引号；normalize 只认 64 位 hex。
+            ServerMediaDownload(
+                bytes = output.toByteArray(),
+                sha256 = MediaHashes.normalize(response.header("ETag"))
+            )
         }
     }
 

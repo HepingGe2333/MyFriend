@@ -58,7 +58,23 @@ public let backupFormatName: String = "myfriend.backup"
 /// - `messages.attachmentsJson[]` 的 `kind` / `durationMs` 一起带走（语音/视频的时长
 ///   在服务端不下发，丢了就永远显示 `--:--`）。
 /// v1–v5 备份继续能读：缺 `stickers` / `diaryNotes` → 空数组（= 他没有表情和便条）。
-public let backupFormatVersion: Int = 6
+///
+/// v7（0.15，schema v19）：「把他带走」也要带走 0.15 新长出来的东西，换机之后他仍然是
+/// **同一个人**，而不是「忘了自己刚想过什么、把你说过的话又忘一遍」。
+/// - `personas[]` 增加三个拉黑字段：`blockedUntil` / `blockReason` / `blockProposalJson`
+///  （0.14 的拉黑状态与未确认提议；到期与否由时间决定，不写第二个状态位）；
+/// - `personas[]` 增加 `languageTag`（0.15）：人格自己的提示词语言；
+/// - `messages[]` 增加 `blocked`：拉黑期间用户发来的消息在换机后仍然对模型不可见
+///  （否则「解除拉黑」后新机器会把那几句喂给模型，与规范 §2 相反）；
+/// - 顶层新增 `mentalActivities[]`（最近的心理活动，≤50 条/人格）与 `sessionMemory[]`
+///  （会话备忘录：短期 / 长期摘要 + **主题总结** + 三个节流游标）；
+/// - `media[]` 增加可选 `sha256`（对 base64 解码后的**原始字节**求，64 位小写 hex）：
+///   导入时非空就校验，不一致的那一条跳过并计数（老备份没有这个键 → 跳过校验）；
+/// - 服务端备份的 `extensions.mentalActivities` / `extensions.sessionMemory` 会被**当成
+///   对应的顶层段读进来**（服务端自己那套键名不用客户端理解），`extensions.proactiveFailures`
+///   落到本机诊断表（见 `ProactiveFailureStore`）。客户端导出从不写 `extensions`。
+/// v1–v6 备份继续能读：缺上面的新段 → 空数组 / nil / false（行为与 0.14 完全一致）。
+public let backupFormatVersion: Int = 7
 
 // MARK: - 顶层
 
@@ -91,6 +107,21 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
     public var stickers: [BackupSticker]
     /// v6：他自己的日记便条（含提醒）。老备份没有这一段 → 空数组。
     public var diaryNotes: [BackupDiaryNote]
+    /// v7：他最近的心理活动（私密念头 + 当时的心情快照）。老备份没有这一段 → 空数组。
+    ///
+    /// 只带每个人的最近若干条（`BackupService.exportMentalActivitiesPerPersona`）：
+    /// 这是「最近在想什么」的工作记忆，不是需要全史的业务数据。
+    public var mentalActivities: [BackupMentalActivity]
+    /// v7：会话备忘录（短期 / 长期摘要 + 主题总结 + 节流游标）。老备份没有这一段 → 空数组。
+    ///
+    /// 换机后「你的备忘录」要还在：否则他会把你们刚聊过的话题再问一遍。
+    public var sessionMemory: [BackupSessionMemory]
+    /// v7：服务端诊断段（只在**读取服务端备份**时出现，`extensions.proactiveFailures`）。
+    ///
+    /// 客户端备份**从不写**这个键：它是服务端专有的失败记录，本机只负责落进诊断表
+    /// （`ProactiveFailureStore`），不参与跨端契约。`BackupBundle.encode(to:)` 手写编码
+    /// 把它排除在外，所以读到过它的备份再导出也不会多出这个键。
+    public var proactiveFailures: [BackupProactiveFailure]?
     public var apiConfigs: [BackupApiConfig]
     /// 可移植的设置。为 nil 表示这份备份里没有设置这一段（老版本或手写的备份）：
     /// 接回来时设置页保持原样，绝不拿一份「没有设置的备份」把用户现在的偏好清成默认值。
@@ -113,6 +144,9 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         memoryConsolidations: [BackupMemoryConsolidation] = [],
         stickers: [BackupSticker] = [],
         diaryNotes: [BackupDiaryNote] = [],
+        mentalActivities: [BackupMentalActivity] = [],
+        sessionMemory: [BackupSessionMemory] = [],
+        proactiveFailures: [BackupProactiveFailure]? = nil,
         apiConfigs: [BackupApiConfig] = [],
         settings: BackupSettings? = nil
     ) {
@@ -132,6 +166,9 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         self.memoryConsolidations = memoryConsolidations
         self.stickers = stickers
         self.diaryNotes = diaryNotes
+        self.mentalActivities = mentalActivities
+        self.sessionMemory = sessionMemory
+        self.proactiveFailures = proactiveFailures
         self.apiConfigs = apiConfigs
         self.settings = settings
     }
@@ -145,7 +182,42 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         case proactiveRules, agentIntents, memoryConsolidations
         // v6：表情与日记便条。老版本读到会当未知字段忽略（不影响人格/记忆/聊天）。
         case stickers, diaryNotes
+        // v7：心理活动 / 会话备忘录（客户端本地也带走）。
+        case mentalActivities, sessionMemory
         case apiConfigs, settings
+        // 只读字段（只在手写编码里被故意跳过）：服务端 `extensions.proactiveFailures`。
+        case proactiveFailures
+    }
+
+    /// 手写编码而不是合成：`proactiveFailures` 是**只读**的服务端诊断段。
+    ///
+    /// 为什么不用合成实现 + 可选类型：合成编码对可选属性用的是 `encodeIfPresent`，
+    /// 但「读到过这份诊断数据」时它是非 nil 的，合成实现会把它写回客户端备份 ——
+    /// 那就违反了「客户端格式里没有 proactiveFailures」这条跨端契约。
+    /// 手写编码把它排除在外，其余键与合成行为逐字一致。
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(format, forKey: .format)
+        try container.encode(formatVersion, forKey: .formatVersion)
+        try container.encode(appVersion, forKey: .appVersion)
+        try container.encode(exportedAt, forKey: .exportedAt)
+        try container.encode(apiKeysOmitted, forKey: .apiKeysOmitted)
+        try container.encode(personas, forKey: .personas)
+        try container.encode(memories, forKey: .memories)
+        try container.encode(sessions, forKey: .sessions)
+        try container.encode(messages, forKey: .messages)
+        try container.encode(media, forKey: .media)
+        try container.encode(presets, forKey: .presets)
+        try container.encode(proactiveRules, forKey: .proactiveRules)
+        try container.encode(agentIntents, forKey: .agentIntents)
+        try container.encode(memoryConsolidations, forKey: .memoryConsolidations)
+        try container.encode(stickers, forKey: .stickers)
+        try container.encode(diaryNotes, forKey: .diaryNotes)
+        try container.encode(mentalActivities, forKey: .mentalActivities)
+        try container.encode(sessionMemory, forKey: .sessionMemory)
+        try container.encode(apiConfigs, forKey: .apiConfigs)
+        try container.encodeIfPresent(settings, forKey: .settings)
+        // proactiveFailures：故意不写。
     }
 }
 
@@ -202,6 +274,17 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
     public var speechStyleJson: String?
     /// v5：当前活动 JSON（`PersonaActivity`；过期的活动读进来会自然失效）。
     public var activityJson: String?
+    /// 0.15：人格自己的提示词语言（`zh` / `en`；空 = 默认中文）。
+    ///
+    /// 老备份里没有这个键 → 读成 nil（默认中文），**不影响 v1–v6 的读取**；
+    /// 新备份里只有非空才写出（可选字段省略），所以旧版备份文件逐字不变。
+    public var languageTag: String?
+    /// v7：拉黑到期时间（毫秒；nil = 没被拉黑 / 已到期解除）。
+    public var blockedUntil: Int64?
+    /// v7：拉黑原因（他当时写下的一句话；nil = 没写）。
+    public var blockReason: String?
+    /// v7：未确认的拉黑提议（两轮确认，10 分钟过期；原样透传的 JSON 文本）。
+    public var blockProposalJson: String?
 
     public init(
         id: String = "",
@@ -238,7 +321,11 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         dndOnSleep: Bool = false,
         worldJson: String? = nil,
         speechStyleJson: String? = nil,
-        activityJson: String? = nil
+        activityJson: String? = nil,
+        languageTag: String? = nil,
+        blockedUntil: Int64? = nil,
+        blockReason: String? = nil,
+        blockProposalJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -275,6 +362,13 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         self.worldJson = PromptGuidanceJSON.clean(worldJson)
         self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
         self.activityJson = PromptGuidanceJSON.clean(activityJson)
+        self.languageTag = languageTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 拉黑：`<= 0` 一律当「没拉黑」—— 与 `PersonaEntity` 的初始化同一条口径。
+        self.blockedUntil = blockedUntil.flatMap { $0 > 0 ? $0 : nil }
+        let trimmedReason = blockReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.blockReason = trimmedReason.isEmpty
+            ? nil : String(trimmedReason.prefix(PersonaFieldLimits.blockReasonMax))
+        self.blockProposalJson = PromptGuidanceJSON.clean(blockProposalJson)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -285,7 +379,9 @@ public struct BackupPersona: Equatable, Sendable, Encodable {
         case traits, likes, behaviors, backstory, quirks
         case proactiveLevel, memoryRetention, extractionEvery
         case sleepEnabled, wakeThreshold, dndOnSleep
-        case worldJson, speechStyleJson, activityJson
+        case worldJson, speechStyleJson, activityJson, languageTag
+        // v7：拉黑（0.14 的行为，0.15 才进备份）。
+        case blockedUntil, blockReason, blockProposalJson
     }
 }
 
@@ -479,6 +575,11 @@ public struct BackupMessage: Equatable, Sendable, Encodable {
     public var toolTraceJson: String?
     /// 1.9：用户消息被模型看到的时刻（空 = 还没被看到）。
     public var readAt: Int64?
+    /// v7：拉黑期间用户发来的消息（模型**永久看不到**，解除后也不可见）。
+    ///
+    /// 老备份没有这个键 → false；v7 导出**每条都写**（`true` / `false`）——
+    /// 跨端契约要求两端的键集一致，省略 false 会让 Android 的 fixture 断言多一种形状。
+    public var blocked: Bool
 
     public init(
         id: String = "",
@@ -494,7 +595,8 @@ public struct BackupMessage: Equatable, Sendable, Encodable {
         edited: Bool = false,
         attachmentsJson: String? = nil,
         toolTraceJson: String? = nil,
-        readAt: Int64? = nil
+        readAt: Int64? = nil,
+        blocked: Bool = false
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -510,11 +612,34 @@ public struct BackupMessage: Equatable, Sendable, Encodable {
         self.attachmentsJson = attachmentsJson
         self.toolTraceJson = toolTraceJson
         self.readAt = readAt
+        self.blocked = blocked
     }
 
     enum CodingKeys: String, CodingKey {
         case id, sessionId, personaId, role, content, createdAt, updatedAt, status
         case errorMessage, model, edited, attachmentsJson, toolTraceJson, readAt
+        // v7：拉黑期间的消息
+        case blocked
+    }
+
+    /// 手写编码只为把 `blocked` 固定成 Bool（每条都写）：其余字段与合成实现逐字一致。
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(personaId, forKey: .personaId)
+        try container.encode(role, forKey: .role)
+        try container.encode(content, forKey: .content)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encode(status, forKey: .status)
+        try container.encodeIfPresent(errorMessage, forKey: .errorMessage)
+        try container.encodeIfPresent(model, forKey: .model)
+        try container.encode(edited, forKey: .edited)
+        try container.encodeIfPresent(attachmentsJson, forKey: .attachmentsJson)
+        try container.encodeIfPresent(toolTraceJson, forKey: .toolTraceJson)
+        try container.encodeIfPresent(readAt, forKey: .readAt)
+        try container.encode(blocked, forKey: .blocked)
     }
 }
 
@@ -540,6 +665,11 @@ public struct BackupMedia: Equatable, Sendable, Codable {
     public var mime: String
     public var bytes: Int
     public var data: String
+    /// v7：`data` 解码后**原始字节**的 SHA-256（64 位小写 hex）。
+    ///
+    /// 导入时非空就校验：不一致的那一条跳过并计数（不整份失败）。老备份没有这个键 →
+    /// nil → 跳过校验（旧数据兼容）。导出时本机文件读得出字节就一定写。
+    public var sha256: String?
 
     public init(
         id: String = "",
@@ -548,7 +678,8 @@ public struct BackupMedia: Equatable, Sendable, Codable {
         fileName: String = "",
         mime: String = "",
         bytes: Int = 0,
-        data: String = ""
+        data: String = "",
+        sha256: String? = nil
     ) {
         self.id = id
         self.kind = kind
@@ -557,10 +688,24 @@ public struct BackupMedia: Equatable, Sendable, Codable {
         self.mime = mime
         self.bytes = bytes
         self.data = data
+        self.sha256 = sha256
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, kind, personaId, fileName, mime, bytes, data
+        case id, kind, personaId, fileName, mime, bytes, data, sha256
+    }
+
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            id: try json.text("id"),
+            kind: try json.text("kind"),
+            personaId: try json.optionalText("personaId"),
+            fileName: try json.text("fileName"),
+            mime: try json.text("mime"),
+            bytes: try json.int("bytes"),
+            data: try json.text("data"),
+            sha256: try json.optionalText("sha256")
+        )
     }
 }
 
@@ -721,6 +866,257 @@ public struct BackupDiaryNote: Equatable, Sendable, Encodable {
             remindAt: try json.optionalInt64("remindAt"),
             remindedAt: try json.optionalInt64("remindedAt"),
             updatedAt: try json.int64("updatedAt")
+        )
+    }
+}
+
+/// 一条心理活动（v7，表 `mental_activities`；`spec/experience/README.md` §3）。
+///
+/// 字段与服务端 `extensions.mentalActivities[]` 逐字相同（Android 的 v7 也用它），
+/// 这样服务端备份被客户端读进来时不需要第二套映射。
+/// `thought` 是 ≤60 字的私密念头（**不发给用户**）；心情快照是**微调之后**的值。
+public struct BackupMentalActivity: Equatable, Sendable, Encodable {
+    public var id: String
+    public var personaId: String
+    /// 哪一段会话里的念头（主动/无会话时为空）。
+    public var sessionId: String?
+    public var at: Int64
+    public var thought: String
+    public var moodLabel: String?
+    public var moodIntensity: Int?
+    public var moodValence: Int?
+    public var moodArousal: Int?
+    public var moodDominance: Int?
+
+    public init(
+        id: String = "",
+        personaId: String = "",
+        sessionId: String? = nil,
+        at: Int64 = 0,
+        thought: String = "",
+        moodLabel: String? = nil,
+        moodIntensity: Int? = nil,
+        moodValence: Int? = nil,
+        moodArousal: Int? = nil,
+        moodDominance: Int? = nil
+    ) {
+        self.id = id
+        self.personaId = personaId
+        self.sessionId = sessionId
+        self.at = at
+        self.thought = thought
+        self.moodLabel = moodLabel
+        self.moodIntensity = moodIntensity
+        self.moodValence = moodValence
+        self.moodArousal = moodArousal
+        self.moodDominance = moodDominance
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, personaId, sessionId, at, thought
+        case moodLabel, moodIntensity, moodValence, moodArousal, moodDominance
+    }
+}
+
+extension BackupMentalActivity {
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            id: try json.text("id"),
+            personaId: try json.text("personaId"),
+            sessionId: try json.optionalText("sessionId"),
+            at: try json.int64("at"),
+            thought: try json.text("thought"),
+            moodLabel: try json.optionalText("moodLabel"),
+            moodIntensity: try json.optionalInt("moodIntensity"),
+            moodValence: try json.optionalInt("moodValence"),
+            moodArousal: try json.optionalInt("moodArousal"),
+            moodDominance: try json.optionalInt("moodDominance")
+        )
+    }
+}
+
+/// 一段对话主题（v7）：`sessionMemory[].topics[]` 的一段。
+///
+/// 形状与服务端 `MemoryContract.TopicSegment` 的备份 JSON 一致：`timeLabel` 是
+/// 「2026-11-18 晚」这类时间段，`summary` 是一句摘要（≤120 字）。最多 12 段。
+public struct BackupTopicSegment: Equatable, Sendable, Encodable {
+    public var timeLabel: String
+    public var summary: String
+
+    public init(timeLabel: String = "", summary: String = "") {
+        self.timeLabel = timeLabel
+        self.summary = summary
+    }
+
+    enum CodingKeys: String, CodingKey { case timeLabel, summary }
+
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            timeLabel: try json.text("timeLabel"),
+            summary: try json.text("summary")
+        )
+    }
+}
+
+/// 一段会话的备忘录（v7，表 `session_memory`；`spec/experience/README.md` §6）。
+///
+/// 字段名以**服务端 `extensions.sessionMemory[]`** 为准（本地列名不同，由
+/// `BackupService` 在编解码层映射）：
+/// - `shortUserMessages` / `longUserMessages` / `topicUserMessages` 是三个节流游标
+///  （「生成这份摘要时，会话里已有多少条用户消息」）—— 丢了它们，换机后会立刻重算一遍；
+/// - `longCheckedUserMessages` / `topicCheckedUserMessages` 是「检查过但不需要更新」的游标；
+/// - `topics` 用数组而不是 `topicsJson` 字符串：服务端与 Android 都是这个形状。
+///   读取时**兼容**旧的 `topicsJson` 字符串（老数据/手写备份），导出只写数组。
+public struct BackupSessionMemory: Equatable, Sendable, Encodable {
+    public var sessionId: String
+    public var personaId: String
+    public var shortSummary: String?
+    public var shortUpdatedAt: Int64?
+    public var shortUserMessages: Int
+    public var longSummary: String?
+    public var longUpdatedAt: Int64?
+    public var longUserMessages: Int
+    public var longCheckedUserMessages: Int
+    public var topics: [BackupTopicSegment]
+    public var topicUpdatedAt: Int64?
+    public var topicUserMessages: Int
+    public var topicCheckedUserMessages: Int
+
+    public init(
+        sessionId: String = "",
+        personaId: String = "",
+        shortSummary: String? = nil,
+        shortUpdatedAt: Int64? = nil,
+        shortUserMessages: Int = 0,
+        longSummary: String? = nil,
+        longUpdatedAt: Int64? = nil,
+        longUserMessages: Int = 0,
+        longCheckedUserMessages: Int = 0,
+        topics: [BackupTopicSegment] = [],
+        topicUpdatedAt: Int64? = nil,
+        topicUserMessages: Int = 0,
+        topicCheckedUserMessages: Int = 0
+    ) {
+        self.sessionId = sessionId
+        self.personaId = personaId
+        self.shortSummary = shortSummary
+        self.shortUpdatedAt = shortUpdatedAt
+        self.shortUserMessages = max(shortUserMessages, 0)
+        self.longSummary = longSummary
+        self.longUpdatedAt = longUpdatedAt
+        self.longUserMessages = max(longUserMessages, 0)
+        self.longCheckedUserMessages = max(longCheckedUserMessages, 0)
+        self.topics = Array(topics.prefix(MemoryContract.Summary.TOPIC_MAX_SEGMENTS))
+        self.topicUpdatedAt = topicUpdatedAt
+        self.topicUserMessages = max(topicUserMessages, 0)
+        self.topicCheckedUserMessages = max(topicCheckedUserMessages, 0)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId, personaId
+        case shortSummary, shortUpdatedAt, shortUserMessages
+        case longSummary, longUpdatedAt, longUserMessages, longCheckedUserMessages
+        case topics, topicUpdatedAt, topicUserMessages, topicCheckedUserMessages
+    }
+
+    /// 空主题数组不写进 JSON（与服务端「有主题才写 topics」同一条口径）。
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionId, forKey: .sessionId)
+        try container.encode(personaId, forKey: .personaId)
+        try container.encodeIfPresent(shortSummary, forKey: .shortSummary)
+        try container.encodeIfPresent(shortUpdatedAt, forKey: .shortUpdatedAt)
+        try container.encode(shortUserMessages, forKey: .shortUserMessages)
+        try container.encodeIfPresent(longSummary, forKey: .longSummary)
+        try container.encodeIfPresent(longUpdatedAt, forKey: .longUpdatedAt)
+        try container.encode(longUserMessages, forKey: .longUserMessages)
+        try container.encode(longCheckedUserMessages, forKey: .longCheckedUserMessages)
+        if !topics.isEmpty { try container.encode(topics, forKey: .topics) }
+        try container.encodeIfPresent(topicUpdatedAt, forKey: .topicUpdatedAt)
+        try container.encode(topicUserMessages, forKey: .topicUserMessages)
+        try container.encode(topicCheckedUserMessages, forKey: .topicCheckedUserMessages)
+    }
+
+    init(json: [String: JSONValue]) throws {
+        // 游标的两套键名：服务端形态（`*UserMessages`）优先，Android 本地别名兜底。
+        func cursor(_ name: String, alias: String) throws -> Int {
+            try json.optionalInt(name) ?? (try json.optionalInt(alias)) ?? 0
+        }
+        let topics: [BackupTopicSegment]
+        if let raw = json["topics"], !raw.isNull {
+            topics = try json.objects("topics").map(BackupTopicSegment.init(json:))
+        } else if let legacy = try json.optionalText("topicsJson") {
+            // 旧写法（主题存成 JSON 字符串）：解不出来就当没有主题。
+            let decoded = SessionMemoryV2.decodeTopics(legacy)
+            topics = decoded.map {
+                BackupTopicSegment(timeLabel: $0.timeLabel, summary: $0.summary)
+            }
+        } else {
+            topics = []
+        }
+        self.init(
+            sessionId: try json.text("sessionId"),
+            personaId: try json.text("personaId"),
+            shortSummary: try json.optionalText("shortSummary"),
+            shortUpdatedAt: try json.optionalInt64("shortUpdatedAt"),
+            shortUserMessages: try cursor("shortUserMessages", alias: "shortUserCount"),
+            longSummary: try json.optionalText("longSummary"),
+            longUpdatedAt: try json.optionalInt64("longUpdatedAt"),
+            longUserMessages: try cursor("longUserMessages", alias: "longUserCount"),
+            longCheckedUserMessages: try json.optionalInt("longCheckedUserMessages") ?? 0,
+            topics: topics,
+            topicUpdatedAt: try json.optionalInt64("topicUpdatedAt"),
+            topicUserMessages: try cursor("topicUserMessages", alias: "topicUserCount"),
+            topicCheckedUserMessages: try json.optionalInt("topicCheckedUserMessages") ?? 0
+        )
+    }
+}
+
+/// 一条主动消息失败记录（v7，**只读**：服务端 `extensions.proactiveFailures[]`）。
+///
+/// 客户端备份从不写它；导入服务端备份时落到本机诊断表（`ProactiveFailureStore`），
+/// 让「他今天怎么一句话没说」在客户端也能查。字段与服务端 `ProactiveFailure.toJson()`
+/// 逐字一致。
+public struct BackupProactiveFailure: Equatable, Sendable, Codable {
+    public var id: String
+    public var personaId: String
+    public var sessionId: String?
+    public var at: Int64
+    public var stage: String
+    public var reason: String
+    public var detail: String
+    public var text: String
+
+    public init(
+        id: String = "",
+        personaId: String = "",
+        sessionId: String? = nil,
+        at: Int64 = 0,
+        stage: String = "",
+        reason: String = "",
+        detail: String = "",
+        text: String = ""
+    ) {
+        self.id = id
+        self.personaId = personaId
+        self.sessionId = sessionId
+        self.at = at
+        self.stage = stage
+        self.reason = reason
+        self.detail = detail
+        self.text = text
+    }
+
+    init(json: [String: JSONValue]) throws {
+        self.init(
+            id: try json.text("id"),
+            personaId: try json.text("personaId"),
+            sessionId: try json.optionalText("sessionId"),
+            at: try json.int64("at"),
+            stage: try json.text("stage", "generation"),
+            reason: try json.text("reason"),
+            detail: try json.text("detail"),
+            text: try json.text("text")
         )
     }
 }
@@ -1089,7 +1485,13 @@ extension BackupPersona {
             // v5 的人设引导三列：v1–v4 的备份里没有，读成 nil 正是「没有设定」。
             worldJson: try json.optionalText("worldJson"),
             speechStyleJson: try json.optionalText("speechStyleJson"),
-            activityJson: try json.optionalText("activityJson")
+            activityJson: try json.optionalText("activityJson"),
+            // 0.15：老备份没有这个键 → nil（默认中文）。
+            languageTag: try json.optionalText("languageTag"),
+            // v7：老备份没有拉黑字段 → nil（没拉黑 / 没有未确认提议）。
+            blockedUntil: try json.optionalInt64("blockedUntil"),
+            blockReason: try json.optionalText("blockReason"),
+            blockProposalJson: try json.optionalText("blockProposalJson")
         )
     }
 }
@@ -1165,25 +1567,8 @@ extension BackupMessage {
             edited: try json.bool("edited"),
             attachmentsJson: try json.optionalText("attachmentsJson"),
             toolTraceJson: try json.optionalText("toolTraceJson"),
-            readAt: try json.optionalInt64("readAt")
-        )
-    }
-}
-
-/// 媒体条目：字段缺失按默认值（空串 / 0），字段类型写错就让这一条被跳过并计数。
-///
-/// 这里刻意**不做**「base64 解不开就丢掉」之类的业务校验：那是导入侧
-/// （`BackupMediaRestorer`）的事，因为那里才能把「坏了」换算成给用户看的中文提醒。
-extension BackupMedia {
-    init(json: [String: JSONValue]) throws {
-        self.init(
-            id: try json.text("id"),
-            kind: try json.text("kind"),
-            personaId: try json.optionalText("personaId"),
-            fileName: try json.text("fileName"),
-            mime: try json.text("mime"),
-            bytes: try json.int("bytes"),
-            data: try json.text("data")
+            readAt: try json.optionalInt64("readAt"),
+            blocked: try json.bool("blocked", false)
         )
     }
 }

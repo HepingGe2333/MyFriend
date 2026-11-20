@@ -71,6 +71,39 @@ public final class SessionMemoryRepository {
         return entity
     }
 
+    /// 写主题总结（≤12 段、每段 ≤120 字）。**只动主题三列**，短/长期摘要原样保留。
+    @discardableResult
+    public func applyTopics(
+        sessionId: String,
+        personaId: String,
+        topics: [MemoryContract.TopicSegment],
+        userCount: Int,
+        at: Int64? = nil
+    ) -> SessionMemoryEntity? {
+        guard let json = SessionMemoryV2.encodeTopics(topics) else { return nil }
+        let timestamp = at ?? now()
+        var entity = memory(sessionId: sessionId)
+            ?? SessionMemoryEntity(sessionId: sessionId, personaId: personaId, updatedAt: timestamp)
+        entity.topicsJson = json
+        entity.topicUserCount = max(userCount, 0)
+        entity.topicUpdatedAt = timestamp
+        entity.updatedAt = timestamp
+        guard (try? stores.sessionMemory.upsert(entity)) != nil else { return nil }
+        return entity
+    }
+
+    /// 「这一段看过了、但模型觉得还不用更新」：只推进计数，不动摘要正文。
+    ///
+    /// 为什么需要它：长期/主题摘要是「模型决定要不要更新」的；模型说「再等等」时
+    /// 如果不推进计数，下一轮回复会再问一次，等于每条消息烧一次调用。
+    public func markChecked(sessionId: String, personaId: String, long: Bool, topics: Bool, userCount: Int) {
+        var entity = memory(sessionId: sessionId)
+            ?? SessionMemoryEntity(sessionId: sessionId, personaId: personaId)
+        if long { entity.longUserCount = max(userCount, 0) }
+        if topics { entity.topicUserCount = max(userCount, 0) }
+        _ = try? stores.sessionMemory.upsert(entity)
+    }
+
     /// 「你的备忘录」那一段（短期在前、长期在后）；两份都空返回空串。
     public func promptBlock(sessionId: String) -> String {
         guard let entity = memory(sessionId: sessionId) else { return "" }
@@ -97,6 +130,9 @@ public protocol SessionSummarizing: AnyObject {
     ) async -> String?
 
     /// 更早对话的长期摘要。
+    ///
+    /// 返回 `nil` = 这次生成失败；返回 `SessionMemoryV2.skipLongUpdate` = 模型看过之后
+    /// 认为「还没到要更新的时候」（15–40 轮的判断权在模型手里）。空串按失败处理。
     func summarizeLong(
         persona: PersonaEntity,
         session: ChatSessionEntity,
@@ -104,6 +140,27 @@ public protocol SessionSummarizing: AnyObject {
         previous: String?,
         now: Int64
     ) async -> String?
+
+    /// 主题总结（0.15）：15–40 轮滚动更新，或话题明显切换时。
+    ///
+    /// 默认实现返回 nil（老测试替身不用改）；`LocalSessionSummarizer` 真的调模型。
+    func summarizeTopics(
+        persona: PersonaEntity,
+        session: ChatSessionEntity,
+        existing: [MemoryContract.TopicSegment],
+        recent: [MessageEntity],
+        now: Int64
+    ) async -> [MemoryContract.TopicSegment]?
+}
+
+public extension SessionSummarizing {
+    func summarizeTopics(
+        persona: PersonaEntity,
+        session: ChatSessionEntity,
+        existing: [MemoryContract.TopicSegment],
+        recent: [MessageEntity],
+        now: Int64
+    ) async -> [MemoryContract.TopicSegment]? { nil }
 }
 
 // MARK: - 服务
@@ -145,17 +202,31 @@ public final class SessionMemoryService {
             sessionId: sessionId, includeBlocked: false
         )) ?? 0
         let existing = repository.memory(sessionId: sessionId)
-        let needsShort = SessionMemoryPolicy.shouldUpdate(
+        // 0.15：短期每 5 轮（或计划变了）；长期与主题 15–40 轮由模型决定；
+        // 话题明显切换时主题立刻更新（`SessionMemoryV2` 的三条节奏）。
+        let needsShort = SessionMemoryV2.shouldUpdateShort(
             currentUserCount: userCount,
             upTo: existing?.shortUserCount ?? 0,
-            interval: SessionMemoryPolicy.shortInterval
+            planChanged: false
         )
-        let needsLong = SessionMemoryPolicy.shouldUpdate(
+        let longCandidate = SessionMemoryV2.shouldUpdateLong(
             currentUserCount: userCount,
             upTo: existing?.longUserCount ?? 0,
-            interval: SessionMemoryPolicy.longInterval
+            modelWantsUpdate: true
         )
-        guard needsShort || needsLong else { return }
+        let lastUserText = ((try? stores.messages.recentVisible(
+            sessionId: sessionId, limit: 4
+        )) ?? []).last(where: { $0.role == .user })?.content ?? ""
+        let topicChanged = SessionMemoryV2.topicChanged(
+            lastUserText, topics: existing?.topics ?? []
+        )
+        let topicsCandidate = SessionMemoryV2.shouldUpdateTopics(
+            currentUserCount: userCount,
+            upTo: existing?.topicUserCount ?? 0,
+            topicChanged: topicChanged,
+            modelWantsUpdate: true
+        )
+        guard needsShort || longCandidate || topicsCandidate else { return }
         guard begin(sessionId) else { return }
         defer { end(sessionId) }
 
@@ -182,25 +253,57 @@ public final class SessionMemoryService {
                 log("[memo] 短期摘要生成失败（保留旧的）")
             }
         }
-        if needsLong {
+        if longCandidate {
             // 长期摘要看「更早的对话」：窗口里最后 10 条留给短期，其余是长期素材。
             let earlier = Array(window.dropLast(SessionMemoryPolicy.shortRounds * 2))
-            if let summary = await summarizer.summarizeLong(
+            let summary = await summarizer.summarizeLong(
                 persona: persona,
                 session: session,
                 earlier: earlier,
                 previous: existing?.longSummary,
                 now: at
-            ) {
-                let saved = repository.applyLong(
-                    sessionId: sessionId, personaId: personaId,
-                    summary: summary, userCount: userCount, at: at
+            )
+            if let summary, summary == SessionMemoryV2.skipLongUpdate {
+                // 模型看过、觉得还不用更新：推进计数，别每条消息都再问一次。
+                repository.markChecked(
+                    sessionId: sessionId, personaId: personaId, long: true, topics: false,
+                    userCount: userCount
                 )
-                log(saved == nil
-                    ? "[memo] 长期摘要没写进去（保留旧的）"
-                    : "[memo] 长期摘要已更新（\(userCount) 条用户消息）")
+                log("[memo] 长期摘要：模型认为还不用更新（\(userCount) 条）")
+            } else if let summary,
+                      let saved = repository.applyLong(
+                          sessionId: sessionId, personaId: personaId,
+                          summary: summary, userCount: userCount, at: at
+                      ) {
+                log("[memo] 长期摘要已更新（\(userCount) 条用户消息）")
+                _ = saved
             } else {
                 log("[memo] 长期摘要生成失败（保留旧的）")
+            }
+        }
+        if topicsCandidate {
+            let topics = await summarizer.summarizeTopics(
+                persona: persona,
+                session: session,
+                existing: existing?.topics ?? [],
+                recent: Array(window.suffix(40)),
+                now: at
+            )
+            if let topics, !topics.isEmpty {
+                let saved = repository.applyTopics(
+                    sessionId: sessionId, personaId: personaId,
+                    topics: topics, userCount: userCount, at: at
+                )
+                log(saved == nil
+                    ? "[memo] 主题总结没写进去（保留旧的）"
+                    : "[memo] 主题总结已更新（\(topics.count) 段）")
+            } else {
+                // 模型没有给新主题（失败或「暂时不更新」）：推进计数，避免每条都再问。
+                repository.markChecked(
+                    sessionId: sessionId, personaId: personaId, long: false, topics: true,
+                    userCount: userCount
+                )
+                log("[memo] 主题总结这次没有更新")
             }
         }
     }
@@ -277,6 +380,7 @@ public final class LocalSessionSummarizer: SessionSummarizing {
         你在帮「\(persona.name)」整理自己的备忘录（只给他自己看，不会发给对方）。
         把更早的对话压成一段不超过 500 字的长期摘要：重要的经历、约定、对方的变化。
         只写对话里真的出现过的事，不臆造、不评论。有旧摘要时在它基础上合并更新。直接输出摘要正文。
+        如果你判断「这一段还没有值得长期记下的东西」，只输出 \(SessionMemoryV2.skipLongUpdate) 四个字母，不要别的。
         """
         var user = ""
         if !earlier.isEmpty { user += "更早的对话：\n" + dialogueText(earlier) }
@@ -284,6 +388,54 @@ public final class LocalSessionSummarizer: SessionSummarizing {
             user += (user.isEmpty ? "" : "\n\n") + "上一版长期摘要（合并更新）：\n\(previous)"
         }
         return await complete(system: system, user: user, model: session, persona: persona)
+    }
+
+    public func summarizeTopics(
+        persona: PersonaEntity,
+        session: ChatSessionEntity,
+        existing: [MemoryContract.TopicSegment],
+        recent: [MessageEntity],
+        now: Int64
+    ) async -> [MemoryContract.TopicSegment]? {
+        guard !recent.isEmpty else { return nil }
+        let label = SessionMemoryV2.timeLabel(at: now, calendar: ServiceTime.calendar())
+        let changed = SessionMemoryV2.topicChanged(
+            recent.last(where: { $0.role == .user })?.content ?? "", topics: existing
+        )
+        let messages = SessionMemoryV2.topicUpdateMessages(
+            personaName: persona.name,
+            existing: existing,
+            dialogue: dialogueText(recent),
+            nowLabel: label,
+            topicChanged: changed
+        )
+        guard let resolved = resolveConfig(session) else {
+            log("[memo] 还没有可用的 API 配置")
+            return nil
+        }
+        do {
+            let result = try await completion.complete(
+                config: resolved.config,
+                model: resolved.model,
+                messages: messages,
+                params: CompletionParams(temperature: Self.temperature, maxOutputTokens: Self.maxOutputTokens),
+                kind: .history,
+                context: UsageContext(personaId: persona.id, sessionId: session.id)
+            )
+            let parsed = Self.parseTopics(result.text)
+            return parsed.isEmpty ? nil : parsed
+        } catch {
+            log("[memo] 主题总结调模型失败：\(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// 解析模型给的主题 JSON 数组；坏 JSON / 空 → 空数组（调用方按「这次没更新」处理）。
+    static func parseTopics(_ raw: String) -> [MemoryContract.TopicSegment] {
+        guard let start = raw.firstIndex(of: "["), let end = raw.lastIndex(of: "]"),
+              start <= end else { return [] }
+        let json = String(raw[start...end])
+        return SessionMemoryV2.decodeTopics(json)
     }
 
     private func dialogueText(_ messages: [MessageEntity]) -> String {

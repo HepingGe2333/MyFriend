@@ -31,7 +31,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MentalActivityEntity::class,
         SessionMemoryEntity::class
     ],
-    version = 18,
+    version = 19,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -66,6 +66,40 @@ abstract class YapDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v19：0.15 上下文/记忆 v2 与人格语言（`docs/design/context-memory-v2.md`）。
+         *
+         * - `personas.languageTag TEXT`：人格自己的提示词语言（与界面语言无关）；
+         * - `session_memory.topicsJson TEXT`：对话主题总结（≤12 段 × 120 字）；
+         * - `session_memory.topicUserCount INTEGER NOT NULL DEFAULT 0` / `topicUpdatedAt INTEGER`：
+         *   滚动更新的游标与时间。
+         *
+         * 只加可空列与带默认值的列：老库升级后行为与 v18 一致（人格语言回落中文、
+         * 没有主题总结），不需要回填数据。幂等：先查 `PRAGMA table_info`。
+         */
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                if (personaColumns.isNotEmpty() && "languageTag" !in personaColumns) {
+                    db.execSQL("ALTER TABLE `personas` ADD COLUMN `languageTag` TEXT")
+                }
+                val memoryColumns = columns(db, "session_memory")
+                if (memoryColumns.isNotEmpty()) {
+                    if ("topicsJson" !in memoryColumns) {
+                        db.execSQL("ALTER TABLE `session_memory` ADD COLUMN `topicsJson` TEXT")
+                    }
+                    if ("topicUserCount" !in memoryColumns) {
+                        db.execSQL(
+                            "ALTER TABLE `session_memory` ADD COLUMN `topicUserCount` INTEGER NOT NULL DEFAULT 0"
+                        )
+                    }
+                    if ("topicUpdatedAt" !in memoryColumns) {
+                        db.execSQL("ALTER TABLE `session_memory` ADD COLUMN `topicUpdatedAt` INTEGER")
+                    }
+                }
+            }
+        }
 
         /**
          * v18：0.14 体验版（`spec/experience/README.md` §2 / §3 / §6）。

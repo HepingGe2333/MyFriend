@@ -247,7 +247,7 @@ class BackupApiTest {
     @Test
     fun `a newer backup version is 409 and writes nothing`() {
         val before = store.personas().size
-        val data = TestSupport.parse("""{"formatVersion":7,"personas":[]}""")
+        val data = TestSupport.parse("""{"formatVersion":8,"personas":[]}""")
         val response = import("replace", data)
         assertEquals(409, response.status)
         assertEquals("unsupported_backup_version", errorCode(response))

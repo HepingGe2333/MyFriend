@@ -96,7 +96,13 @@ data class PersonaForm(
     val speechHabits: String = "",
     val speechAvoid: String = "",
     val speechSample: String = "",
-    val speechSource: String = ""
+    val speechSource: String = "",
+    /**
+     * 0.15：这个人的提示词语言（`zh` / `en` …）；空 = 产品默认中文。
+     *
+     * 与界面语言无关：用户换成英文界面，中文人格仍然说中文。
+     */
+    val languageTag: String = ""
 ) {
     val traits: List<String> get() = parseList(traitsText)
     val likes: List<String> get() = parseList(likesText)
@@ -252,7 +258,9 @@ class PersonaEditorViewModel @Inject constructor(
                         speechTone = speech?.tone.orEmpty(),
                         speechPhrases = speech?.phrases.orEmpty(),
                         speechHabits = speech?.habits.orEmpty().joinToString("\n"),
-                        speechAvoid = speech?.avoid.orEmpty().joinToString("\n")
+                        speechAvoid = speech?.avoid.orEmpty().joinToString("\n"),
+                        // 0.15：人格自己的提示词语言（空 = 默认中文）。
+                        languageTag = persona.languageTag.orEmpty()
                     )
                     // 还没有卡时，这里会从旧的一整段提示词里尽力拆一份出来（只读，不写库）。
                     val card = runCatching { personaCardRepository.cardOf(persona.id) }
@@ -710,7 +718,9 @@ class PersonaEditorViewModel @Inject constructor(
                     quietSleepMinutes = parseClock(form.sleepAt),
                     quietWakeMinutes = parseClock(form.wakeAt),
                     worldJson = buildWorldJson(form)?.takeIf { it.isNotBlank() },
-                    speechStyleJson = buildSpeechJson(form)?.takeIf { it.isNotBlank() }
+                    speechStyleJson = buildSpeechJson(form)?.takeIf { it.isNotBlank() },
+                    // 0.15：人格语言跟着表单走；空串交给仓储层按「没选过」处理。
+                    languageTag = form.languageTag.takeIf { it.isNotBlank() }
                 )
             )
             if (result.isFailure) {

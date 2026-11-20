@@ -1,62 +1,77 @@
 package com.yap.app.i18n
 
-import com.yap.app.domain.LanguageDirective
+import com.yap.app.domain.PromptBuilder
+import com.yap.app.domain.PromptContract
+import com.yap.app.domain.PromptLanguage
+import com.yap.app.domain.PromptTemplates
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.util.Locale
 
 /**
- * 系统提示词末尾那一节「用对方的语言回答」。
+ * 语言小节（0.15 重写）。
  *
- * 断言的是**真实资源**：中文模板来自 `values/strings.xml`，英文模板来自 `values-en/strings.xml`。
- * 两条主线——中文系统说中文、英文系统说英文——各一条，另外钉住「拼在 system 最后」。
+ * 0.14 及以前：这一节跟着 **App 界面语言** 走（`prompt_language_directive` 资源 + `LanguageDirective`），
+ * 所以用户把界面切成英文，中文人格也开始用英文思考。0.15 起语言是**人格属性**
+ * （`personas.languageTag`），这一节由共享契约 [PromptTemplates] 生成。
+ *
+ * 这里盯的就是这条主线：人格选中文就说中文、选英文就说英文，界面语言不参与。
  */
 class LanguageDirectiveTest {
 
-    private val zhTemplate = TestResources.strings("values").getValue("prompt_language_directive")
-    private val enTemplate = TestResources.strings("values-en").getValue("prompt_language_directive")
-
     @Test
-    fun `中文系统在 system 末尾追加中文语言小节`() {
-        val languageName = LanguageDirective.languageName(Locale.SIMPLIFIED_CHINESE)
-        assertEquals("中文", languageName)
-
-        val system = "你是林深，一个温柔而安静的朋友。"
-        val built = system + LanguageDirective.section(zhTemplate, languageName)
-
-        assertTrue("中文模板该有自己的标题", built.contains("## 语言"))
-        assertTrue("中文模板里要说明对方在说什么语言", built.contains("中文"))
-        assertTrue("语言小节要粘在 system 的最末尾", built.endsWith("专有名词可以保留原文。"))
-        assertTrue("小节和上文之间要空一行", built.contains("。\n\n## 语言\n"))
+    fun `中文人格的语言小节是中文`() {
+        val section = PromptBuilder.languageSectionFor("zh-CN")
+        assertTrue("中文标题来自共享契约", section.contains(PromptContract.Section.LANGUAGE))
+        assertTrue(section.contains(PromptLanguage.DIRECTIVE_ZH))
+        assertTrue("金句要钉住：用中文思考和说话", section.contains("用中文"))
     }
 
     @Test
-    fun `英文系统在 system 末尾追加英文语言小节`() {
-        val languageName = LanguageDirective.languageName(Locale.US)
-        assertEquals("English", languageName)
-
-        val system = "You are Elias, a gentle and quiet friend."
-        val built = system + LanguageDirective.section(enTemplate, languageName)
-
-        assertTrue("英文模板该有自己的标题", built.contains("## Language"))
-        assertTrue("英文模板里要说明对方在说什么语言", built.contains("English"))
-        assertTrue("语言小节要粘在 system 的最末尾", built.endsWith("proper nouns can stay as they are."))
-        assertTrue("小节和上文之间要空一行", built.contains("friend.\n\n## Language\n"))
+    fun `英文人格的语言小节是英文`() {
+        val section = PromptBuilder.languageSectionFor("en-US")
+        assertTrue("英文人格不该再看到中文标题", !section.contains(PromptContract.Section.LANGUAGE))
+        assertTrue(section.contains("## Language"))
+        assertEquals("## Language", section.lineSequence().first())
+        assertTrue(section.contains("Think and speak in English."))
     }
 
     @Test
-    fun `语言名只取语言不取地区`() {
-        assertEquals("中文", LanguageDirective.languageName(Locale.CHINA))
-        assertEquals("中文", LanguageDirective.languageName(Locale.TAIWAN))
-        assertEquals("English", LanguageDirective.languageName(Locale.UK))
-        assertEquals("English", LanguageDirective.languageName(Locale.CANADA))
+    fun `认不出的语言标签回落中文`() {
+        assertEquals(PromptBuilder.languageSectionFor(null), PromptBuilder.languageSectionFor("klingon"))
+        assertTrue(PromptBuilder.languageSectionFor("klingon").contains(PromptLanguage.DIRECTIVE_ZH))
     }
 
     @Test
-    fun `认不出的语言退回语言标签本身`() {
-        // Kokani 这种没有显示名的语言：不抛异常，退回标签，模型照样能读懂。
-        val name = LanguageDirective.languageName(Locale.forLanguageTag("kok"))
-        assertTrue("语言名不该是空的", name.isNotBlank())
+    fun `语言小节粘在 system 的边界之前 而不是跟着界面语言`() {
+        val zh = PromptBuilder.system(
+            PromptBuilder.Inputs(
+                name = "林深",
+                language = PromptLanguage.ZH,
+                languageSection = "\n\n" + PromptBuilder.languageSectionFor(null)
+            )
+        )
+        val en = PromptBuilder.system(
+            PromptBuilder.Inputs(
+                name = "Elias",
+                language = PromptLanguage.EN,
+                languageSection = "\n\n" + PromptBuilder.languageSectionFor("en")
+            )
+        )
+        assertTrue(zh.contains(PromptContract.Section.LANGUAGE))
+        assertTrue(en.contains("## Language"))
+        // 边界永远是最后一段。
+        assertTrue(zh.indexOf("## 语言") < zh.indexOf(PromptBuilder.Scaffold.SECTION_BOUNDARIES))
+        assertTrue(en.indexOf("## Language") < en.indexOf("# Boundaries"))
+        assertFalse("英文人格的系统提示词里不该出现中文语言指令", en.contains("用中文思考和说话"))
+    }
+
+    @Test
+    fun `共享模板给出六段的双语标题`() {
+        assertEquals(PromptContract.Section.ANTI_AI, PromptTemplates.title(PromptTemplates.CoreSection.ANTI_AI, PromptLanguage.ZH))
+        assertEquals("# Don't sound like an AI", PromptTemplates.title(PromptTemplates.CoreSection.ANTI_AI, PromptLanguage.EN))
+        assertEquals(PromptContract.Section.BOUNDARIES, PromptTemplates.title(PromptTemplates.CoreSection.BOUNDARIES, PromptLanguage.ZH))
+        assertEquals("# Boundaries", PromptTemplates.title(PromptTemplates.CoreSection.BOUNDARIES, PromptLanguage.EN))
     }
 }

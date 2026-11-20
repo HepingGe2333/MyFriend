@@ -20,15 +20,17 @@ class BackupMediaWiringContractTest {
     private val storage get() = source("src/main/java/com/yap/app/util/MediaStorage.kt")
 
     @Test
-    fun `格式版本是 v6 且顶层有 media stickers diaryNotes`() {
-        assertTrue("BackupCodec 的版本常量要改成 6", codec.contains("BACKUP_FORMAT_VERSION: Int = 6"))
+    fun `格式版本是 v7 且顶层有 media stickers diaryNotes mentalActivities sessionMemory`() {
+        assertTrue("BackupCodec 的版本常量要改成 7", codec.contains("BACKUP_FORMAT_VERSION: Int = 7"))
         assertTrue("v4 的配置段要带 webToolsProvider", codec.contains("val webToolsProvider: String = WebToolsProviders.MESSAGEAPI"))
         assertTrue("顶部结构要有 media 数组", codec.contains("val media: List<BackupMedia> = emptyList()"))
         assertTrue("v6 顶部要有 stickers 数组", codec.contains("val stickers: List<BackupSticker> = emptyList()"))
         assertTrue("v6 顶部要有 diaryNotes 数组", codec.contains("val diaryNotes: List<BackupDiaryNote> = emptyList()"))
-        assertTrue("media 的 7 个字段", listOf(
+        assertTrue("v7 顶部要有 mentalActivities 数组", codec.contains("val mentalActivities: List<BackupMentalActivity> = emptyList()"))
+        assertTrue("v7 顶部要有 sessionMemory 数组", codec.contains("val sessionMemory: List<BackupSessionMemory> = emptyList()"))
+        assertTrue("media 的字段（v7 起多一个 sha256）", listOf(
             "val id: String", "val kind: String", "val personaId: String?", "val fileName: String",
-            "val mime: String", "val bytes: Int", "val data: String"
+            "val mime: String", "val bytes: Int", "val sha256: String", "val data: String"
         ).all { codec.contains(it) })
     }
 

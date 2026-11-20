@@ -99,7 +99,7 @@ class MoodServiceTest {
     }
 
     @Test
-    fun `evaluate limits a single mood swing to two steps`() {
+    fun `evaluate applies the full swing because the two step cap is gone`() {
         store.setMood(personaId, "雀跃", 4, valence = 2, arousal = 4, dominance = 4)
         server.close()
         server = FakeLlmServer { exchange ->
@@ -111,9 +111,9 @@ class MoodServiceTest {
         val outcome = service().evaluate(personaId, now)
 
         assertTrue(outcome.changed)
-        assertEquals("2 → -2 只允许走 2 格", 0, outcome.values.valence)
-        assertEquals(2, outcome.values.arousal)
-        assertEquals(2, outcome.values.dominance)
+        assertEquals("0.15：2 → -2 直接生效（心情是每条消息后的直觉结论）", -2, outcome.values.valence)
+        assertEquals(0, outcome.values.arousal)
+        assertEquals(0, outcome.values.dominance)
     }
 
     @Test

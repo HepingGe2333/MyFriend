@@ -7,11 +7,14 @@ import org.junit.Test
 class ExperienceRhythmTest {
 
     @Test
-    fun `首条延迟按字数与心情修正并夹在 0_4 到 4 秒`() {
-        assertEquals(400L, ExperienceRhythm.typingDelayMillis(0))
-        assertEquals(425L, ExperienceRhythm.typingDelayMillis(1))
-        assertEquals(625L, ExperienceRhythm.typingDelayMillis(0, arousal = 1, lowEnergy = false))
-        assertTrue(ExperienceRhythm.typingDelayMillis(200) <= 4_000L)
+    fun `首条延迟走共享契约的均值与随机波动`() {
+        // 0.15：均值 = clamp(0.3 + 字数 × 0.018, 0.3, 2.2) 秒；random = 0.5 时不抖动。
+        assertEquals(300L, ExperienceRhythm.typingDelayMillis(0))
+        assertEquals(318L, ExperienceRhythm.typingDelayMillis(1))
+        assertEquals(2_200L, ExperienceRhythm.typingDelayMillis(500))
+        // 随机波动 ±35%：0.0 → 均值 ×0.65，1.0 → 均值 ×1.35。
+        assertEquals(195L, ExperienceRhythm.typingDelayMillis(0, random = { 0f }))
+        assertEquals(405L, ExperienceRhythm.typingDelayMillis(0, random = { 1f }))
         // 低唤醒/累比高唤醒慢；高唤醒明显更快。
         val low = ExperienceRhythm.typingDelayMillis(10, arousal = 0, lowEnergy = true)
         val high = ExperienceRhythm.typingDelayMillis(10, arousal = 5)
@@ -19,15 +22,30 @@ class ExperienceRhythmTest {
     }
 
     @Test
-    fun `连发间隔落在 0_8 到 2_5 秒`() {
+    fun `连发间隔走共享契约且比首条短`() {
         listOf(0, 1, 20, 120, 500).forEach { chars ->
             val gap = ExperienceRhythm.sendGapMillis(chars, arousal = 3)
-            assertTrue("chars=$chars gap=$gap", gap in 800L..2_500L)
+            assertTrue("chars=$chars gap=$gap", gap in 130L..2_025L)
         }
+        // 同样的字数：连发间隔不能比首条延迟长（语义不同）。
+        assertTrue(
+            ExperienceRhythm.sendGapMillis(40, arousal = 3) <
+                ExperienceRhythm.typingDelayMillis(40, arousal = 3)
+        )
         assertTrue(
             ExperienceRhythm.sendGapMillis(1, arousal = 5) <
                 ExperienceRhythm.sendGapMillis(1, arousal = 0, lowEnergy = true)
         )
+    }
+
+    @Test
+    fun `随机源坏值不会让节奏跑飞`() {
+        // NaN / 越界按 0.5（不抖动）处理，结果仍然落在物理范围内。
+        val nan = ExperienceRhythm.typingDelayMillis(20, random = { Float.NaN })
+        val huge = ExperienceRhythm.typingDelayMillis(20, random = { 99f })
+        assertTrue(nan in ExperienceRhythm.TYPING_MIN_MS..ExperienceRhythm.TYPING_MAX_MS)
+        assertTrue(huge in ExperienceRhythm.TYPING_MIN_MS..ExperienceRhythm.TYPING_MAX_MS)
+        assertEquals(ExperienceRhythm.typingDelayMillis(20), nan)
     }
 
     @Test

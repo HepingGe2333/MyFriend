@@ -296,17 +296,18 @@ class MentalActivityTest {
             sessionMemory = store.sessionMemory(sessionId),
             mentalActivity = activity
         )
-        assertTrue(prompt.contains("# 你刚才心里想的"))
+        assertTrue("0.15 起标题与共享契约一致（没有「的」）", prompt.contains("# 你刚才心里想"))
         assertTrue(prompt.contains("你刚才心里想：刚才那句话有点戳到我"))
         assertTrue(prompt.contains("# 你的备忘录"))
         assertTrue(prompt.contains("你提过下周要去哈尔滨。"))
         assertTrue(prompt.contains("你们认识三年了。"))
         assertTrue(
-            "短期在长期之前",
-            prompt.indexOf("你提过下周要去哈尔滨。") < prompt.indexOf("你们认识三年了。")
+            "长期在短期之前（v2 固定顺序：长期 → 短期 → 此刻 → 主题）",
+            prompt.indexOf("你们认识三年了。") < prompt.indexOf("你提过下周要去哈尔滨。")
         )
-        assertTrue("心理活动在备忘录之前", prompt.indexOf(MENTAL_TITLE) < prompt.indexOf(MEMO_TITLE))
-        assertTrue("人设段之后、话风之前", prompt.indexOf(MENTAL_TITLE) < prompt.indexOf("# 你怎么说话"))
+        assertTrue("心理活动在备忘录之后（备忘录 = 他记住了什么，念头 = 他刚才在想什么）",
+            prompt.indexOf(MEMO_TITLE) < prompt.indexOf(MENTAL_TITLE))
+        assertTrue("心理活动在历史之前、人设之后", prompt.indexOf("# 你怎么说话") < prompt.indexOf(MENTAL_TITLE))
     }
 
     @Test
@@ -364,7 +365,7 @@ class MentalActivityTest {
     }
 
     companion object {
-        private const val MENTAL_TITLE = "# 你刚才心里想的"
+        private const val MENTAL_TITLE = "# 你刚才心里想"
         private const val MEMO_TITLE = "# 你的备忘录"
     }
 }

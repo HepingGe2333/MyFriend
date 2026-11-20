@@ -7,28 +7,38 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 
 /**
- * 自动情绪判定（`spec/mood/README.md` §2）。
+ * 自动情绪判定（`spec/mood/README.md` §2；0.15 改为「每条用户消息后重新判定一次」）。
  *
- * 每 4 条用户消息（或隔了 24 小时）问一次模型：「上一轮情绪 + 最近 8 条对话摘要 → 现在是什么心情」，
- * 让情绪跟着真实对话走，而不是等他自己想起来调 `set_mood`。
+ * 输入是「上一轮情绪 + 最近 8 条对话摘要」，输出是「此刻是什么心情」——直觉标签优先，
+ * 三个维度只是同一份直觉的另一个视角。让情绪跟着真实对话走，而不是等他自己想起来调 `set_mood`。
  *
  * 四条刻意的边界（全部是纯函数，单测逐条钉住）：
  *
- * 1. **节流**：4 条用户消息，或 24 小时 + 至少 1 条新消息（[shouldJudge]）；
- * 2. **幅度限制**：单次每个维度最多动 2（[MoodDimensions.limitChange]）——情绪不该一秒崩掉；
- * 3. **没有明显变化就不写**（[MoodDimensions.isMeaningfulChange]）——否则 `moodUpdatedAt`
- *    被反复刷新，时间衰减永远不生效；
- * 4. **失败/无配置按时间衰减**（[decayAfterFailure]）：每小时向 0 / 2 / 3 靠一步，不报错、不打扰。
+ * 1. **每条必判定**：只要有一条新的用户消息就判一次（[shouldJudge]）——0.15 取消了
+ *    「每 4 条 / 24 小时」的节流，因为心情是每一句话之后的反应，不是每四句话的统计；
+ * 2. **只做物理范围夹取**：模型给 7 / -9 会被夹到规范范围，但**不再限制单次变化幅度**
+ *    （0.14 的「每维最多动 2」会让他被一句话刺痛时还硬要维持上一轮的语气）；
+ * 3. **手动优先**：判定在后台跑，期间模型可能用 `set_mood` 亲手改过；如果库里已经有了
+ *    更新的心情，这次判定结果直接丢弃（[isStale]），不覆盖他自己说的话；
+ * 4. **没有明显变化就不写**（[MoodDimensions.isMeaningfulChange]）——否则 `moodUpdatedAt`
+ *    被反复刷新，时间衰减永远不生效；失败/无配置按时间衰减（[decayAfterFailure]）。
  *
  * 提示词里的固定中文放在 domain/ 而不是 `strings.xml`：它面向模型、不面向用户，
  * 翻译会改变模型行为（与 `docs/I18N.md` 的约定一致）。
  */
 object MoodJudgement {
 
-    /** 每多少条用户消息判定一次。 */
+    /**
+     * 0.14 的节流阈值：每 4 条用户消息判定一次。
+     *
+     * 0.15 起判定改成「每条用户消息后一次」，这个常量只留给旧调用方/文档对照，
+     * 不再参与 [shouldJudge] 的判断。
+     */
+    @Deprecated("0.15 起每条用户消息后都重新判定，见 shouldJudge")
     const val USER_MESSAGES_PER_JUDGE: Int = 4
 
-    /** 就算没攒够 4 条，隔这么久也判定一次（前提是至少有 1 条新消息）。 */
+    /** 0.14 的「24 小时兜底」窗口；0.15 起不再使用（每条消息都判）。 */
+    @Deprecated("0.15 起每条用户消息后都重新判定，见 shouldJudge")
     const val INTERVAL_MS: Long = 24 * 60 * 60 * 1000L
 
     /** 给模型看的最近对话条数（规范 §2「最近 8 条对话摘要」）。 */
@@ -47,24 +57,35 @@ object MoodJudgement {
     }
 
     /**
-     * 这一轮要不要判定。
+     * 这一轮要不要判定：**只要有一条新的用户消息就判**（0.15）。
      *
      * @param userMessages 这个会话累计用户消息数（含刚发出的那条）
      * @param cursor 上次判定时的用户消息数
      * @param lastRunAt 上次判定的时间（毫秒）；从没判定过是 0
+     * @param now 当前时间（毫秒）
      */
     fun shouldJudge(userMessages: Int, cursor: Int, lastRunAt: Long, now: Long): Boolean {
-        val fresh = (userMessages - cursor).coerceAtLeast(0)
-        if (fresh >= USER_MESSAGES_PER_JUDGE) return true
-        return fresh > 0 && lastRunAt > 0L && now - lastRunAt >= INTERVAL_MS
+        val total = userMessages.coerceAtLeast(0)
+        val seen = cursor.coerceAtLeast(0)
+        return total > 0 && total - seen >= 1
     }
+
+    /**
+     * 判定结果是否已经过时：后台判定跑完时，模型可能已经用 `set_mood` 亲手改过心情
+     * （0.15 明确允许一轮里手动再改），这时不能拿旧判定覆盖他）。
+     *
+     * @param judgedFromUpdatedAt 判定开始时读到的 `moodUpdatedAt`
+     * @param currentUpdatedAt 落库前重新读到的 `moodUpdatedAt`
+     */
+    fun isStale(judgedFromUpdatedAt: Long, currentUpdatedAt: Long): Boolean =
+        currentUpdatedAt > judgedFromUpdatedAt.coerceAtLeast(0L)
 
     /**
      * 解析模型给的 JSON（`{label,valence,arousal,dominance,intensity,reason}`）。
      *
      * 返回 `null` 表示「这一轮不写库」：JSON 坏、字段全空、或与上一轮相比**没有明显变化**。
      * 越界值一律夹到规范范围（模型写 7 / -9 也不该让提示词出现离谱数字），
-     * 变化幅度再用 [MoodDimensions.limitChange] 收一次。
+     * 但**不再限制单次变化幅度**：一句话把愉快度从 0 打到 -2 是允许的（0.15）。
      *
      * 兼容两种形状：直接是字段对象，或包在 `{"mood": {…}}` 里（模型常见输出）。
      */
@@ -105,8 +126,8 @@ object MoodJudgement {
             reason = moodObject.text("reason") ?: previous.reason,
             updatedAt = now
         )
-        val limited = MoodDimensions.limitChange(previous, normalized)
-        return limited.takeIf { MoodDimensions.isMeaningfulChange(previous, it) }
+        // 0.15：只做物理范围夹取（normalize 已经做过），不再压「每维最多变 2」。
+        return normalized.takeIf { MoodDimensions.isMeaningfulChange(previous, it) }
     }
 
     /**
@@ -128,12 +149,25 @@ object MoodJudgement {
 
     // ------------------------------------------------------------------ 提示词
 
-    /** 判定用的 system 提示词：只要一个 JSON 对象。 */
+    /**
+     * 判定用的 system 提示词：只要一个 JSON 对象。
+     *
+     * 0.15 的写法顺序是「先直觉、后数值」：模型先说出此刻心里的感觉（label + reason），
+     * 再把这个直觉换算成三个维度。0.14 的三条「单次变化不要超过 2」已经删掉——
+     * 人的情绪本来就会被一句话打到谷底，硬限制会让标签和数值互相打架。
+     */
     fun systemPrompt(): String = buildString {
-        appendLine("你是情绪状态分析器。输入是「上一轮的情绪」和「最近的对话摘要」，")
-        appendLine("判断说话的人此刻的情绪有没有明显变化。只输出一个 JSON 对象，不要解释、不要 markdown：")
+        appendLine("你是「他」的情绪直觉。输入是「上一轮的情绪」和「最近的对话」，")
+        appendLine("先凭直觉判断他此刻心里是什么感觉，再把这种感觉换算成数值。")
+        appendLine("只输出一个 JSON 对象，不要解释、不要 markdown：")
         appendLine(
             """{"label":"一个词的此刻心情，例如 累 / 平静 / 烦 / 开心 / 有点委屈 / 期待","""
+        )
+        appendLine(
+            """ "intensity":1 到 5 的整数（这种情绪有多浓），"""
+        )
+        appendLine(
+            """ "reason":"一句直觉，用他自己的口气说此刻的状态，例如「压着火，不想解释」，"""
         )
         appendLine(
             """ "valence":-2 到 2 的整数（负=不悦，0=平静，正=愉快），"""
@@ -142,17 +176,13 @@ object MoodJudgement {
             """ "arousal":0 到 5 的整数（0=低能量/困，5=激动），"""
         )
         appendLine(
-            """ "dominance":0 到 5 的整数（0=被压住，3=一般，5=掌控），"""
-        )
-        appendLine(
-            """ "intensity":1 到 5 的整数（情绪有多浓），"reason":"一句话，写给将来的自己看"}"""
+            """ "dominance":0 到 5 的整数（0=被压住，3=一般，5=掌控）}"""
         )
         appendLine("规则：")
-        appendLine("- 只根据对话里真实发生的语气与内容判断，不要编；没有明显变化就原样返回上一轮的值；")
-        appendLine(
-            "- 单次变化幅度不要超过 2（例如上一轮 valence 是 0，这次不要直接给 -2 或 2）；"
-        )
-        appendLine("- 标签要短（不超过 6 个字），不要用「开心/难过」这种没有上下文的空话，除非对话就是这样；")
+        appendLine("- 先写直觉，再填数值；数值只是直觉的记录，不要反过来为了数字改直觉；")
+        appendLine("- 只根据对话里真实发生的语气与内容判断，不要编；真的没变化就原样返回上一轮的值；")
+        appendLine("- 一句话就能让他从平静变得很糟——不要为了「平滑」而压住真实反应；")
+        appendLine("- 标签要短（不超过 6 个字），reason 不超过 40 字；")
         appendLine("- 不评价对方，不输出任何额外字段。")
     }.trimEnd()
 

@@ -1,7 +1,6 @@
 package com.yap.app.domain
 
 import java.io.File
-import java.security.MessageDigest
 import java.util.UUID
 
 /**
@@ -413,6 +412,9 @@ object BackupMediaPacker {
                 fileName = candidate.fileName,
                 mime = mime,
                 bytes = bytes.size,
+                // 0.15 v7：把内容哈希一起写进备份。导入端在 base64 解码后再算一遍，
+                // 对不上就拒绝这一条——跨端传输/手工改文件造成的字节损坏当场能发现。
+                sha256 = MediaHashes.sha256Hex(bytes),
                 data = BackupBase64.encode(bytes)
             )
         }
@@ -426,7 +428,9 @@ data class RestoredBackupMedia(
     val fileName: String,
     val file: File,
     val uri: String,
-    val mime: String
+    val mime: String,
+    /** 落盘字节的 SHA-256（本地重算；备份里带 sha256 时已确认一致）。 */
+    val sha256: String = ""
 )
 
 /** 导入媒体阶段的结果：关联表 + 提醒 + 已写文件（失败时要能回滚删掉）。 */
@@ -536,6 +540,14 @@ object BackupMediaRestorer {
                 invalid++
                 return@forEach
             }
+            // 0.15 v7：备份里声明了 sha256 就必须对得上（服务端 `/v1/backup` 也写这个字段）。
+            // 旧备份没有 sha256 → normalize 返回 null → 跳过校验，行为与 v6 一致。
+            val declaredSha = MediaHashes.normalize(entry.sha256)
+            val actualSha = MediaHashes.sha256Hex(bytes)
+            if (declaredSha != null && declaredSha != actualSha) {
+                invalid++
+                return@forEach
+            }
             if (bytes.size > perFileLimit || total + bytes.size > totalBudget) {
                 overLimit++
                 return@forEach
@@ -641,7 +653,10 @@ object BackupMediaRestorer {
                 fileName = entry.fileName,
                 file = target,
                 uri = fileUri(target),
-                mime = outputMime
+                mime = outputMime,
+                // 记录**真正落盘**的字节哈希：头像/聊天图可能被重编码，
+                // 这时它与备份里的 sha256 不同（备份声明的是原始字节），不能混用。
+                sha256 = MediaHashes.sha256Hex(outputBytes)
             )
             fun rejectDuplicate() {
                 if (created) {
@@ -774,18 +789,13 @@ object BackupMediaRestorer {
         }
     }
 
-    /** 内容哈希（SHA-256 十六进制小写）。导出去重与落盘命名共用。 */
-    internal fun sha256Hex(bytes: ByteArray): String {
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        val hex = CharArray(digest.size * 2)
-        val alphabet = "0123456789abcdef"
-        digest.forEachIndexed { index, byte ->
-            val value = byte.toInt() and 0xFF
-            hex[index * 2] = alphabet[value ushr 4]
-            hex[index * 2 + 1] = alphabet[value and 0x0F]
-        }
-        return String(hex)
-    }
+    /**
+     * 内容哈希（SHA-256 小写十六进制）。导出去重与落盘命名共用。
+     *
+     * 0.15 起实现收在 [MediaHashes] 里：媒体下载校验、备份校验、本地记录必须是同一份算法，
+     * 这里保留旧入口只为不打断既有调用方（`MediaStorage` 的内容寻址命名）。
+     */
+    internal fun sha256Hex(bytes: ByteArray): String = MediaHashes.sha256Hex(bytes)
 }
 
 /**

@@ -426,11 +426,19 @@ class BackupMediaTest {
                 attachment(File("/data/user/0/com.yap.app/files/media/chat-a.jpg"), "image/jpeg")
             )
         )
+        // v7：附件导出仍然只写裸文件名，但 0.15 起必须显式带 kind（普通图片写 IMAGE）。
+        val portableImage = BackupAttachmentsPortable.portable(attachmentJson, setOf("chat-a.jpg"))!!
         assertEquals(
             "聊天附件导出时只留文件名",
-            """[{"uri":"chat-a.jpg"}]""",
-            BackupAttachmentsPortable.portable(attachmentJson, setOf("chat-a.jpg"))
+            "chat-a.jpg",
+            AttachmentsCodec.decode(portableImage).single().uri
         )
+        assertEquals(
+            "普通图片也要显式写 kind",
+            MessageAttachment.KIND_IMAGE,
+            AttachmentsCodec.decode(portableImage).single().kind
+        )
+        assertTrue("不许出现设备路径", !portableImage.contains("/data/user/0"))
         // 没有对应 media 的附件不写：换机它也回不来。
         assertNull(BackupAttachmentsPortable.portable(attachmentJson, emptySet()))
         // v6：语音/视频/表情也随备份走（mime 与 kind 一起原样保留）。

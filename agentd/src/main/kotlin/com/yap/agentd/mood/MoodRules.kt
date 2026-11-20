@@ -1,6 +1,7 @@
 package com.yap.agentd.mood
 
 import com.yap.agentd.store.Mood
+import com.yap.app.domain.PromptContract
 import com.yap.app.core.json.Json
 import com.yap.app.core.json.JsonParseException
 import com.yap.app.core.json.JsonValue
@@ -14,8 +15,13 @@ import com.yap.app.core.json.JsonValue
  *
  * 三条规范数字：
  * - 维度范围：valence -2..2、arousal 0..5、dominance 0..5、intensity 1..5；
- * - **单次变化幅度 ≤2**（valence/arousal/dominance 各自）；
+ * - **不做「每维变化 ≤2」的硬限制**（0.15 心情直觉化）：心情是**每条用户消息之后**凭直觉
+ *   重新判断的结论，一句话把心情从谷底拉到顶是正常的；投稿越界也只夹到物理范围
+ *   （[PromptContract.Mood.VALENCE_MIN]..[PromptContract.Mood.DOMINANCE_MAX]）；
  * - 失败/无配置时按时间衰减：每小时向 `0 / 2 / 3` 靠一步（不报错）。
+ *
+ * 「取消每维 ≤2」只针对**心情判定**；`MentalActivityRules` 的「念头让心情动一格」是另一条
+ * 规则（念头只是心里动了一下，不是一次完整判定），两者不冲突。
  */
 object MoodRules {
 
@@ -51,7 +57,12 @@ object MoodRules {
         }
     }
 
-    /** 单次变化幅度上限（valence / arousal / dominance 各自）。 */
+    /**
+     * 0.14 的「单次变化幅度 ≤2」上限，**0.15 起不再参与夹取**。
+     *
+     * 常量保留只是为了兼容旧调用方（备份/客户端可能把它写进诊断字段）；新代码不要再读它。
+     */
+    @Deprecated("0.15 心情直觉化：取消每维≤2，只夹物理范围")
     const val MAX_DELTA: Int = 2
 
     /** 衰减目标（每小时向它靠一步）。 */
@@ -90,17 +101,32 @@ object MoodRules {
     }
 
     /**
-     * 套范围 + 相对上一轮限制幅度（±[MAX_DELTA]）。
+     * 套物理范围（**不再限制相对变化**，0.15 心情直觉化）。
      *
-     * 做法是「先夹范围，再夹相对变化」：模型给 `valence=2` 而上一轮是 -2 时，
-     * 结果是 0 而不是 2 —— 一次对话不该让心情从谷底跳到顶。
+     * 为什么取消「每维 ≤2」：那条规则把心情变成了缓慢漂移的数值——用户说了一件大事，
+     * 模型却只能把「愉快度」挪两格，回复的语气与刚听到的话对不上。现在每条用户消息之后都
+     * 重新判一次直觉结论，模型给多少就取多少（越界才夹）。
+     *
+     * [previous] 只在模型没给标签时兜底（空标签沿用上一轮的词），不参与数值夹取。
      */
     fun limit(previous: Values, proposed: Values): Values = Values(
         label = proposed.label.ifBlank { previous.label },
-        valence = clampDelta(previous.valence, proposed.valence.coerceIn(-2, 2), -2, 2),
-        arousal = clampDelta(previous.arousal, proposed.arousal.coerceIn(0, 5), 0, 5),
-        dominance = clampDelta(previous.dominance, proposed.dominance.coerceIn(0, 5), 0, 5),
-        intensity = proposed.intensity.coerceIn(1, 5),
+        valence = proposed.valence.coerceIn(
+            PromptContract.Mood.VALENCE_MIN,
+            PromptContract.Mood.VALENCE_MAX
+        ),
+        arousal = proposed.arousal.coerceIn(
+            PromptContract.Mood.AROUSAL_MIN,
+            PromptContract.Mood.AROUSAL_MAX
+        ),
+        dominance = proposed.dominance.coerceIn(
+            PromptContract.Mood.DOMINANCE_MIN,
+            PromptContract.Mood.DOMINANCE_MAX
+        ),
+        intensity = proposed.intensity.coerceIn(
+            PromptContract.Mood.INTENSITY_MIN,
+            PromptContract.Mood.INTENSITY_MAX
+        ),
         reason = proposed.reason
     )
 
@@ -130,24 +156,40 @@ object MoodRules {
     // ---------------------------------------------------------------- 提示词
 
     /**
-     * `spec/mood/README.md` §3 的固定提示词段：多维数值 + 1-2 句行为提示 + 反自述提醒。
+     * `spec/mood/README.md` §3 的固定提示词段，**先直觉结论、再三维数值**。
      *
-     * 段标题用规范里的 `# 你的心情`，单独成段插在「# 你此刻的状态」之后：
-     * 这样既不改动共享脚手架（`PersonaPromptScaffold` 的段顺序），也不把数值塞进
-     * `state_mood` 那一行（那一行只有「label（强度 N/5）」）。
+     * 0.15 的顺序是有意的：模型先读到「心情：有点累（强度 3/5）」这个直觉结论，再看
+     * 「愉快度 -1 / 唤醒度 2/5 / 掌控感 3/5」这行**校准值**。反过来（先数值后标签）时，
+     * 模型容易把力气花在解释数值上，说话反而变机械；先给结论，数值只是补充。
+     *
+     * 标题与两行模板全部来自共享契约 [PromptContract.Mood]：两端与服务端逐字一致。
      */
     fun promptSection(values: Values): String {
-        val hints = behaviorHints(values)
+        val clamped = hintSafe(values)
+        val hints = behaviorHints(clamped)
         return buildString {
-            append("# 你的心情\n")
-            append("心情：").append(values.label).append("（强度 ").append(values.intensity).append("/5）。")
-            append("愉快度 ").append(values.valence)
-            append(" / 唤醒度 ").append(values.arousal).append("/5")
-            append(" / 掌控感 ").append(values.dominance).append("/5。\n")
-            for (hint in hints) append("- 这会影响你怎么说：").append(hint).append("\n")
+            appendLine(PromptContract.Mood.TITLE)
+            appendLine(PromptContract.Mood.line(clamped.label, clamped.intensity))
+            appendLine(
+                PromptContract.Mood.dimensionsLine(
+                    valence = clamped.valence,
+                    arousal = clamped.arousal,
+                    dominance = clamped.dominance
+                )
+            )
+            appendLine("- 先按这个直觉说话，数值只是校准；不要向对方解释你的心情。")
+            for (hint in hints) appendLine("- 这会影响你怎么说：$hint")
             append("- 不要直接报数值，也不要说「我的情绪是…」；用说话方式体现。")
         }
     }
+
+    /** 提示词里只写物理范围内的值（脏数据不能把提示词写成 `愉快度 9`）。 */
+    private fun hintSafe(values: Values): Values = values.copy(
+        valence = values.valence.coerceIn(PromptContract.Mood.VALENCE_MIN, PromptContract.Mood.VALENCE_MAX),
+        arousal = values.arousal.coerceIn(PromptContract.Mood.AROUSAL_MIN, PromptContract.Mood.AROUSAL_MAX),
+        dominance = values.dominance.coerceIn(PromptContract.Mood.DOMINANCE_MIN, PromptContract.Mood.DOMINANCE_MAX),
+        intensity = values.intensity.coerceIn(PromptContract.Mood.INTENSITY_MIN, PromptContract.Mood.INTENSITY_MAX)
+    )
 
     /** 按三个维度生成 1–2 句行为提示（不是给用户看的文案，是给模型的指令）。 */
     fun behaviorHints(values: Values): List<String> {
@@ -180,11 +222,6 @@ object MoodRules {
         intensity = intensity.coerceIn(1, 5),
         reason = reason.take(Mood.MAX_REASON_CHARS)
     )
-
-    private fun clampDelta(previous: Int, proposed: Int, min: Int, max: Int): Int {
-        val delta = (proposed - previous).coerceIn(-MAX_DELTA, MAX_DELTA)
-        return (previous + delta).coerceIn(min, max)
-    }
 
     private fun toward(value: Int, target: Int, steps: Int, min: Int, max: Int): Int = when {
         value > target -> (value - steps).coerceAtLeast(target).coerceIn(min, max)

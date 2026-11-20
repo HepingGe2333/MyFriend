@@ -60,7 +60,7 @@ class ServerBackupV6InteropTest {
         val decoded = BackupCodec.decode(adapted!!)
         assertTrue("v6 样本必须能解开：$decoded", decoded is BackupDecodeResult.Success)
         val bundle = (decoded as BackupDecodeResult.Success).bundle
-        assertEquals(6, bundle.formatVersion)
+        assertEquals(7, bundle.formatVersion)
         assertEquals(1, bundle.stickers.size)
         assertEquals(1, bundle.diaryNotes.size)
         assertTrue(bundle.media.isNotEmpty())
@@ -75,11 +75,34 @@ class ServerBackupV6InteropTest {
         val decoded = BackupCodec.decode(adapted!!)
         assertTrue("iOS v6 样本必须能解开：$decoded", decoded is BackupDecodeResult.Success)
         val bundle = (decoded as BackupDecodeResult.Success).bundle
-        assertEquals(6, bundle.formatVersion)
+        assertEquals(7, bundle.formatVersion)
         assertEquals(1, bundle.stickers.size)
         assertEquals(2, bundle.diaryNotes.size)
         // iOS 只写 `file`：适配后 `fileName` 要被补齐，否则本地恢复表情文件时找不到对应媒体。
         assertTrue(bundle.stickers.all { it.portableFileName.isNotBlank() })
+    }
+
+    @Test
+    fun `服务端 v7 extensions 里的两张表经适配后能落到本地解码结果`() {
+        val file = File("../fixtures/backup/server-export-v7-extensions.json")
+        if (!file.exists()) {
+            println("skip: 还没有服务端形态的 v7 样本")
+            return
+        }
+        val raw = file.readText()
+        val adapted = ServerBackupAdapter.toLocalBackupJson(raw) ?: error("适配失败")
+        // extensions 不能原样塞给本地解码（proactiveFailures 客户端没有表），但两张客户端表要提上来。
+        assertTrue("适配后不该再带 extensions 夹层", !adapted.contains("\"extensions\""))
+        assertTrue("诊断段不落本地", !adapted.contains("proactiveFailures"))
+
+        val success = BackupCodec.decode(adapted) as? BackupDecodeResult.Success
+            ?: error("服务端 v7 样本经适配后读不出来")
+        assertEquals(7, success.bundle.formatVersion)
+        assertEquals(1, success.bundle.mentalActivities.size)
+        assertEquals("他其实在等对方先开口", success.bundle.mentalActivities.single().thought)
+        assertEquals(1, success.bundle.sessionMemory.size)
+        assertEquals("短期：刚聊完搬家", success.bundle.sessionMemory.single().shortSummary)
+        assertEquals(1, success.bundle.sessionMemory.single().topics.size)
     }
 
     @Test
@@ -138,7 +161,10 @@ class ServerBackupV6InteropTest {
             """{"mode":"replace","imported":{"personas":1,"sessions":1,"messages":2,
                "memories":1,"presets":0,"settings":true}}"""
         )
+        // iOS 端并行开发期间可能已经把这个样本升级成 v7：断言「原样透传」而不是写死 6。
         val raw = fixture("ios-export-v6.json")
+        val declared = Regex("\"formatVersion\"\\s*:\\s*(\\d+)").find(raw)
+            ?.groupValues?.getOrNull(1) ?: error("样本缺 formatVersion")
 
         val imported = gateway.importBackup(raw, ServerBackupMode.REPLACE).getOrThrow()
 
@@ -150,7 +176,7 @@ class ServerBackupV6InteropTest {
         assertEquals("replace", body["mode"]!!.jsonPrimitive.content)
         // data 是对象：v6 的顶字段都应该在，且没有被二次编码成字符串。
         val data = body["data"]!!.jsonObject
-        assertEquals("6", data["formatVersion"]!!.jsonPrimitive.content)
+        assertEquals("原样透传，不二次改写版本", declared, data["formatVersion"]!!.jsonPrimitive.content)
         assertTrue(data.containsKey("stickers"))
         assertTrue(data.containsKey("diaryNotes"))
         assertTrue(data.containsKey("media"))

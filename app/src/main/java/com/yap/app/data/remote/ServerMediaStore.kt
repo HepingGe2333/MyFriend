@@ -4,7 +4,9 @@ import android.content.Context
 import com.yap.app.domain.AttachmentsCodec
 import com.yap.app.domain.AudioVideoPolicy
 import com.yap.app.domain.BackupAvatarPath
+import com.yap.app.domain.MediaHashes
 import com.yap.app.domain.MediaOwnership
+import com.yap.app.domain.MediaTypes
 import com.yap.app.domain.MessageAttachment
 import com.yap.app.domain.RenderMime
 import com.yap.app.util.MediaStorage
@@ -108,6 +110,25 @@ object ServerMediaKind {
         val fromBytes = fromMime(sniffedMime)
         val fromName = fromMime(fromFileName(existing?.uri))
         if (explicit == null) return fromBytes ?: fromName ?: CHAT_IMAGE
+        if (explicit == CHAT_IMAGE && fromBytes != null && fromBytes != CHAT_IMAGE) return fromBytes
+        return explicit
+    }
+
+    /**
+     * 0.15 严格分类（**下载新字节**专用）：拿不准就返回 null，由调用方拒绝。
+     *
+     * 与 [detect] 的唯一区别是**不再兜底 CHAT_IMAGE**：服务端引用没有 mime、字节 magic 又认不出时，
+     * 旧实现会把它当一张普通图片写进 `files/media`，结果是一条未知格式的媒体永远加载不出来。
+     * 现在返回 null → 计一次失败（保留服务端引用，下次还能重试），不猜、不落库。
+     *
+     * 兼容点保持不变：显式元数据（kind / 具体 mime）优先于字节；`image/jpeg` 这个缺省 mime
+     * 不算证据，字节说它是音视频/表情时信字节。
+     */
+    fun classify(existing: MessageAttachment?, sniffedMime: String?): String? {
+        val explicit = fromAttachment(existing)
+        val fromBytes = fromMime(sniffedMime)
+        val fromName = fromMime(fromFileName(existing?.uri))
+        if (explicit == null) return fromBytes ?: fromName
         if (explicit == CHAT_IMAGE && fromBytes != null && fromBytes != CHAT_IMAGE) return fromBytes
         return explicit
     }
@@ -331,7 +352,14 @@ data class ServerAttachmentRef(
     val serverRef: String,
     val existing: MessageAttachment? = null,
     val personaId: String? = null,
-    val kind: String? = null
+    val kind: String? = null,
+    /**
+     * 已知的服务端内容哈希（来自上传响应 `ServerMedia.sha256` / 服务端备份 `media[].sha256`）。
+     *
+     * 与下载响应 `ETag`、本机附件记录的 `sha256` 一起参与校验；三者任一非空就对字节重算比对，
+     * 不一致 → 该条失败、不落盘、不落库。
+     */
+    val expectedSha256: String? = null
 )
 
 /** 单个附件本地化的结果；[uri] 在失败时仍是服务端引用（界面继续走网络/占位）。 */
@@ -342,7 +370,9 @@ data class ServerMediaAttachment(
     /** 写进 `attachmentsJson` 的 `kind`（STICKER/AUDIO/VIDEO；普通图片为 null）。 */
     val kind: String? = null,
     /** 字节是否真的在本机（false = 下载失败，只保留了服务端引用）。 */
-    val local: Boolean = false
+    val local: Boolean = false,
+    /** 本机字节的 SHA-256（下载校验通过后记录；旧服务端没给哈希时是本地重算值）。 */
+    val sha256: String? = null
 )
 
 /** 一批附件的落盘结果：`media` 按规范引用（`/v1/media/<id>`）索引，同 id 只出现一次。 */
@@ -350,7 +380,9 @@ data class ServerMediaMaterializeResult(
     val media: Map<String, ServerMediaAttachment> = emptyMap(),
     val downloaded: Int = 0,
     val skipped: Int = 0,
-    val failed: Int = 0
+    val failed: Int = 0,
+    /** 0.15：其中因为 sha256 对不上（而非网络/超限）失败的数量。 */
+    val hashMismatches: Int = 0
 ) {
     /** 按「服务端引用 / 裸 id / 绝对 URL」查本地化结果。 */
     fun attachmentFor(raw: String?): ServerMediaAttachment? = media.attachmentFor(raw)
@@ -381,7 +413,11 @@ class ServerMediaMaterializer(
     private val directories: ServerMediaDirectories,
     /** 落盘临时文件名的一部分；放在 [download] 之前，让测试可以用末尾 lambda 传下载器。 */
     private val newToken: () -> String = { UUID.randomUUID().toString() },
-    private val download: suspend (ref: String, maxBytes: Int) -> ByteArray?
+    /**
+     * 下载器：返回字节 + 服务端声明的哈希（`ETag` / 先前的上传响应）。
+     * 返回 null = 下载失败。旧测试/旧调用方可以只塞 `ServerMediaDownload(bytes)`。
+     */
+    private val download: suspend (ref: String, maxBytes: Int) -> ServerMediaDownload?
 ) {
 
     suspend fun materialize(refs: List<ServerAttachmentRef>): ServerMediaMaterializeResult {
@@ -393,6 +429,7 @@ class ServerMediaMaterializer(
         var downloaded = 0
         var skipped = 0
         var failed = 0
+        var hashMismatches = 0
 
         refs.forEach { ref ->
             val raw = ref.serverRef.trim()
@@ -414,18 +451,31 @@ class ServerMediaMaterializer(
             when (outcome.status) {
                 LocalizeStatus.DOWNLOADED -> downloaded++
                 LocalizeStatus.SKIPPED -> skipped++
-                LocalizeStatus.FAILED -> failed++
+                LocalizeStatus.FAILED -> {
+                    failed++
+                    if (outcome.hashMismatch) hashMismatches++
+                }
             }
         }
         return ServerMediaMaterializeResult(
             media = media,
             downloaded = downloaded,
             skipped = skipped,
-            failed = failed
+            failed = failed,
+            hashMismatches = hashMismatches
         )
     }
 
-    /** 单个附件：本地已有 → 跳过；否则下载 → 嗅探 → 原子落盘。失败只返回占位结果。 */
+    /**
+     * 单个附件：本地已有 → 校验/跳过；否则下载 → 校验哈希 → 判定类型 → 原子落盘。
+     *
+     * 0.15 的三道新闸门（顺序是契约的一部分）：
+     * 1. **本机记录校验**：附件里记着 `sha256` 而本地文件重算对不上 → 删掉坏副本、重新下载
+     *    （下载幂等 + 自我修复）；没有记录（旧数据）→ 直接复用，行为与 0.14 一致。
+     * 2. **下载哈希校验**：服务端 `ETag` / `expectedSha256` / 本机记录，三者任一非空就比对；
+     *    不一致 → 删临时文件（此处尚未写目标文件）、记失败、**不落库**。
+     * 3. **类型判定拒绝猜测**：元数据与字节 magic 都认不出用途时记失败，不再兜底成普通图片。
+     */
     private suspend fun localize(
         id: String,
         raw: String,
@@ -435,10 +485,13 @@ class ServerMediaMaterializer(
         val existing = ref.existing
         val existingMime = existing?.mime?.trim()?.takeIf { it.isNotEmpty() }
         val forcedKind = ref.kind?.takeIf { ServerMediaKind.isKnown(it) }
+        // 期望哈希：调用方明确给的优先，其次附件里记录的（上一轮下载通过校验的那份）。
+        val expectedSha = MediaHashes.normalize(ref.expectedSha256)
+            ?: MediaHashes.normalize(existing?.sha256)
 
-        // 1. 已经在本机：上一轮同步落过盘、或本地模式发出去的消息（带 serverMediaId）。
+        // 1. 已经在本机：先按记录的 sha256 复检，坏了就删掉重下。
         val local = indexedLocalFile ?: existingLocalFile(existing)
-        if (local != null) {
+        if (local != null && (expectedSha == null || matchesLocalFile(local, expectedSha))) {
             val kind = forcedKind ?: ServerMediaKind.detect(existing, null)
             return LocalizedItem(
                 attachment = ServerMediaAttachment(
@@ -446,24 +499,51 @@ class ServerMediaMaterializer(
                     uri = fileUri(local),
                     mime = ServerMediaKind.mimeFor(kind, existingMime, null, existing?.uri),
                     kind = ServerMediaKind.attachmentKind(kind),
-                    local = true
+                    local = true,
+                    sha256 = expectedSha ?: hashOfFile(local)
                 ),
                 status = LocalizeStatus.SKIPPED
             )
         }
+        if (local != null) {
+            // 记录的哈希与文件对不上：本地副本已损坏。删掉它（归属守卫已在 existingLocalFile /
+            // 目录索引里过过），让下面走一次干净下载，避免界面一直渲染一张坏图。
+            deleteLocalCopy(local)
+        }
 
         // 2. 下载：用途未知时按最大上限一次取回，再按真实用途复检（见 maxBytes 的注释）。
         val hintKind = forcedKind ?: ServerMediaKind.fromAttachment(existing)
-        val bytes = download(raw, ServerMediaKind.maxBytes(hintKind))
+        val response = download(raw, ServerMediaKind.maxBytes(hintKind))
             ?: return LocalizedItem(failedAttachment(id, existingMime, hintKind), LocalizeStatus.FAILED)
+        val bytes = response.bytes
         if (bytes.isEmpty()) {
             return LocalizedItem(failedAttachment(id, existingMime, hintKind), LocalizeStatus.FAILED)
         }
 
-        // 3. 判定用途与 mime（元数据优先，其次字节 magic，再次扩展名，最后按普通图片）。
+        // 2.1 哈希校验：服务端声明的（ETag）与本机期望值都必须与字节一致。
+        // 不一致时**还没有写任何文件**（临时文件都不建），所以不存在需要清理的半截副本；
+        // 这条按失败计数，保留服务端引用让界面继续走网络/占位，下次同步会重试。
+        val computedSha = MediaHashes.sha256Hex(bytes)
+        if (!MediaHashes.matches(response.sha256, computedSha) ||
+            !MediaHashes.matches(expectedSha, computedSha)
+        ) {
+            return LocalizedItem(
+                attachment = failedAttachment(id, existingMime, hintKind),
+                status = LocalizeStatus.FAILED,
+                hashMismatch = true
+            )
+        }
+
+        // 3. 判定用途与 mime（元数据优先，其次字节 magic，再次扩展名）。
+        // 0.15：认不出来就拒绝，不再默认成 CHAT_IMAGE（旧行为会把未知格式写成一张坏图）。
         val sniffed = ServerMediaSniffer.mimeOf(bytes)
-        val kind = forcedKind ?: ServerMediaKind.detect(existing, sniffed)
+        val kind = forcedKind ?: ServerMediaKind.classify(existing, sniffed)
+            ?: return LocalizedItem(failedAttachment(id, existingMime, hintKind), LocalizeStatus.FAILED)
         val mime = ServerMediaKind.mimeFor(kind, existingMime, sniffed, existing?.uri)
+        // 类型声明必须自洽：kind 与 mime 不同族（例如 AUDIO + image/jpeg）也是拒绝。
+        if (MediaTypes.rejection(kind, mime) != null) {
+            return LocalizedItem(failedAttachment(id, mime, kind), LocalizeStatus.FAILED)
+        }
         if (bytes.size > ServerMediaKind.maxBytes(kind)) {
             // 未知用途按 64 MiB 取回，超过真实用途上限（例如 3 MiB 的“图片”）就不落盘。
             return LocalizedItem(failedAttachment(id, mime, kind), LocalizeStatus.FAILED)
@@ -475,16 +555,47 @@ class ServerMediaMaterializer(
         if (!writeAtomically(target, bytes)) {
             return LocalizedItem(failedAttachment(id, mime, kind), LocalizeStatus.FAILED)
         }
+        // 落盘后再复检一次：rename 之后的文件必须与刚校验过的字节等长且同哈希。
+        // 失败（磁盘截断/别的进程写坏）就删掉目标文件，绝不让一个坏副本进库。
+        if (!fileMatches(target.file, computedSha, bytes.size)) {
+            runCatching { target.file.delete() }
+            return LocalizedItem(
+                attachment = failedAttachment(id, mime, kind),
+                status = LocalizeStatus.FAILED,
+                hashMismatch = true
+            )
+        }
         return LocalizedItem(
             attachment = ServerMediaAttachment(
                 serverMediaId = id,
                 uri = fileUri(target.file),
                 mime = mime,
                 kind = ServerMediaKind.attachmentKind(kind),
-                local = true
+                local = true,
+                sha256 = computedSha
             ),
             status = LocalizeStatus.DOWNLOADED
         )
+    }
+
+    /** 本地文件是否与记录的哈希一致；读不出来/算不出来一律当不一致。 */
+    private fun matchesLocalFile(file: File, expectedSha: String): Boolean {
+        val actual = hashOfFile(file) ?: return false
+        return MediaHashes.matches(expectedSha, actual)
+    }
+
+    private fun hashOfFile(file: File): String? =
+        runCatching { MediaHashes.sha256Hex(file.readBytes()) }.getOrNull()
+
+    private fun fileMatches(file: File, expectedSha: String, expectedBytes: Int): Boolean {
+        if (!file.isFile || file.length() != expectedBytes.toLong()) return false
+        return MediaHashes.matches(expectedSha, hashOfFile(file))
+    }
+
+    /** 删除一个本机坏副本：再加一次目录归属守卫，绝不删到媒体目录外面去。 */
+    private fun deleteLocalCopy(file: File) {
+        if (!MediaOwnership.isWithin(file, directories.all())) return
+        runCatching { file.delete() }
     }
 
     /**
@@ -567,7 +678,12 @@ class ServerMediaMaterializer(
             local = false
         )
 
-    private data class LocalizedItem(val attachment: ServerMediaAttachment, val status: LocalizeStatus)
+    private data class LocalizedItem(
+        val attachment: ServerMediaAttachment,
+        val status: LocalizeStatus,
+        /** 这次失败是不是「sha256 对不上」（与网络失败分开计数，便于诊断）。 */
+        val hashMismatch: Boolean = false
+    )
 
     private enum class LocalizeStatus { DOWNLOADED, SKIPPED, FAILED }
 
@@ -647,7 +763,9 @@ class ServerMediaStore @Inject constructor(
             uri = entry.uri,
             mime = entry.mime?.takeIf { it.isNotBlank() } ?: attachment.mime,
             kind = entry.kind ?: attachment.kind,
-            serverMediaId = entry.serverMediaId
+            serverMediaId = entry.serverMediaId,
+            // 0.15：把校验过的内容哈希记在附件上，下一轮命中本地文件时可以复检。
+            sha256 = MediaHashes.normalize(entry.sha256) ?: attachment.sha256
         )
     }
 
@@ -676,10 +794,11 @@ class ServerMediaStore @Inject constructor(
             if (entry.local) entry.uri else raw
         }
 
-    private suspend fun downloadOnce(ref: String, maxBytes: Int): ByteArray? {
+    /** 下载一次：字节 + 服务端 `ETag`（= 内容 sha256）。失败返回 null，不抛。 */
+    private suspend fun downloadOnce(ref: String, maxBytes: Int): ServerMediaDownload? {
         val api = runCatching { mode.api() }.getOrNull() ?: return null
         return try {
-            api.downloadMedia(ref, maxBytes)
+            api.downloadMediaWithMeta(ref, maxBytes)
         } catch (cancel: CancellationException) {
             throw cancel
         } catch (error: Throwable) {

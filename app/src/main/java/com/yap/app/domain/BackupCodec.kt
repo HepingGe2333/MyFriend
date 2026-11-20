@@ -12,11 +12,13 @@ import com.yap.app.data.local.MemoryEntity
 import com.yap.app.data.local.MessageEntity
 import com.yap.app.data.local.MessageRole
 import com.yap.app.data.local.MessageStatus
+import com.yap.app.data.local.MentalActivityEntity
 import com.yap.app.data.local.PersonaEntity
 import com.yap.app.data.local.PersonaPresetEntity
 import com.yap.app.data.local.ProactiveKind
 import com.yap.app.data.local.ProactiveRuleEntity
 import com.yap.app.data.local.ProactiveSource
+import com.yap.app.data.local.SessionMemoryEntity
 import com.yap.app.data.local.ProviderType
 import com.yap.app.data.local.StickerEntity
 import com.yap.app.data.prefs.AppSettings
@@ -56,12 +58,26 @@ import java.util.Locale
  *
  * v4（0.12）在 v3 的媒体之上加了 `apiConfigs[].webToolsProvider`（搜索后端，默认 MESSAGEAPI）；
  * v5 加了人格引导（世界预设 / 话风 / 当前活动）；v6（0.13）把媒体扩到
- * 表情（GIF）/语音/视频，并新增顶层 `stickers[]` 与 `diaryNotes[]`：
+ * 表情（GIF）/语音/视频，并新增顶层 `stickers[]` 与 `diaryNotes[]`；
+ * v7（0.15）把体验版新增的四类数据也带走：
  *
  * - `media[].kind` 增加 `STICKER` / `AUDIO` / `VIDEO`；表情的字节复用 `media[]`
  *   （`kind=STICKER`、`fileName` 与 `stickers[].fileName` 对应），**不重复内联 base64**；
  * - `stickers[]` 一行一个表情（id/归属/元数据/来源），表情文件本身在 `media[]` 里；
  * - `diaryNotes[]` 是他的日记板（提醒时间也一起带走）。
+ *
+ * v7（0.15，与 iOS 的 v7 互为契约）在 v6 之上加：
+ *
+ * - `personas[].languageTag`（人格提示词语言，BCP-47 主标签，可空）与
+ *   `blockedUntil` / `blockReason` / `blockProposalJson`（拉黑与待确认提议）；
+ * - `messages[].blocked`（这条消息是否被拉黑标记）；
+ * - 顶层 `mentalActivities[]`（他的私密念头 + 当刻心情快照）与 `sessionMemory[]`
+ *   （会话备忘录：短期/长期摘要 + 主题总结 `topics[{timeLabel,summary}]` + 三个游标）；
+ * - `media[].sha256`（原始字节的内容哈希；导入时非空必校验，旧备份没有则跳过）。
+ *
+ * 服务端备份把 `mentalActivities` / `sessionMemory` 放在可选的 `extensions` 里
+ * （服务端专有段，客户端导出写在顶层）：读取时**顶层优先，缺失/空数组回退 extensions**；
+ * `extensions.proactiveFailures[]` 是服务端诊断数据，客户端没有对应本地表，导入时忽略。
  *
  * v3 的媒体规则不变：头像与聊天图片的**二进制**也一起带走：顶层多一个 `media` 数组，
  * 每条是一份媒体 + 标准 base64。
@@ -77,7 +93,7 @@ import java.util.Locale
  *   聊天背景图片是设备上的路径，不导；
  * - 孤儿媒体文件不导：只收集本机当前还引用得到的头像、聊天附件与表情行。
  */
-const val BACKUP_FORMAT_VERSION: Int = 6
+const val BACKUP_FORMAT_VERSION: Int = 7
 
 /**
  * 写在文件里的格式标记：拿错文件时能早点说「这不是他的备份」。
@@ -120,6 +136,18 @@ data class BackupBundle(
     val stickers: List<BackupSticker> = emptyList(),
     /** 他的日记板（v6）。v1–v5 / 缺段的 iOS 备份读出来是空列表。 */
     val diaryNotes: List<BackupDiaryNote> = emptyList(),
+    /**
+     * 他的心理活动（v7，0.15）。服务端备份把它们放在 `extensions.mentalActivities` 里，
+     * 读取时顶层缺失/空数组会回退到 `extensions`；v1–v6 没有这一段 → 空列表。
+     */
+    val mentalActivities: List<BackupMentalActivity> = emptyList(),
+    /**
+     * 会话备忘录（v7，0.15）：短期/长期摘要、主题总结、以及三个游标。
+     *
+     * 与服务端 `extensions.sessionMemory` 同一个形状（`topics` 是数组，
+     * 不是 Android 本地的 `topicsJson` 字符串）；读取时同样支持从 `extensions` 回退。
+     */
+    val sessionMemory: List<BackupSessionMemory> = emptyList(),
     val presets: List<BackupPreset> = emptyList(),
     val proactiveRules: List<BackupProactiveRule> = emptyList(),
     /** 他「想在某个时间段找你」的念头；过期就作废，属于可选内容。 */
@@ -196,7 +224,22 @@ data class BackupPersona(
     /** 话风 JSON（`SpeechStyleCodec`）。 */
     val speechStyleJson: String? = null,
     /** 当前活动 JSON（`PersonaActivityCodec`）；跨端接回来时如果已经过期，读取端会当作「没在忙」。 */
-    val activityJson: String? = null
+    val activityJson: String? = null,
+
+    // ---- v7：0.15 人格提示词语言 / 拉黑与待确认提议 --------------------------
+    /**
+     * 这个人格用什么语言思考和说话（BCP-47 主标签 `zh` / `en` / `ja` …）。
+     *
+     * 与界面语言无关；null = 没选过（按产品默认中文）。导入时用 `PromptLanguage.parse`
+     * 归一（`zh-CN` → `zh`），认不出的标签落成 null，而不是把一个坏值写进库。
+     */
+    val languageTag: String? = null,
+    /** 他主动把对方拉黑到什么时候（毫秒）；null = 没拉黑。到期由读路径判断，不靠导出时清空。 */
+    val blockedUntil: Long? = null,
+    /** 拉黑原因（只给模型/调试看）。 */
+    val blockReason: String? = null,
+    /** 还没生效的 `block_user` 提议 JSON（七个固定字段），原样带走。 */
+    val blockProposalJson: String? = null
 )
 
 /** 一条长期记忆，连「它还剩下多少分量」一起带走。 */
@@ -277,7 +320,9 @@ data class BackupMessage(
     val attachmentsJson: String? = null,
     val toolTraceJson: String? = null,
     /** 模型看到这条用户消息的时刻；1.9 新增，可空。 */
-    val readAt: Long? = null
+    val readAt: Long? = null,
+    /** 0.15：这条消息是否被拉黑动作标记（与人格上的 `blockedUntil` 是两件事）。 */
+    val blocked: Boolean = false
 )
 
 /**
@@ -300,6 +345,13 @@ data class BackupMedia(
     val fileName: String = "",
     val mime: String = "image/jpeg",
     val bytes: Int = 0,
+    /**
+     * 原始字节的 SHA-256（64 位小写 hex；v7 新增，可空）。
+     *
+     * 写入端（Android/iOS/服务端 `/v1/backup`）都写；导入时非空就必须对上，对不上拒绝该条。
+     * 老备份没有这个字段 → 跳过校验（`MediaHashes.normalize` 返回 null），行为与 v6 一致。
+     */
+    val sha256: String = "",
     /** 标准 base64（带 padding、不换行）。 */
     val data: String = ""
 )
@@ -351,6 +403,96 @@ data class BackupDiaryNote(
     val remindedAt: Long? = null,
     val updatedAt: Long = 0L
 )
+
+/**
+ * 一次心理活动（v7，0.15，对应 `MentalActivityEntity`）。
+ *
+ * 字段名与服务端 `extensions.mentalActivities` 逐字对齐（`sessionId` / `thought` /
+ * 三个心情维度）；本地列可空，这里也全部有默认值，缺字段不会让整份备份失败。
+ */
+@Serializable
+data class BackupMentalActivity(
+    val id: String = "",
+    val personaId: String = "",
+    val sessionId: String? = null,
+    val at: Long = 0L,
+    /** 私密念头（规范上限 60 字，落库前已截断；导入时再截一次）。 */
+    val thought: String = "",
+    val moodLabel: String? = null,
+    val moodIntensity: Int? = null,
+    val moodValence: Int? = null,
+    val moodArousal: Int? = null,
+    val moodDominance: Int? = null
+)
+
+/** 主题总结的一段（v7）。`timeLabel` 是「YYYY-MM-DD 时段」，与服务端 `topics[]` 一致。 */
+@Serializable
+data class BackupTopicSegment(
+    val timeLabel: String = "",
+    val summary: String = ""
+)
+
+/**
+ * 一段会话的备忘录（v7，0.15，对应 `SessionMemoryEntity`）。
+ *
+ * 键名以**服务端 `extensions.sessionMemory`** 为准（`shortUserMessages` / `topics[]` 等），
+ * 因为那是跨端已经存在的形状；Android 本地列名（`shortUserCount` / `topicsJson`）只在编解码层
+ * 出现。读取端额外接受本地别名（`shortUserCount` / `longUserCount` / `topicUserCount` /
+ * `topicsJson` 字符串），导出只写规范键——「宽进严出」。
+ */
+@Serializable
+data class BackupSessionMemory(
+    val sessionId: String = "",
+    val personaId: String = "",
+    val shortSummary: String? = null,
+    val shortUpdatedAt: Long? = null,
+    val shortUserMessages: Long? = null,
+    val longSummary: String? = null,
+    val longUpdatedAt: Long? = null,
+    val longUserMessages: Long? = null,
+    /** 上次**询问**模型要不要更新长期摘要时的条数；本地没有这一列，读取端忽略。 */
+    val longCheckedUserMessages: Long? = null,
+    /** 主题总结（数组，与服务端一致，最多 12 段）。 */
+    val topics: List<BackupTopicSegment> = emptyList(),
+    /** 兼容：Android 本地列把主题总结存成 JSON 字符串；导出只写 [topics]，读入时接住旧写法。 */
+    val topicsJson: String? = null,
+    val topicUpdatedAt: Long? = null,
+    val topicUserMessages: Long? = null,
+    val topicCheckedUserMessages: Long? = null,
+    // ---- 兼容 Android 0.15 内部草案的本地别名（只读不写） ----
+    val shortUserCount: Int? = null,
+    val longUserCount: Int? = null,
+    val topicUserCount: Int? = null
+) {
+    /** 短期摘要游标（本地列是 Int）。 */
+    fun shortCursor(): Int = cursorOf(shortUserMessages, shortUserCount)
+
+    /** 长期摘要游标。 */
+    fun longCursor(): Int = cursorOf(longUserMessages, longUserCount)
+
+    /** 主题总结游标。 */
+    fun topicCursor(): Int = cursorOf(topicUserMessages, topicUserCount)
+
+    /**
+     * 主题总结 → 本地 `topicsJson` 字符串。
+     *
+     * 优先用 `topics` 数组（规范形状）；数组为空时退回旧写法 `topicsJson`（原样透传，
+     * 由 `TopicSummary.parse` 再宽松解析）。两者都没有 → null。
+     */
+    fun effectiveTopicsJson(): String? {
+        if (topics.isNotEmpty()) {
+            return TopicSummary.encode(
+                topics.map { segment ->
+                    MemoryContract.TopicSegment(timeLabel = segment.timeLabel, summary = segment.summary)
+                }
+            )
+        }
+        return topicsJson?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun cursorOf(primary: Long?, legacy: Int?): Int =
+        (primary ?: legacy?.toLong() ?: 0L).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt()
+}
 
 @Serializable
 data class BackupPreset(
@@ -602,6 +744,10 @@ object BackupCodec {
         // 往返，不认识这些内容）。客户端导入时把它们当成顶层段读，不能因为放在夹层里就丢掉
         // 主动规则/整理记录/念头。顶层段优先（服务端显式导出时更权威）。
         val clientExtras = root["client_extras"] as? JsonObject
+        // 0.15：服务端把 `mentalActivities` / `sessionMemory` / `proactiveFailures` 放在
+        // 可选的 `extensions` 里（客户端导出写在顶层）。读取时顶层优先，缺失/空数组回退
+        // `extensions`；`proactiveFailures` 客户端没有本地表，故意不读。
+        val serverExtensions = root["extensions"] as? JsonObject
 
         val format = root.textOrNull("format")
         if (format != null && format != BACKUP_FORMAT_NAME) {
@@ -621,8 +767,9 @@ object BackupCodec {
         val sessions = decodeList(root, "sessions", BackupSection.SESSION, warnings, BackupSession.serializer()) { it.id }
         val messages = decodeList(root, "messages", BackupSection.MESSAGE, warnings, BackupMessage.serializer()) { it.id }
         val presets = decodeList(root, "presets", BackupSection.PRESET, warnings, BackupPreset.serializer()) { it.id }
-        // 客户端独有段从「顶层 + client_extras」合并后的根上读；顶层优先，缺的才看夹层。
-        val clientOnlyRoot = mergeClientExtras(root, clientExtras)
+        // 客户端独有段 / 服务端扩展段从合并后的根上读：优先级 顶层 > client_extras > extensions。
+        // （顶层显式导出的段更权威；夹层只补缺失的段。）
+        val clientOnlyRoot = mergeClientExtras(mergeClientExtras(root, clientExtras), serverExtensions)
         val rules =
             decodeList(clientOnlyRoot, "proactiveRules", BackupSection.PROACTIVE_RULE, warnings, BackupProactiveRule.serializer()) { it.id }
         val intents =
@@ -652,6 +799,19 @@ object BackupCodec {
         // 不硬塞一个错误的段名去误导用户。
         val stickers = decodeOptionalList(root, "stickers", BackupSticker.serializer()) { it.id }
         val diaryNotes = decodeOptionalList(root, "diaryNotes", BackupDiaryNote.serializer()) { it.id }
+        // v7（0.15）：两张体验版新表。客户端导出写顶层；服务端备份写在 `extensions` 里，
+        // 因此从合并后的根上读（顶层优先、空数组回退 extensions，与 client_extras 同一套规则）。
+        // 与 stickers/diaryNotes 一样，缺段/坏条目只丢掉，不让整份失败。
+        val mentalActivities = decodeOptionalList(
+            clientOnlyRoot,
+            "mentalActivities",
+            BackupMentalActivity.serializer()
+        ) { it.id }
+        val sessionMemory = decodeOptionalList(
+            clientOnlyRoot,
+            "sessionMemory",
+            BackupSessionMemory.serializer()
+        ) { it.sessionId }
 
         val settings = root["settings"]?.takeIf { it !is JsonNull }?.let { element ->
             runCatching { readJson.decodeFromJsonElement(BackupSettings.serializer(), element) }
@@ -674,6 +834,8 @@ object BackupCodec {
             media = media,
             stickers = stickers,
             diaryNotes = diaryNotes,
+            mentalActivities = mentalActivities,
+            sessionMemory = sessionMemory,
             presets = presets,
             proactiveRules = rules,
             agentIntents = intents,
@@ -866,7 +1028,12 @@ fun PersonaEntity.toBackupPersona(): BackupPersona = BackupPersona(
     dndOnSleep = dndOnSleep,
     worldJson = worldJson,
     speechStyleJson = speechStyleJson,
-    activityJson = activityJson
+    activityJson = activityJson,
+    // v7：0.15 的三类人格数据原样带走（语言标签导出前已由 PersonaRepository 归一）。
+    languageTag = languageTag?.trim()?.takeIf { it.isNotEmpty() },
+    blockedUntil = blockedUntil?.takeIf { it > 0L },
+    blockReason = blockReason?.trim()?.takeIf { it.isNotEmpty() },
+    blockProposalJson = blockProposalJson?.trim()?.takeIf { it.isNotEmpty() }
 )
 
 fun BackupPersona.toEntity(): PersonaEntity = PersonaEntity(
@@ -904,7 +1071,12 @@ fun BackupPersona.toEntity(): PersonaEntity = PersonaEntity(
     dndOnSleep = dndOnSleep,
     worldJson = worldJson,
     speechStyleJson = speechStyleJson,
-    activityJson = activityJson
+    activityJson = activityJson,
+    // v7：语言标签用共享解析器归一（`zh-CN` → `zh`；认不出 → null，不把坏值写进库）。
+    languageTag = PromptLanguage.parse(languageTag)?.code,
+    blockedUntil = blockedUntil?.takeIf { it > 0L },
+    blockReason = blockReason?.trim()?.takeIf { it.isNotEmpty() },
+    blockProposalJson = blockProposalJson?.trim()?.takeIf { it.isNotEmpty() }
 )
 
 fun MemoryEntity.toBackupMemory(): BackupMemory = BackupMemory(
@@ -1021,7 +1193,8 @@ fun MessageEntity.toBackupMessage(
     edited = edited,
     attachmentsJson = BackupAttachmentsPortable.portable(attachmentsJson, mediaFileNames),
     toolTraceJson = toolTraceJson,
-    readAt = readAt
+    readAt = readAt,
+    blocked = blocked
 )
 
 /**
@@ -1044,7 +1217,8 @@ fun BackupMessage.toEntity(): MessageEntity = MessageEntity(
     edited = edited,
     attachmentsJson = null,
     toolTraceJson = toolTraceJson,
-    readAt = readAt
+    readAt = readAt,
+    blocked = blocked
 )
 
 fun PersonaPresetEntity.toBackupPreset(): BackupPreset = BackupPreset(
@@ -1147,6 +1321,86 @@ fun BackupDiaryNote.toEntity(): DiaryNoteEntity = DiaryNoteEntity(
     remindAt = remindAt,
     remindedAt = remindedAt,
     updatedAt = updatedAt.takeIf { it > 0L } ?: createdAt
+)
+
+/** 心理活动 → 备份（v7）。念头与心情快照原样带走；本地 id 就是去重键。 */
+fun MentalActivityEntity.toBackupMentalActivity(): BackupMentalActivity = BackupMentalActivity(
+    id = id,
+    personaId = personaId,
+    sessionId = sessionId?.trim()?.takeIf { it.isNotEmpty() },
+    at = at,
+    thought = thought,
+    moodLabel = moodLabel,
+    moodIntensity = moodIntensity?.coerceIn(1, 5),
+    moodValence = moodValence?.coerceIn(MoodDimensions.VALENCE_MIN, MoodDimensions.VALENCE_MAX),
+    moodArousal = moodArousal?.coerceIn(MoodDimensions.AROUSAL_MIN, MoodDimensions.AROUSAL_MAX),
+    moodDominance = moodDominance?.coerceIn(MoodDimensions.DOMINANCE_MIN, MoodDimensions.DOMINANCE_MAX)
+)
+
+/**
+ * 备份 → 心理活动（v7）。
+ *
+ * 念头按规范再截一次 60 字（外部文件不能绕过写入侧的截断）；心情维度夹到规范范围。
+ * 人格/会话是否存在由调用方先过滤，这里不做跨表猜测。
+ */
+fun BackupMentalActivity.toEntity(): MentalActivityEntity = MentalActivityEntity(
+    id = id,
+    personaId = personaId,
+    sessionId = sessionId?.trim()?.takeIf { it.isNotEmpty() },
+    at = at,
+    thought = MentalActivity.clampThought(thought),
+    moodLabel = moodLabel?.trim()?.takeIf { it.isNotEmpty() },
+    moodIntensity = moodIntensity?.coerceIn(1, 5),
+    moodValence = moodValence?.coerceIn(MoodDimensions.VALENCE_MIN, MoodDimensions.VALENCE_MAX),
+    moodArousal = moodArousal?.coerceIn(MoodDimensions.AROUSAL_MIN, MoodDimensions.AROUSAL_MAX),
+    moodDominance = moodDominance?.coerceIn(MoodDimensions.DOMINANCE_MIN, MoodDimensions.DOMINANCE_MAX)
+)
+
+/**
+ * 会话备忘录 → 备份（v7）。
+ *
+ * `topics` 优先从本地 `topicsJson` 解析成数组（跨端契约是数组）；解析不出来时退回原字符串
+ * （宁可另一端读不懂这一段，也不要把它丢掉）。三个游标用规范键名 `*UserMessages`。
+ */
+fun SessionMemoryEntity.toBackupSessionMemory(): BackupSessionMemory {
+    val topics = topicsJson?.let { TopicSummary.parse(it) }.orEmpty()
+    return BackupSessionMemory(
+        sessionId = sessionId,
+        personaId = personaId,
+        shortSummary = shortSummary?.trim()?.takeIf { it.isNotEmpty() },
+        shortUpdatedAt = shortUpdatedAt?.takeIf { it > 0L },
+        shortUserMessages = shortUserCount.toLong(),
+        longSummary = longSummary?.trim()?.takeIf { it.isNotEmpty() },
+        longUpdatedAt = longUpdatedAt?.takeIf { it > 0L },
+        longUserMessages = longUserCount.toLong(),
+        topics = topics.map { BackupTopicSegment(timeLabel = it.timeLabel, summary = it.summary) },
+        topicsJson = topicsJson?.trim()?.takeIf { it.isNotEmpty() && topics.isEmpty() },
+        topicUpdatedAt = topicUpdatedAt?.takeIf { it > 0L },
+        topicUserMessages = topicUserCount.toLong()
+    )
+}
+
+/**
+ * 备份 → 会话备忘录（v7）。
+ *
+ * [sessionId] 是**本机**的会话 id（调用方已按备份 sessionId → 本机会话 id 映射）；
+ * `updatedAt` 取三段时间里最大的那个，全空时退回 0（由 Room 行语义接受）。
+ */
+fun BackupSessionMemory.toEntity(sessionId: String): SessionMemoryEntity = SessionMemoryEntity(
+    sessionId = sessionId,
+    personaId = personaId,
+    shortSummary = shortSummary?.trim()?.takeIf { it.isNotEmpty() },
+    longSummary = longSummary?.trim()?.takeIf { it.isNotEmpty() },
+    shortUserCount = shortCursor(),
+    longUserCount = longCursor(),
+    shortUpdatedAt = shortUpdatedAt?.takeIf { it > 0L },
+    longUpdatedAt = longUpdatedAt?.takeIf { it > 0L },
+    updatedAt = listOfNotNull(shortUpdatedAt, longUpdatedAt, topicUpdatedAt)
+        .filter { it > 0L }
+        .maxOrNull() ?: 0L,
+    topicsJson = effectiveTopicsJson(),
+    topicUserCount = topicCursor(),
+    topicUpdatedAt = topicUpdatedAt?.takeIf { it > 0L }
 )
 
 fun ProactiveRuleEntity.toBackupRule(): BackupProactiveRule = BackupProactiveRule(

@@ -42,7 +42,11 @@ public enum Schema {
     /// 与两张新表 `mental_activities`（心理活动）`session_memory`（会话备忘录），
     /// 见 `spec/experience/README.md` §2/§3/§6。17→18 是「加两列 + 建两张表」，
     /// 没有数据回填；新列可空/有默认值，老库升级后行为不变（未拉黑、全部消息可见）。
-    public static let version: Int32 = 18
+    ///
+    /// 0.15（上下文/记忆 v2）= v19：`personas.languageTag`（人格自己的提示词语言）
+    /// 与 `session_memory` 的三列主题总结（`topicsJson` / `topicUserCount` / `topicUpdatedAt`）。
+    /// 18→19 同样只有 ADD COLUMN（不回填），老库升级后行为不变（默认中文、还没总结过）。
+    public static let version: Int32 = 19
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -286,6 +290,10 @@ public enum Schema {
             -- 同样追加在表尾（ADD COLUMN 只能加在末尾）。
             blockedUntil INTEGER,
             blockReason TEXT,
+            -- v19：人格自己的提示词语言（0.15；可空 = 沿用默认中文）。
+            -- 放在 blockProposalJson 之前：Android 19.json 就是按这个字段顺序导出的，
+            -- 两端「新装的库」列表必须逐字一致（升级上来的库列序不同，但读的是列名）。
+            languageTag TEXT,
             blockProposalJson TEXT,
             PRIMARY KEY (id)
         )
@@ -764,6 +772,21 @@ public enum Schema {
         ("blockProposalJson", "TEXT")
     ]
 
+    /// v19 给 `personas` 加的列：人格自己的提示词语言（0.15，与页面语言无关）。
+    ///
+    /// 可空：null = 沿用默认中文（`PromptLanguage.resolve` 回落）。
+    /// 只给**人格**加列，不给预设加：预设是模板，套用时可以不带语言（报告里写明了取舍）。
+    public static let personaLanguageColumn: (name: String, ddl: String) = ("languageTag", "TEXT")
+
+    /// v19 给 `session_memory` 加的三列：主题总结（0.15 上下文/记忆 v2）。
+    ///
+    /// `topicUserCount` 有 DEFAULT 0：老库里的会话行读出来就是「还没总结过」，迁移不回填。
+    public static let sessionMemoryTopicColumns: [(name: String, ddl: String)] = [
+        ("topicsJson", "TEXT"),
+        ("topicUserCount", "INTEGER NOT NULL DEFAULT 0"),
+        ("topicUpdatedAt", "INTEGER")
+    ]
+
     /// v18 给 `messages` 加的列：拉黑期间用户发来的消息（模型永久看不到）。
     ///
     /// `NOT NULL DEFAULT 0` 与 Room 的 `@ColumnInfo(defaultValue = "0")` 对齐：
@@ -818,6 +841,10 @@ public enum Schema {
             shortUpdatedAt INTEGER,
             longUpdatedAt INTEGER,
             updatedAt INTEGER NOT NULL,
+            -- v19：主题总结（0.15 上下文/记忆 v2），JSON 数组 + 计数 + 时间。
+            topicsJson TEXT,
+            topicUserCount INTEGER NOT NULL DEFAULT 0,
+            topicUpdatedAt INTEGER,
             PRIMARY KEY (sessionId)
         )
         """
@@ -947,6 +974,15 @@ public enum Schema {
             column: messageBlockedColumn.name, type: messageBlockedColumn.ddl
         )
         try ensureV18Tables(database)
+        // v19：人格的提示词语言 + 会话主题总结三列。都只 ADD COLUMN，不回填数据。
+        try addColumnIfMissing(
+            database, table: "personas",
+            column: personaLanguageColumn.name, type: personaLanguageColumn.ddl
+        )
+        for column in sessionMemoryTopicColumns {
+            try addColumnIfMissing(database, table: sessionMemoryTable,
+                                   column: column.name, type: column.ddl)
+        }
     }
 
     /// 16 → 17 的旧数据映射（`spec/mood/README.md` §1）：

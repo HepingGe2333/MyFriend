@@ -92,7 +92,7 @@ public final class ServerUserAvatarUploader {
                 bytes: 0
             )
         }
-        let attachment = MessageAttachment(uri: localURI)
+        let attachment = MessageAttachment.image(uri: localURI)
         guard let prepared = preparer.prepare(attachment: attachment, kind: .avatar) else {
             // 准备器返回 nil 有两种原因（文件不在 / 解码不了）；调用方看到的是同一句话，
             // 因为对用户来说「这张图用不了」就够了。

@@ -31,6 +31,7 @@ import com.yap.app.domain.MemoryDecision
 import com.yap.app.domain.MemoryDrawer
 import com.yap.app.domain.MemoryRow
 import com.yap.app.domain.MemoryScreening
+import com.yap.app.domain.Memorize
 import com.yap.app.domain.MoodLexicon
 import com.yap.app.domain.PersonaActivityCodec
 import com.yap.app.domain.PersonaCard
@@ -92,6 +93,8 @@ class ToolExecutor @Inject constructor(
     private val apiConfigRepository: ApiConfigRepository,
     private val memoryRepository: MemoryRepository,
     private val recallRepository: RecallRepository,
+    /** 0.15：只在会话历史里「想一想」（memorize）；与 recall 的记忆库检索分工不同。 */
+    private val memorizeRepository: MemorizeRepository,
     private val webSearchScorer: WebSearchScorer,
     private val memoryEchoDao: MemoryEchoDao,
     private val personaDao: PersonaDao,
@@ -131,6 +134,7 @@ class ToolExecutor @Inject constructor(
             "set_activity" -> setActivity(invocation, persona, now)
             "set_mood" -> setMood(invocation, persona, now)
             "recall" -> recall(invocation, persona, now)
+            "memorize" -> memorize(invocation, persona, sessionId, now)
             "diary" -> diary(invocation, persona, now)
             "defer_reply" -> deferReply(invocation, persona, sessionId, now)
             "stay_silent" -> staySilent(invocation, persona, sessionId, now)
@@ -645,6 +649,41 @@ class ToolExecutor @Inject constructor(
                 "翻了翻记忆 · ${outcome.hits.size} 条"
             },
             modelText = outcome.rendered
+        )
+    }
+
+    // ---------------------------------------------------------------- 想一想（memorize）
+
+    /**
+     * `memorize`：只在**这段会话历史**里找旧事（0.15）。
+     *
+     * 与 [recall] 的区别：不翻记忆库、不翻归档、不联网，只查「你们这次聊过什么」。
+     * 命中就回灌 `<回忆：…>` 并留一份给下一轮；没命中也要回一句「想不起来了」，
+     * 不能让模型以为工具坏了、更不能让它编一个答案。
+     */
+    private suspend fun memorize(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Long
+    ): ToolExecution {
+        val query = Memorize.query(invocation.argument("query"))
+        if (query.isEmpty()) {
+            return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_RECALL_MISSING))
+        }
+        val outcome = runCatching { memorizeRepository.recall(sessionId, query, now) }.getOrNull()
+            ?: Memorize.recall(emptyList(), emptyList(), query, now)
+        if (!outcome.isEmpty) {
+            memorizeRepository.stashForNextRound(sessionId, outcome.text)
+        }
+        val subtitle = ToolTraceText.memorizeSubtitle(appContext, query, found = !outcome.isEmpty)
+        return success(
+            invocation = invocation,
+            title = ToolTraceTitle.MEMORIZE,
+            subtitle = subtitle,
+            detail = outcome.text.take(600),
+            modelSummary = if (outcome.isEmpty) "想了想，没想起来" else "想了想 · ${outcome.hits.size} 条",
+            modelText = outcome.text
         )
     }
 

@@ -147,7 +147,8 @@ class LlmReplyGeneratorTest {
         store.appendMessage(sessionId, MessageRole.ASSISTANT, "嗯，我记着。")
         send(access(), """{"clientMessageId":"llm-5","content":"今天继续吗"}""")
 
-        val request = server.onlyRequest()
+        // 0.15 起每条用户消息之后还有一次心情判定（服务端自动），所以这里找**聊天**那一条请求。
+        val request = server.requests.first { it.body.contains("# 你是谁") }
         val body = TestSupport.parse(request.body)
         val messages = body.objects("messages")
         assertTrue(messages.first().str("role") == "system")

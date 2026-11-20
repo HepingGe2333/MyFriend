@@ -12,8 +12,11 @@ import Foundation
 // - 服务端会话叫 `unread`，客户端备份叫 `unreadCount`；
 // - 表情文件名服务端可能只写 `file`，客户端还认 `fileName`（反之亦然）。
 //
-// 0.14.1 的两条硬规矩（`spec/experience/README.md` §11）：
-// 1. `extensions` 是服务端专有数据，客户端**明确忽略**（不写本机、不写回导出）；
+// 0.14.1 / 0.15 的两条硬规矩（`spec/experience/README.md` §11 + 0.15 体验备份）：
+// 1. `extensions` 段本身不是客户端备份格式的一部分，但它里面有三样**客户端也要**的数据：
+//    `mentalActivities[]` / `sessionMemory[]`（0.15 起落进本机对应表）与
+//    `proactiveFailures[]`（只落本机诊断表）。这里把它们**提到顶层**再交给
+//    `BackupCodec`；别的服务端专有键继续忽略（客户端不认、也不写回）。
 // 2. 客户端独有段（`proactiveRules[]` / `agentIntents[]` / `memoryConsolidations[]` 以及
 //    将来新增的段）如果被服务端收在 `client_extras` 里，这里**提到顶层**再交给
 //    `BackupCodec`，否则本地导入会把它们当未知键丢掉。
@@ -53,6 +56,17 @@ public enum ServerBackupAdapter {
         // 顶层已有值时以顶层为准（新服务端会把它们写回顶层）。
         for (key, value) in clientExtras ?? [:] where fields[key] == nil && key != "extensions" {
             fields[key] = value
+        }
+        // 0.15：服务端专有 `extensions` 里也有客户端要的两段（+ 一段诊断数据）。
+        // 只在「顶层缺失或为空」时才用它们，保证客户端自己导出的 v7 永远优先。
+        if let extensions = root["extensions"]?.objectValue {
+            for key in ["mentalActivities", "sessionMemory", "proactiveFailures"] {
+                guard let value = extensions[key] else { continue }
+                let existing = fields[key]
+                let isEmpty = existing == nil || existing?.arrayValue?.isEmpty == true
+                guard isEmpty, value.arrayValue?.isEmpty == false else { continue }
+                fields[key] = value
+            }
         }
 
         if let personas = root["personas"]?.arrayValue {

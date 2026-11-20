@@ -46,31 +46,41 @@ class MoodRulesTest {
     }
 
     @Test
-    fun `limit caps a single change to two steps per dimension`() {
+    fun `limit no longer caps a single change to two steps per dimension`() {
+        // 0.15 心情直觉化：取消「每维 ≤2」，只夹物理范围。
         val proposed = MoodRules.Values(
             label = "雀跃",
-            valence = 2, // 上一轮 1 → 允许到 3，但范围 2
-            arousal = 5, // 上一轮 3 → 允许到 5
-            dominance = 0, // 上一轮 3 → 只允许到 1
+            valence = 2,
+            arousal = 5,
+            dominance = 0,
             intensity = 4
         )
         val limited = MoodRules.limit(previous, proposed)
 
-        assertEquals(2, limited.valence)
+        assertEquals("愉快度直接取模型给的值", 2, limited.valence)
         assertEquals(5, limited.arousal)
-        assertEquals("单次最多降 2", 1, limited.dominance)
+        assertEquals("掌控感 3 → 0 也照样落库（不再限制降幅）", 0, limited.dominance)
         assertEquals(4, limited.intensity)
     }
 
     @Test
-    fun `limit caps a jump from the bottom to the top`() {
+    fun `limit only clamps the physical range when the model jumps`() {
         val low = MoodRules.Values(label = "低落", valence = -2, arousal = 0, dominance = 0, intensity = 4)
-        val high = MoodRules.Values(label = "雀跃", valence = 2, arousal = 5, dominance = 5, intensity = 5)
+        val high = MoodRules.Values(label = "雀跃", valence = 2, arousal = 9, dominance = 11, intensity = 9)
         val limited = MoodRules.limit(low, high)
 
-        assertEquals(0, limited.valence)
-        assertEquals(2, limited.arousal)
-        assertEquals(2, limited.dominance)
+        assertEquals("谷底到顶是允许的（一条消息可以改变心情）", 2, limited.valence)
+        assertEquals("唤醒度夹到 0..5", 5, limited.arousal)
+        assertEquals("掌控感夹到 0..5", 5, limited.dominance)
+        assertEquals("强度夹到 1..5", 5, limited.intensity)
+    }
+
+    @Test
+    fun `an empty label falls back to the previous one but numbers are kept`() {
+        val proposed = MoodRules.Values(label = "", valence = 2, arousal = 5, dominance = 1, intensity = 3)
+        val limited = MoodRules.limit(previous, proposed)
+        assertEquals(previous.label, limited.label)
+        assertEquals(2, limited.valence)
     }
 
     @Test

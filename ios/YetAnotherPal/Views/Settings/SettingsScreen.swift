@@ -302,6 +302,35 @@ struct SettingsScreen: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                // 0.15：真的发一句测试话（只走网络层，不写聊天库）。
+                // 放「添加配置」后面：用户配好一条之后顺手就能验一下能不能开口。
+                MFRowDivider(leadingInset: 8)
+
+                NavigationLink(destination: GenerationTestScreen()) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "bolt.horizontal.circle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(accent)
+                            .frame(width: 22)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(L("测试生成"))
+                                .font(.system(.body, design: .serif))
+                            Text(L("先试试这个配置通不通，不会发到聊天里"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 6)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 8)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
             }
 
             MFNote(text: L("Key 存在这台手机的 Keychain 里：不进备份、不进数据库，也不会显示回来。"))

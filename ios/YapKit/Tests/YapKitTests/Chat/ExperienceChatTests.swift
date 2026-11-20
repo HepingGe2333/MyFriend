@@ -188,12 +188,22 @@ final class ExperienceChatTests: XCTestCase {
         // 一次首条延迟 + 一次连发间隔。
         XCTAssertEqual(sleeps.requests.count, 2)
         guard sleeps.requests.count == 2 else { return }
-        XCTAssertGreaterThanOrEqual(sleeps.requests[0], TypingDelay.nanos(seconds: 0.4))
+        // 0.15：延迟是「均值 ±35% 随机波动」，所以只断言区间，不再钉死旧公式的值。
         XCTAssertGreaterThanOrEqual(
-            sleeps.requests[1], TypingDelay.nanos(seconds: MessageRhythm.minGapSeconds)
+            sleeps.requests[0],
+            TypingDelay.nanos(seconds: ExperienceContract.TYPING_MIN_SECONDS * 0.65)
         )
         XCTAssertLessThanOrEqual(
-            sleeps.requests[1], TypingDelay.nanos(seconds: MessageRhythm.maxGapSeconds)
+            sleeps.requests[0],
+            TypingDelay.nanos(seconds: ExperienceContract.TYPING_MAX_SECONDS * 1.35) + 1
+        )
+        XCTAssertGreaterThanOrEqual(
+            sleeps.requests[1],
+            TypingDelay.nanos(seconds: ExperienceContract.BURST_GAP_MIN_SECONDS * 0.65)
+        )
+        XCTAssertLessThanOrEqual(
+            sleeps.requests[1],
+            TypingDelay.nanos(seconds: ExperienceContract.BURST_GAP_MAX_SECONDS * 1.35) + 1
         )
     }
 
@@ -278,10 +288,10 @@ final class ExperienceChatTests: XCTestCase {
         XCTAssertTrue(system.contains("最近他在赶方案"))
         XCTAssertTrue(system.contains("你刚才心里想："))
         XCTAssertTrue(system.contains("他今天声音好轻"))
-        // 短期在前、长期在后（这里只有短期与念头，钉住它们的相对顺序即可）。
+        // 0.15 上下文 v2：短期记忆在「当前状态」（含「你刚才心里想」）之前。
         XCTAssertLessThan(
-            try XCTUnwrap(system.range(of: "你刚才心里想：")).lowerBound,
-            try XCTUnwrap(system.range(of: "你的备忘录")).lowerBound
+            try XCTUnwrap(system.range(of: "你的备忘录")).lowerBound,
+            try XCTUnwrap(system.range(of: "你刚才心里想：")).lowerBound
         )
     }
 }

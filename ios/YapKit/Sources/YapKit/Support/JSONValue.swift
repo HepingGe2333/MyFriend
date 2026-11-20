@@ -236,6 +236,21 @@ public extension Dictionary where Key == String, Value == JSONValue {
         }
     }
 
+    // MARK: 对象数组（v7 的 topics / 服务端 extensions）
+
+    /// 取一个对象数组；缺失/null → 空数组；**不是数组就抛错**（这一条记录跳过并计数）。
+    /// 数组里混进来的非对象元素直接跳过（宽容读取，不至于为一行坏数据丢掉整段）。
+    func objects(_ key: String) throws -> [[String: JSONValue]] {
+        guard let value = self[key], !value.isNull else { return [] }
+        guard case .array(let items) = value else {
+            throw JSONFieldTypeError(key: key, expected: "对象数组")
+        }
+        return items.compactMap { item in
+            if case .object(let object) = item { return object }
+            return nil
+        }
+    }
+
     // MARK: 顶层元数据（不抛错，与 Android 的 textOrNull / intOrNull 一致）
 
     /// 只认 JSON 字符串，别的类型一律当「没写」。

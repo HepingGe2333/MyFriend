@@ -159,15 +159,16 @@ final class ServerMoodEvaluateTests: XCTestCase {
     }
 
     /// 没到节奏：一个请求都不发。
-    func testThrottleSkipsUntilFourNewUserMessages() async throws {
-        try insertUserMessages(3)
-        let skipped = await cloud.evaluateIfNeeded(personaId: personaId)
-        XCTAssertNil(skipped)
-        XCTAssertTrue(ServerURLProtocolStub.recordedRequests.isEmpty)
-        // 再攒够 4 条（基线之后的 4 条）才判。
-        try insertUserMessages(3, offset: 3)
-        XCTAssertFalse(cloud.shouldEvaluate(personaId: personaId, at: now), "才 3 条新的，还没到")
-        try insertUserMessages(1, offset: 6)
+    func testThrottleRunsAfterEveryNewUserMessage() async throws {
+        // 第一次调用只记基线（不判定）。
+        try insertUserMessages(1)
+        let primed = await cloud.evaluateIfNeeded(personaId: personaId)
+        XCTAssertNil(primed, "第一次只记基线")
+        // 0.15：每一条新的用户消息之后都该再判一次（服务端权威模式下本地只负责发起）。
+        try insertUserMessages(1, offset: 1)
+        XCTAssertTrue(cloud.shouldEvaluate(personaId: personaId, at: now))
+        _ = await cloud.evaluateIfNeeded(personaId: personaId)
+        try insertUserMessages(1, offset: 2)
         XCTAssertTrue(cloud.shouldEvaluate(personaId: personaId, at: now))
     }
 

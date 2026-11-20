@@ -158,9 +158,13 @@ public enum MessageRhythm {
     public static let maxMessageChars = 120
     /// 不走工具的回复最多拆成几条（规范 §4：1–3 条）。
     public static let maxSplitMessages = 3
-    /// 连发之间的停顿区间（秒）：0.8–2.5（规范 §4）。
-    public static let minGapSeconds = 0.8
-    public static let maxGapSeconds = 2.5
+    /// 连发之间的停顿区间（秒）：0.15 起改用共享契约
+    /// `ExperienceContract.BURST_GAP_MIN/MAX_SECONDS`（均值 0.2–1.5 秒，再乘 ±35% 波动）。
+    ///
+    /// 旧值是 0.8–2.5 的**固定区间**；真机反馈多条短句之间等 2 秒像卡断，
+    /// 而长句又不够「在打字」。0.15 统一成「长度决定均值 + 随机波动」，两端同一份公式。
+    public static let minGapSeconds = ExperienceContract.BURST_GAP_MIN_SECONDS
+    public static let maxGapSeconds = ExperienceContract.BURST_GAP_MAX_SECONDS
 
     /// `send_message` 的正文清洗：压掉首尾空白、截到 120 字。空串 = 没东西可发。
     /// 与 Android `ExperienceRhythm.clampSendText` 同一套清洗：去首尾空白、
@@ -200,15 +204,21 @@ public enum MessageRhythm {
         return chunks
     }
 
-    /// 连发之间的停顿（秒）：按长度与心情在 0.8–2.5 之间取。
+    /// 连发之间的停顿（秒）：**长度决定均值 + 心情修正 + ±35% 随机波动**（0.15）。
     ///
-    /// 短句更利落（0.8 出头）、长句要「打一会儿字」（趋近 2.5）；
-    /// 高唤醒再快一点、低唤醒再慢一点——与打字延迟同一个方向。
-    public static func gapSeconds(charCount: Int, mood: MoodState) -> Double {
-        let length = Double(min(max(charCount, 1), maxMessageChars))
-        let base = minGapSeconds + (maxGapSeconds - minGapSeconds) * (length / Double(maxMessageChars))
-        let value = base + TypingDelay.moodAdjustment(mood) * 0.6
-        return min(max(value, minGapSeconds), maxGapSeconds)
+    /// 公式与首条延迟同一条口径，只是均值区间更短（0.2–1.5 秒）：
+    /// 首条是「他看到了、在想」，连发是「他还在打字，下一句马上出来」。
+    /// [random] 由调用方注入（生产传 `Double.random(in: 0...1)`，测试传固定值钉住结果）。
+    public static func gapSeconds(
+        charCount: Int,
+        mood: MoodState,
+        random: () -> Double = { Double.random(in: 0...1) }
+    ) -> Double {
+        ExperienceContract.shared.burstGapSeconds(
+            length: charCount,
+            moodAdjustment: TypingDelay.moodAdjustment(mood),
+            random: random
+        )
     }
 }
 
@@ -216,12 +226,15 @@ public enum MessageRhythm {
 
 public enum TypingDelay {
 
-    /// 公式里的基础项与每字项（规范 §5）：`0.4 + 字数 × 0.025 + 心情修正`。
-    public static let baseSeconds = 0.4
-    public static let perCharSeconds = 0.025
-    public static let minSeconds = 0.4
-    public static let maxSeconds = 4.0
-    /// 字数上限：120 字之后不再变慢（再长的消息也不该等 10 秒）。
+    /// 均值公式里的基础项与每字项：**转发共享契约**（0.15 起 `0.3 + 字数 × 0.018`）。
+    ///
+    /// 旧公式（`0.4 + 字数 × 0.025`，区间 0.4–4.0 秒）是**命令式**的：同样字数永远等同样久，
+    /// 聊久了像进度条。新公式是「均值 + ±35% 随机波动」，随机源由调用方注入（测试可钉住）。
+    public static let baseSeconds = ExperienceContract.TYPING_BASE_SECONDS
+    public static let perCharSeconds = ExperienceContract.TYPING_SECONDS_PER_CHAR
+    public static let minSeconds = ExperienceContract.TYPING_MIN_SECONDS
+    public static let maxSeconds = ExperienceContract.TYPING_MAX_SECONDS
+    /// 字数上限：120 字之后不再变慢（保留常量；共享公式自己会在 2.2 秒封顶）。
     public static let lengthCap = 120
 
     /// 心情修正（秒）：低唤醒 / 累 → 更慢（正数），高唤醒 → 更快（负数）。
@@ -239,19 +252,26 @@ public enum TypingDelay {
         return min(max(adjustment, -0.5), 0.5)
     }
 
-    /// 首条消息显示前的延迟（秒）：`clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4.0)`。
+    /// 首条消息显示前的延迟（秒）：**长度均值 + 心情修正 + ±35% 随机波动**（0.15）。
+    ///
+    /// 公式在 `ExperienceContract.typingDelaySeconds`（与 Android 同一份）：
+    /// 均值 `clamp(0.3 + 字数×0.018 + 心情修正, 0.3, 2.2)`，再乘 `1 ± 35%`。
     ///
     /// - Parameter serverAuthoritative: 服务端权威模式（0.14.1 §8）。延迟已经由服务端在
     ///   入队时按同一个公式算进 `visibleAt`，客户端**不能再加一次**，所以这里直接返回 0。
+    /// - Parameter random: 随机源，返回 0..1；生产用默认值（真随机），测试传固定值。
     public static func seconds(
         charCount: Int,
         mood: MoodState,
-        serverAuthoritative: Bool = false
+        serverAuthoritative: Bool = false,
+        random: () -> Double = { Double.random(in: 0...1) }
     ) -> Double {
         guard !serverAuthoritative else { return 0 }
-        let length = Double(min(max(charCount, 0), lengthCap))
-        let value = baseSeconds + length * perCharSeconds + moodAdjustment(mood)
-        return min(max(value, minSeconds), maxSeconds)
+        return ExperienceContract.shared.typingDelaySeconds(
+            length: charCount,
+            moodAdjustment: moodAdjustment(mood),
+            random: random
+        )
     }
 
     /// 秒 → 纳秒（`Task.sleep` 用）。负值 / 0 一律 0（失败/停止不延迟）。

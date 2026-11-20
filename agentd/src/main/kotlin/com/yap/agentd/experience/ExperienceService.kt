@@ -46,14 +46,25 @@ class ExperienceService(
      *
      * 顺序有讲究：先清拉黑（后面的读取才是「此刻真实状态」），再做记忆/心理活动。
      */
-    fun onChatCompleted(personaId: String, sessionId: String): ChatOutcome {
+    fun onChatCompleted(
+        personaId: String,
+        sessionId: String,
+        /**
+         * 模型认为「刚才定下的计划变了」（0.15 短期缓存：每 5 轮**或**计划变化时更新）。
+         *
+         * 谁来判断：`ChatService` 在工具痕迹里看到 `remember` / `diary` / `defer_reply`
+         * （记约定、记待办、说过会儿再来）时置位——这些动作都意味着「接下来要做的事变了」。
+         * 服务端不猜模型的心思，只消费这个信号。
+         */
+        planChanged: Boolean = false
+    ): ChatOutcome {
         val now = clock.millis()
         var outcome = ChatOutcome(personaId = personaId, sessionId = sessionId)
         outcome = outcome.copy(blockedExpired = runCatching { store.expireBlocks(now) }.getOrDefault(0))
         runCatching { store.expireBlockProposals(now) }
 
         memory?.let { service ->
-            val result = runCatching { service.maybeUpdate(sessionId, now) }.getOrNull()
+            val result = runCatching { service.maybeUpdate(sessionId, now, planChanged) }.getOrNull()
             if (result != null) {
                 outcome = outcome.copy(
                     memoryShortUpdated = result.shortUpdated,

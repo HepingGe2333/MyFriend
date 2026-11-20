@@ -66,7 +66,7 @@ final class SchemaV18Tests: XCTestCase {
     func testV17ToV18AddsColumnsAndTables() throws {
         try seedV17Database()
         let stores = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try stores.database.userVersion(), 18, "升级后 user_version 必须是 18")
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version, "升级后 user_version 必须是最新版本")
 
         // 1) 拉黑三列：老数据是 null（= 未拉黑 / 没有提议）。
         let personaColumns = try columnNames(stores.database, table: "personas")
@@ -109,7 +109,7 @@ final class SchemaV18Tests: XCTestCase {
             _ = try DatabaseStores.open(path: databasePath)
         }
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 18)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         XCTAssertEqual(try reopened.messages.bySession(sessionId).count, 2)
         XCTAssertEqual(try reopened.personas.byId(personaId)?.name, "林岸")
     }

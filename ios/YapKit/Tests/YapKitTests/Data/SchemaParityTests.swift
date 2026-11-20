@@ -174,8 +174,10 @@ final class SchemaParityTests: XCTestCase {
         }
         // 列序也要一致：v17 的三维心情与 v18 的拉黑三列都是 ADD COLUMN 追加在表尾，
         // 所以表尾六列的**相对顺序**两端必须一样，否则两份库 diff 起来会错位。
+        // Android 19.json 的字段顺序：三维心情 → 拉黑两列 → languageTag → blockProposalJson。
         let expectedTail = Schema.personaMoodDimensionColumns.map(\.name)
-            + Schema.personaBlockColumns.map(\.name)
+            + Schema.personaBlockColumns.map(\.name).filter { $0 != "blockProposalJson" }
+            + [Schema.personaLanguageColumn.name, "blockProposalJson"]
         let androidNames = fields.compactMap { $0["columnName"] as? String }
         XCTAssertEqual(Array(androidNames.suffix(expectedTail.count)), expectedTail,
                        "Android 18.json 里心情三维 + 拉黑三列应在表尾（且顺序一致）")

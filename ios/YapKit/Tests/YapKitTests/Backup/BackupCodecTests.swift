@@ -312,7 +312,9 @@ final class BackupCodecTests: XCTestCase {
              "proactiveLevel", "memoryRetention", "extractionEvery",
              "sleepEnabled", "wakeThreshold", "dndOnSleep",
              // v5 的人设引导（§1/§2/§3/§4）
-             "worldJson", "speechStyleJson", "activityJson"]
+             "worldJson", "speechStyleJson", "activityJson",
+             // v7（0.15）：提示词语言 + 拉黑三字段
+             "languageTag", "blockedUntil", "blockReason", "blockProposalJson"]
         )
         XCTAssertEqual(
             try keys(of: "memories"),
@@ -337,7 +339,9 @@ final class BackupCodecTests: XCTestCase {
             "id", "sessionId", "personaId", "role", "content", "createdAt", "updatedAt",
             "status", "errorMessage", "model", "edited", "attachmentsJson", "toolTraceJson",
             // 1.9：用户消息被模型看到的时刻
-            "readAt"
+            "readAt",
+            // v7：拉黑期间的消息
+            "blocked"
         ]
         var messageKeyUnion = Set<String>()
         for index in 0..<BackupSamples.iosBundle().messages.count {
@@ -433,6 +437,8 @@ final class BackupCodecTests: XCTestCase {
             ["format", "formatVersion", "appVersion", "exportedAt", "apiKeysOmitted",
              "personas", "memories", "sessions", "messages", "media", "presets", "proactiveRules",
              "agentIntents", "memoryConsolidations", "stickers", "diaryNotes",
+             // v7（0.15）：心理活动 / 会话备忘录（客户端本地也带走）
+             "mentalActivities", "sessionMemory",
              "apiConfigs", "settings"]
         )
         // 顶层不该出现 Kotlin 结构里没有的东西。
@@ -460,7 +466,7 @@ final class BackupCodecTests: XCTestCase {
             guard case .object(let object) = item else { return XCTFail("media 里有一条不是对象") }
             XCTAssertEqual(
                 Set(object.keys),
-                ["id", "kind", "personaId", "fileName", "mime", "bytes", "data"]
+                ["id", "kind", "personaId", "fileName", "mime", "bytes", "data", "sha256"]
             )
         }
     }
@@ -529,7 +535,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(
             Set(entry.keys),
             ["id", "kind", "fileName", "mime", "bytes", "data"],
-            "nil 的 personaId 不许写进媒体条目（别的段有 personaId 是正常的）"
+            "nil 的 personaId / sha256 不许写进媒体条目（别的段有 personaId 是正常的）"
         )
         // 读回来也必须是 nil（不是空串）。
         XCTAssertNil(BackupCodec.decode(json).bundle?.media.first?.personaId)
@@ -604,6 +610,129 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertNotEqual(base, changed)
     }
 
+    // MARK: - v7（0.15）：拉黑 / 心理活动 / 会话备忘录 / 媒体哈希
+
+    /// v1–v6 备份读进来以后：新段按空处理，拉黑字段是「没拉黑」。
+    func testV6BundleHasEmptyV7Sections() throws {
+        let result = try success(#"{"format":"myfriend.backup","formatVersion":6,"personas":[{"id":"p1"}],"messages":[{"id":"m1","sessionId":"s1"}]}"#)
+        let bundle = try XCTUnwrap(result.bundle)
+        XCTAssertTrue(bundle.mentalActivities.isEmpty)
+        XCTAssertTrue(bundle.sessionMemory.isEmpty)
+        XCTAssertNil(bundle.proactiveFailures, "客户端备份里不该有服务端诊断段")
+        let persona = try XCTUnwrap(bundle.personas.first)
+        XCTAssertNil(persona.blockedUntil)
+        XCTAssertNil(persona.blockReason)
+        XCTAssertNil(persona.blockProposalJson)
+        XCTAssertNil(persona.languageTag)
+        XCTAssertFalse(try XCTUnwrap(bundle.messages.first).blocked)
+        // 只有一句「格式是 v6，已按 v7 读」的警告。
+        XCTAssertEqual(
+            result.warnings,
+            ["备份格式是 v6，已按 v7 尽力读出来"]
+        )
+    }
+
+    /// v7 的新字段逐项解出来（含 `blocked` 只有 true 才写）。
+    func testV7FieldsDecode() throws {
+        let raw = #"""
+        {"format":"myfriend.backup","formatVersion":7,
+         "personas":[{"id":"p1","name":"他","languageTag":"en",
+                      "blockedUntil":1795000000000,"blockReason":"想安静一会儿",
+                      "blockProposalJson":"{\"proposalId\":\"x\"}"}],
+         "messages":[{"id":"m1","sessionId":"s1","personaId":"p1","content":"hi","blocked":true},
+                     {"id":"m2","sessionId":"s1","personaId":"p1","content":"ok"}],
+         "mentalActivities":[{"id":"ma1","personaId":"p1","sessionId":"s1","at":1794999000000,
+                              "thought":"有点想笑","moodLabel":"轻快","moodIntensity":3,
+                              "moodValence":1,"moodArousal":3,"moodDominance":4}],
+         "sessionMemory":[{"sessionId":"s1","personaId":"p1",
+                           "shortSummary":"最近在聊哈尔滨","shortUpdatedAt":1794999100000,
+                           "shortUserMessages":5,"longSummary":"认识三年了","longUpdatedAt":1794998000000,
+                           "longUserMessages":18,"longCheckedUserMessages":20,
+                           "topics":[{"timeLabel":"2026-11-18 晚上","summary":"哈尔滨的行程"}],
+                           "topicUpdatedAt":1794997000000,"topicUserMessages":12,
+                           "topicCheckedUserMessages":15}]}
+        """#
+        let bundle = try XCTUnwrap(try success(raw).bundle)
+        let persona = try XCTUnwrap(bundle.personas.first)
+        XCTAssertEqual(persona.languageTag, "en")
+        XCTAssertEqual(persona.blockedUntil, 1_795_000_000_000)
+        XCTAssertEqual(persona.blockReason, "想安静一会儿")
+        XCTAssertNotNil(persona.blockProposalJson)
+        XCTAssertEqual(bundle.messages.map(\.blocked), [true, false])
+        let activity = try XCTUnwrap(bundle.mentalActivities.first)
+        XCTAssertEqual(activity.thought, "有点想笑")
+        XCTAssertEqual(activity.moodValence, 1)
+        let memory = try XCTUnwrap(bundle.sessionMemory.first)
+        XCTAssertEqual(memory.shortUserMessages, 5)
+        XCTAssertEqual(memory.longCheckedUserMessages, 20)
+        XCTAssertEqual(memory.topics.map(\.summary), ["哈尔滨的行程"])
+        XCTAssertNil(bundle.proactiveFailures)
+    }
+
+    /// 会话备忘录的宽容读取：服务端游标名优先，Android 本地别名 / 旧的 `topicsJson` 兜底。
+    func testV7SessionMemoryAcceptsAliasesAndLegacyTopicsJson() throws {
+        let raw = #"""
+        {"format":"myfriend.backup","formatVersion":7,
+         "sessionMemory":[{"sessionId":"s1","personaId":"p1",
+                           "shortUserCount":3,"longUserCount":9,"topicUserCount":4,
+                           "topicsJson":"[{\"timeLabel\":\"昨晚\",\"summary\":\"聊到旧书\"}]"}]}
+        """#
+        let memory = try XCTUnwrap(try success(raw).bundle?.sessionMemory.first)
+        XCTAssertEqual(memory.shortUserMessages, 3)
+        XCTAssertEqual(memory.longUserMessages, 9)
+        XCTAssertEqual(memory.topicUserMessages, 4)
+        XCTAssertEqual(memory.topics.count, 1)
+        XCTAssertEqual(memory.topics.first?.summary, "聊到旧书")
+    }
+
+    /// 服务端备份：顶层没有这两段时回退到 `extensions.mentalActivities/sessionMemory`；
+    /// `proactiveFailures` 只读、导出**不写**。
+    func testServerExtensionsSectionsAreReadButNotExported() throws {
+        let raw = #"""
+        {"format":"myfriend.backup","formatVersion":7,
+         "personas":[{"id":"p1","name":"他"}],
+         "sessions":[{"id":"s1","personaId":"p1"}],
+         "extensions":{"mediaSkipped":0,
+           "mentalActivities":[{"id":"ma1","personaId":"p1","sessionId":"s1","at":1,"thought":"累了"}],
+           "sessionMemory":[{"sessionId":"s1","personaId":"p1","shortSummary":"短","shortUserMessages":1,
+                             "longUserMessages":0,"topicUserMessages":0}],
+           "proactiveFailures":[{"id":"f1","personaId":"p1","at":2,"stage":"generation",
+                                 "reason":"generation_failed","detail":"上游超时","text":""}]}}
+        """#
+        let bundle = try XCTUnwrap(try success(raw).bundle)
+        XCTAssertEqual(bundle.mentalActivities.count, 1)
+        XCTAssertEqual(bundle.sessionMemory.count, 1)
+        XCTAssertEqual(bundle.proactiveFailures?.count, 1)
+
+        let encoded = try BackupCodec.encode(bundle)
+        XCTAssertFalse(encoded.contains("extensions"), "客户端导出不写服务端专有段")
+        XCTAssertFalse(encoded.contains("proactiveFailures"), "诊断段只读不写")
+        XCTAssertTrue(encoded.contains("mentalActivities"))
+        XCTAssertTrue(encoded.contains("sessionMemory"))
+    }
+
+    /// 顶层为空数组时也要回退到 extensions（服务端导出的顶层就是空的）。
+    func testEmptyTopLevelFallsBackToExtensions() throws {
+        let raw = #"""
+        {"format":"myfriend.backup","formatVersion":7,
+         "mentalActivities":[],"sessionMemory":[],
+         "extensions":{"mentalActivities":[{"id":"ma1","personaId":"p1","at":1,"thought":"想了点事"}],
+                       "sessionMemory":[{"sessionId":"s1","personaId":"p1","shortUserMessages":2,
+                                         "longUserMessages":0,"topicUserMessages":0}]}}
+        """#
+        let bundle = try XCTUnwrap(try success(raw).bundle)
+        XCTAssertEqual(bundle.mentalActivities.count, 1)
+        XCTAssertEqual(bundle.sessionMemory.count, 1)
+    }
+
+    /// media[].sha256：有就解出来；老备份没有 → nil（导入时跳过校验）。
+    func testMediaSha256IsOptional() throws {
+        let sample = try XCTUnwrap(try success(try BackupCodec.encode(BackupSamples.iosBundle())).bundle)
+        XCTAssertTrue(sample.media.allSatisfy { $0.sha256?.count == 64 })
+        let legacy = try XCTUnwrap(try success(#"{"media":[{"id":"m1","kind":"USER_AVATAR","fileName":"a.jpg","mime":"image/jpeg","bytes":1,"data":"AA=="}]}"#).bundle)
+        XCTAssertNil(legacy.media.first?.sha256)
+    }
+
     // MARK: - v6 宽容解码（跨端字段名 / 坏数据）
 
     /// Android 的 `stickers[]` 行可能只写 `fileName`（它导出时两个都写，但契约要求两个都认）。
@@ -643,7 +772,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertEqual(preview.personas, 1)
         XCTAssertEqual(preview.memories, 1)
         XCTAssertEqual(preview.sessions, 1)
-        XCTAssertEqual(preview.messages, 3)
+        XCTAssertEqual(preview.messages, 4)
         XCTAssertEqual(preview.rules, 2)
         XCTAssertEqual(preview.presets, 1)
         XCTAssertEqual(preview.apiConfigs, 1)
@@ -652,7 +781,7 @@ final class BackupCodecTests: XCTestCase {
         XCTAssertFalse(preview.isEmpty)
         XCTAssertEqual(
             preview.describe(),
-            "1 个人格 · 1 条记忆 · 1 段对话 · 3 句话 · 2 条主动节奏 · 1 个表情 · 2 条日记"
+            "1 个人格 · 1 条记忆 · 1 段对话 · 4 句话 · 2 条主动节奏 · 1 个表情 · 2 条日记"
         )
         XCTAssertTrue(preview.exportedAtText().hasSuffix(" 带走"))
     }
@@ -716,7 +845,7 @@ final class BackupCodecTests: XCTestCase {
         bundle.personas[0] = persona
 
         let encoded = try BackupCodec.encode(bundle)
-        XCTAssertEqual(BackupCodec.formatVersion, 6, "notes 就在 worldJson 里，不需要为它单独升版本")
+        XCTAssertEqual(BackupCodec.formatVersion, 7, "0.15 的 v7 就是这一版格式")
         let decoded = try XCTUnwrap(try success(encoded).bundle)
         let restored = try XCTUnwrap(decoded.personas.first)
         let restoredWorld = try XCTUnwrap(WorldPreset.decode(restored.worldJson))

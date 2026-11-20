@@ -79,6 +79,20 @@ final class ChatViewModel: ObservableObject {
     /// 只在「已读」这一件事上按它决定要不要显示（§四：不显示任何「他可能不想回」的解释）。
     @Published private(set) var lastNoReply: ChatNoReplyReason?
 
+    /// 服务端多气泡（0.15）：判断「新到的这条该不该立刻追加」的去重器。
+    ///
+    /// 服务端模式里同一条消息会从两条路到达：自己发消息时的 SSE（`.appended`）与
+    /// 前台事件流（`message.created`）。这里保证同一个 id 只上屏一次、只追加更新的；
+    /// 本地模式完全不用它（仍然走原来的「`.appended` / 结束后整页重读」）。
+    private var bubbleFeed = ServerBubbleFeed()
+
+    /// 当前拉黑期的到期时刻（毫秒）；nil = 没被拉黑。
+    ///
+    /// 只存**时刻**、不存文案：`ChatScreen` 用 `TimelineView` 每秒调
+    /// `BlockCountdown.text(until:now:)` 现算，倒计时真的会走字；到期后函数返回 nil，
+    /// 输入框上方那一行自己消失（`BlockRepository.state` 也会顺手把两列清掉）。
+    @Published private(set) var blockUntil: Int64?
+
     /// 输入框上方那行「他睡着了（08:00 醒）；连着发几条可以叫醒他」；nil = 不显示（0.12 续 7）。
     ///
     /// 出现条件全在 `ChatNoReplyReason.sleepHintWakeText`：只有「睡着、还没到阈值」被静默，
@@ -193,6 +207,10 @@ final class ChatViewModel: ObservableObject {
     func reloadMessages(preservingLoadedRange: Bool = false) {
         guard let env else { return }
 
+        // 无论走哪条分支（重置 / 追加 / 保持），窗口都更新过了：把去重游标与已见 id
+        // 重新对齐到当前视图，避免「整页重读之后同一条消息又被当成新消息追加一次」。
+        defer { seedBubbleFeedFromWindow() }
+
         // 0.11.1 审计 P1-3：先确认**会话还在不在**。`try?` 会把 nil 拍平成同一条分支，
         // 所以这里显式解一层：读不到就说明会话被别处删了（清空全部聊天 / 删人格 / 替换导入）。
         guard let fresh = (try? env.stores.sessions.byId(sessionId)) ?? nil else {
@@ -286,6 +304,9 @@ final class ChatViewModel: ObservableObject {
         messagePulseTask = nil
         pulseTask?.cancel()
         pulseTask = nil
+        // 会话都没了：去重器也清空，下一段会话从「空窗口」重新开始。
+        bubbleFeed.reset(seenIds: [], lastCreatedAt: nil, lastId: nil)
+        blockUntil = nil
         #if DEBUG
         DebugSeeding.log("[chat] session gone, 清空窗口并停轮询")
         #endif
@@ -479,7 +500,14 @@ final class ChatViewModel: ObservableObject {
         // 服务端模式下「能不能聊」由服务端决定，本机不需要任何 API 配置：
         // 没有这一行，用户一开服务端模式就会看到「先去设置里配一个 API」。
         hasApiConfig = env.serverModeActive || env.resolvedChatConfig() != nil
-        guard let persona else { return }
+        guard let persona else {
+            blockUntil = nil
+            return
+        }
+        // 拉黑（0.15）：到期自动解除就发生在 `state` 里（过期时它顺手把两列清掉）。
+        // 30 秒脉冲 / 进页面 / 一轮生成结束都会走到这里，所以拉黑开始与结束最多晚 30 秒，
+        // 而界面上的秒级倒计时由 `BlockCountdown` 现算，不受这一次读库节奏影响。
+        blockUntil = env.blockRepository.state(personaId: persona.id)?.until
         if env.serverModeActive {
             // 服务端模式（M4）：心情/在场由服务端下发，本机不再做衰减推导。
             // 服务端没下发时退回本地推导（第一次同步还没跑完的那一小段时间）。
@@ -508,6 +536,126 @@ final class ChatViewModel: ObservableObject {
             isSessionOpen: isVisible,
             hasTypingEvent: env.serverLiveState.isTyping(sessionId: sessionId)
         )
+    }
+
+    // MARK: - 服务端多气泡（0.15）
+
+    /// 前台事件流刚写进缓存的消息（`AppEnvironment.serverIncomingBubbles`）。
+    ///
+    /// 事件里带的是**服务端**会话 id：只处理属于当前会话的那几条（本机会话与服务端
+    /// 会话 id 可能不同，见 `ServerSessionResolver`）。剩下的都交给 `ServerBubbleFeed`：
+    /// 排序、按 id 去重、只追加比窗口最后一条新的。
+    func applyServerIncomingBubbles(_ bubbles: [AppEnvironment.ServerIncomingBubble]) {
+        guard env?.serverModeActive == true, !bubbles.isEmpty else { return }
+        guard let serverSessionId = session?.serverSessionId, !serverSessionId.isEmpty else {
+            return
+        }
+        let matching = bubbles.filter { $0.serverSessionId == serverSessionId }
+        guard !matching.isEmpty else { return }
+        appendServerBubbles(matching.map {
+            ServerBubbleCandidate(id: $0.id, createdAt: $0.createdAt, source: .eventStream)
+        })
+    }
+
+    /// 服务端模式：从本地缓存里把「比窗口最后一条新」的消息拉出来逐条上屏。
+    ///
+    /// 为什么事件钩子之外还要这一条：转发钩子只覆盖 `message.created`；首次全量同步 /
+    /// 5 分钟增量同步 / 媒体落地也会往缓存里写消息并 bump `serverDataVersion`。
+    /// 它们不该触发整页重读（那正是这一版要消掉的抖动），但也不该被漏掉——这里只读
+    /// 一页 `pageAfter`，再交给同一个 feed 去重。
+    func pullNewerServerMessagesFromCache() {
+        guard let env, env.serverModeActive, let cursor = messages.last else { return }
+        let newer = (try? env.stores.messages.pageAfter(
+            sessionId: sessionId,
+            createdAt: cursor.createdAt,
+            id: cursor.id,
+            limit: MessagePaging.maxLoadedMessages
+        )) ?? []
+        guard !newer.isEmpty else { return }
+        appendServerBubbles(newer.map {
+            ServerBubbleCandidate(id: $0.id, createdAt: $0.createdAt, source: .eventStream)
+        })
+    }
+
+    /// 把一批候选交给 feed；只把 `accepted` 的实体**逐条追加**到窗口，不整页重读。
+    private func appendServerBubbles(_ candidates: [ServerBubbleCandidate]) {
+        guard let env, !candidates.isEmpty else { return }
+        let accepted = bubbleFeed.accept(candidates)
+        guard !accepted.isEmpty else { return }
+        var appended: [MessageEntity] = []
+        appended.reserveCapacity(accepted.count)
+        for candidate in accepted {
+            guard let message = (try? env.stores.messages.byId(candidate.id)) ?? nil else {
+                continue
+            }
+            // 二次保险：feed 认为新、但窗口里其实已经有（例如别处刚好整页重读过）。
+            guard !messages.contains(where: { $0.id == message.id }) else { continue }
+            appended.append(message)
+        }
+        guard !appended.isEmpty else { return }
+        // `accepted` 已按 `(createdAt, id)` 排好，这里接在后面就是时间升序；
+        // `appendingNewer` 还会按 id 去重并保住已加载的历史窗口。
+        messages = MessagePaging.appendingNewer(appended, to: messages)
+        totalMessageCount = ((try? env.stores.messages.count(sessionId: sessionId))
+            ?? (totalMessageCount + appended.count))
+        refreshLoadedBlockRangeAfterAppend()
+        refreshHasMore()
+        refreshBlockCountdown()
+        // 「消息到了」= 他不再输入了；事件流里的 typing 清理是主路径，这里是兜底。
+        remoteTyping = false
+    }
+
+    /// 新消息可能已经开出新的一块：把已加载区间的最新块号推到库里最新那一块，
+    /// 否则「下面还有更新的消息」会在其实已经到底时还亮着（与 `appendNewerMessages` 同义）。
+    private func refreshLoadedBlockRangeAfterAppend() {
+        guard let env,
+              let last = ((try? env.stores.messages.lastBlockIndex(sessionId: sessionId)) ?? nil) else {
+            return
+        }
+        let lower = loadedBlockRange?.lowerBound ?? last
+        let upper = max(last, loadedBlockRange?.upperBound ?? last)
+        loadedBlockRange = lower...upper
+    }
+
+    /// 用当前窗口重新对齐去重器（`reloadMessages` 的 `defer` 会调它）。
+    private func seedBubbleFeedFromWindow() {
+        bubbleFeed.reset(
+            seenIds: messages.map(\.id),
+            lastCreatedAt: messages.last?.createdAt,
+            lastId: messages.last?.id
+        )
+    }
+
+    /// 重新读一次拉黑状态（拉黑开始/结束都不必等 30 秒脉冲）。
+    func refreshBlockCountdown() {
+        guard let env, let persona else {
+            blockUntil = nil
+            return
+        }
+        blockUntil = env.blockRepository.state(personaId: persona.id)?.until
+    }
+
+    /// 服务端模式：只刷新会话行（首页预览 / 未读 / 人格），不碰消息窗口。
+    ///
+    /// 一轮 `done` 之后 `ServerChatGateway` 已经把助手消息与预览写进库了；`finishGeneration`
+    /// 不需要再整页重读消息来让首页正确，只需要把这里持有的会话快照对齐。
+    private func refreshServerSessionRow() {
+        guard let env else { return }
+        guard let fresh = (try? env.stores.sessions.byId(sessionId)) ?? nil else {
+            handleSessionGone()
+            return
+        }
+        if session != fresh { session = fresh }
+        // 打开着的会话未读永远为 0（与 `reloadMessages` 的同一处理）。
+        if fresh.unreadCount != 0 {
+            var current = fresh
+            current.unreadCount = 0
+            try? env.stores.sessions.upsert(current)
+            session = current
+        }
+        if let personaId = session?.personaId {
+            persona = ((try? env.stores.personas.byId(personaId)) ?? nil) ?? persona
+        }
     }
 
     // MARK: - 轮询（0.11.0 审计 P2-3）
@@ -879,24 +1027,41 @@ final class ChatViewModel: ObservableObject {
             } else {
                 streamingTraces.append(item)
             }
-        case .done:
-            // 落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
-            // 服务端模式下 `done` 之前一定已经收到了 `message.created`：输入指示该收了。
+        case .done(let completion):
+            // 本地模式：落库后的完整消息在 `finishGeneration` 里统一重读，避免两条流各自拼状态。
+            // 服务端模式：`finishGeneration` 不重读整页，所以 `done` 自己落库的那一条也要
+            // 走 feed 上屏（有的服务端只发 done、不发 message.created）；按 id 去重，
+            // 与先到的 `.appended` 不会重复。
             remoteTyping = false
             // 0.12 续 7：他这一轮说了话 → 上一轮的「他睡着了」提示立刻作废。
             lastNoReply = nil
             // 云端模式的人格进化只认「真的完成了一轮回复」（停止/失败/没说话都不算）。
             completedReply = true
+            if env?.serverModeActive == true {
+                appendServerBubbles([ServerBubbleCandidate(
+                    id: completion.message.id,
+                    createdAt: completion.message.createdAt,
+                    source: .sse
+                )])
+            }
         case .noReply(let reason):
             // 他这一轮没说话：没有助手消息要落库，界面只重读一次消息（用户气泡会显示「已读」）。
             lastNoReply = reason
             streamingText = ""
             streamingTraces = []
-        case .appended:
-            // 0.14 连发 / 0.14.1 服务端 `message.created`：这一轮又落了一条独立消息，
-            // 立刻重读让它逐条出现；「消息到了」同时收起服务端输入指示。
+        case .appended(let message):
+            // 0.14 连发 / 0.14.1 服务端 `message.created`：这一轮又落了一条独立消息。
+            // 服务端模式：逐条即时追加（feed 去重，不整页重读）；本地模式保持原来的重读。
             remoteTyping = false
-            reloadMessages(preservingLoadedRange: true)
+            if env?.serverModeActive == true {
+                appendServerBubbles([ServerBubbleCandidate(
+                    id: message.id,
+                    createdAt: message.createdAt,
+                    source: .sse
+                )])
+            } else {
+                reloadMessages(preservingLoadedRange: true)
+            }
         }
     }
 
@@ -908,7 +1073,15 @@ final class ChatViewModel: ObservableObject {
         streamingTraces = []
         stopFallback?.cancel()
         stopFallback = nil
-        reloadMessages(preservingLoadedRange: true)
+        // 服务端模式：气泡已经在 `.appended` / `message.created` 时逐条上屏了，
+        // 这里只收「正在输入」（状态的收尾）与「会话行的预览」，**不再整页重读**：
+        // done 之后重读会把已经画好的多气泡列表替换一次，滚动会抖、顺序也可能被
+        // 重读期间新到的消息打乱。本地模式保持原行为（一轮结束时统一重读）。
+        if env?.serverModeActive == true {
+            refreshServerSessionRow()
+        } else {
+            reloadMessages(preservingLoadedRange: true)
+        }
         refreshContext()
         // 云端模式：这一轮助手回复已经落库，按与本地模式同一节流考虑跑一次人格进化
         //（本地模式由 `ChatService` 在落库后触发，这里不做，避免两条路径各烧一次调用）。

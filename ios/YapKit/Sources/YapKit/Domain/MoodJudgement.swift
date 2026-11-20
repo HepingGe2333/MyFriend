@@ -59,13 +59,20 @@ public enum MoodJudgementRules {
     // MARK: - 触发节奏（规范 §2）
 
     /// 每多少条用户消息判一次。
-    public static let triggerUserMessages = 4
+    ///
+    /// 0.15 起是 **1**：每一条用户消息之后都重新判一次（`docs/design/context-memory-v2.md`
+    /// 「心情：每条用户消息后重新判定一次」）。心情不再是一个每小时才动一次的旧值。
+    public static let triggerUserMessages = 1
     /// 或者每隔多久（毫秒）判一次。
     public static let triggerIntervalMillis: Int64 = 24 * 60 * 60 * 1000
     /// 判定时带最近多少条对话（一条一行的小摘要）。
     public static let recentMessageLimit = 8
-    /// 单次变化幅度上限（三天维度 + intensity 都用它）。
-    public static let maxDelta = 2
+    /// 0.14 及以前「单次变化幅度 ≤2」的常量。
+    ///
+    /// 0.15 起**不再使用**（只做物理范围夹取）：真机反馈是「同一晚从雀跃掉到崩溃」被压成
+    /// 一次只动 2 格，模型明说了、提示词里却是温吞的中间值，读起来像没听懂。
+    /// 保留常量供迁移期对照与文档引用，避免旧测试/旧数据引用处编译不过。
+    public static let legacyMaxDelta = 2
     /// 判定那一轮用的参数：低温度（要稳定 JSON），输出很短。
     public static let temperature = 0.2
     public static let maxOutputTokens = 300
@@ -86,15 +93,17 @@ public enum MoodJudgementRules {
         earlierSummary: String?
     ) -> [CompletionMessage] {
         let system = """
-        你是情绪判定器。你只做一件事：看完「他」最近和对方的几句对话，判断他此刻的心情，
-        并把它写成三个维度：愉快度（valence，-2 很不悦 … 2 很愉快）、
-        唤醒度（arousal，0 很没劲/困 … 5 很激动）、掌控感（dominance，0 被压住 … 5 掌控）。
+        你是「他」的直觉。看完「他」最近和对方的几句对话，**先凭感觉给结论**，再想这一轮该怎么说话。
+        不要逐项推理、不要分析对话结构：你的第一反应就是答案。
+        结论写成：一个词（label）+ 三个维度——愉快度（valence，-2 很不悦 … 2 很愉快）、
+        唤醒度（arousal，0 很没劲/困 … 5 很激动）、掌控感（dominance，0 被压住 … 5 掌控），
+        以及强度（intensity，1 很淡 … 5 很浓）。行为指导只写一句（guidance 可以省略，系统只用结论）。
         只输出 JSON 对象，不要解释、不要 markdown：
         {"label":"不超过4个字的词","valence":-2到2的整数,"arousal":0到5的整数,"dominance":0到5的整数,"intensity":1到5的整数,"reason":"一句话，<=30字"}
         规则：
         - label 用日常的说法（累、平静、烦、开心、想念、有点委屈……），不要用心理学名词；
-        - 除非对话里真的发生了明显的事，否则不要大幅改变心情；
-        - 拿不准就输出与上一轮接近的值；没有任何变化也要如实输出（系统会自己判断要不要写）；
+        - 如果你读完真的觉得心情变了，就照实写——**不要为了「变化平滑」把强烈的感受压成中间值**；
+        - 没有变化也要如实输出（系统会自己判断要不要写）；
         - 不要把对方的情绪当成他的情绪；不要评价关系，不要给建议。
         """
         let current = previous.isEmpty()
@@ -172,15 +181,18 @@ public enum MoodJudgementRules {
         )
     }
 
-    /// 把判定合并到「上一轮的心情」上，**单次幅度 ≤2**（规范 §2）。
+    /// 把判定合并到「上一轮的心情」上：**只做物理范围夹取，不再限制单次幅度**（0.15）。
+    ///
+    /// 与 `parse` 的分工：`parse` 已经把模型给的越界值夹到合法范围（-2..2 / 0..5 / 1..5），
+    /// 这里再夹一次是因为 `MoodJudgement` 可以被调用方直接构造（服务端、测试、旧缓存）。
+    /// 幅度不再限制之后，「他一句话从雀跃到崩溃」会如实写进库与提示词——那才是直觉。
     public static func merged(_ judgement: MoodJudgement, previous: MoodState) -> MoodState {
-        let base = previous.resolvedDimensions
-        let dimensions = base.limitedChange(to: judgement.dimensions, maxDelta: maxDelta)
-        let intensityBase = previous.isEmpty() ? 2 : Swift.max(previous.intensity, 1)
-        let intensity = clamp(
-            intensityBase + clamp(judgement.intensity - intensityBase, to: -maxDelta...maxDelta),
-            to: 1...5
+        let dimensions = MoodDimensions(
+            valence: clamp(judgement.valence, to: MoodDimensions.valenceRange),
+            arousal: clamp(judgement.arousal, to: MoodDimensions.arousalRange),
+            dominance: clamp(judgement.dominance, to: MoodDimensions.dominanceRange)
         )
+        let intensity = clamp(judgement.intensity, to: 1...5)
         let label = judgement.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? previous.label
             : judgement.label

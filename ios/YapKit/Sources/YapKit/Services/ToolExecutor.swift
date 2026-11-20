@@ -142,6 +142,8 @@ public final class ToolExecutor: ToolRunning {
             return setMood(invocation, persona: persona, now: at)
         case "recall":
             return recall(invocation, persona: persona, now: at)
+        case "memorize":
+            return memorize(invocation, sessionId: sessionId, now: at)
         case "defer_reply":
             return await deferReply(invocation, persona: persona, sessionId: sessionId, now: at)
         case "stay_silent":
@@ -304,9 +306,14 @@ public final class ToolExecutor: ToolRunning {
         let intensity = (1...5).contains(rawIntensity) ? rawIntensity : nil
         let reason = String((invocation.argument("reason") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        // 0.15：三维可选（同一个词在不同时候不是同一种感受）；同一轮再调一次也能改。
+        let valence = Self.optionalInt(invocation, "valence", range: MoodDimensions.valenceRange)
+        let arousal = Self.optionalInt(invocation, "arousal", range: MoodDimensions.arousalRange)
+        let dominance = Self.optionalInt(invocation, "dominance", range: MoodDimensions.dominanceRange)
         guard let state = mood.setMood(
             personaId: persona.id, label: raw, intensity: intensity,
-            reason: reason, now: now
+            reason: reason, valence: valence, arousal: arousal, dominance: dominance,
+            now: now
         ) else {
             return failure(invocation, String(localized: "找不到这个人格"))
         }
@@ -695,6 +702,45 @@ public final class ToolExecutor: ToolRunning {
     ///
     /// 翻不到不是错误：那意味着「想不太起来」，甚至「可能早就忘了」。
     /// 所以空结果也返回 ok = true，只把不同的说法交给模型，免得它以为工具坏了去反复重试。
+    /// 0.15 `memorize(query)`：在**这一段会话**的历史里按「关键词 + 主题段 + 时间衰减」翻旧话。
+    ///
+    /// 与 `recall` 分工：`recall` 跨会话翻长期记忆/聊天记录/他看过的资料；`memorize` 只翻
+    /// 你们这一段会话里说过的原话（`docs/design/context-memory-v2.md`）。返回的
+    /// `<回忆：…>` 会被 `ChatService` 当成工具结果注回下一轮上下文，界面动作卡片显示
+    /// 「（他想了想）」。
+    private func memorize(_ invocation: ToolInvocation, sessionId: String, now: Int64) -> ToolResult {
+        let query = (invocation.argument("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if query.isEmpty { return failure(invocation, String(localized: "没说要想起什么")) }
+        let messages = (try? stores.messages.recentVisible(sessionId: sessionId, limit: 400)) ?? []
+        let topics = ((try? stores.sessionMemory.bySession(sessionId)) ?? nil)?.topics ?? []
+        let hits = MemorizeSearch.search(
+            query: query, messages: messages, topics: topics, now: now,
+            calendar: ServiceTime.calendar()
+        )
+        let rendered = MemorizeSearch.render(hits, query: query)
+        return success(
+            invocation,
+            title: String(localized: "（他想了想）"),
+            subtitle: hits.isEmpty
+                ? String(localized: "想不起来了")
+                : PluralText.format("想起了 %d 句以前的话", hits.count),
+            detail: String(rendered.prefix(600)),
+            modelText: rendered
+        )
+    }
+
+    /// 可选整数参数：越界夹到物理范围，没给/不是数字返回 nil（不让脏参数变成 0）。
+    private static func optionalInt(
+        _ invocation: ToolInvocation,
+        _ key: String,
+        range: ClosedRange<Int>
+    ) -> Int? {
+        let raw = invocation.argument(key) ?? ""
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let value = Int(trimmed) else { return nil }
+        return min(max(value, range.lowerBound), range.upperBound)
+    }
+
     private func recall(_ invocation: ToolInvocation, persona: PersonaEntity, now: Int64) -> ToolResult {
         let query = (invocation.argument("query") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         if query.isEmpty { return failure(invocation, String(localized: "没说要回忆什么")) }

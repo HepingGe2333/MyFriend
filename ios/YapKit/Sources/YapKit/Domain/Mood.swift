@@ -379,10 +379,18 @@ public enum MoodPrompt {
         let intensity = state.isEmpty() ? 1 : min(Swift.max(state.intensity, 1), 5)
 
         var lines: [String] = [sectionTitle]
+        // 0.15：**先直觉结论、后行为指导**。
+        // 第一行是他此刻的感受本身（一个词 + 强度），第二行是给模型自己看的维度，
+        // 第三行才是「所以这一轮怎么说话」。顺序反了的话，模型会先读规则再读感受，
+        // 语气就会像在照着一张参数表演。
+        // 先给直觉结论（一个词 + 强度），再给维度与行为指导。
+        // 这一行逐字用脚手架的 `state_mood` 模板（`spec/persona-guidance/scaffold.json` 是唯一出处）。
+        lines.append("先凭直觉说：")
         lines.append(PersonaPromptScaffold.fill(
             PersonaPromptScaffold.stateMood,
             ["mood": label, "intensity": String(intensity)]
-        ) + dimensionLine(dimensions))
+        ))
+        lines.append(dimensionLine(dimensions).trimmingCharacters(in: .whitespacesAndNewlines))
         lines.append("- 这会影响你怎么说：" + behaviorHints(dimensions))
         if !state.reason.trimmed.isEmpty {
             // 与 Android `MoodDimensions.promptLines` 同一行文：`原因：…`（不展示给用户）。

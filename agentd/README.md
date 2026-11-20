@@ -1939,14 +1939,16 @@ The 83 tests added in this round:
 - `ToolLoopTest` (10) — real `LlmClient` + fake SSE server: a tool call is executed and its result
   fed back (`role=tool`, `tool_call_id`), streamed arguments split across frames are reassembled,
   `toolTraceJson`/sticker attachments are persisted, `stay_silent` leaves no assistant message and
-  marks read, at most 3 rounds (the 3rd without `tools[]`), the wall-clock deadline stops the loop,
+  marks read, 5 rounds by default (caller/model may request 1–15; the last round has no `tools[]`),
+  an XML-tagged tool call (`<tool_call>` / `<tool_code>` / `<tool>`) is normalised and never leaks to
+  the client, the wall-clock deadline stops the loop,
   `toolEnabled=false` sends no tools, and an unknown tool becomes a failed tool result.
 - `StickerDiaryApiTest` (10) — sticker CRUD shapes (root `stickers`, `file`/`fileName`/`mediaId`/
   `url`, persona filter, newest-first, `mediaId` registration, mime/size/base64/404/405) and diary
   CRUD (root `notes`, seven columns, `remindInMinutes` → absolute `remindAt`, content edits keep
   `remindedAt`, `remindAt:null` clears, `limit`/`since`, persona isolation, restart).
-- `AutoTriggersTest` (10) — mood after 4 messages and evolution after 20, both **without any client
-  connection**, separate cursors, 24 h fallback, no LLM config leaves the evolution cursor alone,
+- `AutoTriggersTest` (10) — mood after **every** user message (0.15) and evolution after 20, both
+  **without any client connection**, separate cursors, 24 h fallback, no LLM config leaves the evolution cursor alone,
   upstream failure does not throw, counters survive a restart, and the chat service runs the hooks
   only when an LLM is configured.
 - `DiaryReminderTest` (11) — a due reminder becomes exactly one proactive message, future reminders
@@ -1958,3 +1960,95 @@ The 83 tests added in this round:
   v5 still imports, bare file and `{mode,data}` envelope both work, merge semantics, client backup
   survives **import → export → import → export** byte-for-byte, server-created content round-trips,
   v7 is still rejected, and a broken media makes the import transactional.
+
+## 0.15: context & memory v2, per-message mood, tool rounds, proactive failures
+
+This round is the server half of `docs/design/context-memory-v2.md`. Everything below is covered by
+tests in this module (`:agentd:test`).
+
+### Context assembly v2 (`llm/ChatPromptBuilder` + `context/ContextAssembler`)
+
+One round of context is assembled in a **fixed order**, and the order/titles come from `:agentcore`
+contracts (`ExperienceContract`, `MemoryContract`, `PromptContract`):
+
+```
+full persona + tools (identity → world → voice → relationship → capabilities → boundaries)
+  → # 你的备忘录 (## 长期记忆 ≤500 chars, ## 短期记忆 ≤200 chars)
+  → # 你此刻的状态 (+ # 你的心情: intuitive label first, then the three dimensions)
+  → ## 对话主题 (≤12 × 120 chars, each with a time slot)
+  → # 你刚才心里想 (last mental activity, ≤60 chars)
+  → remaining budget: the newest raw chat messages
+```
+
+`ContextAssembler` uses `ExperienceContract.practicalPlan()` (28,000 chars ≈ 14k tokens) as a
+**hard** budget: `system + history` never exceeds it. On overflow it first compresses the topic
+summary (drops the oldest segments, clips each to 120 chars) and only then drops older history;
+history is always taken newest-first and emitted in ascending order. There is no fixed “40 messages”
+cap any more — the character budget decides (`ChatPromptBuilder.chatMessages`).
+
+### Memory v2 (`experience/SessionMemoryService`, `experience/TopicSummaryRules`, `experience/SessionRecall`)
+
+| cache | when it is updated |
+| --- | --- |
+| short (≤200 chars) | every 5 user messages, **or** immediately when the model changed the plan (`remember` / `diary` / `defer_reply` in this turn) |
+| long (≤500 chars) | between 15 and 40 messages, **decided by the model**: from 15 it is asked at every check and may answer `SKIP`; at 40 it is forced |
+| topics (≤12 × 120 chars) | same 15–40 window, or immediately when the topic clearly switches (`TopicSummaryRules.shouldSplit`, keyword overlap); each segment carries a time slot such as `2026-11-18 晚` |
+
+“Check cursor” and “update cursor” are stored separately, so a `SKIP` only advances the check cursor
+(next check 15 messages later, forced update at 40) instead of calling the model on every message.
+
+`memorize(query)` is a new tool: it searches the **raw session history** (keyword + topic segment +
+time decay, newest 600 messages) and returns the injection shape from the design doc:
+
+```
+- <回忆：2026-11-18 晚 —— 加班与方案改版；你原话：「方案又被甲方打回来了」>
+```
+
+`recall` still searches the long-term memory store; the capability prompt tells the model the
+difference, insists on calling `remember` when the user asks it to remember something, and bans
+narration (`沉默了一会儿` / `顿了顿` / parenthesised actions) and XML tool tags in the body.
+
+### Mood after every user message (`mood/MoodService`, `mood/MoodRules`)
+
+- `ChatService` judges the mood **after storing the user message and before building the prompt**, so
+  the reply reacts to the message that was just read.
+- The “≤2 per dimension” clamp is gone: only the physical ranges are clamped
+  (`valence -2..2`, `arousal/dominance 0..5`, `intensity 1..5`). A single message may move the mood
+  from the bottom to the top.
+- The prompt leads with the intuitive conclusion (`心情：有点累（强度 3/5）`) and then gives the three
+  dimensions as calibration values (`PromptContract.Mood`).
+- A manual `set_mood` later in the same turn still wins (it writes the store directly; the per-message
+  judgement already ran before the tools).
+
+### Tool rounds (`llm/LlmReplyGenerator`)
+
+Default is 5 rounds (`ExperienceContract.DEFAULT_TOOL_ROUNDS`); the caller/model may request more via
+the optional `toolRounds` field of `POST /v1/sessions/{id}/messages` (or the generator's constructor),
+and everything is clamped to 1..15 by `ExperienceContract.clampToolRounds`. The last round never
+carries `tools[]`.
+
+### Proactive messages: background record (`ToolsRoutes.ProactiveTicker`, `store/ProactiveFailure`)
+
+Proactive messages are generated, persisted and recorded entirely on the server, whether or not a
+client is connected:
+
+- every proactive message gets a `message.created` event plus a `message_queue.json` record. Online:
+  queued + `typing.started` (delivered at `visibleAt`). Offline: the record is enqueued and completed
+  immediately (`MessageDelivery.deliverNow`), so the client sees it on its next sync;
+- failures are kept in `proactive_failures.json` (stage = `generation` / `persistence` / `delivery` /
+  `push`, newest 200) and exposed as the additive `proactiveFailures` field of `GET /v1/state`;
+- a generation failure still never falls back to a template message.
+
+### Backup v6+ (`store/BackupV6`, `store/FileStore`)
+
+`mentalActivities[]`, `sessionMemory[]` (including 0.15 topics and cursors) and `proactiveFailures[]`
+are exported under the optional `extensions` object — the top-level key set stays client v6 compatible.
+Persona `blockedUntil` / `blockReason` and message `blocked` remain additive client-readable keys.
+A client v6 backup (no `extensions`) still imports; in `merge` mode the server-only sections are kept.
+
+### XML tool calls (`llm/XmlToolCalls`)
+
+DeepSeek baselines sometimes emit tool calls as body text (`<tool_call>…</tool_call>`, `<tool_code>`,
+`<tool>`). `LlmClient` now filters those tags out of the streamed text (even when a tag is split across
+deltas) and normalises the content (JSON object/array, `name({...})`, Python kwargs, or a `name=`
+attribute on the tag) into ordinary `tool_calls`, so the same tool loop executes them.

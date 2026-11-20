@@ -25,6 +25,11 @@ struct PersonaEditorScreen: View {
 
     @State private var name = ""
     @State private var summary = ""
+    /// 他思考和说话用的语言（0.15：语言是**人格属性**，不是页面属性）。
+    ///
+    /// 默认中文（产品默认人格语言）；载入时按 `persona.languageTag` 解析，保存时写回
+    /// `PromptLanguage.code`。它与 App 的界面语言完全无关——界面切英文，这个中文人格也不会改口。
+    @State private var promptLanguage: PromptLanguage = PersonaLanguagePrompt.fallback
     /// 头像：从相册选一张（压到 ≤512px 存沙盒），nil = 用名字首字。
     @State private var avatarUri: String?
     @State private var avatarSeed = 0
@@ -92,6 +97,7 @@ struct PersonaEditorScreen: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 identityCard
+                languageCard
                 worldCard
                 speechCard
                 translationCard
@@ -145,6 +151,46 @@ struct PersonaEditorScreen: View {
                 .padding(.vertical, 8)
                 .padding(.horizontal, 10)
                 .background(fieldBackground)
+        }
+    }
+
+    // MARK: - 他用的语言（0.15）
+
+    /// 他思考和说话用的语言。
+    ///
+    /// 为什么放在「名字 / 一句话介绍」下面而不是设置页：它和名字一样是「他是谁」的一部分，
+    /// 而不是 App 的偏好。界面上刻意不出现「提示词语言」这种工程词——用户理解的是
+    /// 「这个人说哪种话」，提示词只是实现细节。
+    ///
+    /// 选项固定两个（产品默认中文）：语言列表拉长成十项只会让人犹豫；
+    /// 万一从备份里读到别的标签（比如 `ja`），补一项进来原样保留，不悄悄改成中文。
+    private var languageCard: some View {
+        MFCard {
+            Text(L("他用的语言"))
+                .font(.system(.body, design: .serif))
+            MFNote(text: L("跟 App 的界面语言无关：他一直用这个语言说话。"))
+            MFChoiceBar(
+                options: languageOptions.map { ($0, languageLabel($0)) },
+                selection: $promptLanguage,
+                accent: accent
+            )
+            .padding(.top, 10)
+        }
+    }
+
+    private var languageOptions: [PromptLanguage] {
+        var options: [PromptLanguage] = [.zh, .en]
+        if !options.contains(promptLanguage) { options.append(promptLanguage) }
+        return options
+    }
+
+    /// 选项名用各自语言自己的说法（中文 / English），翻译文件里只放这两条。
+    private func languageLabel(_ language: PromptLanguage) -> String {
+        switch language {
+        case .zh: return L("中文")
+        case .en: return L("English")
+        // 备份/服务端带回来的其它语言：直接显示母语名，没有对应的界面文案也不报错。
+        default: return language.nativeName
         }
     }
 
@@ -1357,6 +1403,8 @@ struct PersonaEditorScreen: View {
         }
         name = persona.name
         summary = persona.description
+        // 0.15：提示词语言是人格属性，读回来时按标签解析（空 / 认不出 = 中文）。
+        promptLanguage = PersonaLanguagePrompt.language(for: persona)
         avatarUri = persona.avatarUri
         originalAvatarUri = persona.avatarUri
         avatarSeed = persona.avatarSeed
@@ -1430,6 +1478,8 @@ struct PersonaEditorScreen: View {
         let promptChanged = entity.prompt != resolvedPrompt
         entity.name = resolvedName
         entity.description = resolvedDescription
+        // 0.15：写规范语言码（`zh` / `en`），不写显示名；空人格默认中文也会显式写 `zh`。
+        entity.languageTag = promptLanguage.code
         entity.avatarUri = avatarUri
         entity.prompt = resolvedPrompt
         entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -3,6 +3,7 @@ package com.yap.app.data.remote
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -127,6 +128,51 @@ class ServerApiMediaTest {
         }
 
         assertEquals("invalid_response", error.code)
+    }
+
+    @Test
+    fun `下载会把服务端 ETag 当成内容 sha256 带回来`() = runBlocking {
+        val bytes = "JPEG-DATA".toByteArray()
+        val sha = com.yap.app.domain.MediaHashes.sha256Hex(bytes)
+        server.responder = {
+            FakeHttpTestServer.FakeReply.Json(
+                body = "JPEG-DATA",
+                contentType = "image/jpeg",
+                headers = mapOf("ETag" to "\"$sha\"")
+            )
+        }
+
+        val download = api.downloadMediaWithMeta("/v1/media/media-9")
+
+        assertEquals("JPEG-DATA", String(download.bytes))
+        assertEquals("ETag 引号要剥掉、按 64 位 hex 归一", sha, download.sha256)
+        assertEquals("兼容入口仍然返回字节", "JPEG-DATA", String(api.downloadMedia("/v1/media/media-9")))
+    }
+
+    @Test
+    fun `下载响应没有 ETag 时 sha256 为 null`() = runBlocking {
+        server.respondJson("""{"ok":true}""")
+        val download = api.downloadMediaWithMeta("/v1/media/media-9")
+        assertNull("旧服务端/代理剥掉 ETag 时按「没有哈希」处理", download.sha256)
+    }
+
+    @Test
+    fun `上传响应里未知 kind 或 mime 不同族时按 invalid_response 拒绝`() = runBlocking {
+        server.respondJson(
+            """{"kind":"GIF","mime":"image/gif","bytes":1,"sha256":"abc","id":"media-9","url":"/v1/media/media-9"}"""
+        )
+        val error = assertThrows(ServerApiException::class.java) {
+            runBlocking { api.uploadMedia(byteArrayOf(1), "image/gif", ServerMediaKinds.CHAT_IMAGE) }
+        }
+        assertEquals("invalid_response", error.code)
+
+        server.respondJson(
+            """{"kind":"AUDIO","mime":"image/jpeg","bytes":1,"sha256":"abc","id":"media-9","url":"/v1/media/media-9"}"""
+        )
+        val mismatch = assertThrows(ServerApiException::class.java) {
+            runBlocking { api.uploadMedia(byteArrayOf(1), "audio/m4a", ServerMediaKinds.AUDIO) }
+        }
+        assertEquals("invalid_response", mismatch.code)
     }
 
     @Test

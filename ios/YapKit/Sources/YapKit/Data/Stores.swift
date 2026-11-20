@@ -169,7 +169,10 @@ extension PersonaEntity: SQLiteRecord {
         "moodValence", "moodArousal", "moodDominance",
         // v18 的拉黑（可空 = 没被拉黑 / 已到期解除，见 `BlockPolicy`），
         // 以及未确认的提议（10 分钟有效）。列序与 Android 18.json 一致。
-        "blockedUntil", "blockReason", "blockProposalJson"
+        "blockedUntil", "blockReason",
+        // v19：人格自己的提示词语言（可空 = 默认中文，见 `PromptLanguage`）。
+        // 顺序跟 Android 19.json 一致：languageTag 在 blockProposalJson 之前。
+        "languageTag", "blockProposalJson"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -191,7 +194,7 @@ extension PersonaEntity: SQLiteRecord {
             .optionalText(translationJson), .optionalText(translationLang),
             .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance),
             .optionalInt(blockedUntil), .optionalText(blockReason),
-            .optionalText(blockProposalJson)
+            .optionalText(languageTag), .optionalText(blockProposalJson)
         ]
     }
 
@@ -247,7 +250,8 @@ extension PersonaEntity: SQLiteRecord {
             // v18：老库没有这两列时给 nil（= 未拉黑）。
             blockedUntil: try row.optionalInt64("blockedUntil"),
             blockReason: try row.optionalText("blockReason"),
-            blockProposalJson: try row.optionalText("blockProposalJson")
+            blockProposalJson: try row.optionalText("blockProposalJson"),
+            languageTag: try row.optionalText("languageTag")
         )
     }
 }
@@ -710,14 +714,17 @@ extension SessionMemoryEntity: SQLiteRecord {
     /// 列序与 Android 18.json 逐字一致（两份摘要在前，然后是两个计数与两个时间）。
     public static let columns = [
         "sessionId", "personaId", "shortSummary", "longSummary",
-        "shortUserCount", "longUserCount", "shortUpdatedAt", "longUpdatedAt", "updatedAt"
+        "shortUserCount", "longUserCount", "shortUpdatedAt", "longUpdatedAt", "updatedAt",
+        // v19：主题总结（JSON 数组 + 计数 + 时间），追加在表尾。
+        "topicsJson", "topicUserCount", "topicUpdatedAt"
     ]
 
     public var bindings: [SQLiteValue] {
         [
             .text(sessionId), .text(personaId), .optionalText(shortSummary),
             .optionalText(longSummary), .int(shortUserCount), .int(longUserCount),
-            .optionalInt(shortUpdatedAt), .optionalInt(longUpdatedAt), .int(updatedAt)
+            .optionalInt(shortUpdatedAt), .optionalInt(longUpdatedAt), .int(updatedAt),
+            .optionalText(topicsJson), .int(topicUserCount), .optionalInt(topicUpdatedAt)
         ]
     }
 
@@ -731,6 +738,9 @@ extension SessionMemoryEntity: SQLiteRecord {
             longUserCount: try row.int("longUserCount"),
             shortUpdatedAt: try row.optionalInt64("shortUpdatedAt"),
             longUpdatedAt: try row.optionalInt64("longUpdatedAt"),
+            topicsJson: try row.optionalText("topicsJson"),
+            topicUserCount: try row.int("topicUserCount"),
+            topicUpdatedAt: try row.optionalInt64("topicUpdatedAt"),
             updatedAt: try row.int64("updatedAt")
         )
     }

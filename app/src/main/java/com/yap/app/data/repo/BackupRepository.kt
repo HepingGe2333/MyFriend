@@ -9,6 +9,8 @@ import com.yap.app.data.local.ChatSessionEntity
 import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryDao
+import com.yap.app.data.local.MentalActivityDao
+import com.yap.app.data.local.SessionMemoryDao
 import com.yap.app.data.local.MemoryTermDao
 import com.yap.app.data.local.MemoryTermEntity
 import com.yap.app.data.local.MessageDao
@@ -49,6 +51,8 @@ import com.yap.app.domain.toBackupConsolidation
 import com.yap.app.domain.toBackupDiaryNote
 import com.yap.app.domain.toBackupIntent
 import com.yap.app.domain.toBackupMemory
+import com.yap.app.domain.toBackupMentalActivity
+import com.yap.app.domain.toBackupSessionMemory
 import com.yap.app.domain.toBackupMessage
 import com.yap.app.domain.toBackupPersona
 import com.yap.app.domain.toBackupPreset
@@ -96,7 +100,11 @@ data class ImportSummary(
     /** v6：接回来的表情行数（只统计真的落库、且文件已还原的行）。 */
     val stickers: Int = 0,
     /** v6：接回来的日记条数。 */
-    val diaryNotes: Int = 0
+    val diaryNotes: Int = 0,
+    /** v7：接回来的心理活动条数。 */
+    val mentalActivities: Int = 0,
+    /** v7：接回来的会话备忘录条数。 */
+    val sessionMemory: Int = 0
 )
 
 /**
@@ -156,6 +164,9 @@ class BackupRepository @Inject constructor(
     /** 块元数据的唯一写入入口：导入之后按消息顺序重建（备份格式仍是 v2，不含块）。 */
     private val blockWriter: MessageBlockWriter,
     private val memoryDao: MemoryDao,
+    /** v7：0.15 的两张体验表也要跟着备份走（心理活动 / 会话备忘录）。 */
+    private val mentalActivityDao: MentalActivityDao,
+    private val sessionMemoryDao: SessionMemoryDao,
     private val memoryTermDao: MemoryTermDao,
     private val memoryConsolidationDao: MemoryConsolidationDao,
     private val proactiveRuleDao: ProactiveRuleDao,
@@ -281,6 +292,20 @@ class BackupRepository @Inject constructor(
             runCatching { diaryNoteDao.allForPersona(persona.id) }.getOrDefault(emptyList())
         }
 
+        // v7（0.15）：心理活动与会话备忘录。
+        // - 心理活动按 DAO 的保留策略取最近 N 条（每个他最多 50 条，与线上保留口径一致）；
+        // - 会话备忘录只导这次真的在备份里的会话（一人一段之后），别把已被收起的旧会话带出去。
+        val exportedSessionIds = sessions.mapTo(mutableSetOf()) { it.id }
+        val mentalActivities = personas.flatMap { persona ->
+            runCatching { mentalActivityDao.recent(persona.id, MENTAL_ACTIVITY_KEEP) }
+                .getOrDefault(emptyList())
+        }
+        val sessionMemoryRows = personas
+            .flatMap { persona ->
+                runCatching { sessionMemoryDao.byPersona(persona.id) }.getOrDefault(emptyList())
+            }
+            .filter { it.sessionId in exportedSessionIds }
+
         val bundle = BackupBundle(
             formatVersion = BACKUP_FORMAT_VERSION,
             appVersion = BuildConfig.VERSION_NAME,
@@ -292,6 +317,8 @@ class BackupRepository @Inject constructor(
             media = packed.media,
             stickers = stickers,
             diaryNotes = diaryNotes.map { it.toBackupDiaryNote() },
+            mentalActivities = mentalActivities.map { it.toBackupMentalActivity() },
+            sessionMemory = sessionMemoryRows.map { it.toBackupSessionMemory() },
             presets = presets.map { it.toBackupPreset() },
             proactiveRules = proactiveRuleDao.observeAll().first().map { it.toBackupRule() },
             agentIntents = intents.map { it.toBackupIntent() },
@@ -611,6 +638,57 @@ class BackupRepository @Inject constructor(
             }
         }
 
+        // ---- v7（0.15）：心理活动与会话备忘录 ---------------------------------
+        // 心理活动：所属人格必须在这次备份里（孤儿跳过并计数）；会话 collect 不到就落成
+        // `sessionId=null`（念头仍然属于这个人，不该因为一段旧会话被收起就整条丢掉）。
+        var skippedMentalActivities = 0
+        val mentalActivities = bundle.mentalActivities.mapNotNull { backup ->
+            if (backup.personaId !in personaIds) {
+                skippedMentalActivities++
+                return@mapNotNull null
+            }
+            val localSessionId = backup.sessionId
+                ?.takeIf { it.isNotBlank() }
+                ?.let { sessionIdMap[it] }
+            backup.copy(sessionId = localSessionId).toEntity()
+        }
+        // 会话备忘录：一行挂一个会话，会话不在这次备份里就跳过（没有落点，写进去也是孤儿）。
+        var skippedSessionMemory = 0
+        val sessionMemoryRows = bundle.sessionMemory.mapNotNull { backup ->
+            val localSessionId = sessionIdMap[backup.sessionId] ?: run {
+                skippedSessionMemory++
+                return@mapNotNull null
+            }
+            if (backup.personaId !in personaIds) {
+                skippedSessionMemory++
+                return@mapNotNull null
+            }
+            backup.toEntity(localSessionId)
+        }
+        skipped += skippedMentalActivities + skippedSessionMemory
+
+        // 0.15：心理活动/会话备忘录是 v7 才进备份的。用**旧备份**（v1–v6）做「替换」时，
+        // ErasurePlan 会把这两张表跟着人格/会话一起清掉——那份备份里根本没有它们，
+        // 清掉等于「换个备份就丢了最近的念头和小本子」。
+        // 因此在替换前先把本机快照留下来，事务里清空之后再补回「备份里没有的行」：
+        // 备份带的行优先（同 id / 同 sessionId），其余的旧数据原样留下。
+        val preservedMentalActivities = mutableListOf<com.yap.app.data.local.MentalActivityEntity>()
+        val preservedSessionMemory = mutableListOf<com.yap.app.data.local.SessionMemoryEntity>()
+        if (mode == ImportMode.REPLACE) {
+            // 只快照「这份备份里也有的人格」：替换会删掉备份之外的人格，
+            // 把它们的念头/备忘录补回来只会留下指向不存在人格的孤儿行。
+            personaDao.getAll().filter { it.id in personaIds }.forEach { persona ->
+                preservedMentalActivities += runCatching {
+                    mentalActivityDao.recent(persona.id, MENTAL_ACTIVITY_KEEP)
+                }.getOrDefault(emptyList())
+            }
+            sessionDao.getAll().filter { it.personaId in personaIds }.forEach { session ->
+                preservedSessionMemory += runCatching {
+                    sessionMemoryDao.byPersona(session.personaId)
+                }.getOrDefault(emptyList())
+            }
+        }
+
         // 消息得有个能落脚的会话：按上面的映射改 sessionId，落不进去的跳过并计数。
         // 附件：v3 用 media 重建本机新路径；v6 的语音/视频/表情也走同一张 byFileName 表；
         // v1/v2 没有 media，仍然只剩文字。
@@ -702,6 +780,34 @@ class BackupRepository @Inject constructor(
                 }
                 insertedStickerCount = insertedStickers
                 diaryNotes.forEach { diaryNoteDao.insert(it) }
+                // 0.15：心理活动与会话备忘录（v7）。
+                // 替换模式先补回「这份（旧）备份没带、但本机本来有」的行，再写备份带来的行；
+                // 合并模式直接 upsert（同 id / 同 sessionId 覆盖，本机其余行不动）。
+                if (mode == ImportMode.REPLACE) {
+                    val importedMentalIds = mentalActivities.mapTo(mutableSetOf()) { it.id }
+                    val restoredSessionIds = sessionIdMap.values.toSet()
+                    preservedMentalActivities
+                        .filter { it.id !in importedMentalIds }
+                        .map { activity ->
+                            // 会话没被这次备份恢复出来：念头保留，但不要把 sessionId 指回一个不存在的会话。
+                            if (activity.sessionId != null && activity.sessionId !in restoredSessionIds) {
+                                activity.copy(sessionId = null)
+                            } else {
+                                activity
+                            }
+                        }
+                        .forEach { mentalActivityDao.insert(it) }
+                    val importedMemorySessions = sessionMemoryRows.mapTo(mutableSetOf()) { it.sessionId }
+                    preservedSessionMemory
+                        .filter { it.sessionId in restoredSessionIds && it.sessionId !in importedMemorySessions }
+                        .forEach { sessionMemoryDao.upsert(it) }
+                }
+                mentalActivities.forEach { mentalActivityDao.insert(it) }
+                sessionMemoryRows.forEach { sessionMemoryDao.upsert(it) }
+                // 保留策略（每个他最近 50 条念头）与线上写入一致：导入后顺手裁一次。
+                mentalActivities.map { it.personaId }.toSet().forEach { personaId ->
+                    runCatching { mentalActivityDao.trim(personaId, MENTAL_ACTIVITY_KEEP) }
+                }
                 memoryDao.insertAll(memories)
                 // 记忆的倒排索引要跟着一起建：否则接回来以后按关键词想不起事，只剩 LIKE 兜底。
                 memories.forEach { memory ->
@@ -815,7 +921,9 @@ class BackupRepository @Inject constructor(
             mode = mode,
             presets = presets.size,
             stickers = insertedStickerCount,
-            diaryNotes = diaryNotes.size
+            diaryNotes = diaryNotes.size,
+            mentalActivities = mentalActivities.size,
+            sessionMemory = sessionMemoryRows.size
         )
     }
 
@@ -849,5 +957,12 @@ class BackupRepository @Inject constructor(
 
         /** 每个他，最多带多少条还没过期的念头。 */
         const val EXPORT_INTENTS_PER_PERSONA = 30
+
+        /**
+         * 心理活动的保留条数（与线上写入后的 trim 口径一致：每个他最近 50 条）。
+         *
+         * 导出与导入都用它：备份不是无限历史，念头是「最近的心里话」，不是相册。
+         */
+        const val MENTAL_ACTIVITY_KEEP = 50
     }
 }

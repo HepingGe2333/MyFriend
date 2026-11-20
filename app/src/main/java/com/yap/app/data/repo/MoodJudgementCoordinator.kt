@@ -26,12 +26,12 @@ import javax.inject.Singleton
 /**
  * 自动情绪判定的执行者（`spec/mood/README.md` §2）。
  *
- * 每 4 条用户消息（或 24 小时 + 至少一条新消息）问一次模型，把结果写进多维心情。
+ * 0.15 起**每条用户消息后**都问一次模型（[MoodJudgement.shouldJudge]），把结果写进多维心情。
  * 与人格进化（[PersonaEvolutionRepository]）同一套纪律：
  *
  * 1. **不拖慢聊天**：条件满足才在后台起一个协程，用户那条消息照常返回；
  * 2. **单飞**：同一时刻只跑一个判定，连发几条消息不会打一串 API；
- * 3. **游标先推进**：模型失败时这一轮就算过去了，下一轮要再攒 4 条——
+ * 3. **游标先推进**：模型失败时这一轮就算过去了，下一条消息再判——
  *    否则一次失败会变成「每发一条就打一次 API」的重试循环；
  * 4. **失败/无配置不报错**：按时间衰减（每小时向 0/2/3 靠一步），用户永远看不到这一步。
  *
@@ -71,7 +71,7 @@ class MoodJudgementCoordinator @Inject constructor(
     }
 
     /**
-     * 条件满足才判定：**4 条新用户消息**，或**距上次判定满 24 小时且有新消息**。
+     * 条件满足才判定：0.15 起**只要有一条新的用户消息就判**（每句话之后的反应）。
      *
      * 游标在调用模型之前推进（与进化一致）：判定失败不该变成每条消息一次 API 的重试循环，
      * 时间衰减会在下一次读心情时自然接管。
@@ -130,6 +130,12 @@ class MoodJudgementCoordinator @Inject constructor(
 
         val next = MoodJudgement.parse(raw, previous, now)
             ?: return runCatching { moodRepository.decayForFailure(persona.id, now) }.getOrNull()
+        // 0.15：判定在后台跑，这期间模型可能已经用 set_mood 亲手改过心情（允许一轮里再改）。
+        // 库里已经有更新的心情时，这次判定作废——不能让后台分析覆盖他自己说的话。
+        val current = runCatching { moodRepository.reading(persona.id, now) }.getOrNull()
+        if (current != null && MoodJudgement.isStale(previous.updatedAt, current.updatedAt)) {
+            return current
+        }
         return runCatching { moodRepository.setReading(persona.id, next, now) }.getOrNull()
     }
 

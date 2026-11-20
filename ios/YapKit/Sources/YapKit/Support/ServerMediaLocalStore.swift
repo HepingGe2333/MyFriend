@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 // ---------------------------------------------------------------------------
@@ -290,6 +291,129 @@ public final class ServerMediaLocalStore {
         return target
     }
 
+    /// 一次「落盘 + 校验」的结果。
+    public struct StoredFile: Equatable, Sendable {
+        public var url: URL
+        /// 落盘字节的 sha256（64 位小写 hex）。
+        public var sha256: String
+        /// true = 本机已有同 id 文件，没有重新写。
+        public var reused: Bool
+
+        public init(url: URL, sha256: String, reused: Bool) {
+            self.url = url
+            self.sha256 = sha256
+            self.reused = reused
+        }
+    }
+
+    /// 落盘并校验服务端声明的 sha256（0.15）。
+    ///
+    /// 流程（与「不一致就删掉、记失败、不落库」这条要求对应）：
+    /// 1. 先写进**临时文件**（`.<name>.tmp-<uuid>`，与目标同目录，保证 rename 原子）；
+    /// 2. 从临时文件**流式**算出 sha256；
+    /// 3. 与服务端声明的哈希比对：不一致 → 删临时文件、抛 `hashMismatch`，
+    ///    目标路径一个字节都不写（调用方据此只计数、不改库）；
+    /// 4. 一致 → 原子改名成目标文件名，返回哈希。
+    ///
+    /// `expectedSha256` 为空 = 服务端没给哈希（老服务端 / 老数据）：照常落盘，不做校验。
+    @discardableResult
+    public func storeVerified(
+        data: Data,
+        mediaId: String,
+        kind: ServerMediaLocalKind,
+        mime: String,
+        expectedSha256: String? = nil
+    ) throws -> StoredFile {
+        let safeId = Self.sanitized(mediaId)
+        guard !safeId.isEmpty else { throw ServerMediaLocalError.invalidMediaId }
+        guard !data.isEmpty else { throw ServerMediaLocalError.empty }
+        if let limit = Self.maxBytesPerKind[kind], data.count > limit {
+            throw ServerMediaLocalError.tooLarge(limit)
+        }
+        let expected = ServerMediaHash.normalized(expectedSha256)
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+
+        // 幂等：同一个 id 已有文件且（有哈希时）哈希一致 → 直接复用，不重写。
+        if let existing = existingFile(mediaId: safeId, kind: kind),
+           let existingHash = sha256Hex(ofFileAt: existing) {
+            if let expected, existingHash != expected {
+                // 本机这份和「服务端声明的内容」对不上：删掉重下（绝不把坏字节当缓存用）。
+                try? fileManager.removeItem(at: existing)
+            } else {
+                return StoredFile(url: existing, sha256: existingHash, reused: true)
+            }
+        }
+
+        let directory = self.directory(for: kind).standardizedFileURL
+        let name = Self.fileName(mediaId: safeId, kind: kind, mime: mime, data: data)
+        let target = directory.appendingPathComponent(name, isDirectory: false).standardizedFileURL
+        guard AttachmentLocation.isWithin(directory, target) else {
+            throw ServerMediaLocalError.writeFailed
+        }
+        let temp = directory.appendingPathComponent(
+            ".\(name).tmp-\(UUID().uuidString)", isDirectory: false
+        ).standardizedFileURL
+        guard AttachmentLocation.isWithin(directory, temp) else {
+            throw ServerMediaLocalError.writeFailed
+        }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            try data.write(to: temp, options: .atomic)
+        } catch {
+            try? fileManager.removeItem(at: temp)
+            throw ServerMediaLocalError.writeFailed
+        }
+        guard let actual = sha256Hex(ofFileAt: temp) else {
+            try? fileManager.removeItem(at: temp)
+            throw ServerMediaLocalError.writeFailed
+        }
+        if let expected, actual != expected {
+            // 校验失败：临时文件立刻删掉，**目标路径不落任何字节**。
+            try? fileManager.removeItem(at: temp)
+            throw ServerMediaLocalError.hashMismatch(expected: expected, actual: actual)
+        }
+        do {
+            if fileManager.fileExists(atPath: target.path) {
+                try? fileManager.removeItem(at: target)
+            }
+            try fileManager.moveItem(at: temp, to: target)
+        } catch {
+            try? fileManager.removeItem(at: temp)
+            throw ServerMediaLocalError.writeFailed
+        }
+        return StoredFile(url: target, sha256: actual, reused: false)
+    }
+
+    /// 一个本机文件内容的 sha256（分块读，视频也不会一次进内存）；文件不在/读不出 → nil。
+    public func sha256Hex(ofFileAt url: URL) -> String? {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while true {
+            guard let chunk = try? handle.read(upToCount: 256 * 1024), !chunk.isEmpty else { break }
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 删掉一个本机媒体文件（只删四个受管目录里的普通文件；别的一律不碰）。
+    ///
+    /// 用途只有一个：本机文件与服务端声明的 sha256 对不上时清掉它，下次重新下载。
+    /// 目录归属守卫在这里同样成立 —— 传进来一条任意路径也不会误删。
+    public func deleteStoredFile(at url: URL) {
+        let standardized = url.standardizedFileURL
+        let directories = [
+            attachmentsDirectory, stickersDirectory, audioDirectory, videoDirectory
+        ].map { $0.standardizedFileURL }
+        guard directories.contains(where: { AttachmentLocation.isWithin($0, standardized) }) else {
+            return
+        }
+        Self.lock.lock()
+        defer { Self.lock.unlock() }
+        try? fileManager.removeItem(at: standardized)
+    }
+
     /// 把一条服务端媒体引用换成"落盘之后的附件"：`uri` 指向本地文件，`serverMediaId` 保留。
     ///
     /// 图片的宽高、语音/视频的时长与 `kind` 全部沿用传进来的元信息（服务端不下发这些，
@@ -306,6 +430,18 @@ public final class ServerMediaLocalStore {
         if local.mime.isEmpty || local.mime == MessageAttachment.defaultMime,
            let guessed = BackupMediaTransfer.mime(forFileName: fileURL.lastPathComponent) {
             local.mime = guessed
+        }
+        // 0.15：kind 与 mime 必须匹配。老数据里「kind=AUDIO + mime 默认 image/jpeg」在
+        // 落盘之后要按 kind 补成规范 mime，否则下一次 `AttachmentsCodec.decode` 会把
+        // 这条附件当坏数据整段丢掉（比显示成坏图更难查）。
+        if let type = local.mediaType, !type.accepts(mime: local.mime) {
+            switch type {
+            case .sticker: local.mime = "image/gif"
+            case .audio: local.mime = AudioVideoLimits.audioMime
+            case .video: local.mime = AudioVideoLimits.videoMime
+            case .image: local.mime = MessageAttachment.defaultMime
+            case .avatar: break
+            }
         }
         return local
     }
@@ -335,6 +471,11 @@ public enum ServerMediaLocalError: Error, LocalizedError, Equatable {
     case empty
     case tooLarge(Int)
     case writeFailed
+    /// 下载回来的字节与服务端声明的 sha256 不一致（0.15）。
+    ///
+    /// 出现它就说明「这份字节不是服务端那份」：临时文件已经删掉、库里也不该改，
+    /// 下次同步会重新下载。不重试到成功为止（避免坏代理把同步卡死）。
+    case hashMismatch(expected: String, actual: String)
 
     public var errorDescription: String? {
         switch self {
@@ -343,6 +484,59 @@ public enum ServerMediaLocalError: Error, LocalizedError, Equatable {
         case .tooLarge(let limit):
             return String(format: String(localized: "这个媒体超过上限（%d MB），没有存到本机"), limit / (1024 * 1024))
         case .writeFailed: return String(localized: "媒体没能存到本机")
+        case .hashMismatch:
+            return String(localized: "下载回来的媒体与校验值不一致，已丢弃")
         }
+    }
+}
+
+
+/// 本机媒体文件的 sha256 台账（0.15）。
+///
+/// 存在 `server_sync_state`（与 `ServerMediaMetaStore` 同一个理由：这是**附属于媒体的状态**，
+/// 不是一张业务记录表；跨端 schema 不需要为它多一版）。
+///
+/// 用途只有两件：
+/// 1. 下载落地后记下「这份文件的 sha256 就是服务端声明的那个」；
+/// 2. 下次「已有文件就复用」之前复核 —— 文件被改坏/截断时能发现并重下。
+/// 没有记录（老数据）时跳过复核，行为与 0.14 一样。
+public final class ServerMediaLocalHashStore {
+
+    private let state: ServerSyncStateStore
+    private let now: () -> Int64
+
+    public init(state: ServerSyncStateStore, now: @escaping () -> Int64 = { DomainClock.nowMillis }) {
+        self.state = state
+        self.now = now
+    }
+
+    public convenience init(
+        database: SQLiteDatabase,
+        now: @escaping () -> Int64 = { DomainClock.nowMillis }
+    ) {
+        self.init(state: ServerSyncStateStore(database: database), now: now)
+    }
+
+    /// 记下的哈希（不存在 / 格式坏 → nil）。
+    public func recorded(mediaId: String) -> String? {
+        let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return nil }
+        return ServerMediaHash.normalized(
+            (try? state.value(ServerSyncStateStore.Key.mediaLocalHash(id))) ?? nil
+        )
+    }
+
+    /// 记一行（哈希不合法就忽略：宁可没有记录，也不要记一个永远对不上的值）。
+    @discardableResult
+    public func record(mediaId: String, sha256: String) -> Bool {
+        let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, let hash = ServerMediaHash.normalized(sha256) else { return false }
+        return (try? state.set(hash, for: ServerSyncStateStore.Key.mediaLocalHash(id), at: now())) != nil
+    }
+
+    public func clear(mediaId: String) {
+        let id = mediaId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty else { return }
+        try? state.set(nil, for: ServerSyncStateStore.Key.mediaLocalHash(id), at: now())
     }
 }

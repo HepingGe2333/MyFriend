@@ -402,7 +402,9 @@ data class BackupImportResult(
     /** 0.14：导入的心理活动条数（客户端忽略这个可加字段）。 */
     val mentalActivities: Int = 0,
     /** 0.14：导入的会话记忆条数（客户端忽略这个可加字段）。 */
-    val sessionMemories: Int = 0
+    val sessionMemories: Int = 0,
+    /** 0.15：导入的主动消息失败记录条数（服务端专有诊断数据，客户端忽略）。 */
+    val proactiveFailures: Int = 0
 )
 
 /** 备份里的 version 不受支持（路由翻成 409）。 */

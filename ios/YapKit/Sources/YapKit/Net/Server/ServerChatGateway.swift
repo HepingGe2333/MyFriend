@@ -318,7 +318,7 @@ public final class ServerChatGateway {
                     kind: ServerMediaKind(mediaKind: kind).rawValue,
                     personaId: session.personaId
                 )
-                mediaMeta.record(attachment, mediaId: media.id)
+                mediaMeta.record(attachment, mediaId: media.id, sha256: media.sha256)
                 mediaIds.append(media.id)
             } catch {
                 // 上传失败：不入队、不发文字 —— 用户看到的应该是一句「为什么没发出去」。
@@ -383,7 +383,7 @@ public final class ServerChatGateway {
                     personaId: session.personaId
                 )
                 // 服务端只存 id；回到客户端时靠这一行元信息认出「这是一段语音」。
-                mediaMeta.record(attachment, mediaId: media.id)
+                mediaMeta.record(attachment, mediaId: media.id, sha256: media.sha256)
                 mediaIds.append(media.id)
             } catch {
                 log("语音/视频上传失败：\(ServerSyncService.describe(error))")

@@ -44,6 +44,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     SET_ACTIVITY(R.string.tool_trace_set_activity),
     SET_MOOD(R.string.tool_trace_set_mood),
     RECALL(R.string.tool_trace_recall),
+    MEMORIZE(R.string.tool_trace_memorize),
     DEFER_REPLY(R.string.tool_trace_defer_reply),
     STAY_SILENT(R.string.tool_trace_stay_silent),
     DIARY(R.string.tool_trace_diary),
@@ -73,6 +74,7 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.SET_ACTIVITY -> SET_ACTIVITY
             ToolCatalog.SET_MOOD -> SET_MOOD
             ToolCatalog.RECALL -> RECALL
+            ToolCatalog.MEMORIZE -> MEMORIZE
             ToolCatalog.DEFER_REPLY -> DEFER_REPLY
             ToolCatalog.STAY_SILENT -> STAY_SILENT
             ToolCatalog.DIARY -> DIARY
@@ -156,6 +158,18 @@ object ToolTraceText {
     } else {
         context.resources.getQuantityString(R.plurals.tool_trace_recall_hits, hits, hits)
     }
+
+    /**
+     * memorize 的副标题（0.15）：找到了就写「想了想：…」，没找到写「想不起来了」。
+     *
+     * 一行「（他想了想）」来自这个标题 + 副标题，不额外造一个气泡。
+     */
+    fun memorizeSubtitle(context: Context, query: String, found: Boolean): String =
+        if (found) {
+            context.getString(R.string.tool_trace_memorize_found, query.take(40))
+        } else {
+            context.getString(R.string.tool_trace_memorize_empty)
+        }
 
     // ------------------------------------------------------------ 日记（spec/diary）
 

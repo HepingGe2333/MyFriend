@@ -92,11 +92,11 @@ final class MoodJudgementTests: XCTestCase {
             label: "雀跃", intensity: 4, updatedAt: now,
             dimensions: MoodDimensions(valence: 2, arousal: 5, dominance: 5)
         ))
-        // 雀跃(2/5/5) → 崩溃(-2/0/0)：每维最多动 2。
-        XCTAssertEqual(0, merged.resolvedDimensions.valence)
-        XCTAssertEqual(3, merged.resolvedDimensions.arousal)
-        XCTAssertEqual(3, merged.resolvedDimensions.dominance)
-        XCTAssertEqual(2, merged.intensity, "强度一次也只动 2（4 → 2）")
+        // 0.15：取消「每维最多动 2」的限制，只做物理范围夹取 —— 直觉是什么就是什么。
+        XCTAssertEqual(-2, merged.resolvedDimensions.valence)
+        XCTAssertEqual(0, merged.resolvedDimensions.arousal)
+        XCTAssertEqual(0, merged.resolvedDimensions.dominance)
+        XCTAssertEqual(1, merged.intensity, "强度也照模型说的（1）")
     }
 
     func testMergedKeepsSmallChanges() {

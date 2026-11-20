@@ -131,6 +131,8 @@ public enum PersonaFieldLimits {
     public static let backstoryMax = 600
     /// 个人设定（称呼、口头禅、忌讳）的字数上限。
     public static let quirksMax = 300
+    /// 拉黑原因的字数上限（0.14 §2：一句中文，不用写小作文）。
+    public static let blockReasonMax = 200
 
     public static let levelRange = 1...5
     public static let proactiveLevelDefault = 3
@@ -304,6 +306,12 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 两端 schema 要逐字一致；而且「提议」天然属于某一条人格。
     public var blockProposalJson: String?
 
+    /// 这个人格自己的**提示词语言**（0.15，schema v19）。
+    ///
+    /// 与页面语言无关：人格说中文还是英文由人格自己决定，用户换界面语言不会让聊天对象
+    /// 突然改口。空 = 沿用默认（中文），读取时用 `PromptLanguage.resolve` 解析。
+    public var languageTag: String?
+
     public init(
         id: String,
         name: String,
@@ -347,7 +355,8 @@ public struct PersonaEntity: Equatable, Sendable {
         translationLang: String? = nil,
         blockedUntil: Int64? = nil,
         blockReason: String? = nil,
-        blockProposalJson: String? = nil
+        blockProposalJson: String? = nil,
+        languageTag: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -398,6 +407,8 @@ public struct PersonaEntity: Equatable, Sendable {
         self.blockReason = blockReason.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
             .flatMap { $0.isEmpty ? nil : $0 }
         self.blockProposalJson = PromptGuidanceJSON.clean(blockProposalJson)
+        // 语言标签只 trim：认不出来的标签留给 `PromptLanguage.resolve` 回落，不在写入时丢信息。
+        self.languageTag = languageTag?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// 长文本字段的清洗：去首尾空白；**不截断**（0.12）。
@@ -1123,6 +1134,14 @@ public struct SessionMemoryEntity: Equatable, Sendable {
     public var longUserCount: Int
     public var shortUpdatedAt: Int64?
     public var longUpdatedAt: Int64?
+    /// 0.15 主题总结（v19）：`[{"timeLabel":"…","summary":"…"}]` 的 JSON。
+    ///
+    /// 存 JSON 而不是三段文本：时间段要与正文分开（注入排版、检索加权都要用）。
+    /// 坏 JSON 由 `SessionMemoryV2.decodeTopics` 安静降级成空数组。
+    public var topicsJson: String?
+    /// 生成主题总结时，会话里已有多少条用户消息（15–40 轮的节流用）。
+    public var topicUserCount: Int
+    public var topicUpdatedAt: Int64?
     public var updatedAt: Int64
 
     public init(
@@ -1134,6 +1153,9 @@ public struct SessionMemoryEntity: Equatable, Sendable {
         longUserCount: Int = 0,
         shortUpdatedAt: Int64? = nil,
         longUpdatedAt: Int64? = nil,
+        topicsJson: String? = nil,
+        topicUserCount: Int = 0,
+        topicUpdatedAt: Int64? = nil,
         updatedAt: Int64 = 0
     ) {
         self.sessionId = sessionId
@@ -1144,7 +1166,16 @@ public struct SessionMemoryEntity: Equatable, Sendable {
         self.longUserCount = max(longUserCount, 0)
         self.shortUpdatedAt = shortUpdatedAt
         self.longUpdatedAt = longUpdatedAt
+        self.topicsJson = topicsJson?.trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty == true ? nil : topicsJson
+        self.topicUserCount = max(topicUserCount, 0)
+        self.topicUpdatedAt = topicUpdatedAt
         self.updatedAt = updatedAt
+    }
+
+    /// 解码后的主题总结（空 = 还没总结过 / 坏数据）。
+    public var topics: [MemoryContract.TopicSegment] {
+        SessionMemoryV2.decodeTopics(topicsJson)
     }
 
     static func clean(_ raw: String?, limit: Int) -> String? {

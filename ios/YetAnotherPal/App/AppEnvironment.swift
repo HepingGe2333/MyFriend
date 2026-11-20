@@ -137,6 +137,25 @@ final class AppEnvironment: ObservableObject {
     /// 服务端推送回来的数据版本：bootstrap 拉完 / 每次增量同步写库后 +1。
     /// 首页与聊天页用它触发一次重载（不用等各自的轮询拍）。
     @Published private(set) var serverDataVersion = 0
+
+    /// 服务端事件流刚写进本地缓存的消息（0.15）：聊天页据此**逐条**上屏。
+    ///
+    /// 为什么要多一个转发钩子（而不是只 bump `serverDataVersion`）：`ServerEventService`
+    /// 的 `message.created` 已经写进库了，但聊天页拿到「有新消息」之外还需要知道
+    /// **是哪几条**，才能交给 `ServerBubbleFeed` 去重后一条条追加；整页重读会让多气泡
+    /// 场景抖一下（见 `ServerBubbleFeed` 的注释）。
+    ///
+    /// 值本身是最近一批（数组），相同 id 重复出现由聊天页的 feed 消化掉。
+    @Published private(set) var serverIncomingBubbles: [ServerIncomingBubble] = []
+
+    /// 一条「事件流写进缓存」的消息。会话 id 是**服务端**的（聊天页用自己的
+    /// `session.serverSessionId` 对齐），id 是本地缓存里的消息 id（与服务端一致）。
+    struct ServerIncomingBubble: Identifiable, Equatable {
+        let id: String
+        let serverSessionId: String
+        let createdAt: Int64
+    }
+
     /// 首次同步正在跑（避免两次并发；`activateServerMode` 会被冷启动 + 回前台各调一次）。
     private var isBootstrapping = false
     /// 上一次「轻量增量同步」的时间（5 分钟节流用）。
@@ -693,9 +712,22 @@ final class AppEnvironment: ObservableObject {
             },
             // 0.14.1 §8：`message.created` 一到就重读缓存直接上屏（不等 20 秒的消息轮询）。
             // typing 状态在上面 `onLiveState` 里已经发布，聊天页据此收起/显示输入指示。
+            // 0.15：除了 bump 版本号（首页据此刷新会话行），还把「这一批新消息」转发给
+            // 聊天页——它用 `ServerBubbleFeed` 去重后逐条追加，不再整页重读。
             onEventReport: { [weak self] report in
                 guard !report.newMessages.isEmpty else { return }
-                Task { @MainActor in self?.serverDataVersion &+= 1 }
+                let bubbles = report.newMessages.map {
+                    ServerIncomingBubble(
+                        id: $0.id,
+                        serverSessionId: $0.sessionId,
+                        createdAt: $0.createdAt
+                    )
+                }
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.serverIncomingBubbles = bubbles
+                    self.serverDataVersion &+= 1
+                }
             },
             log: { DebugSeeding.log($0) }
         )
@@ -1399,6 +1431,43 @@ final class AppEnvironment: ObservableObject {
     /// 返回 nil 表示「还没配 API」，界面据此显示引导而不是发一个注定失败的请求。
     func resolvedChatConfig() -> ResolvedConfig? {
         Self.resolveConfig(stores: stores, settings: settings, apiKeys: apiKeys)
+    }
+
+    // MARK: - 测试生成（设置页，0.15）
+
+    /// 用当前生效的 API 配置发一次**不写聊天库**的补全：设置页「测试生成」用。
+    ///
+    /// 为什么直接接网络层的 `streamChat` 而不是 `ChatService`：后者会先建会话、落用户
+    /// 消息、跑工具回路、更新会话预览——这几件事都不是「只测一下」该留下的痕迹。
+    /// 这里只把同一套参数（配置里的 `effectiveInferenceParams`）与同一套流式解析
+    /// （`ToolProtocol`）交给 `GenerationTestService`，收完流就结束。
+    func runGenerationTest() async -> GenerationTestOutcome {
+        guard let resolved = resolvedChatConfig() else {
+            return .failure(L("还没有可用的 API 配置"))
+        }
+        let client = webClient
+        let service = GenerationTestService(
+            stream: { request in
+                client.streamChat(
+                    config: request.config,
+                    apiKey: request.apiKey,
+                    model: request.model,
+                    messages: request.messages,
+                    params: request.params,
+                    extraHeaders: [:],
+                    // 记账记成 UNKNOWN，不冒充聊天：这是诊断调用，不该把「测试」算进
+                    // 用户的聊天用量里（用量页会把它归到「其它」）。
+                    kind: UsageKind.unknown,
+                    usageContext: .none
+                )
+            },
+            now: { DomainClock.nowMillis }
+        )
+        return await service.run(
+            config: resolved.config,
+            apiKey: resolved.apiKey,
+            model: resolved.model
+        )
     }
 
     /// 主动唤醒的「现在试一次」：走心跳平时那条开口路径（同一套人格提示词、同一个落库与通知回调），

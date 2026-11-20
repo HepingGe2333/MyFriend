@@ -108,7 +108,7 @@ class ExperienceBackupTest {
         assertEquals(1, extensions.objects("sessionMemory").size)
         assertEquals("你提过下周去哈尔滨。", extensions.objects("sessionMemory").single().str("shortSummary"))
         // 顶层仍然是合法的 v6 备份（客户端只认它认识的段）。
-        assertEquals(6, backup.int("formatVersion"))
+        assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
         assertEquals(FileStore.BACKUP_FORMAT_NAME, backup.str("format"))
     }
 

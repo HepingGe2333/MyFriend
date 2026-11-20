@@ -15,6 +15,7 @@ final class PromptMoodAntiAITests: XCTestCase {
             dimensions: MoodDimensions(valence: -2, arousal: 4, dominance: 1)
         ))
         XCTAssertTrue(line.contains(MoodPrompt.sectionTitle))
+        XCTAssertTrue(line.contains("先凭直觉说"))
         XCTAssertTrue(line.contains("心情：烦（强度 4/5）。"))
         XCTAssertTrue(line.contains("愉快度 -2 / 唤醒度 4/5 / 掌控感 1/5。"))
         XCTAssertTrue(line.contains("- 这会影响你怎么说："))

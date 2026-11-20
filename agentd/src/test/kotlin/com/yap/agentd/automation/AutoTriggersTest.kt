@@ -100,23 +100,20 @@ class AutoTriggersTest {
     // ------------------------------------------------------------------ 心情
 
     @Test
-    fun `mood is evaluated automatically after four user messages`() {
+    fun `mood is evaluated automatically after every user message`() {
         fakeLlm().use { server ->
             val services = chatOnlyServices(llmFor(server))
             repeat(3) { index -> send(services, index) }
-            assertEquals("3 条还不该判定", 0, server.moodRequests())
-            assertNull(store.mood(personaId)?.takeIf { it.label == "有点累" })
-
-            send(services, 4)
-            assertEquals("第 4 条之后要问一次模型", 1, server.moodRequests())
+            // 0.15（心情直觉化）：每条用户消息之后都重新判一次，不再是「每 4 条」。
+            assertEquals("3 条消息 → 3 次心情判定", 3, server.moodRequests())
             val mood = store.mood(personaId)!!
             assertEquals("有点累", mood.label)
             assertEquals(-1, mood.valence)
             assertEquals(2, mood.dominance)
             assertEquals("聊得有点久", mood.reason)
-            // 游标推进了：再聊一条不会重复判定。
-            send(services, 5)
-            assertEquals(1, server.moodRequests())
+
+            send(services, 4)
+            assertEquals("第 4 条再判一次", 4, server.moodRequests())
         }
     }
 

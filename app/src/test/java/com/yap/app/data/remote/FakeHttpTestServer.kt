@@ -131,6 +131,7 @@ internal class FakeHttpTestServer : Closeable {
             append("HTTP/1.1 ").append(reply.status).append(' ').append(reason(reply.status)).append("\r\n")
             append("Content-Type: ").append(reply.contentType).append("\r\n")
             append("Content-Length: ").append(body.size).append("\r\n")
+            reply.headers.forEach { (name, value) -> append(name).append(": ").append(value).append("\r\n") }
             append("Connection: close\r\n\r\n")
         }
         output.write(header.toByteArray(Charsets.US_ASCII))
@@ -181,7 +182,9 @@ internal class FakeHttpTestServer : Closeable {
         class Json(
             val body: String,
             val status: Int = 200,
-            val contentType: String = "application/json; charset=utf-8"
+            val contentType: String = "application/json; charset=utf-8",
+            /** 额外响应头（例如 `/v1/media/{id}` 的 `ETag` = 内容 sha256）。 */
+            val headers: Map<String, String> = emptyMap()
         ) : FakeReply()
 
         class Stream(

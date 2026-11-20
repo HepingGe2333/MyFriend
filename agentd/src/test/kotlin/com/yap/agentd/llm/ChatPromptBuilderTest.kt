@@ -74,18 +74,21 @@ class ChatPromptBuilderTest {
         seedRichPersona()
         val prompt = builder.systemPrompt(persona(), mood(), activity = null, now = now)
 
+        // 0.15 上下文/记忆 v2 的固定顺序：完整设定 + 工具 → （记忆为空则省略）→
+        // 当前状态（此刻 + 心情）；「别像 AI」挂在边界之后。
         val titles = listOf(
             "# 你是谁",
             "# 你所在的世界",
-            "# 你此刻的状态",
-            "# 你的心情",
             "# 你怎么说话",
             "# 你们的关系",
             "# 你能做什么",
-            "# 边界"
+            "# 边界",
+            "# 别像 AI",
+            "# 你此刻的状态",
+            "# 你的心情"
         )
         val positions = titles.map { prompt.indexOf(it) }
-        assertTrue("八段都必须出现：$positions", positions.all { it >= 0 })
+        assertTrue("这些段都必须出现：$positions", positions.all { it >= 0 })
         assertEquals("段顺序不可乱", positions.sorted(), positions)
     }
 
@@ -172,6 +175,22 @@ class ChatPromptBuilderTest {
         assertEquals(listOf("system", "user", "assistant", "user"), built.map { it.role })
         assertEquals("在干嘛", built[1].content)
         assertTrue("附件要告诉模型「你看不到内容」", built[3].content.contains("看不到内容"))
+    }
+
+    @Test
+    fun `the remaining budget decides history length instead of a fixed forty cap`() {
+        val messages = (1..60).map { index ->
+            com.yap.agentd.store.Message(
+                id = "m$index", sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
+                role = if (index % 2 == 0) MessageRole.ASSISTANT else MessageRole.USER,
+                content = "第 $index 句", createdAt = index.toLong(), readAt = null,
+                attachments = emptyList(), source = "CHAT", clientMessageId = null,
+                replyTo = null, promptTokens = null, completionTokens = null
+            )
+        }
+        val built = builder.chatMessages(persona(), null, null, messages, now)
+        assertEquals("60 条短消息全都在预算内（不再被 40 条截断）", 61, built.size)
+        assertEquals("顺序仍然是升序", "第 60 句", built.last().content)
     }
 
     @Test

@@ -79,11 +79,14 @@ final class MoodJudgementServiceTests: XCTestCase {
         XCTAssertTrue(service.shouldJudge(personaId: personaId))
     }
 
-    func testThreeNewMessagesAreNotEnough() throws {
+    func testEveryNewUserMessageTriggersJudgement() throws {
+        // 第一次调用只记基线（不判定）；之后每一条新的用户消息都该触发。
         try addUserMessages(1)
-        _ = service.shouldJudge(personaId: personaId)
-        try addUserMessages(3)
-        XCTAssertFalse(service.shouldJudge(personaId: personaId), "每 4 条才判一次")
+        XCTAssertFalse(service.shouldJudge(personaId: personaId), "第一次只记基线")
+        try addUserMessages(1)
+        XCTAssertTrue(service.shouldJudge(personaId: personaId), "0.15：每条用户消息后都判一次")
+        try addUserMessages(1)
+        XCTAssertTrue(service.shouldJudge(personaId: personaId))
         try addUserMessages(1)
         XCTAssertTrue(service.shouldJudge(personaId: personaId))
     }
@@ -147,10 +150,10 @@ final class MoodJudgementServiceTests: XCTestCase {
             personaId: personaId, sessionId: sessionId, config: config, model: "deepseek-chat"
         )
         let stored = try persona()
-        // 雀跃(2/5/5) → 崩溃(-2/0/0)：每维最多动 2（规范 §2）。
-        XCTAssertEqual(0, stored.moodValence)
-        XCTAssertEqual(3, stored.moodArousal)
-        XCTAssertEqual(3, stored.moodDominance)
+        // 0.15：取消「每维最多动 2」，直觉是什么就是什么。
+        XCTAssertEqual(-2, stored.moodValence)
+        XCTAssertEqual(0, stored.moodArousal)
+        XCTAssertEqual(0, stored.moodDominance)
     }
 
     func testNoVisibleChangeDoesNotTouchTheRow() async throws {

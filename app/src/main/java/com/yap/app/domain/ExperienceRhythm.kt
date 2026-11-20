@@ -3,26 +3,49 @@ package com.yap.app.domain
 import kotlin.math.roundToLong
 
 /**
- * 0.14 的「像人」节奏（`spec/experience/README.md` §4 / §5）。
+ * 0.15 的「像人」节奏（`spec/experience/README.md` §4 / §5）。
  *
- * 这里只做纯计算：首条消息的「正在输入」时长、连发之间的停顿、以及不带工具时按空行拆条。
- * 真正的 delay 由仓库层执行；UI 不自己算，测试也不依赖真实时间。
+ * 0.15 起公式的**唯一真源**是共享契约 [ExperienceContract]：
+ * 首条延迟的均值 `clamp(0.3 + 字数 × 0.018, 0.3, 2.2)` 秒，连发间隔
+ * `clamp(0.2 + 字数 × 0.012, 0.2, 1.5)` 秒，两者都乘一个 `1 ± 35%` 的随机波动。
+ * 这里只把「毫秒 / 心情修正 / 旧调用签名」适配过去，不再自己写第二份数字。
+ *
+ * 为什么不再用 0.14 的 `clamp(0.4 + 字数×0.025, 0.4, 4.0)`：那是**命令式**的——
+ * 同样的字数永远等同样久，聊久了像进度条。人的打字间隔本来就有分布：
+ * 越长的句子平均等越久，但每一次都不完全一样。0.15 的随机波动由契约负责，
+ * 生产传随机源，测试传固定值。
+ *
+ * 真正的 `delay` 由仓库层执行；UI 不自己算，测试也不依赖真实时间。
  */
 object ExperienceRhythm {
 
-    /** 首条 / 每条发送前的思考时长上下界（规范 §5）。 */
-    const val TYPING_MIN_MS = 400L
-    const val TYPING_MAX_MS = 4_000L
-    const val TYPING_BASE_MS = 400L
-    const val TYPING_PER_CHAR_MS = 25L
-    /** 120 字之后不再变慢（再长的消息也不该等 10 秒）。 */
+    /** 首条延迟能达到的最短值（均值下界 × (1 − 35%)）：0.3 × 0.65 = 195ms。 */
+    val TYPING_MIN_MS: Long = secondsToMillis(
+        ExperienceContract.TYPING_MIN_SECONDS * (1.0 - ExperienceContract.RHYTHM_JITTER_RATIO)
+    )
+
+    /** 首条延迟能达到的最长值（均值上界 × (1 + 35%)）：2.2 × 1.35 = 2970ms。 */
+    val TYPING_MAX_MS: Long = secondsToMillis(
+        ExperienceContract.TYPING_MAX_SECONDS * (1.0 + ExperienceContract.RHYTHM_JITTER_RATIO)
+    )
+
+    /** 均值公式的三个常量（转发契约，保留旧名字给调用方/测试）。 */
+    const val TYPING_BASE_MS = 300L
+    const val TYPING_PER_CHAR_MS = 18L
     const val TYPING_LENGTH_CAP = 120
 
-    /** 连发之间的停顿（规范 §4）：0.8–2.5 秒。 */
-    const val GAP_MIN_MS = 800L
-    const val GAP_MAX_MS = 2_500L
-    const val GAP_BASE_MS = 800L
-    const val GAP_SPAN_MS = 1_700L
+    /** 连发间隔能达到的最短/最长值：130ms .. 2025ms。 */
+    val GAP_MIN_MS: Long = secondsToMillis(
+        ExperienceContract.BURST_GAP_MIN_SECONDS * (1.0 - ExperienceContract.RHYTHM_JITTER_RATIO)
+    )
+    val GAP_MAX_MS: Long = secondsToMillis(
+        ExperienceContract.BURST_GAP_MAX_SECONDS * (1.0 + ExperienceContract.RHYTHM_JITTER_RATIO)
+    )
+    const val GAP_BASE_MS = 200L
+    const val GAP_SPAN_MS = 1_300L
+
+    /** 随机波动幅度（±35%），测试与日志用它解释分布。 */
+    const val JITTER_RATIO = ExperienceContract.RHYTHM_JITTER_RATIO
 
     /** 单条 `send_message` 的字数上限（规范 §4）。 */
     const val MAX_SEND_MESSAGE_CHARS = 120
@@ -34,50 +57,55 @@ object ExperienceRhythm {
     const val MAX_SPLIT_MESSAGES = 3
 
     /**
-     * `clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4.0)` 秒。
+     * 首条消息的「正在输入」时长（毫秒）：均值正比于长度 + 心情修正 + ±35% 随机。
      *
-     * 心情修正只影响「等多久」，不改内容：低唤醒更慢、高唤醒更快；「累/困」这类低能量标签
-     * 再慢一点。修正量故意很小（±0.45s），免得让用户觉得延迟是随机的。
+     * @param charCount 已经到达的可见字数（负数按 0）
+     * @param arousal 唤醒度 0..5；null 表示没读到心情（不做修正）
+     * @param lowEnergy 「累/困」这类低能量标签：再慢一点
+     * @param random 返回 0..1 的随机源；默认 0.5 = 不抖动（测试可精确钉住）
      */
     fun typingDelayMillis(
         charCount: Int,
         arousal: Int? = null,
         lowEnergy: Boolean = false,
         random: () -> Float = { 0.5f }
-    ): Long {
-        // 与 iOS `TypingDelay.seconds` 同一公式；random 仅为兼容旧调用，默认不抖动。
-        val chars = charCount.coerceIn(0, TYPING_LENGTH_CAP)
-        val correctionMs = moodCorrectionMs(arousal, lowEnergy)
-        val raw = TYPING_BASE_MS + chars * TYPING_PER_CHAR_MS + correctionMs
-        val shaken = raw * (1f + (random() - 0.5f) * 2f * 0.06f)
-        return shaken.roundToLong().coerceIn(TYPING_MIN_MS, TYPING_MAX_MS)
-    }
+    ): Long = ExperienceContract.typingDelayMillis(
+        length = charCount,
+        moodAdjustment = moodAdjustmentSeconds(arousal, lowEnergy),
+        random = { random().toDouble() }
+    )
 
     /**
-     * 连发之间的停顿：同样按长度与心情，但落在 0.8–2.5 秒这个更窄的区间。
+     * 连发之间的停顿（毫秒）：同一套「均值 + 随机」，均值区间更短。
      *
-     * 这里与 [typingDelayMillis] 分开，是因为语义不同：首条是「他看到了、在想」，
-     * 连发是「他还在打字，下一句马上出来」。连发太长会像卡住，太短又不像人在敲。
+     * 语义不同：首条是「他看到了、在想」，连发是「他还在打字，下一句马上出来」。
      */
     fun sendGapMillis(
         charCount: Int,
         arousal: Int? = null,
         lowEnergy: Boolean = false,
         random: () -> Float = { 0.5f }
-    ): Long {
-        val chars = charCount.coerceIn(1, TYPING_LENGTH_CAP)
-        val base = GAP_BASE_MS + GAP_SPAN_MS * (chars.toDouble() / TYPING_LENGTH_CAP)
-        val adjusted = base + moodCorrectionMs(arousal, lowEnergy) * 0.6
-        val shaken = adjusted * (1f + (random() - 0.5f) * 2f * 0.10f)
-        return shaken.roundToLong().coerceIn(GAP_MIN_MS, GAP_MAX_MS)
+    ): Long = ExperienceContract.burstGapMillis(
+        length = charCount,
+        moodAdjustment = moodAdjustmentSeconds(arousal, lowEnergy),
+        random = { random().toDouble() }
+    )
+
+    /**
+     * 心情修正（秒）：低唤醒/累 → 正数（更慢），高唤醒 → 负数（更快）。
+     *
+     * 总幅度由契约夹在 ±0.4 秒内；这里只给方向与力度，不重复夹取。
+     */
+    internal fun moodAdjustmentSeconds(arousal: Int?, lowEnergy: Boolean): Double {
+        var adjustment = if (arousal == null) 0.0 else (2.5 - arousal.coerceIn(0, 5)) * 0.08
+        if (lowEnergy) adjustment += 0.15
+        return adjustment.coerceIn(
+            -ExperienceContract.MAX_MOOD_ADJUSTMENT_SECONDS,
+            ExperienceContract.MAX_MOOD_ADJUSTMENT_SECONDS
+        )
     }
 
-    /** 心情修正（毫秒）：低唤醒/累 → 更慢，高唤醒 → 更快；总幅度 ≤ 0.5 秒。 */
-    private fun moodCorrectionMs(arousal: Int?, lowEnergy: Boolean): Long {
-        var adjustment = if (arousal == null) 0.0 else (2.5 - arousal.coerceIn(0, 5)) * 150.0
-        if (lowEnergy) adjustment += 250.0
-        return adjustment.coerceIn(-500.0, 500.0).roundToLong()
-    }
+    private fun secondsToMillis(seconds: Double): Long = (seconds * 1000.0).roundToLong()
 
     /**
      * 不带 `send_message` 的回复按空行拆成 1–3 条。

@@ -97,23 +97,86 @@ class SessionMemoryTest {
     }
 
     @Test
-    fun `long summary updates every thirty user messages`() {
+    fun `a plan change updates the short summary before the five round mark`() {
+        FakeLlmServer { exchange ->
+            exchange.json(200, FakeLlmServer.completion("你们约好周四一起去看展。"))
+        }.use { server ->
+            val memory = service(llmFor(server))
+            say(1)
+            val normal = memory.maybeUpdate(sessionId, clock.now)
+            assertFalse("1 条还不够 5 条的节流", normal.shortUpdated)
+            assertNull(store.sessionMemory(sessionId))
+
+            // 模型说「计划变了」（例如这轮调了 remember / defer_reply）：立刻更新短期缓存。
+            val planned = memory.maybeUpdate(sessionId, clock.now, planChanged = true)
+            assertTrue("计划变化要立刻更新短期摘要", planned.shortUpdated)
+            assertEquals("你们约好周四一起去看展。", store.sessionMemory(sessionId)!!.shortSummary)
+        }
+    }
+
+    @Test
+    fun `long summary is decided by the model between fifteen and forty rounds`() {
         FakeLlmServer { exchange ->
             exchange.json(200, FakeLlmServer.completion("你们认识三年，他一直在做建筑。"))
         }.use { server ->
             val memory = service(llmFor(server))
-            repeat(29) { index -> say(index) }
-            val at29 = memory.maybeUpdate(sessionId, clock.now)
-            assertFalse("29 条还没有长期摘要", at29.longUpdated)
-            assertNull(store.sessionMemory(sessionId)!!.let { it.longSummary.takeIf(String::isNotBlank) })
+            repeat(14) { index -> say(index) }
+            val at14 = memory.maybeUpdate(sessionId, clock.now)
+            assertFalse("14 条还没到长期摘要的检查点（15 条起）", at14.longUpdated)
+            assertNull(store.sessionMemory(sessionId)?.longSummary?.takeIf(String::isNotBlank))
 
-            say(30)
-            val at30 = memory.maybeUpdate(sessionId, clock.now)
-            assertTrue("第 30 条要更新长期摘要", at30.longUpdated)
+            say(15)
+            val at15 = memory.maybeUpdate(sessionId, clock.now)
+            assertTrue("第 15 条起由模型决定：它说更新就更新", at15.longUpdated)
             val saved = store.sessionMemory(sessionId)!!
             assertEquals("你们认识三年，他一直在做建筑。", saved.longSummary)
-            assertEquals(30L, saved.longUserMessages)
-            assertTrue("短期摘要也顺手更新了", saved.shortSummary.isNotBlank())
+            assertEquals(15L, saved.longUserMessages)
+            assertEquals("检查游标也推到 15", 15L, saved.longCheckedUserMessages)
+        }
+    }
+
+    @Test
+    fun `a model that says SKIP only advances the check cursor and is forced at forty`() {
+        val longChecks = java.util.concurrent.atomic.AtomicInteger()
+        FakeLlmServer { exchange ->
+            val body = exchange.request.body
+            if (body.contains("更早之前的对话")) {
+                // 长期检查：前两次都说「先不更新」，40 条那次必须给出内容。
+                if (longChecks.incrementAndGet() <= 2) {
+                    exchange.json(200, FakeLlmServer.completion("SKIP"))
+                } else {
+                    exchange.json(200, FakeLlmServer.completion("你们认识三年了。"))
+                }
+            } else {
+                exchange.json(200, FakeLlmServer.completion("最近在聊哈尔滨。"))
+            }
+        }.use { server ->
+            val memory = service(llmFor(server))
+            repeat(15) { index -> say(index) }
+            val skipped = memory.maybeUpdate(sessionId, clock.now)
+            assertTrue("模型说先不更新", skipped.longSkipped)
+            assertFalse(skipped.longUpdated)
+            val afterSkip = store.sessionMemory(sessionId)!!
+            assertEquals("长期摘要还没有", "", afterSkip.longSummary)
+            assertEquals("检查游标推到 15（下一轮检查在 30 条）", 15L, afterSkip.longCheckedUserMessages)
+
+            // 15 → 29：还没到下一次检查。
+            repeat(14) { index -> say(100 + index) }
+            val at29 = memory.maybeUpdate(sessionId, clock.now)
+            assertFalse("29 条还没到下一次检查", at29.longUpdated || at29.longSkipped)
+            assertEquals(0, store.sessionMemory(sessionId)!!.longUserMessages)
+
+            // 30：第二次检查（模型仍说 SKIP）。
+            say(200)
+            val second = memory.maybeUpdate(sessionId, clock.now)
+            assertTrue(second.longSkipped)
+
+            // 40：强制更新（不再允许 SKIP）。
+            repeat(10) { index -> say(300 + index) }
+            val forced = memory.maybeUpdate(sessionId, clock.now)
+            assertTrue("40 条必须更新（不能再 SKIP）", forced.longUpdated)
+            assertEquals("你们认识三年了。", store.sessionMemory(sessionId)!!.longSummary)
+            assertEquals(40L, store.sessionMemory(sessionId)!!.longUserMessages)
         }
     }
 
@@ -191,13 +254,19 @@ class SessionMemoryTest {
     // ------------------------------------------------------------------ 注入
 
     @Test
-    fun `short summary is injected before the long one in the memo section`() {
+    fun `the memo uses the shared v2 titles with long term before short term`() {
         store.saveSessionMemory(
             SessionMemory(
                 sessionId = sessionId,
                 personaId = personaId,
                 shortSummary = "最近：你提过下周去哈尔滨。",
-                longSummary = "更早：你们认识三年了。"
+                longSummary = "更早：你们认识三年了。",
+                topics = listOf(
+                    com.yap.app.domain.MemoryContract.TopicSegment(
+                        timeLabel = "2026-11-18 晚",
+                        summary = "加班与方案改版"
+                    )
+                )
             )
         )
         val builder = ChatPromptBuilder()
@@ -208,14 +277,23 @@ class SessionMemoryTest {
             now = clock.now,
             sessionMemory = store.sessionMemory(sessionId)
         )
+        // 段标题统一走共享契约（`:agentcore` MemoryContract.Injection）。
         assertTrue(prompt.contains("# 你的备忘录"))
-        assertTrue(prompt.contains("最近你记得：最近：你提过下周去哈尔滨。"))
-        assertTrue(prompt.contains("更早之前：更早：你们认识三年了。"))
+        assertTrue(prompt.contains("## 长期记忆"))
+        assertTrue(prompt.contains("## 短期记忆"))
+        assertTrue(prompt.contains("## 对话主题"))
+        assertTrue(prompt.contains("- 更早：你们认识三年了。"))
+        assertTrue(prompt.contains("- 最近：你提过下周去哈尔滨。"))
+        assertTrue(prompt.contains("- 2026-11-18 晚：加班与方案改版"))
         assertTrue(
-            "短期在前、长期在后",
-            prompt.indexOf("下周去哈尔滨") < prompt.indexOf("认识三年")
+            "v2 固定顺序：长期在上、短期在下、主题最后",
+            prompt.indexOf("## 长期记忆") < prompt.indexOf("## 短期记忆") &&
+                prompt.indexOf("## 短期记忆") < prompt.indexOf("## 对话主题")
         )
-        assertTrue("备忘录不是人设的一部分（在边界之前）", prompt.indexOf("# 你的备忘录") < prompt.indexOf("# 边界"))
+        assertTrue(
+            "备忘录属于「他记住了什么」，排在完整设定之后（边界之后）",
+            prompt.indexOf("# 边界") < prompt.indexOf("# 你的备忘录")
+        )
     }
 
     @Test

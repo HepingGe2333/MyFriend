@@ -779,6 +779,14 @@ public enum BackupMediaTransfer {
         )
     }
 
+    /// mime → 消息附件的 `kind`（0.15：导出时把老数据补成显式值）。
+    ///
+    /// 认不出来时给 `IMAGE`：调用点都是「这条消息原本就在本地显示成图片」的路径，
+    /// 猜成图片与 0.14 的行为一致；严格的「未知类型拒绝」发生在 `AttachmentsCodec.decode`。
+    public static func attachmentKind(forMime raw: String) -> String {
+        MediaType.inferred(fromMime: raw)?.rawValue ?? MessageAttachment.imageKind
+    }
+
     /// MIME → 落盘扩展名。v6 起包含 GIF / 语音 / 视频（视频原样保留容器）。
     public static func fileExtension(forMime mime: String) -> String? {
         switch mime.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
@@ -1029,7 +1037,9 @@ public enum BackupMediaPacker {
                     fileName: candidate.fileName,
                     mime: candidate.mime,
                     bytes: data.count,
-                    data: BackupMediaTransfer.encode(data)
+                    data: BackupMediaTransfer.encode(data),
+                    // v7：原始字节的 SHA-256，导入端据此校验「这份字节没在途中被改过」。
+                    sha256: ImageContentHash.sha256Hex(data)
                 )
             )
             switch candidate.kind {
@@ -1169,6 +1179,18 @@ public enum BackupMediaRestorer {
                   data.count == entry.bytes else {
                 result.invalidCount += 1
                 continue
+            }
+            // v7：sha256 非空就校验（老备份没有这个键 → 跳过校验，旧数据照样能接回来）。
+            // 不一致的条目按坏数据跳过并计数：绝不把「字节与声明不符」的媒体写进用户目录
+            // （那会变成一张能打开但内容不对的图，比读不出来更难查）。
+            if let declaredRaw = entry.sha256?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !declaredRaw.isEmpty {
+                let declared = declaredRaw.lowercased()
+                let actual = ImageContentHash.sha256Hex(data)
+                guard declared == actual else {
+                    result.invalidCount += 1
+                    continue
+                }
             }
             // 输入闸（规范里的单张 8 MiB / 总量 128 MiB）按**原始字节**算：
             // 超限的图连压缩都不做，避免用一张畸形大图做像素解码。
@@ -1347,7 +1369,11 @@ public enum BackupMediaRestorer {
                 MessageAttachment(
                     uri: name, mime: mime,
                     width: attachment.width, height: attachment.height,
-                    kind: attachment.normalizedKind, durationMs: attachment.durationMs
+                    // 0.15：导出时补上显式 kind（老数据没写 kind 也按 mime 推出来），
+                    // 另一端读到的就不再是「猜」。
+                    kind: attachment.resolvedMediaType?.rawValue
+                        ?? BackupMediaTransfer.attachmentKind(forMime: mime),
+                    durationMs: attachment.durationMs
                 )
             )
         }
@@ -1531,7 +1557,8 @@ public final class MediaStorage {
                     uri: existing.absoluteString,
                     mime: MessageAttachment.defaultMime,
                     width: decoded.width,
-                    height: decoded.height
+                    height: decoded.height,
+                    kind: MessageAttachment.imageKind
                 )
             }
             let target = directory.appendingPathComponent(
@@ -1547,7 +1574,8 @@ public final class MediaStorage {
                 uri: target.absoluteString,
                 mime: MessageAttachment.defaultMime,
                 width: decoded.width,
-                height: decoded.height
+                height: decoded.height,
+                kind: MessageAttachment.imageKind
             )
         }
     }

@@ -69,7 +69,6 @@
     <string name="wipe_confirm_message">这将永久删除所有人物人格、聊天记录、长期记忆、版本历史、自定义预设、主动唤醒规则、API 配置与设置。此操作无法撤销；想留个底的话，先把他带走。</string>
     <string name="wipe_confirm_action">全部删除</string>
     <!-- 提示词脚手架里的一节：让「他」用对方的语言说话（模型面向，但语言名跟着 App 语言走） -->
-    <string name="prompt_language_directive">## 语言\n对方现在用%1$s跟你说话。请用同一种语言回答，专有名词可以保留原文。</string>
 
     <!-- 时间/日期：格式化模式与「今天/昨天」都从这里取，不在 Kotlin 里手写中文后缀 -->
     <string name="common_today">今天</string>
@@ -1774,4 +1773,25 @@
     <!-- 0.13 已读不回（spec/mood §4）：只在这条工具调用成功时可能进痕迹；正常情况不产生任何气泡 -->
     <string name="tool_trace_stay_silent">只读不回</string>
     <string name="chat_sticker_delete_failed">没删掉，等一下再试</string>
+
+    <!-- 0.15 memorization tool: one line "(he thought for a moment)"; the query is echoed back -->
+    <string name="tool_trace_memorize">想了想</string>
+    <string name="tool_trace_memorize_found">想了想：%1$s</string>
+    <string name="tool_trace_memorize_empty">想了想，没想起来</string>
+    <!-- 0.15 block countdown: shown above the composer; disappears when blockedUntil passes -->
+    <string name="chat_blocked_remaining_hours">你已被拉黑，还剩 %1$d 小时 %2$d 分</string>
+    <string name="chat_blocked_remaining_minutes">你已被拉黑，还剩 %1$d 分钟</string>
+    <!-- 0.15 persona prompt language (independent of the app language) -->
+    <string name="persona_editor_language_section">提示词语言</string>
+    <string name="persona_editor_language_hint">他思考和说话用哪种语言。与界面语言无关：你换成英文界面，他也不会改口。</string>
+    <string name="persona_editor_language_default">跟随默认（中文）</string>
+    <!-- 0.15 settings: generation test (never written to any conversation) -->
+    <string name="settings_generation_section">测试生成</string>
+    <string name="settings_generation_hint">用当前人格和 API 配置发一条测试消息，看看他会不会说话、这一轮多慢。消息不会写进任何会话。</string>
+    <string name="settings_generation_button">发一条测试消息</string>
+    <string name="settings_generation_running">正在让他说话…</string>
+    <string name="settings_generation_summary">耗时 %1$.1f 秒 · %2$d 字</string>
+    <string name="settings_generation_tools_used">调用了 %1$d 次工具</string>
+    <string name="settings_generation_tools_none">没有调用工具</string>
+    <string name="settings_generation_failed">这次没跑通：检查一下 API 配置或网络，再试</string>
 </resources>

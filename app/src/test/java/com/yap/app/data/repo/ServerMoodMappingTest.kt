@@ -74,21 +74,22 @@ class ServerMoodMappingTest {
         assertTrue(reading!!.valence in MoodDimensions.VALENCE_MIN..MoodDimensions.VALENCE_MAX)
         assertTrue(reading.arousal in MoodDimensions.AROUSAL_MIN..MoodDimensions.AROUSAL_MAX)
         assertTrue(reading.dominance in MoodDimensions.DOMINANCE_MIN..MoodDimensions.DOMINANCE_MAX)
-        assertEquals("强度同样受单次 ±2 限制（上一轮 2 → 最多 4）", 4, reading.intensity)
+        assertEquals("强度只夹到 1..5，不再受单次 ±2 限制", 5, reading.intensity)
     }
 
     @Test
-    fun `单次变化幅度不超过二`() {
+    fun `取消单次幅度限制 服务端心情原样落地`() {
         val reading = ServerMoodMapping.toReading(
             server = ServerMood(label = "烦", intensity = 5, valence = 2, arousal = 5, dominance = 5),
             previous = previous(label = "累", intensity = 1, valence = -2, arousal = 0, dominance = 0),
             now = 3_000L
         )
         assertTrue(reading != null)
-        assertEquals("valence 每次最多 +2", 0, reading!!.valence)
-        assertEquals(2, reading.arousal)
-        assertEquals(2, reading.dominance)
-        assertEquals(3, reading.intensity)
+        // 0.15：服务端算出来的心情就是他的真实反应，客户端不再二次压平。
+        assertEquals(2, reading!!.valence)
+        assertEquals(5, reading.arousal)
+        assertEquals(5, reading.dominance)
+        assertEquals(5, reading.intensity)
     }
 
     @Test

@@ -66,7 +66,13 @@ class LlmClient(
             }
             if (!contentType.contains("text/event-stream")) {
                 // 有些网关忽略 stream=true，直接回一整份 completion：按非流式解析，仍然逐段下发。
-                val completion = parseCompletion(readLimited(body, MAX_COMPLETION_BODY_BYTES))
+                var completion = parseCompletion(readLimited(body, MAX_COMPLETION_BODY_BYTES))
+                // 0.15：模型可能把工具调用写成正文里的 XML 标签（`<tool_call>` 等），
+                // 归一成普通 toolCalls；标签本身从正文里去掉（不能发给用户）。
+                if (completion.toolCalls.isEmpty() && XmlToolCalls.containsToolTag(completion.text)) {
+                    val parsed = XmlToolCalls.extract(completion.text)
+                    completion = completion.copy(text = parsed.text, toolCalls = parsed.calls)
+                }
                 if (completion.text.isBlank() && completion.toolCalls.isEmpty()) {
                     throw LlmException(LlmErrorKind.EMPTY_REPLY, "模型没有生成任何内容（空回复）。")
                 }
@@ -160,6 +166,13 @@ class LlmClient(
         var sawDone = false
         val promptSeed = StringBuilder()
         val toolCalls = ToolCallAccumulator()
+        // 0.15：XML 工具标签过滤器。文字要「先去掉标签再下发」，否则客户端会看到
+        // `<tool_call>…</tool_call>`；标签内容在流结束时归一成普通 toolCalls。
+        val xmlFilter = XmlToolCalls.StreamFilter { cleaned ->
+            emitted = true
+            promptSeed.append(cleaned)
+            onDelta(cleaned)
+        }
         try {
             BufferedReader(InputStreamReader(body, StandardCharsets.UTF_8), 8 * 1024).use { reader ->
                 while (true) {
@@ -173,9 +186,7 @@ class LlmClient(
                     }
                     val chunk = parseStreamChunk(payload)
                     if (!chunk.text.isNullOrEmpty()) {
-                        emitted = true
-                        promptSeed.append(chunk.text)
-                        onDelta(chunk.text)
+                        xmlFilter.accept(chunk.text)
                     }
                     toolCalls.merge(chunk.toolCalls)
                     if (chunk.usage != LlmUsage.ZERO) usage = chunk.usage
@@ -189,7 +200,7 @@ class LlmClient(
                 cause = io
             )
         }
-        val calls = toolCalls.build()
+        val calls = toolCalls.build() + xmlFilter.finish()
         // 一个字都没写、也没有工具调用，才是空回复（只调工具不说话的回合是合法的）。
         if (!emitted && calls.isEmpty()) {
             val reason = if (sawDone) "服务端只发了 [DONE]，没有内容" else "流里没有任何文字分片"

@@ -116,6 +116,45 @@ public enum BackupCodec {
                                   id: { $0.id }, build: BackupSticker.init(json:))
         let diaryNotes = decodeList(root, key: "diaryNotes", label: String(localized: "日记"), warnings: &warnings,
                                     id: { $0.id }, build: BackupDiaryNote.init(json:))
+        // v7：心理活动 / 会话备忘录。客户端 v7 备份写在**顶层**；服务端备份写在
+        // `extensions.mentalActivities` / `extensions.sessionMemory`（服务端专有段）。
+        //
+        // 读的顺序与 Android v7 一致：顶层优先，**顶层缺失或空数组**才回退到 extensions。
+        // 为什么「空数组也算回退」：服务端导出的顶层 `mentalActivities` 是空的（它只写在
+        // extensions 里），客户端读的时候不能把「空」当成「他就是没有心理活动」。
+        let extensions = root["extensions"]?.objectValue
+        var mentalActivities = decodeList(
+            root, key: "mentalActivities", label: String(localized: "心理活动"),
+            warnings: &warnings, id: { $0.id }, build: BackupMentalActivity.init(json:)
+        )
+        if mentalActivities.isEmpty, let extensions {
+            mentalActivities = decodeList(
+                extensions, key: "mentalActivities", label: String(localized: "心理活动"),
+                warnings: &warnings, id: { $0.id }, build: BackupMentalActivity.init(json:)
+            )
+        }
+        var sessionMemory = decodeList(
+            root, key: "sessionMemory", label: String(localized: "会话备忘录"),
+            warnings: &warnings, id: { $0.sessionId }, build: BackupSessionMemory.init(json:)
+        )
+        if sessionMemory.isEmpty, let extensions {
+            sessionMemory = decodeList(
+                extensions, key: "sessionMemory", label: String(localized: "会话备忘录"),
+                warnings: &warnings, id: { $0.sessionId }, build: BackupSessionMemory.init(json:)
+            )
+        }
+        // 服务端诊断段：客户端从不导出，只在读服务端备份时出现（可选 → 导出时不会写）。
+        let proactiveFailures = decodeList(
+            root, key: "proactiveFailures", label: String(localized: "主动失败记录"),
+            warnings: &warnings, id: { $0.id }, build: BackupProactiveFailure.init(json:)
+        )
+        let failures: [BackupProactiveFailure]? = proactiveFailures.isEmpty
+            ? decodeList(
+                extensions ?? [:], key: "proactiveFailures",
+                label: String(localized: "主动失败记录"),
+                warnings: &warnings, id: { $0.id }, build: BackupProactiveFailure.init(json:)
+            ).nonEmpty
+            : proactiveFailures
         let consolidations = decodeList(root, key: "memoryConsolidations", label: String(localized: "整理记录"),
                                         warnings: &warnings, id: { $0.id },
                                         build: BackupMemoryConsolidation.init(json:))
@@ -143,6 +182,9 @@ public enum BackupCodec {
             memoryConsolidations: consolidations,
             stickers: stickers,
             diaryNotes: diaryNotes,
+            mentalActivities: mentalActivities,
+            sessionMemory: sessionMemory,
+            proactiveFailures: failures,
             apiConfigs: configs,
             settings: settings
         )
@@ -225,6 +267,11 @@ public enum BackupCodec {
             return nil
         }
     }
+}
+
+private extension Array {
+    /// 「空数组 → nil」：给「这个可选段到底有没有内容」这种判断用。
+    var nonEmpty: [Element]? { isEmpty ? nil : self }
 }
 
 public enum BackupCodecError: Error, LocalizedError, CustomStringConvertible {

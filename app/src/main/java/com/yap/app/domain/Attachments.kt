@@ -23,6 +23,12 @@ import kotlinx.serialization.json.Json
  * 同步把服务端媒体落到本机之后，[uri] 会改成 `file://` 本地路径，而这里保留服务端 id：
  * 回推/去重/换设备重新下载都要靠它，不能因为「本机已经有文件」就把服务端身份丢掉。
  * 本地模式的历史数据没有这个字段，解出来是 `null`（与 0.12 完全兼容）。
+ *
+ * 0.15 起：
+ * - 新写入的附件**一律显式写 [kind]**（普通图片写 `IMAGE`，不再留 null），[mime] 必须与 kind 同族；
+ *   未知 kind / mime 不匹配的附件由 [AttachmentsCodec.encode] 拒绝，不再静默当图片；
+ * - [sha256] 记录这份字节的内容哈希（`/v1/media` 下载后由服务端 ETag 校验过的那份），
+ *   下次同步命中本地文件时重算比对，本地副本被改坏就删掉重下。旧数据没有这个字段 → 跳过校验。
  */
 @Serializable
 data class MessageAttachment(
@@ -32,7 +38,9 @@ data class MessageAttachment(
     val height: Int = 0,
     val kind: String? = null,
     val durationMs: Long? = null,
-    val serverMediaId: String? = null
+    val serverMediaId: String? = null,
+    /** 原始字节的 SHA-256（64 位小写 hex）；0.15 新增，可空 = 旧数据没有哈希。 */
+    val sha256: String? = null
 ) {
     /**
      * 图片类 mime。
@@ -68,21 +76,26 @@ data class MessageAttachment(
             else -> null
         }
 
-    /** 落库/传输时用的规范 kind（图片保留 null 之外的显式值，避免改写老数据）。 */
-    val canonicalKind: String?
+    /**
+     * 落库/传输时用的规范 kind：**永远显式**（0.15 起）。
+     *
+     * 老数据 `kind=null` 等价于普通图片，写回时落成 `IMAGE`；表情/语音/视频按 mime 兜底判一次
+     * （与服务端/备份的既有约定一致：`image/gif` = 表情）。
+     */
+    val canonicalKind: String
         get() = when {
             isSticker -> KIND_STICKER
             isAudio -> KIND_AUDIO
             isVideo -> KIND_VIDEO
-            kind == KIND_IMAGE -> KIND_IMAGE
-            else -> kind
+            else -> KIND_IMAGE
         }
 
     companion object {
-        const val KIND_IMAGE = "IMAGE"
-        const val KIND_STICKER = "STICKER"
-        const val KIND_AUDIO = "AUDIO"
-        const val KIND_VIDEO = "VIDEO"
+        // 常量只在这里定义一次：媒体类型判定（MediaTypes）依赖它们做 kind 白名单。
+        const val KIND_IMAGE = MediaKinds.IMAGE
+        const val KIND_STICKER = MediaKinds.STICKER
+        const val KIND_AUDIO = MediaKinds.AUDIO
+        const val KIND_VIDEO = MediaKinds.VIDEO
     }
 }
 
@@ -98,33 +111,55 @@ object AttachmentsCodec {
         explicitNulls = false
     }
 
+    /**
+     * 写：每条附件都必须能过 [MediaTypes.normalizeForWrite]（kind 显式、mime 同族、sha256 归一）。
+     *
+     * 类型不合法（未知 kind / mime 与 kind 不同族 / mime 无法识别）的条目**直接丢掉**：
+     * 0.15 起不许再「拿不准就当普通图片」，否则一条语音会静默变成一张加载不出来的图。
+     * 全部被丢掉时返回 null（与空列表同义）。
+     */
     fun encode(items: List<MessageAttachment>): String? {
         if (items.isEmpty()) return null
-        return runCatching { json.encodeToString(items) }.getOrNull()
+        val normalized = items.mapNotNull { MediaTypes.normalizeForWrite(it) }
+        if (normalized.isEmpty()) return null
+        return runCatching { json.encodeToString(normalized) }.getOrNull()
     }
 
+    /**
+     * 读：宽容但**不认识就拒绝**。
+     *
+     * - 老数据 `kind=null` 仍按 mime 判（`image/` 前缀 = 图片、`image/gif` = 表情、音视频按前缀）；
+     * - 显式 kind 必须属于 `IMAGE/STICKER/AUDIO/VIDEO`（`AVATAR` 不是附件类型），
+     *   与 mime 不同族的条目丢掉——这是「未知类型拒绝而不是猜」的读路径落点；
+     * - 空 uri 的脏附件照旧丢掉；kind/mime/sha256 在这里做一次大小写/空白归一。
+     */
     fun decode(raw: String?): List<MessageAttachment> {
         if (raw.isNullOrBlank()) return emptyList()
         return runCatching { json.decodeFromString<List<MessageAttachment>>(raw) }
             .getOrDefault(emptyList())
-            // 老数据里可能有空 uri 的脏附件；媒体种类与时长在这里做一次宽松归一：
-            // kind 大小写不统一（服务端/旧版本写过小写）也认，避免同一条语音换端后变成「图片」。
             .filter { it.uri.isNotBlank() }
-            .map { attachment ->
-                val normalizedKind = attachment.kind?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }
-                val normalizedDuration = attachment.durationMs
-                    ?.takeIf { it > 0L }
+            .mapNotNull { attachment ->
+                val descriptor = MediaTypes.attachmentDescriptor(attachment.kind, attachment.mime)
+                    ?: return@mapNotNull null
+                val normalizedDuration = attachment.durationMs?.takeIf { it > 0L }
                 val normalizedServerId = attachment.serverMediaId?.trim()?.takeIf { it.isNotEmpty() }
+                val normalizedSha = MediaHashes.normalize(attachment.sha256)
+                // 老数据（kind=null）保持 null：写回时由 encode 补显式 kind，读出来不改写历史形状。
+                val normalizedKind = if (attachment.kind == null) null else descriptor.kind
                 if (normalizedKind == attachment.kind &&
+                    descriptor.mime == attachment.mime &&
                     normalizedDuration == attachment.durationMs &&
-                    normalizedServerId == attachment.serverMediaId
+                    normalizedServerId == attachment.serverMediaId &&
+                    normalizedSha == attachment.sha256
                 ) {
                     attachment
                 } else {
                     attachment.copy(
                         kind = normalizedKind,
+                        mime = descriptor.mime,
                         durationMs = normalizedDuration,
-                        serverMediaId = normalizedServerId
+                        serverMediaId = normalizedServerId,
+                        sha256 = normalizedSha
                     )
                 }
             }

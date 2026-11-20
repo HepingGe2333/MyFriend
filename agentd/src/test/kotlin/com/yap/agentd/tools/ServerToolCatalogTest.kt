@@ -27,10 +27,10 @@ class ServerToolCatalogTest {
             ((function.fields.getValue("name") as JsonValue.Str).value)
         }
         assertEquals(ServerToolCatalog.names, names)
-        assertEquals(16, names.size)
+        assertEquals("0.15 加了 memorize 之后是 17 个工具", 17, names.size)
         assertTrue(names.containsAll(listOf(
             "stay_silent", "defer_reply", "set_mood", "set_activity", "diary",
-            "remember", "recall", "web_search", "web_fetch", "sticker",
+            "remember", "recall", "memorize", "web_search", "web_fetch", "sticker",
             "send_message", "block_user",
             // 0.14.1：四个「以前服务端做不到」的工具现在真的注册了（提示词不再落后于实现）。
             "update_persona", "set_quiet_hours", "listen", "watch"

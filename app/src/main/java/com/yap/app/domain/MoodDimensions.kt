@@ -259,21 +259,31 @@ object MoodDimensions {
     }.distinct().take(2)
 
     /**
-     * 「你此刻的状态」里的多维心情段（`spec/mood/README.md` §3 的逐项落地）。
+     * 「你此刻的状态」里的心情段（0.15：直觉优先，三维降为备注）。
      *
-     * 规范给的是一个带 `# 你的心情` 标题的段；聊天的系统提示词里这一段并进
-     * `# 你此刻的状态`（`spec/persona-guidance/README.md` §1 要求状态段里带心情），
-     * 所以这里只产出**正文行**，标题由外层段落提供，避免出现第二个同级标题。
+     * 规范 §3 要求这一段既能体现「他此刻什么感觉」，也要给生成一句语气指导。0.15 起顺序改成：
+     *
+     * ```
+     * 心情：有点烦（强度 3/5）。        ← 直觉结论（先读这一行）
+     * 一句直觉：压着火，不想解释。       ← 他自己会怎么形容
+     * - 这会影响你怎么说：…            ← 生成指导
+     * （下面的数值只是记录，不要念出来：愉快度 … / 唤醒度 … / 掌控感 …）
+     * ```
+     *
+     * 为什么把三维数值放到最后并加括注：模型很容易把「愉快度 -2 / 唤醒度 4」当成台词复述出来，
+     * 或者反过来被数字主导、忽略标签的直觉。0.15 的判定也不再限制「每维最多变 2」，
+     * 数值只是同一份直觉的另一个视角，不该是提示词的主表达。
      */
     fun promptLines(reading: MoodReading): List<String> {
         val hints = behaviorHints(reading).joinToString(" ")
         return buildList {
+            add("心情：${reading.label}（强度 ${reading.intensity}/5）。")
+            if (reading.reason.isNotBlank()) add("一句直觉：${reading.reason.trim()}")
+            add("- 这会影响你怎么说：$hints")
             add(
-                "心情：${reading.label}（强度 ${reading.intensity}/5）。" +
+                "- 下面的数值只是你自己的记录，不要念出来：" +
                     "愉快度 ${reading.valence} / 唤醒度 ${reading.arousal}/5 / 掌控感 ${reading.dominance}/5。"
             )
-            if (reading.reason.isNotBlank()) add("原因：${reading.reason.trim()}")
-            add("- 这会影响你怎么说：$hints")
             add("- 不要直接报数值，也不要说「我的情绪是…」；用说话方式体现。")
         }
     }

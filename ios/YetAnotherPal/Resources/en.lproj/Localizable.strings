@@ -949,6 +949,15 @@
 "有 %d 个表情没接回来（备份里没有它的文件）.one" = "%d sticker wasn't restored (the backup had no file for it)";
 "有 %d 条日记没接回来（它属于的人不在这次备份里）" = "%d notes weren't restored (their persona isn't in this backup)";
 "有 %d 条日记没接回来（它属于的人不在这次备份里）.one" = "%d note wasn't restored (its persona isn't in this backup)";
+// 0.15 backup v7: mental activities / session memory / media hash verification.
+"心理活动" = "Mental activity";
+"会话备忘录" = "Session notes";
+"主动失败记录" = "Proactive failure log";
+"下载回来的媒体与校验值不一致，已丢弃" = "The downloaded media didn't match its checksum and was discarded";
+"有 %d 条心理活动没接回来（它属于的人不在这次备份里）" = "%d mental activities weren't restored (their persona isn't in this backup)";
+"有 %d 条心理活动没接回来（它属于的人不在这次备份里）.one" = "%d mental activity wasn't restored (its persona isn't in this backup)";
+"有 %d 段会话备忘录没接回来（那段对话不在这次备份里）" = "%d session memories weren't restored (that conversation isn't in this backup)";
+"有 %d 段会话备忘录没接回来（那段对话不在这次备份里）.one" = "%d session memory wasn't restored (that conversation isn't in this backup)";
 "媒体" = "Media";
 
 // 0.12 web tools: search service selection.
@@ -1322,3 +1331,33 @@
 "已生效，到期自动解除。" = "In effect until it expires automatically.";
 "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。" = "The proposal is saved; you can confirm it only after they send another message.";
 "发消息" = "Message";
+
+/* 0.15: the persona's own prompt language (persona editor). Independent of the app's language. */
+"他用的语言" = "The language he uses";
+"跟 App 的界面语言无关：他一直用这个语言说话。" = "Nothing to do with the app's language: he always speaks and thinks in this one.";
+"中文" = "Chinese";
+"English" = "English";
+
+/* 0.15: Settings → "Test generation" (checks the API configuration without touching chat storage). */
+"测试生成" = "Test generation";
+"先试试这个配置通不通，不会发到聊天里" = "Check whether this configuration works; nothing goes into a chat";
+"只看看这个 API 配置通不通、大概多快。" = "Just checks whether this API configuration works, and roughly how fast it is.";
+"不会写进聊天，也不会建会话、动消息表；发一句固定测试话就结束。" = "Nothing is written to chats, no session is created, and the message table is untouched. It sends one fixed test line and stops.";
+"配置" = "Configuration";
+"还没填模型" = "No model yet";
+"开始测试" = "Start test";
+"测试通过" = "Test passed";
+"测试没通过" = "Test failed";
+"耗时" = "Time";
+"字数" = "Characters";
+"用到的工具" = "Tools used";
+"开头预览" = "Preview";
+"未知" = "Unknown";
+"测试会真的发一次补全，会消耗一点点额度，但不会留下任何聊天记录。" = "The test sends one real completion. It uses a little quota, but leaves no chat history.";
+
+/* 0.15: trace copy for the memorize tool (searching back through this session). */
+"（他想了想）" = "(He thinks back for a moment)";
+"想不起来了" = "Can't remember it";
+"没说要想起什么" = "Nothing to recall";
+"想起了 %d 句以前的话" = "Recalled %d lines from before";
+"想起了 %d 句以前的话.one" = "Recalled %d line from before";

@@ -145,8 +145,11 @@ class FileStore(
         /** 0.14：心理活动（他私下的念头 + 心情快照；每个人格只留最近 50 条）。 */
         const val MENTAL_ACTIVITIES_FILE = "mental_activities.json"
 
-        /** 0.14：会话级「他的备忘录」（短期/长期摘要）。 */
+        /** 0.14：会话级「他的备忘录」（短期/长期摘要 + 0.15 的对话主题）。 */
         const val SESSION_MEMORY_FILE = "session_memory.json"
+
+        /** 0.15：没发出去的主动消息（生成/落库/投递/推送四类失败，只留最近 200 条）。 */
+        const val PROACTIVE_FAILURES_FILE = "proactive_failures.json"
 
         /**
          * 0.14.1：**客户端独有**的备份段（`proactiveRules[]` / `memoryConsolidations[]` 以及
@@ -179,7 +182,7 @@ class FileStore(
          * `STICKER`/`AUDIO`/`VIDEO` 并改用 `fileName` 关联，段内字段名全部换成客户端 v6 的
          * （`unreadCount` / `attachmentsJson` / `toolTraceJson` …）。v1–v5 仍然可以导入。
          */
-        const val BACKUP_FORMAT_VERSION = 6
+        const val BACKUP_FORMAT_VERSION = 7
         /** 跨版本/跨端备份格式标记；不随品牌更名，否则旧备份无法导入。 */
         const val BACKUP_FORMAT_NAME = "myfriend.backup"
 
@@ -315,6 +318,9 @@ class FileStore(
 
     /** 0.14：会话记忆（`session_memory.json`，key = sessionId）。 */
     private val sessionMemories = LinkedHashMap<String, SessionMemory>()
+
+    /** 0.15：主动消息的失败记录（`proactive_failures.json`，key = id；只留最近 200 条）。 */
+    private val proactiveFailures = LinkedHashMap<String, ProactiveFailure>()
 
     /**
      * 0.14.1：客户端独有的备份段（`proactiveRules` / `memoryConsolidations` / 未知顶层段），
@@ -545,6 +551,7 @@ class FileStore(
         mentalActivities.entries.removeAll { it.value.personaId == personaId }
         sessionMemories.entries.removeAll { it.value.personaId == personaId }
         blockProposals.remove(personaId)
+        proactiveFailures.entries.removeAll { it.value.personaId == personaId }
         // 待审的进化补丁跟着人格一起消失（否则会留下一条永远无法 accept 的孤儿）。
         val doomedPatches = pendingPatches.values.filter { it.personaId == personaId }.map { it.id }
         for (id in doomedPatches) pendingPatches.remove(id)
@@ -559,6 +566,7 @@ class FileStore(
         persistMentalActivitiesLocked()
         persistSessionMemoryLocked()
         persistBlockProposalsLocked()
+        persistProactiveFailuresLocked()
         true
     }
 
@@ -2371,6 +2379,42 @@ class FileStore(
         true
     }
 
+    // ================================================================== 0.15：主动消息失败记录
+
+    /**
+     * 记一条主动消息失败（生成/落库/投递/推送四个阶段都走这里）。
+     *
+     * 保留策略：**只留最近 [ProactiveFailure.KEEP_RECENT] 条**（跨人格，按 `at` 从新到旧）。
+     * 它是诊断数据不是业务数据——无限增长只会让数据目录越来越难排查。
+     * 返回值只用于测试/日志断言。
+     */
+    fun recordProactiveFailure(failure: ProactiveFailure): ProactiveFailure = lock.withLock {
+        val normalized = failure.copy(detail = failure.detail.take(ProactiveFailure.MAX_DETAIL_CHARS))
+        proactiveFailures[normalized.id] = normalized
+        val doomed = proactiveFailures.values
+            .sortedWith(compareByDescending<ProactiveFailure> { it.at }.thenByDescending { it.id })
+            .drop(ProactiveFailure.KEEP_RECENT)
+        for (old in doomed) proactiveFailures.remove(old.id)
+        persistProactiveFailuresLocked()
+        normalized
+    }
+
+    /** 最近的失败记录（新的在前）。[personaId] 非空时只看那个人格。 */
+    fun proactiveFailures(
+        personaId: String? = null,
+        limit: Int = ProactiveFailure.KEEP_RECENT
+    ): List<ProactiveFailure> = lock.withLock {
+        proactiveFailures.values
+            .filter { personaId == null || it.personaId == personaId }
+            .sortedWith(compareByDescending<ProactiveFailure> { it.at }.thenByDescending { it.id })
+            .take(limit.coerceAtLeast(0))
+    }
+
+    /** 全部失败记录（备份导出用；按时间升序）。 */
+    fun allProactiveFailures(): List<ProactiveFailure> = lock.withLock {
+        proactiveFailures.values.sortedWith(compareBy({ it.at }, { it.id }))
+    }
+
     // ================================================================== 备份（流式导出）
 
     /**
@@ -2430,6 +2474,9 @@ class FileStore(
                 sessionMemories = sessionMemories.values
                     .sortedBy { it.sessionId }
                     .map { BackupV6.sessionMemory(it) },
+                proactiveFailures = proactiveFailures.values
+                    .sortedWith(compareBy({ it.at }, { it.id }))
+                    .map { BackupV6.proactiveFailure(it) },
                 settings = BackupV6.settings(publicSettingsLocked()),
                 media = media.values.sortedWith(compareBy({ it.createdAt }, { it.id })).toList(),
                 clientExtras = LinkedHashMap(clientExtras)
@@ -2489,6 +2536,11 @@ class FileStore(
             writer.key("sessionMemory")
             writer.value(jsonArray(snapshot.sessionMemories))
         }
+        // 0.15：主动消息的失败记录（诊断数据；客户端忽略，服务端换机后还能查）。
+        if (snapshot.proactiveFailures.isNotEmpty()) {
+            writer.key("proactiveFailures")
+            writer.value(jsonArray(snapshot.proactiveFailures))
+        }
         writer.endObject()
         writer.key("memoryConsolidations")
         writer.value(snapshot.clientExtras["memoryConsolidations"] ?: jsonArray(emptyList()))
@@ -2523,6 +2575,8 @@ class FileStore(
         /** 0.14：心理活动与会话记忆（客户端忽略，服务端往返用）。 */
         val mentalActivities: List<JsonValue> = emptyList(),
         val sessionMemories: List<JsonValue> = emptyList(),
+        /** 0.15：主动消息失败记录（服务端专有诊断数据）。 */
+        val proactiveFailures: List<JsonValue> = emptyList(),
         val settings: JsonValue.Obj,
         val media: List<MediaItem>,
         /** 0.14.1：客户端独有的备份段（原样透传）。 */
@@ -2805,6 +2859,8 @@ class FileStore(
         val mentalActivities: List<MentalActivity> = emptyList(),
         /** 0.14：会话记忆（服务端扩展段，客户端忽略）。 */
         val sessionMemories: List<SessionMemory> = emptyList(),
+        /** 0.15：主动消息失败记录（服务端扩展段，客户端忽略）。 */
+        val proactiveFailures: List<ProactiveFailure> = emptyList(),
         /** 0.14.1：客户端独有的顶层段（`proactiveRules` / `memoryConsolidations` / 未知段），原样透传。 */
         val clientExtras: Map<String, JsonValue> = emptyMap()
     )
@@ -2843,6 +2899,7 @@ class FileStore(
         val intents = ArrayList<StoredIntent>()
         val mentalActivities = ArrayList<MentalActivity>()
         val sessionMemories = ArrayList<SessionMemory>()
+        val proactiveFailures = ArrayList<ProactiveFailure>()
         val clientExtras = LinkedHashMap<String, JsonValue>()
         var clientExtrasBytes = 0L
         val messageSpools = LinkedHashMap<String, Path>()
@@ -2973,6 +3030,11 @@ class FileStore(
                         sessionMemories += parseBackupSessionMemory(obj, "$where.sessionMemory[$index]")
                     }
 
+                    // 0.15：主动消息失败记录（顶层只作为旧文件的兼容读入口；新文件写在 extensions 里）。
+                    "proactiveFailures" -> readBackupSection(reader, "proactiveFailures") { obj, index ->
+                        proactiveFailures += parseBackupProactiveFailure(obj, "$where.proactiveFailures[$index]")
+                    }
+
                     // 0.14.1：客户端独有的段 —— 不解析、不替换，原样存进 `client_extras.json`。
                     "proactiveRules", "memoryConsolidations" -> captureClientExtra(key, reader.readValue())
 
@@ -2981,7 +3043,8 @@ class FileStore(
                         value = reader.readValue(),
                         where = "$where.extensions",
                         mentalActivities = mentalActivities,
-                        sessionMemories = sessionMemories
+                        sessionMemories = sessionMemories,
+                        proactiveFailures = proactiveFailures
                     )
 
                     // 客户端将来新增的其它段：同样原样透传（不认识的段不能一导入就丢）。
@@ -3023,8 +3086,15 @@ class FileStore(
             sessionMemories.clear()
             sessionMemories += unique.values
         }
+        if (proactiveFailures.size > 1) {
+            val unique = LinkedHashMap<String, ProactiveFailure>()
+            for (failure in proactiveFailures) unique.putIfAbsent(failure.id, failure)
+            proactiveFailures.clear()
+            proactiveFailures += unique.values
+        }
         requireUniqueIds("mentalActivities", mentalActivities.map { it.id })
         requireUniqueIds("sessionMemory", sessionMemories.map { it.sessionId })
+        requireUniqueIds("proactiveFailures", proactiveFailures.map { it.id })
 
         return StreamedBackup(
             personas = personas,
@@ -3040,6 +3110,7 @@ class FileStore(
             intents = intents,
             mentalActivities = mentalActivities,
             sessionMemories = sessionMemories,
+            proactiveFailures = proactiveFailures,
             clientExtras = clientExtras
         )
     }
@@ -3071,7 +3142,8 @@ class FileStore(
         value: JsonValue,
         where: String,
         mentalActivities: MutableList<MentalActivity>,
-        sessionMemories: MutableList<SessionMemory>
+        sessionMemories: MutableList<SessionMemory>,
+        proactiveFailures: MutableList<ProactiveFailure> = ArrayList()
     ) {
         val obj = value as? JsonValue.Obj
             ?: throw BackupValidationException("备份的 extensions 必须是对象")
@@ -3095,6 +3167,16 @@ class FileStore(
                         val element = item as? JsonValue.Obj
                             ?: throw BackupValidationException("$where.sessionMemory 第 ${index + 1} 项不是对象")
                         sessionMemories += parseBackupSessionMemory(element, "$where.sessionMemory[$index]")
+                    }
+                }
+
+                "proactiveFailures" -> {
+                    val items = raw as? JsonValue.Arr
+                        ?: throw BackupValidationException("$where.proactiveFailures 必须是数组")
+                    items.items.forEachIndexed { index, item ->
+                        val element = item as? JsonValue.Obj
+                            ?: throw BackupValidationException("$where.proactiveFailures 第 ${index + 1} 项不是对象")
+                        proactiveFailures += parseBackupProactiveFailure(element, "$where.proactiveFailures[$index]")
                     }
                 }
 
@@ -3322,6 +3404,7 @@ class FileStore(
             mentalActivities.clear()
             sessionMemories.clear()
             blockProposals.clear()
+            proactiveFailures.clear()
             deliveries.clear()
         } else {
             for (sessionId in affectedSessions) {
@@ -3438,6 +3521,15 @@ class FileStore(
         for (memory in parsed.sessionMemories) {
             if (finalSessions[memory.sessionId] != null) sessionMemories[memory.sessionId] = memory
         }
+        // 0.15：主动消息失败记录也按 id 覆盖（人格已经不在了就丢掉，它只是诊断数据）。
+        for (failure in parsed.proactiveFailures) {
+            if (finalPersonas[failure.personaId] != null) proactiveFailures[failure.id] = failure
+        }
+        // 与运行时同一套保留策略：只留最近 200 条（导入一份别的备份不该把上限撑破）。
+        val doomedFailures = proactiveFailures.values
+            .sortedWith(compareByDescending<ProactiveFailure> { it.at }.thenByDescending { it.id })
+            .drop(ProactiveFailure.KEEP_RECENT)
+        for (old in doomedFailures) proactiveFailures.remove(old.id)
         // 心理活动仍然只保留最近 50 条/人格（导入一份别的备份不该把上限撑破）。
         for (personaId in finalPersonas.keys) {
             val doomed = mentalActivities.values
@@ -3474,6 +3566,7 @@ class FileStore(
         persistMentalActivitiesLocked()
         persistSessionMemoryLocked()
         persistBlockProposalsLocked()
+        persistProactiveFailuresLocked()
         // 0.14.1：客户端独有段的透传。replace = 备份就是新状态（旧透传清掉）；
         // merge = 按段覆盖，没提到的段保留（与其它 merge 语义一致）。
         if (mode == "replace") clientExtras.clear()
@@ -3496,7 +3589,8 @@ class FileStore(
             stickers = parsed.stickers.size,
             diaryNotes = parsed.diaryNotes.size,
             mentalActivities = parsed.mentalActivities.size,
-            sessionMemories = parsed.sessionMemories.size
+            sessionMemories = parsed.sessionMemories.size,
+            proactiveFailures = parsed.proactiveFailures.size
         )
     }
 
@@ -3943,7 +4037,33 @@ class FileStore(
             shortUserMessages = obj.optLong("shortUserMessages", where) ?: 0L,
             longSummary = obj.optString("longSummary", where).orEmpty().take(SessionMemory.MAX_LONG_CHARS),
             longUpdatedAt = obj.optLong("longUpdatedAt", where) ?: 0L,
-            longUserMessages = obj.optLong("longUserMessages", where) ?: 0L
+            longUserMessages = obj.optLong("longUserMessages", where) ?: 0L,
+            // 0.15 的可加键：旧备份没有就是默认值（消费点判定「要不要更新」会退回按条数触发）。
+            longCheckedUserMessages = obj.optLong("longCheckedUserMessages", where) ?: 0L,
+            topics = SessionMemory.parseTopics(obj.fields["topics"], where),
+            topicUpdatedAt = obj.optLong("topicUpdatedAt", where) ?: 0L,
+            topicUserMessages = obj.optLong("topicUserMessages", where) ?: 0L,
+            topicCheckedUserMessages = obj.optLong("topicCheckedUserMessages", where) ?: 0L
+        )
+    }
+
+    /** 0.15：备份里的一条主动消息失败记录（服务端扩展段）。 */
+    private fun parseBackupProactiveFailure(obj: JsonValue.Obj, where: String): ProactiveFailure {
+        val id = obj.reqString("id", where)
+        if (!isValidId(id)) throw BackupValidationException("$where 的 id 不合法")
+        val personaId = obj.reqString("personaId", where)
+        if (!isValidId(personaId)) throw BackupValidationException("$where 的 personaId 不合法")
+        val stage = obj.optString("stage", where).orEmpty().takeIf { it.isNotBlank() }
+            ?: ProactiveFailure.Stage.GENERATION
+        return ProactiveFailure(
+            id = id,
+            personaId = personaId,
+            sessionId = obj.optString("sessionId", where)?.takeIf { it.isNotBlank() },
+            at = obj.optLong("at", where) ?: 0L,
+            stage = if (stage in ProactiveFailure.Stage.ALL) stage else ProactiveFailure.Stage.GENERATION,
+            reason = obj.optString("reason", where).orEmpty().take(80),
+            detail = obj.optString("detail", where).orEmpty().take(ProactiveFailure.MAX_DETAIL_CHARS),
+            text = obj.optString("text", where).orEmpty().take(500)
         )
     }
 
@@ -4030,6 +4150,7 @@ class FileStore(
             Files.exists(root.resolve(DIARY_NOTES_FILE)) ||
             Files.exists(root.resolve(MENTAL_ACTIVITIES_FILE)) ||
             Files.exists(root.resolve(SESSION_MEMORY_FILE)) ||
+            Files.exists(root.resolve(PROACTIVE_FAILURES_FILE)) ||
             Files.exists(eventsFile) ||
             Files.newDirectoryStream(sessionsDir).use { it.iterator().hasNext() } ||
             Files.newDirectoryStream(mediaDir).use { it.iterator().hasNext() }
@@ -4139,6 +4260,10 @@ class FileStore(
         loadOptionalObjectList(root.resolve(SESSION_MEMORY_FILE), "memories") { obj, where ->
             val memory = SessionMemory.fromJson(obj, where)
             sessionMemories[memory.sessionId] = memory
+        }
+        loadOptionalObjectList(root.resolve(PROACTIVE_FAILURES_FILE), "failures") { obj, where ->
+            val failure = ProactiveFailure.fromJson(obj, where)
+            proactiveFailures[failure.id] = failure
         }
         loadOptionalObjectList(root.resolve(MESSAGE_QUEUE_FILE), "deliveries") { obj, where ->
             val entry = PendingDelivery.fromJson(obj, where)
@@ -4610,6 +4735,17 @@ class FileStore(
         StoreJson.obj(
             "memories" to StoreJson.arr(
                 sessionMemories.values.sortedBy { it.sessionId }.map { it.toJson() }
+            )
+        )
+    )
+
+    private fun persistProactiveFailuresLocked() = writeJsonLocked(
+        root.resolve(PROACTIVE_FAILURES_FILE),
+        StoreJson.obj(
+            "failures" to StoreJson.arr(
+                proactiveFailures.values
+                    .sortedWith(compareBy({ it.at }, { it.id }))
+                    .map { it.toJson() }
             )
         )
     )

@@ -1,6 +1,7 @@
 package com.yap.agentd.tools
 
 import com.yap.agentd.evolution.PersonaEvolutionRules
+import com.yap.agentd.experience.SessionRecall
 import com.yap.agentd.llm.LlmContentPart
 import com.yap.agentd.llm.LlmUsage
 import com.yap.agentd.media.MediaLookup
@@ -60,7 +61,12 @@ class ToolExecutor(
      * 默认用系统 `ffmpeg`（`--ffmpeg` / `YAP_FFMPEG`，见 [com.yap.agentd.media.FfmpegFrameExtractor]）；
      * 没有解码器时 `watch` 会明确失败。测试注入假抽取器/假媒体服务。
      */
-    private val media: MediaUnderstanding = MediaUnderstanding(store)
+    private val media: MediaUnderstanding = MediaUnderstanding(store),
+    /**
+     * 0.15：`memorize` 的会话历史检索（关键词 + 主题段 + 时间衰减）。
+     * 测试可以注入更小的扫描上限；生产就是默认实现。
+     */
+    private val recall: SessionRecall = SessionRecall(store, clock)
 ) {
 
     /**
@@ -164,6 +170,7 @@ class ToolExecutor(
                 ServerToolCatalog.DIARY -> diary(args, context)
                 ServerToolCatalog.REMEMBER -> remember(args, context)
                 ServerToolCatalog.RECALL -> recall(args, context)
+                ServerToolCatalog.MEMORIZE -> memorize(args, context)
                 ServerToolCatalog.WEB_SEARCH -> webSearch(args)
                 ServerToolCatalog.WEB_FETCH -> webFetch(args)
                 ServerToolCatalog.STICKER -> sticker(args, context)
@@ -514,6 +521,47 @@ class ToolExecutor(
             if (memory.tags.any { it.contains(token, ignoreCase = true) }) score += 1
         }
         return score
+    }
+
+    // ------------------------------------------------------------------ memorize（0.15）
+
+    /**
+     * `memorize`：在**这段会话的历史原文**里检索（0.15 上下文/记忆 v2）。
+     *
+     * 回灌形状是设计文档的注入示例 `<回忆：某段时间的对话摘要 + 关键原句>`：
+     * 模型拿到之后可以顺着那件事说，而不是编一句「我记得你说过…」。
+     * 没有命中也要回一条**诚实**的结果（「没翻到」），它会说「想不太起来了」。
+     */
+    private fun memorize(args: JsonValue.Obj, context: Context): Outcome {
+        val query = args.stringOrNull("query").orEmpty().trim().take(MAX_MEMORIZE_QUERY_CHARS)
+        if (query.isEmpty()) return failure(ServerToolCatalog.MEMORIZE, "缺少 query", "没写要找什么")
+        val limit = (args.intOrNull("limit") ?: SessionRecall.DEFAULT_LIMIT)
+            .coerceIn(1, SessionRecall.MAX_LIMIT)
+        val found = recall.recall(
+            sessionId = context.sessionId,
+            query = query,
+            limit = limit,
+            now = clock.millis()
+        )
+        val summary = if (found.hits.isEmpty()) "想了想，没想起来" else "想起了 ${found.hits.size} 段"
+        return Outcome(
+            name = ServerToolCatalog.MEMORIZE,
+            ok = true,
+            summary = summary,
+            contentForModel = if (found.hits.isEmpty()) {
+                "你翻了翻聊天记录，关于「$query」没找到什么。就当想不起来了，别编。"
+            } else {
+                "你翻了翻聊天记录，关于「$query」想起了这些（时间段 + 摘要 + 关键原句）：\n${found.text}\n" +
+                    "顺着这些说，别把时间说错，也别补没发生过的细节；想不起来的就老实说想不起来，别编。"
+            },
+            trace = ToolTrace(
+                name = ServerToolCatalog.MEMORIZE,
+                title = "想了想",
+                subtitle = query.take(30),
+                detail = found.text,
+                ok = true
+            )
+        )
     }
 
     // ------------------------------------------------------------------ send_message / block_user（0.14）
@@ -1166,6 +1214,9 @@ class ToolExecutor(
 
         /** recall 的查询最长多少字（再长也不会是「关键词」，只会把匹配变慢）。 */
         const val MAX_RECALL_QUERY_CHARS = 200
+
+        /** `memorize` 的查询上限（与 recall 同一口径：再长就不是关键词了）。 */
+        const val MAX_MEMORIZE_QUERY_CHARS = 200
 
         /** recall 最多拆几个词元。 */
         const val MAX_RECALL_TOKENS = 12
