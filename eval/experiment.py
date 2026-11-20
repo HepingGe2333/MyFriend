@@ -82,6 +82,39 @@ MEMORY_MODES = {
     "layered": "长期+短期+主题+回忆提示",
 }
 
+GUIDANCE_TEMPLATE = """# 引导
+这一轮：{stance}
+- {move1}
+- {move2}
+- 不要{avoid}。"""
+
+# 同一模板生成 20 个引导提示词：只改 stance/move1/move2/avoid，不改变结构。
+GUIDANCE_VARIANTS: dict[str, dict[str, str]] = {
+    "g01": {"stance": "少说，只回一句", "move1": "句子控制在 15 个字内", "move2": "不解释原因", "avoid": "反问"},
+    "g02": {"stance": "短，但让对方感到你在", "move1": "先接一句对方的话", "move2": "再说自己的反应", "avoid": "讲道理"},
+    "g03": {"stance": "先接住情绪，不急着给方案", "move1": "承认对方现在不好受", "move2": "问一句具体发生了什么", "avoid": "马上安慰"},
+    "g04": {"stance": "不给建议，除非对方明确问", "move1": "只回应对方说的内容", "move2": "把决定留给对方", "avoid": "替对方安排"},
+    "g05": {"stance": "不反问，不把话题抛回去", "move1": "直接说自己的看法", "move2": "说完就停", "avoid": "追问"},
+    "g06": {"stance": "不想接就停住，可以只回嗯", "move1": "允许这轮很短", "move2": "不硬找话题", "avoid": "尬聊"},
+    "g07": {"stance": "不总结对方说的话", "move1": "只接住一个点", "move2": "不重复对方的原话", "avoid": "复述"},
+    "g08": {"stance": "不分析对方心理", "move1": "只说自己的感受", "move2": "不猜对方动机", "avoid": "下判断"},
+    "g09": {"stance": "说具体的，不说抽象道理", "move1": "给一个具体细节或例子", "move2": "不用大词", "avoid": "空泛"},
+    "g10": {"stance": "可以有停顿和不完整", "move1": "句子短、口语", "move2": "不把话说圆", "avoid": "写作文"},
+    "g11": {"stance": "累，回得慢而短", "move1": "先说自己现在的状态", "move2": "少主动开新话题", "avoid": "强撑热情"},
+    "g12": {"stance": "有点防备，不轻易示弱", "move1": "用短句挡一下", "move2": "被问急了才多露半句", "avoid": "掏心掏肺"},
+    "g13": {"stance": "语气放软，但别讨好", "move1": "可以关心一句", "move2": "不立刻认错", "avoid": "卑微"},
+    "g14": {"stance": "可以轻轻损一句，不刻薄", "move1": "用熟人式吐槽", "move2": "留个台阶", "avoid": "人身攻击"},
+    "g15": {"stance": "有不同意见就说，不迎合", "move1": "先说我不同意", "move2": "再给理由", "avoid": "顺着说"},
+    "g16": {"stance": "自然用记得的细节，不复述", "move1": "带一个之前提过的小事", "move2": "说完就继续聊", "avoid": "背诵记忆"},
+    "g17": {"stance": "只聊此刻，不翻旧账", "move1": "回应现在这句话", "move2": "不延伸过去", "avoid": "翻旧账"},
+    "g18": {"stance": "不替对方做决定", "move1": "把选项说清楚", "move2": "让对方自己选", "avoid": "替对方选"},
+    "g19": {"stance": "不解释自己怎么想，不像客服", "move1": "直接给反应", "move2": "不写内心独白", "avoid": "旁白"},
+    "g20": {"stance": "一条一条说，别一次说完", "move1": "先只发一句", "move2": "等对方接上再说", "avoid": "长篇大论"},
+}
+
+for _key, _params in GUIDANCE_VARIANTS.items():
+    MOOD_MODES[_key] = "引导模板：" + _params["stance"]
+
 DEFAULT_MOOD = "label3d"
 DEFAULT_MEMORY = "full"
 
@@ -176,6 +209,8 @@ def _mood_block(mode: str) -> str:
             f"心情：{label}（强度 {intensity}/5）。\n"
             "- 这一轮你会更短、更少解释、更少主动开新话题；不要报数值。"
         )
+    if mode in GUIDANCE_VARIANTS:
+        return GUIDANCE_TEMPLATE.format(**GUIDANCE_VARIANTS[mode])
     return "\n".join(prompt_lib._mood_lines(mood))  # label3d（当前实现）
 
 

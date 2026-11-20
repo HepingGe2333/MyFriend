@@ -53,3 +53,14 @@ v1 的 31 场景/词表仍保留用于快速冒烟与回归（`eval/run.py`）�
   compact·guidance·topic_long / two_block·guidance·retrieval / mood_identity·guidance·retrieval
 
 汇总见 `eval/reports/bench2-summary-*.md`；结论与局限以报告为准。
+
+## 20 个引导提示词（同一模板）
+
+`eval/experiment.py` 的 `GUIDANCE_TEMPLATE` 只改四个参数（stance/move1/move2/avoid），
+生成 g01–g20；用 Bench v2 在 12 个多轮场景上对比（compact 架构、full 记忆）：
+
+```bash
+python3 -m eval.bench2.run --variants compact/g06/full,compact/g17/full,compact/g12/full ...
+```
+
+汇总：`eval/reports/bench2-guidance-summary-*.md`。当前第一梯队：g06/g17/g12/g05（差距在噪声内）。
