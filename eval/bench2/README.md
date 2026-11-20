@@ -42,3 +42,14 @@ python3 -m eval.bench2.run --variants baseline,state_first,guidance,compact \
 
 v1 的 31 场景/词表仍保留用于快速冒烟与回归（`eval/run.py`）；v2 是发布前/重大改动前的质量门禁。
 建议 CI：v1 fake 冒烟 + v2 离线单测；真实模型每周/发布前跑 v2。
+
+## 已比较的方案（2026-11-21 实验）
+
+- 架构 11 种：baseline / state_first / compact / two_block / scene / mood_identity / tools_first /
+  memory_first / rules_tail_only / minimal_state / bullet_persona
+- 心情 9 种：none / label / label3d / guidance / intuition / somatic / behavior / label_intuition / dual
+- 记忆 9 种：none / short / long / topics / full / topic_long / pins / retrieval / layered
+- 组合 6 种：compact·guidance·retrieval / compact·guidance·long / compact·behavior·retrieval /
+  compact·guidance·topic_long / two_block·guidance·retrieval / mood_identity·guidance·retrieval
+
+汇总见 `eval/reports/bench2-summary-*.md`；结论与局限以报告为准。

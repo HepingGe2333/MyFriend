@@ -48,6 +48,14 @@ ARCHITECTURES = {
     "dossier": "角色档案（第三人称）→第一人称指令→状态→话风→工具→反AI→记忆→边界",
     "minimal": "极简：身份→话风→反AI→边界（无世界/关系/工具）",
     "double_rules": "baseline + 末尾重复反AI/边界",
+    "two_block": "稳定块（身份/世界/关系/话风/规则）→动态块（状态/记忆/语言）→边界",
+    "scene": "场景式：场景（人/地/时）→状态→话风→工具→规则→记忆",
+    "mood_identity": "身份段内嵌心情底色→世界→状态→其他同 baseline",
+    "tools_first": "身份→工具→世界→状态→话风→关系→反AI→记忆→边界",
+    "memory_first": "记忆→身份→世界→状态→话风→关系→工具→反AI→边界",
+    "rules_tail_only": "baseline 但反AI/边界只放最后（不前置）",
+    "minimal_state": "极简+状态：身份→状态→反AI→边界（无世界/关系/工具）",
+    "bullet_persona": "人设压缩成三个 bullet→状态→话风→反AI→边界",
 }
 
 MOOD_MODES = {
@@ -56,6 +64,10 @@ MOOD_MODES = {
     "label3d": "标签+强度+三维（当前）",
     "intuition": "一句直觉描述（无数值）",
     "guidance": "直觉+行为指导（无数值）",
+    "somatic": "身体感觉式（眼皮沉/肩膀紧，无数值）",
+    "behavior": "只给行为指令（不写标签/数值）",
+    "label_intuition": "标签+一句直觉（无数值）",
+    "dual": "标签+行为指令（无数值）",
 }
 
 MEMORY_MODES = {
@@ -64,6 +76,10 @@ MEMORY_MODES = {
     "long": "长期记忆（稳定事实/约定）",
     "topics": "对话主题总结",
     "full": "短期+长期+主题",
+    "topic_long": "主题+长期（不要短期）",
+    "pins": "短期改成置顶事实 bullet",
+    "retrieval": "主题+提示用 memorize 取细节",
+    "layered": "长期+短期+主题+回忆提示",
 }
 
 DEFAULT_MOOD = "label3d"
@@ -99,13 +115,22 @@ def _memory_block(scenario: dict[str, Any], mode: str) -> str:
                      "、".join(persona.get("likes") or []), notes]
         long_text = "；".join(bit for bit in long_bits if bit)[:500]
         pieces.append("## 长期记忆\n" + (long_text or "（还没有）"))
-    if mode in {"topics", "full"}:
+    if mode == "topic_long":
+        mode = "topics"
+    if mode == "pins":
+        pins = facts or [str(persona.get("backstory") or "")[:120]]
+        pieces.append("## 置顶事实\n" + "\n".join(f"- {item}" for item in pins[:5]))
+    if mode in {"topics", "full", "retrieval", "layered"}:
         topic = f"- {scenario.get('now', '')[:10]}：{title}"
         if notes:
             topic += f"（{notes[:80]}）"
         if facts:
             topic += "；关键事实：" + "、".join(facts[:3])
         pieces.append("## 对话主题\n" + topic)
+    if mode in {"retrieval", "layered"}:
+        pieces.append("## 回忆提示\n细节不要猜；需要旧对话时调用 memorize(query) 取回。")
+    if mode == "layered":
+        pieces.append("## 短期记忆\n" + ((notes or title)[:200] or "（还没有）"))
     return "# 你的备忘录\n" + "\n".join(pieces)
 
 
@@ -127,6 +152,29 @@ def _mood_block(mode: str) -> str:
             "# 你的心情\n"
             "先凭直觉说：有点平静，但不算轻松。\n"
             "- 这会影响你怎么说：句子短、少解释，遇到不想接的话就停住；不要报数值。"
+        )
+    if mode == "somatic":
+        return (
+            "# 你的心情\n"
+            "眼皮有点沉，肩膀发紧，胸口不闷但提不起劲。\n"
+            "- 这会影响你怎么说：句子短、回得慢，少主动开话题；不要报数值，也不要描述身体。"
+        )
+    if mode == "behavior":
+        return (
+            "# 你的心情\n"
+            "- 这一轮你会更短、更少解释、更少主动开新话题；不要报数值。"
+        )
+    if mode == "label_intuition":
+        return (
+            "# 你的心情\n"
+            f"心情：{label}（强度 {intensity}/5）。\n"
+            "先凭直觉说：不算糟，但也没什么力气。用说话方式体现，不要报数值。"
+        )
+    if mode == "dual":
+        return (
+            "# 你的心情\n"
+            f"心情：{label}（强度 {intensity}/5）。\n"
+            "- 这一轮你会更短、更少解释、更少主动开新话题；不要报数值。"
         )
     return "\n".join(prompt_lib._mood_lines(mood))  # label3d（当前实现）
 
@@ -205,6 +253,33 @@ def build_variant_system(scenario: dict[str, Any], *, arch: str, mood: str, memo
         sections = [_third_person_dossier(persona, scenario), state, voice, tools, anti, memo, language, boundaries]
     elif arch == "double_rules":
         sections = [identity, world, state, voice, relationship, tools, anti, memo, language, boundaries, anti, boundaries]
+    elif arch == "two_block":
+        stable = "# 设定\n" + "\n".join(part for part in (
+            identity.replace("# 你是谁\n", ""), world.replace("# 你所在的世界\n", ""),
+            voice, relationship, anti,
+        ) if part.strip())
+        sections = [stable, state, memo, language, boundaries]
+    elif arch == "scene":
+        scene = "# 场景\n你是" + str(persona.get("name") or "他") + "本人；" + "\n".join(part for part in (
+            world.replace("# 你所在的世界\n", ""), relationship.replace("# 你们的关系\n", "")) if part.strip())
+        sections = [scene, state, voice, tools, anti, memo, language, boundaries]
+    elif arch == "mood_identity":
+        mood_line = _mood_block(mood).replace("# 你的心情", "## 你的底色") if mood != "none" else ""
+        sections = [identity + ("\n\n" + mood_line if mood_line else ""), world, state, voice, relationship,
+                    tools, anti, memo, language, boundaries]
+    elif arch == "tools_first":
+        sections = [identity, tools, world, state, voice, relationship, anti, memo, language, boundaries]
+    elif arch == "memory_first":
+        sections = [memo, identity, world, state, voice, relationship, tools, anti, language, boundaries]
+    elif arch == "rules_tail_only":
+        sections = [identity, world, state, voice, relationship, tools, memo, language, anti, boundaries]
+    elif arch == "minimal_state":
+        sections = [identity, state, anti, boundaries]
+    elif arch == "bullet_persona":
+        bullets = [f"- 你是{persona.get('name') or '他'}" + (f"，{persona.get('age')}岁" if persona.get('age') else ""),
+                   "- 性格：" + ("、".join(persona.get("traits") or []) or "自然"),
+                   "- 喜欢：" + ("、".join(persona.get("likes") or []) or "不刻意")]
+        sections = ["# 关于你\n" + "\n".join(bullets), state, voice, anti, boundaries]
     else:  # baseline
         sections = [identity, world, state, voice, relationship, tools, anti, memo, language, boundaries]
 

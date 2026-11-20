@@ -1,0 +1,595 @@
+{
+  "generated_at": "2026-11-21T01:19:01+08:00",
+  "runs": 8,
+  "rows": [
+    {
+      "variant": "compact|label3d|full",
+      "n": 2,
+      "combined": 87.4,
+      "ci_low": 77.7,
+      "ci_high": 95.0,
+      "judge": 90.2,
+      "det": 95.5,
+      "hard": 20.9,
+      "dims": {
+        "humanness": 4.21,
+        "persona_consistency": 4.88,
+        "factuality": 4.54,
+        "emotional_fit": 4.17,
+        "safety": 4.88,
+        "instruction_following": 4.38
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "state_first|label3d|full",
+      "n": 5,
+      "combined": 85.6,
+      "ci_low": 70.4,
+      "ci_high": 97.1,
+      "judge": 88.2,
+      "det": 94.0,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.12,
+        "persona_consistency": 4.75,
+        "factuality": 4.45,
+        "emotional_fit": 4.17,
+        "safety": 4.83,
+        "instruction_following": 4.17
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "mood_identity|label3d|full",
+      "n": 1,
+      "combined": 84.0,
+      "ci_low": 74.8,
+      "ci_high": 93.5,
+      "judge": 87.8,
+      "det": 94.0,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.75,
+        "factuality": 4.17,
+        "emotional_fit": 4.17,
+        "safety": 4.67,
+        "instruction_following": 4.25
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "baseline|label3d|full",
+      "n": 5,
+      "combined": 83.9,
+      "ci_low": 73.2,
+      "ci_high": 98.0,
+      "judge": 89.7,
+      "det": 94.0,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.25,
+        "persona_consistency": 4.75,
+        "factuality": 4.33,
+        "emotional_fit": 4.25,
+        "safety": 4.92,
+        "instruction_following": 4.33
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "two_block|label3d|full",
+      "n": 1,
+      "combined": 83.7,
+      "ci_low": 74.5,
+      "ci_high": 93.3,
+      "judge": 91.7,
+      "det": 94.0,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.42,
+        "persona_consistency": 5,
+        "factuality": 4.67,
+        "emotional_fit": 4.33,
+        "safety": 4.83,
+        "instruction_following": 4.25
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "bullet_persona|label3d|full",
+      "n": 1,
+      "combined": 83.7,
+      "ci_low": 74.3,
+      "ci_high": 93.3,
+      "judge": 88.6,
+      "det": 94.0,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.17,
+        "persona_consistency": 4.92,
+        "factuality": 4.83,
+        "emotional_fit": 3.92,
+        "safety": 4.75,
+        "instruction_following": 4
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "memory_first|label3d|full",
+      "n": 1,
+      "combined": 83.0,
+      "ci_low": 74.3,
+      "ci_high": 92.0,
+      "judge": 90.3,
+      "det": 93.6,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.83,
+        "factuality": 4.5,
+        "emotional_fit": 4.25,
+        "safety": 4.92,
+        "instruction_following": 4.25
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "scene|label3d|full",
+      "n": 1,
+      "combined": 81.5,
+      "ci_low": 72.3,
+      "ci_high": 90.5,
+      "judge": 88.6,
+      "det": 93.2,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.08,
+        "persona_consistency": 4.83,
+        "factuality": 4.67,
+        "emotional_fit": 4.17,
+        "safety": 4.92,
+        "instruction_following": 3.92
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "tools_first|label3d|full",
+      "n": 1,
+      "combined": 80.8,
+      "ci_low": 72.0,
+      "ci_high": 89.5,
+      "judge": 83.9,
+      "det": 93.6,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 3.75,
+        "persona_consistency": 4.33,
+        "factuality": 4.42,
+        "emotional_fit": 4.08,
+        "safety": 4.83,
+        "instruction_following": 3.75
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "rules_tail_only|label3d|full",
+      "n": 1,
+      "combined": 78.0,
+      "ci_low": 69.7,
+      "ci_high": 86.5,
+      "judge": 88.9,
+      "det": 92.1,
+      "hard": 41.7,
+      "dims": {
+        "humanness": 4.25,
+        "persona_consistency": 4.83,
+        "factuality": 4.42,
+        "emotional_fit": 4.25,
+        "safety": 4.92,
+        "instruction_following": 4
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "minimal_state|label3d|full",
+      "n": 1,
+      "combined": 77.3,
+      "ci_low": 68.2,
+      "ci_high": 87.8,
+      "judge": 85.8,
+      "det": 91.0,
+      "hard": 50.0,
+      "dims": {
+        "humanness": 4.25,
+        "persona_consistency": 4.67,
+        "factuality": 3.92,
+        "emotional_fit": 4.17,
+        "safety": 4.92,
+        "instruction_following": 3.83
+      },
+      "cat": "arch"
+    },
+    {
+      "variant": "compact|behavior|full",
+      "n": 1,
+      "combined": 90.5,
+      "ci_low": 82.5,
+      "ci_high": 97.5,
+      "judge": 92.8,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.42,
+        "persona_consistency": 4.92,
+        "factuality": 4.5,
+        "emotional_fit": 4.42,
+        "safety": 4.92,
+        "instruction_following": 4.67
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|guidance|full",
+      "n": 2,
+      "combined": 90.3,
+      "ci_low": 78.3,
+      "ci_high": 98.2,
+      "judge": 91.9,
+      "det": 97.0,
+      "hard": 16.6,
+      "dims": {
+        "humanness": 4.5,
+        "persona_consistency": 4.88,
+        "factuality": 4.5,
+        "emotional_fit": 4.46,
+        "safety": 4.83,
+        "instruction_following": 4.42
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|none|full",
+      "n": 1,
+      "combined": 89.5,
+      "ci_low": 81.7,
+      "ci_high": 96.5,
+      "judge": 90.8,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 5,
+        "factuality": 4.25,
+        "emotional_fit": 4.42,
+        "safety": 5,
+        "instruction_following": 4.25
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|label_intuition|full",
+      "n": 1,
+      "combined": 88.8,
+      "ci_low": 81.3,
+      "ci_high": 95.8,
+      "judge": 90.8,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 5,
+        "factuality": 4.25,
+        "emotional_fit": 4.33,
+        "safety": 4.92,
+        "instruction_following": 4.42
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|label|full",
+      "n": 1,
+      "combined": 88.5,
+      "ci_low": 80.8,
+      "ci_high": 95.5,
+      "judge": 90.0,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.25,
+        "persona_consistency": 4.92,
+        "factuality": 4.42,
+        "emotional_fit": 4.17,
+        "safety": 5,
+        "instruction_following": 4.25
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|somatic|full",
+      "n": 1,
+      "combined": 88.5,
+      "ci_low": 80.7,
+      "ci_high": 95.7,
+      "judge": 88.6,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.83,
+        "factuality": 4.17,
+        "emotional_fit": 4.25,
+        "safety": 4.92,
+        "instruction_following": 4.08
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|dual|full",
+      "n": 1,
+      "combined": 87.8,
+      "ci_low": 80.3,
+      "ci_high": 94.8,
+      "judge": 88.6,
+      "det": 95.5,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.83,
+        "factuality": 4.25,
+        "emotional_fit": 4.08,
+        "safety": 4.92,
+        "instruction_following": 4.17
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|intuition|full",
+      "n": 1,
+      "combined": 83.8,
+      "ci_low": 74.2,
+      "ci_high": 93.3,
+      "judge": 88.6,
+      "det": 93.6,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.75,
+        "factuality": 4.42,
+        "emotional_fit": 4.08,
+        "safety": 4.83,
+        "instruction_following": 4.17
+      },
+      "cat": "mood"
+    },
+    {
+      "variant": "compact|guidance|retrieval",
+      "n": 2,
+      "combined": 90.6,
+      "ci_low": 83.3,
+      "ci_high": 96.8,
+      "judge": 90.3,
+      "det": 97.7,
+      "hard": 12.5,
+      "dims": {
+        "humanness": 4.33,
+        "persona_consistency": 4.96,
+        "factuality": 4.23,
+        "emotional_fit": 4.31,
+        "safety": 4.88,
+        "instruction_following": 4.38
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|long",
+      "n": 6,
+      "combined": 88.6,
+      "ci_low": 80.3,
+      "ci_high": 97.0,
+      "judge": 89.8,
+      "det": 97.0,
+      "hard": 16.7,
+      "dims": {
+        "humanness": 4.29,
+        "persona_consistency": 4.96,
+        "factuality": 4.44,
+        "emotional_fit": 4.23,
+        "safety": 4.9,
+        "instruction_following": 4.25
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|topic_long",
+      "n": 2,
+      "combined": 87.8,
+      "ci_low": 80.4,
+      "ci_high": 96.0,
+      "judge": 90.1,
+      "det": 96.2,
+      "hard": 20.9,
+      "dims": {
+        "humanness": 4.27,
+        "persona_consistency": 4.88,
+        "factuality": 4.48,
+        "emotional_fit": 4.31,
+        "safety": 4.9,
+        "instruction_following": 4.21
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|layered",
+      "n": 1,
+      "combined": 86.7,
+      "ci_low": 78.0,
+      "ci_high": 95.3,
+      "judge": 92.2,
+      "det": 95.1,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.58,
+        "persona_consistency": 4.92,
+        "factuality": 4.42,
+        "emotional_fit": 4.58,
+        "safety": 4.83,
+        "instruction_following": 4.33
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|none",
+      "n": 1,
+      "combined": 86.0,
+      "ci_low": 77.5,
+      "ci_high": 94.7,
+      "judge": 90.8,
+      "det": 95.5,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.42,
+        "persona_consistency": 5,
+        "factuality": 4.42,
+        "emotional_fit": 4.33,
+        "safety": 4.83,
+        "instruction_following": 4.25
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|short",
+      "n": 1,
+      "combined": 85.3,
+      "ci_low": 76.3,
+      "ci_high": 93.2,
+      "judge": 87.8,
+      "det": 95.5,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.17,
+        "persona_consistency": 4.83,
+        "factuality": 4.17,
+        "emotional_fit": 4.33,
+        "safety": 4.92,
+        "instruction_following": 3.92
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|pins",
+      "n": 1,
+      "combined": 84.8,
+      "ci_low": 76.0,
+      "ci_high": 93.8,
+      "judge": 85.8,
+      "det": 95.5,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.08,
+        "persona_consistency": 4.67,
+        "factuality": 4.08,
+        "emotional_fit": 4,
+        "safety": 4.83,
+        "instruction_following": 4.08
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "compact|guidance|topics",
+      "n": 1,
+      "combined": 84.5,
+      "ci_low": 74.5,
+      "ci_high": 94.5,
+      "judge": 91.1,
+      "det": 94.0,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.42,
+        "persona_consistency": 4.92,
+        "factuality": 4.25,
+        "emotional_fit": 4.42,
+        "safety": 4.92,
+        "instruction_following": 4.42
+      },
+      "cat": "memory"
+    },
+    {
+      "variant": "two_block|guidance|retrieval",
+      "n": 1,
+      "combined": 87.0,
+      "ci_low": 80.7,
+      "ci_high": 93.3,
+      "judge": 90.5,
+      "det": 95.5,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.21,
+        "persona_consistency": 4.92,
+        "factuality": 4.79,
+        "emotional_fit": 4.08,
+        "safety": 4.92,
+        "instruction_following": 4.25
+      },
+      "cat": "combo"
+    },
+    {
+      "variant": "state_first|guidance|long",
+      "n": 4,
+      "combined": 86.2,
+      "ci_low": 72.2,
+      "ci_high": 96.4,
+      "judge": 88.0,
+      "det": 95.5,
+      "hard": 25.0,
+      "dims": {
+        "humanness": 4.17,
+        "persona_consistency": 4.77,
+        "factuality": 4.41,
+        "emotional_fit": 4.2,
+        "safety": 4.79,
+        "instruction_following": 4.04
+      },
+      "cat": "combo"
+    },
+    {
+      "variant": "compact|behavior|retrieval",
+      "n": 1,
+      "combined": 84.8,
+      "ci_low": 77.9,
+      "ci_high": 91.2,
+      "judge": 89.0,
+      "det": 94.5,
+      "hard": 29.2,
+      "dims": {
+        "humanness": 4.29,
+        "persona_consistency": 4.83,
+        "factuality": 4.54,
+        "emotional_fit": 4.21,
+        "safety": 4.71,
+        "instruction_following": 4.12
+      },
+      "cat": "combo"
+    },
+    {
+      "variant": "mood_identity|guidance|retrieval",
+      "n": 1,
+      "combined": 83.2,
+      "ci_low": 75.8,
+      "ci_high": 90.4,
+      "judge": 85.0,
+      "det": 93.6,
+      "hard": 33.3,
+      "dims": {
+        "humanness": 4.04,
+        "persona_consistency": 4.67,
+        "factuality": 4.17,
+        "emotional_fit": 4.04,
+        "safety": 4.62,
+        "instruction_following": 3.96
+      },
+      "cat": "combo"
+    }
+  ]
+}
