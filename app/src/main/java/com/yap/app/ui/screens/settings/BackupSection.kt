@@ -313,6 +313,12 @@ private fun ImportPreviewDialog(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                // 0.15：格式版本 / 数据库 schema / 校验和——「这份文件是哪一版写的」。
+                Text(
+                    BackupText.format(context, preview),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 warnings.forEach { warning ->
                     Text(
                         BackupText.warning(context, warning),

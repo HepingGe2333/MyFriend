@@ -117,6 +117,7 @@ def build_payload(
     model: str,
     temperature: float | None,
     max_tokens: int | None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     """请求体只放必要字段，和 App 的 ``buildChatCompletionPayload`` 保持同一形状。"""
     payload: dict[str, Any] = {
@@ -128,6 +129,8 @@ def build_payload(
         payload["temperature"] = float(temperature)
     if max_tokens is not None:
         payload["max_tokens"] = int(max_tokens)
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     return payload
 
 
@@ -150,6 +153,7 @@ class OpenAICompatibleProvider(Provider):
         transport: Callable[[urllib.request.Request, float, ssl.SSLContext], tuple[int, str]] | None = None,
         sleep: Callable[[float], None] = time.sleep,
         extra_headers: dict[str, str] | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if not (api_key or "").strip():
             raise ProviderError(
@@ -167,6 +171,7 @@ class OpenAICompatibleProvider(Provider):
         self._transport = transport or self._http_post
         self._sleep = sleep
         self._extra_headers = dict(extra_headers or {})
+        self.reasoning_effort = reasoning_effort
         self.last_usage: dict[str, int] = {}
 
     def complete(
@@ -180,6 +185,7 @@ class OpenAICompatibleProvider(Provider):
             model=self.model,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            reasoning_effort=self.reasoning_effort,
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {

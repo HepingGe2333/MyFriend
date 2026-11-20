@@ -50,6 +50,7 @@ struct SettingsScreen: View {
                     SettingsUsageSection()
                     proactiveSection
                     backupSection
+                    updateSection
                     dangerSection
                     footer
                 }
@@ -683,7 +684,41 @@ struct SettingsScreen: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+
+                // 0.15：把这份 App 的「版本三件套」写在备份入口下面。
+                // 用户拿一份旧备份来问「为什么读不了」时，一眼就能对上这三个数字。
+                VStack(alignment: .leading, spacing: 3) {
+                    MFRowDivider(leadingInset: 0)
+                    Text(versionLine)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                        .padding(.top, 2)
+                        .padding(.bottom, 8)
+                }
             }
+        }
+    }
+
+    /// 「本机这版 App：v0.15.0 · 备份格式 v7 · 数据库 v19」。
+    ///
+    /// 三个数字各自有出处（`MARKETING_VERSION` / `backupFormatVersion` / `Schema.version`），
+    /// 不写死：升版本时它们会自己跟着变，测试也钉住了「导出文件里写的与这里显示的一致」。
+    private var versionLine: String {
+        // 注意：`Lf(` 与中文字面量必须在同一行 —— `UIChineseLiteralGuardTests` 是按行判定的。
+        Lf("本机这版 App：v%@ · 备份格式 v%d · 数据库 v%d", AppEnvironment.appVersion, BackupCodec.formatVersion, Int(Schema.version))
+    }
+
+    // MARK: - 版本与更新
+
+    /// 「检查更新」：手动检查 + 自动检查开关 + 预览版开关 + 上次检查。
+    ///
+    /// 具体排版在 `UpdateSettingsSection`（它自己 `@ObservedObject` 观察 `UpdateCenter`，
+    /// 检查状态变化时只有这一小块重绘，整个设置页不用跟着刷新）。
+    private var updateSection: some View {
+        UpdateSettingsSection(updates: env.updates, accent: accent) { alert in
+            banner = alert
         }
     }
 

@@ -47,13 +47,41 @@ public enum BackupCodec {
     /// 紧凑 JSON。键顺序不重要（两端都按 key 读），这里排序只是为了让写进仓库的
     /// fixture 在两次运行之间不抖动，diff 里只出现真正的变化。
     public static func encode(_ bundle: BackupBundle) throws -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
-        let data = try encoder.encode(bundle)
+        let data = try encodedData(bundle)
         guard let text = String(data: data, encoding: .utf8) else {
             throw BackupCodecError.notUTF8
         }
         return text
+    }
+
+    // MARK: - 完整性（0.15）
+
+    /// 导出：写好 `checksumAlgorithm` + `checksum` 再交出去（`BackupService` 走这个入口）。
+    ///
+    /// 分两步编码是刻意的，也是跨端协议的一部分：
+    /// 1. 先写出**没有 checksum** 的文件（含算法标记）；
+    /// 2. 按 `BackupIntegrity` 的规范化规则对这份 JSON 求 SHA-256（规则见那个文件头）；
+    /// 3. 把哈希写进去再编码一次。
+    ///
+    /// 为什么不在 `encode(_:)` 里顺手加：跨端黄金样本与单元测试要的是「不带元数据的
+    /// 纯净形状」（`fixtures/backup/*.json` 钉的是键集合），而真正导出的文件要有封条。
+    public static func encodeSealed(_ bundle: BackupBundle) throws -> String {
+        var sealed = bundle
+        sealed.checksumAlgorithm = BackupIntegrity.algorithm
+        sealed.checksum = nil
+        let body = try encode(sealed)
+        guard let checksum = BackupIntegrity.checksum(ofJSONText: body) else {
+            // 自己刚编码出来的 JSON 都规范化不了，只可能是编码器出了问题。
+            throw BackupCodecError.integrityUnavailable
+        }
+        sealed.checksum = checksum
+        return try encode(sealed)
+    }
+
+    private static func encodedData(_ bundle: BackupBundle) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.withoutEscapingSlashes, .sortedKeys]
+        return try encoder.encode(bundle)
     }
 
     // MARK: - 导入
@@ -90,6 +118,23 @@ public enum BackupCodec {
         // v1 → v2 的两处变化值得跟用户说一句：多会话会合并、旧开关不再生效。
         if version < 2 {
             warnings.append(String(localized: "这是 1.9 之前的备份：记忆与节奏的旧开关不再生效，一人只保留最新的一段对话"))
+        }
+
+        // 0.15 的元数据（都可选；老备份没有 → 默认值，行为与之前完全一致）。
+        let schemaVersion = root.rawInt("schemaVersion") ?? 0
+        let createdAt = root.rawInt64("createdAt") ?? 0
+        let declaredChecksum = (root.rawText(BackupIntegrity.checksumKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let checksumAlgorithm = (root.rawText(BackupIntegrity.algorithmKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let isOwnChecksum = checksumAlgorithm == BackupIntegrity.algorithm
+        if schemaVersion > Int(Schema.version) {
+            // 不拒绝：格式版本才是硬门槛。schema 更新说明「写这份备份的库里有更多列」，
+            // 我们能读的部分照读，读不懂的段按既有规则跳过 —— 但要让用户知道可能少了东西。
+            warnings.append(String(
+                format: String(localized: "这份备份来自更新版本的 Yap（数据库 v%d，本机只到 v%d）：能读的都读了，读不懂的部分已跳过"),
+                schemaVersion, Int(Schema.version)
+            ))
         }
 
         let personas = decodeList(root, key: "personas", label: String(localized: "人格"), warnings: &warnings,
@@ -186,8 +231,29 @@ public enum BackupCodec {
             sessionMemory: sessionMemory,
             proactiveFailures: failures,
             apiConfigs: configs,
-            settings: settings
+            settings: settings,
+            // 元数据原样带回：`encodeSealed` 再导出时会重新算一遍哈希，不会把旧的传下去。
+            schemaVersion: schemaVersion,
+            createdAt: createdAt,
+            checksum: declaredChecksum.isEmpty ? nil : declaredChecksum.lowercased(),
+            checksumAlgorithm: checksumAlgorithm.isEmpty ? nil : checksumAlgorithm
         )
+
+        // 完整性校验（与 Android `BackupCodec.checksumCorruption` 同一套规则）：
+        //
+        // 1. 没有 checksum（v1–v7 老备份 / 服务端备份 / 手写文件）→ 跳过，**绝不判损坏**；
+        // 2. 有 checksum 但没有 `checksumAlgorithm`，或标记是别的客户端/别的算法 → 跳过，
+        //    只让预览说一句「未在本机复核」——两端的 JSON 编码器不同，硬比会把好文件判坏；
+        // 3. 标记正好是本机算法 → 逐字节复核；对不上或格式不合法，才拒绝整份备份。
+        if !declaredChecksum.isEmpty, isOwnChecksum {
+            guard let expected = BackupIntegrity.normalizedChecksum(declaredChecksum),
+                  let computed = BackupIntegrity.checksum(ofJSONText: raw),
+                  computed == expected else {
+                return .failure(
+                    reason: String(localized: "备份校验不通过：文件可能被改过或传坏了一点，换一份之前带走的备份试试。")
+                )
+            }
+        }
 
         if BackupPreview.from(bundle).isEmpty {
             warnings.append(String(localized: "这份备份里没有他：既没有人格也没有记忆和对话"))
@@ -276,6 +342,8 @@ private extension Array {
 
 public enum BackupCodecError: Error, LocalizedError, CustomStringConvertible {
     case notUTF8
+    /// 编码出来的 JSON 自己都规范化不了（只可能是编码器层面的 bug）。
+    case integrityUnavailable
 
     public var errorDescription: String? { description }
 
@@ -283,6 +351,8 @@ public enum BackupCodecError: Error, LocalizedError, CustomStringConvertible {
         switch self {
         case .notUTF8:
             return String(localized: "备份编码失败：内容不是合法的 UTF-8")
+        case .integrityUnavailable:
+            return String(localized: "备份编码失败：算不出校验和，这次没有写出文件")
         }
     }
 }

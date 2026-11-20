@@ -570,10 +570,14 @@ final class BackupServiceTests: XCTestCase {
         XCTAssertNil(bundle.presets.first { $0.id == "preset-1" }?.avatarUri)
 
         // 老备份里的绝对路径仍然能读进来（导入侧「文件不存在则清空」照旧）。
-        let withPath = json.replacingOccurrences(
-            of: "\"name\":\"林岸\"",
-            with: "\"name\":\"林岸\",\"avatarUri\":\"file:///var/mobile/Containers/x/avatar-1.jpg\""
-        )
+        //
+        // 0.15 起导出的文件带 checksum：手改文本会被完整性校验拒绝（那是另一条测试）。
+        // 这里要模拟的是**没有元数据的老文件**，所以先把元数据摘掉再改。
+        var edited = try XCTUnwrap(BackupCodec.decode(json).bundle)
+        edited.checksum = nil
+        let personaIndex = try XCTUnwrap(edited.personas.firstIndex { $0.id == "persona-1" })
+        edited.personas[personaIndex].avatarUri = "file:///var/mobile/Containers/x/avatar-1.jpg"
+        let withPath = try BackupCodec.encode(edited)
         XCTAssertTrue(withPath.contains("file:///"), "夹具应该真的把路径写回去了")
         let decoded = try XCTUnwrap(BackupCodec.decode(withPath).bundle)
         XCTAssertEqual(decoded.personas.first?.avatarUri, "file:///var/mobile/Containers/x/avatar-1.jpg")

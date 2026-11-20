@@ -1846,4 +1846,31 @@
     <string name="settings_generation_tools_used">Called tools %1$d time(s)</string>
     <string name="settings_generation_tools_none">No tool calls</string>
     <string name="settings_generation_failed">It didn\'t go through. Check the API config or network and try again.</string>
+    <!-- 0.15 settings: update channel (GitHub Releases) -->
+    <string name="settings_section_update">Updates</string>
+    <string name="settings_update_check_title">Check for updates</string>
+    <string name="settings_update_desc">See whether GitHub has a newer version. Automatic checks run at most once a day.</string>
+    <string name="settings_update_checking">Checking…</string>
+    <string name="settings_update_up_to_date">You are on the latest version</string>
+    <string name="settings_update_available">Version v%1$s is available</string>
+    <string name="settings_update_skipped_prerelease">The newest release is a pre-release, so it is skipped by your setting</string>
+    <string name="settings_update_unavailable">No release information available right now</string>
+    <string name="settings_update_failed">The check didn\'t go through. Try again later.</string>
+    <string name="settings_update_auto_title">Check automatically</string>
+    <string name="settings_update_auto_desc">Checks quietly when you open Settings or return to the app, at most once every 24 hours</string>
+    <string name="settings_update_prerelease_title">Include pre-releases</string>
+    <string name="settings_update_prerelease_desc">Also notify about beta / rc builds</string>
+    <string name="update_dialog_title">Version v%1$s is out</string>
+    <string name="update_dialog_prerelease">Pre-release</string>
+    <string name="update_dialog_no_notes">This release has no notes.</string>
+    <string name="update_dialog_later">Later</string>
+    <string name="update_dialog_download">Get it</string>
+
+    <!-- 0.15 backup metadata -->
+    <string name="backup_dialog_format">Backup format v%1$d · schema v%2$d · %3$s</string>
+    <string name="backup_dialog_format_no_schema">Backup format v%1$d · schema unknown · %2$s</string>
+    <string name="backup_dialog_checksum_ok">checksum verified</string>
+    <string name="backup_dialog_checksum_missing">no checksum (older or server-side backup)</string>
+    <string name="backup_fail_checksum">This backup file looks corrupted (checksum mismatch), so the import was cancelled instead of restoring half of him. Try another backup, or export a fresh one.</string>
+    <string name="backup_dialog_checksum_foreign">checksum from another client (not verified here)</string>
 </resources>

@@ -22,6 +22,8 @@ import com.yap.app.data.repo.PresetRepository
 import com.yap.app.data.repo.PersonaRepositoryInitializer
 import com.yap.app.data.repo.ProactiveRepository
 import com.yap.app.data.repo.UsageTotals
+import com.yap.app.data.update.UpdateCoordinator
+import com.yap.app.data.update.UpdateUiState
 import com.yap.app.data.remote.ServerConfigRejection
 import com.yap.app.data.remote.ServerCredentials
 import com.yap.app.data.remote.ServerModeRepository
@@ -139,6 +141,8 @@ class SettingsViewModel @Inject constructor(
     private val serverModeSwitch: ServerModeSwitchCoordinator,
     /** 0.13：连接成功后把本机模型配置推给本机部署的服务端（远程地址会被策略挡掉）。 */
     private val llmConfigPusher: com.yap.app.data.remote.ServerLlmConfigPusher,
+    /** 0.15：检查更新（与前台自动检查共用同一个协调器与状态）。 */
+    private val updateCoordinator: UpdateCoordinator,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -207,6 +211,9 @@ class SettingsViewModel @Inject constructor(
     ) { busy, preview, warnings, mediaWarnings ->
         BackupUiState(busy, preview, warnings, mediaWarnings)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), BackupUiState())
+
+    /** 设置页「更新」小节的状态：检查中 / 已是最新 / 有新版本 / 失败（失败只显示一行）。 */
+    val updateState: StateFlow<UpdateUiState> = updateCoordinator.state
 
     /** 用户手里那份备份文件：预览之后先拿着，等用户决定怎么接回来时再用。 */
     private var pendingBackup: String? = null
@@ -332,6 +339,26 @@ class SettingsViewModel @Inject constructor(
     }
 
     // ------------------------------------------------------------------
+    // 检查更新
+    // ------------------------------------------------------------------
+
+    /** 手动检查：不看节流、不看自动开关（用户点了一下就该真的查）。 */
+    fun checkForUpdates() {
+        viewModelScope.launch { updateCoordinator.checkNow() }
+    }
+
+    /** 打开设置页时的静默检查：受开关与 24h 节流约束，通常是一次 no-op。 */
+    fun maybeAutoCheckUpdates() {
+        viewModelScope.launch { updateCoordinator.maybeCheckOnStart() }
+    }
+
+    fun setUpdateAutoCheck(enabled: Boolean) =
+        launchSetting { updateCoordinator.setAutoCheckEnabled(enabled) }
+
+    fun setUpdateIncludePrereleases(enabled: Boolean) =
+        launchSetting { updateCoordinator.setIncludePrereleases(enabled) }
+
+    // ------------------------------------------------------------------
     // 把他带走 / 从备份里接他回来
     // ------------------------------------------------------------------
 
@@ -359,11 +386,15 @@ class SettingsViewModel @Inject constructor(
             backupBusy.value = true
             when (val decoded = backupRepository.preview(text)) {
                 is BackupDecodeResult.Failure -> message.value = BackupText.failure(context, decoded.reason)
+                // 0.15：checksum 对不上 = 文件坏了，直接说清楚，不给「要不要接着导」的错觉。
+                is BackupDecodeResult.Corrupted ->
+                    message.value = BackupText.corruption(context, decoded.reason)
                 is BackupDecodeResult.Success -> {
                     pendingBackup = text
                     backupDecodeWarnings.value = decoded.warnings
                     backupDecodeMediaWarnings.value = decoded.mediaWarnings
-                    backupPreview.value = BackupPreview.from(decoded.bundle)
+                    // 版本信息（格式 / schema / appVersion / checksum）随预览一起显示。
+                    backupPreview.value = BackupPreview.from(decoded.bundle, decoded.metadata)
                 }
             }
             backupBusy.value = false
@@ -389,10 +420,12 @@ class SettingsViewModel @Inject constructor(
                     dismissBackupPreview()
                 }
                 .onFailure { error ->
-                    message.value = if (error is BackupImportException) {
-                        BackupText.failure(context, error.failure)
-                    } else {
-                        ErrorText.of(context, error, R.string.settings_error_import)
+                    message.value = when {
+                        error !is BackupImportException ->
+                            ErrorText.of(context, error, R.string.settings_error_import)
+                        error.corruption != null -> BackupText.corruption(context, error.corruption)
+                        error.failure != null -> BackupText.failure(context, error.failure)
+                        else -> context.getString(R.string.settings_error_import)
                     }
                 }
             backupBusy.value = false

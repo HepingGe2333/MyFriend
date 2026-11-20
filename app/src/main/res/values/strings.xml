@@ -1794,4 +1794,32 @@
     <string name="settings_generation_tools_used">调用了 %1$d 次工具</string>
     <string name="settings_generation_tools_none">没有调用工具</string>
     <string name="settings_generation_failed">这次没跑通：检查一下 API 配置或网络，再试</string>
+    <!-- 0.15 settings: update channel (GitHub Releases). Manual check is a normal setting row; -->
+    <!-- failures and 403 rate limits only ever produce one quiet status line, never an error dialog. -->
+    <string name="settings_section_update">更新</string>
+    <string name="settings_update_check_title">检查更新</string>
+    <string name="settings_update_desc">看看 GitHub 上有没有新版本。自动检查每天最多一次。</string>
+    <string name="settings_update_checking">正在检查…</string>
+    <string name="settings_update_up_to_date">已是最新版本</string>
+    <string name="settings_update_available">有新版本 v%1$s</string>
+    <string name="settings_update_skipped_prerelease">最新发布是预发布版本，按你的设置先不提示</string>
+    <string name="settings_update_unavailable">暂时没有可用的发布信息</string>
+    <string name="settings_update_failed">这次没查到，稍后再试</string>
+    <string name="settings_update_auto_title">自动检查更新</string>
+    <string name="settings_update_auto_desc">打开设置页或回到 App 时静默查一次，24 小时内不重复</string>
+    <string name="settings_update_prerelease_title">包含预发布版本</string>
+    <string name="settings_update_prerelease_desc">打开后，beta / rc 这类版本也会提示</string>
+    <string name="update_dialog_title">发现新版本 v%1$s</string>
+    <string name="update_dialog_prerelease">预发布版本</string>
+    <string name="update_dialog_no_notes">这次发布没有写说明。</string>
+    <string name="update_dialog_later">稍后</string>
+    <string name="update_dialog_download">去下载</string>
+
+    <!-- 0.15 backup metadata: format/schema/checksum shown in the import preview -->
+    <string name="backup_dialog_format">备份格式 v%1$d · 数据库 schema v%2$d · %3$s</string>
+    <string name="backup_dialog_format_no_schema">备份格式 v%1$d · 数据库 schema 未知 · %2$s</string>
+    <string name="backup_dialog_checksum_ok">校验和已通过</string>
+    <string name="backup_dialog_checksum_missing">这份备份没有校验和（旧版本或服务端导出）</string>
+    <string name="backup_fail_checksum">这份备份文件已损坏（校验和对不上），为避免接回半份数据，这次导入已取消。请换一份备份，或重新导出一次。</string>
+    <string name="backup_dialog_checksum_foreign">校验和来自其他客户端，未在本机复核</string>
 </resources>

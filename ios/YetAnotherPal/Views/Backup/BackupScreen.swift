@@ -623,9 +623,11 @@ private struct BackupPreviewSheet: View {
         .presentationDetents([.medium, .large])
     }
 
+    /// 备份自己的「身份证」：谁写的、哪一版、什么时候、有没有校验过。
+    ///
+    /// 0.15 起由 `BackupPreview.metaText()` 统一拼（设置页与这里用同一行），
+    /// 这样「备份格式 v7 / 数据库 v19 / SHA-256 前 8 位」不会在两个页面各说各话。
     private var metaText: String {
-        var parts = [preview.exportedAtText()]
-        if !preview.appVersion.isEmpty { parts.append("v\(preview.appVersion)") }
-        return parts.joined(separator: " · ")
+        preview.metaText()
     }
 }

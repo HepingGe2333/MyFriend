@@ -30,12 +30,14 @@ import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -628,11 +630,26 @@ sealed interface BackupDecodeResult {
         val bundle: BackupBundle,
         val warnings: List<BackupWarning> = emptyList(),
         /** v3 媒体段的提醒（坏条目 / 整段读不出来）；导入/预览都会带上。 */
-        val mediaWarnings: List<BackupMediaWarning> = emptyList()
+        val mediaWarnings: List<BackupMediaWarning> = emptyList(),
+        /**
+         * 文件的版本信息（0.15）：格式版本、App 版本、数据库 schema、导出时间、校验和。
+         *
+         * 服务端的备份 JSON 没有这些字段时全是默认值；界面只在导入预览里展示，
+         * 不参与「他」的往返。
+         */
+        val metadata: BackupMetadata = BackupMetadata()
     ) : BackupDecodeResult
 
     /** 读不懂：[reason] 是结构化原因，由 UI 翻成句子。 */
     data class Failure(val reason: BackupFailure) : BackupDecodeResult
+
+    /**
+     * 文件能解析，但内容对不上自己声明的校验和：被截断 / 被改过 / 传输坏了。
+     *
+     * 与 [Failure] 分开是因为原因不在 agentcore 的跨端 [BackupFailure] 里（那是两端共用的契约），
+     * 而「checksum 被改坏」是 0.15 新增的、只属于 Android 端的封条。
+     */
+    data class Corrupted(val reason: BackupCorruption) : BackupDecodeResult
 }
 
 /** 选好文件、还没决定怎么接回来时，先给用户看的一句话摘要。 */
@@ -645,7 +662,19 @@ data class BackupPreview(
     val presets: Int = 0,
     val apiConfigs: Int = 0,
     val exportedAt: Long = 0L,
-    val appVersion: String = ""
+    val appVersion: String = "",
+    /** 备份格式版本（v1–v7）。 */
+    val formatVersion: Int = BACKUP_FORMAT_VERSION,
+    /** 导出时 Room 的 schema 版本；0 = 文件里没写（旧备份 / 服务端备份）。 */
+    val schemaVersion: Int = 0,
+    /** 文件里的 createdAt（毫秒）；0 = 没写。 */
+    val createdAt: Long = 0L,
+    /** 文件里有没有 checksum。 */
+    val hasChecksum: Boolean = false,
+    /** checksum 是否已经校验通过（没有 checksum / 来自其他客户端时为 false）。 */
+    val checksumVerified: Boolean = false,
+    /** checksum 来自其他客户端，未在本机复核（仍然允许导入）。 */
+    val checksumForeign: Boolean = false
 ) {
     val isEmpty: Boolean
         get() = personas == 0 && memories == 0 && sessions == 0 && messages == 0
@@ -658,17 +687,25 @@ data class BackupPreview(
         get() = !isEmpty
 
     companion object {
-        fun from(bundle: BackupBundle): BackupPreview = BackupPreview(
-            personas = bundle.personas.size,
-            memories = bundle.memories.size,
-            sessions = bundle.sessions.size,
-            messages = bundle.messages.size,
-            rules = bundle.proactiveRules.size,
-            presets = bundle.presets.size,
-            apiConfigs = bundle.apiConfigs.size,
-            exportedAt = bundle.exportedAt,
-            appVersion = bundle.appVersion
-        )
+        fun from(bundle: BackupBundle, metadata: BackupMetadata = BackupMetadata()): BackupPreview =
+            BackupPreview(
+                personas = bundle.personas.size,
+                memories = bundle.memories.size,
+                sessions = bundle.sessions.size,
+                messages = bundle.messages.size,
+                rules = bundle.proactiveRules.size,
+                presets = bundle.presets.size,
+                apiConfigs = bundle.apiConfigs.size,
+                // 老备份只有 exportedAt；0.15 起的文件两者都写（值相同），取非零的那个。
+                exportedAt = bundle.exportedAt.takeIf { it > 0L } ?: metadata.createdAt,
+                appVersion = metadata.appVersion.ifBlank { bundle.appVersion },
+                formatVersion = metadata.formatVersion,
+                schemaVersion = metadata.schemaVersion,
+                createdAt = metadata.createdAt,
+                hasChecksum = metadata.hasChecksum,
+                checksumVerified = metadata.checksumVerified,
+                checksumForeign = metadata.checksumForeign
+            )
     }
 }
 
@@ -726,6 +763,42 @@ object BackupCodec {
         )
     )
 
+    /**
+     * 导出（0.15）：在 [encode] 的基础上补上 `schemaVersion` / `createdAt` / `checksum`。
+     *
+     * 为什么不在 [BackupBundle] 里加字段：
+     * - 那三个键是**文件的封条与版本信息**，不是「他」的数据，导入时也不写库；
+     * - 加进 data class 会让「编码 → 解码 → 再编码」的逐字节幂等（`BackupV7Test` 钉住的那条）
+     *   以及 iOS 的 v7 黄金样本都被默认值搅动。现在它们只在导出管线里追加，
+     *   旧备份读进来没有这些键，照样能跑。
+     *
+     * 校验和的计算口径见 [BackupChecksum]：整份 JSON（去掉 checksum 自己）规范化后的 SHA-256。
+     * 写入顺序固定（schemaVersion → createdAt → checksum 在最后），同一份数据每次导出逐字节一致。
+     */
+    fun encodeWithMetadata(
+        bundle: BackupBundle,
+        schemaVersion: Int,
+        createdAt: Long = bundle.exportedAt
+    ): String {
+        val base = writeJson.parseToJsonElement(encode(bundle)).jsonObject
+        val withMetadata = JsonObject(
+            LinkedHashMap<String, JsonElement>(base.size + 2).apply {
+                putAll(base)
+                put("schemaVersion", JsonPrimitive(schemaVersion))
+                put("createdAt", JsonPrimitive(if (createdAt > 0L) createdAt else bundle.exportedAt))
+            }
+        )
+        val sealed = JsonObject(
+            LinkedHashMap<String, JsonElement>(withMetadata.size + 2).apply {
+                putAll(withMetadata)
+                // 算法标记与 checksum 成对出现：没有标记的 checksum 来自别的客户端，本机不复核。
+                put(BackupChecksum.ALGORITHM_KEY, JsonPrimitive(BackupChecksum.ALGORITHM))
+                put(BackupChecksum.KEY, JsonPrimitive(BackupChecksum.of(withMetadata)))
+            }
+        )
+        return writeJson.encodeToString(JsonObject.serializer(), sealed)
+    }
+
     /** 坏 JSON、坏条目、版本过高都在这里被接住，返回中文原因而不是抛异常。 */
     fun decode(raw: String?): BackupDecodeResult {
         if (raw.isNullOrBlank()) return BackupDecodeResult.Failure(BackupFailure.EmptyFile)
@@ -761,6 +834,24 @@ object BackupCodec {
         if (version < BACKUP_FORMAT_VERSION) {
             warnings += BackupWarning.OlderFormat(version, BACKUP_FORMAT_VERSION)
         }
+
+        // 0.15：文件自带的版本信息与封条。
+        //
+        // 顺序是刻意的：格式版本先判（「来自更新版本，先升级 App」比「校验和不对」更可行动），
+        // 再校验内容。没有任何 checksum 键（v1–v7 旧备份、iOS / 服务端导出）时跳过校验，
+        // 绝不因为「没有封条」就把一份正常备份判成损坏。
+        val declaredChecksum = (root[BackupChecksum.KEY] as? JsonPrimitive)?.contentOrNull?.trim()
+        checksumCorruption(root)?.let { return BackupDecodeResult.Corrupted(it) }
+        val checksumVerified = !declaredChecksum.isNullOrBlank() && isOwnChecksum(root)
+        val metadata = BackupMetadata(
+            formatVersion = version,
+            appVersion = root.textOrNull("appVersion") ?: "",
+            schemaVersion = root.intOrNull("schemaVersion") ?: 0,
+            createdAt = root.longOrNull("createdAt") ?: 0L,
+            checksum = declaredChecksum?.lowercase(Locale.ROOT),
+            checksumVerified = checksumVerified,
+            checksumForeign = !declaredChecksum.isNullOrBlank() && !isOwnChecksum(root)
+        )
 
         val personas = decodeList(root, "personas", BackupSection.PERSONA, warnings, BackupPersona.serializer()) { it.id }
         val memories = decodeList(root, "memories", BackupSection.MEMORY, warnings, BackupMemory.serializer()) { it.id }
@@ -847,8 +938,42 @@ object BackupCodec {
         if (BackupPreview.from(bundle).isEmpty) {
             warnings += BackupWarning.NoContent
         }
-        return BackupDecodeResult.Success(bundle, warnings, mediaWarnings.toList())
+        return BackupDecodeResult.Success(bundle, warnings, mediaWarnings.toList(), metadata)
     }
+
+    /**
+     * 只验封条，不解析业务段（0.15）。
+     *
+     * 服务端模式用：JSON 要原样交给服务端导入，本地不会 `decode` 它，但**损坏的文件
+     * 同样不该被送进去**。没有 checksum 键时返回 null（旧备份 / 服务端导出照常放行）。
+     */
+    fun verifyChecksum(raw: String?): BackupCorruption? {
+        if (raw.isNullOrBlank()) return null
+        val root = runCatching { readJson.parseToJsonElement(raw) as? JsonObject }.getOrNull() ?: return null
+        return checksumCorruption(root)
+    }
+
+    /**
+     * 校验和判定的唯一实现（decode 与 verifyChecksum 共用，避免两处规则漂移）。
+     *
+     * 只有带本机算法标记的 checksum 才复核：
+     * - 本机导出的文件 → 严格比对，不一致就整份拒绝；
+     * - 没有标记（v1–v7 旧备份、iOS / 服务端导出）→ 没有可复核的封条，放行；
+     * - 有标记但不是本机算法（将来别的客户端）→ 也放行，**不把它当损坏**
+     *   （两份不同的 JSON 编码器写出的字节本来就不会相同，硬比会把好文件判坏）。
+     */
+    private fun checksumCorruption(root: JsonObject): BackupCorruption? {
+        val declared = (root[BackupChecksum.KEY] as? JsonPrimitive)?.contentOrNull?.trim()
+        if (declared.isNullOrBlank() || !isOwnChecksum(root)) return null
+        val expected = MediaHashes.normalize(declared)
+            ?: return BackupCorruption.ChecksumMalformed(declared)
+        val computed = BackupChecksum.of(root)
+        return if (computed == expected) null else BackupCorruption.ChecksumMismatch(expected, computed)
+    }
+
+    /** 文件里的 checksum 是不是本机算法写的。 */
+    private fun isOwnChecksum(root: JsonObject): Boolean =
+        ((root[BackupChecksum.ALGORITHM_KEY] as? JsonPrimitive)?.contentOrNull?.trim() == BackupChecksum.ALGORITHM)
 
     /**
      * v3 媒体段的宽容解码。

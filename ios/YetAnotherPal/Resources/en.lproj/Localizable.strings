@@ -1361,3 +1361,40 @@
 "没说要想起什么" = "Nothing to recall";
 "想起了 %d 句以前的话" = "Recalled %d lines from before";
 "想起了 %d 句以前的话.one" = "Recalled %d line from before";
+
+/* 0.15: update channel (Settings "check for updates" + new-version alert) and backup metadata.
+   Kit-side failure/checksum copy uses String(localized:) from YapKit; App-side buttons and
+   switches use L()/Lf(). Both language files must stay in sync. */
+"版本" = "Version";
+"当前版本" = "Current version";
+"检查更新" = "Check for updates";
+"正在检查…" = "Checking…";
+"自动检查更新" = "Check for updates automatically";
+"开着的时候，每次打开 App 会安静地问一次 GitHub；24 小时内不会重复问。" = "While on, each launch quietly asks GitHub once; it won't ask again within 24 hours.";
+"包含预览版" = "Include pre-releases";
+"预览版还没正式发布，可能不稳定。" = "Pre-releases aren't officially out yet and may be unstable.";
+"还没检查过" = "Not checked yet";
+"上次检查：%@" = "Last checked: %@";
+"有新的版本 v%@" = "A new version is available: v%@";
+"已经是最新版本" = "You're on the latest version";
+"已经是最新版本（v%@）" = "You're on the latest version (v%@)";
+"当前版本 v%@，GitHub 上还没有更新的正式版。" = "You're on v%@; GitHub has no newer stable release yet.";
+"检查更新失败" = "Couldn't check for updates";
+"去下载" = "Download";
+"稍后" = "Later";
+"下载地址会在浏览器里打开；装好再回来，他还是原来的样子。" = "The download page opens in your browser. Install it, come back, and he'll be just the same.";
+"检查更新失败：网络连不上，之后再试。" = "Couldn't check for updates: the network is unreachable. Try again later.";
+"检查更新失败：等太久没有回应，之后再试。" = "Couldn't check for updates: it took too long to respond. Try again later.";
+"检查更新失败：GitHub 返回了 %d。" = "Couldn't check for updates: GitHub returned %d.";
+"检查更新失败：看不懂 GitHub 的回复。" = "Couldn't check for updates: the reply from GitHub wasn't readable.";
+"本机这版 App：v%@ · 备份格式 v%d · 数据库 v%d" = "This build: v%@ · backup format v%d · database v%d";
+
+/* 0.15 backup metadata: format/database versions, file birthday, SHA-256 of canonical data. */
+"备份格式 v%d · 数据库 v%d" = "Backup format v%d · database v%d";
+"备份格式 v%d" = "Backup format v%d";
+"已校验：SHA-256 %@" = "Verified: SHA-256 %@";
+"没有校验值（更早的备份）" = "No checksum (an older backup)";
+"备份校验不通过：文件可能被改过或传坏了一点，换一份之前带走的备份试试。" = "The backup failed its checksum: the file may have been edited or arrived damaged. Try another backup you exported earlier.";
+"这份备份来自更新版本的 Yap（数据库 v%d，本机只到 v%d）：能读的都读了，读不懂的部分已跳过" = "This backup comes from a newer Yap (database v%d; this build knows up to v%d). Everything readable was read; parts it couldn't understand were skipped.";
+"备份编码失败：算不出校验和，这次没有写出文件" = "Couldn't encode the backup: the checksum couldn't be computed, so no file was written.";
+"校验和来自其他客户端，未在本机复核" = "The checksum came from another client and wasn't verified here";

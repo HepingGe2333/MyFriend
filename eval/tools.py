@@ -79,6 +79,13 @@ TOOLS: list[ToolSpec] = [
         "depth 越深翻得越久也越慢（3 会翻到很早以前，甚至翻不出来）；日常闲聊不要调用。",
     ),
     ToolSpec(
+        "memorize",
+        "memorize(query)",
+        "对方提起以前说过的事、你隐约记得但想不起细节时调用（「让我想想」）；"
+        "只在你们这段会话的历史里翻，不会改任何东西。和 recall 的区别：recall 翻记忆库/更早的会话，"
+        "memorize 翻这一段对话本身。只在正文说「我记得」而不调用不算。",
+    ),
+    ToolSpec(
         "defer_reply",
         "defer_reply(minutes?, reason?)",
         "这一轮你想先不回、过一会儿再说时调用（现在不想说话、想等自己缓一缓、不知道怎么接）；"

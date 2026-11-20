@@ -126,7 +126,10 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val backupState by viewModel.backupState.collectAsStateWithLifecycle()
+    val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
+    // 打开设置页时静默检查一次（设置开关关掉 / 24h 内查过时，协调器会直接返回）。
+    LaunchedEffect(Unit) { viewModel.maybeAutoCheckUpdates() }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     // 「把他带走」这一节和下面清空前的快捷入口共用同一份文件选择器。
@@ -615,6 +618,14 @@ fun SettingsScreen(
                     onCancelSync = viewModel::cancelServerSync
                 )
 
+                UpdateSection(
+                    settings = state.settings,
+                    update = updateState,
+                    onCheck = viewModel::checkForUpdates,
+                    onToggleAutoCheck = viewModel::setUpdateAutoCheck,
+                    onTogglePrereleases = viewModel::setUpdateIncludePrereleases
+                )
+
                 BackupSection(
                     state = backupState,
                     transfer = backupTransfer,
@@ -892,7 +903,7 @@ private fun StepperCircle(
 }
 
 @Composable
-private fun switchColors() = SwitchDefaults.colors(
+internal fun switchColors() = SwitchDefaults.colors(
     checkedThumbColor = Color.White,
     checkedTrackColor = LocalAccentColor.current,
     uncheckedThumbColor = MaterialTheme.colorScheme.onSurfaceVariant,

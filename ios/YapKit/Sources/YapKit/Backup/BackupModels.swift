@@ -126,6 +126,32 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
     /// 可移植的设置。为 nil 表示这份备份里没有设置这一段（老版本或手写的备份）：
     /// 接回来时设置页保持原样，绝不拿一份「没有设置的备份」把用户现在的偏好清成默认值。
     public var settings: BackupSettings?
+    /// 写下这份备份时本机的**数据库 schema 版本**（`Schema.version`）。老备份没有这个键 → 0。
+    ///
+    /// 为什么格式版本之外还要 schema 版本：格式版本说「文件长什么样」，schema 版本说
+    /// 「写这份文件时库里有哪几张表、哪些列」。两个数字一起看，才能判断旧 App 硬读新数据
+    /// 会缺哪一块。读取侧只把它当提示（> 本机时给一句警告），真正的拒绝仍由 `formatVersion` 做。
+    public var schemaVersion: Int
+    /// 这份文件被生成的时间（毫秒）。老备份没有这个键 → 0（界面显示「时间不详」）。
+    ///
+    /// 与 `exportedAt` 同源，但**语义不同**：`exportedAt` 是跨端契约里 Android 也在写的
+    /// 「导出时刻」，`createdAt` 是这份文件自己的生日，用来在导入预览里说清
+    /// 「这份备份是哪一刻的他」；两者分开记，将来做增量导出时不会互相绑死。
+    public var createdAt: Int64
+    /// **规范化 JSON 的 SHA-256**（64 位小写 hex）；老备份没有这个键 → nil（跳过校验）。
+    ///
+    /// 「规范化」的规则是跨端协议，见 `BackupIntegrity`：键排序、无空白、数字保留原始
+    /// 字面量、字符串按 kotlinx 的转义表输出。所以：
+    /// - 文件的空格/换行/键序被重排 **不影响** 校验（内容没变）；
+    /// - 任何一个值被改过，校验一定失败（本机算法的封条才会拒绝导入）。
+    /// 服务端备份与 v1–v7 的老备份都没有这个键，行为与之前完全一致。
+    public var checksum: String?
+    /// 校验和算法标记（`yap-canonical-json-sha256-v1`）；nil / 别的值 = 这份封条不由本机复核。
+    ///
+    /// 与 Android 的 `checksumAlgorithm` 同一个键、同一套语义：只有标记完全匹配才复核 ——
+    /// 别的客户端（或将来换了算法）写的哈希，两端算出来的字节本来就可能不同，
+    /// 硬比只会把一份正常备份判成损坏。
+    public var checksumAlgorithm: String?
 
     public init(
         format: String = backupFormatName,
@@ -148,7 +174,11 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         sessionMemory: [BackupSessionMemory] = [],
         proactiveFailures: [BackupProactiveFailure]? = nil,
         apiConfigs: [BackupApiConfig] = [],
-        settings: BackupSettings? = nil
+        settings: BackupSettings? = nil,
+        schemaVersion: Int = 0,
+        createdAt: Int64 = 0,
+        checksum: String? = nil,
+        checksumAlgorithm: String? = nil
     ) {
         self.format = format
         self.formatVersion = formatVersion
@@ -171,10 +201,16 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         self.proactiveFailures = proactiveFailures
         self.apiConfigs = apiConfigs
         self.settings = settings
+        self.schemaVersion = schemaVersion
+        self.createdAt = createdAt
+        self.checksum = checksum
+        self.checksumAlgorithm = checksumAlgorithm
     }
 
     enum CodingKeys: String, CodingKey {
         case format, formatVersion, appVersion, exportedAt, apiKeysOmitted
+        // 0.15 的元数据：schema 版本 / 文件生日 / 封条（都可选，老备份没有）。
+        case schemaVersion, createdAt, checksum, checksumAlgorithm
         case personas, memories, sessions, messages
         // `media` 紧跟在 `messages` 后面只为读起来顺：JSON 键顺序对两端都不重要。
         case media
@@ -202,6 +238,21 @@ public struct BackupBundle: Equatable, Sendable, Encodable {
         try container.encode(appVersion, forKey: .appVersion)
         try container.encode(exportedAt, forKey: .exportedAt)
         try container.encode(apiKeysOmitted, forKey: .apiKeysOmitted)
+        // 元数据是**可选**的：值为 0 / nil 时不写。
+        //
+        // 为什么要这样「省」：跨端黄金样本（`fixtures/backup/*.json`）钉的是
+        // 「顶层键集合 = Kotlin 结构里的键集合」，它们由 `BackupCodec.encode` 生成；
+        // 元数据只在真正导出（`BackupService` → `encodeSealed`）时才有值，
+        // 样本与手写的 bundle 保持逐字不变。Android 读到多出来的键时会直接忽略
+        //（`ignoreUnknownKeys`），所以带元数据的 iOS 备份照样能被 Android 接住。
+        if schemaVersion > 0 {
+            try container.encode(schemaVersion, forKey: .schemaVersion)
+        }
+        if createdAt > 0 {
+            try container.encode(createdAt, forKey: .createdAt)
+        }
+        try container.encodeIfPresent(checksum, forKey: .checksum)
+        try container.encodeIfPresent(checksumAlgorithm, forKey: .checksumAlgorithm)
         try container.encode(personas, forKey: .personas)
         try container.encode(memories, forKey: .memories)
         try container.encode(sessions, forKey: .sessions)
@@ -1737,6 +1788,16 @@ public struct BackupPreview: Equatable, Sendable {
     public var diaryNotes: Int
     public var exportedAt: Int64
     public var appVersion: String
+    /// 0.15 的元数据（导入预览里显示；老备份都是 0 / nil）。
+    public var formatVersion: Int
+    public var schemaVersion: Int
+    public var createdAt: Int64
+    /// 文件里写的 sha256（规范化 JSON）；nil = 这份备份没有校验值。
+    public var checksum: String?
+    /// 封条是不是本机算法写的、且已经复核通过。
+    public var checksumVerified: Bool
+    /// 封条来自别的客户端（或别的算法）：**不在本机复核**，但绝不因此拒绝导入。
+    public var checksumForeign: Bool
 
     public init(
         personas: Int = 0,
@@ -1749,7 +1810,13 @@ public struct BackupPreview: Equatable, Sendable {
         stickers: Int = 0,
         diaryNotes: Int = 0,
         exportedAt: Int64 = 0,
-        appVersion: String = ""
+        appVersion: String = "",
+        formatVersion: Int = backupFormatVersion,
+        schemaVersion: Int = 0,
+        createdAt: Int64 = 0,
+        checksum: String? = nil,
+        checksumVerified: Bool = false,
+        checksumForeign: Bool = false
     ) {
         self.personas = personas
         self.memories = memories
@@ -1762,6 +1829,12 @@ public struct BackupPreview: Equatable, Sendable {
         self.diaryNotes = diaryNotes
         self.exportedAt = exportedAt
         self.appVersion = appVersion
+        self.formatVersion = formatVersion
+        self.schemaVersion = schemaVersion
+        self.createdAt = createdAt
+        self.checksum = checksum
+        self.checksumVerified = checksumVerified
+        self.checksumForeign = checksumForeign
     }
 
     public var isEmpty: Bool {
@@ -1790,6 +1863,44 @@ public struct BackupPreview: Equatable, Sendable {
             : String(format: String(localized: "%@ 带走"), formatBackupMoment(exportedAt))
     }
 
+    /// 「格式 v7 · 数据库 v19」：这份文件长什么样、写它的时候库里有哪几版。
+    ///
+    /// 数据库版本是 0（v7 之前的老备份，或手写样本）时只显示格式版本 ——
+    /// 编一个「数据库 v0」出来只会让用户以为文件坏了。
+    public func originText() -> String {
+        schemaVersion > 0
+            ? String(format: String(localized: "备份格式 v%d · 数据库 v%d"), formatVersion, schemaVersion)
+            : String(format: String(localized: "备份格式 v%d"), formatVersion)
+    }
+
+    /// 校验状态：本机复核通过就给前 8 位；别的客户端的封条说明「未复核」；没有封条就说没有。
+    ///
+    /// 三种说法对应三种真实情况（与 Android 的预览文案同一套语义）：
+    /// - `已校验` —— 文件带着本机算法标记，`BackupCodec.decode` 已经逐字节复核通过；
+    /// - `未在本机复核` —— 封条来自别的客户端，**不影响导入**，只是我们算不出同样的字节；
+    /// - `没有校验值` —— v1–v7 老备份 / 服务端备份 / 手写文件。
+    public func integrityText() -> String {
+        if checksumForeign {
+            return String(localized: "校验和来自其他客户端，未在本机复核")
+        }
+        guard checksumVerified, let checksum, checksum.count >= 8 else {
+            return String(localized: "没有校验值（更早的备份）")
+        }
+        return String(format: String(localized: "已校验：SHA-256 %@"), String(checksum.prefix(8)))
+    }
+
+    /// 「2026年11月21日 03:40 · v0.15.0 · 格式 v7 · 数据库 v19 · 校验值 …」。
+    ///
+    /// 导入预览与设置页共用这一行：用户要能一眼看出「这份备份是哪一版的他」。
+    public func metaText() -> String {
+        var parts: [String] = []
+        parts.append(createdAt > 0 ? formatBackupMoment(createdAt) : exportedAtText())
+        if !appVersion.isEmpty { parts.append("v" + appVersion) }
+        parts.append(originText())
+        parts.append(integrityText())
+        return parts.joined(separator: " · ")
+    }
+
     public static func from(_ bundle: BackupBundle) -> BackupPreview {
         BackupPreview(
             personas: bundle.personas.count,
@@ -1802,7 +1913,17 @@ public struct BackupPreview: Equatable, Sendable {
             stickers: bundle.stickers.count,
             diaryNotes: bundle.diaryNotes.count,
             exportedAt: bundle.exportedAt,
-            appVersion: bundle.appVersion
+            appVersion: bundle.appVersion,
+            formatVersion: bundle.formatVersion,
+            schemaVersion: bundle.schemaVersion,
+            createdAt: bundle.createdAt,
+            checksum: bundle.checksum,
+            // 解码只在**复核通过**之后才会把带本机算法标记的文件交出来，
+            // 所以这两个布尔值可以由 bundle 自己推出来（见 `BackupCodec.decode`）。
+            checksumVerified: bundle.checksum != nil
+                && bundle.checksumAlgorithm == BackupIntegrity.algorithm,
+            checksumForeign: bundle.checksum != nil
+                && bundle.checksumAlgorithm != BackupIntegrity.algorithm
         )
     }
 }

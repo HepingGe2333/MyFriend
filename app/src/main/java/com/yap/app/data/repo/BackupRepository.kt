@@ -23,6 +23,7 @@ import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.domain.BACKUP_FORMAT_VERSION
 import com.yap.app.domain.BackupBundle
 import com.yap.app.domain.BackupCodec
+import com.yap.app.domain.BackupCorruption
 import com.yap.app.domain.BackupDecodeResult
 import com.yap.app.domain.BackupPreview
 import com.yap.app.domain.BackupSettings
@@ -126,7 +127,11 @@ data class BackupExport(
  * 只带结构化 [failure]（外加一句给日志看的中文）；界面用 `BackupText` 映射资源，
  * 不再显示 `throwable.message`。
  */
-class BackupImportException(val failure: BackupFailure) : Exception(failure.toString())
+class BackupImportException(
+    val failure: BackupFailure? = null,
+    /** 0.15：文件自己的 checksum 对不上（导入因此被拒绝）。 */
+    val corruption: BackupCorruption? = null
+) : Exception((failure ?: corruption).toString())
 
 /**
  * 「把他带走」与「从备份里接他回来」。
@@ -335,7 +340,10 @@ class BackupRepository @Inject constructor(
             userError(DomainErrorCode.BACKUP_EMPTY)
         }
 
-        val encoded = BackupCodec.encode(bundle)
+        // 0.15：把「哪一版数据库结构导出的」写进文件，并在最后封一个 checksum。
+        // 用运行时 Room 版本，而不是再抄一份 19：schema 一升这里自动跟着变。
+        val schemaVersion = runCatching { database.openHelper.readableDatabase.version }.getOrDefault(0)
+        val encoded = BackupCodec.encodeWithMetadata(bundle, schemaVersion = schemaVersion)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if (BackupCodec.containsSecretField(encoded)) userError(DomainErrorCode.BACKUP_SECRET_FIELD)
         BackupExport(
@@ -377,6 +385,8 @@ class BackupRepository @Inject constructor(
         }
         when (val decoded = decodedResult) {
             is BackupDecodeResult.Failure -> decoded
+            // 损坏的文件不需要再做「结构完整性」检查：它已经被拒绝了。
+            is BackupDecodeResult.Corrupted -> decoded
             is BackupDecodeResult.Success -> {
                 val holes = BackupIntegrity.check(decoded.bundle)
                 if (holes.isClean) {
@@ -392,7 +402,7 @@ class BackupRepository @Inject constructor(
 
     /** 预览用的一行摘要（读不懂时返回 null，原因走 [preview]）。 */
     suspend fun previewOf(raw: String): BackupPreview? =
-        (preview(raw) as? BackupDecodeResult.Success)?.let { BackupPreview.from(it.bundle) }
+        (preview(raw) as? BackupDecodeResult.Success)?.let { BackupPreview.from(it.bundle, it.metadata) }
 
     /**
      * 从 JSON 文本把他接回来。读不懂就抛 [BackupImportException]，库里什么都不改。
@@ -402,11 +412,17 @@ class BackupRepository @Inject constructor(
      */
     suspend fun importJson(raw: String, mode: ImportMode): ImportSummary =
         withContext(Dispatchers.IO) {
+            // 0.15：交给服务端之前先在本地验一遍封条。服务端不认识 checksum，
+            // 一份被截断/改坏的文件在那边可能被「尽力导入」，而用户以为恢复成功了。
+            BackupCodec.verifyChecksum(raw)?.let { throw BackupImportException(corruption = it) }
             if (serverWrites.isEnabled()) {
                 return@withContext importServerBackup(raw, mode)
             }
             when (val decoded = BackupCodec.decode(raw)) {
-                is BackupDecodeResult.Failure -> throw BackupImportException(decoded.reason)
+                is BackupDecodeResult.Failure -> throw BackupImportException(failure = decoded.reason)
+                // 0.15：checksum 对不上 = 文件损坏，直接拒绝，绝不半懂不懂地写库。
+                is BackupDecodeResult.Corrupted ->
+                    throw BackupImportException(corruption = decoded.reason)
                 is BackupDecodeResult.Success -> {
                     val summary = importBundle(decoded.bundle, mode)
                     summary.copy(
@@ -437,6 +453,7 @@ class BackupRepository @Inject constructor(
                 ?: return@runCatching
             when (val decoded = BackupCodec.decode(localRaw)) {
                 is BackupDecodeResult.Failure -> Unit
+                is BackupDecodeResult.Corrupted -> Unit
                 is BackupDecodeResult.Success -> importBundle(decoded.bundle, mode)
             }
         }.onFailure { error ->

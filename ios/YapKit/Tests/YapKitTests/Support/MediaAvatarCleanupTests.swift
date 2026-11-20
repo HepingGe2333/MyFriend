@@ -90,10 +90,14 @@ final class MediaAvatarCleanupTests: XCTestCase {
         let exported = try service.export()
         // 0.11.0 安全审计 P2-5：导出已经不写本机绝对路径了。这里把 `avatarUri` 塞回去，
         // 模拟「老版本 / 另一端导出的备份」——导入侧「文件不存在则清空」的逻辑必须照旧兜住它。
-        let text = exported.replacingOccurrences(
-            of: "\"name\":\"\(persona.name)\"",
-            with: "\"name\":\"\(persona.name)\",\"avatarUri\":\"\(avatar.absoluteString)\""
-        )
+        //
+        // 0.15 起导出带 checksum：手改 JSON 文本会被完整性校验拒绝，所以这里先解出 bundle、
+        // 摘掉元数据（老文件没有它）再把绝对路径塞回去，形状与老备份一致。
+        var edited = try XCTUnwrap(BackupCodec.decode(exported).bundle)
+        edited.checksum = nil
+        let index = try XCTUnwrap(edited.personas.firstIndex { $0.id == personaId })
+        edited.personas[index].avatarUri = avatar.absoluteString
+        let text = try BackupCodec.encode(edited)
         XCTAssertTrue(text.contains(avatar.absoluteString), "夹具要把 avatarUri 写进备份")
         if !withAvatarExists { try? FileManager.default.removeItem(at: avatar) }
         return (text, avatar.absoluteString)

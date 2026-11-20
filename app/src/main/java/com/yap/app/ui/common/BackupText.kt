@@ -5,6 +5,7 @@ import androidx.annotation.PluralsRes
 import com.yap.app.R
 import com.yap.app.data.repo.ImportMode
 import com.yap.app.data.repo.ImportSummary
+import com.yap.app.domain.BackupCorruption
 import com.yap.app.domain.BackupFailure
 import com.yap.app.domain.BackupMediaWarning
 import com.yap.app.domain.BackupPreview
@@ -40,6 +41,44 @@ object BackupText {
         val pattern = context.getString(R.string.backup_moment_pattern)
         return context.getString(R.string.backup_exported_at, formatBackupMoment(preview.exportedAt, pattern))
     }
+
+    /**
+     * 「备份格式 v7 · schema v19 · 校验和已通过」。
+     *
+     * 这一行回答「这份文件是谁、什么时候、哪一版写出来的」，也是 0.15 起
+     * 「版本过高被拒 / checksum 对不上」这两类拒绝能被用户理解的前提。
+     */
+    fun format(context: Context, preview: BackupPreview): String {
+        val checksum = context.getString(
+            when {
+                preview.checksumVerified -> R.string.backup_dialog_checksum_ok
+                // 别的客户端写的 checksum 本机不复核（两端 JSON 编码字节不同），但仍然允许导入。
+                preview.checksumForeign -> R.string.backup_dialog_checksum_foreign
+                else -> R.string.backup_dialog_checksum_missing
+            }
+        )
+        return if (preview.schemaVersion > 0) {
+            context.getString(
+                R.string.backup_dialog_format,
+                preview.formatVersion,
+                preview.schemaVersion,
+                checksum
+            )
+        } else {
+            context.getString(
+                R.string.backup_dialog_format_no_schema,
+                preview.formatVersion,
+                checksum
+            )
+        }
+    }
+
+    /** 文件损坏（checksum 对不上）：无论具体是哪一种，用户要做的事都一样——换一份。 */
+    fun corruption(context: Context, corruption: BackupCorruption): String =
+        when (corruption) {
+            is BackupCorruption.ChecksumMismatch,
+            is BackupCorruption.ChecksumMalformed -> context.getString(R.string.backup_fail_checksum)
+        }
 
     /** 「把他接回来了：3 个人格 · …」+ 跳过的条数 + 每条提醒。 */
     fun importSummary(context: Context, summary: ImportSummary): String {

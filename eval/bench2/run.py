@@ -141,9 +141,10 @@ def parse_args(argv: Iterable[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--judge-key", default=None)
     parser.add_argument("--temperature", type=float, default=0.75)
     parser.add_argument("--judge-temperature", type=float, default=0.1)
-    parser.add_argument("--max-tokens", type=int, default=500)
+    parser.add_argument("--max-tokens", type=int, default=4000)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--concurrency", type=int, default=10)
+    parser.add_argument("--reasoning-effort", default=os.environ.get("CAMPUS_REASONING", "max"))
     parser.add_argument("--out", default=None)
     return parser.parse_args(list(argv) if argv is not None else None)
 
@@ -155,11 +156,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise SystemExit("缺少 key：设置 CAMPUS_API_KEY / PROXY_API_KEY 或 --api-key")
     provider = OpenAICompatibleProvider(base_url=args.base_url, api_key=key, model=args.model,
                                         temperature=args.temperature, max_tokens=args.max_tokens,
-                                        timeout=args.timeout, retries=2)
+                                        timeout=args.timeout, retries=2,
+                                        reasoning_effort=args.reasoning_effort)
     judge_provider = OpenAICompatibleProvider(
         base_url=args.judge_base_url or args.base_url, api_key=args.judge_key or key,
         model=args.judge_model or args.model, temperature=args.judge_temperature,
-        max_tokens=2000, timeout=args.timeout, retries=2,
+        max_tokens=max(2000, args.max_tokens), timeout=args.timeout, retries=2,
+        reasoning_effort=args.reasoning_effort,
     )
     scenarios = load_scenarios()
     if args.scenario:

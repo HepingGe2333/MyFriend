@@ -380,10 +380,15 @@ public final class BackupService {
             sessionMemory: sessionMemory,
             apiConfigs: ((try? stores.apiConfigs.all(orderBy: "updatedAt DESC")) ?? [])
                 .map(Self.toBackupApiConfig),
-            settings: currentSettings.toBackupSettings()
+            settings: currentSettings.toBackupSettings(),
+            // 0.15 的元数据：写清楚「哪一版 App、哪一版库、哪一刻」。
+            // `createdAt` 与 `exportedAt` 同源（一次导出就是一个快照），但语义分开记。
+            schemaVersion: Int(Schema.version),
+            createdAt: exportedAt
         )
 
-        let encoded = try BackupCodec.encode(bundle)
+        // 导出走 `encodeSealed`：先算规范化 data 的 sha256 再写进文件，导入时复核。
+        let encoded = try BackupCodec.encodeSealed(bundle)
         // 最后一道闸：真出现了密钥字段就中止导出，不写文件。
         if BackupCodec.containsSecretField(encoded) {
             throw BackupImportError(String(localized: "备份里出现了密钥字段，已中止导出"))

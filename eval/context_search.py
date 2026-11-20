@@ -61,6 +61,7 @@ PROFILE_AXES: dict[str, list[str]] = {
     "history": ["raw", "labeled", "timestamped"],
     "state": ["full", "minimal", "mood_only"],
     "persona": ["full", "compact"],
+    "hints": ["off", "on"],
 }
 BASE_PROFILE = {axis: values[0] for axis, values in PROFILE_AXES.items()}
 
@@ -94,6 +95,17 @@ def _state(scenario: dict[str, Any], level: str, guidance: str, mood: str) -> st
     return minimal + "\n\n" + experiment._mood_block(guidance)
 
 
+TOOL_HINT = """# 工具使用
+- 在忙具体的事：调用 set_activity；想休息/不被打扰：set_quiet_hours。
+- 关于对方的长期事实：调用 remember；回忆这段会话的细节：调用 memorize（只在正文说「我记得」不算）。
+- 不想说话：调用 stay_silent；这一轮先不回、过会再说：defer_reply。
+- 工具调用就是行动；不要用文字假装已经调用。"""
+
+
+def _hints(level: str) -> str:
+    return TOOL_HINT if level == "on" else ""
+
+
 def _persona(scenario: dict[str, Any], level: str) -> str:
     p = scenario["persona"]
     if level == "compact":
@@ -116,17 +128,18 @@ def build_system(scenario: dict[str, Any], profile: dict[str, str]) -> str:
     state = _state(scenario, profile["state"], profile["guidance"], profile["guidance"])
     anti = _anti(profile["anti"])
     tools = _tools(profile["tools"], p)
+    hints = _hints(profile.get("hints", "off"))
     memo = experiment._memory_block(scenario, profile["memory"])
     language = prompt._language_section(scenario)
     boundaries = prompt._boundaries_section()
     arch = profile["arch"]
     if arch == "two_block":
         stable = "# 设定\n" + "\n".join(x for x in (persona, anti) if x.strip())
-        sections = [stable, state, tools, memo, language, boundaries]
+        sections = [stable, state, tools, hints, memo, language, boundaries]
     elif arch == "state_first":
-        sections = [state, persona, tools, anti, memo, language, boundaries]
+        sections = [state, persona, tools, hints, anti, memo, language, boundaries]
     else:  # compact
-        sections = [persona, state, tools, anti, memo, language, boundaries]
+        sections = [persona, state, tools, hints, anti, memo, language, boundaries]
     return "\n\n".join(section for section in sections if section and section.strip()).strip()
 
 
@@ -228,7 +241,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--base-url", default=os.environ.get("CAMPUS_BASE_URL", "http://127.0.0.1:11435/v1"))
     parser.add_argument("--model", default=os.environ.get("CAMPUS_MODEL", "campus-chat"))
     parser.add_argument("--api-key", default=None)
-    parser.add_argument("--max-tokens", type=int, default=500)
+    parser.add_argument("--max-tokens", type=int, default=4000)
+    parser.add_argument("--reasoning-effort", default=os.environ.get("CAMPUS_REASONING", "max"))
     parser.add_argument("--timeout", type=float, default=120.0)
     args = parser.parse_args(list(argv) if argv is not None else None)
     key = args.api_key or os.environ.get("CAMPUS_API_KEY") or os.environ.get("PROXY_API_KEY")
@@ -236,9 +250,11 @@ def main(argv: Iterable[str] | None = None) -> int:
         raise SystemExit("缺少 key")
     scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))
     provider = OpenAICompatibleProvider(base_url=args.base_url, api_key=key, model=args.model,
-                                        temperature=0.75, max_tokens=args.max_tokens, timeout=args.timeout, retries=2)
+                                        temperature=0.75, max_tokens=args.max_tokens, timeout=args.timeout, retries=2,
+                                        reasoning_effort=args.reasoning_effort)
     judge_provider = OpenAICompatibleProvider(base_url=args.base_url, api_key=key, model=args.model,
-                                              temperature=0.1, max_tokens=2000, timeout=args.timeout, retries=2)
+                                              temperature=0.1, max_tokens=max(2000, args.max_tokens), timeout=args.timeout, retries=2,
+                                              reasoning_effort=args.reasoning_effort)
     profiles: list[tuple[str, dict[str, str]]] = []
     if args.stage == "combine":
         if not args.profiles:

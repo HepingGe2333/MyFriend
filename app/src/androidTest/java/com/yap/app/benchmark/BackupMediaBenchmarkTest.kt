@@ -321,6 +321,10 @@ class BackupMediaBenchmarkTest {
                 is BackupDecodeResult.Failure -> {
                     recorder.put("$key.import.decodeFailure", decoded.reason.toString())
                 }
+
+                is BackupDecodeResult.Corrupted -> {
+                    recorder.put("$key.import.decodeFailure", decoded.reason.toString())
+                }
             }
             val latencyMs = elapsedMsSince(started)
             val cpuMs = processCpuMs() - cpuStart

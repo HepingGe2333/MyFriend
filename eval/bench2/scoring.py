@@ -19,7 +19,21 @@ def score_conversation(conv: Conversation) -> dict[str, Any]:
     hard: list[str] = []
     missing_facts: list[str] = []
     for forbidden in facts.get("must_not_include") or []:
-        if forbidden and forbidden in text:
+        if not forbidden:
+            continue
+        start = 0
+        violated = False
+        while True:
+            index = text.find(forbidden, start)
+            if index < 0:
+                break
+            prefix = text[max(0, index - 8):index]
+            # 「不要叫宝贝」「不是清华」这类否定/纠正不算违规
+            if not any(neg in prefix for neg in ("不", "别", "不是", "没", "非")):
+                violated = True
+                break
+            start = index + len(forbidden)
+        if violated:
             hard.append(f"forbidden:{forbidden}")
     required_any = [str(item) for item in (facts.get("must_include_any") or []) if str(item)]
     if required_any and not any(item in text for item in required_any):
