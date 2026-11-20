@@ -178,6 +178,20 @@ accordingly or do the per-user limiting at the proxy and treat `agentd`'s limite
 backstop. `X-Forwarded-For` is deliberately **not** trusted (it is trivially spoofable unless you
 validate the proxy's address); if you need per-client limits behind a proxy, do it there.
 
+## Runtime dependencies: ffmpeg and CJK fonts (0.14.1)
+
+Remote deployments need two host-level dependencies; **local client mode never needs them**
+(Android uses `MediaMetadataRetriever` + system fonts, iOS uses `AVAssetImageGenerator` + CoreText):
+
+- **`ffmpeg`** for the `watch` tool (video → ≤8 JPEG keyframes). Resolution: `--ffmpeg` →
+  `YAP_FFMPEG` → `PATH`. Without it `watch` answers “服务器没有视频解码器，看不了视频” and never
+  fabricates frames. `brew install ffmpeg` / `apt-get install ffmpeg` / `apk add ffmpeg`.
+- **A CJK font on the JRE** for `sticker.make` text overlay (JDK logical `SansSerif`). macOS/Windows
+  usually ship one; minimal Linux images need `fonts-noto-cjk` / `font-noto-cjk`, otherwise Chinese
+  renders as `□□□`. Verify with `fc-list :lang=zh` (or `Font.canDisplay('中')`), then restart agentd.
+
+Full deployment guide (Dockerfile, verification, checklist): [docs/DEPLOY.md](../docs/DEPLOY.md).
+
 ## Deployment and TLS (0.12.0)
 
 > **The service itself speaks plain HTTP only. Never expose it directly to the public internet.**

@@ -9,6 +9,7 @@
 
 | 文件 | 内容 |
 | --- | --- |
+| [DEPLOY.md](DEPLOY.md) | 服务端部署依赖：ffmpeg 视频解码、CJK 字体、启动自检与检查清单 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) · [EN](ARCHITECTURE.en.md) | 分层、数据流、跨端契约、agent 核心的三种形态与演进路径 |
 | [I18N.md](I18N.md) · [EN](I18N.en.md) | 双语方案：资源位置、新增文案规则、语言指令、守卫测试 |
 | [CHANGELOG.md](CHANGELOG.md) · [EN](CHANGELOG.en.md) | 每个版本的实际变更 |
