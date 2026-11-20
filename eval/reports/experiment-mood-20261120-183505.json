@@ -1,0 +1,4304 @@
+{
+  "meta": {
+    "generated_at": "2026-11-20T18:35:05+08:00",
+    "model": "campus-chat",
+    "base_url": "http://127.0.0.1:11435/v1",
+    "stage": "mood",
+    "scenario_count": 31,
+    "concurrency": 10,
+    "temperature": 0.75,
+    "max_tokens": 600,
+    "elapsed_ms": 31621
+  },
+  "variants": [
+    {
+      "variant": "state_first|none|full",
+      "arch": "state_first",
+      "mood": "none",
+      "memory": "full",
+      "label": "state_first / none / full",
+      "overall": 93.5,
+      "pass_rate": 83.9,
+      "dimensions": {
+        "length": 98.2,
+        "anti_ai": 100.0,
+        "human_voice": 99.9,
+        "truthfulness": 77.3,
+        "relationship": 92.2,
+        "language": 87.1,
+        "format": 100.0
+      },
+      "avg_chars": 30.5,
+      "avg_questions": 0.13,
+      "hard_failures": 5,
+      "tool_calls": 1,
+      "errors": 0,
+      "elapsed_ms": 9811,
+      "usage": {
+        "prompt_tokens": 78817,
+        "completion_tokens": 2701,
+        "total_tokens": 81518
+      },
+      "results": [
+        {
+          "id": "daily-001",
+          "category": "daily_chat",
+          "score": 97.5,
+          "passed": true,
+          "dimensions": {
+            "length": 86.7,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 25,
+          "questions": 2,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1539,
+          "usage": {
+            "prompt_tokens": 2563,
+            "completion_tokens": 67,
+            "total_tokens": 2630
+          },
+          "error": null
+        },
+        {
+          "id": "low-001",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1933,
+          "usage": {
+            "prompt_tokens": 2574,
+            "completion_tokens": 89,
+            "total_tokens": 2663
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-001",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 45,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3141,
+          "usage": {
+            "prompt_tokens": 2579,
+            "completion_tokens": 81,
+            "total_tokens": 2660
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-001",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 2,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1008,
+          "usage": {
+            "prompt_tokens": 2556,
+            "completion_tokens": 37,
+            "total_tokens": 2593
+          },
+          "error": null
+        },
+        {
+          "id": "burst-001",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1279,
+          "usage": {
+            "prompt_tokens": 2603,
+            "completion_tokens": 48,
+            "total_tokens": 2651
+          },
+          "error": null
+        },
+        {
+          "id": "memory-001",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 50.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 1,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 1763,
+          "usage": {
+            "prompt_tokens": 2630,
+            "completion_tokens": 74,
+            "total_tokens": 2704
+          },
+          "error": null
+        },
+        {
+          "id": "fact-001",
+          "category": "factcheck",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 58.3,
+            "anti_ai": 100.0,
+            "human_voice": 99.5,
+            "truthfulness": 0.0,
+            "relationship": 100.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 108,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1009,
+          "usage": {
+            "prompt_tokens": 2553,
+            "completion_tokens": 53,
+            "total_tokens": 2606
+          },
+          "error": null
+        },
+        {
+          "id": "tool-001",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1111,
+          "usage": {
+            "prompt_tokens": 2562,
+            "completion_tokens": 79,
+            "total_tokens": 2641
+          },
+          "error": null
+        },
+        {
+          "id": "mood-001",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1020,
+          "usage": {
+            "prompt_tokens": 2481,
+            "completion_tokens": 36,
+            "total_tokens": 2517
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-001",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 66.7,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 496,
+          "usage": {
+            "prompt_tokens": 2536,
+            "completion_tokens": 1,
+            "total_tokens": 2537
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-001",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 41,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1941,
+          "usage": {
+            "prompt_tokens": 2530,
+            "completion_tokens": 113,
+            "total_tokens": 2643
+          },
+          "error": null
+        },
+        {
+          "id": "daily-002",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 33,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 877,
+          "usage": {
+            "prompt_tokens": 2549,
+            "completion_tokens": 42,
+            "total_tokens": 2591
+          },
+          "error": null
+        },
+        {
+          "id": "low-002",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 11,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3358,
+          "usage": {
+            "prompt_tokens": 2484,
+            "completion_tokens": 157,
+            "total_tokens": 2641
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-002",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 20,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1852,
+          "usage": {
+            "prompt_tokens": 2546,
+            "completion_tokens": 67,
+            "total_tokens": 2613
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-002",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 51,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1899,
+          "usage": {
+            "prompt_tokens": 2536,
+            "completion_tokens": 72,
+            "total_tokens": 2608
+          },
+          "error": null
+        },
+        {
+          "id": "burst-002",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": null,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 32,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1137,
+          "usage": {
+            "prompt_tokens": 2481,
+            "completion_tokens": 58,
+            "total_tokens": 2539
+          },
+          "error": null
+        },
+        {
+          "id": "memory-002",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 61,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2713,
+          "usage": {
+            "prompt_tokens": 2586,
+            "completion_tokens": 138,
+            "total_tokens": 2724
+          },
+          "error": null
+        },
+        {
+          "id": "fact-002",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 23,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2185,
+          "usage": {
+            "prompt_tokens": 2544,
+            "completion_tokens": 107,
+            "total_tokens": 2651
+          },
+          "error": null
+        },
+        {
+          "id": "tool-002",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 13,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 958,
+          "usage": {
+            "prompt_tokens": 2556,
+            "completion_tokens": 31,
+            "total_tokens": 2587
+          },
+          "error": null
+        },
+        {
+          "id": "mood-002",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 34,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2471,
+          "usage": {
+            "prompt_tokens": 2507,
+            "completion_tokens": 113,
+            "total_tokens": 2620
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-002",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "content",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 7391,
+          "usage": {
+            "prompt_tokens": 2542,
+            "completion_tokens": 600,
+            "total_tokens": 3142
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-002",
+          "category": "bilingual",
+          "score": 99.575,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 97.7,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 52,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 879,
+          "usage": {
+            "prompt_tokens": 2528,
+            "completion_tokens": 45,
+            "total_tokens": 2573
+          },
+          "error": null
+        },
+        {
+          "id": "daily-003",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 962,
+          "usage": {
+            "prompt_tokens": 2539,
+            "completion_tokens": 32,
+            "total_tokens": 2571
+          },
+          "error": null
+        },
+        {
+          "id": "low-003",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1920,
+          "usage": {
+            "prompt_tokens": 2414,
+            "completion_tokens": 100,
+            "total_tokens": 2514
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-003",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 12,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1141,
+          "usage": {
+            "prompt_tokens": 2418,
+            "completion_tokens": 55,
+            "total_tokens": 2473
+          },
+          "error": null
+        },
+        {
+          "id": "memory-003",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1087,
+          "usage": {
+            "prompt_tokens": 2624,
+            "completion_tokens": 57,
+            "total_tokens": 2681
+          },
+          "error": null
+        },
+        {
+          "id": "fact-003",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 7,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 510,
+          "usage": {
+            "prompt_tokens": 2580,
+            "completion_tokens": 28,
+            "total_tokens": 2608
+          },
+          "error": null
+        },
+        {
+          "id": "tool-003",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 126,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [
+            "remember"
+          ],
+          "latency_ms": 897,
+          "usage": {
+            "prompt_tokens": 2571,
+            "completion_tokens": 68,
+            "total_tokens": 2639
+          },
+          "error": null
+        },
+        {
+          "id": "mood-003",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 13,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1041,
+          "usage": {
+            "prompt_tokens": 2542,
+            "completion_tokens": 72,
+            "total_tokens": 2614
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-003",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 98,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1508,
+          "usage": {
+            "prompt_tokens": 2521,
+            "completion_tokens": 123,
+            "total_tokens": 2644
+          },
+          "error": null
+        },
+        {
+          "id": "daily-004",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 861,
+          "usage": {
+            "prompt_tokens": 2582,
+            "completion_tokens": 58,
+            "total_tokens": 2640
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "variant": "state_first|label|full",
+      "arch": "state_first",
+      "mood": "label",
+      "memory": "full",
+      "label": "state_first / label / full",
+      "overall": 90.9,
+      "pass_rate": 77.4,
+      "dimensions": {
+        "length": 99.9,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 59.1,
+        "relationship": 85.6,
+        "language": 83.9,
+        "format": 100.0
+      },
+      "avg_chars": 26.1,
+      "avg_questions": 0.1,
+      "hard_failures": 7,
+      "tool_calls": 0,
+      "errors": 0,
+      "elapsed_ms": 5533,
+      "usage": {
+        "prompt_tokens": 79561,
+        "completion_tokens": 1812,
+        "total_tokens": 81373
+      },
+      "results": [
+        {
+          "id": "daily-001",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 868,
+          "usage": {
+            "prompt_tokens": 2587,
+            "completion_tokens": 49,
+            "total_tokens": 2636
+          },
+          "error": null
+        },
+        {
+          "id": "low-001",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 27,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2768,
+          "usage": {
+            "prompt_tokens": 2598,
+            "completion_tokens": 122,
+            "total_tokens": 2720
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-001",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 61,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2056,
+          "usage": {
+            "prompt_tokens": 2603,
+            "completion_tokens": 105,
+            "total_tokens": 2708
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-001",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 1,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 807,
+          "usage": {
+            "prompt_tokens": 2580,
+            "completion_tokens": 48,
+            "total_tokens": 2628
+          },
+          "error": null
+        },
+        {
+          "id": "burst-001",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 14,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1230,
+          "usage": {
+            "prompt_tokens": 2627,
+            "completion_tokens": 29,
+            "total_tokens": 2656
+          },
+          "error": null
+        },
+        {
+          "id": "memory-001",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 50.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 6,
+          "questions": 0,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 844,
+          "usage": {
+            "prompt_tokens": 2654,
+            "completion_tokens": 34,
+            "total_tokens": 2688
+          },
+          "error": null
+        },
+        {
+          "id": "fact-001",
+          "category": "factcheck",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1752,
+          "usage": {
+            "prompt_tokens": 2577,
+            "completion_tokens": 87,
+            "total_tokens": 2664
+          },
+          "error": null
+        },
+        {
+          "id": "tool-001",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1525,
+          "usage": {
+            "prompt_tokens": 2586,
+            "completion_tokens": 79,
+            "total_tokens": 2665
+          },
+          "error": null
+        },
+        {
+          "id": "mood-001",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 770,
+          "usage": {
+            "prompt_tokens": 2505,
+            "completion_tokens": 33,
+            "total_tokens": 2538
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-001",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 66.7,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 498,
+          "usage": {
+            "prompt_tokens": 2560,
+            "completion_tokens": 1,
+            "total_tokens": 2561
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-001",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 32,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1514,
+          "usage": {
+            "prompt_tokens": 2554,
+            "completion_tokens": 57,
+            "total_tokens": 2611
+          },
+          "error": null
+        },
+        {
+          "id": "daily-002",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 31,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 835,
+          "usage": {
+            "prompt_tokens": 2573,
+            "completion_tokens": 22,
+            "total_tokens": 2595
+          },
+          "error": null
+        },
+        {
+          "id": "low-002",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 7,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2214,
+          "usage": {
+            "prompt_tokens": 2508,
+            "completion_tokens": 120,
+            "total_tokens": 2628
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-002",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 30,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1327,
+          "usage": {
+            "prompt_tokens": 2570,
+            "completion_tokens": 59,
+            "total_tokens": 2629
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-002",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 41,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1998,
+          "usage": {
+            "prompt_tokens": 2560,
+            "completion_tokens": 93,
+            "total_tokens": 2653
+          },
+          "error": null
+        },
+        {
+          "id": "burst-002",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": null,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 37,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1066,
+          "usage": {
+            "prompt_tokens": 2505,
+            "completion_tokens": 66,
+            "total_tokens": 2571
+          },
+          "error": null
+        },
+        {
+          "id": "memory-002",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 83,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3529,
+          "usage": {
+            "prompt_tokens": 2610,
+            "completion_tokens": 112,
+            "total_tokens": 2722
+          },
+          "error": null
+        },
+        {
+          "id": "fact-002",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 20,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1155,
+          "usage": {
+            "prompt_tokens": 2568,
+            "completion_tokens": 37,
+            "total_tokens": 2605
+          },
+          "error": null
+        },
+        {
+          "id": "tool-002",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 11,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 563,
+          "usage": {
+            "prompt_tokens": 2580,
+            "completion_tokens": 27,
+            "total_tokens": 2607
+          },
+          "error": null
+        },
+        {
+          "id": "mood-002",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 23,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1660,
+          "usage": {
+            "prompt_tokens": 2531,
+            "completion_tokens": 63,
+            "total_tokens": 2594
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-002",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "content",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 261,
+          "usage": {
+            "prompt_tokens": 2566,
+            "completion_tokens": 1,
+            "total_tokens": 2567
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-002",
+          "category": "bilingual",
+          "score": 99.30555555555556,
+          "passed": true,
+          "dimensions": {
+            "length": 96.3,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 115,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1598,
+          "usage": {
+            "prompt_tokens": 2552,
+            "completion_tokens": 86,
+            "total_tokens": 2638
+          },
+          "error": null
+        },
+        {
+          "id": "daily-003",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 7,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1532,
+          "usage": {
+            "prompt_tokens": 2563,
+            "completion_tokens": 31,
+            "total_tokens": 2594
+          },
+          "error": null
+        },
+        {
+          "id": "low-003",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 25,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3213,
+          "usage": {
+            "prompt_tokens": 2438,
+            "completion_tokens": 58,
+            "total_tokens": 2496
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-003",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 15,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2071,
+          "usage": {
+            "prompt_tokens": 2442,
+            "completion_tokens": 66,
+            "total_tokens": 2508
+          },
+          "error": null
+        },
+        {
+          "id": "memory-003",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 20,
+          "questions": 0,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 1516,
+          "usage": {
+            "prompt_tokens": 2648,
+            "completion_tokens": 44,
+            "total_tokens": 2692
+          },
+          "error": null
+        },
+        {
+          "id": "fact-003",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2239,
+          "usage": {
+            "prompt_tokens": 2604,
+            "completion_tokens": 41,
+            "total_tokens": 2645
+          },
+          "error": null
+        },
+        {
+          "id": "tool-003",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1328,
+          "usage": {
+            "prompt_tokens": 2595,
+            "completion_tokens": 97,
+            "total_tokens": 2692
+          },
+          "error": null
+        },
+        {
+          "id": "mood-003",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 19,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2509,
+          "usage": {
+            "prompt_tokens": 2566,
+            "completion_tokens": 40,
+            "total_tokens": 2606
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-003",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 119,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1325,
+          "usage": {
+            "prompt_tokens": 2545,
+            "completion_tokens": 74,
+            "total_tokens": 2619
+          },
+          "error": null
+        },
+        {
+          "id": "daily-004",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 12,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 661,
+          "usage": {
+            "prompt_tokens": 2606,
+            "completion_tokens": 31,
+            "total_tokens": 2637
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "variant": "state_first|label3d|full",
+      "arch": "state_first",
+      "mood": "label3d",
+      "memory": "full",
+      "label": "state_first / label3d / full",
+      "overall": 94.8,
+      "pass_rate": 87.1,
+      "dimensions": {
+        "length": 100.0,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 86.4,
+        "relationship": 92.2,
+        "language": 90.0,
+        "format": 100.0
+      },
+      "avg_chars": 33.3,
+      "avg_questions": 0.06,
+      "hard_failures": 4,
+      "tool_calls": 2,
+      "errors": 0,
+      "elapsed_ms": 4862,
+      "usage": {
+        "prompt_tokens": 81266,
+        "completion_tokens": 2271,
+        "total_tokens": 83537
+      },
+      "results": [
+        {
+          "id": "daily-001",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 27,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 997,
+          "usage": {
+            "prompt_tokens": 2642,
+            "completion_tokens": 54,
+            "total_tokens": 2696
+          },
+          "error": null
+        },
+        {
+          "id": "low-001",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 37,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2512,
+          "usage": {
+            "prompt_tokens": 2653,
+            "completion_tokens": 129,
+            "total_tokens": 2782
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-001",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 65,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1740,
+          "usage": {
+            "prompt_tokens": 2658,
+            "completion_tokens": 95,
+            "total_tokens": 2753
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-001",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 4,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2150,
+          "usage": {
+            "prompt_tokens": 2635,
+            "completion_tokens": 131,
+            "total_tokens": 2766
+          },
+          "error": null
+        },
+        {
+          "id": "burst-001",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 24,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 888,
+          "usage": {
+            "prompt_tokens": 2682,
+            "completion_tokens": 48,
+            "total_tokens": 2730
+          },
+          "error": null
+        },
+        {
+          "id": "memory-001",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 50.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 7,
+          "questions": 0,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 809,
+          "usage": {
+            "prompt_tokens": 2709,
+            "completion_tokens": 31,
+            "total_tokens": 2740
+          },
+          "error": null
+        },
+        {
+          "id": "fact-001",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": null,
+            "anti_ai": null,
+            "human_voice": null,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": null,
+            "format": null
+          },
+          "length": 95,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [
+            "web_search"
+          ],
+          "latency_ms": 921,
+          "usage": {
+            "prompt_tokens": 2632,
+            "completion_tokens": 55,
+            "total_tokens": 2687
+          },
+          "error": null
+        },
+        {
+          "id": "tool-001",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1047,
+          "usage": {
+            "prompt_tokens": 2641,
+            "completion_tokens": 71,
+            "total_tokens": 2712
+          },
+          "error": null
+        },
+        {
+          "id": "mood-001",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 17,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 801,
+          "usage": {
+            "prompt_tokens": 2560,
+            "completion_tokens": 32,
+            "total_tokens": 2592
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-001",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 66.7,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 4388,
+          "usage": {
+            "prompt_tokens": 2615,
+            "completion_tokens": 247,
+            "total_tokens": 2862
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-001",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 33,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1495,
+          "usage": {
+            "prompt_tokens": 2609,
+            "completion_tokens": 68,
+            "total_tokens": 2677
+          },
+          "error": null
+        },
+        {
+          "id": "daily-002",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 25,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1334,
+          "usage": {
+            "prompt_tokens": 2628,
+            "completion_tokens": 40,
+            "total_tokens": 2668
+          },
+          "error": null
+        },
+        {
+          "id": "low-002",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 6,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3819,
+          "usage": {
+            "prompt_tokens": 2563,
+            "completion_tokens": 212,
+            "total_tokens": 2775
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-002",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 27,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1301,
+          "usage": {
+            "prompt_tokens": 2625,
+            "completion_tokens": 48,
+            "total_tokens": 2673
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-002",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 29,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2012,
+          "usage": {
+            "prompt_tokens": 2615,
+            "completion_tokens": 71,
+            "total_tokens": 2686
+          },
+          "error": null
+        },
+        {
+          "id": "burst-002",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": null,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 38,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2324,
+          "usage": {
+            "prompt_tokens": 2560,
+            "completion_tokens": 109,
+            "total_tokens": 2669
+          },
+          "error": null
+        },
+        {
+          "id": "memory-002",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 80,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2503,
+          "usage": {
+            "prompt_tokens": 2665,
+            "completion_tokens": 124,
+            "total_tokens": 2789
+          },
+          "error": null
+        },
+        {
+          "id": "fact-002",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 14,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 818,
+          "usage": {
+            "prompt_tokens": 2623,
+            "completion_tokens": 30,
+            "total_tokens": 2653
+          },
+          "error": null
+        },
+        {
+          "id": "tool-002",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 12,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1089,
+          "usage": {
+            "prompt_tokens": 2635,
+            "completion_tokens": 28,
+            "total_tokens": 2663
+          },
+          "error": null
+        },
+        {
+          "id": "mood-002",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 26,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 894,
+          "usage": {
+            "prompt_tokens": 2586,
+            "completion_tokens": 50,
+            "total_tokens": 2636
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-002",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "content",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 816,
+          "usage": {
+            "prompt_tokens": 2621,
+            "completion_tokens": 51,
+            "total_tokens": 2672
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-002",
+          "category": "bilingual",
+          "score": 99.975,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 99.9,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 70,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 830,
+          "usage": {
+            "prompt_tokens": 2607,
+            "completion_tokens": 62,
+            "total_tokens": 2669
+          },
+          "error": null
+        },
+        {
+          "id": "daily-003",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 481,
+          "usage": {
+            "prompt_tokens": 2618,
+            "completion_tokens": 25,
+            "total_tokens": 2643
+          },
+          "error": null
+        },
+        {
+          "id": "low-003",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1232,
+          "usage": {
+            "prompt_tokens": 2493,
+            "completion_tokens": 84,
+            "total_tokens": 2577
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-003",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 12,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1118,
+          "usage": {
+            "prompt_tokens": 2497,
+            "completion_tokens": 49,
+            "total_tokens": 2546
+          },
+          "error": null
+        },
+        {
+          "id": "memory-003",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 20,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1116,
+          "usage": {
+            "prompt_tokens": 2703,
+            "completion_tokens": 49,
+            "total_tokens": 2752
+          },
+          "error": null
+        },
+        {
+          "id": "fact-003",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 26,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1003,
+          "usage": {
+            "prompt_tokens": 2659,
+            "completion_tokens": 47,
+            "total_tokens": 2706
+          },
+          "error": null
+        },
+        {
+          "id": "tool-003",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 122,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [
+            "remember"
+          ],
+          "latency_ms": 901,
+          "usage": {
+            "prompt_tokens": 2650,
+            "completion_tokens": 63,
+            "total_tokens": 2713
+          },
+          "error": null
+        },
+        {
+          "id": "mood-003",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 15,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 860,
+          "usage": {
+            "prompt_tokens": 2621,
+            "completion_tokens": 46,
+            "total_tokens": 2667
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-003",
+          "category": "bilingual",
+          "score": 99.85714285714286,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 99.3,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 154,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1259,
+          "usage": {
+            "prompt_tokens": 2600,
+            "completion_tokens": 86,
+            "total_tokens": 2686
+          },
+          "error": null
+        },
+        {
+          "id": "daily-004",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 15,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 618,
+          "usage": {
+            "prompt_tokens": 2661,
+            "completion_tokens": 36,
+            "total_tokens": 2697
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "variant": "state_first|intuition|full",
+      "arch": "state_first",
+      "mood": "intuition",
+      "memory": "full",
+      "label": "state_first / intuition / full",
+      "overall": 92.1,
+      "pass_rate": 80.6,
+      "dimensions": {
+        "length": 97.2,
+        "anti_ai": 100.0,
+        "human_voice": 99.6,
+        "truthfulness": 68.2,
+        "relationship": 88.9,
+        "language": 83.9,
+        "format": 98.7
+      },
+      "avg_chars": 28.2,
+      "avg_questions": 0.06,
+      "hard_failures": 6,
+      "tool_calls": 0,
+      "errors": 0,
+      "elapsed_ms": 5896,
+      "usage": {
+        "prompt_tokens": 80119,
+        "completion_tokens": 2067,
+        "total_tokens": 82186
+      },
+      "results": [
+        {
+          "id": "daily-001",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1251,
+          "usage": {
+            "prompt_tokens": 2605,
+            "completion_tokens": 59,
+            "total_tokens": 2664
+          },
+          "error": null
+        },
+        {
+          "id": "low-001",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 26,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1866,
+          "usage": {
+            "prompt_tokens": 2616,
+            "completion_tokens": 105,
+            "total_tokens": 2721
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-001",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 46,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2011,
+          "usage": {
+            "prompt_tokens": 2621,
+            "completion_tokens": 95,
+            "total_tokens": 2716
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-001",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 2,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1178,
+          "usage": {
+            "prompt_tokens": 2598,
+            "completion_tokens": 47,
+            "total_tokens": 2645
+          },
+          "error": null
+        },
+        {
+          "id": "burst-001",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1179,
+          "usage": {
+            "prompt_tokens": 2645,
+            "completion_tokens": 46,
+            "total_tokens": 2691
+          },
+          "error": null
+        },
+        {
+          "id": "memory-001",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 50.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 6,
+          "questions": 0,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 1175,
+          "usage": {
+            "prompt_tokens": 2672,
+            "completion_tokens": 47,
+            "total_tokens": 2719
+          },
+          "error": null
+        },
+        {
+          "id": "fact-001",
+          "category": "factcheck",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1177,
+          "usage": {
+            "prompt_tokens": 2595,
+            "completion_tokens": 66,
+            "total_tokens": 2661
+          },
+          "error": null
+        },
+        {
+          "id": "tool-001",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1169,
+          "usage": {
+            "prompt_tokens": 2604,
+            "completion_tokens": 70,
+            "total_tokens": 2674
+          },
+          "error": null
+        },
+        {
+          "id": "mood-001",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1167,
+          "usage": {
+            "prompt_tokens": 2523,
+            "completion_tokens": 32,
+            "total_tokens": 2555
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-001",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 66.7,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 510,
+          "usage": {
+            "prompt_tokens": 2578,
+            "completion_tokens": 1,
+            "total_tokens": 2579
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-001",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 44,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1383,
+          "usage": {
+            "prompt_tokens": 2572,
+            "completion_tokens": 92,
+            "total_tokens": 2664
+          },
+          "error": null
+        },
+        {
+          "id": "daily-002",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 29,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 951,
+          "usage": {
+            "prompt_tokens": 2591,
+            "completion_tokens": 49,
+            "total_tokens": 2640
+          },
+          "error": null
+        },
+        {
+          "id": "low-002",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 18,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 4717,
+          "usage": {
+            "prompt_tokens": 2526,
+            "completion_tokens": 328,
+            "total_tokens": 2854
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-002",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 19,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1204,
+          "usage": {
+            "prompt_tokens": 2588,
+            "completion_tokens": 76,
+            "total_tokens": 2664
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-002",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 15,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1107,
+          "usage": {
+            "prompt_tokens": 2578,
+            "completion_tokens": 55,
+            "total_tokens": 2633
+          },
+          "error": null
+        },
+        {
+          "id": "burst-002",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": null,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 56,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1800,
+          "usage": {
+            "prompt_tokens": 2523,
+            "completion_tokens": 78,
+            "total_tokens": 2601
+          },
+          "error": null
+        },
+        {
+          "id": "memory-002",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 59,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2248,
+          "usage": {
+            "prompt_tokens": 2628,
+            "completion_tokens": 122,
+            "total_tokens": 2750
+          },
+          "error": null
+        },
+        {
+          "id": "fact-002",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 11,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 592,
+          "usage": {
+            "prompt_tokens": 2586,
+            "completion_tokens": 28,
+            "total_tokens": 2614
+          },
+          "error": null
+        },
+        {
+          "id": "tool-002",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1067,
+          "usage": {
+            "prompt_tokens": 2598,
+            "completion_tokens": 34,
+            "total_tokens": 2632
+          },
+          "error": null
+        },
+        {
+          "id": "mood-002",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 20,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1461,
+          "usage": {
+            "prompt_tokens": 2549,
+            "completion_tokens": 60,
+            "total_tokens": 2609
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-002",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "content",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 375,
+          "usage": {
+            "prompt_tokens": 2584,
+            "completion_tokens": 1,
+            "total_tokens": 2585
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-002",
+          "category": "bilingual",
+          "score": 98.95833333333334,
+          "passed": true,
+          "dimensions": {
+            "length": 94.4,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 112,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1034,
+          "usage": {
+            "prompt_tokens": 2570,
+            "completion_tokens": 63,
+            "total_tokens": 2633
+          },
+          "error": null
+        },
+        {
+          "id": "daily-003",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 5,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2223,
+          "usage": {
+            "prompt_tokens": 2581,
+            "completion_tokens": 35,
+            "total_tokens": 2616
+          },
+          "error": null
+        },
+        {
+          "id": "low-003",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 13,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1055,
+          "usage": {
+            "prompt_tokens": 2456,
+            "completion_tokens": 60,
+            "total_tokens": 2516
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-003",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 13,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1042,
+          "usage": {
+            "prompt_tokens": 2460,
+            "completion_tokens": 47,
+            "total_tokens": 2507
+          },
+          "error": null
+        },
+        {
+          "id": "memory-003",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1059,
+          "usage": {
+            "prompt_tokens": 2666,
+            "completion_tokens": 57,
+            "total_tokens": 2723
+          },
+          "error": null
+        },
+        {
+          "id": "fact-003",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 8,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 709,
+          "usage": {
+            "prompt_tokens": 2622,
+            "completion_tokens": 49,
+            "total_tokens": 2671
+          },
+          "error": null
+        },
+        {
+          "id": "tool-003",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 37.5,
+            "anti_ai": 100.0,
+            "human_voice": 92.5,
+            "truthfulness": 0.0,
+            "relationship": 100.0,
+            "language": 0.0,
+            "format": 60.0
+          },
+          "length": 118,
+          "questions": 0,
+          "hard_failures": [
+            "tool",
+            "language",
+            "format"
+          ],
+          "tools": [],
+          "latency_ms": 897,
+          "usage": {
+            "prompt_tokens": 2613,
+            "completion_tokens": 57,
+            "total_tokens": 2670
+          },
+          "error": null
+        },
+        {
+          "id": "mood-003",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 11,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 860,
+          "usage": {
+            "prompt_tokens": 2584,
+            "completion_tokens": 34,
+            "total_tokens": 2618
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-003",
+          "category": "bilingual",
+          "score": 95.21428571428571,
+          "passed": true,
+          "dimensions": {
+            "length": 81.7,
+            "anti_ai": 100.0,
+            "human_voice": 96.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 136,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2044,
+          "usage": {
+            "prompt_tokens": 2563,
+            "completion_tokens": 139,
+            "total_tokens": 2702
+          },
+          "error": null
+        },
+        {
+          "id": "daily-004",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1185,
+          "usage": {
+            "prompt_tokens": 2624,
+            "completion_tokens": 35,
+            "total_tokens": 2659
+          },
+          "error": null
+        }
+      ]
+    },
+    {
+      "variant": "state_first|guidance|full",
+      "arch": "state_first",
+      "mood": "guidance",
+      "memory": "full",
+      "label": "state_first / guidance / full",
+      "overall": 94.6,
+      "pass_rate": 87.1,
+      "dimensions": {
+        "length": 98.7,
+        "anti_ai": 100.0,
+        "human_voice": 100.0,
+        "truthfulness": 86.4,
+        "relationship": 92.2,
+        "language": 90.0,
+        "format": 100.0
+      },
+      "avg_chars": 32.7,
+      "avg_questions": 0.1,
+      "hard_failures": 4,
+      "tool_calls": 2,
+      "errors": 0,
+      "elapsed_ms": 5515,
+      "usage": {
+        "prompt_tokens": 80119,
+        "completion_tokens": 1939,
+        "total_tokens": 82058
+      },
+      "results": [
+        {
+          "id": "daily-001",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 19,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1529,
+          "usage": {
+            "prompt_tokens": 2605,
+            "completion_tokens": 44,
+            "total_tokens": 2649
+          },
+          "error": null
+        },
+        {
+          "id": "low-001",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 28,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2034,
+          "usage": {
+            "prompt_tokens": 2616,
+            "completion_tokens": 81,
+            "total_tokens": 2697
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-001",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 40,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 3407,
+          "usage": {
+            "prompt_tokens": 2621,
+            "completion_tokens": 141,
+            "total_tokens": 2762
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-001",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 2,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1014,
+          "usage": {
+            "prompt_tokens": 2598,
+            "completion_tokens": 48,
+            "total_tokens": 2646
+          },
+          "error": null
+        },
+        {
+          "id": "burst-001",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 25,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1529,
+          "usage": {
+            "prompt_tokens": 2645,
+            "completion_tokens": 48,
+            "total_tokens": 2693
+          },
+          "error": null
+        },
+        {
+          "id": "memory-001",
+          "category": "memory",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 50.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 12,
+          "questions": 0,
+          "hard_failures": [
+            "facts"
+          ],
+          "tools": [],
+          "latency_ms": 1025,
+          "usage": {
+            "prompt_tokens": 2672,
+            "completion_tokens": 37,
+            "total_tokens": 2709
+          },
+          "error": null
+        },
+        {
+          "id": "fact-001",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": null,
+            "anti_ai": null,
+            "human_voice": null,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": null,
+            "format": null
+          },
+          "length": 95,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [
+            "web_search"
+          ],
+          "latency_ms": 1089,
+          "usage": {
+            "prompt_tokens": 2595,
+            "completion_tokens": 67,
+            "total_tokens": 2662
+          },
+          "error": null
+        },
+        {
+          "id": "tool-001",
+          "category": "tools",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 0.0,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "facts",
+            "tool",
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 1065,
+          "usage": {
+            "prompt_tokens": 2604,
+            "completion_tokens": 68,
+            "total_tokens": 2672
+          },
+          "error": null
+        },
+        {
+          "id": "mood-001",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1014,
+          "usage": {
+            "prompt_tokens": 2523,
+            "completion_tokens": 34,
+            "total_tokens": 2557
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-001",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 66.7,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 476,
+          "usage": {
+            "prompt_tokens": 2578,
+            "completion_tokens": 1,
+            "total_tokens": 2579
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-001",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 35,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1351,
+          "usage": {
+            "prompt_tokens": 2572,
+            "completion_tokens": 64,
+            "total_tokens": 2636
+          },
+          "error": null
+        },
+        {
+          "id": "daily-002",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 21,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1511,
+          "usage": {
+            "prompt_tokens": 2591,
+            "completion_tokens": 54,
+            "total_tokens": 2645
+          },
+          "error": null
+        },
+        {
+          "id": "low-002",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 22,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2252,
+          "usage": {
+            "prompt_tokens": 2526,
+            "completion_tokens": 103,
+            "total_tokens": 2629
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-002",
+          "category": "conflict",
+          "score": 97.5,
+          "passed": true,
+          "dimensions": {
+            "length": 86.7,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 27,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1427,
+          "usage": {
+            "prompt_tokens": 2588,
+            "completion_tokens": 63,
+            "total_tokens": 2651
+          },
+          "error": null
+        },
+        {
+          "id": "blocked-002",
+          "category": "blocked",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 37,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1483,
+          "usage": {
+            "prompt_tokens": 2578,
+            "completion_tokens": 68,
+            "total_tokens": 2646
+          },
+          "error": null
+        },
+        {
+          "id": "burst-002",
+          "category": "burst",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": null,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 46,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2196,
+          "usage": {
+            "prompt_tokens": 2523,
+            "completion_tokens": 94,
+            "total_tokens": 2617
+          },
+          "error": null
+        },
+        {
+          "id": "memory-002",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 57,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2971,
+          "usage": {
+            "prompt_tokens": 2628,
+            "completion_tokens": 129,
+            "total_tokens": 2757
+          },
+          "error": null
+        },
+        {
+          "id": "fact-002",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 10,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 593,
+          "usage": {
+            "prompt_tokens": 2586,
+            "completion_tokens": 28,
+            "total_tokens": 2614
+          },
+          "error": null
+        },
+        {
+          "id": "tool-002",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 23,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2299,
+          "usage": {
+            "prompt_tokens": 2598,
+            "completion_tokens": 61,
+            "total_tokens": 2659
+          },
+          "error": null
+        },
+        {
+          "id": "mood-002",
+          "category": "mood",
+          "score": 95.3125,
+          "passed": true,
+          "dimensions": {
+            "length": 75.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 17,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 2387,
+          "usage": {
+            "prompt_tokens": 2549,
+            "completion_tokens": 79,
+            "total_tokens": 2628
+          },
+          "error": null
+        },
+        {
+          "id": "proactive-002",
+          "category": "proactive",
+          "score": 60.0,
+          "passed": false,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 0.0,
+            "language": 0.0,
+            "format": 100.0
+          },
+          "length": 0,
+          "questions": 0,
+          "hard_failures": [
+            "silence",
+            "content",
+            "language"
+          ],
+          "tools": [],
+          "latency_ms": 320,
+          "usage": {
+            "prompt_tokens": 2584,
+            "completion_tokens": 1,
+            "total_tokens": 2585
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-002",
+          "category": "bilingual",
+          "score": 99.775,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 98.8,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 57,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1688,
+          "usage": {
+            "prompt_tokens": 2570,
+            "completion_tokens": 84,
+            "total_tokens": 2654
+          },
+          "error": null
+        },
+        {
+          "id": "daily-003",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 19,
+          "questions": 1,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1110,
+          "usage": {
+            "prompt_tokens": 2581,
+            "completion_tokens": 48,
+            "total_tokens": 2629
+          },
+          "error": null
+        },
+        {
+          "id": "low-003",
+          "category": "low_mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 39,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1721,
+          "usage": {
+            "prompt_tokens": 2456,
+            "completion_tokens": 72,
+            "total_tokens": 2528
+          },
+          "error": null
+        },
+        {
+          "id": "conflict-003",
+          "category": "conflict",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 28,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1434,
+          "usage": {
+            "prompt_tokens": 2460,
+            "completion_tokens": 44,
+            "total_tokens": 2504
+          },
+          "error": null
+        },
+        {
+          "id": "memory-003",
+          "category": "memory",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 27,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1316,
+          "usage": {
+            "prompt_tokens": 2666,
+            "completion_tokens": 64,
+            "total_tokens": 2730
+          },
+          "error": null
+        },
+        {
+          "id": "fact-003",
+          "category": "factcheck",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 7,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 841,
+          "usage": {
+            "prompt_tokens": 2622,
+            "completion_tokens": 31,
+            "total_tokens": 2653
+          },
+          "error": null
+        },
+        {
+          "id": "tool-003",
+          "category": "tools",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": 100.0,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 126,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [
+            "remember"
+          ],
+          "latency_ms": 942,
+          "usage": {
+            "prompt_tokens": 2613,
+            "completion_tokens": 67,
+            "total_tokens": 2680
+          },
+          "error": null
+        },
+        {
+          "id": "mood-003",
+          "category": "mood",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 967,
+          "usage": {
+            "prompt_tokens": 2584,
+            "completion_tokens": 50,
+            "total_tokens": 2634
+          },
+          "error": null
+        },
+        {
+          "id": "bilingual-003",
+          "category": "bilingual",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 147,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 1528,
+          "usage": {
+            "prompt_tokens": 2563,
+            "completion_tokens": 134,
+            "total_tokens": 2697
+          },
+          "error": null
+        },
+        {
+          "id": "daily-004",
+          "category": "daily_chat",
+          "score": 100.0,
+          "passed": true,
+          "dimensions": {
+            "length": 100.0,
+            "anti_ai": 100.0,
+            "human_voice": 100.0,
+            "truthfulness": null,
+            "relationship": 100.0,
+            "language": 100.0,
+            "format": 100.0
+          },
+          "length": 16,
+          "questions": 0,
+          "hard_failures": [],
+          "tools": [],
+          "latency_ms": 515,
+          "usage": {
+            "prompt_tokens": 2624,
+            "completion_tokens": 32,
+            "total_tokens": 2656
+          },
+          "error": null
+        }
+      ]
+    }
+  ]
+}

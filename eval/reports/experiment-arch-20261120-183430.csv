@@ -1,0 +1,9 @@
+variant,arch,mood,memory,overall,pass_rate,length,anti_ai,human_voice,truthfulness,relationship,language,format,avg_chars,avg_questions,hard_failures,tool_calls,errors,elapsed_ms
+baseline / label3d / full,baseline,label3d,full,92.1,80.6,97.6,100.0,99.6,68.2,88.9,83.9,98.7,28.0,0.1,6,0,0,4557
+state_first / label3d / full,state_first,label3d,full,94.8,87.1,99.8,100.0,99.9,86.4,92.2,90.0,100.0,31.8,0.1,4,2,0,6861
+rules_first / label3d / full,rules_first,label3d,full,93.0,83.9,97.0,100.0,99.6,68.2,93.3,90.3,98.7,33.7,0.13,5,1,0,7759
+compact / label3d / full,compact,label3d,full,93.4,83.9,97.8,99.3,99.8,68.2,90.0,87.1,98.7,29.7,0.06,5,0,0,7467
+no_tools / label3d / full,no_tools,label3d,full,92.3,80.6,100.0,100.0,99.6,77.3,95.6,87.1,98.7,25.1,0.1,6,0,0,10574
+dossier / label3d / full,dossier,label3d,full,93.2,83.9,98.9,99.7,100.0,77.3,92.2,90.0,100.0,33.1,0.13,5,2,0,7677
+minimal / label3d / full,minimal,label3d,full,91.9,80.6,99.1,100.0,99.3,77.3,96.7,90.3,100.0,14.7,0.1,6,0,0,4718
+double_rules / label3d / full,double_rules,label3d,full,91.8,80.6,98.1,100.0,99.9,68.2,85.6,83.9,100.0,26.4,0.06,6,0,0,9927

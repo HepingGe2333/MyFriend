@@ -357,3 +357,22 @@ jobs:
 - 真正的短板是**事实与工具（68.2）**：会编学校/城市、工具结果用 App 不认识的 XML 包装、明确要求 `remember` 时不调用、长对话里答不回关键事实。
 - 下一轮如果只做一件事：把「不知道就说不知道」变成可执行的硬约束（例如事实类场景先检索/先承认不确定），并在 `tool-003` 这类明确请求上强制走 `remember`。
 - 本平台只负责**量化与留证**；上述问题按任务约束只记录在报告与本节，没有改动 `app/ios/agentd`。
+
+## 方案对比实验（0.15）
+
+`eval/experiment.py` 在**不改产品代码**的前提下，用同一批 31 个场景比较：
+
+- 提示词架构：baseline / state_first / rules_first / compact / no_tools / dossier / minimal / double_rules
+- 心情模式：none / label / label3d / intuition / guidance
+- 记忆模式：none / short / long / topics / full
+- 组合：`--stage custom --arch ... --mood ... --memory ...`
+
+```bash
+python3 -m eval.experiment --stage arch  --concurrency 10
+python3 -m eval.experiment --stage mood  --arch state_first --concurrency 10
+python3 -m eval.experiment --stage memory --arch state_first --mood label3d --concurrency 10
+```
+
+每个方案重复 3–5 轮取中位数；报告含总分、通过率、7 个维度、平均字数、硬失败、token 用量。
+最新汇总见 `eval/reports/experiment-summary-*.md`。campus-chat 走本机代理
+`http://127.0.0.1:11435/v1`，key 从 `CAMPUS_API_KEY` / `PROXY_API_KEY` 读取，不写入报告。

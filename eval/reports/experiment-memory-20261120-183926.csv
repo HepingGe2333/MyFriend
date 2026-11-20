@@ -1,0 +1,6 @@
+variant,arch,mood,memory,overall,pass_rate,length,anti_ai,human_voice,truthfulness,relationship,language,format,avg_chars,avg_questions,hard_failures,tool_calls,errors,elapsed_ms
+state_first / label3d / none,state_first,label3d,none,94.8,87.1,99.6,100.0,100.0,77.3,90.0,90.3,100.0,26.9,0.13,4,1,0,4485
+state_first / label3d / short,state_first,label3d,short,94.8,87.1,99.7,100.0,100.0,77.3,90.0,90.3,100.0,28.5,0.13,4,1,0,8079
+state_first / label3d / long,state_first,label3d,long,94.6,87.1,99.0,100.0,99.9,86.4,95.6,93.1,100.0,33.4,0.06,4,3,0,4078
+state_first / label3d / topics,state_first,label3d,topics,93.3,83.9,98.7,100.0,100.0,68.2,95.6,90.0,100.0,29.5,0.16,5,1,0,8161
+state_first / label3d / full,state_first,label3d,full,93.4,83.9,98.7,100.0,98.9,68.2,98.9,90.0,97.3,32.9,0.16,5,1,0,4665

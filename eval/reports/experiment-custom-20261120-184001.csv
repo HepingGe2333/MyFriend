@@ -1,0 +1,5 @@
+variant,arch,mood,memory,overall,pass_rate,length,anti_ai,human_voice,truthfulness,relationship,language,format,avg_chars,avg_questions,hard_failures,tool_calls,errors,elapsed_ms
+state_first / guidance / long,state_first,guidance,long,92.3,80.6,98.0,100.0,99.8,68.2,88.9,83.9,98.7,28.8,0.1,6,0,0,7702
+state_first / guidance / full,state_first,guidance,full,92.0,80.6,96.9,100.0,99.5,68.2,88.9,83.9,98.7,29.2,0.13,6,0,0,4789
+compact / guidance / long,compact,guidance,long,93.3,83.9,98.7,100.0,99.8,77.3,92.2,90.0,100.0,35.2,0.06,5,2,0,5306
+compact / guidance / full,compact,guidance,full,93.5,83.9,100.0,100.0,99.5,77.3,92.2,90.3,100.0,33.2,0.06,5,2,0,4934
