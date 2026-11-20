@@ -64,3 +64,14 @@ python3 -m eval.bench2.run --variants compact/g06/full,compact/g17/full,compact/
 ```
 
 汇总：`eval/reports/bench2-guidance-summary-*.md`。当前第一梯队：g06/g17/g12/g05（差距在噪声内）。
+
+## 上下文工程全维度搜索
+
+`eval/context_search.py` 把参数化搜索推广到 8 个维度：
+架构、引导（g01–g20）、记忆、反 AI 规则、工具段、历史格式、状态段、人设段。
+一次只改一个维度做坐标下降，再组合验证；输出 `eval/reports/context-search-*.md`。
+
+```bash
+python3 -m eval.context_search --stage axes --samples 1 --concurrency 10
+python3 -m eval.context_search --stage combine --profiles profiles.json --samples 3
+```
