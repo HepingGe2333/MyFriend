@@ -109,6 +109,67 @@ class ServerBackupAdapterTest {
         assertEquals(4, bundle.memories.single().importance)
     }
 
+    // ------------------------------------------------------------------ 0.14.1 §11
+
+    @Test
+    fun `client_extras 里的客户端独有段提到顶层`() {
+        val raw = """
+            {"format":"myfriend.backup","formatVersion":6,"apiKeysOmitted":true,
+             "personas":[{"id":"p1","name":"林深","updatedAt":1}],
+             "sessions":[{"id":"s1","personaId":"p1","title":"日常","updatedAt":1}],
+             "proactiveRules":[{"id":"rule-1","personaId":"p1","kind":"DAILY","hint":"晚上问一句"}],
+             "client_extras":{
+               "memoryConsolidations":[{"id":"run-1","personaId":"p1","at":1,"summary":"并了两条"}],
+               "agentIntents":[{"id":"intent-1","personaId":"p1","kind":"REACH_OUT"}]
+             }}
+        """.trimIndent()
+
+        val local = ServerBackupAdapter.toLocalBackupJson(raw)!!
+        val root = kotlinx.serialization.json.Json.parseToJsonElement(local).jsonObject
+
+        assertEquals(1, (root["memoryConsolidations"] as JsonArray).size)
+        assertEquals(1, (root["agentIntents"] as JsonArray).size)
+        // 顶层已有 proactiveRules：以顶层为准，不被夹层覆盖。
+        assertEquals(1, (root["proactiveRules"] as JsonArray).size)
+        assertTrue("夹层本身不能留在本地备份里", !root.containsKey("client_extras"))
+
+        val bundle = (BackupCodec.decode(local) as BackupDecodeResult.Success).bundle
+        assertEquals(listOf("run-1"), bundle.memoryConsolidations.map { it.id })
+        assertEquals(listOf("intent-1"), bundle.agentIntents.map { it.id })
+        assertEquals(listOf("rule-1"), bundle.proactiveRules.map { it.id })
+    }
+
+    @Test
+    fun `client_extras 的段在顶层只有空数组占位时仍然接回`() {
+        val raw = """
+            {"format":"myfriend.backup","formatVersion":6,"apiKeysOmitted":true,
+             "personas":[{"id":"p1","name":"林深","updatedAt":1}],
+             "sessions":[{"id":"s1","personaId":"p1","title":"日常","updatedAt":1}],
+             "proactiveRules":[],
+             "client_extras":{"proactiveRules":[{"id":"rule-9","personaId":"p1","kind":"DAILY","hint":"睡前问一句"}]}}
+        """.trimIndent()
+
+        val bundle = (BackupCodec.decode(ServerBackupAdapter.toLocalBackupJson(raw)!!) as BackupDecodeResult.Success).bundle
+
+        assertEquals(listOf("rule-9"), bundle.proactiveRules.map { it.id })
+    }
+
+    @Test
+    fun `服务端 extensions 被忽略 不进本机缓存`() {
+        val raw = """
+            {"format":"myfriend.backup","formatVersion":6,"apiKeysOmitted":true,
+             "personas":[{"id":"p1","name":"林深","updatedAt":1}],
+             "extensions":{"mentalActivities":[{"id":"ma-1","thought":"不想说"}],
+                            "sessionMemory":{"shortSummary":"在赶项目"}}}
+        """.trimIndent()
+
+        val local = ServerBackupAdapter.toLocalBackupJson(raw)!!
+        val root = kotlinx.serialization.json.Json.parseToJsonElement(local).jsonObject
+
+        assertTrue("extensions 是服务端专有段，客户端不该镜像", !root.containsKey("extensions"))
+        assertTrue((BackupCodec.decode(local) as BackupDecodeResult.Success).bundle.personas.isNotEmpty())
+    }
+
     @Test
     fun `适配后的备份仍能被预览解码 且各段数量不变`() = runBlocking {
         val local = ServerBackupAdapter.toLocalBackupJson(serverBackup)!!

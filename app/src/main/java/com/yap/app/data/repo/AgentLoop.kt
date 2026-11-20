@@ -151,6 +151,9 @@ class AgentLoop @Inject constructor(
 
         val persona = pickPersona(settings.activePersonaId)
             ?: return Outcome(BACKOFF_MINUTES, false, "还没有可以对话的人格")
+        if (com.yap.app.domain.BlockPolicy.isBlocked(persona.blockedUntil, now)) {
+            return Outcome(IDLE_MAX, false, "拉黑期间不主动")
+        }
 
         // 日记里到点的提醒先变成念头：心跳每 30 秒会调它一次，这里只是「主动 tick 也顺手检查一遍」，
         // 同一条提醒不会触发两次（DiaryRepository 用带条件的 UPDATE 抢占）。

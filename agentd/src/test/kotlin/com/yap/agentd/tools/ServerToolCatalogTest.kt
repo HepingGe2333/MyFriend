@@ -27,10 +27,13 @@ class ServerToolCatalogTest {
             ((function.fields.getValue("name") as JsonValue.Str).value)
         }
         assertEquals(ServerToolCatalog.names, names)
-        assertEquals(10, names.size)
+        assertEquals(16, names.size)
         assertTrue(names.containsAll(listOf(
             "stay_silent", "defer_reply", "set_mood", "set_activity", "diary",
-            "remember", "recall", "web_search", "web_fetch", "sticker"
+            "remember", "recall", "web_search", "web_fetch", "sticker",
+            "send_message", "block_user",
+            // 0.14.1：四个「以前服务端做不到」的工具现在真的注册了（提示词不再落后于实现）。
+            "update_persona", "set_quiet_hours", "listen", "watch"
         )))
     }
 
@@ -79,20 +82,26 @@ class ServerToolCatalogTest {
     @Test
     fun `byName is trimmed and unknown tools return null`() {
         assertNotNull(ServerToolCatalog.byName(" set_mood "))
+        assertNotNull(ServerToolCatalog.byName(" update_persona "))
         assertEquals(null, ServerToolCatalog.byName("think"))
-        assertEquals(null, ServerToolCatalog.byName("update_persona"))
+        assertEquals(null, ServerToolCatalog.byName("block"))
     }
 
     @Test
-    fun `catalog does not advertise tools the server cannot execute`() {
-        // 服务端不做图像合成、看不到语音/视频、不写作息：这些工具不能出现在表里。
-        for (name in listOf("think", "listen", "watch", "update_persona", "set_quiet_hours")) {
-            assertFalse("服务端不该注册 $name", ServerToolCatalog.names.contains(name))
+    fun `catalog advertises exactly what the server can now execute`() {
+        // 0.14.1：`update_persona` / `set_quiet_hours` / `listen` / `watch` / `sticker.make` 都有实现。
+        for (name in listOf("listen", "watch", "update_persona", "set_quiet_hours")) {
+            assertTrue("服务端应该注册 $name", ServerToolCatalog.names.contains(name))
         }
-        // sticker 的 action 也不该提供 make（描述里只承诺 send/list）。
+        // `think` 仍然只是客户端的提示词技巧，服务端不注册。
+        assertFalse("服务端不该注册 think", ServerToolCatalog.names.contains("think"))
+        // sticker 的 action 现在包含 make（服务端真的会合成 GIF）。
         val sticker = ServerToolCatalog.byName("sticker")!!
-        assertFalse(sticker.description.contains("现做"))
-        XCTAssertSchemaEnum(sticker.parametersJson, "action", listOf("send", "list"))
+        assertTrue(sticker.description.contains("现做"))
+        XCTAssertSchemaEnum(sticker.parametersJson, "action", listOf("send", "list", "make"))
+        // listen/watch 的参数是可选的音频/视频 id。
+        assertTrue(ServerToolCatalog.byName("listen")!!.parametersJson.contains("audioId"))
+        assertTrue(ServerToolCatalog.byName("watch")!!.parametersJson.contains("videoId"))
     }
 
     private fun XCTAssertSchemaEnum(parametersJson: String, field: String, expected: List<String>) {

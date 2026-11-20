@@ -269,7 +269,12 @@ private final class RecordingToolRunner: ToolRunning {
     private(set) var callCount = 0
     private(set) var lastName: String?
 
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         callCount += 1
         lastName = invocation.name
         if let result { return result }

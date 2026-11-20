@@ -67,6 +67,53 @@ class ServerSseTest {
     }
 
     @Test
+    fun `解析器认识 0_14 的 message_created 完整消息`() {
+        val parser = ServerSseParser()
+        val events = mutableListOf<ServerChatEvent>()
+        listOf(
+            "event: message.created",
+            "data: {\"message\":{\"id\":\"a-1\",\"sessionId\":\"s-1\",\"role\":\"ASSISTANT\",\"content\":\"第一条\",\"createdAt\":42,\"blocked\":false,\"visibleAt\":142}}",
+            ""
+        ).forEach { events += parser.feed(it) }
+        val event = events.single() as ServerChatEvent.MessageCreated
+        assertEquals("a-1", event.message.id)
+        assertEquals("第一条", event.message.content)
+        assertEquals(false, event.message.blocked)
+        // 服务端已经按 visibleAt 延迟发过；客户端只解析，不据此再加延迟。
+        assertEquals(142L, event.message.visibleAt)
+    }
+
+    @Test
+    fun `解析器认识 0_14_1 的 typing 事件`() {
+        val parser = ServerSseParser()
+        val events = mutableListOf<ServerChatEvent>()
+        listOf(
+            "event: typing.started",
+            "data: {\"sessionId\":\"s-1\",\"personaId\":\"p-1\",\"at\":1700000000000}",
+            "",
+            "event: typing.stopped",
+            "data: {\"sessionId\":\"s-1\",\"personaId\":\"p-1\",\"at\":1700000004000}",
+            ""
+        ).forEach { events += parser.feed(it) }
+
+        assertEquals(
+            listOf(
+                ServerChatEvent.TypingStarted("s-1", "p-1"),
+                ServerChatEvent.TypingStopped("s-1", "p-1")
+            ),
+            events
+        )
+    }
+
+    @Test
+    fun `typing 事件缺字段时给空串 不抛异常`() {
+        val parser = ServerSseParser()
+        val events = mutableListOf<ServerChatEvent>()
+        listOf("event: typing.started", "data: {}", "").forEach { events += parser.feed(it) }
+        assertEquals(listOf(ServerChatEvent.TypingStarted("", "")), events)
+    }
+
+    @Test
     fun `解析器按规范拼接多行 data`() {
         val parser = ServerSseParser()
         val events = mutableListOf<ServerChatEvent>()

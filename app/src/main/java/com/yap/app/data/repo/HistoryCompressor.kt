@@ -208,7 +208,7 @@ class HistoryCompressor @Inject constructor(
         val generation = sessionGeneration.current(sessionId)
         val startSummaryUpTo = session.historySummarizedUpTo
 
-        val total = runCatching { messageDao.countInSession(sessionId) }.getOrDefault(0)
+        val total = runCatching { messageDao.countVisibleInSession(sessionId) }.getOrDefault(0)
         if (total <= HistoryCompression.DEFAULT_MAX_VERBATIM) {
             return CompressionResult(CompressionStatus.SKIPPED, note = "只有 $total 条，还不用收")
         }
@@ -290,7 +290,7 @@ class HistoryCompressor @Inject constructor(
         val upTo = chunk.last().at
         // 写完之前再核一次：期间清空 / 删除 / 并发压缩过就丢弃，绝不让旧摘要回来。
         val freshSession = runCatching { sessionDao.getById(sessionId) }.getOrNull()
-        val currentCount = runCatching { messageDao.countInSession(sessionId) }.getOrDefault(0)
+        val currentCount = runCatching { messageDao.countVisibleInSession(sessionId) }.getOrDefault(0)
         val decision = CompressionWriteGuard.decide(
             startGeneration = generation,
             currentGeneration = sessionGeneration.current(sessionId),

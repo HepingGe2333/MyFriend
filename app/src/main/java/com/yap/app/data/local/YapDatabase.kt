@@ -27,9 +27,11 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MemoryVersionEntity::class,
         MemoryVectorEntity::class,
         DiaryNoteEntity::class,
-        StickerEntity::class
+        StickerEntity::class,
+        MentalActivityEntity::class,
+        SessionMemoryEntity::class
     ],
-    version = 17,
+    version = 18,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -56,12 +58,104 @@ abstract class YapDatabase : RoomDatabase() {
     abstract fun memoryVectorDao(): MemoryVectorDao
     abstract fun diaryNoteDao(): DiaryNoteDao
     abstract fun stickerDao(): StickerDao
+    abstract fun mentalActivityDao(): MentalActivityDao
+    abstract fun sessionMemoryDao(): SessionMemoryDao
 
     /** 媒体文件引用计数（0.12 去重收尾）：纯查询，不新增表，也不动 schema。 */
     abstract fun mediaReferenceDao(): MediaReferenceDao
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v18：0.14 体验版（`spec/experience/README.md` §2 / §3 / §6）。
+         *
+         * - `personas` 加三列可空 `TEXT/INTEGER`：`blockedUntil` / `blockReason` / `blockProposalJson`；
+         * - `messages` 加 `blocked INTEGER NOT NULL DEFAULT 0`（老消息一律可见）；
+         * - 新建 `mental_activities`（心理活动，按人格保留最近 50 条）；
+         * - 新建 `session_memory`（每个会话一行短期/长期摘要）。
+         *
+         * 只加可空列与空表：老库升级后行为与 v17 一致（没人被拉黑、没有念头、没有备忘录）。
+         * 幂等：列先查 `PRAGMA table_info`，表/索引用 `IF NOT EXISTS`，可重复执行。
+         */
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                if (personaColumns.isNotEmpty()) {
+                    if ("blockedUntil" !in personaColumns) {
+                        db.execSQL("ALTER TABLE `personas` ADD COLUMN `blockedUntil` INTEGER")
+                    }
+                    if ("blockReason" !in personaColumns) {
+                        db.execSQL("ALTER TABLE `personas` ADD COLUMN `blockReason` TEXT")
+                    }
+                    if ("blockProposalJson" !in personaColumns) {
+                        db.execSQL("ALTER TABLE `personas` ADD COLUMN `blockProposalJson` TEXT")
+                    }
+                }
+
+                val messageColumns = columns(db, "messages")
+                if (messageColumns.isNotEmpty() && "blocked" !in messageColumns) {
+                    db.execSQL(
+                        "ALTER TABLE `messages` ADD COLUMN `blocked` INTEGER NOT NULL DEFAULT 0"
+                    )
+                }
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `mental_activities` (
+                        `id` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `sessionId` TEXT,
+                        `at` INTEGER NOT NULL,
+                        `thought` TEXT NOT NULL,
+                        `moodLabel` TEXT,
+                        `moodIntensity` INTEGER,
+                        `moodValence` INTEGER,
+                        `moodArousal` INTEGER,
+                        `moodDominance` INTEGER,
+                        PRIMARY KEY(`id`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_mental_activities_personaId_at` " +
+                        "ON `mental_activities` (`personaId`, `at`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_mental_activities_sessionId_at` " +
+                        "ON `mental_activities` (`sessionId`, `at`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_mental_activities_at` " +
+                        "ON `mental_activities` (`at`)"
+                )
+
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `session_memory` (
+                        `sessionId` TEXT NOT NULL,
+                        `personaId` TEXT NOT NULL,
+                        `shortSummary` TEXT,
+                        `longSummary` TEXT,
+                        `shortUserCount` INTEGER NOT NULL,
+                        `longUserCount` INTEGER NOT NULL,
+                        `shortUpdatedAt` INTEGER,
+                        `longUpdatedAt` INTEGER,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`sessionId`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_session_memory_personaId` " +
+                        "ON `session_memory` (`personaId`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_session_memory_updatedAt` " +
+                        "ON `session_memory` (`updatedAt`)"
+                )
+            }
+        }
 
         /**
          * v17：多维情绪（`spec/mood/README.md` §1）。

@@ -111,6 +111,9 @@ internal object BackupV6 {
         putIfNotNull(fields, "worldJson", extraStringOrNull(extras, "worldJson"))
         putIfNotNull(fields, "speechStyleJson", extraStringOrNull(extras, "speechStyleJson"))
         putIfNotNull(fields, "activityJson", persona.activityJson?.takeIf { it.isNotBlank() })
+        // 0.14：拉黑（客户端忽略这两个可加键；服务端自己再导入时要原样带回）。
+        putIfNotNull(fields, "blockedUntil", persona.blockedUntil?.takeIf { it > 0 }?.let { StoreJson.num(it) })
+        putIfNotNull(fields, "blockReason", persona.blockReason.takeIf { it.isNotBlank() })
         return JsonValue.Obj(fields)
     }
 
@@ -199,6 +202,8 @@ internal object BackupV6 {
         putIfNotNull(fields, "attachmentsJson", attachmentsJson)
         putIfNotNull(fields, "toolTraceJson", message.toolTraceJson)
         putIfNotNull(fields, "readAt", message.readAt?.let { StoreJson.num(it) })
+        // 0.14：拉黑期间落库的消息（客户端忽略未知键；服务端自己再导入时要保留这个永久标记）。
+        if (message.blocked) fields["blocked"] = StoreJson.bool(true)
         return JsonValue.Obj(fields)
     }
 
@@ -322,6 +327,25 @@ internal object BackupV6 {
         putIfNotNull(fields, "sentAt", intent.sentAt?.let { StoreJson.num(it) })
         return JsonValue.Obj(fields)
     }
+
+    // ------------------------------------------------------------------ 0.14：心理活动 / 会话记忆
+
+    fun mentalActivity(activity: MentalActivity): JsonValue.Obj = JsonValue.Obj(
+        linkedMapOf(
+            "id" to StoreJson.str(activity.id),
+            "personaId" to StoreJson.str(activity.personaId),
+            "sessionId" to StoreJson.str(activity.sessionId),
+            "at" to StoreJson.num(activity.at),
+            "thought" to StoreJson.str(activity.thought),
+            "moodLabel" to StoreJson.str(activity.moodLabel),
+            "moodValence" to StoreJson.num(activity.moodValence),
+            "moodArousal" to StoreJson.num(activity.moodArousal),
+            "moodDominance" to StoreJson.num(activity.moodDominance),
+            "moodIntensity" to StoreJson.num(activity.moodIntensity)
+        )
+    )
+
+    fun sessionMemory(memory: SessionMemory): JsonValue.Obj = memory.toBackupJson()
 
     // ------------------------------------------------------------------ 小工具
 

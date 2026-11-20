@@ -76,7 +76,6 @@
 "已复制" = "Copied";
 "复制代码" = "Copy code";
 "生成失败" = "Couldn't generate";
-"重新生成" = "Regenerate";
 "动作痕迹" = "Activity";
 "收起动作痕迹" = "Collapse activity";
 "展开动作痕迹" = "Expand activity";
@@ -801,7 +800,6 @@
 "所有聊天与记忆已清空（%@）" = "All chats and memories were cleared (%@)";
 "所有本地数据已删除（%@）" = "All local data was deleted (%@)";
 "会话不存在" = "This conversation no longer exists";
-"没有可以重新生成的消息" = "There's no message to regenerate";
 "消息不能为空" = "A message can't be empty";
 "消息过长" = "The message is too long";
 "请先为该会话选择 API 配置" = "Choose an API configuration for this conversation first";
@@ -1126,7 +1124,6 @@
 "打开后，聊天与心情都由他那边生成，这台机器只缓存；关掉就回到本机模式。" = "When on, chats and moods are generated on his side and this device only caches them; turn it off to go back to local mode.";
 "把状态和聊天交给服务端" = "Let the server keep state and chats";
 "服务端模式" = "Server mode";
-"服务端模式下重新生成还没做" = "Regenerating isn't available in server mode yet";
 "服务端没开鉴权可以不填" = "Leave empty if the server doesn't require a token";
 "正在用服务端" = "Using the server";
 "正在连接…" = "Connecting…";
@@ -1216,6 +1213,7 @@
 "这个表情已经在收藏里了" = "This sticker is already in your stickers";
 "没能保存这个表情" = "Couldn't save this sticker";
 "表情没能导入" = "Couldn't import the sticker";
+"表情没能删除" = "Couldn't delete the sticker";
 "表情没能存到本机" = "The sticker couldn't be saved on this device";
 "表情没能存下来" = "The sticker couldn't be saved";
 "这个表情是空的" = "This sticker is empty";
@@ -1312,3 +1310,15 @@
 "这一轮得说句话" = "Has to say something this turn";
 "这轮先不回" = "Staying quiet this turn";
 "这轮没说话" = "Said nothing this turn";
+"对方已将你拉黑" = "They have blocked you";
+"一轮最多发 4 条" = "One turn can send at most 4 messages";
+"发了条消息" = "Sent a message";
+"拉黑 %d 小时" = "Blocked for %d hours";
+"没有写要发什么" = "Nothing to send";
+"这一轮已经发够了" = "Already sent enough this turn";
+"拉黑 %d 小时.one" = "Blocked for %d hour";
+"已拉黑" = "Blocked";
+"拉黑提议" = "Block proposal";
+"已生效，到期自动解除。" = "In effect until it expires automatically.";
+"已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。" = "The proposal is saved; you can confirm it only after they send another message.";
+"发消息" = "Message";

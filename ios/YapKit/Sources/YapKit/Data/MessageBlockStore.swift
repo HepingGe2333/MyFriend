@@ -4,7 +4,7 @@ import Foundation
 // `message_blocks` 的读写与维护（规范：`spec/messages-blocks/README.md`）。
 //
 // 这个文件是「块表」的唯一入口，**所有**改动消息的路径都必须经过它，否则块会漂：
-// 发消息 / 主动开口 / 工具消息（`ChatService`、`AgentLoop`）、重新生成（删最后一条）、
+// 发消息 / 主动开口 / 工具消息（`ChatService`、`AgentLoop`）、删除消息、
 // 删一条消息、清空上下文、备份导入（替换 / 合并）、删会话、删人格、删除全部数据……
 // 因此 `MessageStore` 把 `upsert` / `delete` / `deleteAll` 全部转到这里（见 Stores.swift），
 // 调用方一行都不用改，就不会有「某条路径忘了维护块」。

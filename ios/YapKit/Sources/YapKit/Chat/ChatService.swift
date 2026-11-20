@@ -32,10 +32,15 @@ public enum ChatNoReplyReason: Equatable, Sendable {
     /// 模型用 `stay_silent` 说「这一轮就不回」：不落消息、不留念头，只标已读
     ///（`spec/mood/README.md` §4）。
     case stayedSilent
+    /// 0.14：他在拉黑期（`spec/experience/README.md` §2）。用户消息照常落库并标 `blocked`，
+    /// 但这一轮**不生成、不回**——界面看到的是「对方已将你拉黑」，不是「正在输入」。
+    case blocked
 
     /// 界面要不要在他没回的时候显示「已读」。
     public var showsRead: Bool {
         if case .sleepingDoNotDisturb = self { return false }
+        // 拉黑期间的消息不会进模型上下文（永久排除），所以也不算「已读」。
+        if case .blocked = self { return false }
         return true
     }
 
@@ -79,6 +84,10 @@ public enum ChatEvent: Equatable, Sendable {
     case done(ChatCompletion)
     /// 这一轮他没有说话（睡着了 / 免打扰 / 主动选择晚点回）。界面上只会看到「已读」。
     case noReply(ChatNoReplyReason)
+    /// 0.14 连发：这一轮又落了一条**独立**的助手消息（`send_message` / 空行拆分）。
+    ///
+    /// 界面收到就立刻重读消息列表：多条气泡要逐条出现，而不是等这一轮结束一起冒出来。
+    case appended(MessageEntity)
 }
 
 /// 一轮生成的结果。
@@ -111,14 +120,26 @@ public struct ChatCompletion: Equatable, Sendable {
 /// 聊天服务只负责「按协议呼出去、把结果回灌」。默认实现老老实实说自己做不了，
 /// 这样模型和用户都不会被一个静默空结果骗过去。
 public protocol ToolRunning: AnyObject {
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult
+    /// - Parameter userMessageId: 这一轮那条用户消息的 id（工具据此判断「是不是下一轮」，
+    ///   例如 `block_user` 的两轮确认；没有用户消息时为 nil）。
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult
 }
 
 /// 默认工具执行器：iOS 还没接入任何工具。
 public final class UnavailableToolRunner: ToolRunning {
     public init() {}
 
-    public func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    public func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         let name = invocation.name
         return ToolResult(
             invocation: invocation,
@@ -147,6 +168,10 @@ public protocol ChatBackgroundTasks: AnyObject {
     /// 这一轮聊完了：考虑跑一次**自动情绪判定**（每 4 条用户消息或 24 小时，
     /// 见 `spec/mood/README.md` §2）。默认什么都不做，老调用点不用改。
     func moodJudgementNeeded(sessionId: String, personaId: String)
+    /// 这一轮聊完了：考虑更新会话备忘录（每 5 / 30 条用户消息，0.14 规范 §6）。
+    func sessionMemoryNeeded(sessionId: String, personaId: String)
+    /// 这一轮聊完了：考虑做一次心理活动（每 3 分钟 / 3 轮，0.14 规范 §3）。
+    func mentalActivityNeeded(sessionId: String, personaId: String)
 }
 
 public extension ChatBackgroundTasks {
@@ -154,6 +179,10 @@ public extension ChatBackgroundTasks {
     func personaEvolutionNeeded(sessionId: String, personaId: String) {}
     /// 默认实现：没接情绪判定时，回复绝不会因此变慢或失败。
     func moodJudgementNeeded(sessionId: String, personaId: String) {}
+    /// 默认实现：没接备忘录时，回复绝不会因此变慢或失败。
+    func sessionMemoryNeeded(sessionId: String, personaId: String) {}
+    /// 默认实现：没接心理活动时，回复绝不会因此变慢或失败。
+    func mentalActivityNeeded(sessionId: String, personaId: String) {}
 }
 
 /// 默认空实现：功能没接上时，回复绝不会因此变慢或失败。
@@ -191,6 +220,14 @@ public final class ChatService {
     private let presenceDetail: ((String) -> String?)?
     /// 心情：直接复用 Services 的 `MoodRepository`（读时顺手让时间冲淡、并落库）。
     private let mood: MoodRepository
+    /// 拉黑（0.14）：读「此刻是不是在拉黑期」、把用户消息标成 blocked。
+    private let block: BlockRepository
+    /// 会话备忘录（0.14）：每轮读一次，作为「你的备忘录」注入 system。
+    private let memo: SessionMemoryRepository
+    /// 心理活动（0.14）：读最近一句念头注入 system（生成在后台，见 `MentalActivityService`）。
+    private let mind: MentalActivityRepository
+    /// 等一会儿（打字延迟 / 连发间隔）。生产是 `Task.sleep`；单测注入记录器，断言「延迟了多久」。
+    private let sleep: (UInt64) async -> Void
     /// 说话节奏：被叫醒后的心情拉回、以及 `defer_reply` 落的念头。nil = 不落（测试常用）。
     private let rhythm: ChatRhythmHandling?
     /// 主动唤醒规则的落库（回复里剥出来的 `yap-wake` 提案）。nil = 只把 JSON 交给上层、不落库。
@@ -238,6 +275,10 @@ public final class ChatService {
         background: ChatBackgroundTasks = NoBackgroundTasks(),
         presenceDetail: ((String) -> String?)? = nil,
         mood: MoodRepository? = nil,
+        block: BlockRepository? = nil,
+        memo: SessionMemoryRepository? = nil,
+        mind: MentalActivityRepository? = nil,
+        sleep: ((UInt64) async -> Void)? = nil,
         rhythm: ChatRhythmHandling? = nil,
         proactive: ProactiveRuleWriting? = nil,
         personaText: ((PersonaEntity) -> String)? = nil,
@@ -259,6 +300,10 @@ public final class ChatService {
         self.background = background
         self.presenceDetail = presenceDetail
         self.mood = mood ?? MoodRepository(stores: stores, now: now)
+        self.block = block ?? BlockRepository(stores: stores, now: now)
+        self.memo = memo ?? SessionMemoryRepository(stores: stores, now: now)
+        self.mind = mind ?? MentalActivityRepository(stores: stores, now: now)
+        self.sleep = sleep ?? { try? await Task.sleep(nanoseconds: $0) }
         self.rhythm = rhythm
         self.proactive = proactive
         self.personaText = personaText
@@ -293,7 +338,7 @@ public final class ChatService {
         return runningGenerations[sessionId] != nil
     }
 
-    // MARK: - 发送 / 重新生成 / 停止
+    // MARK: - 发送 / 停止
 
     /// `send` 的结果：要么已经开始生成，要么**压根没落库**。
     ///
@@ -305,6 +350,11 @@ public final class ChatService {
         case started(AsyncThrowingStream<ChatEvent, Error>)
         /// 没落库：调用方应当把草稿/图片还给界面，并给一个可重试的提示。
         case rejected(Error)
+
+        /// 一条「什么都不发生」的流（0.14 拉黑：消息落库了，但没有生成）。
+        static func emptyStream() -> AsyncThrowingStream<ChatEvent, Error> {
+            AsyncThrowingStream { continuation in continuation.finish() }
+        }
     }
 
     /// 发一条用户消息，然后开始生成回复。
@@ -344,33 +394,13 @@ public final class ChatService {
         } catch {
             return .rejected(error)
         }
-        return .started(generate(sessionId: sessionId))
-    }
-
-    /// 重新生成：删掉最后一条助手消息（如果有），然后重新跑一轮。
-    ///
-    /// 与 Android `prepareRegeneration` 一致：只删「最后一条是助手消息」的那一条，
-    /// 没有可回复的用户消息就直接报错。
-    public func regenerate(sessionId: String) -> AsyncThrowingStream<ChatEvent, Error> {
-        do {
-            guard try stores.sessions.byId(sessionId) != nil else {
-                throw ApiException(statusCode: nil, message: String(localized: "会话不存在"))
-            }
-            if let latest = try stores.messages.latest(sessionId: sessionId), latest.role == .assistant {
-                try stores.messages.delete(id: latest.id)
-                try refreshPreview(sessionId: sessionId)
-            }
-            let hasUser = try stores.messages
-                .fetch(where: "sessionId = ? AND role = ?", [.text(sessionId), .text(MessageRole.user.stored)],
-                       orderBy: "createdAt DESC", limit: 1)
-                .isEmpty == false
-            guard hasUser else {
-                throw ApiException(statusCode: nil, message: String(localized: "没有可以重新生成的消息"))
-            }
-        } catch {
-            return Self.failedStream(error)
+        // 0.14 拉黑：消息照常落库（并标 blocked），但这一轮**不生成**。
+        // 返回一条立刻结束的流，界面靠消息自带的 `blocked` 显示「对方已将你拉黑」。
+        if let session = try? stores.sessions.byId(sessionId),
+           block.isBlocked(personaId: session.personaId) {
+            return .started(SendOutcome.emptyStream())
         }
-        return generate(sessionId: sessionId)
+        return .started(generate(sessionId: sessionId))
     }
 
     /// 停止当前这一轮。
@@ -451,6 +481,9 @@ public final class ChatService {
         }
         let persona = try stores.personas.byId(session.personaId)
         let timestamp = try nextTimestamp(sessionId: sessionId)
+        // 0.14 拉黑：这条用户消息是在拉黑期发的吗？落库时就定下来，之后不再改。
+        // 「到期解除」不会把已落库的 blocked 清掉 —— 模型永久看不到它（规范 §2）。
+        let blockedDuringSend = block.isBlocked(personaId: session.personaId, now: timestamp)
         let isFirstUserMessage = try stores.messages.count(
             where: "sessionId = ? AND role = ?", [.text(sessionId), .text(MessageRole.user.stored)]
         ) == 0
@@ -465,7 +498,8 @@ public final class ChatService {
             status: .complete,
             model: nil,
             edited: false,
-            attachmentsJson: AttachmentsCodec.encode(keptAttachments)
+            attachmentsJson: AttachmentsCodec.encode(keptAttachments),
+            blocked: blockedDuringSend
         )
         // 首页那一行预览：只有附件的时候写「图片 / 语音 / 视频」（与 Android 的 `ifBlank` 同义）。
         let flattened = content.replacingOccurrences(of: "\n", with: " ")
@@ -553,6 +587,12 @@ public final class ChatService {
         var completed = false
         var personaId = ""
         var model = ""
+        /// 0.14：这一轮「首字显示前」的打字延迟有没有付过（每一轮工具回路重新计）。
+        var typingDelayApplied = false
+        /// 0.14：这一轮已经用 `send_message` 发出去几条（每轮最多 4 条）。
+        var sentCount = 0
+        /// 0.14：这一轮总共落了几条助手消息（工具连发 + 正文拆分），用于「只有首条付打字延迟」。
+        var deliveredCount = 0
         do {
             let resolved = try resolveSession(sessionId: sessionId)
             let session = resolved.session
@@ -561,10 +601,23 @@ public final class ChatService {
             personaId = persona.id
             model = session.model.isEmpty ? config.model : session.model
 
+            // 0.14 拉黑：这一轮不生成（用户消息已经落库并标 blocked）。
+            // 放在最前面：连模型都不叫，省一次请求，也不会让「正在输入」闪一下。
+            if let blockState = block.state(personaId: persona.id, now: now()) {
+                if let log {
+                    log("[chat] 他在拉黑期（还有 \(max(0, (blockState.until - now()) / 60_000)) 分钟），这一轮不回")
+                }
+                continuation.yield(.noReply(.blocked))
+                continuation.finish()
+                return
+            }
+
             // 0.11.0 P2-1：只从 SQLite 捞「最近 N 条」，不再整段读进内存再截尾巴。
             // 几千条的会话里这一步省下的是三份大字符串（`content` / `attachmentsJson` /
             // `toolTraceJson`）的全量物化 —— 每一轮回复都要付一次。
-            let recent = try stores.messages.recent(
+            // 0.14：拉黑期间的消息**永久不进模型上下文**（规范 §2）。在 SQL 里就筛掉，
+            // 而不是读 200 条再 filter —— 拉黑很长时后者等于这一轮没有上下文可用。
+            let recent = try stores.messages.recentVisible(
                 sessionId: sessionId, limit: PromptBuilder.contextRecentLimit
             )
             guard recent.contains(where: { $0.role == .user }) else {
@@ -664,6 +717,14 @@ public final class ChatService {
             // `MoodRepository` 会顺手做两件事（与 Android 一致）：让时间冲淡、把「已经问过心情」记下来。
             let moodState = mood.current(personaId: persona.id, now: timestamp)
             let nudge = mood.reflectionNudge(personaId: persona.id, now: timestamp)
+            // 0.14 §3：「你刚才心里想：…」——最近一次心理活动（不新鲜 / 没有就是空串）。
+            let mentalActivityBlock = mind.promptLine(personaId: persona.id, now: timestamp)
+            // 0.14 §6：「你的备忘录」——短期在前、长期在后（可变区域，不写进人设）。
+            let memoBlock = memo.promptBlock(sessionId: sessionId)
+            // 拉黑提示：让他知道「这段时间我没理他」不是「他没说话」。
+            let blockNote = block.state(personaId: persona.id, now: timestamp).map {
+                "\n\n" + BlockPolicy.promptNote($0, now: timestamp)
+            } ?? ""
 
             // 提示词翻译（`spec/persona-translation/README.md`）：用**已有缓存**里的译文拼提示词。
             // 触发（kick）在进聊天时由视图层做，所以这一轮不会被翻译拖慢：
@@ -692,8 +753,11 @@ public final class ChatService {
                 earlierMemoryBlock: HistoryCompression.memoryBlock(
                     summary: session.historySummary, summarizedUpTo: session.historySummarizedUpTo
                 ),
+                // 0.14：备忘录与「刚才心里想」都在心情之前（与 `SystemPromptInput` 的字段顺序一致）。
+                memoBlock: memoBlock,
+                mentalActivityBlock: mentalActivityBlock,
                 moodBlock: MoodPrompt.line(moodState),
-                moodPaceBlock: MoodBehavior.promptLine(moodState, now: timestamp),
+                moodPaceBlock: MoodBehavior.promptLine(moodState, now: timestamp) + blockNote,
                 moodNudgeBlock: nudge ?? "",
                 proactiveCapability: ProactiveCapabilityPrompt.text,
                 toolsCapability: ToolCatalog.capabilityPrompt(webEnabled: config.webToolsEnabled),
@@ -730,6 +794,17 @@ public final class ChatService {
                         // 只把「还没写到的工具块」之前的部分推到界面，协议块永不示人。
                         let visible = ToolProtocol.visiblePrefix(buffer)
                         if visible != shownText {
+                            // 0.14 §5：首字到达前先「打一会儿字」。
+                            //
+                            // 字数只能用**这一刻已经到达的字数**估（流式里没法预知整句长度）；
+                            // 有工具回路时每轮重新付一次，多条 send_message 的精确延迟在落库前算。
+                            // 失败与停止不会走到这里（流已经 throw / cancel），所以天然不延迟。
+                            if !typingDelayApplied, !visible.isEmpty {
+                                typingDelayApplied = true
+                                await sleep(TypingDelay.nanos(
+                                    seconds: TypingDelay.seconds(charCount: visible.count, mood: moodState)
+                                ))
+                            }
                             shownText = visible
                             continuation.yield(.delta(visible))
                         }
@@ -857,8 +932,40 @@ public final class ChatService {
                         ))
                         continue
                     }
+                    // 0.14 §4：`send_message` 每轮最多 4 条。超出的这次**不执行**，
+                    // 只回灌一句「已经发够了」——比直接把多出来的消息丢掉更容易让模型收敛。
+                    if call.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.sendMessage,
+                       sentCount >= MessageRhythm.maxMessagesPerRound {
+                        results.append(ToolResult(
+                            invocation: call,
+                            ok: false,
+                            summary: String(localized: "这一轮已经发够了"),
+                            contentForModel: "这一轮你已经发了 \(sentCount) 条消息（上限 \(MessageRhythm.maxMessagesPerRound) 条），"
+                                + "这一条没有发出去。把还没说完的留到下一轮。",
+                            errorMessage: String(localized: "一轮最多发 4 条")
+                        ))
+                        continue
+                    }
                     executed.insert(fingerprint)
-                    let result = await tools.run(call, persona: persona, sessionId: sessionId)
+                    let result = await tools.run(
+                        call, persona: persona, sessionId: sessionId,
+                        userMessageId: currentUserMessage?.id
+                    )
+                    // 0.14 §4：`send_message` 的产物由**这里**落库（工具只交出文本），
+                    // 这样才能按「打字延迟 / 连发间隔」控制每一条出现的时机。
+                    if let outbound = result.outboundText,
+                       let delivered = await deliverOutbound(
+                           outbound,
+                           sessionId: sessionId,
+                           personaId: persona.id,
+                           model: model,
+                           mood: moodState,
+                           payTypingDelay: deliveredCount == 0 && !typingDelayApplied,
+                           continuation: continuation
+                       ) {
+                        sentCount += 1
+                        producedMessage = delivered
+                    }
                     if let producedId = result.producedMessageId,
                        let produced = (try? stores.messages.byId(producedId)) ?? nil {
                         producedMessage = produced
@@ -873,6 +980,8 @@ public final class ChatService {
                 }
                 // 过程话不算数：先把气泡里的临时文字清干净，等最后那一轮的真话。
                 shownText = ""
+                // 下一轮的正文是「新的一条消息」：首字延迟重新算（规范 §5：连发之间同一公式）。
+                typingDelayApplied = false
                 continuation.yield(.delta(""))
                 // `listen` / `watch` 的结果不只是文字：音频片段与视频关键帧要真的进这一条消息，
                 // 否则模型只能看到「我听了一遍…」这句自己都没底的说明。
@@ -899,21 +1008,36 @@ public final class ChatService {
             let rawFinal = finalBody.trimmingCharacters(in: .whitespacesAndNewlines)
             // 主动唤醒提案（`yap-wake`）：代码块不能给用户看，解析成规则交回上层并落库。
             let extracted = ProactiveProtocol.extract(rawFinal)
-            let finalText = extracted.body
+            var finalText = extracted.body
             let proposal = extracted.proposal
             let proposalJson = extracted.payloadJson
-            if finalText.isEmpty, proposalJson == nil, let producedMessage {
-                // 这一轮已经用工具发出去了一条消息（表情包的 `sticker.send`）：模型不再写正文
-                // 是正常用法，不是「走神」。直接把那条消息当成这一轮的产物结束掉，
-                // 不要再落一条空助手消息，也不要把「他查完了东西」的错给用户看。
+            // 0.14 §4：4 条已经发满了，模型最后又补了一句正文时，**把它并进最后一条**，
+            // 而不是再造第 5 个气泡（「每轮最多 4 条」是硬上限）。
+            if MessageRhythm.maxMessagesPerRound - deliveredCount <= 0,
+               !finalText.isEmpty,
+               let lastDelivered = producedMessage {
+                var merged = lastDelivered
+                merged.content = (lastDelivered.content + "\n\n"
+                    + finalText.trimmingCharacters(in: .whitespacesAndNewlines))
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if (try? stores.messages.upsert(merged)) != nil {
+                    producedMessage = merged
+                    finalText = ""
+                    continuation.yield(.appended(merged))
+                }
+            }
+            if finalText.isEmpty, let producedMessage {
+                // 这一轮已经用工具发出去了一条消息（表情包的 `sticker.send`，或连发到上限后
+                // 把正文并进最后一条）：模型不再写正文是正常用法，不是「走神」。
+                // 直接把那条消息当成这一轮的产物结束掉，不要再落一条空助手消息。
                 completed = true
-                // 他其实说过了（用表情）：连续沉默清零。
+                // 他其实说过了（用表情 / 连发）：连续沉默清零。
                 rhythm?.handleReplied(personaId: persona.id, at: now())
                 continuation.yield(.done(ChatCompletion(
                     message: producedMessage,
                     toolTraces: traces,
                     pendingMemory: false,
-                    proactiveProposalJson: nil
+                    proactiveProposalJson: proposalJson
                 )))
                 continuation.finish()
                 return
@@ -932,15 +1056,50 @@ public final class ChatService {
                 continuation.yield(.delta(finalText))
             }
 
-            guard let saved = try saveAssistant(
-                sessionId: sessionId,
-                personaId: persona.id,
-                content: finalText,
-                status: .complete,
-                errorMessage: nil,
-                model: model,
-                traces: traces
-            ) else {
+            // 0.14 §4：不走工具的回复按空行拆成 1–3 条（用了 `send_message` 时，正文也算一条，
+            // 总数仍然不超过 4 条）。每一条都是**独立的助手消息**，逐条出现。
+            let remainingSlots = MessageRhythm.maxMessagesPerRound - deliveredCount
+            let chunkLimit = sentCount > 0
+                ? min(max(remainingSlots, 1), 1)
+                : min(MessageRhythm.maxSplitMessages, max(remainingSlots, 1))
+            let chunks = MessageRhythm.split(finalText, max: chunkLimit)
+            guard !chunks.isEmpty else {
+                throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
+            }
+            var saved: MessageEntity?
+            for (index, chunk) in chunks.enumerated() {
+                if Task.isCancelled { throw CancellationError() }
+                let isLast = index == chunks.count - 1
+                if deliveredCount == 0 && !typingDelayApplied {
+                    // 首条：这一条此刻已知长度，按规范 §5 的完整公式延迟。
+                    await sleep(TypingDelay.nanos(
+                        seconds: TypingDelay.seconds(charCount: chunk.count, mood: moodState)
+                    ))
+                    typingDelayApplied = true
+                } else if deliveredCount > 0 {
+                    // 连发之间：0.8–2.5 秒（按长度与心情），期间界面显示「正在输入」。
+                    await sleep(TypingDelay.nanos(
+                        seconds: MessageRhythm.gapSeconds(charCount: chunk.count, mood: moodState)
+                    ))
+                }
+                guard let message = try saveAssistant(
+                    sessionId: sessionId,
+                    personaId: persona.id,
+                    content: chunk,
+                    status: .complete,
+                    errorMessage: nil,
+                    model: model,
+                    // 动作痕迹挂在最后一条上：与 `.done.toolTraces` 对齐，界面不会重复显示。
+                    traces: isLast ? traces : []
+                ) else {
+                    throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
+                }
+                deliveredCount += 1
+                saved = message
+                // 多条时才通知界面重读：单条走 `.done` 的统一重读，避免多余的一次查询。
+                if chunks.count > 1 { continuation.yield(.appended(message)) }
+            }
+            guard let saved else {
                 throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
             }
             completed = true
@@ -971,6 +1130,10 @@ public final class ChatService {
             // 自动情绪判定（0.13 schema v17）：每 4 条用户消息 / 24 小时一次，
             // 结果写库并在下一轮提示词里生效（`spec/mood/README.md` §2）。
             background.moodJudgementNeeded(sessionId: sessionId, personaId: persona.id)
+            // 0.14 会话备忘录（每 5 / 30 条用户消息）：失败保留旧摘要，不阻塞回复。
+            background.sessionMemoryNeeded(sessionId: sessionId, personaId: persona.id)
+            // 0.14 心理活动（活跃窗口内每 3 分钟 / 3 轮）：生成在后台，下一轮提示词里生效。
+            background.mentalActivityNeeded(sessionId: sessionId, personaId: persona.id)
             // 他说了话：连续沉默清零（`stay_silent` 的「连续 ≤2 轮」）。
             rhythm?.handleReplied(personaId: persona.id, at: timestamp)
 
@@ -983,7 +1146,10 @@ public final class ChatService {
             continuation.finish()
         } catch is CancellationError {
             // 用户点了停止：把已经说出来的那半句落库，流正常结束（界面看消息状态就知道是停的）。
-            if !completed {
+            //
+            // 0.14 §1：**一个字都没吐出来时不落消息**。以前这里会存一条空的 STOPPED 消息，
+            // 界面上就是一个空气泡（「不产生空消息」）。
+            if !completed, !shownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 _ = try? saveAssistant(
                     sessionId: sessionId,
                     personaId: personaId,
@@ -991,8 +1157,7 @@ public final class ChatService {
                     status: .stopped,
                     errorMessage: nil,
                     model: model,
-                    traces: traces,
-                    allowEmpty: true
+                    traces: traces
                 )
             }
             continuation.finish()
@@ -1000,7 +1165,7 @@ public final class ChatService {
             // 取消有时会以 `URLError.cancelled` 的形式冒出来：仍然按「用户停止」处理，
             // 否则界面会把一次主动停止显示成「网络连接中断」。
             if Task.isCancelled {
-                if !completed {
+                if !completed, !shownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     _ = try? saveAssistant(
                         sessionId: sessionId,
                         personaId: personaId,
@@ -1008,8 +1173,7 @@ public final class ChatService {
                         status: .stopped,
                         errorMessage: nil,
                         model: model,
-                        traces: traces,
-                        allowEmpty: true
+                        traces: traces
                     )
                 }
                 continuation.finish()
@@ -1023,7 +1187,9 @@ public final class ChatService {
                 message = localized.isEmpty ? String(localized: "生成失败") : localized
             }
             var saved: MessageEntity?
-            if !completed {
+            // 0.14 §1：失败时同样不产生空消息。已经吐出来的半句仍然按失败落库
+            //（那是「他说了一半，然后断了」，不是占位）；一个字都没有就只把错误抛给界面。
+            if !completed, !shownText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 saved = try? saveAssistant(
                     sessionId: sessionId,
                     personaId: personaId,
@@ -1031,8 +1197,7 @@ public final class ChatService {
                     status: .error,
                     errorMessage: String(message.prefix(800)),
                     model: model,
-                    traces: traces,
-                    allowEmpty: true
+                    traces: traces
                 )
             }
             if let saved {
@@ -1093,6 +1258,43 @@ public final class ChatService {
         return object.keys.contains { $0.caseInsensitiveCompare("Authorization") == .orderedSame }
     }
 
+    // MARK: - 连发（0.14）
+
+    /// 把一句 `send_message` 的正文按节奏落成**独立**助手消息，并让界面立刻看到它。
+    ///
+    /// 延迟规则（规范 §4/§5）：
+    /// - 这一轮的第一条：`clamp(0.4 + 字数×0.025 + 心情修正, 0.4, 4.0)` 秒；
+    /// - 之后每一条：0.8–2.5 秒（按长度与心情）。
+    ///
+    /// 停止/失败不会走到这里：工具回路里每次 await 之后都会检查取消，
+    /// 所以用户点停止时还没发出去的那几句**不会**被发出去（也不延迟）。
+    private func deliverOutbound(
+        _ text: String,
+        sessionId: String,
+        personaId: String,
+        model: String,
+        mood: MoodState,
+        payTypingDelay: Bool,
+        continuation: AsyncThrowingStream<ChatEvent, Error>.Continuation
+    ) async -> MessageEntity? {
+        let seconds = payTypingDelay
+            ? TypingDelay.seconds(charCount: text.count, mood: mood)
+            : MessageRhythm.gapSeconds(charCount: text.count, mood: mood)
+        await sleep(TypingDelay.nanos(seconds: seconds))
+        if Task.isCancelled { return nil }
+        guard let saved = try? saveAssistant(
+            sessionId: sessionId,
+            personaId: personaId,
+            content: text,
+            status: .complete,
+            errorMessage: nil,
+            model: model,
+            traces: []
+        ) else { return nil }
+        continuation.yield(.appended(saved))
+        return saved
+    }
+
     // MARK: - 落库
 
     @discardableResult
@@ -1103,10 +1305,10 @@ public final class ChatService {
         status: MessageStatus,
         errorMessage: String?,
         model: String,
-        traces: [ToolTraceItem],
-        allowEmpty: Bool = false
+        traces: [ToolTraceItem]
     ) throws -> MessageEntity? {
-        if content.isEmpty && !allowEmpty { return nil }
+        // 0.14 §1「不产生空消息」：空正文一律不落库（失败/停止也一样）。
+        if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return nil }
         let timestamp = try nextTimestamp(sessionId: sessionId)
         let message = MessageEntity(
             id: UUID().uuidString,

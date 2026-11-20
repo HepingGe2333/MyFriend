@@ -71,6 +71,8 @@ object ToolCatalog {
     const val STICKER = "sticker"
     const val LISTEN = "listen"
     const val WATCH = "watch"
+    const val SEND_MESSAGE = "send_message"
+    const val BLOCK_USER = "block_user"
 
     /** 给模型看的一句话能力说明（中文，含该用/不该用的边界）。 */
     private const val THINK_DESCRIPTION =
@@ -215,6 +217,49 @@ object ToolCatalog {
           "properties": {
             "videoId": {"type": "string", "description": "要看哪一段的 mediaId；不填就看这段聊天最近一条视频"}
           }
+        }
+    """
+
+    /**
+     * `send_message`：一轮里分几条短消息发出去（0.14，`spec/experience/README.md` §4）。
+     *
+     * 它和「回复正文」不是一回事：正文是这一轮的收尾，`send_message` 是抢在收尾之前
+     * 先把一两句发出去。最多 4 条/轮，每条 ≤120 字；没有这个工具时正文会按空行自动拆。
+     */
+    private const val SEND_MESSAGE_DESCRIPTION =
+        "想分几条短消息发出去时用（一句一条、想到什么先发什么）；每条最多 120 字，一轮最多 4 条。" +
+            "发完还可以继续用正文补最后一句。日常只回一句时不要用它，直接说。"
+
+    private const val SEND_MESSAGE_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "text": {"type": "string", "description": "这一条要发出去的话，最多 120 字"}
+          },
+          "required": ["text"]
+        }
+    """
+
+    /**
+     * `block_user`：他主动拉黑对方（0.14，`spec/experience/README.md` §2）。
+     *
+     * 必须写成两轮：第一次只返回 pending_confirmation，之后（中间至少一条用户消息）
+     * 再 confirm=true 才生效。描述里把「别在同一轮里确认」说死，避免模型自问自答。
+     */
+    private const val BLOCK_USER_DESCRIPTION =
+        "对方反复越界、你确实不想再收到消息时，可以拉黑 1–24 小时。必须分两轮：" +
+            "第一次调用只提交提议（不生效）；等对方又发过至少一条消息之后，再调用 confirm=true 才生效。" +
+            "不要在同一轮里连续确认；到期自动解除，没有 unblock 工具。"
+
+    private const val BLOCK_USER_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "hours": {"type": "integer", "minimum": 1, "maximum": 24, "description": "拉黑多少小时，1–24"},
+            "reason": {"type": "string", "description": "为什么拉黑，一句话，只给自己看；可选"},
+            "confirm": {"type": "boolean", "description": "第二次调用时传 true；第一次不要传"}
+          },
+          "required": ["hours"]
         }
     """
 
@@ -384,7 +429,15 @@ object ToolCatalog {
         ToolSpec(DIARY, DIARY_DESCRIPTION, DIARY_PARAMETERS.trimIndent(), DIARY_CONTRAST),
         ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
         ToolSpec(LISTEN, LISTEN_DESCRIPTION, LISTEN_PARAMETERS.trimIndent(), LISTEN_CONTRAST),
-        ToolSpec(WATCH, WATCH_DESCRIPTION, WATCH_PARAMETERS.trimIndent(), WATCH_CONTRAST)
+        ToolSpec(WATCH, WATCH_DESCRIPTION, WATCH_PARAMETERS.trimIndent(), WATCH_CONTRAST),
+        ToolSpec(
+            SEND_MESSAGE, SEND_MESSAGE_DESCRIPTION, SEND_MESSAGE_PARAMETERS.trimIndent(),
+            "它只负责把话拆成几条；不要为了热闹而刷屏，一轮最多 4 条。"
+        ),
+        ToolSpec(
+            BLOCK_USER, BLOCK_USER_DESCRIPTION, BLOCK_USER_PARAMETERS.trimIndent(),
+            "这是最后手段：先表达边界，别因为一次不高兴就拉黑；确认必须隔一轮。"
+        )
     )
 
     fun byName(name: String): ToolSpec? = all.firstOrNull { it.name == name.trim() }
@@ -710,6 +763,11 @@ object ToolProtocol {
         ToolCatalog.STICKER -> stickerArgumentHint(invocation)
         ToolCatalog.LISTEN -> invocation.argument("audioId")?.take(80)?.let { "听：$it" } ?: "听：最近一条语音"
         ToolCatalog.WATCH -> invocation.argument("videoId")?.take(80)?.let { "看：$it" } ?: "看：最近一条视频"
+        ToolCatalog.SEND_MESSAGE -> invocation.argument("text")?.take(80)?.let { "发：$it" }
+        ToolCatalog.BLOCK_USER -> {
+            val hours = invocation.intArgument("hours", 0)
+            if (hours <= 0) null else "拉黑：$hours 小时"
+        }
         else -> null
     }
 

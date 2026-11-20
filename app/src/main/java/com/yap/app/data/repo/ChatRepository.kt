@@ -27,7 +27,9 @@ import com.yap.app.domain.AttachmentsCodec
 import com.yap.app.domain.ApiDefaults
 import com.yap.app.domain.AudioVideoKind
 import com.yap.app.domain.AudioVideoText
+import com.yap.app.domain.BlockPolicy
 import com.yap.app.domain.CurrentMedia
+import com.yap.app.domain.ExperienceRhythm
 import com.yap.app.domain.MediaErrorTokens
 import com.yap.app.domain.VideoFramePlan
 import com.yap.app.domain.ChatNotificationPolicy
@@ -47,6 +49,7 @@ import com.yap.app.domain.MoodRecovery
 import com.yap.app.domain.MessageAttachment
 import com.yap.app.domain.StickerPromptBlock
 import com.yap.app.domain.MoodBehavior
+import com.yap.app.domain.MoodLexicon
 import com.yap.app.domain.MoodPrompt
 import com.yap.app.domain.OpenSessionTracker
 import com.yap.app.domain.PersonaActivityCodec
@@ -238,6 +241,10 @@ class ChatRepository @Inject constructor(
     private val personaCardRepository: PersonaCardRepository,
     private val moodRepository: MoodRepository,
     private val presenceRepository: PresenceRepository,
+    /** 0.14 心理活动（活跃窗口每 3 分钟/3 轮一次）；异步、失败不阻塞回复。 */
+    private val mentalActivityRepository: MentalActivityRepository,
+    /** 0.14 会话备忘录（每 5/30 条更新）；异步、失败保留旧摘要。 */
+    private val sessionMemoryRepository: SessionMemoryRepository,
     private val historyCompressor: HistoryCompressor,
     /** 人格进化评估（每 20 条用户消息或 24 小时一次，结果只进待审表）。 */
     private val personaEvolution: PersonaEvolutionRepository,
@@ -340,6 +347,18 @@ class ChatRepository @Inject constructor(
 
     suspend fun getSession(id: String): ChatSessionEntity? = sessionDao.getById(id)
     suspend fun getPersona(id: String): PersonaEntity? = personaDao.getById(id)
+    /**
+     * 这段会话对应的人格现在是否处于拉黑中。
+     *
+     * 读路径顺手把过期拉黑清掉；UI 在发送后调用它决定还要不要启动生成。
+     */
+    suspend fun isBlocked(sessionId: String, now: Long = System.currentTimeMillis()): Boolean {
+        val session = runCatching { sessionDao.getById(sessionId) }.getOrNull() ?: return false
+        runCatching { personaDao.clearExpiredBlocks(now) }
+        val persona = runCatching { personaDao.getById(session.personaId) }.getOrNull() ?: return false
+        return BlockPolicy.isBlocked(persona.blockedUntil, now)
+    }
+
     suspend fun getConfig(id: String?): com.yap.app.data.local.ApiConfigEntity? =
         id?.let { apiConfigDao.getById(it) }
 
@@ -675,6 +694,9 @@ class ChatRepository @Inject constructor(
         if (session.apiConfigId == null) userError(DomainErrorCode.API_CONFIG_REQUIRED)
         apiConfigDao.getById(session.apiConfigId) ?: userError(DomainErrorCode.API_CONFIG_GONE)
         val now = nextTimestamp(sessionId)
+        runCatching { personaDao.clearExpiredBlocks(now) }
+        val persona = personaDao.getById(session.personaId)
+        val blocked = BlockPolicy.isBlocked(persona?.blockedUntil, now)
         val isFirstUserMessage = messageDao.countUserMessages(sessionId) == 0
         val message = MessageEntity(
             id = UUID.randomUUID().toString(),
@@ -688,7 +710,8 @@ class ChatRepository @Inject constructor(
             errorMessage = null,
             model = null,
             edited = false,
-            attachmentsJson = AttachmentsCodec.encode(media)
+            attachmentsJson = AttachmentsCodec.encode(media),
+            blocked = blocked
         )
         database.withTransaction {
             // 写入统一走块维护（规范 §2 Append）：落进最后一块，满了才开新块。
@@ -714,7 +737,7 @@ class ChatRepository @Inject constructor(
         // 0.13 服务端模式：情绪判定与人格进化都由服务端独立负责，客户端不再触发。
         // 这里再挡一次是必要的：本地发送路径在服务端模式下通常不会被走到，但导入/补数据等
         // 路径仍可能落一条用户消息，不能让它们把「自动情绪/进化」带起来（=双份判定）。
-        if (!isServerMode()) {
+        if (!isServerMode() && !blocked) {
             // 人格进化：条件到了（20 条用户消息 / 隔了 24 小时）就在后台回顾一次，
             // 结果只写进「待审的变化」，不会直接改他的人设，也不会拖慢这条消息的发送。
             runCatching { personaEvolution.ensureAsync(session.personaId, now) }
@@ -732,11 +755,18 @@ class ChatRepository @Inject constructor(
                 emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.SESSION_NOT_FOUND), null))
                 return@flow
             }
-        val persona = personaDao.getById(session.personaId)
+        var persona = personaDao.getById(session.personaId)
             ?: run {
                 emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.PERSONA_NOT_FOUND), null))
                 return@flow
             }
+        // 0.14：拉黑期间模型不看、不回；用户消息仍然已经落库并标了 blocked。
+        runCatching { personaDao.clearExpiredBlocks(System.currentTimeMillis()) }
+        persona = personaDao.getById(session.personaId) ?: persona
+        if (BlockPolicy.isBlocked(persona.blockedUntil, System.currentTimeMillis())) {
+            emit(GenerationEvent.Silent(SilentReason.BLOCKED))
+            return@flow
+        }
         val configId = session.apiConfigId
             ?: run {
                 emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.API_CONFIG_REQUIRED), null))
@@ -815,12 +845,24 @@ class ChatRepository @Inject constructor(
         runCatching { messageDao.markUserMessagesRead(sessionId, now0) }
         val wireMessages = buildContext(session, persona, config, recentHistory)
         val adapter = registry.adapterFor(config.provider)
+        // 连发与首条延迟都要看此刻的心情：低唤醒更慢、高唤醒更快（规范 §5）。
+        val moodForTiming = runCatching { moodRepository.reading(persona.id) }.getOrNull()
+        val lowEnergy = moodForTiming?.let {
+            it.arousal <= 1 || MoodLexicon.isLowEnergy(it.label)
+        } ?: false
         emit(GenerationEvent.Started)
         val traces = mutableListOf<ToolTraceItem>()
-        // `sticker` 工具的 send 会把表情挂在工具执行结果上：这些附件属于**本轮这条助手消息**。
+        // `sticker` / 媒体工具的附件属于最后一条助手消息；连发时先攒着。
         val toolAttachments = mutableListOf<MessageAttachment>()
         var completed = false
         var shownText = ""
+        val sentMessages = mutableListOf<MessageEntity>()
+        var lastSaved: MessageEntity? = null
+        var messagesThisRound = 0
+        // 首条消息的「正在输入」只付一次；连发之间改用更短的 gap（规范 §4/§5）。
+        // 0.14.1 §8：服务端权威模式下**延迟由服务端在入队时决定**，客户端一行都不加。
+        // 把标记预置成 true，等于跳过下面所有 ExperienceRhythm 延迟（不到达/不连发）。
+        var typingDelayApplied = isServerMode()
         try {
             val conversation = wireMessages.toMutableList()
             val executed = mutableSetOf<String>()
@@ -848,6 +890,18 @@ class ChatRepository @Inject constructor(
                             // 只把「还没写到的工具块」之前的部分推到界面，协议块永不示人。
                             val visible = ToolProtocol.visiblePrefix(buffer.toString())
                             if (visible != shownText) {
+                                // 首字到达前先「打一会儿字」：字数只能用这一刻已经到达的字数估。
+                                // 延迟期间界面已经显示输入指示；失败/停止不会走到这里。
+                                if (!typingDelayApplied && visible.isNotBlank()) {
+                                    typingDelayApplied = true
+                                    kotlinx.coroutines.delay(
+                                        ExperienceRhythm.typingDelayMillis(
+                                            charCount = visible.length,
+                                            arousal = moodForTiming?.arousal,
+                                            lowEnergy = lowEnergy
+                                        )
+                                    )
+                                }
                                 shownText = visible
                                 emit(GenerationEvent.Delta(visible))
                             }
@@ -861,12 +915,79 @@ class ChatRepository @Inject constructor(
                     break
                 }
                 round++
-                val results = calls.map { call ->
+                val results = mutableListOf<ToolResult>()
+                for (call in calls) {
+                    // 0.14 连发：聊天层直接落库，不交给通用工具执行器（它没有「发消息」的写路径）。
+                    if (call.name.trim().equals(ToolCatalog.SEND_MESSAGE, ignoreCase = true)) {
+                        val text = ExperienceRhythm.clampSendText(call.argument("text").orEmpty())
+                        val tooMany = messagesThisRound >= ExperienceRhythm.MAX_MESSAGES_PER_ROUND
+                        if (text.isBlank() || tooMany) {
+                            results += ToolResult(
+                                invocation = call,
+                                ok = false,
+                                summary = if (tooMany) "本轮已经发了 ${ExperienceRhythm.MAX_MESSAGES_PER_ROUND} 条" else "消息是空的",
+                                contentForModel = if (tooMany) {
+                                    "这一轮已经发满 ${ExperienceRhythm.MAX_MESSAGES_PER_ROUND} 条了，别再发；把剩下的话并进正文。"
+                                } else {
+                                    "这条消息是空的，没有发出去。写一句完整的话再试。"
+                                }
+                            )
+                            continue
+                        }
+                        messagesThisRound++
+                        // 首条付完整打字延迟；连发之间只停 0.8–2.5 秒。
+                        if (!typingDelayApplied) {
+                            typingDelayApplied = true
+                            kotlinx.coroutines.delay(
+                                ExperienceRhythm.typingDelayMillis(
+                                    charCount = text.length,
+                                    arousal = moodForTiming?.arousal,
+                                    lowEnergy = lowEnergy
+                                )
+                            )
+                        } else if (sentMessages.isNotEmpty()) {
+                            shownText = ""
+                            emit(GenerationEvent.Delta(""))
+                            kotlinx.coroutines.delay(
+                                ExperienceRhythm.sendGapMillis(
+                                    charCount = text.length,
+                                    arousal = moodForTiming?.arousal,
+                                    lowEnergy = lowEnergy
+                                )
+                            )
+                        }
+                        val saved = saveAssistantMessage(
+                            sessionId = sessionId,
+                            personaId = persona.id,
+                            content = text,
+                            model = session.model.ifBlank { config.model },
+                            toolAttachments = emptyList(),
+                            toolTraceJson = null,
+                            generation = generation
+                        )
+                        if (saved == null) {
+                            completed = true
+                            emit(GenerationEvent.Stopped)
+                            return@flow
+                        }
+                        sentMessages += saved
+                        lastSaved = saved
+                        notifyAssistant(persona, sessionId, saved)
+                        emit(GenerationEvent.MessageSent(saved))
+                        results += ToolResult(
+                            invocation = call,
+                            ok = true,
+                            summary = "已发出第 ${sentMessages.size} 条",
+                            contentForModel = "已经作为第 ${sentMessages.size} 条消息发出去了（对方能看见）。" +
+                                "不要重复这句；还有话说可以再发一条，或直接把最后一句写成正文。"
+                        )
+                        continue
+                    }
                     val fingerprint = call.name.trim() + "|" + call.argumentsJson.trim()
                     if (!executed.add(fingerprint)) {
                         // 同一个调用这一轮已经做过：别再执行一次，只告诉它「刚做过」，
                         // 否则模型会陷进「查了又查」的循环。
-                        ToolResult(
+                        results += ToolResult(
                             invocation = call,
                             ok = true,
                             summary = "刚刚已经做过",
@@ -889,7 +1010,7 @@ class ChatRepository @Inject constructor(
                         if (call.name.trim().equals(ToolCatalog.STAY_SILENT, ignoreCase = true) && execution.result.ok) {
                             silenced = true
                         }
-                        execution.result
+                        results += execution.result
                     }
                 }
                 if (deferred) {
@@ -949,99 +1070,150 @@ class ChatRepository @Inject constructor(
             }
             val rawFinalText = finalBody.trim()
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
+            // 0.14：不带工具的回复按空行拆成 1–3 条，逐条落库（规范 §4）。
+            // 已经用 send_message 发过时，正文最多再补 1 条；4 条是这一轮的硬上限。
+            val remainingSlots = (ExperienceRhythm.MAX_MESSAGES_PER_ROUND - sentMessages.size).coerceAtLeast(0)
+            val chunkLimit = if (sentMessages.isNotEmpty()) {
+                remainingSlots.coerceAtMost(1)
+            } else {
+                minOf(ExperienceRhythm.MAX_SPLIT_MESSAGES, remainingSlots)
+            }
+            val chunks = ExperienceRhythm.splitPlainReply(finalText).let { raw ->
+                if (raw.size <= chunkLimit) raw else raw.take(chunkLimit)
+            }
+            val pendingAttachments = toolAttachments.take(MAX_IMAGES_PER_MESSAGE)
+            if (chunkLimit == 0 && finalText.isNotBlank() && lastSaved != null) {
+                // 已经发满 4 条：正文并进最后一条，不再造第 5 个气泡（规范 §4 的硬上限）。
+                val previous = sentMessages.last()
+                val merged = previous.copy(
+                    content = (previous.content + "\n\n" + finalText.trim()).trim(),
+                    updatedAt = nextTimestamp(sessionId)
+                )
+                runCatching {
+                    messageDao.update(merged)
+                    sentMessages[sentMessages.lastIndex] = merged
+                    lastSaved = merged
+                    refreshPreview(session)
+                }
+            }
             // 只发了一张表情、没写正文是合法的一轮（「点选即发送」另一种形态）：
             // 有附件就不算空流，否则会把刚发出去的表情一起丢掉。
-            if (finalText.isBlank() && proposal == null && toolAttachments.isEmpty()) {
+            if (chunks.isEmpty() && proposal == null && toolAttachments.isEmpty() && sentMessages.isEmpty()) {
                 throw ApiException(NetworkErrorKind.EmptyStream)
             }
-            val saved = withContext(NonCancellable) {
-                // 用户可能在流式过程中清空上下文 / 删掉会话：这条回复不能再写回去
-                // （0.10.2 之前 NonCancellable 会把半截回复写进已删会话，留下永远看不见的孤儿行）。
-                if (!writeStillValid(sessionId, generation)) return@withContext null
-                val now = nextTimestamp(sessionId)
-                val assistant = MessageEntity(
-                    id = UUID.randomUUID().toString(),
+            chunks.forEachIndexed { index, chunk ->
+                val isFirst = sentMessages.isEmpty()
+                if (!typingDelayApplied) {
+                    typingDelayApplied = true
+                    kotlinx.coroutines.delay(
+                        ExperienceRhythm.typingDelayMillis(
+                            charCount = chunk.length,
+                            arousal = moodForTiming?.arousal,
+                            lowEnergy = lowEnergy
+                        )
+                    )
+                } else if (!isFirst) {
+                    // 连发之间：先收起暂存气泡，让「正在输入」显示出来，再停 0.8–2.5 秒。
+                    shownText = ""
+                    emit(GenerationEvent.Delta(""))
+                    kotlinx.coroutines.delay(
+                        ExperienceRhythm.sendGapMillis(
+                            charCount = chunk.length,
+                            arousal = moodForTiming?.arousal,
+                            lowEnergy = lowEnergy
+                        )
+                    )
+                }
+                val attachments = if (index == chunks.lastIndex) pendingAttachments else emptyList()
+                val traceJson = if (index == chunks.lastIndex) ToolTraceCodec.encode(traces) else null
+                val saved = saveAssistantMessage(
                     sessionId = sessionId,
                     personaId = persona.id,
-                    role = MessageRole.ASSISTANT,
-                    content = finalText,
-                    createdAt = now,
-                    updatedAt = now,
-                    status = MessageStatus.COMPLETE,
-                    errorMessage = null,
+                    content = chunk,
                     model = session.model.ifBlank { config.model },
-                    edited = false,
-                    attachmentsJson = AttachmentsCodec.encode(toolAttachments.take(MAX_IMAGES_PER_MESSAGE)),
-                    toolTraceJson = ToolTraceCodec.encode(traces)
+                    toolAttachments = attachments,
+                    toolTraceJson = traceJson,
+                    generation = generation
                 )
-                database.withTransaction {
-                    // 同上：助手回复也走统一追加规则，块边界不会因为「另一条路径」而错位。
-                    blockWriter.append(assistant)
-                    val preview = finalText.replace('\n', ' ').trim().take(100)
-                        .ifBlank {
-                            if (toolAttachments.isNotEmpty()) {
-                                attachmentPreview(toolAttachments)
-                            } else {
-                                appContext.getString(R.string.chat_preview_proactive)
-                            }
-                        }
-                    val fresh = sessionDao.getById(sessionId)
-                    if (fresh != null) {
-                        sessionDao.update(
-                            fresh.copy(
-                                lastMessagePreview = preview,
-                                lastMessageAt = now,
-                                updatedAt = now
-                            )
-                        )
-                    }
-                    if (ChatNotificationPolicy.shouldMarkUnread(openSessionTracker.openSessionId, sessionId)) {
-                        sessionDao.incrementUnread(sessionId)
-                    } else {
-                        sessionDao.markRead(sessionId)
-                    }
+                if (saved == null) {
+                    // 会话没了 / 世代过期：这次回复作废，界面收成「已停止」而不是假装成功。
+                    completed = true
+                    emit(GenerationEvent.Stopped)
+                    return@flow
                 }
-                assistant
+                sentMessages += saved
+                lastSaved = saved
+                notifyAssistant(persona, sessionId, saved)
+                emit(GenerationEvent.MessageSent(saved))
+                shownText = ""
             }
-            if (saved == null) {
-                // 会话没了 / 世代过期：这次回复作废，界面收成「已停止」而不是假装成功。
-                completed = true
-                emit(GenerationEvent.Stopped)
-                return@flow
+            if (chunks.isEmpty() && pendingAttachments.isNotEmpty()) {
+                // 只有表情/附件、没有正文：仍然是一条完整的助手消息，不能当空流丢掉。
+                if (!typingDelayApplied) {
+                    typingDelayApplied = true
+                    kotlinx.coroutines.delay(
+                        ExperienceRhythm.typingDelayMillis(
+                            charCount = 0,
+                            arousal = moodForTiming?.arousal,
+                            lowEnergy = lowEnergy
+                        )
+                    )
+                } else if (sentMessages.isNotEmpty()) {
+                    shownText = ""
+                    emit(GenerationEvent.Delta(""))
+                    kotlinx.coroutines.delay(
+                        ExperienceRhythm.sendGapMillis(
+                            charCount = 0,
+                            arousal = moodForTiming?.arousal,
+                            lowEnergy = lowEnergy
+                        )
+                    )
+                }
+                val saved = saveAssistantMessage(
+                    sessionId = sessionId,
+                    personaId = persona.id,
+                    content = "",
+                    model = session.model.ifBlank { config.model },
+                    toolAttachments = pendingAttachments,
+                    toolTraceJson = ToolTraceCodec.encode(traces),
+                    generation = generation
+                ) ?: run {
+                    completed = true
+                    emit(GenerationEvent.Stopped)
+                    return@flow
+                }
+                sentMessages += saved
+                lastSaved = saved
+                notifyAssistant(persona, sessionId, saved)
+                emit(GenerationEvent.MessageSent(saved))
+                shownText = ""
             }
+            val saved = lastSaved ?: throw ApiException(NetworkErrorKind.EmptyStream)
             completed = true
             // 他回了一句：连续「已读不回」的计数清零（规范 §4 的连续性只按连续轮次算）。
             runCatching { settingsRepository.resetStaySilentStreak() }
-            // 普通回复落库后：只要「这个会话没开着」或者「App 根本不在前台」，都补一条系统通知。
-            // 后者是必须的——按 Home 退到桌面时聊天页还挂在栈上，不这样写就永远收不到通知。
-            if (ChatNotificationPolicy.shouldNotify(
-                    openSessionTracker.openSessionId,
-                    sessionId,
-                    foregroundTracker.isForeground
-                )
-            ) {
-                runCatching {
-                    chatNotifier.notifyMessage(appContext, persona, sessionId, saved.content)
-                }
-            }
             // 这一轮聊完了：让他在后台把「已经聊过去的那一段」收成一段记忆。
             // 异步、不 await：压缩再慢也晚不了一毫秒回话，失败也当没发生。
             // 服务端模式下上下文由服务端维护，本机不再压缩（否则两边各花一次模型调用）。
-            if (!isServerMode()) historyCompressor.ensureAsync(sessionId)
+            if (!isServerMode()) {
+                historyCompressor.ensureAsync(sessionId)
+                // 0.14：心理活动与会话备忘录都在收尾异步触发；失败保留旧值。
+                runCatching { mentalActivityRepository.ensureAsync(sessionId, justSent = true) }
+                runCatching { sessionMemoryRepository.ensureAsync(sessionId) }
+            }
             // 记忆内置开启；抽不抽由人格的「抽记忆频率」决定（会话可覆盖）。
-            val count = messageDao.countInSession(sessionId)
+            val count = messageDao.countVisibleInSession(sessionId)
             val freshSession = sessionDao.getById(sessionId)
             val every = (freshSession?.extractionEveryOverride ?: persona.extractionEvery).coerceIn(3, 12)
             val pendingMemory = count - (freshSession?.lastMemoryExtractedCount ?: 0) >= every
-            emit(GenerationEvent.Completed(saved, pendingMemory, proposal))
+            emit(GenerationEvent.Completed(saved, pendingMemory, proposal, sentMessages.toList()))
         } catch (cancel: CancellationException) {
             // 0.11.0（审计 P2-8）：这一轮到底有没有「值得落库的东西」由 InterruptedReply 决定。
-            // 以前只要 traces 非空就落一条 content="" 的消息，界面上既没有正文（空串不渲染）
-            // 也没有工具痕迹（只有 COMPLETE 才渲染），于是出现一个点不开的空气泡。
+            // 0.14 再收紧一步：停止时不落空消息——没有可见正文就什么都不写。
             if (!completed) {
                 when (InterruptedReply.decide(shownText, traces.isNotEmpty())) {
                     InterruptedReply.Outcome.DISCARD -> Unit
-                    InterruptedReply.Outcome.STATUS_ONLY,
+                    InterruptedReply.Outcome.STATUS_ONLY -> Unit
                     InterruptedReply.Outcome.SAVE_TEXT -> withContext(NonCancellable) {
                         saveInterrupted(
                             sessionId = sessionId,
@@ -1084,6 +1256,76 @@ class ChatRepository @Inject constructor(
         .onCompletion {
             activeGenerations.remove(sessionId, currentCoroutineContext()[Job])
         }
+
+    /**
+     * 落一条完整的 assistant 消息（0.14 连发也走这里）。
+     *
+     * 与旧的「最后一并写」不同：每条消息独立成行、独立时间戳，块维护统一走
+     * [MessageBlockWriter]；会话预览/未读也按最后一条更新。
+     */
+    private suspend fun saveAssistantMessage(
+        sessionId: String,
+        personaId: String,
+        content: String,
+        model: String,
+        toolAttachments: List<MessageAttachment>,
+        toolTraceJson: String?,
+        generation: Long
+    ): MessageEntity? = withContext(NonCancellable) {
+        if (!writeStillValid(sessionId, generation)) return@withContext null
+        val now = nextTimestamp(sessionId)
+        val assistant = MessageEntity(
+            id = UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            personaId = personaId,
+            role = MessageRole.ASSISTANT,
+            content = content,
+            createdAt = now,
+            updatedAt = now,
+            status = MessageStatus.COMPLETE,
+            errorMessage = null,
+            model = model,
+            edited = false,
+            attachmentsJson = AttachmentsCodec.encode(toolAttachments),
+            toolTraceJson = toolTraceJson
+        )
+        database.withTransaction {
+            blockWriter.append(assistant)
+            val preview = content.replace('\n', ' ').trim().take(100)
+                .ifBlank {
+                    if (toolAttachments.isNotEmpty()) attachmentPreview(toolAttachments)
+                    else appContext.getString(R.string.chat_preview_proactive)
+                }
+            val fresh = sessionDao.getById(sessionId)
+            if (fresh != null) {
+                sessionDao.update(
+                    fresh.copy(
+                        lastMessagePreview = preview,
+                        lastMessageAt = now,
+                        updatedAt = now
+                    )
+                )
+            }
+            if (ChatNotificationPolicy.shouldMarkUnread(openSessionTracker.openSessionId, sessionId)) {
+                sessionDao.incrementUnread(sessionId)
+            } else {
+                sessionDao.markRead(sessionId)
+            }
+        }
+        assistant
+    }
+
+    private fun notifyAssistant(persona: PersonaEntity, sessionId: String, message: MessageEntity) {
+        if (!ChatNotificationPolicy.shouldNotify(
+                openSessionTracker.openSessionId,
+                sessionId,
+                foregroundTracker.isForeground
+            )
+        ) return
+        runCatching {
+            chatNotifier.notifyMessage(appContext, persona, sessionId, message.content)
+        }
+    }
 
     /**
      * 收尾写入（成功 / 中断 / 失败）之前的最后一道检查：会话还在、世代没变。
@@ -1193,16 +1435,6 @@ class ChatRepository @Inject constructor(
         return message
     }
 
-    suspend fun prepareRegeneration(sessionId: String): Result<Unit> = runCatching {
-        val session = sessionDao.getById(sessionId) ?: userError(DomainErrorCode.SESSION_NOT_FOUND)
-        val latest = messageDao.latestInSession(sessionId)
-        if (latest?.role == MessageRole.ASSISTANT) {
-            blockWriter.deleteMessage(latest)
-            refreshPreview(session)
-        }
-        if (messageDao.latestUser(sessionId) == null) userError(DomainErrorCode.NOTHING_TO_REGENERATE)
-    }
-
     suspend fun editUserMessage(sessionId: String, messageId: String, newContent: String): Result<Unit> = runCatching {
         val content = newContent.trim()
         if (content.isBlank()) userError(DomainErrorCode.MESSAGE_EMPTY)
@@ -1257,6 +1489,9 @@ class ChatRepository @Inject constructor(
         val doomed = messageDao.getBySession(sessionId)
         database.withTransaction {
             blockWriter.deleteSession(sessionId)
+            // 0.14：清空上下文后旧念头/旧备忘录也不能再注入。
+            mentalActivityRepository.deleteBySession(sessionId)
+            sessionMemoryRepository.deleteBySession(sessionId)
             sessionDao.update(
                 session.copy(
                     lastMessagePreview = null,
@@ -1345,6 +1580,9 @@ class ChatRepository @Inject constructor(
         database.withTransaction {
             blockWriter.deleteSession(sessionId)
             sessionDao.deleteById(sessionId)
+            // 0.14：会话级心理活动与备忘录跟着会话一起走。
+            mentalActivityRepository.deleteBySession(sessionId)
+            sessionMemoryRepository.deleteBySession(sessionId)
         }
         deleteAttachmentFiles(doomed)
         // 会话彻底没了：世代记录也没必要留着（不然后台写入的 key 会无限增长）。
@@ -1623,6 +1861,9 @@ class ChatRepository @Inject constructor(
         // 文件清理（删聊天图）在 IO 上做：`ErasureFiles` 是非挂起接口，那里的引用查询会阻塞
         // 调用线程（见 `AndroidErasureFiles`），不能让它阻塞主线程。
         withContext(Dispatchers.IO) { dataEraser.clearChatsAndMemories() }
+        // 0.14：这两张新表不在 agentcore 的 `ErasableTable` 清单里，按同一语义显式清空。
+        runCatching { mentalActivityRepository.deleteAll() }
+        runCatching { sessionMemoryRepository.deleteAll() }
         // 0.13：语音/视频文件不在 `DataEraser` 的清单里（那是 agentcore 的跨端契约），
         // 在这里按同一套引用守卫收尾，否则「清空聊天」之后语音还留在沙盒里。
         runCatching { mediaJanitor.clearVoiceVideoExcept(emptySet()) }
@@ -1641,6 +1882,8 @@ class ChatRepository @Inject constructor(
     suspend fun wipeAllData() {
         // 整棵媒体目录的删除是阻塞文件 IO；与其他删除路径一样挪到 IO 上。
         withContext(Dispatchers.IO) { dataEraser.wipeAllData() }
+        runCatching { mentalActivityRepository.deleteAll() }
+        runCatching { sessionMemoryRepository.deleteAll() }
         // 表情行与表情文件不归 `DataEraser` 管（那张表在 `agentcore` 的清单里不存在，而且
         // 文件目录也不在 `MediaStorage.ownedRoots` 里），所以在这里显式清一遍。
         runCatching { stickerRepository.wipeAll() }
@@ -1836,6 +2079,14 @@ class ChatRepository @Inject constructor(
         // 0.12 人设引导：系统提示词按规范 §1 的五段顺序拼（身份 → 世界 → 此刻状态 → 话风 → 关系），
         // 记忆 / 念头 / 工具说明放在边界之前；边界与语言指令由 PromptBuilder 统一收尾。
         val now = System.currentTimeMillis()
+        // 0.14：刚想过的私密念头 + 他自己的会话备忘录（短期在前、长期在后）。
+        val mentalBlock = runCatching { mentalActivityRepository.promptBlock(persona.id, now) }.getOrDefault("")
+        val memoBlock = runCatching { sessionMemoryRepository.promptBlock(session.id) }.getOrDefault("")
+        // 拉黑提示：即使这一轮不生成，主动/心理活动的上下文也能知道他「为什么不想理对方」。
+        val blockNote = persona.blockedUntil
+            ?.takeIf { BlockPolicy.isBlocked(it, now) }
+            ?.let { "\n\n" + BlockPolicy.promptNote(it, persona.blockReason, now) }
+            .orEmpty()
         // 多维心情（schema v17）：与 moodLine 来自同一个实体，但会带上 valence/arousal/dominance。
         // 读失败（老库/坏数据）时返回按旧标签折算的基准值，不会让提示词少一段。
         val moodReading = runCatching { moodRepository.reading(persona.id, now) }.getOrNull()
@@ -1875,6 +2126,9 @@ class ChatRepository @Inject constructor(
                     // 这一轮带语音/视频：给模型 mediaId 与类型，它才知道可以 listen/watch。
                     currentMediaBlock.takeIf { it.isNotBlank() },
                     memoryOfEarlier.takeIf { it.isNotBlank() },
+                    memoBlock.takeIf { it.isNotBlank() },
+                    mentalBlock.takeIf { it.isNotBlank() },
+                    blockNote.takeIf { it.isNotBlank() },
                     // 「我的表情」：`sticker` 工具的 send 只认 id，模型必须看得到有哪些 id 可用。
                     stickerPromptBlock.takeIf { it.isNotBlank() },
                     "---\n" + ProactiveProtocol.CAPABILITY_PROMPT,

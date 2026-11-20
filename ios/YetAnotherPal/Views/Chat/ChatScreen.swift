@@ -8,7 +8,7 @@ import SwiftUI
 /// `ChatService` 里，这个文件只做三件事：**把状态画出来**、**把点击交回去**、**把滚动管好**。
 ///
 /// 几个刻意与 Android 对齐的细节：
-/// - 长按气泡出的是自己的菜单（复制 / 重新生成 / 删除），不是系统选字工具条；
+/// - 长按气泡出的是自己的菜单（复制 / 删除），不是系统选字工具条；
 /// - 流式正文用全文覆盖同一条气泡（`ChatEvent.delta` 传的就是全文），带闪烁光标；
 /// - 生成中发送按钮变停止按钮，停止不会清空气泡，而是留一句「已停止」；
 /// - 滚到底部做了 60ms 节流，长回复一路 token 一路滚会抖。
@@ -196,7 +196,14 @@ struct ChatScreen: View {
         // 服务端模式：首次全量同步 / 每 5 分钟增量同步写库之后，聊天页也要立刻看到
         //（否则要等它自己 4 秒一拍，或者「进来时还没同步完」就会一直空着）。
         .onChange(of: env.serverDataVersion) { _ in
+            // 0.14.1 §8：`message.created` 一到就重读缓存直接上屏；同一条事件也会让
+            // 服务端撤掉 typing（`ServerEventService` 已经把输入状态清掉）。
             model.reloadMessages(preservingLoadedRange: true)
+            model.refreshServerTyping()
+        }
+        // 服务端模式：typing.started / typing.stopped 只改输入指示，不动消息列表。
+        .onChange(of: env.serverLiveState) { _ in
+            model.refreshServerTyping()
         }
     }
 
@@ -296,8 +303,8 @@ struct ChatScreen: View {
     /// 这一行刻意只显示、不提供任何设置入口——他的状态是可以看见的，不是可以调的。
     @ViewBuilder
     private var subtitle: some View {
-        if model.isGenerating {
-            Text(model.isStopping ? L("正在停下…") : L("正在输入…"))
+        if model.showsTypingIndicator {
+            Text(model.isGenerating && model.isStopping ? L("正在停下…") : L("正在输入…"))
                 .font(.caption2)
                 .foregroundStyle(accent)
         } else {
@@ -355,7 +362,6 @@ struct ChatScreen: View {
                         case .message(let message):
                             ChatBubbleRow(
                                 message: message,
-                                isLatestAssistant: message.id == model.latestAssistantId,
                                 showsRead: model.showsReadBadge(for: message),
                                 bubbleStyle: bubbleStyle,
                                 accent: accent,
@@ -369,7 +375,6 @@ struct ChatScreen: View {
                                 },
                                 onAddSticker: { model.saveSticker(from: message) },
                                 onCopy: { model.copy(message.content) },
-                                onRegenerate: { model.regenerate() },
                                 onDelete: { pendingDelete = message }
                             )
                             // 搜索结果跳过来时的高亮：一圈强调色底，约 2 秒后淡出。
@@ -397,7 +402,7 @@ struct ChatScreen: View {
                             .onAppear { model.loadNewerMessages() }
                             .onTapGesture { model.loadNewerMessages() }
                     }
-                    if model.isGenerating {
+                    if model.showsTypingIndicator {
                         ChatStreamingBubble(
                             text: model.streamingText,
                             traces: model.streamingTraces,
@@ -425,7 +430,7 @@ struct ChatScreen: View {
             .onChange(of: model.messages.last?.id) { _ in
                 scrollToBottom(proxy, animated: true)
             }
-            .onChange(of: model.isGenerating) { _ in
+            .onChange(of: model.showsTypingIndicator) { _ in
                 scrollToBottom(proxy, animated: true)
             }
             .onChange(of: model.streamingText) { _ in

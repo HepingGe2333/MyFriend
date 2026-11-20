@@ -167,7 +167,7 @@ object PersonaEvolutionRules {
      * 只写四个键，不写 confidence：补丁是给人审的，[decodePatch] 会把缺失的 confidence
      * 读成 0.0，不影响 [apply]。
      */
-    fun encodePatch(changes: List<Change>): String = runCatching {
+    fun encodePatch(changes: List<Change>, address: String? = null): String = runCatching {
         val items = changes.mapTo(mutableListOf<JsonValue>()) { change ->
             JsonValue.Obj(
                 linkedMapOf(
@@ -178,15 +178,39 @@ object PersonaEvolutionRules {
                 )
             )
         }
-        Json.stringify(JsonValue.Obj(linkedMapOf("changes" to JsonValue.Arr(items))))
+        val fields = linkedMapOf<String, JsonValue>("changes" to JsonValue.Arr(items))
+        // 0.14.1：`update_persona` 允许改「称呼」。它不是四组值之一，所以作为补丁的可选旁路
+        // 字段一起存；老补丁没有它 → 行为完全不变。
+        val trimmed = address?.trim().orEmpty()
+        if (trimmed.isNotEmpty()) {
+            fields["address"] = JsonValue.Str(trimmed.take(PersonaFields.MAX_ADDRESS_CHARS))
+        }
+        Json.stringify(JsonValue.Obj(fields))
     }.getOrDefault(EMPTY_PATCH)
 
+    /**
+     * 补丁里的可选举止「称呼」（`update_persona` 写入）。
+     *
+     * 为什么允许「称呼」：模型在长期关系里确实会改口（「宝贝」→「你」），而这一个词不属于
+     * 用户手写的人设正文；`traits/likes/behaviors/quirks` 之外的字段一律拒绝（见 `update_persona`）。
+     */
+    fun decodeAddress(patchJson: String): String? {
+        val root = parseRoot(patchJson)
+        val raw = (root as? JsonValue.Obj)?.fields?.get("address") as? JsonValue.Str
+        return raw?.value?.trim()?.takeIf { it.isNotEmpty() }?.take(PersonaFields.MAX_ADDRESS_CHARS)
+    }
+
     /** 给用户看的一行中文摘要，例如「性格 +嘴硬心软；喜欢的事 −夜里散步」；无变更返回空串。 */
-    fun summary(changes: List<Change>): String = changes.mapNotNull { change ->
-        val value = normalizeValue(change.value)
-        if (value.isBlank()) return@mapNotNull null
-        "${labelOf(change.field)} ${symbolOf(change.op)}$value"
-    }.joinToString("；")
+    fun summary(changes: List<Change>, address: String? = null): String {
+        val parts = changes.mapNotNull { change ->
+            val value = normalizeValue(change.value)
+            if (value.isBlank()) return@mapNotNull null
+            "${labelOf(change.field)} ${symbolOf(change.op)}$value"
+        }.toMutableList()
+        val trimmed = address?.trim().orEmpty()
+        if (trimmed.isNotEmpty()) parts += "称呼 →$trimmed"
+        return parts.joinToString("；")
+    }
 
     // ---------------------------------------------------------------- 提示词
 

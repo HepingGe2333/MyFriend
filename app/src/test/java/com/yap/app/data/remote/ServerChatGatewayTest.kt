@@ -53,6 +53,8 @@ class ServerChatGatewayTest {
         var pages = 0
         var appliedPage: ServerMessagePage? = null
         val usages = mutableListOf<ServerUsage>()
+        /** 0.14.1：SSE 里每条 message.created 都应当**收到即落库**（不等 done）。 */
+        val enqueued = mutableListOf<ServerMessage>()
 
         override suspend fun applyPage(page: ServerMessagePage): ServerSyncApplyResult {
             pages++
@@ -62,6 +64,10 @@ class ServerChatGatewayTest {
 
         override suspend fun recordUsage(sessionId: String, usage: ServerUsage, at: Long) {
             usages += usage
+        }
+
+        override fun enqueueMessage(message: ServerMessage) {
+            enqueued += message
         }
     }
 
@@ -141,6 +147,56 @@ class ServerChatGatewayTest {
     // ------------------------------------------------------------------ SSE 编排
 
     @Test
+    fun `message_created 收到即落库 多条按到达顺序`() = runBlocking {
+        val remote = FakeRemote()
+        remote.onSend = { _, emit ->
+            emit(ServerChatEvent.Accepted("u1", 100))
+            emit(
+                ServerChatEvent.MessageCreated(
+                    ServerMessage(id = "a1", sessionId = "s1", blockIndex = 1, role = "ASSISTANT", content = "第一条")
+                )
+            )
+            emit(
+                ServerChatEvent.MessageCreated(
+                    ServerMessage(id = "a2", sessionId = "s1", blockIndex = 1, role = "ASSISTANT", content = "第二条")
+                )
+            )
+            emit(ServerChatEvent.Done("a2", ServerUsage()))
+        }
+        val (gateway, _, sink) = gateway(remote)
+
+        gateway.send("s1", "在吗")
+
+        // 不等 done 之后拉整页：两条都按顺序交给落库口。
+        assertEquals(listOf("a1", "a2"), sink.enqueued.map { it.id })
+    }
+
+    @Test
+    fun `typing 事件转给界面 不参与落库`() = runBlocking {
+        val remote = FakeRemote()
+        remote.onSend = { _, emit ->
+            emit(ServerChatEvent.Accepted("u1", 100))
+            emit(ServerChatEvent.TypingStarted("s1", "p1"))
+            emit(ServerChatEvent.TypingStopped("s1", "p1"))
+            emit(ServerChatEvent.Done("a1", ServerUsage()))
+        }
+        val (gateway, _, sink) = gateway(remote)
+        val events = mutableListOf<ServerSendEvent>()
+
+        gateway.send("s1", "在吗", onEvent = { events += it })
+
+        assertEquals(
+            listOf(
+                ServerSendEvent.TypingStarted("s1", "p1"),
+                ServerSendEvent.TypingStopped("s1", "p1")
+            ),
+            events.filterIsInstance<ServerSendEvent.TypingStarted>() +
+                events.filterIsInstance<ServerSendEvent.TypingStopped>()
+        )
+        assertTrue(sink.enqueued.isEmpty())
+    }
+
+    @Test
     fun `SSE 事件按序转给界面 accepted 后出队 done 记用量`() = runBlocking {
         val remote = FakeRemote()
         remote.onSend = { _, emit ->
@@ -171,6 +227,9 @@ class ServerChatGatewayTest {
                 when (it) {
                     is ServerSendEvent.Accepted -> "accepted:${it.userMessageId}"
                     is ServerSendEvent.Delta -> "delta:${it.text}"
+                    is ServerSendEvent.MessageCreated -> "message:${it.message.id}"
+                    is ServerSendEvent.TypingStarted -> "typing-started:${it.sessionId}"
+                    is ServerSendEvent.TypingStopped -> "typing-stopped:${it.sessionId}"
                     is ServerSendEvent.Tool -> "tool:${it.name}:${it.status}"
                     is ServerSendEvent.Done -> "done:${it.assistantMessageId}"
                     is ServerSendEvent.Error -> "error:${it.code}"

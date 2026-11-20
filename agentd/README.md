@@ -90,6 +90,7 @@ Options:
 | `--llm-base-url <url>` | — | OpenAI-compatible root, e.g. `https://api.deepseek.com/v1`. **Remote** deployments (`--host` is not loopback) read *only* these server-side values; **loopback** deployments prefer the client-pushed `api_configs.json` + `secrets.json` and fall back to this. Also `YAP_LLM_BASE_URL`. |
 | `--llm-key <key>` | — | API key for the server-side config (optional: local gateways often need none). Also `YAP_LLM_KEY`. Never logged, never part of a response. |
 | `--llm-model <name>` | — | Model name, e.g. `deepseek-chat`. Required when a server-side config is supplied. Also `YAP_LLM_MODEL`. |
+| `--ffmpeg <path>` | — (PATH lookup) | System `ffmpeg` used by the `watch` tool to extract video keyframes. Resolution order: flag → `YAP_FFMPEG` → `ffmpeg` on `PATH`. When nothing is found, `watch` answers **“服务器没有视频解码器，看不了视频”** instead of faking frames. |
 | `--help` / `-h` | — | Usage. |
 
 Flags win over environment variables, which win over the defaults (so a container can pin the
@@ -176,6 +177,20 @@ request arrives from `127.0.0.1`, so all users share one bucket — either raise
 accordingly or do the per-user limiting at the proxy and treat `agentd`'s limiter as a
 backstop. `X-Forwarded-For` is deliberately **not** trusted (it is trivially spoofable unless you
 validate the proxy's address); if you need per-client limits behind a proxy, do it there.
+
+## Runtime dependencies: ffmpeg and CJK fonts (0.14.1)
+
+Remote deployments need two host-level dependencies; **local client mode never needs them**
+(Android uses `MediaMetadataRetriever` + system fonts, iOS uses `AVAssetImageGenerator` + CoreText):
+
+- **`ffmpeg`** for the `watch` tool (video → ≤8 JPEG keyframes). Resolution: `--ffmpeg` →
+  `YAP_FFMPEG` → `PATH`. Without it `watch` answers “服务器没有视频解码器，看不了视频” and never
+  fabricates frames. `brew install ffmpeg` / `apt-get install ffmpeg` / `apk add ffmpeg`.
+- **A CJK font on the JRE** for `sticker.make` text overlay (JDK logical `SansSerif`). macOS/Windows
+  usually ship one; minimal Linux images need `fonts-noto-cjk` / `font-noto-cjk`, otherwise Chinese
+  renders as `□□□`. Verify with `fc-list :lang=zh` (or `Font.canDisplay('中')`), then restart agentd.
+
+Full deployment guide (Dockerfile, verification, checklist): [docs/DEPLOY.md](../docs/DEPLOY.md).
 
 ## Deployment and TLS (0.12.0)
 
@@ -480,6 +495,8 @@ environment variable, which wins over the default — same precedence as every o
   presets.json                   {"presets":[{id,name,…,worldJson,speechStyleJson}]}
   push_tokens.json               {"tokens":[{platform,token,bundleId,createdAt,updatedAt}]}
   events.jsonl                   one event per line, append-only                 ← GET /v1/events cursor
+  message_queue.json             0.14.1: pending deliveries ({deliveries:[…]}), survives a restart
+  client_extras.json             0.14.1: client-only backup sections kept verbatim (proactiveRules / memoryConsolidations / unknown)
   sessions/<sessionId>/block_index.json   {"sessionId":…,"blocks":[{index,firstMessageId,lastMessageId,firstAt,lastAt,count}]}
   sessions/<sessionId>/blocks/<blockIndex>.jsonl   one message per line (append-only, UTF-8)
   media.json                     {"media":[{id,kind,personaId,mime,bytes,sha256,createdAt}]}
@@ -1017,6 +1034,17 @@ Each line of `events.jsonl` (and each `events[]` item) is:
  "payload":{"message":{…}}}
 ```
 
+0.14.1 adds two event types (`spec/experience` §8):
+
+```json
+{"cursor":12,"type":"typing.started","at":1002,"sessionId":"seed-session-linshen","personaId":"seed-linshen","payload":{}}
+{"cursor":13,"type":"typing.stopped","at":1006,"sessionId":"seed-session-linshen","personaId":"seed-linshen","payload":{}}
+```
+
+They are sent only while a client is “foreground online” (a `/v1/` request within the last 60 s);
+one `typing.started` / `typing.stopped` pair per assistant turn. Offline clients get no typing events
+at all — messages are stored with `visibleAt = createdAt` and the next sync shows them immediately.
+
 `mood.changed` / `presence.changed` carry `"payload":{"mood":{…}}` / `"payload":{"presence":{…}}` and
 have `sessionId: null`. Cursors come from `meta.cursor`, increase by one per event and never get
 reused; `GET /v1/events?since=<cursor>` returns events with a strictly larger cursor. When the long
@@ -1389,12 +1417,14 @@ round 3: the model has to answer with what it already has
 | `recall` | keyword/tag search over that persona's memories (no embeddings) | returns the hits back to the model |
 | `web_search` | `WebSearchService.search` with the **server** provider/base/key | count 1–12; the key never appears in model arguments |
 | `web_fetch` | `WebSearchService.webFetch` (public http(s) only, `WebUrlPolicy`) | text capped at 8000 chars by the search layer |
-| `sticker` | `send` attaches an existing sticker to the assistant message; `list` shows "my stickers" | `make` is **not** advertised and answers "not supported" if the model tries |
+| `sticker` | `send` attaches an existing sticker to the assistant message; `list` shows "my stickers"; **`make`** (0.14.1) composes a new GIF from a base (`baseStickerId` / public `url` / built-in blank), an optional `overlayStickerId` and `text` at `TOP`/`CENTER`/`BOTTOM`, stores it as `kind=STICKER` media and returns `做好了（id=…）` | output obeys `spec/stickers`: ≤512 KB, long edge ≤320 px, ≤60 frames, ≤6 s; static JPEG/PNG and animated GIF inputs; downloads go through `WebUrlPolicy` and are capped at 8 MiB |
+| `listen` | **0.14.1.** Reads the newest (or `audioId`) voice message of the session, base64-encodes it and feeds it back to the model as an `input_audio` content part (`spec/audio-video`) | audio ≤8 MB; blocked/deleted/missing media fail explicitly; a model that cannot hear audio surfaces “这个模型听不了语音/看不了图片” |
+| `watch` | **0.14.1.** Extracts ≤8 JPEG keyframes (long edge ≤1024 px) from the newest (or `videoId`) video with the system `ffmpeg` and feeds them back as `image_url` parts | requires `--ffmpeg` / `YAP_FFMPEG` / `ffmpeg` on `PATH`; without a decoder it answers **“服务器没有视频解码器，看不了视频”** — never a fabricated frame; video ≤64 MB |
+| `update_persona` | **0.14.1.** Files a **pending patch** (`pending_patches.json`) for `traits` / `likes` / `behaviors` / `quirks` additions & removals and/or `address` (how he calls you, ≤20 chars). The persona is only changed when the user accepts the patch (`/v1/personas/{id}/evolution/{patchId}/accept`), exactly like evolution proposals | never touches the user-written persona text (name/description/world/voice); ≤3 changes per call via `PersonaEvolutionRules.sanitize`; a no-op proposal is refused, not stored |
+| `set_quiet_hours` | **0.14.1.** Writes `personas.quietSleepMinutes` / `quietWakeMinutes` (local minutes after midnight) and `version + 1`; the proactive engine’s `SleepPolicy` then treats that window as sleep (cross-midnight works: `23:30–08:00`) | `start`/`end` accept `HH:MM`, `H:MM`, `HHmm`, `23点30`; equal or unparsable times are refused (no guessing). `null`/absent = no quiet window |
 
-Things that are deliberately *not* in the table (`think`, `update_persona`, `set_quiet_hours`,
-`listen`, `watch`): the server either cannot execute them (audio/video understanding, image
-compositing) or has a dedicated route already (evolution patches). The prompt lists exactly the
-registered tools — `ServerToolCatalogTest` fails if that ever drifts.
+The prompt lists **exactly** the registered tools — `ServerToolCatalogTest` fails if that ever
+drifts. `think` stays client-only (it is a prompt trick, not a server action).
 
 Limits and failure behaviour: `MAX_TOOL_ROUNDS = 3`, a 2-minute wall-clock deadline for the whole
 loop (a slow search cannot hold the turn forever), every tool **returns** a result instead of
@@ -1452,7 +1482,8 @@ was the core of this task:
 | `diary_notes.json` | `diaryNotes[]` | seven columns, `remindAt`/`remindedAt` omitted when null |
 | `agent_intents.json` | `agentIntents[]` | `PENDING`/`SENT`/`EXPIRED` |
 | `settings.json` | `settings` | the client's nine whitelist keys are always written (defaults filled in); server-only keys (`userAvatarUri`, `autoTranslatePersona`) are appended as extensions |
-| `proactiveRules[]` / `memoryConsolidations[]` | same | written as empty arrays (the server does not maintain them); `pending_patches.json` is not exported |
+| `proactiveRules[]` / `memoryConsolidations[]` | same | **0.14.1: preserved verbatim.** The server does not interpret them; an import stores the raw JSON in `client_extras.json` and an export writes it back untouched (an unknown future top-level section is treated the same way). With no client data the arrays stay `[]` so the key set still matches the clients. `pending_patches.json` is not exported |
+| server-only data | `extensions` | **0.14.1:** `{mediaSkipped, mentalActivities[], sessionMemory[]}` — a single optional object the clients ignore. The old top-level placement (`mediaSkipped` / `mentalActivities` / `sessionMemory`) is still **accepted on import** (0.14.0 backups keep importing); exports only write `extensions` |
 
 `POST /v1/backup` accepts **both** envelopes:
 
@@ -1487,6 +1518,238 @@ curl -s -X DELETE http://127.0.0.1:8788/v1/personas/seed-linshen/diary/<noteId>
 curl -s -X POST http://127.0.0.1:8788/v1/proactive/tick -d '{}'
 # -> {"now":…,"fired":1,"decisions":[{"personaId":…,"sessionId":…,"messageId":…,"reason":"diary_reminder"}],"skipped":[…]}
 ```
+
+## Experience features: blocking, multi-message turns, inner monologue and session memory (0.14)
+
+0.14 的规则由 `spec/experience/README.md` 定义，服务端和客户端跑**同一套**规则。服务端这一侧
+不依赖客户端连接：拉黑、心理活动、会话记忆都由 `ChatService` 的收尾与 `ProactiveTicker`
+的每一拍推进（`experience/ExperienceService`）。
+
+### What runs without a client (0.14 additions)
+
+| Driver | Cadence | What it does | Where the state lives |
+| --- | --- | --- | --- |
+| **block expiry** (every chat turn + heartbeat) | on read and once per tick | clears `blockedUntil`/`blockReason` once the moment has passed; reading already treats an expired block as unblocked | `personas.json` |
+| **mental activities**（心理活动，same tick + after chat） | every **3 minutes** or every **3 turns** inside the 10-minute active window; **mandatory** when arousal ≥ 4 or a mood dimension moved ≥ 2 | one private thought (≤ 60 chars, never sent), a mood nudge of at most **1 step per dimension**, injected into the next prompt as `# 你刚才心里想的` | `mental_activities.json` (newest 50 per persona) |
+| **session memory**（会话记忆，same tick + after chat） | every **5** non-blocked user messages → `shortSummary` (≤ 200 chars); every **30** → `longSummary` (≤ 500 chars) | injected as `# 你的备忘录` (short before long) in the **variable** area, never written into the persona | `session_memory.json` |
+| **pending block proposal** (`block_user`, per chat turn) | expires after 10 minutes | two-round confirmation state (`personaId/sessionId/userMessageId/hours/reason/proposedAt`) | `block_proposals.json` |
+
+A failed background generation keeps the old state (`mental_activities.json` / `session_memory.json`
+are not touched), records one stderr line, and does not block the reply.
+
+### `block_user`（拉黑）: two rounds, then it is real
+
+```
+turn N   : block_user{hours: 6, reason: "想清静一会儿"}
+           → pending_confirmation, nothing is stored on the persona
+turn N+K : (at least one new user message in between)
+           block_user{hours: 6, confirm: true} → personas.blockedUntil = now + 6h
+```
+
+- `hours` is clamped to 1–24; a proposal older than 10 minutes is discarded (the next call starts over);
+- confirming **in the same turn** is refused — the proposal remembers the user-message id, and it must differ;
+- while blocked: the user can still send. The message is stored with `blocked: true`, **no model call** happens,
+  the stream is `accepted → done{silent:true}`, and the session is marked read;
+- blocked messages are **permanently** excluded from the model context (`latestMessages(..., includeBlocked = false)`),
+  including after the block expires; they still appear in `GET /v1/state`, paging and backups so the client can
+  show the red exclamation mark and “对方已将你拉黑”;
+- expiry is automatic and silent (no notification, no catch-up); there is **no** `unblock` tool and the user cannot
+  unblock manually.
+
+DTO additions (additive; clients ignore unknown keys): `personas[].blockedUntil` / `blockReason` in
+`GET /v1/state` and CRUD responses, `messages[].blocked` (always written, `false` for everything else).
+
+### Multi-message turns（连发）and the SSE shape
+
+`send_message{text}` sends one real assistant message per call (≤ 120 chars, at most **4 per turn**;
+the 5th returns a tool failure). A reply that does not use the tool is split by **blank lines** into 1–3
+messages (extra paragraphs are folded into the last one, never dropped). No placeholder / “…” message
+is ever stored: `stay_silent` and “tool-only” turns produce `done{silent:true}` and nothing else.
+
+SSE for a multi-message turn (contract confirmed with both clients):
+
+```
+event: accepted        data: {"userMessageId":"…","createdAt":…}
+event: delta           data: {"text":"…"}          ← typing indicator / legacy single-bubble path
+event: tool            data: {"name":"send_message","status":"done","summary":"发出第 1 条"}
+event: typing.started  data: {"sessionId":"…","personaId":"…","at":…}      ← 0.14.1, once per turn
+event: message.created data: {"message":{…full message DTO…}}  × N, in order (at each visibleAt)
+event: typing.stopped  data: {"sessionId":"…","personaId":"…","at":…}      ← 0.14.1, once per turn
+event: done            data: {"assistantMessageId":"<last id>","usage":{…}}
+```
+
+- **one `done`** at the end (`assistantMessageId` = the last message, usage on its row); single-message
+  turns keep the old shape (`accepted → delta* → done`) so older clients are unaffected;
+- each `message.created` payload is identical to the `GET /v1/events` `message.created` payload;
+- usage/tool trace are recorded on the last message; every message points `replyTo` at the same user message;
+- idempotent replay of such a turn re-sends every `message.created` and then **one** `done`.
+
+### `recall` audit (0.14 fixes)
+
+Three real bugs were fixed in `ToolExecutor.recall`:
+
+1. the candidate set was `memories(limit = 500)` — older memories silently disappeared; it now scans the
+   whole per-persona list (the index is in memory, no disk scan);
+2. the whole query was used as one substring (`"那家店 怕冷"` could never match); it is now tokenised on
+   whitespace/punctuation and any token counts, with the exact phrase scoring higher;
+3. ranking was importance-only; it now scores phrase hits (3) + token hits in content (2) / tags (1), then
+   importance and recency, deduplicates identical content, clamps the query to 200 chars and the rendered
+   answer to ≤ 2,000 chars.
+
+### Backup v6 additions
+
+`GET /v1/backup` keeps the client v6 key set and **adds** (clients ignore unknown keys):
+
+| Where | Field | Meaning |
+| --- | --- | --- |
+| `personas[]` | `blockedUntil`, `blockReason` | optional; present only when blocked |
+| `messages[]` | `blocked` | only written when `true` (permanent context exclusion) |
+| top level | `mentalActivities[]` | id/personaId/sessionId/at/thought/mood snapshot |
+| top level | `sessionMemory[]` | sessionId/personaId/short+long summaries and their cursors |
+
+Import accepts v1–v6 as before; the new sections are optional (an old v6 file without them still imports),
+references are validated (persona/session must exist, session memory must match the session's persona),
+and `replace` clears these tables while `merge` overwrites by id / sessionId. The import result reports
+`mentalActivities` / `sessionMemories` counts as additive fields.
+
+### Tests for 0.14 (`:agentd:test`)
+
+| Test class | What it pins |
+| --- | --- |
+| `BlockUserTest` | two-round confirmation, same-turn refusal, 10-minute expiry, hours clamp, permanent context exclusion, automatic expiry, state/message DTO |
+| `MultiSendTest` | SSE order with multiple `message.created` + single `done`, independent rows/events, 4-per-turn cap, 120-char clamp, blank-line splitting, silent turns, idempotent replay |
+| `MentalActivityTest` | active window, 3 min / 3 turn triggers, arousal/Δ≥2 mandatory, 1-step clamp, prompt injection order, 50-row cap, heartbeat independence, failure writes nothing |
+| `SessionMemoryTest` | 5/30-message throttles, blocked messages excluded, failure keeps old summary, blank/overlong answers, short-before-long injection, persistence across reopen |
+| `ExperienceBackupTest` | export fields/sections, round trip, merge keeps state, old client v6 file still imports |
+| `ToolExecutorTest` | recall audit: >500 memories, tokenised query, dedupe/ranking, truncation, persona isolation |
+
+## 0.14.1 fixes (server)
+
+0.14.1 closes the five server-side gaps that 0.14 left open. Nothing else in the HTTP contract
+changed: no version bump, no new dependency, same 1 MiB / 4 MiB / 8 MiB / 256 MiB body limits.
+
+### Backup symmetry (`spec/experience` §11)
+
+- **Same key set as the clients' v6 file.** `GET /v1/backup` still writes exactly the client keys;
+  the server-only data now lives in one optional `extensions` object
+  (`{mediaSkipped, mentalActivities[], sessionMemory[]}`) that the clients ignore. The old
+  top-level placement is still accepted on import (0.14.0 files keep working).
+- **Client-only sections round-trip verbatim.** On import, `proactiveRules[]`,
+  `memoryConsolidations[]` and any *unknown* top-level section are stored as raw JSON in
+  `<data>/client_extras.json`; an export writes them back unchanged (byte-for-byte field order,
+  no re-shaping). `merge` overlays a section only when the incoming backup mentions it;
+  `replace` clears the stored extras (the backup is the new state).
+- **Client fields are never replaced by server extension keys.** Unknown persona/session/message
+  fields still travel in the rows' `extraFields`; the new `extensions` object is additive only.
+- Guard rails: at most 64 client sections / 8 MiB in total are kept (an oversized section is
+  skipped with one stderr line instead of failing the import), and backups with a duplicate
+  top-level key are rejected by the parser.
+- `BackupSymmetryTest` imports both v6 fixtures, exports, re-imports and re-exports and compares
+  the client sections field by field; it also proves two round trips are idempotent and that a
+  future unknown section survives.
+
+### `sticker.make` (server-side compositing)
+
+`sticker` gained the `make` action. The renderer is `sticker/StickerComposer` + a **verbatim port**
+of the clients' GIF89a codec (`sticker/StickerGif.kt`, same algorithm, only the package changed —
+`:agentd` still has zero third-party dependencies):
+
+- static JPEG/PNG bases are decoded with `javax.imageio`, GIF bases with the ported codec;
+- every frame is composited (base frame + optional overlay + caption), then the whole sequence is
+  re-encoded as GIF89a — an animated base really keeps its per-frame delays;
+- the output is pushed through the `spec/stickers` limits with a degradation ladder
+  (colours 256→128→64→32→16, canvas 320→240→200→160, frame decimation) until it fits ≤512 KB;
+- binaries go through the normal media table (`kind=STICKER`), so `GET /v1/media/<id>` serves them
+  and the sticker row is the media id; `url` sources go through `WebUrlPolicy` and are capped at
+  8 MiB. `StickerComposerTest` covers text, overlay, animated GIF frame count, size/edge caps and
+  the failure codes.
+
+### `listen` / `watch` (`spec/audio-video`)
+
+Both tools are now registered and executed:
+
+- `listen(audioId?)`: resolves the explicit id or the newest audio attachment of the session
+  (blocked messages are excluded), enforces the 8 MB cap and sends the bytes as an
+  `input_audio` content part. The tool result and the audio are fed back to the model in one
+  follow-up `user` message (tool messages can only carry text).
+- `watch(videoId?)`: resolves the newest/explicit video, enforces the 64 MB cap, asks the
+  injectable `FrameExtractor` for ≤8 JPEG frames (long edge ≤1024) and sends them as `image_url`
+  parts. The production extractor shells out to `ffmpeg` (`--ffmpeg` / `YAP_FFMPEG` / `PATH`,
+  30 s timeout, temp dir cleaned up); with no decoder the tool fails with
+  **「服务器没有视频解码器，看不了视频」** and the model is told to say it cannot watch.
+- `LlmClient` serialises `content` as an OpenAI content array (`text` / `image_url` /
+  `input_audio`) only for messages that actually carry parts; everything else stays a plain
+  string. If the provider rejects a modality (`400`, detail mentions audio/image/modality) the
+  failure is reported as “这个模型听不了语音/看不了图片”.
+- `MultimodalToolsTest` uses a fake extractor (and a fake SSE provider) for the deterministic
+  cases; the real-ffmpeg smoke test is `Assume`-skipped when `ffmpeg` is absent.
+
+### `update_persona` / `set_quiet_hours`
+
+- `update_persona` files a **pending patch** (the same `pending_patches.json` + accept/reject flow
+  as 0.13 evolution, so the user keeps the final say). Allowed: `traits` / `likes` / `behaviors` /
+  `quirks` (add/remove, ≤3 per call through `PersonaEvolutionRules.sanitize`) and `address`
+  (`personaCardJson.voice.address`, ≤20 chars). `accept` applies the four fields **and** the
+  address, then bumps `version`; `reject` leaves the persona untouched. Nothing else (name,
+  description, world, speech style) can be changed by the model. The capability prompt already
+  lists both tools because it is generated from the registry.
+- `set_quiet_hours` writes `quietSleepMinutes` / `quietWakeMinutes` directly (a behaviour switch,
+  not “who he is”) and bumps the version. `QuietHours` is the single implementation of the
+  cross-midnight `[start, end)` rule and of the loose `HH:MM` / `HHmm` / `23点30` parsing; the
+  proactive ticker feeds the window into `SleepPolicy`, so a persona inside its quiet window
+  reports `asleep` and does not send proactive messages. `PersonaToolsTest` pins the formula,
+  boundaries, timezone conversion and both tools' failure modes.
+
+### Server message queue and typing (`spec/experience` §8)
+
+- **The server decides the delay at enqueue time:**
+  `visibleAt = now + clamp(0.4 + chars × 0.025 + mood adjustment, 0.4, 4.0)` seconds
+  (`delivery/TypingDelay`, identical to §5; low arousal / unhappy → slower, high arousal →
+  faster). Multi-message turns are staggered: message _n_ is due at message _n−1_'s `visibleAt`
+  plus its own delay.
+- **Foreground online** (a `/v1/` request within the last 60 s, `delivery/ClientPresence`):
+  one `typing.started` at enqueue → one `message.created` per message at its `visibleAt` →
+  one `typing.stopped` after the last one. The events are written to `events.jsonl` (so
+  `GET /v1/events` sees them) and streamed on the POST SSE at the same moments; the final `done`
+  comes after `typing.stopped`.
+- **Offline:** no typing events; messages are stored with `visibleAt = createdAt` and their
+  `message.created` event is emitted immediately, so the next sync shows them directly.
+- **`GET /v1/sessions/{id}/messages` never waits.** It returns the stored rows (now with
+  `visibleAt`) regardless of the queue, so history/sync cannot be held hostage by a delay.
+- **Persistent per-session FIFO:** pending deliveries go to `<data>/message_queue.json` before
+  the wait starts, deliveries of one session are serialised by a per-session lock, and a
+  background recovery thread re-emits anything that was in flight when the process was killed
+  (worst case a duplicate `message.created`, which clients dedupe by message id).
+- `ChatService` uses the queue only when `AgentdServices.delivery` is set; `Main` always sets it.
+  Unit tests that assert the 0.14 SSE shape keep `delivery = null` (immediate path), while
+  `DeliveryTest` injects a fake clock + fake sleeper and asserts the exact per-message timing.
+
+### Unified block protocol (`spec/experience` §9)
+
+- `blockProposalJson` has exactly seven fields:
+  `{"proposalId","personaId","hours","reason","userMessageId","proposedAt","expiresAt"}`
+  (`expiresAt = proposedAt + 600000`; no `sessionId`, no message-count field).
+  It is stored in `block_proposals.json`, exposed as a string on `personas[].blockProposalJson`
+  in `GET /v1/state` and the CRUD responses, and is the same shape the clients keep in
+  `personas.blockProposalJson`.
+- An unexpired proposal is reused (not renewed) by a repeated non-confirming call; `expiresAt`
+  is the **moment it becomes invalid** (`now >= expiresAt` ⇒ expired, matching the clients).
+- Confirmation requires a later turn with a **different `userMessageId`**; the proposal's `hours`
+  are what gets applied (a `hours` in the confirming call is ignored). Tool results are the fixed
+  JSON `{"status":"pending_confirmation","expiresAt":…}` / `{"status":"blocked","blockedUntil":…}`;
+  refusals are `{"status":"rejected","code":"no_pending_proposal|proposal_expired|need_more_user_messages|already_blocked"}`
+  with `ok = true` (a protocol-level refusal, not a broken tool — same as both clients).
+- `BlockUserTest` pins the field set, the expiry boundary, the tool JSON, the persona DTO and the
+  permanent context exclusion.
+
+### Tests for 0.14.1
+
+Added: `BackupSymmetryTest` (7), `DeliveryTest` (10), `PersonaToolsTest` (9),
+`MultimodalToolsTest` (9), `StickerMakeTest` (5), `StickerComposerTest` (10),
+`MediaUnderstandingTest` (15), one `--ffmpeg` case in `MainOptionsTest`, and the updated
+`BlockUserTest` / `ServerToolCatalogTest` / `ToolExecutorTest` expectations. The whole
+`:agentd:test` suite is now **668 tests** (0 failures, 1 skipped: the real-`ffmpeg` smoke test on
+a machine without ffmpeg); `:agentd:test` + `:agentd:build` pass on JDK 17 with `--offline`.
 
 ## Errors
 
@@ -1574,9 +1837,11 @@ Everything else (36 files: `SleepPolicy`, `DeferReply`, `ProactiveLevel`, `Heart
   model answer, the server executes the model's tool calls (search/fetch/memory/diary/sticker/mood/
   activity/defer/stay-silent) and feeds the results back, proactive ticks write a model-generated
   opener, evolution/mood are judged automatically after every chat turn, and diary reminders /
-  deferred intents fire from the heartbeat. Still missing: image/audio/video understanding
-  (`listen`/`watch`), sticker `make` (image compositing), `update_persona`/`set_quiet_hours` as
-  tools, and client-supplied prompts. See
+  deferred intents fire from the heartbeat. 0.14.1 adds the four tools that were missing here:
+  `listen` (audio → `input_audio`), `watch` (video → ≤8 `image_url` frames via system `ffmpeg`),
+  `sticker.make` (server-side GIF compositing) and `update_persona` / `set_quiet_hours`.
+  Still missing: a video **audio track** (`watch` only looks at frames) and client-supplied
+  prompts. See
   [Standalone operation, tool loop, stickers/diary and backup v6](#standalone-operation-tool-loop-stickersdiary-and-backup-v6-013).
 - Android does not start it as an embedded service; remote mode is a development build switch.
   iOS does not call this service by default either: its in-process decisions run the same Kotlin
@@ -1662,8 +1927,9 @@ The 83 tests added in this round:
 
 - `ServerToolCatalogTest` (6) — the registry **is** the `tools[]` array and the `# 你能做什么`
   section (both directions), every schema's `required` points at real properties, no networking ⇒
-  no web tools, and no tool is advertised that the server cannot run (`think`/`update_persona`/
-  `set_quiet_hours`/`listen`/`watch`/`sticker.make`).
+  no web tools, and the registry only advertises what the server can execute: 0.14.1 adds
+  `update_persona` / `set_quiet_hours` / `listen` / `watch` / `sticker.make`, while `think`
+  stays client-only.
 - `ToolExecutorTest` (24) — each tool's real effect: `stay_silent` writes nothing, `defer_reply`
   clamps minutes and writes a `PENDING` intent, `set_mood` writes all four dimensions (and clamps),
   `set_activity` normalises `kind`/`availability` and clamps minutes, `diary` add/list/remove,

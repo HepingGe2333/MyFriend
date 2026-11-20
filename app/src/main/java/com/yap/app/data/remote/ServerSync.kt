@@ -213,11 +213,29 @@ object ServerMergePlan {
         now: Long = System.currentTimeMillis(),
         localAvatarUri: String? = null
     ): PersonaEntity {
-        if (local != null && !shouldOverwrite(local.updatedAt, server.updatedAt)) return local
+        if (local != null && !shouldOverwrite(local.updatedAt, server.updatedAt)) {
+            // 拉黑/解除不一定伴随 updatedAt 变化；这三列以服务端快照为准。
+            // 没变化时返回同一个对象：既省一次无意义的重组，也保持「本地更新就不重写」的语义。
+            if (local.blockedUntil == server.blockedUntil &&
+                local.blockReason == server.blockReason &&
+                local.blockProposalJson == server.blockProposalJson
+            ) {
+                return local
+            }
+            return local.copy(
+                blockedUntil = server.blockedUntil,
+                blockReason = server.blockReason,
+                blockProposalJson = server.blockProposalJson
+            )
+        }
         val fallbackAvatar = localAvatarUri?.takeIf { it.isNotBlank() } ?: server.avatarUrl
         if (local != null) {
             return local.copy(
                 name = server.name.ifBlank { local.name },
+                // 0.14：拉黑状态以服务端为准；null 表示服务端已经解除。
+                blockedUntil = server.blockedUntil,
+                blockReason = server.blockReason,
+                blockProposalJson = server.blockProposalJson,
                 // 本机已有真实头像文件（`file://`）就保留，离线也能看；本地只是服务端引用时
                 // 优先换成这次刚落盘的文件，避免同一张头像每隔一次同步都重新走网络。
                 avatarUri = preferredAvatar(local.avatarUri, fallbackAvatar),
@@ -237,7 +255,10 @@ object ServerMergePlan {
             modelOverride = null,
             isDefault = false,
             createdAt = now,
-            updatedAt = server.updatedAt.takeIf { it > 0 } ?: now
+            updatedAt = server.updatedAt.takeIf { it > 0 } ?: now,
+            blockedUntil = server.blockedUntil,
+            blockReason = server.blockReason,
+            blockProposalJson = server.blockProposalJson
         )
     }
 
@@ -326,7 +347,8 @@ object ServerMergePlan {
                 ?: local?.attachmentsJson,
             toolTraceJson = local?.toolTraceJson,
             readAt = server.readAt ?: local?.readAt,
-            blockIndex = server.blockIndex.coerceAtLeast(0)
+            blockIndex = server.blockIndex.coerceAtLeast(0),
+            blocked = server.blocked || (local?.blocked == true)
         )
     }
 

@@ -33,15 +33,39 @@ import Foundation
 public struct ServerLiveState: Equatable, Sendable {
     public var mood: ServerMood?
     public var presence: ServerPresence?
+    /// 此刻「他正在输入」的会话：本地会话 id → 收到 `typing.started` 的时刻。
+    ///
+    /// 只在**前台**且服务端真的推送了 typing 事件时才有值；离线同步回来的消息
+    /// **不会**写这里（所以历史消息不会再补一遍打字动画，规范 §8）。
+    /// 带时间戳是为了兜底：万一 `typing.stopped` 丢了，超过 `typingMaxAgeMillis` 自动失效。
+    public var typing: [String: Int64]
     public var updatedAt: Int64
 
-    public init(mood: ServerMood? = nil, presence: ServerPresence? = nil, updatedAt: Int64 = 0) {
+    public init(
+        mood: ServerMood? = nil,
+        presence: ServerPresence? = nil,
+        typing: [String: Int64] = [:],
+        updatedAt: Int64 = 0
+    ) {
         self.mood = mood
         self.presence = presence
+        self.typing = typing
         self.updatedAt = updatedAt
     }
 
-    public var isEmpty: Bool { mood == nil && presence == nil }
+    public var isEmpty: Bool { mood == nil && presence == nil && typing.isEmpty }
+
+    /// 这个会话此刻要不要显示「正在输入…」。
+    public static let typingMaxAgeMillis: Int64 = 60_000
+
+    public func isTyping(
+        sessionId: String,
+        now: Int64 = DomainClock.nowMillis,
+        maxAgeMillis: Int64 = ServerLiveState.typingMaxAgeMillis
+    ) -> Bool {
+        guard let startedAt = typing[sessionId] else { return false }
+        return now - startedAt <= maxAgeMillis
+    }
 
     /// 界面要显示的心情（服务端权威，本地不再按时间冲淡）。
     ///
@@ -97,6 +121,9 @@ public enum ServerSyncMapping {
         record.isDefault = server.isDefault
         record.updatedAt = server.updatedAt > 0 ? server.updatedAt : now
         if record.createdAt == 0 { record.createdAt = server.createdAt > 0 ? server.createdAt : now }
+        // 0.14 拉黑：服务端是权威，本地跟着同步（界面与本地规则读同一列）。
+        record.blockedUntil = server.blockedUntil
+        record.blockReason = server.blockReason
         // 头像：服务端下发的是 `/v1/media/...` 这样的**服务端路径**，本地 `avatarUri`
         // 是沙盒里的 `file://`。两者不是同一个东西，硬塞进去会让界面去 decode 一个不存在的文件。
         // 这一版刻意不映射头像（见交付报告的「没做到」）。
@@ -170,6 +197,9 @@ public enum ServerSyncMapping {
         record.updatedAt = record.createdAt
         record.status = .complete
         record.readAt = server.readAt
+        // 0.14：拉黑期间的消息在服务端带 `blocked`，本地也要标上（界面显示红色感叹号；
+        // 服务端模式下的模型上下文本来就在服务端，客户端只负责显示）。
+        record.blocked = server.blocked ?? false
         record.attachmentsJson = attachmentsJson(
             from: server.attachments, mediaMeta: mediaMeta,
             existing: existing?.attachmentsJson
@@ -528,6 +558,7 @@ public actor ServerSyncService {
             live = ServerLiveState(
                 mood: snapshot.mood ?? live.mood,
                 presence: snapshot.presence ?? live.presence,
+                typing: live.typing,
                 updatedAt: at
             )
 

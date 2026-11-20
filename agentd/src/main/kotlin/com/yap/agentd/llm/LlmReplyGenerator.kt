@@ -57,7 +57,9 @@ class LlmReplyGenerator(
             mood = store.mood(request.personaId),
             activity = ActivityState.decode(persona.activityJson),
             history = request.history,
-            now = now
+            now = now,
+            sessionMemory = request.sessionMemory,
+            mentalActivity = request.mentalActivity
         )
         val messages = systemMessages.toMutableList()
         val startedAt = now
@@ -68,26 +70,49 @@ class LlmReplyGenerator(
         val attachments = LinkedHashSet<String>()
         var suppressed = false
         var textSoFar = StringBuilder()
+        // 0.14 连发：`send_message` 每调一次收集一条；`OutgoingMessages` 负责「每轮最多 4 条」。
+        val outgoing = ToolExecutor.OutgoingMessages()
+        val sentMessages = ArrayList<String>()
 
         var round = 0
+        var sentMultimodal = false
         while (round < MAX_TOOL_ROUNDS) {
             round += 1
             if (clock.millis() > deadline) break
             // 最后一轮不再给 tools：让它只能用已经查到的信息说话，而不是无限查下去。
             val useTools = toolEnabled && round < MAX_TOOL_ROUNDS
-            val turn = llm.chat(
-                config = config,
-                messages = messages,
-                tools = if (useTools) toolsJson else null
-            ) { delta ->
-                // 逐段下发：客户端拿到的就是模型真实吐出的内容（不是攒完再切块）。
-                textSoFar.append(delta)
-                emit(SseEvent.Delta(delta))
+            val turn = try {
+                llm.chat(
+                    config = config,
+                    messages = messages,
+                    tools = if (useTools) toolsJson else null
+                ) { delta ->
+                    // 逐段下发：客户端拿到的就是模型真实吐出的内容（不是攒完再切块）。
+                    textSoFar.append(delta)
+                    emit(SseEvent.Delta(delta))
+                }
+            } catch (failure: LlmException) {
+                // 0.14.1（`spec/audio-video`）：不支持音频/图片的模型，上游通常回 400。
+                // 这时要给一句明确的话（「这个模型听不了语音」），而不是笼统的「模型接口返回错误」。
+                if (sentMultimodal && failure.kind == LlmErrorKind.UPSTREAM && isModalityRejection(failure.detail)) {
+                    throw LlmException(
+                        LlmErrorKind.UPSTREAM,
+                        "这个模型听不了语音/看不了图片（provider 拒绝了多模态输入）",
+                        detail = failure.detail,
+                        cause = failure
+                    )
+                }
+                throw failure
             }
             usage = usage.plus(turn.usage)
             if (turn.toolCalls.isEmpty()) break
             messages += LlmMessage.assistant(turn.text, toolCalls = turn.toolCalls)
             var silentThisRound = false
+            // 一轮里的多模态工具结果（listen/watch）先收集，等所有 tool 消息回完再作为**一条**
+            // user 消息送进去：OpenAI 要求 assistant(tool_calls) 后面紧跟对应的 tool 消息，
+            // 中间插 user 消息会让严格实现拒绝整轮请求。
+            val roundParts = ArrayList<LlmContentPart>()
+            val roundTexts = ArrayList<String>()
             for (call in turn.toolCalls) {
                 emit(SseEvent.Tool(call.name, "running", null))
                 val outcome = tools.execute(
@@ -96,14 +121,24 @@ class LlmReplyGenerator(
                     context = ToolExecutor.Context(
                         personaId = request.personaId,
                         sessionId = request.sessionId,
-                        userMessageId = request.userMessage.id
+                        userMessageId = request.userMessage.id,
+                        outgoing = outgoing
                     )
                 )
                 traces += outcome.trace
                 emit(SseEvent.Tool(call.name, "done", outcome.summary))
                 messages += LlmMessage.tool(outcome.contentForModel, call.id)
+                if (outcome.modelParts.isNotEmpty()) {
+                    roundParts += outcome.modelParts
+                    roundTexts += outcome.contentForModel
+                }
                 attachments += outcome.attachments
+                outcome.sentMessage?.let { sentMessages += it }
                 if (outcome.staySilent) silentThisRound = true
+            }
+            if (roundParts.isNotEmpty()) {
+                messages += LlmMessage.userWithParts(roundTexts.joinToString("\n"), roundParts)
+                sentMultimodal = true
             }
             if (silentThisRound) {
                 // 只有「一句话都没说」才算 silent：模型先说了半句又调 `stay_silent` 是自相矛盾的，
@@ -123,8 +158,22 @@ class LlmReplyGenerator(
             toolTraceJson = toolTraceJson,
             toolsUsed = traces.map { it.name },
             elapsedMs = clock.millis() - startedAt,
-            textLength = textSoFar.length
+            textLength = textSoFar.length,
+            // 用了 `send_message` 就以逐条消息为准（已流出的文字只当「正在输入」的进度）。
+            messages = if (suppressed) emptyList() else sentMessages.toList()
         )
+    }
+
+    /**
+     * 上游的 400 是不是「不支持这种模态」。
+     *
+     * 各家措辞不同（`audio` / `image` / `input_audio` / `modality` / `unsupported content type`…），
+     * 只在多模态请求之后才做这个判断；其它 400（参数错、额度）照原样上报。
+     */
+    private fun isModalityRejection(detail: String?): Boolean {
+        val text = detail?.lowercase().orEmpty()
+        if (text.isBlank()) return false
+        return listOf("audio", "image", "modality", "multimodal", "unsupported content").any { it in text }
     }
 
     /** tools 数组只序列化一次（每次生成都一样）。 */

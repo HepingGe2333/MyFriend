@@ -52,7 +52,9 @@ class EvolutionService(
         val persona: Persona,
         val applied: List<PersonaEvolutionRules.Change>,
         val version: Int,
-        val changed: Boolean
+        val changed: Boolean,
+        /** 0.14.1：这次一并生效的称呼（`update_persona` 的补丁）；`null` = 没改称呼。 */
+        val address: String? = null
     )
 
     /** 补丁不存在（或不属于 URL 里的人格）→ 路由回 404。 */
@@ -142,7 +144,10 @@ class EvolutionService(
         val changes = PersonaEvolutionRules.decodePatch(patch.patchJson)
         val after = PersonaEvolutionRules.apply(current, changes)
         val previousVersion = PersonaFields.version(persona)
-        if (after == current) {
+        // 0.14.1：`update_persona` 提的补丁可能还带一个「称呼」（`voice.address`）。
+        val newAddress = PersonaEvolutionRules.decodeAddress(patch.patchJson)
+        val addressChanged = newAddress != null && newAddress != PersonaFields.address(persona)
+        if (after == current && !addressChanged) {
             store.deletePendingPatch(patch.id)
             return Acceptance(
                 patch = patch,
@@ -153,7 +158,10 @@ class EvolutionService(
             )
         }
         val nextVersion = previousVersion + 1
-        val extras = PersonaFields.withCurrent(persona.extraFields, after, nextVersion)
+        var extras = PersonaFields.withCurrent(persona.extraFields, after, nextVersion)
+        if (addressChanged && newAddress != null) {
+            extras = PersonaFields.withAddress(extras, newAddress)
+        }
         val updated = store.updatePersona(personaId) { existing, _ ->
             existing.copy(extraFields = extras)
         }
@@ -167,7 +175,14 @@ class EvolutionService(
                 PersonaEvolutionRules.Field.QUIRKS -> after.quirks != current.quirks
             }
         }
-        return Acceptance(patch, updated, effective, nextVersion, changed = true)
+        return Acceptance(
+            patch = patch,
+            persona = updated,
+            applied = effective,
+            version = nextVersion,
+            changed = true,
+            address = if (addressChanged) newAddress else null
+        )
     }
 
     /** 拒绝：只丢掉提议，人格一动不动（过期补丁同样删掉，但回 410）。 */
@@ -192,7 +207,7 @@ class EvolutionService(
     /** 最近 12 条（每条 120 字）：「对方：… / 他：…」；会话不存在时返回空串。 */
     fun recentSummary(sessionId: String?): String {
         val id = sessionId ?: return ""
-        val messages: List<Message> = store.latestMessages(id, RECENT_MESSAGES * 2)
+        val messages: List<Message> = store.latestMessages(id, RECENT_MESSAGES * 2, includeBlocked = false)
         return messages
             .filter { it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT }
             .filter { it.content.isNotBlank() }

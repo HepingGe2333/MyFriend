@@ -130,7 +130,28 @@ data class PersonaEntity(
     val moodArousal: Int? = null,
 
     /** 掌控感：0 被压住 … 3 一般 … 5 很有把握。 */
-    val moodDominance: Int? = null
+    val moodDominance: Int? = null,
+
+    // ---- 0.14 拉黑（schema v18，`spec/experience/README.md` §2） ----------------
+    /**
+     * 他主动把对方拉黑到什么时候（毫秒时间戳）；null = 没拉黑。
+     *
+     * 到期不通知、不补看：读路径只认 `blockedUntil > now`，到点自动失效；
+     * 另有一个清理查询把过期值写回 NULL，免得界面一直显示「已拉黑」。
+     */
+    val blockedUntil: Long? = null,
+    /** 拉黑原因（只给模型/调试看，不展示给对方）。 */
+    val blockReason: String? = null,
+    /**
+     * 还没生效的 `block_user` 提议（JSON；`spec/experience/README.md` §9 的七个固定字段：
+     * `proposalId/personaId/hours/reason/userMessageId/proposedAt/expiresAt`）。
+     *
+     * 规范要求两轮确认：第一次调用只写这里，10 分钟过期；只有之后的一轮（`userMessageId`
+     * 已经不同）再 `confirm=true` 才写 [blockedUntil]。单独一列比另建表更轻，
+     * 也不会出现「提议表有孤儿人格」。老库里的 0.14.0 形状（at/afterUserCount）由
+     * `BlockPolicy.decode` 兼容读取。
+     */
+    val blockProposalJson: String? = null
 )
 
 @Entity(
@@ -274,7 +295,16 @@ data class MessageEntity(
      * 默认值 0 让老库的 `ALTER TABLE` 不用回填两次，真正的回填由 `MIGRATION_10_11` 做。
      */
     @ColumnInfo(defaultValue = "0")
-    val blockIndex: Int = 0
+    val blockIndex: Int = 0,
+
+    /**
+     * 拉黑期间收到的用户消息（schema v18）。
+     *
+     * 永久排除在模型上下文之外：解除拉黑之后也不会补看、不会抽进记忆，所以这不是
+     * 「暂时隐藏」而是一个写入时就定下的可见性标记。界面照常显示，并在气泡左侧标红。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val blocked: Boolean = false
 )
 
 @Entity(tableName = "memories", indices = [Index(value = ["personaId"]), Index(value = ["personaId", "importance"]), Index(value = ["updatedAt"])])
@@ -650,4 +680,60 @@ data class StickerEntity(
     val source: String = "IMPORTED",
     val createdBy: String = "USER",
     val createdAt: Long
+)
+
+/**
+ * 一次「心理活动」（schema v18，`spec/experience/README.md` §3）。
+ *
+ * 这是他不说出口的念头：活跃窗口里每 3 分钟或每 3 轮生成一句，写在这里，
+ * 下一轮以「你刚才心里想：…」注入提示词；同时留下当时的心情快照，供「心情变化 ≥2 必做」判定。
+ * 每个会话/人格只保留最近 50 条，由 DAO 在写入后裁掉更老的。
+ */
+@Entity(
+    tableName = "mental_activities",
+    indices = [
+        Index(value = ["personaId", "at"]),
+        Index(value = ["sessionId", "at"]),
+        Index(value = ["at"])
+    ]
+)
+data class MentalActivityEntity(
+    @PrimaryKey val id: String,
+    val personaId: String,
+    val sessionId: String?,
+    val at: Long,
+    /** 私密念头；规范上限 60 字，写入前已截断。 */
+    val thought: String,
+    // ---- 生成那一刻的心情快照 ------------------------------------------------
+    val moodLabel: String? = null,
+    val moodIntensity: Int? = null,
+    val moodValence: Int? = null,
+    val moodArousal: Int? = null,
+    val moodDominance: Int? = null
+)
+
+/**
+ * 会话级「小本子」（schema v18，`spec/experience/README.md` §6）。
+ *
+ * 与 `chat_sessions.historySummary` 的区别：historySummary 是长历史的压缩，属于上下文装配；
+ * 这里的两段摘要是**他的备忘录**，短期覆盖最近 5 轮、长期覆盖更早的对话，作为可变区域
+ * 注入系统提示词（短期在前、长期在后），不写进人设。
+ *
+ * [shortUserCount] / [longUserCount] 是节流凭据：每 5 / 30 条用户消息才各更新一次，
+ * 失败时不写，所以旧摘要会保留。
+ */
+@Entity(
+    tableName = "session_memory",
+    indices = [Index(value = ["personaId"]), Index(value = ["updatedAt"])]
+)
+data class SessionMemoryEntity(
+    @PrimaryKey val sessionId: String,
+    val personaId: String,
+    val shortSummary: String? = null,
+    val longSummary: String? = null,
+    val shortUserCount: Int = 0,
+    val longUserCount: Int = 0,
+    val shortUpdatedAt: Long? = null,
+    val longUpdatedAt: Long? = null,
+    val updatedAt: Long
 )

@@ -69,6 +69,43 @@ sealed class SseEvent {
         }
     }
 
+    /**
+     * 一条 assistant 消息已经落库（0.14 连发：一轮可能有好几条，按发送顺序逐条下发）。
+     *
+     * data 与 `GET /v1/events` 的 `message.created` payload 同形：`{"message": {…}}`。
+     * 老客户端把未知事件类型静默忽略，新客户端以它为准渲染多条气泡；`delta` 仍保留，
+     * 只用于「正在输入…」与单条回复的旧渲染路径。
+     */
+    data class MessageCreated(val message: com.yap.agentd.store.Message) : SseEvent() {
+        override val type: String get() = "message.created"
+        override fun data(): JsonValue.Obj = StoreJson.obj("message" to message.toJson())
+    }
+
+    /**
+     * 0.14.1（`spec/experience` §8）：服务端开始「打字」——一轮的第一条 assistant 消息入队时发一次。
+     *
+     * 与 `GET /v1/events` 的 `typing.started` 事件**同名同字段**；客户端只在前台收到它时显示
+     * 「正在输入…」，离线不补。
+     */
+    data class TypingStarted(val sessionId: String, val personaId: String, val at: Long) : SseEvent() {
+        override val type: String get() = "typing.started"
+        override fun data(): JsonValue.Obj = StoreJson.obj(
+            "sessionId" to StoreJson.str(sessionId),
+            "personaId" to StoreJson.str(personaId),
+            "at" to StoreJson.num(at)
+        )
+    }
+
+    /** 0.14.1：这一轮的消息都发完了（每轮一次 `typing.started` / 一次 `typing.stopped`）。 */
+    data class TypingStopped(val sessionId: String, val personaId: String, val at: Long) : SseEvent() {
+        override val type: String get() = "typing.stopped"
+        override fun data(): JsonValue.Obj = StoreJson.obj(
+            "sessionId" to StoreJson.str(sessionId),
+            "personaId" to StoreJson.str(personaId),
+            "at" to StoreJson.num(at)
+        )
+    }
+
     data class Error(val code: String, val message: String) : SseEvent() {
         override val type: String get() = "error"
         override fun data(): JsonValue.Obj = StoreJson.obj(

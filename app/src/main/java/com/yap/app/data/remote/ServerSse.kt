@@ -4,6 +4,7 @@ import com.yap.app.network.ApiException
 import com.yap.app.network.SseLines
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -21,11 +22,29 @@ sealed class ServerChatEvent {
     /** 用户消息已落库（幂等重复请求也发它，`userMessageId` 是同一条）。 */
     data class Accepted(val userMessageId: String, val createdAt: Long) : ServerChatEvent()
 
-    /** 一段回复增量；拼接顺序就是显示顺序。 */
+    /** 一段回复增量；拼接顺序就是显示顺序（0.14 起只用于输入指示）。 */
     data class Delta(val text: String) : ServerChatEvent()
+
+    /**
+     * 一条完整的 assistant 消息（0.14 连发）。
+     *
+     * 服务端在 `accepted` 之后按顺序发若干条，最后才发一个 `done`；老客户端会忽略它，
+     * 靠 `delta` 仍能工作。新客户端应把它当作独立气泡渲染。
+     */
+    data class MessageCreated(val message: ServerMessage) : ServerChatEvent()
 
     /** 工具调用进度（服务端只转发，客户端只展示）。 */
     data class Tool(val name: String, val status: String, val summary: String?) : ServerChatEvent()
+
+    /**
+     * 他正在输入（0.14.1 §8）：服务端在一条消息入队时发一次。
+     *
+     * 客户端只据此显示输入指示——服务端权威模式下**不再自己加延迟**。
+     */
+    data class TypingStarted(val sessionId: String, val personaId: String) : ServerChatEvent()
+
+    /** 这一轮发完（§8）：收掉输入指示。 */
+    data class TypingStopped(val sessionId: String, val personaId: String) : ServerChatEvent()
 
     /** assistant 消息已落库；[assistantMessageId] 是服务端权威 id。 */
     data class Done(val assistantMessageId: String, val usage: ServerUsage) : ServerChatEvent()
@@ -112,12 +131,37 @@ class ServerSseParser(private val json: Json = ServerApi.DEFAULT_JSON) {
 
         "delta" -> ServerChatEvent.Delta(objectOf(name, payload).string("text"))
 
+        "message.created" -> {
+            val data = objectOf(name, payload)
+            val message = (data["message"] as? JsonObject) ?: data
+            ServerChatEvent.MessageCreated(
+                json.decodeFromJsonElement<ServerMessage>(message)
+            )
+        }
+
         "tool" -> {
             val data = objectOf(name, payload)
             ServerChatEvent.Tool(
                 name = data.string("name"),
                 status = data.string("status"),
                 summary = data.stringOrNull("summary")
+            )
+        }
+
+        // 0.14.1：typing 事件的 sessionId/personaId 在 data 顶层（§8 契约）。
+        "typing.started" -> {
+            val data = objectOf(name, payload)
+            ServerChatEvent.TypingStarted(
+                sessionId = data.string("sessionId"),
+                personaId = data.string("personaId")
+            )
+        }
+
+        "typing.stopped" -> {
+            val data = objectOf(name, payload)
+            ServerChatEvent.TypingStopped(
+                sessionId = data.string("sessionId"),
+                personaId = data.string("personaId")
             )
         }
 

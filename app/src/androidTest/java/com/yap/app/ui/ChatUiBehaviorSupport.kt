@@ -37,6 +37,7 @@ import com.yap.app.data.repo.PersonaCardRepository
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PresenceRepository
 import com.yap.app.data.repo.ProactiveRepository
+import com.yap.app.data.remote.ServerTypingState
 import com.yap.app.ui.screens.chat.ChatScreen
 import com.yap.app.ui.screens.chat.ChatUiState
 import com.yap.app.ui.screens.chat.ChatViewModel
@@ -103,7 +104,9 @@ class ChatUiHarness(
      * `translationJson`，把它接进这些测试只会让它们变慢变脆。默认实现让协调器直接
      * 返回 MISSING（零请求），需要测翻译时单独注入。
      */
-    private val translationCoordinator: PersonaTranslationCoordinator = offlineTranslationCoordinator()
+    private val translationCoordinator: PersonaTranslationCoordinator = offlineTranslationCoordinator(),
+    /** 0.14.1：服务端模式的「正在输入」瞬时状态（UI 测试默认没有 typing 事件）。 */
+    private val serverTypingState: ServerTypingState = ServerTypingState()
 ) {
 
     val personaDao get() = db.personaDao()
@@ -237,6 +240,7 @@ class ChatUiHarness(
                 stickerRepository = stickerRepository,
                 audioVideoRepository = audioVideoRepository,
                 translationCoordinator = translationCoordinator,
+                serverTypingState = serverTypingState,
                 context = context
             ) as T
         }

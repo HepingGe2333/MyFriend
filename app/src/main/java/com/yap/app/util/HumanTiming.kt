@@ -18,7 +18,7 @@ object HumanTiming {
     const val MIN_MS = 500L
     const val MAX_MS = 4_500L
 
-    /** 重新生成时他已经知道上下文，只需要很短的反应时间。 */
+    /** 编辑重发时他已经知道上下文，只需要很短的反应时间。 */
     const val REGENERATE_MS = 380L
 
     /**

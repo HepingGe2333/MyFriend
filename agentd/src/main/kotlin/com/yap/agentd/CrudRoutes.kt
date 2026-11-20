@@ -199,7 +199,7 @@ object CrudRoutes {
         StoreJson.stringify(
             StoreJson.obj(
                 "serverTime" to StoreJson.num(store.serverTime()),
-                "personas" to StoreJson.arr(store.personas().map { personaJson(it) })
+                "personas" to StoreJson.arr(store.personas().map { PersonaJson.of(store, it) })
             )
         )
     )
@@ -238,14 +238,14 @@ object CrudRoutes {
         val requestedId = optionalId(request, "id")
         if (requestedId == null) {
             val persona = store.createPersona(null) { now -> personaFromRequest(request, null, now, creating = true) }
-            return Response(200, StoreJson.stringify(StoreJson.obj("persona" to personaJson(persona))))
+            return Response(200, StoreJson.stringify(StoreJson.obj("persona" to PersonaJson.of(store, persona))))
         }
         requireValidId(requestedId, "id")
         if (store.persona(requestedId) == null) throw personaNotFound(requestedId)
         val persona = store.updatePersona(requestedId) { existing, now ->
             personaFromRequest(request, existing, now, creating = false)
         }
-        return Response(200, StoreJson.stringify(StoreJson.obj("persona" to personaJson(persona))))
+        return Response(200, StoreJson.stringify(StoreJson.obj("persona" to PersonaJson.of(store, persona))))
     }
 
     private fun deletePersona(store: FileStore, personaId: String): Response {
@@ -320,6 +320,9 @@ object CrudRoutes {
             createdAt = existing?.createdAt ?: now,
             updatedAt = existing?.updatedAt ?: now,
             activityJson = activityJson,
+            // 0.14：拉黑状态只能由 block_user/到期解除改变；客户端更新人格时原样保留。
+            blockedUntil = existing?.blockedUntil,
+            blockReason = existing?.blockReason.orEmpty(),
             extraFields = extras
         )
     }
@@ -895,12 +898,6 @@ object CrudRoutes {
     private fun optionalId(request: JsonValue.Obj, key: String): String? {
         val raw = request.optionalString(key)?.trim()
         return raw?.takeIf { it.isNotEmpty() }
-    }
-
-    private fun personaJson(persona: Persona): JsonValue.Obj {
-        val fields = LinkedHashMap(persona.toJson().fields)
-        fields["activity"] = ActivityState.decode(persona.activityJson)?.toJson() ?: JsonValue.Null
-        return JsonValue.Obj(fields)
     }
 
     // ------------------------------------------------------------------ 错误

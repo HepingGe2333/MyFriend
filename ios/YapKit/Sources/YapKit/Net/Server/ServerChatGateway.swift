@@ -545,6 +545,11 @@ public final class ServerChatGateway {
         case .delta(let text):
             accumulated += text
             return .delta(accumulated)
+        case .messageCreated(let message):
+            // 0.14.1 §8：服务端到 `visibleAt` 推下来的**完整**消息。直接落库 + 让界面
+            // 立刻上屏（`.appended` 会触发重读）；不再等 delta、也不加任何本地延迟。
+            let saved = try cacheDeliveredMessage(message, entry: entry)
+            return .appended(saved)
         case .tool(let name, let status, let summary):
             let finished = status.lowercased() != "running"
             let item = ToolTraceItem(
@@ -636,7 +641,48 @@ public final class ServerChatGateway {
         }
     }
 
+    /// `message.created`（SSE）：把服务端推下来的完整消息写进本地缓存，界面立刻上屏。
+    ///
+    /// 与 `/v1/events` 的同名事件走**同一套映射**（`ServerSyncMapping.message`），
+    /// 所以两条通道哪条先到都会得到同一条记录（幂等）。
+    private func cacheDeliveredMessage(
+        _ serverMessage: ServerMessage,
+        entry: ServerOutboxEntry
+    ) throws -> MessageEntity {
+        let at = now()
+        let session = (try? stores.sessions.byId(entry.sessionId)) ?? nil
+        let personaId = entry.personaId ?? session?.personaId ?? ""
+        var saved: MessageEntity?
+        try stores.database.inTransaction {
+            let existing = (try? stores.messages.byId(serverMessage.id)) ?? nil
+            var record = ServerSyncMapping.message(
+                from: serverMessage, existing: existing, personaId: personaId, now: at,
+                mediaMeta: mediaMeta
+            )
+            record.sessionId = entry.sessionId
+            try stores.messages.upsert(record)
+            saved = record
+            if var session {
+                if let preview = ServerChatSync.previewText(serverMessage) {
+                    session.lastMessagePreview = preview
+                }
+                session.lastMessageAt = max(session.lastMessageAt ?? 0, record.createdAt)
+                session.updatedAt = max(session.updatedAt, at)
+                try stores.sessions.upsert(session)
+            }
+        }
+        return saved ?? MessageEntity(
+            id: serverMessage.id, sessionId: entry.sessionId, personaId: personaId,
+            role: .assistant, content: serverMessage.content, createdAt: at, updatedAt: at,
+            status: .complete
+        )
+    }
+
     /// `done`：助手消息落库并出队。
+    ///
+    /// 0.14.1 §8：新服务端不再发 `delta`，正文已经在 `message.created` 里落库了；
+    /// 这里**不能**拿空 `accumulated` 把那条消息覆盖成空气泡。只有老服务端
+    /// （delta + done、没有 message.created）才用累积正文补写。
     private func finishAssistantMessage(
         entry: ServerOutboxEntry,
         assistantMessageId: String,
@@ -647,7 +693,8 @@ public final class ServerChatGateway {
         var saved: MessageEntity?
         try stores.database.inTransaction {
             let session = (try? stores.sessions.byId(entry.sessionId)) ?? nil
-            let message = MessageEntity(
+            let existing = (try? stores.messages.byId(assistantMessageId)) ?? nil
+            var message = existing ?? MessageEntity(
                 id: assistantMessageId,
                 sessionId: entry.sessionId,
                 personaId: entry.personaId ?? session?.personaId ?? "",
@@ -657,14 +704,19 @@ public final class ServerChatGateway {
                 updatedAt: at,
                 status: .complete
             )
+            if !content.isEmpty {
+                message.content = content
+            }
+            message.status = .complete
+            message.updatedAt = at
             try stores.messages.upsert(message)
             saved = message
             if var session {
-                if let preview = ServerChatSync.previewText(content) {
+                if let preview = ServerChatSync.previewText(message.content) {
                     session.lastMessagePreview = preview
                 }
-                session.lastMessageAt = at
-                session.updatedAt = at
+                session.lastMessageAt = max(session.lastMessageAt ?? 0, message.createdAt)
+                session.updatedAt = max(session.updatedAt, at)
                 try stores.sessions.upsert(session)
             }
         }

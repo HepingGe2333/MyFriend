@@ -11,6 +11,8 @@ import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.MemoryConsolidationDao
 import com.yap.app.data.local.MemoryDao
 import com.yap.app.data.local.MemoryEchoDao
+import com.yap.app.data.local.MentalActivityDao
+import com.yap.app.data.local.SessionMemoryDao
 import com.yap.app.data.local.MemoryTermDao
 import com.yap.app.data.local.MemoryVectorDao
 import com.yap.app.data.local.MessageBlockDao
@@ -61,6 +63,8 @@ class RoomErasureStore @Inject constructor(
     private val proactiveRuleDao: ProactiveRuleDao,
     private val presetDao: PersonaPresetDao,
     private val personaDao: PersonaDao,
+    private val mentalActivityDao: MentalActivityDao,
+    private val sessionMemoryDao: SessionMemoryDao,
     private val apiConfigDao: ApiConfigDao,
     private val apiUsageDao: ApiUsageDao,
     private val memoryReconsolidator: MemoryReconsolidator,
@@ -82,7 +86,13 @@ class RoomErasureStore @Inject constructor(
             }
 
             ErasableTable.SESSIONS -> {
-                if (personaId == null) sessionDao.deleteAll() else sessionDao.deleteByPersona(personaId)
+                if (personaId == null) {
+                    sessionMemoryDao.deleteAll()
+                    sessionDao.deleteAll()
+                } else {
+                    sessionMemoryDao.deleteByPersona(personaId)
+                    sessionDao.deleteByPersona(personaId)
+                }
                 // 兜底：会话已经不存在、块行还在（异常导入/中断的事务）时回收孤儿块。
                 blockDao.deleteOrphans()
             }
@@ -136,6 +146,10 @@ class RoomErasureStore @Inject constructor(
                 presetDao.deleteAll()
 
             ErasableTable.PERSONAS -> {
+                // 0.14（schema v18）：心理活动挂人格；会话备忘录已经随 SESSIONS 删过，
+                // 这里再按人格兜底一次（异常导入可能留下没有会话的行）。
+                if (personaId == null) mentalActivityDao.deleteAll() else mentalActivityDao.deleteByPersona(personaId)
+                if (personaId == null) sessionMemoryDao.deleteAll() else sessionMemoryDao.deleteByPersona(personaId)
                 // 0.13（schema v15）：`diary_notes` 是「他的备忘」，挂人格不挂记忆，
                 // 所以不进 `ErasableTable`（那份清单在 :agentcore，本轮不改），
                 // 而是跟着父表 personas 在同一个分支里删——整库清空/删一个人/备份替换都会走到这里。

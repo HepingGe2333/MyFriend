@@ -301,6 +301,86 @@ final class StickerServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
     }
 
+    /// 服务端模式：删除必须**先**过服务端，再删本机缓存行；面板重新读列表就看不到它了。
+    func testServerModeDeleteCallsServerFirstThenRemovesLocalRow() async throws {
+        let catalog = FakeStickerCatalog()
+        let serverService = StickerService(
+            stores: temp.stores,
+            storage: storage,
+            session: StubURLProtocol.makeSession(),
+            serverCatalog: catalog,
+            now: { self.now }
+        )
+        let sticker = StickerEntity(
+            id: "stk_1", ownerUserId: "owner-1", personaId: personaId,
+            file: "/v1/media/stk_1", mime: "image/gif", width: 1, height: 1,
+            frames: 1, bytes: 42, source: "IMPORTED", createdBy: "USER",
+            createdAt: now
+        )
+        try temp.stores.stickers.upsert([sticker])
+
+        let removed = try await serverService.delete(id: sticker.id)
+
+        XCTAssertTrue(removed)
+        XCTAssertEqual(catalog.deletedIds, ["stk_1"], "服务端模式必须先 DELETE /v1/stickers/{id}")
+        XCTAssertNil(try temp.stores.stickers.byId(sticker.id), "本地缓存行也要删掉")
+        XCTAssertTrue(try serverService.all().isEmpty, "面板重新读列表时它必须消失")
+    }
+
+    /// 服务端删除失败：**保留**本机行并把错误交给界面提示（不能假装删掉了）。
+    func testServerModeDeleteFailureKeepsLocalRowAndThrows() async throws {
+        let catalog = FakeStickerCatalog()
+        catalog.deleteError = ServerAPIError(code: "server_error", status: 500, message: "服务端挂了")
+        let serverService = StickerService(
+            stores: temp.stores,
+            storage: storage,
+            session: StubURLProtocol.makeSession(),
+            serverCatalog: catalog,
+            now: { self.now }
+        )
+        let sticker = StickerEntity(
+            id: "stk_2", ownerUserId: "owner-1", personaId: personaId,
+            file: "/v1/media/stk_2", mime: "image/gif", width: 1, height: 1,
+            frames: 1, bytes: 42, source: "IMPORTED", createdBy: "USER",
+            createdAt: now
+        )
+        try temp.stores.stickers.upsert([sticker])
+
+        do {
+            _ = try await serverService.delete(id: sticker.id)
+            XCTFail("服务端失败时不能当成功")
+        } catch let error as StickerError {
+            XCTAssertEqual(error, .writeFailed)
+        }
+        XCTAssertEqual(catalog.deletedIds, ["stk_2"])
+        XCTAssertNotNil(try temp.stores.stickers.byId(sticker.id), "失败时保留，用户可以重试")
+    }
+
+    /// 服务端已经没了（404）：当成功，继续删本机缓存。
+    func testServerModeDeleteTreats404AsAlreadyGone() async throws {
+        let catalog = FakeStickerCatalog()
+        catalog.deleteError = ServerAPIError(code: "not_found", status: 404, message: "没找到")
+        let serverService = StickerService(
+            stores: temp.stores,
+            storage: storage,
+            session: StubURLProtocol.makeSession(),
+            serverCatalog: catalog,
+            now: { self.now }
+        )
+        let sticker = StickerEntity(
+            id: "stk_3", ownerUserId: "owner-1", personaId: personaId,
+            file: "/v1/media/stk_3", mime: "image/gif", width: 1, height: 1,
+            frames: 1, bytes: 42, source: "IMPORTED", createdBy: "USER",
+            createdAt: now
+        )
+        try temp.stores.stickers.upsert([sticker])
+
+        let removed = try await serverService.delete(id: sticker.id)
+
+        XCTAssertTrue(removed)
+        XCTAssertNil(try temp.stores.stickers.byId(sticker.id))
+    }
+
     // MARK: - 服务端模式
 
     func testServerModeStoresMediaURIAndSkipsLocalFile() async throws {
@@ -349,4 +429,28 @@ final class StickerServiceTests: XCTestCase {
 private final class UploadRecorder {
     var bytes: [Data] = []
     var downloads: [String] = []
+}
+
+
+/// 表情服务端写口的假实现（只记录删除，够钉住「先服务端、后本机」）。
+private final class FakeStickerCatalog: StickerServerCatalog {
+    var deletedIds: [String] = []
+    var deleteError: Error?
+
+    func createSticker(
+        data: Data, width: Int, height: Int, frames: Int,
+        source: String, createdBy: String, personaId: String?
+    ) async throws -> ServerStickerRow {
+        ServerStickerRow(
+            id: "stk_fake", ownerUserId: "owner-1", personaId: personaId,
+            file: "stk_fake.gif", fileName: "stk_fake.gif", mediaId: "stk_fake",
+            mime: "image/gif", width: width, height: height, frames: frames,
+            bytes: data.count, source: source, createdBy: createdBy, createdAt: 1
+        )
+    }
+
+    func deleteSticker(id: String) async throws {
+        deletedIds.append(id)
+        if let deleteError { throw deleteError }
+    }
 }

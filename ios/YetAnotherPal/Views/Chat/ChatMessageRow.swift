@@ -37,8 +37,6 @@ struct ChatDateDivider: View {
 struct ChatBubbleRow: View {
 
     let message: MessageEntity
-    /// 只有「最后一条助手消息」才给「重新生成」——`ChatService.regenerate` 删的也是最后一条。
-    let isLatestAssistant: Bool
     /// 1.9：这条用户消息要不要在右下角显示「已读」（见 `ChatViewModel.showsReadBadge`）。
     let showsRead: Bool
     let bubbleStyle: BubbleStyle
@@ -52,7 +50,6 @@ struct ChatBubbleRow: View {
     /// 长按「添加到我的表情」（0.13 表情包）。
     let onAddSticker: () -> Void
     let onCopy: () -> Void
-    let onRegenerate: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.colorScheme) private var scheme
@@ -81,7 +78,24 @@ struct ChatBubbleRow: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             if outgoing { Spacer(minLength: 40) }
-            bubble
+            // 0.14 拉黑（`spec/experience/README.md` §2）：气泡**左侧**一个红色感叹号，
+            // 气泡下方一句「对方已将你拉黑」。只认消息自己的 `blocked` 列：
+            // 解除之后这几条仍然带标记（那是当时发生过的事，模型永远不会看到它们）。
+            if BlockPolicy.showsBlockedIndicator(role: message.role, blocked: message.blocked) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.red)
+                    .padding(.bottom, 2)
+                    .accessibilityLabel(Text(L("对方已将你拉黑")))
+            }
+            VStack(alignment: .trailing, spacing: 3) {
+                bubble
+                if message.blocked && message.role == .user {
+                    Text(L("对方已将你拉黑"))
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                }
+            }
             if outgoing {
                 // 自己那一侧的小头像：这是「我」在这个对话里存在过的证据（1.9.1 新增）。
                 MFAvatar(myAvatarUri: myAvatarUri, size: 26)
@@ -126,10 +140,6 @@ struct ChatBubbleRow: View {
             }
             if !message.content.isEmpty {
                 ChatMarkdownView(text: message.content, isOutgoing: usesAccentFill, onOpenLink: onOpenLink)
-            }
-            if message.status == .error {
-                errorBox
-                    .padding(.top, message.content.isEmpty ? 0 : 8)
             }
             if !traces.isEmpty && message.status == .complete {
                 tracesSection
@@ -184,46 +194,6 @@ struct ChatBubbleRow: View {
 
     private var traceTint: Color {
         usesAccentFill ? Color.white.opacity(0.75) : MFTheme.subtleText(scheme)
-    }
-
-    // MARK: 失败
-
-    private var errorBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Image(systemName: "exclamationmark.circle")
-                    .font(.system(size: 12))
-                Text(L("生成失败"))
-                    .font(.caption.weight(.medium))
-            }
-            .foregroundStyle(usesAccentFill ? Color.white : Color.red)
-
-            if let detail = message.errorMessage, !detail.isEmpty {
-                Text(detail)
-                    .font(.caption)
-                    .foregroundStyle((usesAccentFill ? Color.white : Color.red).opacity(0.85))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if isLatestAssistant {
-                Button(action: onRegenerate) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.clockwise").font(.system(size: 10, weight: .semibold))
-                        Text(L("重新生成")).font(.caption)
-                    }
-                    .foregroundStyle(usesAccentFill ? Color.white : MFTheme.defaultAccent)
-                    .padding(.top, 2)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            usesAccentFill ? Color.white.opacity(0.12) : Color.red.opacity(0.10),
-            in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-        )
     }
 
     // MARK: 动作痕迹
@@ -291,11 +261,6 @@ struct ChatBubbleRow: View {
                 Label(L("添加到我的表情"), systemImage: "face.smiling")
             }
         }
-        if isLatestAssistant {
-            Button(action: onRegenerate) {
-                Label(L("重新生成"), systemImage: "arrow.clockwise")
-            }
-        }
         Button(role: .destructive, action: onDelete) {
             Label(L("删除这条消息"), systemImage: "trash")
         }
@@ -323,28 +288,59 @@ struct ChatStreamingBubble: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                if text.isEmpty {
-                    ChatTypingDots(animationsEnabled: animationsEnabled)
-                } else {
+            if text.isEmpty {
+                // 0.14 §1：生成中**只显示输入指示**，不再画一个带「…」的占位气泡。
+                // 三个点直接贴在聊天里（没有气泡底、没有时间戳），首字一到就换成下面的真气泡。
+                ChatTypingRow(traces: traces, animationsEnabled: animationsEnabled)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
                     ChatMarkdownView(text: text, isOutgoing: false, onOpenLink: onOpenLink)
                     ChatBlinkingCursor(animationsEnabled: animationsEnabled)
                         .padding(.top, 1)
+                    if !traces.isEmpty {
+                        tracesSection
+                            .padding(.top, 6)
+                    }
                 }
-                if !traces.isEmpty {
-                    tracesSection
-                        .padding(.top, 6)
-                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(MFTheme.incomingBubble(scheme))
+                .clipShape(shape)
+                .overlay(shape.strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.7))
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .background(MFTheme.incomingBubble(scheme))
-            .clipShape(shape)
-            .overlay(shape.strokeBorder(Color.primary.opacity(0.07), lineWidth: 0.7))
 
             Spacer(minLength: 52)
         }
         .padding(.vertical, 2)
+    }
+
+    /// 生成中但还没有正文：只有三个点（+ 正在跑的工具痕迹），**没有气泡**。
+    ///
+    /// 为什么连痕迹也不套气泡：这一版的要求是「生成中只显示输入指示」；
+    /// 一旦有真字，整个东西才变成一条消息（那是下面的分支）。
+    private struct ChatTypingRow: View {
+        let traces: [ToolTraceItem]
+        let animationsEnabled: Bool
+
+        @Environment(\.colorScheme) private var scheme
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 4) {
+                ChatTypingDots(animationsEnabled: animationsEnabled)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                if !traces.isEmpty {
+                    HStack(spacing: 5) {
+                        Image(systemName: "sparkles").font(.system(size: 10))
+                        Text(ToolTraceCodec.summarize(traces).isEmpty ? L("正在忙") : ToolTraceCodec.summarize(traces))
+                            .font(.caption2)
+                            .lineLimit(1)
+                    }
+                    .foregroundStyle(MFTheme.subtleText(scheme))
+                    .padding(.horizontal, 12)
+                }
+            }
+        }
     }
 
     private var tracesSection: some View {

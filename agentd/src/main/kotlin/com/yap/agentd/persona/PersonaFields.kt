@@ -26,11 +26,20 @@ object PersonaFields {
     const val BEHAVIORS = "behaviors"
     const val QUIRKS = "quirks"
     const val VERSION = "version"
+    /** 安静时段（`set_quiet_hours` 工具写入；客户端备份里是同名的两个可空列）。 */
+    const val QUIET_SLEEP_MINUTES = "quietSleepMinutes"
+    const val QUIET_WAKE_MINUTES = "quietWakeMinutes"
+
+    /** `personaCardJson` 里「他怎么称呼对方」的那一格（`voice.address`）。 */
+    const val CARD_JSON = "personaCardJson"
 
     const val MAX_TRAITS = 6
     const val MAX_LIKES = 8
     const val MAX_BEHAVIORS = 6
     const val MAX_QUIRKS = 300
+
+    /** 「称呼」的字数上限（一句话，不能变成整段人设）。 */
+    const val MAX_ADDRESS_CHARS = 20
 
     /** 人格当前的四组值（进化的输入/输出、提示词的 profile 段都用它）。 */
     data class Current(
@@ -67,6 +76,67 @@ object PersonaFields {
         updated[BEHAVIORS] = encodeListLike(extras[BEHAVIORS], current.behaviors)
         val quirks = current.quirks.trim().take(MAX_QUIRKS)
         updated[QUIRKS] = if (quirks.isEmpty()) JsonValue.Null else JsonValue.Str(quirks)
+        updated[VERSION] = JsonValue.Num(version.toString())
+        return updated
+    }
+
+    /**
+     * 安静时段（`quietSleepMinutes` / `quietWakeMinutes`，当天第几分钟）。
+     *
+     * 两个值缺失、越界或相同都视为「没有设过」：坏数据不该让 `SleepPolicy` 拿到一个空窗口。
+     */
+    fun quietHours(persona: Persona): QuietHours? {
+        val start = extraInt(persona.extraFields[QUIET_SLEEP_MINUTES]) ?: return null
+        val end = extraInt(persona.extraFields[QUIET_WAKE_MINUTES]) ?: return null
+        if (start !in 0 until QuietHours.MINUTES_PER_DAY) return null
+        if (end !in 0 until QuietHours.MINUTES_PER_DAY) return null
+        if (start == end) return null
+        return QuietHours(start, end)
+    }
+
+    /** 写安静时段（纯函数）：`null` = 清掉这两个键（客户端恢复成默认作息）。 */
+    fun withQuietHours(extras: Map<String, JsonValue>, hours: QuietHours?): Map<String, JsonValue> {
+        val updated = LinkedHashMap(extras)
+        if (hours == null) {
+            updated.remove(QUIET_SLEEP_MINUTES)
+            updated.remove(QUIET_WAKE_MINUTES)
+        } else {
+            updated[QUIET_SLEEP_MINUTES] = JsonValue.Num(hours.startMinutes.toString())
+            updated[QUIET_WAKE_MINUTES] = JsonValue.Num(hours.endMinutes.toString())
+        }
+        return updated
+    }
+
+    /** 「他怎么叫对方」的称呼（`personaCardJson.voice.address`）；没设过是空串。 */
+    fun address(persona: Persona): String = card(persona).address
+
+    /**
+     * 改「称呼」并**保持 `personaCardJson` 原来的形状**（客户端 Room 列存的是 JSON 文本）。
+     *
+     * 只动 `voice.address` 这一格：`identity` / `voice.catchphrases` / `life` / `bond` 原样保留。
+     * 原来没有 `personaCardJson` 时，新建一个最小对象再写成 JSON 文本（客户端那一列的形状）。
+     */
+    fun withAddress(extras: Map<String, JsonValue>, address: String): Map<String, JsonValue> {
+        val updated = LinkedHashMap(extras)
+        val previous = extras[CARD_JSON]
+        val root: JsonValue.Obj = when (previous) {
+            is JsonValue.Obj -> previous
+            is JsonValue.Str -> parseObjectOrNull(previous.value) ?: JsonValue.Obj()
+            else -> JsonValue.Obj()
+        }
+        val fields = LinkedHashMap(root.fields)
+        val voice = (fields["voice"] as? JsonValue.Obj) ?: JsonValue.Obj()
+        val voiceFields = LinkedHashMap(voice.fields)
+        voiceFields["address"] = JsonValue.Str(address.trim().take(MAX_ADDRESS_CHARS))
+        fields["voice"] = JsonValue.Obj(voiceFields)
+        val next = JsonValue.Obj(fields)
+        updated[CARD_JSON] = if (previous is JsonValue.Obj) next else JsonValue.Str(Json.stringify(next))
+        return updated
+    }
+
+    /** 只改版本号（安静时段这类「不是四组值」的人设字段写入后用它 +1）。 */
+    fun withVersion(extras: Map<String, JsonValue>, version: Int): Map<String, JsonValue> {
+        val updated = LinkedHashMap(extras)
         updated[VERSION] = JsonValue.Num(version.toString())
         return updated
     }
@@ -220,6 +290,12 @@ object PersonaFields {
     }
 
     // ------------------------------------------------------------------ 小工具
+
+    private fun extraInt(value: JsonValue?): Int? = when (value) {
+        is JsonValue.Num -> value.asInt
+        is JsonValue.Str -> value.value.trim().toIntOrNull()
+        else -> null
+    }
 
     /** 客户端复合字段（worldJson 等）可能是对象，也可能是「JSON 文本」；两种都认。 */
     private fun jsonObject(value: JsonValue?): JsonValue.Obj? = when (value) {

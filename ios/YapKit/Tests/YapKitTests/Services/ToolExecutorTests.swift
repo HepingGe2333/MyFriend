@@ -539,11 +539,112 @@ final class ToolExecutorTests: XCTestCase {
         }
     }
 
-    private func run(_ name: String, arguments: [String: Any]) async -> ToolResult {
+    // MARK: - 0.14 连发与拉黑
+
+    /// `send_message`：不落库，只把清洗后的正文交回聊天链路（节奏由 `ChatService` 管），
+    /// 超过 120 字截断、空正文明确失败。
+    func testSendMessageReturnsOutboundTextWithoutPersisting() async throws {
+        let before = try temp.stores.messages.count()
+        let result = await run("send_message", arguments: ["text": "  在吗  "])
+        XCTAssertTrue(result.ok)
+        XCTAssertEqual(result.outboundText, "在吗")
+        XCTAssertEqual(try temp.stores.messages.count(), before, "工具本身不该落库")
+
+        let long = await run("send_message", arguments: ["text": String(repeating: "字", count: 300)])
+        XCTAssertEqual(long.outboundText?.count, MessageRhythm.maxMessageChars)
+
+        let empty = await run("send_message", arguments: ["text": "   "])
+        XCTAssertFalse(empty.ok)
+        XCTAssertNil(empty.outboundText)
+    }
+
+    /// `block_user` 的两轮确认：第一次只是提议；之后一轮（中间有一条用户消息）再确认才生效。
+    func testBlockUserNeedsTwoRounds() async throws {
+        let first = await run(
+            "block_user", arguments: ["hours": 6, "reason": "想静静"], userMessageId: "u-1"
+        )
+        XCTAssertTrue(first.ok, "提议不是失败：要说清「还没生效」")
+        let pending = try XCTUnwrap(Self.jsonObject(first.contentForModel))
+        XCTAssertEqual(pending["status"] as? String, "pending_confirmation")
+        XCTAssertEqual(pending["expiresAt"] as? Int64, now + BlockPolicy.proposalTTLMillis)
+        XCTAssertNil(try temp.stores.personas.byId(personaId)?.blockedUntil)
+
+        // 同一轮里急着确认（当前用户消息 id 没变）→ 仍然不生效。
+        let tooEarly = await run(
+            "block_user", arguments: ["hours": 6, "confirm": true], userMessageId: "u-1"
+        )
+        XCTAssertTrue(tooEarly.contentForModel.contains("现在还不能确认"))
+        XCTAssertNil(try temp.stores.personas.byId(personaId)?.blockedUntil)
+
+        // 对方又发来一条（新的 userMessageId）→ 下一轮确认生效。
+        let confirmed = await run(
+            "block_user", arguments: ["hours": 6, "confirm": true], userMessageId: "u-2"
+        )
+        let blocked = try XCTUnwrap(Self.jsonObject(confirmed.contentForModel))
+        XCTAssertEqual(blocked["status"] as? String, "blocked")
+        XCTAssertEqual(blocked["blockedUntil"] as? Int64, now + 6 * 3_600_000)
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        XCTAssertEqual(persona.blockedUntil, now + 6 * 3_600_000)
+        XCTAssertEqual(persona.blockReason, "想静静")
+        XCTAssertNil(persona.blockProposalJson, "确认后提议要清掉")
+    }
+
+    /// 提议 10 分钟过期：过期之后 `confirm=true` 也不算数，要重新提议。
+    func testBlockUserProposalExpiresAfterTenMinutes() async throws {
+        _ = await run("block_user", arguments: ["hours": 3], userMessageId: "u-1")
+        // 把等待时间推过 10 分钟：用一个「未来时钟」执行器。
+        let lateExecutor = ToolExecutor(
+            stores: temp.stores, apiKeys: apiKeys, memory: memory, recallService: recall,
+            mood: mood, personaCards: PersonaCardRepository(stores: temp.stores), intents: intents,
+            echoes: echoes, webTools: WebToolsClient(session: StubURLProtocol.makeSession()),
+            now: { self.now + BlockPolicy.proposalTTLMillis + 1 }
+        )
+        let invocation = ToolInvocation(
+            id: "call-late", name: "block_user",
+            argumentsJson: #"{"hours":3,"confirm":true}"#
+        )
+        let persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        let result = await lateExecutor.run(
+            invocation, persona: persona, sessionId: sessionId, userMessageId: "u-2"
+        )
+        XCTAssertTrue(result.contentForModel.contains("已经过期"), "过期要明确告诉模型「重新提议」")
+        XCTAssertNil(try temp.stores.personas.byId(personaId)?.blockedUntil)
+        XCTAssertNil(
+            try temp.stores.personas.byId(personaId)?.blockProposalJson,
+            "确认不成立时不会悄悄续一条新提议（与 Android 一致）"
+        )
+    }
+
+    /// 已经在拉黑期：再调只说明「还在拉黑期」，不延长时间。
+    func testBlockUserWhileAlreadyBlockedDoesNotExtend() async throws {
+        var persona = try XCTUnwrap(try temp.stores.personas.byId(personaId))
+        persona.blockedUntil = now + 3_600_000
+        try temp.stores.personas.upsert(persona)
+
+        let result = await run(
+            "block_user", arguments: ["hours": 24, "confirm": true], userMessageId: "u-2"
+        )
+        XCTAssertTrue(result.contentForModel.contains("还没有可以确认的拉黑提议"))
+        XCTAssertEqual(try temp.stores.personas.byId(personaId)?.blockedUntil, now + 3_600_000)
+    }
+
+    private func run(
+        _ name: String,
+        arguments: [String: Any],
+        userMessageId: String? = nil
+    ) async -> ToolResult {
         let data = try! JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])
         let json = String(data: data, encoding: .utf8) ?? "{}"
         let invocation = ToolInvocation(id: "call-1", name: name, argumentsJson: json)
         let persona = (try? temp.stores.personas.byId(personaId)) ?? TestData.persona(id: personaId)
-        return await executor.run(invocation, persona: persona, sessionId: sessionId)
+        return await executor.run(
+            invocation, persona: persona, sessionId: sessionId, userMessageId: userMessageId
+        )
+    }
+
+    /// `block_user` 的回灌是 JSON（规范 §9）：把它解成对象再断言，避免靠字符串包含蒙对。
+    private static func jsonObject(_ text: String) -> [String: Any]? {
+        guard let data = text.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 }

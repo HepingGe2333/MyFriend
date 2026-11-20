@@ -289,6 +289,21 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 这份翻译的目标语言（`zh` / `en` / BCP-47）。
     public var translationLang: String?
 
+    // MARK: v18 的拉黑（`spec/experience/README.md` §2）
+
+    /// 拉黑到期时间（毫秒时间戳）；`nil` = 没被拉黑。
+    ///
+    /// 「到期」是**读的时候算**的（`BlockPolicy.effective`），不是定时任务：
+    /// App 可能几天不开，靠定时器解除必然错过；存到期时间则任何一次读都对。
+    public var blockedUntil: Int64?
+    /// 拉黑原因（只给他自己看；原因可能为空）。
+    public var blockReason: String?
+    /// 未确认的拉黑提议 JSON（10 分钟有效；null = 没有提议）。
+    ///
+    /// 为什么放人格行：Android 18.json 就是这么定义 `blockProposalJson` 的，
+    /// 两端 schema 要逐字一致；而且「提议」天然属于某一条人格。
+    public var blockProposalJson: String?
+
     public init(
         id: String,
         name: String,
@@ -329,7 +344,10 @@ public struct PersonaEntity: Equatable, Sendable {
         speechStyleJson: String? = nil,
         activityJson: String? = nil,
         translationJson: String? = nil,
-        translationLang: String? = nil
+        translationLang: String? = nil,
+        blockedUntil: Int64? = nil,
+        blockReason: String? = nil,
+        blockProposalJson: String? = nil
     ) {
         self.id = id
         self.name = name
@@ -375,6 +393,11 @@ public struct PersonaEntity: Equatable, Sendable {
         self.activityJson = PromptGuidanceJSON.clean(activityJson)
         self.translationJson = PromptGuidanceJSON.clean(translationJson)
         self.translationLang = translationLang?.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 0 与负数都当「没拉黑」：到期时间必须是未来某一刻。
+        self.blockedUntil = blockedUntil.flatMap { $0 > 0 ? $0 : nil }
+        self.blockReason = blockReason.map { String($0.trimmingCharacters(in: .whitespacesAndNewlines).prefix(200)) }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        self.blockProposalJson = PromptGuidanceJSON.clean(blockProposalJson)
     }
 
     /// 长文本字段的清洗：去首尾空白；**不截断**（0.12）。
@@ -616,6 +639,11 @@ public struct MessageEntity: Equatable, Sendable {
     /// 由 `MessageBlockStore` 在写入时**算好**（追加规则 / 锚点插入），业务代码不要自己赋值：
     /// 新建消息默认 0，落库那一刻被替换成真实块号。读出来时它是可信的（区块分页就按它取页）。
     public var blockIndex: Int
+    /// v18：这条消息是他在拉黑期间收到的（`spec/experience/README.md` §2）。
+    ///
+    /// 用户仍能发、消息仍落库，但**模型上下文永久排除**它（解除拉黑之后也不可见）：
+    /// 界面靠这一列显示红色感叹号与「对方已将你拉黑」。
+    public var blocked: Bool
 
     public init(
         id: String,
@@ -632,7 +660,8 @@ public struct MessageEntity: Equatable, Sendable {
         attachmentsJson: String? = nil,
         toolTraceJson: String? = nil,
         readAt: Int64? = nil,
-        blockIndex: Int = 0
+        blockIndex: Int = 0,
+        blocked: Bool = false
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -649,6 +678,7 @@ public struct MessageEntity: Equatable, Sendable {
         self.toolTraceJson = toolTraceJson
         self.readAt = readAt
         self.blockIndex = blockIndex
+        self.blocked = blocked
     }
 }
 
@@ -1013,5 +1043,113 @@ public struct ApiUsageEntity: Equatable, Sendable {
         self.promptTokens = promptTokens
         self.completionTokens = completionTokens
         self.costMicroUsd = costMicroUsd
+    }
+}
+
+// MARK: - v18 心理活动（`spec/experience/README.md` §3）
+
+/// 他的一句私密念头 + 那一刻的心情快照。
+///
+/// 它不是消息：不发出去、不进聊天记录、用户也看不到（除非以后做「他最近在想什么」）。
+/// 它存在的意义只有一个 —— 让**下一轮**的他知道「我刚刚心里想过这个」，
+/// 从而接上自己刚才的情绪，而不是每轮都像第一次见到对方。
+public struct MentalActivityEntity: Equatable, Sendable {
+    public var id: String
+    /// 哪一段会话里的念头（可空：主动／无会话时也可能产生）。
+    public var sessionId: String?
+    public var personaId: String
+    /// 念头产生的时刻（毫秒时间戳）。
+    public var at: Int64
+    /// ≤60 字的念头（规范 §3：私密、不发给用户）。
+    public var thought: String
+    /// 那一刻的心情标签与强度（微调之后的快照）。
+    public var moodLabel: String?
+    public var moodIntensity: Int?
+    /// 那一刻的三维心情快照（v17 的三列；没判过时为空）。
+    public var moodValence: Int?
+    public var moodArousal: Int?
+    public var moodDominance: Int?
+
+    public init(
+        id: String,
+        sessionId: String?,
+        personaId: String,
+        at: Int64,
+        thought: String,
+        moodLabel: String? = nil,
+        moodIntensity: Int? = nil,
+        moodValence: Int? = nil,
+        moodArousal: Int? = nil,
+        moodDominance: Int? = nil
+    ) {
+        self.id = id
+        self.sessionId = sessionId
+        self.personaId = personaId
+        self.at = at
+        self.thought = String(thought.trimmingCharacters(in: .whitespacesAndNewlines).prefix(60))
+        self.moodLabel = moodLabel
+        self.moodIntensity = moodIntensity
+        self.moodValence = moodValence.map(MoodDimensions.clampValence)
+        self.moodArousal = moodArousal.map(MoodDimensions.clampArousal)
+        self.moodDominance = moodDominance.map(MoodDimensions.clampDominance)
+    }
+
+    /// 三维快照（三列都有值才算；与 `MoodRepository.dimensionsOf` 同一口径）。
+    public var dimensions: MoodDimensions? {
+        guard let valence = moodValence, let arousal = moodArousal, let dominance = moodDominance else {
+            return nil
+        }
+        return MoodDimensions(valence: valence, arousal: arousal, dominance: dominance)
+    }
+}
+
+// MARK: - v18 会话备忘录（`spec/experience/README.md` §6）
+
+/// 一段会话的两份滚动摘要（「你的备忘录」）。
+///
+/// 为什么不复用 `chat_sessions.historySummary`：那个是**上下文压缩**（把早已滚出窗口的
+/// 历史压成一段），语义是「更早说过什么」；这里的短期摘要覆盖**最近 5 轮**，
+/// 长期摘要覆盖「更早的对话」，是每分钟都在变的工作记忆。混在一起会让两边互相覆盖。
+public struct SessionMemoryEntity: Equatable, Sendable {
+    public var sessionId: String
+    public var personaId: String
+    /// ≤200 字：最近 5 轮。
+    public var shortSummary: String?
+    /// ≤500 字：更早的对话。
+    public var longSummary: String?
+    /// 生成短期摘要时，会话里已有多少条用户消息（节流用）。
+    public var shortUserCount: Int
+    /// 生成长期摘要时，会话里已有多少条用户消息（节流用）。
+    public var longUserCount: Int
+    public var shortUpdatedAt: Int64?
+    public var longUpdatedAt: Int64?
+    public var updatedAt: Int64
+
+    public init(
+        sessionId: String,
+        personaId: String,
+        shortSummary: String? = nil,
+        longSummary: String? = nil,
+        shortUserCount: Int = 0,
+        longUserCount: Int = 0,
+        shortUpdatedAt: Int64? = nil,
+        longUpdatedAt: Int64? = nil,
+        updatedAt: Int64 = 0
+    ) {
+        self.sessionId = sessionId
+        self.personaId = personaId
+        self.shortSummary = Self.clean(shortSummary, limit: SessionMemoryPolicy.shortLimit)
+        self.longSummary = Self.clean(longSummary, limit: SessionMemoryPolicy.longLimit)
+        self.shortUserCount = max(shortUserCount, 0)
+        self.longUserCount = max(longUserCount, 0)
+        self.shortUpdatedAt = shortUpdatedAt
+        self.longUpdatedAt = longUpdatedAt
+        self.updatedAt = updatedAt
+    }
+
+    static func clean(_ raw: String?, limit: Int) -> String? {
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return String(trimmed.prefix(limit))
     }
 }

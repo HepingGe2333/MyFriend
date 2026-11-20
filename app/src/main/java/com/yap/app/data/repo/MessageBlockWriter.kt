@@ -25,7 +25,6 @@ import javax.inject.Singleton
  * | --- | --- |
  * | 用户发消息 | `ChatRepository.sendUserMessage` |
  * | 助手回复 / 中断 / 失败 | `ChatRepository.generateAssistant` / `saveInterrupted` / `saveFailed` |
- * | 重新生成（删最后一条） | `ChatRepository.prepareRegeneration` |
  * | 编辑用户消息（锚点插入 + 删后续） | `ChatRepository.editUserMessage` |
  * | 删除单条消息 | `ChatRepository.deleteMessage` |
  * | 清空上下文 / 删除会话 | `ChatRepository.clearContext` / `deleteSession` |

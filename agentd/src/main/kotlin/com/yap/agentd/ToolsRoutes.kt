@@ -20,6 +20,7 @@ import com.yap.agentd.search.SearchLimits
 import com.yap.agentd.search.SearchRequest
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.DiaryNote
+import com.yap.agentd.store.Message
 import com.yap.agentd.store.MessageRole
 import com.yap.agentd.store.MessageSource
 import com.yap.agentd.store.Persona
@@ -340,7 +341,17 @@ internal class ProactiveTicker(
      * 正文来源：生产是 `llm/LlmProactiveTextSource`（真调模型）；默认 [ProactiveTextSource.DEFAULT]
      * 只给测试/冒烟用。返回空串表示这一拍不开口（不落固定文案）。
      */
-    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT
+    private val texts: ProactiveTextSource = ProactiveTextSource.DEFAULT,
+    /**
+     * 0.14 体验功能：心理活动 / 会话记忆 / 拉黑到期都挂在这一拍上（**不依赖客户端连接**）。
+     * `null` = 没有接 LLM/存储（老测试），心跳照常做主动/日记/念头。
+     */
+    private val experience: com.yap.agentd.experience.ExperienceService? = null,
+    /**
+     * 0.14.1（`spec/experience` §8）：前台在线时主动消息也走「typing → 到点 message.created」；
+     * 离线时保持「落库即发事件」。`null` = 不启用延迟（测试默认）。
+     */
+    private val delivery: com.yap.agentd.delivery.MessageDelivery? = null
 ) {
 
     private val lock = Any()
@@ -379,6 +390,11 @@ internal class ProactiveTicker(
             // 冷却/每日上限（用户自己定的提醒不该被「今天说够了」挡掉），但同样不依赖客户端。
             deliverDiaryReminders(now, fired)
             deliverDeferredIntents(now, fired)
+            // 0.14：心理活动、会话记忆、拉黑到期——同一拍里跑，客户端不在线也照常推进。
+            runCatching { experience?.onTick(now) }
+                .onFailure { failure ->
+                    System.err.println("[agentd] 体验功能心跳失败：${failure::class.simpleName}: ${failure.message}")
+                }
             ProactiveTickOutcome(now = now, fired = fired.toList(), decisions = tick.decisions)
         } finally {
             collected.remove()
@@ -400,12 +416,16 @@ internal class ProactiveTicker(
         store.expireOverdueDiaryReminders(now)
         for (note in store.dueDiaryReminders(now)) {
             val session = latestSessionFor(note.personaId) ?: continue
+            val text = diaryReminderText(note)
+            val visibleAt = plannedVisibleAt(note.personaId, text, now)
             val message = try {
                 store.appendMessage(
                     sessionId = session.id,
                     role = MessageRole.ASSISTANT,
-                    content = diaryReminderText(note),
-                    source = MessageSource.PROACTIVE
+                    content = text,
+                    source = MessageSource.PROACTIVE,
+                    visibleAt = visibleAt,
+                    emitEvent = visibleAt == null
                 )
             } catch (failure: Exception) {
                 System.err.println(
@@ -414,6 +434,7 @@ internal class ProactiveTicker(
                 continue
             }
             store.markDiaryReminded(note.id, now)
+            enqueueIfDelayed(session.id, note.personaId, message, visibleAt != null, now)
             fired += FiredProactive(
                 personaId = note.personaId,
                 sessionId = session.id,
@@ -441,12 +462,15 @@ internal class ProactiveTicker(
                 System.err.println("[agentd] 延后回复正文生成失败，用兜底文案：${failure::class.simpleName}")
                 DEFERRED_FALLBACK_TEXT
             }
+            val visibleAt = plannedVisibleAt(intent.personaId, text, now)
             val message = try {
                 store.appendMessage(
                     sessionId = session.id,
                     role = MessageRole.ASSISTANT,
                     content = text,
-                    source = MessageSource.PROACTIVE
+                    source = MessageSource.PROACTIVE,
+                    visibleAt = visibleAt,
+                    emitEvent = visibleAt == null
                 )
             } catch (failure: Exception) {
                 System.err.println(
@@ -455,6 +479,7 @@ internal class ProactiveTicker(
                 continue
             }
             store.markIntentSent(intent.id, now)
+            enqueueIfDelayed(session.id, intent.personaId, message, visibleAt != null, now)
             fired += FiredProactive(
                 personaId = intent.personaId,
                 sessionId = session.id,
@@ -529,16 +554,35 @@ internal class ProactiveTicker(
         val proactive = store.proactiveState(persona.id, localDate(now))
         // 占用时间（`set_activity`）：坏 JSON / 没设过都是 null；过期由引擎读取时判断。
         val activity = ActivityState.decode(store.activity(persona.id))
+        // 0.14.1：`set_quiet_hours` 写下的安静时段 → `SleepPolicy` 的作息窗口。
+        // 跨夜（23:30–08:00）由 `:agentcore` 的 `SleepPolicy.window` 处理，这里不重复判断。
+        val quiet = com.yap.agentd.persona.PersonaFields.quietHours(persona)
         return PersonaState(
             personaId = persona.id,
             displayName = persona.name,
-            sleepEnabled = false,
+            // 设过安静时段 = 他确实会睡；没设过保持 `false`（服务端不替他猜作息）。
+            sleepEnabled = quiet != null,
+            sleepMinutes = quiet?.startMinutes,
+            wakeMinutes = quiet?.endMinutes,
             lastInteractionAt = session.lastMessageAt ?: 0L,
             lastProactiveAt = proactive.lastProactiveAt,
             proactiveCountToday = proactive.proactiveCountToday,
             mood = mood,
             activity = activity
         )
+    }
+
+    /** 计算一条要发的 assistant 消息的 `visibleAt`；`null` = 不延迟（离线/未启用）。 */
+    private fun plannedVisibleAt(personaId: String, text: String, now: Long): Long? =
+        delivery?.visibleAts(personaId, listOf(text), now)?.firstOrNull()
+
+    /** 落库之后：在线走「排队 + typing.started」，离线什么都不用做（落库时已经发过事件）。 */
+    private fun enqueueIfDelayed(sessionId: String, personaId: String, message: Message, delayed: Boolean, at: Long) {
+        if (!delayed) return
+        runCatching { delivery!!.enqueueAsync(sessionId, personaId, listOf(message), enqueuedAt = at) }
+            .onFailure { failure ->
+                System.err.println("[agentd] 主动消息排队失败，已落库：${failure::class.simpleName}: ${failure.message}")
+            }
     }
 
     /**
@@ -552,6 +596,7 @@ internal class ProactiveTicker(
         val pending: PendingProactive = decision.pending ?: return
         val session = latestSessionFor(decision.targetPersonaId) ?: return
         val at = pending.createdAt
+        val visibleAt = plannedVisibleAt(decision.targetPersonaId, pending.text, at)
         val message = store.appendProactiveMessageIfAllowed(
             sessionId = session.id,
             personaId = decision.targetPersonaId,
@@ -559,8 +604,11 @@ internal class ProactiveTicker(
             at = at,
             today = localDate(at),
             dailyCap = decision.dailyCap,
-            minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong()
+            minGapMs = (Heartbeat.COOL_DOWN_MINUTES * 60_000.0).toLong(),
+            visibleAt = visibleAt,
+            emitEvent = visibleAt == null
         ) ?: return
+        enqueueIfDelayed(session.id, decision.targetPersonaId, message, visibleAt != null, at)
         collected.get()?.add(
             FiredProactive(
                 personaId = decision.targetPersonaId,

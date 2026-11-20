@@ -292,7 +292,18 @@ data class AutoState(
      * 落盘而不是只放内存：重启之后「他刚连续两轮没说话」这件事不该被忘掉，
      * 否则第三轮又可以沉默。任何一条真正的 assistant 回复都会把它清零。
      */
-    val consecutiveSilent: Int = 0
+    val consecutiveSilent: Int = 0,
+    /**
+     * 累计发出的 assistant 消息条数（0.14）。
+     *
+     * 心理活动的「每 3 轮」按它算：用户消息条数会被「他连发几条」拉偏，
+     * 而「他这几轮有没有静下来想过」更接近「他说了几轮」。
+     */
+    val assistantReplies: Long = 0,
+    /** 上次做心理活动时 [assistantReplies] 的值（`0.14`：每 3 轮一次）。 */
+    val mentalCursor: Long = 0,
+    /** 上次做心理活动的时刻（毫秒；`0` = 从没做过）。 */
+    val mentalEvaluatedAt: Long = 0
 ) {
     /** 连续沉默超过这个轮数就必须回一句（规范 §4）。 */
     val silentLimitReached: Boolean get() = consecutiveSilent >= MAX_CONSECUTIVE_SILENT
@@ -304,7 +315,11 @@ data class AutoState(
         "evolutionCursor" to num(evolutionCursor),
         "evolutionEvaluatedAt" to num(evolutionEvaluatedAt),
         "userMessagesSeen" to num(userMessagesSeen),
-        "consecutiveSilent" to num(consecutiveSilent)
+        "consecutiveSilent" to num(consecutiveSilent),
+        // 0.14 可加字段（老目录没有这三格，读的时候按 0 处理）。
+        "assistantReplies" to num(assistantReplies),
+        "mentalCursor" to num(mentalCursor),
+        "mentalEvaluatedAt" to num(mentalEvaluatedAt)
     )
 
     companion object {
@@ -318,7 +333,10 @@ data class AutoState(
             evolutionCursor = value.optLong("evolutionCursor", where) ?: 0L,
             evolutionEvaluatedAt = value.optLong("evolutionEvaluatedAt", where) ?: 0L,
             userMessagesSeen = value.optLong("userMessagesSeen", where) ?: 0L,
-            consecutiveSilent = value.optInt("consecutiveSilent", where) ?: 0
+            consecutiveSilent = value.optInt("consecutiveSilent", where) ?: 0,
+            assistantReplies = value.optLong("assistantReplies", where) ?: 0L,
+            mentalCursor = value.optLong("mentalCursor", where) ?: 0L,
+            mentalEvaluatedAt = value.optLong("mentalEvaluatedAt", where) ?: 0L
         )
     }
 }

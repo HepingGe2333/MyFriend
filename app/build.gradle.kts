@@ -60,8 +60,8 @@ android {
         // 内测版本号：0.9.0 → 0.10.0 → 0.10.2 → 0.11.0，本次 0.11.1（审计修复：备份引用完整性 /
         // 定位窗口 / 事务外删文件 / 主线程 IO / 深链校验 / i18n 守卫）。
         // versionCode 只增不减，升级路径才不会断。
-        versionCode = 20
-        versionName = "0.13.0"
+        versionCode = 21
+        versionName = "0.14.0"
         vectorDrawables { useSupportLibrary = true }
         // 0.12：仪器化 UI 测试要在真实 DI 图上跑（@HiltAndroidTest 只认 Hilt 的测试
         // Application），所以换成 Hilt 官方规定的 runner；它其余行为与

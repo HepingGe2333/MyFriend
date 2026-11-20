@@ -18,6 +18,8 @@ import com.yap.app.data.local.MemoryEchoDao
 import com.yap.app.data.local.MediaReferenceDao
 import com.yap.app.data.local.DiaryNoteDao
 import com.yap.app.data.local.StickerDao
+import com.yap.app.data.local.MentalActivityDao
+import com.yap.app.data.local.SessionMemoryDao
 import com.yap.app.data.local.MessageBlockDao
 import com.yap.app.data.local.MessageDao
 import com.yap.app.data.local.AgentIntentDao
@@ -128,7 +130,8 @@ object AppModule {
                 YapDatabase.MIGRATION_13_14,
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
-                YapDatabase.MIGRATION_16_17
+                YapDatabase.MIGRATION_16_17,
+                YapDatabase.MIGRATION_17_18
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -154,6 +157,8 @@ object AppModule {
     @Provides fun personaPendingPatchDao(db: YapDatabase): PersonaPendingPatchDao = db.personaPendingPatchDao()
     @Provides fun diaryNoteDao(db: YapDatabase): DiaryNoteDao = db.diaryNoteDao()
     @Provides fun stickerDao(db: YapDatabase): StickerDao = db.stickerDao()
+    @Provides fun mentalActivityDao(db: YapDatabase): MentalActivityDao = db.mentalActivityDao()
+    @Provides fun sessionMemoryDao(db: YapDatabase): SessionMemoryDao = db.sessionMemoryDao()
 
     /**
      * 表情包的「下载一张公开图片」端口（`sticker` 工具的 `make`）。
@@ -529,8 +534,10 @@ object AppModule {
         remoteProvider: ServerRemoteProvider,
         localStore: ServerLocalStore,
         sink: ServerEventSink,
-        notifier: ServerEventNotifier
-    ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier)
+        notifier: ServerEventNotifier,
+        /** 0.14.1：typing 事件只更新瞬时输入指示，不落库（§8）。 */
+        typing: com.yap.app.data.remote.ServerTypingState
+    ): ServerEventPoller = ServerEventPoller(remoteProvider, localStore, sink, notifier, typing)
 
     /**
      * 人格进化「接受 / 拒绝」的本地读写端口（0.13）。

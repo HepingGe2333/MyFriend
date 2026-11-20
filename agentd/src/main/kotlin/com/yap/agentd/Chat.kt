@@ -16,8 +16,12 @@ data class ReplyRequest(
     val sessionId: String,
     val personaId: String,
     val userMessage: Message,
-    /** 最近若干条消息（升序，含刚落的用户消息），供生成器参考。 */
-    val history: List<Message>
+    /** 最近若干条消息（升序，含刚落的用户消息，**已排除拉黑期间的消息**），供生成器参考。 */
+    val history: List<Message>,
+    /** 0.14：会话级「他的备忘录」（短期/长期摘要）；注入系统提示词的可变区域。 */
+    val sessionMemory: com.yap.agentd.store.SessionMemory? = null,
+    /** 0.14：最近一次心理活动（「你刚才心里想：…」）；过旧的不再注入。 */
+    val mentalActivity: com.yap.agentd.store.MentalActivity? = null
 )
 
 /**
@@ -37,7 +41,13 @@ data class ReplyOutcome(
     val toolTraceJson: String? = null,
     val toolsUsed: List<String> = emptyList(),
     val elapsedMs: Long = 0L,
-    val textLength: Int = 0
+    val textLength: Int = 0,
+    /**
+     * 0.14：这一轮真正要逐条发出的消息（`send_message` 工具收集来的，按顺序）。
+     *
+     * 空列表 = 生成器没有用连发，由 `ChatService` 把已生成的文字按空行拆成 1–3 条。
+     */
+    val messages: List<String> = emptyList()
 )
 
 /**
@@ -132,7 +142,17 @@ class ChatService(
      * 契约要求「不依赖客户端连接」：这里在**反手回完 done 之后**同步跑一次（生产把它丢进
      * `AgentdServices` 的单线程执行器，见 `AutoTriggers`），失败只记日志，绝不影响聊天本身。
      */
-    private val autoTriggers: com.yap.agentd.automation.AutoTriggers? = null
+    private val autoTriggers: com.yap.agentd.automation.AutoTriggers? = null,
+    /**
+     * 0.14 的体验功能：每条聊天后记一轮「他说了几轮」、按 5/30 条更新会话记忆、
+     * 在心情激动/变化大时补一次心理活动。失败同样只记日志。
+     */
+    private val experience: com.yap.agentd.experience.ExperienceService? = null,
+    /**
+     * 0.14.1：服务端消息队列与 typing 指示器（`spec/experience` §8）。
+     * `null` = 不启用延迟（落库即发 `message.created`，0.14 的旧行为；测试默认走这条）。
+     */
+    private val delivery: com.yap.agentd.delivery.MessageDelivery? = null
 ) {
 
     /** 同一 `(sessionId, clientMessageId)` 的并发生成只允许一个；生成完把锁从表里摘掉。 */
@@ -146,14 +166,18 @@ class ChatService(
         try {
             val existing = store.findUserMessageByClientMessageId(sessionId, request.clientMessageId)
             if (existing != null) {
-                val reply = store.findAssistantReply(sessionId, existing.id)
+                val replies = store.findAssistantReplies(sessionId, existing.id)
                 safe.emit(SseEvent.Accepted(existing.id, existing.createdAt))
-                if (reply != null) {
+                if (replies.isNotEmpty()) {
                     // 幂等重放：不再调生成器，也不产生第二条用户消息。
+                    // 0.14 连发的一轮有几条回复就逐条重放 message.created，最后用一个 done 收尾
+                    // （assistantMessageId = 最后一条，usage 取自它）。
+                    if (replies.size > 1) replies.forEach { safe.emit(SseEvent.MessageCreated(it)) }
+                    val last = replies.last()
                     safe.emit(
                         SseEvent.Done(
-                            reply.id,
-                            Usage(reply.promptTokens ?: 0, reply.completionTokens ?: 0)
+                            last.id,
+                            Usage(last.promptTokens ?: 0, last.completionTokens ?: 0)
                         )
                     )
                     return
@@ -162,15 +186,25 @@ class ChatService(
                 generateAndPersist(sessionId, existing, safe)
                 return
             }
+            val session = store.session(sessionId) ?: return
+            // 0.14 拉黑：被拉黑期间用户仍可发；消息落库并永久标记 blocked，**不生成回复**。
+            val blockedNow = store.persona(session.personaId)?.isBlockedAt(store.serverTime()) == true
             val userMessage = store.appendMessage(
                 sessionId = sessionId,
                 role = MessageRole.USER,
                 content = request.content,
                 attachments = request.attachments,
                 source = MessageSource.CHAT,
-                clientMessageId = request.clientMessageId
+                clientMessageId = request.clientMessageId,
+                blocked = blockedNow
             )
             safe.emit(SseEvent.Accepted(userMessage.id, userMessage.createdAt))
+            if (blockedNow) {
+                // 「对方已将你拉黑」：只把会话标已读，不产生 assistant 消息，也不跑任何自动判定。
+                store.markSessionRead(sessionId)
+                safe.emit(SseEvent.Done("", Usage.ZERO, silent = true))
+                return
+            }
             generateAndPersist(sessionId, userMessage, safe)
         } finally {
             // 先在还持锁时判断有没有排队者，再把锁从表里摘掉：并发重复请求会等在同一个锁对象上，
@@ -182,12 +216,17 @@ class ChatService(
 
     private fun generateAndPersist(sessionId: String, userMessage: Message, sink: SafeSink) {
         val session = store.session(sessionId) ?: return
-        val history = store.latestMessages(sessionId, historyLimit)
+        val now = store.serverTime()
+        // 模型上下文**永久排除**拉黑期间的消息（解除后也不可见）：includeBlocked = false。
+        val history = store.latestMessages(sessionId, historyLimit, includeBlocked = false)
         val request = ReplyRequest(
             sessionId = sessionId,
             personaId = session.personaId,
             userMessage = userMessage,
-            history = history
+            history = history,
+            sessionMemory = store.sessionMemory(sessionId),
+            mentalActivity = store.latestMentalActivity(session.personaId)
+                ?.takeIf { now - it.at <= MENTAL_ACTIVITY_CONTEXT_MS }
         )
         val builder = StringBuilder()
         var outcome = ReplyOutcome(Usage.ZERO)
@@ -215,6 +254,15 @@ class ChatService(
             sink.emit(SseEvent.Error("generation_failed", "生成回复失败，已保存已经生成的部分"))
         }
         val usage = outcome.usage
+        val replyTexts = when {
+            outcome.suppressed -> emptyList()
+            outcome.messages.isNotEmpty() -> outcome.messages
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                // 连发是「每轮最多 4 条」，比纯文字按空行拆的 1–3 条宽一条。
+                .take(com.yap.agentd.tools.ToolExecutor.MAX_MESSAGES_PER_TURN)
+            else -> splitIntoMessages(builder.toString())
+        }
         if (outcome.suppressed) {
             // `stay_silent`（spec/mood §4）：这一轮**没有 assistant 消息**，只把会话标已读；
             // 客户端 UI 不显示任何占位气泡，只看到「已读」。用量照记（模型确实被调用了）。
@@ -223,51 +271,108 @@ class ChatService(
             }
             store.markSessionRead(sessionId)
             sink.emit(SseEvent.Done("", usage, silent = true))
-            afterChat(session.personaId)
+            afterChat(session.personaId, sessionId)
             return
         }
-        if (failed && builder.isEmpty()) {
+        if (failed && replyTexts.isEmpty()) {
             // 一个字都没生成出来：不落一条空 assistant 消息，避免污染历史。
-            afterChat(session.personaId)
+            afterChat(session.personaId, sessionId)
             return
         }
-        if (builder.isEmpty() && outcome.attachments.isEmpty()) {
+        if (replyTexts.isEmpty() && outcome.attachments.isEmpty()) {
             // 工具回路把 3 轮都用完了、模型一个字都没说（只调工具）：同样不落空消息，
             // 用一条 `silent` 的 done 收尾（客户端只会看到「已读」，和 stay_silent 同一形状）。
             store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
             store.markSessionRead(sessionId)
             sink.emit(SseEvent.Done("", usage, silent = true))
-            afterChat(session.personaId)
+            afterChat(session.personaId, sessionId)
             return
         }
+        // 有附件但没有文字（sticker.send）：仍然落一条带附件的空正文消息（与 0.13 一致）。
+        val textsToPersist = if (replyTexts.isEmpty()) listOf("") else replyTexts
+        val multiMessage = outcome.messages.isNotEmpty() || textsToPersist.size > 1
+        // 0.14.1（§8）：延迟由服务端在**入队时**决定。离线/未启用/失败时是 `null` = 立即上屏。
+        // 失败时不延迟：已经流出去的半句话要立刻落库并发事件，不能排进队列等 4 秒。
+        val visibleAts = if (failed) null else delivery?.visibleAts(session.personaId, textsToPersist)
+        val delayed = visibleAts != null
         // 关键点：这里不检查 socket 是否还活着 —— 客户端断开也要落库。
-        val assistant = store.appendMessage(
-            sessionId = sessionId,
-            role = MessageRole.ASSISTANT,
-            content = builder.toString(),
-            attachments = outcome.attachments,
-            source = MessageSource.CHAT,
-            replyTo = userMessage.id,
-            promptTokens = usage.promptTokens,
-            completionTokens = usage.completionTokens,
-            toolTraceJson = outcome.toolTraceJson
-        )
+        val persisted = ArrayList<Message>(textsToPersist.size)
+        for ((index, text) in textsToPersist.withIndex()) {
+            val isLast = index == textsToPersist.lastIndex
+            persisted += store.appendMessage(
+                sessionId = sessionId,
+                role = MessageRole.ASSISTANT,
+                content = text,
+                attachments = if (isLast) outcome.attachments else emptyList(),
+                source = MessageSource.CHAT,
+                replyTo = userMessage.id,
+                // 用量记在最后一条：`done` 与幂等重放都读它。
+                promptTokens = if (isLast) usage.promptTokens else null,
+                completionTokens = if (isLast) usage.completionTokens else null,
+                toolTraceJson = if (isLast) outcome.toolTraceJson else null,
+                visibleAt = visibleAts?.getOrNull(index),
+                // 延迟投递的消息先不写 `message.created` 事件（到点由 MessageDelivery 补发）；
+                // 立即路径保持现状（落库即发事件）。
+                emitEvent = !delayed
+            )
+        }
         store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
         // 真的说了一句 → 连续沉默清零（`stay_silent` 的「不超过 2 轮」由它兜底）。
         store.recordAssistantReply(session.personaId)
-        if (!failed) sink.emit(SseEvent.Done(assistant.id, usage))
-        afterChat(session.personaId)
+        if (!failed) {
+            if (delayed) {
+                // 前台在线：typing.started → 到 visibleAt 的 message.created → typing.stopped（每轮各一次）。
+                // 写 socket 失败由 SafeSink 吞掉；投递队列本身已经持久化，进程被 kill 也能补发。
+                try {
+                    delivery!!.present(sessionId, session.personaId, persisted, sink)
+                } catch (failure: Exception) {
+                    System.err.println(
+                        "[agentd] 延迟投递失败，改为立即下发：${failure::class.simpleName}: ${failure.message}"
+                    )
+                    persisted.forEach { sink.emit(SseEvent.MessageCreated(it)) }
+                }
+            } else if (multiMessage) {
+                // 0.14 连发：逐条 `message.created`（带完整消息 DTO），最后只发一个 `done`。
+                // 单条回复保持旧形状（只有 delta + done），老客户端不用改也能正常显示。
+                persisted.forEach { sink.emit(SseEvent.MessageCreated(it)) }
+            }
+            sink.emit(SseEvent.Done(persisted.last().id, usage))
+        }
+        afterChat(session.personaId, sessionId)
     }
 
     /**
-     * 聊天结束后的自动动作（0.13）。**在任何情况下都不抛**：
+     * 不走工具的回复按**空行**拆成 1–3 条短消息（`spec/experience/README.md` §4）。
+     *
+     * 只有一个段落就原样一条；超过 3 段时把多出来的并进最后一条——宁可最后一条长一点，
+     * 也不要丢掉内容。
+     */
+    internal fun splitIntoMessages(text: String): List<String> {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return emptyList()
+        val parts = trimmed.split(EMPTY_LINE).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size <= 1) return listOf(trimmed)
+        if (parts.size <= MAX_REPLY_MESSAGES) return parts
+        return parts.take(MAX_REPLY_MESSAGES - 1) +
+            parts.drop(MAX_REPLY_MESSAGES - 1).joinToString("\n\n")
+    }
+
+    /**
+     * 聊天结束后的自动动作（0.13 / 0.14）。**在任何情况下都不抛**：
      * 情绪判定失败要按时间衰减、进化评估失败只丢一条日志，聊天本身已经成功回完了。
      */
-    private fun afterChat(personaId: String) {
-        val triggers = autoTriggers ?: return
-        runCatching { triggers.onChatCompleted(personaId) }
+    private fun afterChat(personaId: String, sessionId: String) {
+        val triggers = autoTriggers
+        if (triggers != null) {
+            runCatching { triggers.onChatCompleted(personaId) }
+                .onFailure { failure ->
+                    System.err.println("[agentd] 自动判定触发失败：${failure::class.simpleName}: ${failure.message}")
+                }
+        }
+        val experienceService = experience ?: return
+        runCatching { experienceService.onChatCompleted(personaId, sessionId) }
             .onFailure { failure ->
-                System.err.println("[agentd] 自动判定触发失败：${failure::class.simpleName}: ${failure.message}")
+                System.err.println("[agentd] 体验功能触发失败：${failure::class.simpleName}: ${failure.message}")
             }
     }
 
@@ -288,5 +393,16 @@ class ChatService(
                 }
             }
         }
+    }
+
+    companion object {
+        /** 一轮最多拆成几条（规范 §4：1–3 条）。 */
+        const val MAX_REPLY_MESSAGES = 3
+
+        /** 心理活动注入下一轮的时效：太久以前的念头不再提（半小时）。 */
+        const val MENTAL_ACTIVITY_CONTEXT_MS: Long = 30 * 60 * 1000L
+
+        /** 空行（一个或多个，允许行内空白）。 */
+        private val EMPTY_LINE = Regex("\\n[ \\t]*\\n")
     }
 }

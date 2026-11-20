@@ -43,12 +43,12 @@ final class MoodSchemaTests: XCTestCase {
     func testFreshDatabaseHasMoodDimensionColumns() throws {
         let stores = try DatabaseStores.open(path: databasePath)
         defer { stores.database.close() }
-        XCTAssertEqual(Schema.version, 17, "v17 = 多维心情三列")
+        XCTAssertEqual(Schema.version, 18, "当前 schema 是 v18（v17 的三维心情 + v18 的拉黑三列）")
         let columns = try columnNames(stores.database, table: "personas")
         for column in Schema.personaMoodDimensionColumns {
             XCTAssertTrue(columns.contains(column.name), "缺列：personas.\(column.name)")
         }
-        XCTAssertEqual(try stores.database.userVersion(), 17)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
     func testPersonaMoodDimensionsRoundTrip() throws {
@@ -113,7 +113,7 @@ final class MoodSchemaTests: XCTestCase {
         database.close()
 
         let reopened = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try reopened.database.userVersion(), 17)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         let columns = try columnNames(reopened.database, table: "personas")
         for column in Schema.personaMoodDimensionColumns {
             XCTAssertTrue(columns.contains(column.name), "v17 要加列：\(column.name)")
@@ -164,10 +164,10 @@ final class MoodSchemaTests: XCTestCase {
 
         // 连开两次：列只加一次、回填只做一次。
         let first = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try first.database.userVersion(), 17)
+        XCTAssertEqual(try first.database.userVersion(), Schema.version)
         first.database.close()
         let again = try DatabaseStores.open(path: databasePath)
-        XCTAssertEqual(try again.database.userVersion(), 17)
+        XCTAssertEqual(try again.database.userVersion(), Schema.version)
         let stored = try XCTUnwrap(try again.personas.byId("quiet"))
         XCTAssertNil(stored.moodValence, "没有心情的人不该被编出一个心情")
         XCTAssertEqual(try again.database.scalarInt64(

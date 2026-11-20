@@ -245,7 +245,9 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertGreaterThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 300)
         // 0.13 加了 diary / stay_silent 和每个工具的副作用句，上限相应放宽
         //（仍然要短，不能占满上下文）。
-        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 3_000)
+        // 0.14 加了两件工具（send_message / block_user），工具段自然变长：
+        // 上限从 3 000 提到 4 200（仍是「一段能塞进 system 的合理长度」）。
+        XCTAssertLessThan(ToolCatalog.capabilityPrompt(webEnabled: true).count, 4_200)
         XCTAssertGreaterThan(ProactiveCapabilityPrompt.text.count, 300)
         XCTAssertLessThan(ProactiveCapabilityPrompt.text.count, 1_500)
     }

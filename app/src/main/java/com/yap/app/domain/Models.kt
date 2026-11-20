@@ -89,8 +89,18 @@ sealed class GenerationEvent {
     data class Completed(
         val message: MessageEntity,
         val autoMemoryPending: Boolean,
-        val proposal: ProactiveProposal? = null
+        val proposal: ProactiveProposal? = null,
+        /** 这一轮实际落库的全部 assistant 消息（连发时不止一条）；最后一条与 [message] 相同。 */
+        val messages: List<MessageEntity> = listOf(message)
     ) : GenerationEvent()
+
+    /**
+     * 一条完整的助手消息已经落库（连发场景每条一次）。
+     *
+     * 界面收到它就把暂存气泡清掉；真正的气泡从数据库观察流里出现。
+     * 这样「正在输入」与「已经发出的消息」不会在屏幕上同时存在。
+     */
+    data class MessageSent(val message: MessageEntity) : GenerationEvent()
     /** 他中途用了工具：界面在「正在输入」下方显示动作卡片。 */
     data class ToolCall(val traces: List<ToolTraceItem>) : GenerationEvent()
     /** 生成失败。界面用 [error] 映射资源；[errorMessage] 是已经落库的失败气泡。 */
@@ -120,6 +130,9 @@ enum class SilentReason {
 
     /** 他自己决定过会儿再说（`defer_reply`）：与睡眠无关，不显示任何提示。 */
     DEFERRED,
+
+    /** 拉黑期间用户仍可发送，但这一轮不会被模型看到、也不会产生回复。 */
+    BLOCKED,
 
     /**
      * 这一轮只「已读」不回（`stay_silent`）。

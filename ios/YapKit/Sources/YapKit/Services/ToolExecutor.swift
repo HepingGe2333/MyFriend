@@ -55,6 +55,8 @@ public final class ToolExecutor: ToolRunning {
     /// 不必真的录一段音、解一段视频。
     private let audioVideo: AudioVideoStore
     private let videoFrames: VideoFrameExtracting
+    /// 拉黑（0.14）：提议 / 两轮确认 / 到期解除都在这里（`BlockRepository`）。
+    private let block: BlockRepository
     private let webTools: WebToolsClient
     /// 搜完顺手判断「值不值得记」；没接（或没配置）就是「只搜不记」，搜索本身不受影响。
     private let scorer: WebSearchScoring?
@@ -85,6 +87,7 @@ public final class ToolExecutor: ToolRunning {
         stickers: StickerService? = nil,
         audioVideo: AudioVideoStore = .shared,
         videoFrames: VideoFrameExtracting = AVVideoFrameExtractor(),
+        block: BlockRepository? = nil,
         webTools: WebToolsClient = WebToolsClient(),
         scorer: WebSearchScoring? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
@@ -103,6 +106,7 @@ public final class ToolExecutor: ToolRunning {
         self.stickers = stickers ?? StickerService(stores: stores)
         self.audioVideo = audioVideo
         self.videoFrames = videoFrames
+        self.block = block ?? BlockRepository(stores: stores, now: now)
         self.webTools = webTools
         self.scorer = scorer
         self.agentCore = agentCore
@@ -116,7 +120,8 @@ public final class ToolExecutor: ToolRunning {
     public func run(
         _ invocation: ToolInvocation,
         persona: PersonaEntity,
-        sessionId: String
+        sessionId: String,
+        userMessageId: String? = nil
     ) async -> ToolResult {
         let name = invocation.name.trimmingCharacters(in: .whitespacesAndNewlines)
         let at = now()
@@ -151,10 +156,139 @@ public final class ToolExecutor: ToolRunning {
             return await listen(invocation, sessionId: sessionId)
         case "watch":
             return await watch(invocation, sessionId: sessionId)
+        case "send_message":
+            return sendMessage(invocation)
+        case "block_user":
+            return blockUser(
+                invocation, persona: persona, sessionId: sessionId,
+                userMessageId: userMessageId, now: at
+            )
         default:
             // 不认识就明确说，不假装做过：模型要能知道这条路走不通。
             return failure(invocation, String(format: String(localized: "不认识这个工具：%@"), name))
         }
+    }
+
+    // MARK: - 连发（0.14）
+
+    /// 这一轮要发出去的一句（≤120 字）。
+    ///
+    /// 只做两件事：清洗 + 截断，然后把正文交给 `ChatService`。
+    /// **不落库**的理由写在 `ToolResult.outboundText` 的注释里：节奏只能有一处实现。
+    private func sendMessage(_ invocation: ToolInvocation) -> ToolResult {
+        guard let text = MessageRhythm.cleanSendText(invocation.argument("text")) else {
+            return failure(invocation, String(localized: "没有写要发什么"))
+        }
+        var result = success(
+            invocation,
+            title: String(localized: "发了条消息"),
+            subtitle: text,
+            detail: text,
+            modelText: "这一条已经发出去了。想接着说下一句就再调用一次 send_message；"
+                + "不说了就直接结束这一轮。不要再用正文重复它。"
+        )
+        result.outboundText = text
+        return result
+    }
+
+    // MARK: - 拉黑（0.14，`spec/experience/README.md` §2）
+
+    /// 模型想暂时不理对方。
+    ///
+    /// 与 Android `ToolExecutor.blockUser` 同一套结论与文案（两轮确认、10 分钟过期、
+    /// `pending_confirmation` / `blocked` 这两个稳定字符串）：
+    /// 回灌给模型的话必须说清「生效没生效」——它很容易把「提议」当成「已经拉黑」，
+    /// 然后真的不回消息。
+    private func blockUser(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?,
+        now: Int64
+    ) -> ToolResult {
+        // 过期解除在读取时完成（`state` 顺手清列），这里只需要确认现状。
+        let confirm = invocation.boolArgument("confirm") ?? false
+        // 模型没写 hours 时按 12 小时；写了 0 / 99 由 `BlockPolicy.hours` 夹到 1–24。
+        let requestedHours = invocation.optionalIntArgument("hours").map(BlockPolicy.clampHours)
+        let hours = requestedHours ?? BlockPolicy.defaultHours
+        let reason = invocation.argument("reason")
+
+        if !confirm {
+            let proposal = block.propose(
+                personaId: persona.id,
+                hours: hours, reason: reason, userMessageId: userMessageId, now: now
+            )
+            return pendingResult(invocation, proposal: proposal)
+        }
+
+        switch block.confirm(
+            personaId: persona.id,
+            hours: requestedHours, reason: reason, userMessageId: userMessageId, now: now
+        ) {
+        case .accepted:
+            let until = (try? stores.personas.byId(persona.id))?.blockedUntil ?? 0
+            let state = block.state(personaId: persona.id, now: now)
+            return success(
+                invocation,
+                title: String(localized: "已拉黑"),
+                subtitle: state.map { PluralText.format("拉黑 %d 小时", hoursUntil($0.until, now: now)) }
+                    ?? String(localized: "已拉黑"),
+                detail: String(localized: "已生效，到期自动解除。"),
+                modelText: Self.blockResultJSON(status: "blocked", key: "blockedUntil", value: until)
+            )
+        case .waitingForNextRound:
+            let proposal = block.pendingProposal(personaId: persona.id, now: now)
+            return success(
+                invocation,
+                title: String(localized: "拉黑提议"),
+                subtitle: proposal.map { PluralText.format("拉黑 %d 小时", $0.hours) },
+                detail: String(localized: "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。"),
+                modelText: "现在还不能确认：中间还没有新的用户消息。等下一轮再说；"
+                    + "如果这轮已经说了什么，就正常把话说完。"
+            )
+        case .expiredProposal:
+            return success(
+                invocation,
+                title: String(localized: "拉黑提议"),
+                subtitle: nil,
+                detail: String(localized: "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。"),
+                modelText: "那个拉黑提议已经过期了。如果还是想拉黑，先重新提一次（不要 confirm），等下一轮再确认。"
+            )
+        case .needsProposal:
+            return success(
+                invocation,
+                title: String(localized: "拉黑提议"),
+                subtitle: nil,
+                detail: String(localized: "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。"),
+                modelText: "还没有可以确认的拉黑提议。先调用一次 block_user（不要 confirm）提交提议。"
+            )
+        }
+    }
+
+    /// 第一次调用（或重复调用）的结论：`pending_confirmation`（规范 §9 的稳定字符串）。
+    private func pendingResult(_ invocation: ToolInvocation, proposal: BlockProposal) -> ToolResult {
+        success(
+            invocation,
+            title: String(localized: "拉黑提议"),
+            subtitle: PluralText.format("拉黑 %d 小时", proposal.hours),
+            detail: String(localized: "已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。"),
+            modelText: Self.blockResultJSON(
+                status: "pending_confirmation", key: "expiresAt", value: proposal.expiresAt
+            )
+        )
+    }
+
+    /// 工具回灌给模型的统一 JSON（`spec/experience/README.md` §9）：
+    /// `{"status":"pending_confirmation","expiresAt":…}` / `{"status":"blocked","blockedUntil":…}`。
+    static func blockResultJSON(status: String, key: String, value: Int64) -> String {
+        let escaped = status.replacingOccurrences(of: "\"", with: "\\\"")
+        return "{\"status\":\"\(escaped)\",\"\(key)\":\(value)}"
+    }
+
+    /// 还剩几小时（向上取整，用于给模型一句人话）；已经到期返回 0。
+    private func hoursUntil(_ until: Int64, now: Int64) -> Int {
+        let minutes = Swift.max(0, until - now) / 60_000
+        return Int((Double(minutes) / 60.0).rounded(.up))
     }
 
     // MARK: - 心情
@@ -1071,7 +1205,8 @@ public final class ToolExecutor: ToolRunning {
         requestedId: String?
     ) -> FoundMedia? {
         let requested = requestedId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let recent = (try? stores.messages.recent(
+        // 0.14：拉黑期间的消息模型看不到，里面的语音/视频也不该被「听/看」到。
+        let recent = (try? stores.messages.recentVisible(
             sessionId: sessionId, limit: Self.listenScanLimit
         )) ?? []
         for message in recent.reversed() {

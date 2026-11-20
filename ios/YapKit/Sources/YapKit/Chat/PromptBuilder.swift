@@ -52,6 +52,17 @@ public struct SystemPromptInput {
     public var memoriesBlock: String
     /// 会话滚动摘要块（`HistoryCompression.memoryBlock(session.historySummary, …)`）。
     public var earlierMemoryBlock: String
+    /// 「你的备忘录」块（0.14，`spec/experience/README.md` §6）：短期摘要在前、长期在后。
+    ///
+    /// 它与记忆块的区别：记忆是「长期记得的事」，备忘录是「这几轮聊到哪」。
+    /// 属于**可变区域**（几分钟就换一份），所以不写进人设（`# 你是谁`）里。
+    public var memoBlock: String
+    /// 「你刚才心里想：…」（0.14，`spec/experience/README.md` §3）：
+    /// 最近一次心理活动的一句私密念头；不新鲜 / 没有时为空串。
+    ///
+    /// 放在心情两段之后：先告诉他「此刻什么心情」，再告诉他「刚才心里在想什么」，
+    /// 这样那句念头读起来像自省，而不是一句突然出现的旁白。
+    public var mentalActivityBlock: String
     /// 心情那一段（`MoodPrompt.line(state)`）。
     public var moodBlock: String
     /// 心情驱动的语气分寸（`MoodBehavior.promptLine(mood)`）。
@@ -82,6 +93,8 @@ public struct SystemPromptInput {
         antiAIPrompt: String = AntiAIPrompt.text(),
         memoriesBlock: String = "",
         earlierMemoryBlock: String = "",
+        memoBlock: String = "",
+        mentalActivityBlock: String = "",
         moodBlock: String = "",
         moodPaceBlock: String = "",
         presenceBlock: String = "",
@@ -100,6 +113,8 @@ public struct SystemPromptInput {
         self.antiAIPrompt = antiAIPrompt
         self.memoriesBlock = memoriesBlock
         self.earlierMemoryBlock = earlierMemoryBlock
+        self.memoBlock = memoBlock
+        self.mentalActivityBlock = mentalActivityBlock
         self.moodBlock = moodBlock
         self.moodPaceBlock = moodPaceBlock
         self.presenceBlock = presenceBlock
@@ -160,9 +175,10 @@ public enum PromptBuilder {
     /// # 你是谁       —— 身份、第一人称、不是助手
     /// # 你所在的世界  —— 世界预设（World Preset）
     /// # 你此刻的状态  —— 时间、当前活动/忙碌、心情、在场
+    /// 刚才心里想      —— 最近一次心理活动（0.14，私密念头）
     /// # 你怎么说话    —— 话风（tone/habits/avoid + 常用语）
     /// # 你们的关系    —— 与用户的关系、亲密度、称呼
-    /// 记忆 / 滚动摘要  —— 「他记得什么」（不属于人设引导，紧跟关系之后）
+    /// 记忆 / 滚动摘要 / 备忘录  —— 「他记得什么」（不属于人设引导，紧跟关系之后）
     /// ---
     /// 主动唤醒能力 / 工具能力
     /// # 边界         —— 不暴露 AI、不旁白、不总结人设、不替用户决定
@@ -177,10 +193,14 @@ public enum PromptBuilder {
         text += stateSection(input.stateBlock, legacyPresence: input.presenceBlock)
         text += input.moodBlock
         text += input.moodPaceBlock
+        // 0.14：他刚才心里想的那一句（紧跟在心情之后，读起来是自省而不是旁白）。
+        text += input.mentalActivityBlock
         text += input.speechStyleBlock
         text += input.relationshipBlock
         text += input.memoriesBlock
         text += input.earlierMemoryBlock
+        // 0.14：会话备忘录（短期在前、长期在后，属于可变区域）。
+        text += input.memoBlock
         text += sectionSeparator
         text += input.proactiveCapability
         text += "\n\n"
@@ -426,6 +446,8 @@ public enum PromptBuilder {
         for message in messages {
             if let cutoff, message.createdAt <= cutoff { continue }
             guard message.role == .user || message.role == .assistant else { continue }
+            // 0.14：拉黑期间收下的消息**永久不进模型上下文**（解除后也不可见）。
+            guard !message.blocked else { continue }
             guard message.status != .error else { continue }
             let hasAttachments = !(message.attachmentsJson ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

@@ -292,7 +292,12 @@ private final class FakeToolRunner: ToolRunning {
     var resultFor: ((ToolInvocation) -> ToolResult)?
     private(set) var calls: [ToolInvocation] = []
 
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         calls.append(invocation)
         if let resultFor { return resultFor(invocation) }
         return ToolResult(invocation: invocation, ok: true, summary: "做完了", contentForModel: "结果")

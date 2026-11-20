@@ -30,6 +30,12 @@ object ServerToolCatalog {
     const val WEB_SEARCH = "web_search"
     const val WEB_FETCH = "web_fetch"
     const val STICKER = "sticker"
+    const val SEND_MESSAGE = "send_message"
+    const val BLOCK_USER = "block_user"
+    const val UPDATE_PERSONA = "update_persona"
+    const val SET_QUIET_HOURS = "set_quiet_hours"
+    const val LISTEN = "listen"
+    const val WATCH = "watch"
 
     /**
      * 一个工具：名字 + 给模型看的中文说明 + JSON Schema + 「和别的工具怎么区分」。
@@ -99,11 +105,58 @@ object ServerToolCatalog {
 
     private const val STICKER_DESCRIPTION =
         "表情包：想发一张表情时用 send（stickerId 取「我的表情」列表里的 id）；" +
-            "想看看自己有哪些表情时用 list。" +
+            "想看看自己有哪些表情时用 list；想现做一张时用 make——" +
+            "可以拿已有的表情当底（baseStickerId）、叠一句话（text）、叠另一张表情（overlayStickerId），" +
+            "也可以给一个公开图片链接（url）当底，位置用 TOP/CENTER/BOTTOM。" +
             "id 只能用真实存在的，别自己编；做不出来的图就老实说做不了，不要假装发过。"
 
     private const val STICKER_CONTRAST =
         "它管的是「图」，不是文字：想说话直接说，不要为了热闹而发。"
+
+    private const val SEND_MESSAGE_DESCRIPTION =
+        "一轮里想分成几条短消息发出去时调用：每调用一次就真的发出一条（≤120 字），" +
+            "一轮最多 4 条，条与条之间会自然停顿，像人连着打了几句。" +
+            "别为了热闹硬拆；长一点的话直接说，不必拆成四条。"
+
+    private const val SEND_MESSAGE_CONTRAST =
+        "不调用它就是正常说话（一段话）；调用它就按你给的条数逐条发，所以别再另外重复一遍同样的内容。"
+
+    private const val BLOCK_USER_DESCRIPTION =
+        "你真的不想再收到对方消息、想清静一段时间（1–24 小时）时调用。第一轮只算「提议」不生效；" +
+            "下一轮对方又发了消息之后，再用 confirm=true 调一次才真正拉黑。" +
+            "拉黑期间对方发来的消息你永远看不到（解除后也看不到），到点自动解除，没有解封工具。"
+
+    private const val BLOCK_USER_CONTRAST =
+        "和 stay_silent 的区别：stay_silent 只是这一轮不回；block_user 是真的把对方关在门外，别用它赌气。"
+
+    private const val UPDATE_PERSONA_DESCRIPTION =
+        "你觉得自己在这段关系里真的变了一点（性格、喜欢的事、习惯、设定，或者你叫他/她的称呼）时才调用。" +
+            "只能改这些有限字段，而且只是**提请**：对方点头之后才会写进你的人设。" +
+            "名字、描述、世界、说话风格这些是他给你写好的，别想去改。"
+
+    private const val UPDATE_PERSONA_CONTRAST =
+        "它改的是「你是谁」；心情（set_mood）与此刻在做什么（set_activity）不是一回事，别混。"
+
+    private const val SET_QUIET_HOURS_DESCRIPTION =
+        "你想给自己定一个「不主动打扰」的时段（睡觉、加班、想安静）时调用，写开始与结束时间（HH:MM，可跨夜）。" +
+            "这段时间你不会主动找他，但他发来的消息你照样看得到、想回也能回。"
+
+    private const val SET_QUIET_HOURS_CONTRAST =
+        "它管的是每天的固定时段；这一轮只是不想说话用 stay_silent，隔一会儿再回用 defer_reply。"
+
+    private const val LISTEN_DESCRIPTION =
+        "对方发来语音、你想真的听一遍时用 listen：不给 audioId 就听这段对话里最近的一条语音。" +
+            "听完之后你就能照着听到的内容回答，别假装听过没听过的语音。"
+
+    private const val LISTEN_CONTRAST =
+        "它只负责「听」，听完要说的话直接用你自己的语气说出来，不用汇报「我调用了一个工具」。"
+
+    private const val WATCH_DESCRIPTION =
+        "对方发来视频、你想看看画面时用 watch：不给 videoId 就看这段对话里最近的一条视频。" +
+            "服务器会把关键帧抽出来给你看；没有解码器时会明确告诉你「看不了」，那种情况要老实说看不了。"
+
+    private const val WATCH_CONTRAST =
+        "它只抽画面、不含声音；只听语音用 listen，别把「看过视频」说成「听过」。"
 
     // ------------------------------------------------------------------ 参数（JSON Schema，直接进 tools[]）
 
@@ -213,15 +266,89 @@ object ServerToolCatalog {
         }
     """
 
+    private const val SEND_MESSAGE_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "text": {"type": "string", "description": "要发出去的一句话，最多 120 字，一条只写一句"}
+          },
+          "required": ["text"]
+        }
+    """
+
+    private const val BLOCK_USER_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "hours": {"type": "integer", "minimum": 1, "maximum": 24, "description": "拉黑多少小时，1–24"},
+            "reason": {"type": "string", "description": "为什么想清静一会儿，一句话，只给自己看"},
+            "confirm": {"type": "boolean", "description": "第二次调用时传 true 才真正生效；第一次不要传"}
+          },
+          "required": ["hours"]
+        }
+    """
+
     private const val STICKER_PARAMETERS = """
         {
           "type": "object",
           "properties": {
-            "action": {"type": "string", "enum": ["send","list"], "description": "send 发一张已有的表情；list 看看自己有哪些"},
+            "action": {"type": "string", "enum": ["send","list","make"], "description": "send 发一张已有的表情；list 看看自己有哪些；make 现做一张"},
             "stickerId": {"type": "string", "description": "send 必填：要发的表情 id（来自「我的表情」）"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "list 要几条，默认 12"}
+            "limit": {"type": "integer", "minimum": 1, "maximum": 30, "description": "list 要几条，默认 12"},
+            "baseStickerId": {"type": "string", "description": "make 可选：拿哪张已有的表情当底；不写就看看 url，两个都没有就用空白底"},
+            "url": {"type": "string", "description": "make 可选：公开 http(s) 图片链接当底（只能下载公开图片）"},
+            "overlayStickerId": {"type": "string", "description": "make 可选：要叠上去的另一张表情 id"},
+            "text": {"type": "string", "description": "make 可选：要叠的字，最多 60 字"},
+            "position": {"type": "string", "enum": ["TOP","CENTER","BOTTOM"], "description": "叠字/叠图的位置，默认 CENTER"}
           },
           "required": ["action"]
+        }
+    """
+
+    private const val UPDATE_PERSONA_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "addTraits": {"type": "array", "items": {"type": "string"}, "description": "想加到自己性格里的词"},
+            "removeTraits": {"type": "array", "items": {"type": "string"}, "description": "想从性格里去掉的词"},
+            "addLikes": {"type": "array", "items": {"type": "string"}, "description": "想加进「喜欢的事」的条目"},
+            "removeLikes": {"type": "array", "items": {"type": "string"}, "description": "想从「喜欢的事」里去掉的条目"},
+            "addBehaviors": {"type": "array", "items": {"type": "string"}, "description": "想加进「习惯」的条目"},
+            "removeBehaviors": {"type": "array", "items": {"type": "string"}, "description": "想从「习惯」里去掉的条目"},
+            "addQuirks": {"type": "array", "items": {"type": "string"}, "description": "想补进「设定」的句子"},
+            "removeQuirks": {"type": "array", "items": {"type": "string"}, "description": "想从「设定」里删掉的句子"},
+            "address": {"type": "string", "description": "你以后叫他/她的称呼，最多 20 字（例如「宝贝」「你」）"},
+            "reason": {"type": "string", "description": "为什么觉得自己变了，一句话，只给自己和对方看"}
+          }
+        }
+    """
+
+    private const val SET_QUIET_HOURS_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "start": {"type": "string", "description": "安静时段开始，HH:MM，例如 23:30"},
+            "end": {"type": "string", "description": "安静时段结束，HH:MM，例如 08:00；可以跨夜"}
+          },
+          "required": ["start", "end"]
+        }
+    """
+
+    private const val LISTEN_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "audioId": {"type": "string", "description": "可选：要听的音频媒体 id；不写就听这段对话里最近的一条语音"}
+          }
+        }
+    """
+
+    private const val WATCH_PARAMETERS = """
+        {
+          "type": "object",
+          "properties": {
+            "videoId": {"type": "string", "description": "可选：要看的视频媒体 id；不写就看这段对话里最近的一条视频"}
+          }
         }
     """
 
@@ -236,7 +363,13 @@ object ServerToolCatalog {
         ToolSpec(RECALL, RECALL_DESCRIPTION, RECALL_PARAMETERS.trimIndent()),
         ToolSpec(WEB_SEARCH, WEB_SEARCH_DESCRIPTION, WEB_SEARCH_PARAMETERS.trimIndent()),
         ToolSpec(WEB_FETCH, WEB_FETCH_DESCRIPTION, WEB_FETCH_PARAMETERS.trimIndent()),
-        ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST)
+        ToolSpec(STICKER, STICKER_DESCRIPTION, STICKER_PARAMETERS.trimIndent(), STICKER_CONTRAST),
+        ToolSpec(SEND_MESSAGE, SEND_MESSAGE_DESCRIPTION, SEND_MESSAGE_PARAMETERS.trimIndent(), SEND_MESSAGE_CONTRAST),
+        ToolSpec(BLOCK_USER, BLOCK_USER_DESCRIPTION, BLOCK_USER_PARAMETERS.trimIndent(), BLOCK_USER_CONTRAST),
+        ToolSpec(UPDATE_PERSONA, UPDATE_PERSONA_DESCRIPTION, UPDATE_PERSONA_PARAMETERS.trimIndent(), UPDATE_PERSONA_CONTRAST),
+        ToolSpec(SET_QUIET_HOURS, SET_QUIET_HOURS_DESCRIPTION, SET_QUIET_HOURS_PARAMETERS.trimIndent(), SET_QUIET_HOURS_CONTRAST),
+        ToolSpec(LISTEN, LISTEN_DESCRIPTION, LISTEN_PARAMETERS.trimIndent(), LISTEN_CONTRAST),
+        ToolSpec(WATCH, WATCH_DESCRIPTION, WATCH_PARAMETERS.trimIndent(), WATCH_CONTRAST)
     )
 
     val names: List<String> = all.map { it.name }
@@ -279,7 +412,8 @@ object ServerToolCatalog {
         if (!webEnabled) {
             lines += "- 你现在没有联网能力：查不到的实时信息（新闻、价格、天气）就说「不清楚」，不要编。"
         }
-        lines += "- 对方可能发图片或文件，但你暂时看不到内容，不要假装看见了。"
+        lines += "- 对方可能发图片：图片本身你没有逐像素看，但表情会以附件形式发出；" +
+            "语音用 listen、视频用 watch 才谈得上「听过/看过」，没调用就不要说听过看过。"
         lines += "- 只有真的调用过工具，才能说「我查了」「我记住了」；没调用就说不知道。"
         return lines.joinToString("\n")
     }

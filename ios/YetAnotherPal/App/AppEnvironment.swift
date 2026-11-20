@@ -73,6 +73,12 @@ final class AppEnvironment: ObservableObject {
     let personaEvolution: PersonaEvolutionService
     /// 自动情绪判定（schema v17，`spec/mood/README.md` §2）。
     let moodJudgement: MoodJudgementService
+    /// 拉黑（0.14，`spec/experience/README.md` §2）：工具提议 / 两轮确认 / 到期解除。
+    let blockRepository: BlockRepository
+    /// 会话备忘录（0.14，`spec/experience/README.md` §6）。
+    let sessionMemory: SessionMemoryService
+    /// 心理活动（0.14，`spec/experience/README.md` §3）。
+    let mentalActivity: MentalActivityService
     /// 回复落库之后那两件后台事（抽记忆 / 压摘要）。
     let chatBackground: ChatBackgroundService
     /// 后台调用用的模型配置（会话上填的模型优先，其次当前生效的 API 配置）。
@@ -218,6 +224,10 @@ final class AppEnvironment: ObservableObject {
             vectorIndex: vectorIndex
         )
         let moodRepository = MoodRepository(stores: fallbackStores)
+        // 0.14 拉黑（`spec/experience/README.md` §2）：提议存在 `personas.blockProposalJson`
+        //（Android 18.json 的同一列），跨进程也能确认（10 分钟内）。
+        let blockRepository = BlockRepository(stores: fallbackStores)
+        self.blockRepository = blockRepository
         let tickStore = AgentTickStore(database: fallbackStores.database)
         let intents = AgentIntentSupport(stores: fallbackStores, ticks: tickStore)
         let presence = PresenceRepository(stores: fallbackStores, ticks: tickStore, intents: intents)
@@ -258,6 +268,44 @@ final class AppEnvironment: ObservableObject {
             intents: intents
         )
         self.rhythm = rhythm
+
+        // 0.14：先备好「怎么把一段会话解析成一次后台请求」，摘要 / 心理活动 / 历史压缩共用。
+        let resolveCompressionConfig: (ChatSessionEntity) -> CompressionConfig? = { session in
+            guard let resolved = AppEnvironment.resolveConfig(
+                stores: fallbackStores, settings: settings, apiKeys: apiKeys
+            ) else { return nil }
+            let model = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
+            return CompressionConfig(
+                config: CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey),
+                model: model.isEmpty ? resolved.model : model
+            )
+        }
+        // 0.14 会话备忘录（每 5 / 30 条用户消息）与心理活动（每 3 分钟 / 3 轮）。
+        // 两者都用同一个 completion 与并发闸；失败只落日志、不影响回复。
+        let sessionMemory = SessionMemoryService(
+            stores: fallbackStores,
+            summarizer: LocalSessionSummarizer(
+                completion: completion,
+                resolveConfig: { session in session.flatMap(resolveCompressionConfig) },
+                log: { DebugSeeding.log($0) }
+            ),
+            log: { DebugSeeding.log($0) }
+        )
+        self.sessionMemory = sessionMemory
+        let mentalActivity = MentalActivityService(
+            stores: fallbackStores,
+            mood: moodRepository,
+            generator: LocalMentalThoughtGenerator(
+                completion: completion,
+                resolveConfig: { session in
+                    guard let session else { return nil }
+                    return resolveCompressionConfig(session)
+                },
+                log: { DebugSeeding.log($0) }
+            ),
+            log: { DebugSeeding.log($0) }
+        )
+        self.mentalActivity = mentalActivity
 
         // `AgentLoop` 的「主动消息送达」回调要问一句「这段会话现在开着吗」，
         // 但 `chat` 是在它之后才装配好的。用一个极小的引用盒子把这层先后顺序接起来
@@ -317,6 +365,11 @@ final class AppEnvironment: ObservableObject {
             },
             // 低电量模式下把前台账拍放宽到 2 分钟（`ForegroundPulse.intervalMillis` 与
             // 概率换算用的是同一个数）：省电优先，但也别让「他」彻底不说话。
+            // 0.14：活跃窗口里递一拍心理活动（判定在服务里；这里只是把「他还在聊」这个信号给它）。
+            mentalActivityRunner: { personaId, sessionId, now in
+                await mentalActivity.runIfNeeded(personaId: personaId, sessionId: sessionId, now: now)
+            },
+            block: blockRepository,
             isLowPower: { ProcessInfo.processInfo.isLowPowerModeEnabled },
             // 服务端模式：本机这一拍什么都不做（双份主动消息的另一半就在这里被挡掉）。
             isServerMode: { envBoxRef.env?.serverModeActive ?? false },
@@ -333,16 +386,6 @@ final class AppEnvironment: ObservableObject {
         let webTools = WebToolsClient(session: URLSession(configuration: Self.sessionConfiguration()))
         let personaCards = PersonaCardRepository(stores: fallbackStores)
         let proactiveRules = ProactiveRuleService(stores: fallbackStores)
-        let resolveCompressionConfig: (ChatSessionEntity) -> CompressionConfig? = { session in
-            guard let resolved = AppEnvironment.resolveConfig(
-                stores: fallbackStores, settings: settings, apiKeys: apiKeys
-            ) else { return nil }
-            let model = session.model.trimmingCharacters(in: .whitespacesAndNewlines)
-            return CompressionConfig(
-                config: CompletionConfig(entity: resolved.config, apiKey: resolved.apiKey),
-                model: model.isEmpty ? resolved.model : model
-            )
-        }
         let historyCompression = HistoryCompressionService(
             stores: fallbackStores,
             completion: completion,
@@ -415,6 +458,7 @@ final class AppEnvironment: ObservableObject {
             personaCards: personaCards,
             intents: intents,
             stickers: stickerService,
+            block: blockRepository,
             webTools: webTools,
             scorer: webSearchScorer,
             agentCore: agentCore,
@@ -447,6 +491,8 @@ final class AppEnvironment: ObservableObject {
             resolveConfig: resolveCompressionConfig,
             evolution: personaEvolution,
             moodJudgement: moodJudgement,
+            sessionMemory: sessionMemory,
+            mentalActivity: mentalActivity,
             // 服务端模式：抽记忆/压摘要/进化/情绪都由服务端独立完成，本机不再各跑一遍。
             isServerMode: { envBoxRef.env?.serverModeActive ?? false },
             log: { DebugSeeding.log($0) }
@@ -491,6 +537,9 @@ final class AppEnvironment: ObservableObject {
                 presence?.current(personaId: personaId).detail
             },
             mood: moodRepository,
+            block: blockRepository,
+            memo: SessionMemoryRepository(stores: fallbackStores),
+            mind: MentalActivityRepository(stores: fallbackStores),
             rhythm: rhythm,
             proactive: proactiveRules,
             // 人设卡有内容就用人设卡渲染（Android 的 `PersonaCardRepository.systemText`）；
@@ -641,6 +690,12 @@ final class AppEnvironment: ObservableObject {
             isForeground: { foreground.isActive },
             onLiveState: { [weak self] state in
                 Task { @MainActor in self?.serverLiveState = state }
+            },
+            // 0.14.1 §8：`message.created` 一到就重读缓存直接上屏（不等 20 秒的消息轮询）。
+            // typing 状态在上面 `onLiveState` 里已经发布，聊天页据此收起/显示输入指示。
+            onEventReport: { [weak self] report in
+                guard !report.newMessages.isEmpty else { return }
+                Task { @MainActor in self?.serverDataVersion &+= 1 }
             },
             log: { DebugSeeding.log($0) }
         )
@@ -839,6 +894,11 @@ final class AppEnvironment: ObservableObject {
     func stopServerEvents() {
         serverEventTask?.cancel()
         serverEventTask = nil
+        // 0.14.1 §8：输入指示是瞬时状态，进后台就清掉。否则回前台时
+        // 离线同步下来的消息前面会凭空演一次「正在输入…」。
+        if let events = serverEvents {
+            Task { await events.clearTyping() }
+        }
         // 增量同步的 5 分钟一拍也是前台才做的事：进后台一起停。
         stopServerSyncPulse()
     }

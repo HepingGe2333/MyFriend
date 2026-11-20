@@ -295,7 +295,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				ENABLE_PREVIEWS = YES;
 				/* Kotlin `AgentCoreKit`（静态 framework，Do Not Embed）：模拟器与真机两个 slice 都列进搜索路径，
 				   由 Xcode 按 SDK 选；xcframework 由 scripts/build-agentcore-framework.sh 产出。 */
@@ -311,7 +311,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.0;
+				MARKETING_VERSION = 0.14.0;
 				/* 静态 framework：只链接，不 Embed（没有 Embed Frameworks phase，也不加 rpath）。 */
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -331,7 +331,7 @@
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				ENABLE_PREVIEWS = YES;
 				/* Kotlin `AgentCoreKit`（静态 framework，Do Not Embed）：模拟器与真机两个 slice 都列进搜索路径，
 				   由 Xcode 按 SDK 选；xcframework 由 scripts/build-agentcore-framework.sh 产出。 */
@@ -346,7 +346,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.0;
+				MARKETING_VERSION = 0.14.0;
 				/* 静态 framework：只链接，不 Embed（没有 Embed Frameworks phase，也不加 rpath）。 */
 				OTHER_LDFLAGS = (
 					"$(inherited)",
@@ -368,7 +368,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				/* 只用来解析 App 模块依赖的 `AgentCoreKit`（模块搜索）；测试 bundle 自己不链接它 ——
 				   链接只在 App 上做，否则 Kotlin 运行时会在同一进程里出现两份。 */
 				FRAMEWORK_SEARCH_PATHS = (
@@ -385,7 +385,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.0;
+				MARKETING_VERSION = 0.14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yap.app.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;
@@ -399,7 +399,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 20;
+				CURRENT_PROJECT_VERSION = 21;
 				/* 只用来解析 App 模块依赖的 `AgentCoreKit`（模块搜索）；测试 bundle 自己不链接它 ——
 				   链接只在 App 上做，否则 Kotlin 运行时会在同一进程里出现两份。 */
 				FRAMEWORK_SEARCH_PATHS = (
@@ -416,7 +416,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 0.13.0;
+				MARKETING_VERSION = 0.14.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.yap.app.ios.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_VERSION = 5.0;

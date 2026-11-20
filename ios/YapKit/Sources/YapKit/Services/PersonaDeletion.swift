@@ -78,6 +78,9 @@ public enum PersonaDeletion {
         // 它们没有 persona 外键，留着就会变成「看不见但一直占着」的孤儿行
         //（日记内容还是他写给自己的话，删人之后不应该留在库里）。
         _ = try? stores.diaryNotes.delete(where: "personaId = ?", [.text(personaId)])
+        // 0.14：心理活动与会话备忘录跟着人格一起走（会话马上就没了）。
+        _ = try? stores.mentalActivities.delete(where: "personaId = ?", [.text(personaId)])
+        _ = try? stores.sessionMemory.delete(where: "personaId = ?", [.text(personaId)])
         _ = try? stores.personaPendingPatches.delete(where: "personaId = ?", [.text(personaId)])
 
         // 2) 回声与思考留痕（这两张表没有 persona 外键，必须显式删）。

@@ -527,7 +527,7 @@ class MediaApiTest {
 
         val backup = exportBackup()
         assertEquals(FileStore.BACKUP_FORMAT_VERSION, backup.int("formatVersion"))
-        assertEquals(0, backup.int("mediaSkipped"))
+        assertEquals(0, backup.obj("extensions").int("mediaSkipped"))
         val exported = backup.objects("media").single()
         assertEquals(id, exported.str("id"))
         assertEquals(sha256(bytes), exported.str("sha256"))
@@ -564,7 +564,7 @@ class MediaApiTest {
         Files.write(root.resolve(FileStore.MEDIA_DIR).resolve("${tampered.id}.jpg"), byteArrayOf(9, 9, 9))
         val backup = exportBackup()
         assertEquals(0, backup.objects("media").size)
-        assertEquals(2, backup.int("mediaSkipped"))
+        assertEquals(2, backup.obj("extensions").int("mediaSkipped"))
     }
 
     @Test

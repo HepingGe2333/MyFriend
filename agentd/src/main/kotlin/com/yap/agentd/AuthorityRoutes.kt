@@ -99,6 +99,9 @@ object AuthorityRoutes {
             )
         }
         return try {
+            // 0.14.1：handler 直调路径（测试/内嵌）也刷新「前台在线」；
+            // 真实 HTTP 路径已在 AgentdServer 里对每个 /v1/ 请求标记过。
+            services.presence.markSeen()
             val store = requireStore(services)
             val verb = method.uppercase()
             val path = rawPath.substringBefore('?')
@@ -195,6 +198,7 @@ object AuthorityRoutes {
         body: String?,
         sink: SseSink
     ) {
+        services.presence.markSeen()
         val store = requireStore(services)
         val chat = services.chatService
             ?: throw AgentdApi.ApiFailure(503, "state_unavailable", "服务端权威模式未启用：没有聊天服务")
@@ -254,14 +258,14 @@ object AuthorityRoutes {
             }
         }
         val snapshot = store.snapshot(since, personaId)
-        return Response(200, StoreJson.stringify(snapshotJson(snapshot)))
+        return Response(200, StoreJson.stringify(snapshotJson(store, snapshot)))
     }
 
-    private fun snapshotJson(snapshot: StateSnapshot): JsonValue.Obj = StoreJson.obj(
+    private fun snapshotJson(store: FileStore, snapshot: StateSnapshot): JsonValue.Obj = StoreJson.obj(
         "serverTime" to StoreJson.num(snapshot.serverTime),
         // 人格多带一格可有可无的 `activity`（结构化活动对象，`null` = 没在忙）；
         // 磁盘上的 `activityJson` 原样保留，客户端爱用哪个用哪个。
-        "personas" to StoreJson.arr(snapshot.personas.map { personaJson(it) }),
+        "personas" to StoreJson.arr(snapshot.personas.map { PersonaJson.of(store, it) }),
         "sessions" to StoreJson.arr(snapshot.sessions.map { it.toJson() }),
         "messages" to StoreJson.arr(snapshot.messages.map { it.toJson() }),
         "mood" to (snapshot.mood?.toJson() ?: JsonValue.Null),
@@ -328,23 +332,11 @@ object AuthorityRoutes {
             200,
             StoreJson.stringify(
                 StoreJson.obj(
-                    "persona" to personaJson(persona),
+                    "persona" to PersonaJson.of(store, persona),
                     "activity" to activity.toJson()
                 )
             )
         )
-    }
-
-    /**
-     * 人格的 HTTP 形状 = 磁盘形状 + `activity`（解析后；`null` = 没设过或坏 JSON）。
-     *
-     * 为什么两个字段都给：`activityJson` 是**原样文本**（客户端可能直接存下来，或原样再上报），
-     * `activity` 是**解析后的对象**（`GET /v1/state` 的读者不用再解析一遍）。
-     */
-    private fun personaJson(persona: Persona): JsonValue.Obj {
-        val fields = LinkedHashMap(persona.toJson().fields)
-        fields["activity"] = ActivityState.decode(persona.activityJson)?.toJson() ?: JsonValue.Null
-        return JsonValue.Obj(fields)
     }
 
     // ------------------------------------------------------------------ GET /v1/sessions

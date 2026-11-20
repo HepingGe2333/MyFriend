@@ -36,6 +36,27 @@ The project is now **YetAnotherPal**, abbreviated **Yap**. The repository is
   retained legacy string is the compatibility format name `myfriend.backup`.
 
 
+
+## 0.14.0 (in progress)
+
+- **No "…" placeholder bubble while typing**: only the typing indicator, and failures/stops do not create empty messages.
+- **AI blocking**: `block_user` tool (1–24 h, two-step confirmation, 10-minute expiry). While blocked, user messages
+  show a red exclamation and "they blocked you"; those messages are permanently excluded from model context and the
+  block expires automatically.
+- **Mental activity**: in an active window (10 min / after sending) every 3 minutes or 3 turns the persona writes a
+  private ≤60-character thought and nudges mood (≤1 per dimension); excitement or a ≥2 change forces it; the thought is
+  injected into the next prompt.
+- **Burst messages**: `send_message` sends up to 4 short bubbles per turn with 0.8–2.5 s pauses; plain replies split into
+  1–3 bubbles by blank lines; no question-answer required.
+- **Typing delay**: `clamp(0.4 + chars×0.025 + mood adjustment, 0.4, 4.0)` seconds.
+- **Memory**: audited and fixed recall (empty query, de-duplication, persona isolation, truncation, stable ordering);
+  added `session_memory` short (every 5 messages, ≤200 chars) and long (every 30, ≤500 chars) summaries injected as
+  "your memo".
+- **schema v18** on both platforms.
+- **Server parity**: block_user/send_message tools, independent blocking/bursts/mental activity/memory; SSE emits multiple
+  `message.created` then a single `done`.
+- Tests: Android 2040/199 classes, iOS 2120 (2 skipped), agentd 602, agentcore 90.
+
 ## 0.13.0
 
 Release: 0.13.0 / build 20 (Android and iOS); the server runs independently and backup v6 interoperates with clients.

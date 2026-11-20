@@ -75,6 +75,27 @@ public enum ToolCatalog {
     public static let listen = "listen"
     /// 0.13：看一段视频（抽 ≤8 张关键帧交给模型）。
     public static let watch = "watch"
+    /// 0.14：一轮里发多条短消息（`spec/experience/README.md` §4）。
+    ///
+    /// 它不落库：工具只负责说「这条要发出去」，落库与节奏（打字延迟 / 连发间隔）
+    /// 由 `ChatService` 统一做 —— 否则「逐条独立消息 + 间隔 0.8–2.5 秒」会散落在两处。
+    public static let sendMessage = "send_message"
+    /// 0.14：他自己决定暂时不理对方（`spec/experience/README.md` §2）。
+    ///
+    /// 两轮确认：第一次调用只是提议；**之后的一轮**（中间至少一条用户消息）再调用
+    /// `confirm=true` 才生效。到期自动解除，没有 `unblock`。
+    public static let blockUser = "block_user"
+
+    /// 连发（规范 §4）：写清「一条一句」「最多 4 条」「每条 ≤120 字」，
+    /// 还要写清「不要把它当分段工具」——否则模型会把一段话硬拆成四条。
+    /// 与 Android `SEND_MESSAGE_DESCRIPTION` **逐字一致**（提示词差一个字，模型的调用率就会变）。
+    private static let sendMessageDescription = "想分几条短消息发出去时用（一句一条、想到什么先发什么）；每条最多 120 字，一轮最多 4 条。" +
+        "发完还可以继续用正文补最后一句。日常只回一句时不要用它，直接说。"
+    /// 拉黑（规范 §2）：两轮确认必须写清，否则模型会以为一次调用就生效。
+    /// 与 Android `BLOCK_USER_DESCRIPTION` 逐字一致：两轮确认必须写死，否则模型会自问自答。
+    private static let blockUserDescription = "对方反复越界、你确实不想再收到消息时，可以拉黑 1–24 小时。必须分两轮：" +
+        "第一次调用只提交提议（不生效）；等对方又发过至少一条消息之后，再调用 confirm=true 才生效。" +
+        "不要在同一轮里连续确认；到期自动解除，没有 unblock 工具。"
 
     private static let thinkDescription = "需要认真想清楚、比较几种可能、或者信息不足时调用；日常闲聊不要调用，也不要为了显得深刻而调用。"
     private static let webSearchDescription = "需要最新事实、新闻、价格、版本号、你不确定的信息时调用；纯聊天、或你本来就知道的常识不要调用。"
@@ -122,6 +143,30 @@ public enum ToolCatalog {
     private static let watchDescription = "对方发来视频、你想知道画面里发生了什么时调用；" +
         "你会看到几帧关键画面（不是整段视频），看不到的地方老实说不确定。" +
         "不填 videoId 就看最近那一段视频；没有视频可看时会明确告诉你，别假装看过。"
+    /// 连发的参数：只有正文（≤120 字，规范 §4）。
+    private static let sendMessageParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "text": {"type": "string", "description": "这一条要发出去的话，最多 120 字"}
+      },
+      "required": ["text"]
+    }
+    """
+
+    /// 拉黑的参数（规范 §2：hours 1–24、reason 可选、confirm 可选）。
+    private static let blockUserParameters = """
+    {
+      "type": "object",
+      "properties": {
+        "hours": {"type": "integer", "minimum": 1, "maximum": 24, "description": "拉黑多少小时，1–24"},
+        "reason": {"type": "string", "description": "为什么拉黑，一句话，只给自己看；可选"},
+        "confirm": {"type": "boolean", "description": "第二次调用时传 true；第一次不要传"}
+      },
+      "required": ["hours"]
+    }
+    """
+
     private static let thinkParameters = """
     {
       "type": "object",
@@ -302,6 +347,8 @@ public enum ToolCatalog {
     ///
     /// 故意写成**具体的后果**而不是「会影响模型输出」这类空话：模型靠这些句子判断
     /// 「这件事该不该做」，也靠它们知道「失败时不要假装做过」。
+    private static let sendMessageSideEffect = "它只负责把话拆成几条；不要为了热闹而刷屏，一轮最多 4 条。"
+    private static let blockUserSideEffect = "这是最后手段：先表达边界，别因为一次不高兴就拉黑；确认必须隔一轮。"
     private static let thinkSideEffect = "只在心里想一遍，不写库、不发消息、什么都不改。"
     private static let webSearchSideEffect = "会向搜索服务发一次查询（花一点额度），结果只给你自己看。"
     private static let webFetchSideEffect = "会联网读那个网页（花一点额度），不改本地任何数据。"
@@ -348,7 +395,12 @@ public enum ToolCatalog {
         ToolSpec(name: listen, description: listenDescription, parametersJson: listenParameters,
                  sideEffect: listenSideEffect),
         ToolSpec(name: watch, description: watchDescription, parametersJson: watchParameters,
-                 sideEffect: watchSideEffect)
+                 sideEffect: watchSideEffect),
+        // 0.14 的两件「节奏」工具（`spec/experience/README.md` §2/§4）。
+        ToolSpec(name: sendMessage, description: sendMessageDescription,
+                 parametersJson: sendMessageParameters, sideEffect: sendMessageSideEffect),
+        ToolSpec(name: blockUser, description: blockUserDescription,
+                 parametersJson: blockUserParameters, sideEffect: blockUserSideEffect)
     ]
 
     public static func byName(_ name: String) -> ToolSpec? {
@@ -476,6 +528,23 @@ public struct ToolInvocation: Equatable, Sendable {
         return value
     }
 
+    /// 可选整数参数：没写 / 认不出返回 nil（调用方自己决定默认值）。
+    ///
+    /// 与 Android 的 `optionalIntArgument` 同义：`block_user` 的 `hours` 要看
+    /// 「模型到底写没写」，才能区分「显式给了 12」与「没写、按 12 兜底」。
+    public func optionalIntArgument(_ name: String) -> Int? {
+        guard let object = argumentsObject() else { return nil }
+        if let number = object[name] as? NSNumber {
+            if CFGetTypeID(number) == CFBooleanGetTypeID() { return nil }
+            return number.intValue
+        }
+        if let text = object[name] as? String,
+           let value = Int(text.trimmingCharacters(in: .whitespaces)) {
+            return value
+        }
+        return nil
+    }
+
     public func intArgument(_ name: String, default fallback: Int) -> Int {
         guard let object = argumentsObject() else { return fallback }
         if let number = object[name] as? NSNumber { return number.intValue }
@@ -541,6 +610,12 @@ public struct ToolResult: Equatable, Sendable {
     /// 聊天服务就能把「表情已经发出去了」当成正常完成（见 `ChatService.generate`）。
     /// 其它工具都是 nil（它们不直接产生消息）。
     public var producedMessageId: String?
+    /// 这次工具调用的产物是**一句要发出去的话**（0.14 的 `send_message`）。
+    ///
+    /// 为什么工具不直接落库：连发的节奏（首条打字延迟、条与条之间 0.8–2.5 秒、
+    /// 停止/失败时不发）属于聊天链路，只能由 `ChatService` 一处决定。
+    /// 工具只交出文本，落库与停顿都在那边做 —— 这样「节奏」只有一份实现。
+    public var outboundText: String?
     /// 这次工具调用要**额外交给模型的多模态内容**（0.13 的 `listen` / `watch`）。
     ///
     /// 为什么不能只用 `contentForModel`：`listen` 要让模型真的听到声音（`input_audio`），
@@ -558,6 +633,7 @@ public struct ToolResult: Equatable, Sendable {
         traceTitle: String? = nil,
         traceDetail: String? = nil,
         producedMessageId: String? = nil,
+        outboundText: String? = nil,
         mediaParts: MediaWireParts? = nil
     ) {
         self.invocation = invocation
@@ -568,6 +644,7 @@ public struct ToolResult: Equatable, Sendable {
         self.traceTitle = traceTitle
         self.traceDetail = traceDetail
         self.producedMessageId = producedMessageId
+        self.outboundText = outboundText
         self.mediaParts = mediaParts
     }
 }
@@ -764,6 +841,9 @@ public enum ToolProtocol {
         // 0.13 音视频：听/看不是「工具调用」的黑箱，界面上就是一句「听了一遍」。
         case ToolCatalog.listen: return String(localized: "听了一遍")
         case ToolCatalog.watch: return String(localized: "看了几帧")
+        // 0.14：连发与拉黑。连发的痕迹不占地方（它产生的是真消息），默认标题是「发了条消息」。
+        case ToolCatalog.sendMessage: return String(localized: "发消息")
+        case ToolCatalog.blockUser: return String(localized: "拉黑提议")
         default:
             let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? String(localized: "动作") : trimmed
@@ -860,6 +940,23 @@ public enum ToolProtocol {
         case ToolCatalog.watch:
             let videoId = invocation.argument("videoId") ?? ""
             return videoId.isEmpty ? "看最近那段视频" : "看视频：\(String(videoId.prefix(40)))"
+        case ToolCatalog.sendMessage:
+            let text = invocation.argument("text") ?? ""
+            return text.isEmpty ? nil : "内容：\(String(text.prefix(80)))"
+        case ToolCatalog.blockUser:
+            let hours = invocation.intArgument("hours", default: BlockPolicy.defaultHours)
+            let confirm = invocation.boolArgument("confirm") == true
+            let reason = (invocation.argument("reason") ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            var hint = confirm ? "确认拉黑 \(BlockPolicy.clampHours(hours)) 小时" : "提议拉黑 \(BlockPolicy.clampHours(hours)) 小时"
+            if !reason.isEmpty { hint += "（\(String(reason.prefix(60)))）" }
+            return hint
+        case ToolCatalog.sendMessage:
+            // 与 Android `argumentHint` 一致："发：<前 80 字>"。
+            return invocation.argument("text").map { "发：\(String($0.prefix(80)))" }
+        case ToolCatalog.blockUser:
+            // 与 Android 一致：只写「拉黑：N 小时」；confirm 与否由回灌给模型的话说明。
+            let hours = invocation.intArgument("hours", default: 0)
+            return hours <= 0 ? nil : "拉黑：\(BlockPolicy.clampHours(hours)) 小时"
         case ToolCatalog.sticker:
             let action = (invocation.argument("action") ?? "").lowercased()
             switch action {

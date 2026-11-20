@@ -13,6 +13,17 @@ import kotlinx.serialization.json.decodeFromJsonElement
  */
 sealed class ServerEventChange {
     data class MessageCreated(val message: ServerMessage) : ServerEventChange()
+
+    /**
+     * 他正在输入（§8）：一轮的第一条消息入队时由服务端发一次。
+     *
+     * [sessionId] 是**服务端会话 id**；轮询器会先映射成本地 id 再交给输入指示器。
+     */
+    data class TypingStarted(val sessionId: String, val personaId: String) : ServerEventChange()
+
+    /** 这一轮发完了（§8）：把输入指示收掉。 */
+    data class TypingStopped(val sessionId: String, val personaId: String) : ServerEventChange()
+
     data class MoodChanged(val mood: ServerMood) : ServerEventChange()
     data class PresenceChanged(val presence: ServerPresence) : ServerEventChange()
     data class Unknown(val type: String) : ServerEventChange()
@@ -22,8 +33,9 @@ sealed class ServerEventChange {
  * 事件 payload 解码（纯函数，可单测）。
  *
  * 服务端的 payload 形状：`message.created → {message:{…}}`、`mood.changed → {mood:{…}}`、
- * `presence.changed → {presence:{…}}`。字段缺失/坏 JSON 时返回 [ServerEventChange.Unknown]，
- * 不让一条坏事件阻断后续事件。
+ * `presence.changed → {presence:{…}}`；`typing.started/typing.stopped` 的 `sessionId/personaId`
+ * 在**事件对象顶层**（`payload` 是空对象，§8/§9 的服务端契约）。字段缺失/坏 JSON 时返回
+ * [ServerEventChange.Unknown]，不让一条坏事件阻断后续事件。
  */
 object ServerEventDecoder {
 
@@ -33,6 +45,14 @@ object ServerEventDecoder {
             when (event.type) {
                 TYPE_MESSAGE_CREATED -> payload.objectOf("message")
                     ?.let { ServerEventChange.MessageCreated(json.decodeFromJsonElement<ServerMessage>(it)) }
+
+                TYPE_TYPING_STARTED -> typingChange(event, payload) { sessionId, personaId ->
+                    ServerEventChange.TypingStarted(sessionId, personaId)
+                }
+
+                TYPE_TYPING_STOPPED -> typingChange(event, payload) { sessionId, personaId ->
+                    ServerEventChange.TypingStopped(sessionId, personaId)
+                }
 
                 TYPE_MOOD_CHANGED -> payload.objectOf("mood")
                     ?.let { ServerEventChange.MoodChanged(json.decodeFromJsonElement<ServerMood>(it)) }
@@ -48,6 +68,28 @@ object ServerEventDecoder {
     private const val TYPE_MESSAGE_CREATED = "message.created"
     private const val TYPE_MOOD_CHANGED = "mood.changed"
     private const val TYPE_PRESENCE_CHANGED = "presence.changed"
+    const val TYPE_TYPING_STARTED = "typing.started"
+    const val TYPE_TYPING_STOPPED = "typing.stopped"
+
+    /**
+     * 顶层字段优先、`payload` 兜底：服务端定稿是顶层，但老版本/别的实现可能把同样的字段
+     * 放进 payload。sessionId 为空时返回 null（→ Unknown），不会把指示器挂到空会话上。
+     */
+    private inline fun typingChange(
+        event: ServerEvent,
+        payload: JsonObject,
+        build: (sessionId: String, personaId: String) -> ServerEventChange
+    ): ServerEventChange? {
+        val sessionId = event.sessionId?.trim().orEmpty()
+            .ifEmpty { payload.stringOrEmpty("sessionId") }
+        if (sessionId.isEmpty()) return null
+        val personaId = event.personaId?.trim().orEmpty()
+            .ifEmpty { payload.stringOrEmpty("personaId") }
+        return build(sessionId, personaId)
+    }
+
+    private fun JsonObject.stringOrEmpty(name: String): String =
+        runCatching { (this[name] as? kotlinx.serialization.json.JsonPrimitive)?.content }.getOrNull().orEmpty()
 
     private fun JsonObject.objectOf(name: String): JsonObject? = this[name] as? JsonObject
 }
@@ -95,12 +137,16 @@ data class ServerPollOutcome(
  *
  * 这里只做一次轮询；循环（前台启动/退后台停止/失败退避）由 `ServerModeRuntime` 负责，
  * 这样测试不需要控制协程调度。
+ *
+ * typing 事件不进 Room（那是瞬时状态）：解码后先做 server→local 会话映射，再交给
+ * [ServerTypingSink]；`typing.stopped` 幂等，重复/乱序都只会收掉指示器。
  */
 class ServerEventPoller(
     private val remoteProvider: ServerRemoteProvider,
     private val localStore: ServerLocalStore,
     private val sink: ServerEventSink,
     private val notifier: ServerEventNotifier,
+    private val typing: ServerTypingSink = ServerTypingSink.None,
     private val decoder: (ServerEvent) -> ServerEventChange = { ServerEventDecoder.decode(it) }
 ) {
 
@@ -113,14 +159,28 @@ class ServerEventPoller(
             var notified = 0
             batch.events.forEach { event ->
                 val change = runCatching { decoder(event) }.getOrDefault(ServerEventChange.Unknown(event.type))
-                val effect = runCatching { sink.apply(change) }.getOrNull() ?: return@forEach
-                applied++
-                val sessionId = effect.notifySessionId
-                val personaId = effect.notifyPersonaId
-                val text = effect.notifyText
-                if (!sessionId.isNullOrBlank() && !personaId.isNullOrBlank() && !text.isNullOrBlank()) {
-                    runCatching { notifier.notifyMessage(sessionId, personaId, text) }
-                    notified++
+                when (change) {
+                    is ServerEventChange.TypingStarted -> {
+                        typing.typingStarted(localSessionId(change.sessionId))
+                        applied++
+                    }
+
+                    is ServerEventChange.TypingStopped -> {
+                        typing.typingStopped(localSessionId(change.sessionId))
+                        applied++
+                    }
+
+                    else -> {
+                        val effect = runCatching { sink.apply(change) }.getOrNull() ?: return@forEach
+                        applied++
+                        val sessionId = effect.notifySessionId
+                        val personaId = effect.notifyPersonaId
+                        val text = effect.notifyText
+                        if (!sessionId.isNullOrBlank() && !personaId.isNullOrBlank() && !text.isNullOrBlank()) {
+                            runCatching { notifier.notifyMessage(sessionId, personaId, text) }
+                            notified++
+                        }
+                    }
                 }
             }
             if (batch.events.isNotEmpty()) {
@@ -136,5 +196,11 @@ class ServerEventPoller(
         } catch (error: Throwable) {
             ServerPollOutcome(events = 0, cursor = since, notified = 0, error = error)
         }
+    }
+
+    /** typing 指示器按本地会话 id 记：映射失败时退回服务端 id（同一人格一般两者相同）。 */
+    private suspend fun localSessionId(serverSessionId: String): String {
+        if (serverSessionId.isBlank()) return serverSessionId
+        return runCatching { localStore.localSessionId(serverSessionId) }.getOrNull() ?: serverSessionId
     }
 }

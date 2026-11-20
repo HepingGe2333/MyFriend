@@ -61,12 +61,12 @@ class ChatLifecycleContractTest {
     // ------------------------------------------------------------------ P1-5
 
     @Test
-    fun `发送 重新生成 编辑 都不再等抽记忆`() {
+    fun `发送 编辑 都不再等抽记忆`() {
         assertFalse(
             "send() 里 memoryJob?.join() 会让发送键最长卡一次模型往返（P1-5）",
             viewModel.contains("memoryJob?.join()")
         )
-        listOf("fun send()", "fun regenerate()", "fun editUserMessage(").forEach { marker ->
+        listOf("fun send()", "fun editUserMessage(").forEach { marker ->
             val body = bodyOf(viewModel, marker)
             assertFalse("$marker 不该等待抽记忆", body.contains("memoryJob?.join()"))
             assertFalse("$marker 不该等待抽记忆", body.contains("memoryJob?.join("))
@@ -78,6 +78,65 @@ class ChatLifecycleContractTest {
         assertTrue(
             "抽记忆应当由 Completed 事件在后台启动",
             viewModel.contains("memoryJob = viewModelScope.launch { extractMemory(silent = false) }")
+        )
+    }
+
+    // ------------------------------------------------------------------ 0.14.1 §10
+
+    @Test
+    fun `不再有重新生成入口 失败只提示`() {
+        assertFalse("ViewModel 不该再有 regenerate()", viewModel.contains("fun regenerate()"))
+        assertFalse("长按菜单不该有重新生成项", chatScreen.contains("onRegenerate"))
+        assertFalse("失败气泡行内不该有重试按钮", chatScreen.contains("onRetry"))
+        assertFalse("仓库存着也没有用户入口，不能悄悄接回来", chatScreen.contains("R.string.chat_regenerate"))
+        val stringsZh = source("src/main/res/values/strings.xml")
+        val stringsEn = source("src/main/res/values-en/strings.xml")
+        assertFalse("中文资源不该再有「重新生成」文案", stringsZh.contains("name=\"chat_regenerate\""))
+        assertFalse("英文资源不该再有重试文案", stringsEn.contains("name=\"chat_regenerate\""))
+    }
+
+    // ------------------------------------------------------------------ 0.14.1 §8
+
+    @Test
+    fun `服务端模式不再自己加打字延迟`() {
+        assertTrue(
+            "仓库要在服务端模式跳过 ExperienceRhythm 延迟",
+            chatRepo.contains("var typingDelayApplied = isServerMode()")
+        )
+        val sendViaServer = bodyOf(viewModel, "private fun sendViaServer(")
+        assertFalse("服务端发送路径不该再自己等", sendViaServer.contains("delay("))
+        assertFalse("服务端发送路径不该用本地读消息延迟", sendViaServer.contains("HumanTiming"))
+        assertFalse(
+            "服务端发送路径不该把 hasStarted 当成打字状态",
+            sendViaServer.contains("hasStarted = true")
+        )
+        assertTrue(
+            "输入指示由 typing 事件驱动",
+            sendViaServer.contains("ServerSendEvent.TypingStarted") &&
+                sendViaServer.contains("serverTypingState.typingStarted(sessionId)") &&
+                sendViaServer.contains("serverTypingState.typingStopped(sessionId)")
+        )
+        assertTrue(
+            "界面只在 state.typing 时显示输入指示",
+            chatScreen.contains("typing = state.typing") &&
+                chatScreen.contains("if (state.typing || state.streamingText.isNotBlank())")
+        )
+        assertTrue(
+            "message.created 收到即落库，不塞暂存气泡",
+            source("src/main/java/com/yap/app/data/remote/ServerChat.kt")
+                .contains("sink.enqueueMessage(event.message)") &&
+                !sendViaServer.contains("streamingText = event.message.content")
+        )
+        // 离线同步（/v1/state + 分页）不经过 typing、也不补打字动画：只有事件长轮询与发送 SSE
+        // 这两条「前台实时通道」会碰 ServerTypingSink。
+        assertFalse(
+            "状态同步不应触碰输入指示",
+            source("src/main/java/com/yap/app/data/remote/ServerSync.kt").contains("ServerTyping")
+        )
+        val roomEventSink = source("src/main/java/com/yap/app/data/repo/RoomServerEventSink.kt")
+        assertFalse(
+            "Room 事件落库层不负责 typing（由轮询器瞬时处理）",
+            roomEventSink.contains("typingStarted(") || roomEventSink.contains("typingStopped(")
         )
     }
 

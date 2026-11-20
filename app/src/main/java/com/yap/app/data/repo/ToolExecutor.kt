@@ -19,6 +19,8 @@ import com.yap.app.domain.AgentCore
 import com.yap.app.domain.AgentWindow
 import com.yap.app.domain.AudioVideoKind
 import com.yap.app.domain.AudioVideoPolicy
+import com.yap.app.domain.BlockPlan
+import com.yap.app.domain.BlockPolicy
 import com.yap.app.domain.MediaTool
 import com.yap.app.domain.DeferReply
 import com.yap.app.domain.Diary
@@ -135,6 +137,8 @@ class ToolExecutor @Inject constructor(
             "sticker" -> sticker(invocation, persona)
             "listen" -> listen(invocation, sessionId)
             "watch" -> watch(invocation, sessionId)
+            "block_user" -> blockUser(invocation, persona, sessionId, now)
+            "send_message" -> sendMessageFallback(invocation)
             "think" -> think(invocation)
             else -> failure(invocation, UserError.Domain(DomainErrorCode.TOOL_UNKNOWN, arg = name))
         }
@@ -187,6 +191,93 @@ class ToolExecutor @Inject constructor(
             }
         )
     }
+
+    // ---------------------------------------------------------------- 拉黑 / 连发
+
+    /**
+     * `block_user`：两轮确认（`spec/experience/README.md` §9）。
+     *
+     * 第一次只写提议；只有「之后的一轮、`userMessageId` 已经不同」再 confirm 才能生效。
+     * 提议存 `personas.blockProposalJson`（7 个固定字段），10 分钟过期；确认成功后写
+     * `blockedUntil`。回灌给模型的就是 §9 的两行 JSON 之一，与服务端逐字一致。
+     */
+    private suspend fun blockUser(
+        invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        now: Long
+    ): ToolExecution {
+        runCatching { personaDao.clearExpiredBlocks(now) }
+        val fresh = personaDao.getById(persona.id)
+            ?: return failure(invocation, UserError.Domain(DomainErrorCode.TOOL_PERSONA_NOT_FOUND))
+        // 已经在拉黑期：与服务端同一条拒绝（不需要再提一次，也不该刷新到期时间）。
+        if (BlockPolicy.isBlocked(fresh.blockedUntil, now)) {
+            return success(
+                invocation = invocation,
+                title = ToolTraceTitle.BLOCK_USER_APPLIED,
+                subtitle = null,
+                detail = appContext.getString(R.string.tool_trace_block_user_applied_detail),
+                modelSummary = "already_blocked",
+                modelText = BlockPolicy.rejectedJson(BlockPolicy.REJECT_ALREADY_BLOCKED)
+            )
+        }
+        val existing = BlockPolicy.decode(fresh.blockProposalJson)
+        val confirm = invocation.booleanArgument("confirm") == true
+        // 模型没写 hours 时按 12 小时；写了 0 / 99 仍由 BlockPolicy 夹到 1–24。
+        val hours = invocation.optionalIntArgument("hours") ?: BlockPolicy.DEFAULT_HOURS
+        val reason = invocation.argument("reason")
+        // 「之后的一轮」用本轮最新的用户消息 id 判断：同一轮里连着调两次，id 相同。
+        val userMessageId = runCatching { messageDao.latestUser(sessionId)?.id }.getOrNull().orEmpty()
+        return when (
+            val plan = BlockPolicy.plan(
+                existing = existing,
+                confirm = confirm,
+                hours = hours,
+                reason = reason,
+                now = now,
+                personaId = persona.id,
+                userMessageId = userMessageId
+            )
+        ) {
+            is BlockPlan.Pending -> {
+                personaDao.setBlockProposal(persona.id, BlockPolicy.encode(plan.proposal))
+                success(
+                    invocation = invocation,
+                    title = ToolTraceTitle.BLOCK_USER,
+                    subtitle = "${plan.proposal.hours}h",
+                    detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
+                    modelSummary = "pending_confirmation",
+                    modelText = BlockPolicy.pendingJson(plan.proposal)
+                )
+            }
+            is BlockPlan.Apply -> {
+                personaDao.applyBlock(persona.id, plan.until, plan.reason.ifBlank { null })
+                success(
+                    invocation = invocation,
+                    title = ToolTraceTitle.BLOCK_USER_APPLIED,
+                    subtitle = "${plan.hours}h",
+                    detail = appContext.getString(R.string.tool_trace_block_user_applied_detail),
+                    modelSummary = "blocked",
+                    modelText = BlockPolicy.blockedJson(plan.until)
+                )
+            }
+            is BlockPlan.Reject -> success(
+                invocation = invocation,
+                title = ToolTraceTitle.BLOCK_USER,
+                subtitle = null,
+                detail = appContext.getString(R.string.tool_trace_block_user_pending_detail),
+                modelSummary = plan.code,
+                // 拒绝不是「用户可见的动作」：轨迹不标红，模型拿到稳定 code 自己决定下一轮再说。
+                modelText = BlockPolicy.rejectedJson(plan.code)
+            )
+        }
+    }
+
+    /** ChatRepository 会在聊天回合里拦截 `send_message`；这里只兜底主动回合。 */
+    private fun sendMessageFallback(invocation: ToolInvocation): ToolExecution = failure(
+        invocation,
+        UserError.Domain(DomainErrorCode.TOOL_FAILED, arg = "send_message")
+    )
 
     // ---------------------------------------------------------------- 深思
 

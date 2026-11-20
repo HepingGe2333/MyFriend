@@ -108,7 +108,14 @@ data class LlmMessage(
     val role: String,
     val content: String,
     val toolCalls: List<LlmToolCall> = emptyList(),
-    val toolCallId: String? = null
+    val toolCallId: String? = null,
+    /**
+     * 0.14.1：多模态内容（`spec/audio-video`）。空 = 只发 [content] 字符串（老路径不变）。
+     *
+     * 只有 `role=user` 用得到：`listen` 把音频变成 `input_audio`，`watch` 把关键帧变成多个
+     * `image_url`，由 `LlmClient.buildPayload` 序列化成 OpenAI 的 content 数组。
+     */
+    val parts: List<LlmContentPart> = emptyList()
 ) {
     companion object {
         fun system(content: String): LlmMessage = LlmMessage("system", content)
@@ -122,6 +129,10 @@ data class LlmMessage(
         fun tool(content: String, toolCallId: String): LlmMessage =
             LlmMessage("tool", content, toolCallId = toolCallId)
 
+        /** 带多模态内容的 user 消息（`listen`/`watch` 的工具结果回灌）。 */
+        fun userWithParts(text: String, parts: List<LlmContentPart>): LlmMessage =
+            LlmMessage("user", text, parts = parts)
+
         /** 历史消息的角色映射；`SYSTEM` 只可能来自导入数据，按 system 透传。 */
         fun fromStoreRole(role: String, content: String): LlmMessage = when (role.uppercase()) {
             "ASSISTANT" -> assistant(content)
@@ -129,6 +140,24 @@ data class LlmMessage(
             else -> user(content)
         }
     }
+}
+
+/**
+ * 一条多模态内容（OpenAI content 数组里的一项）。
+ *
+ * 为什么用 sealed class 而不是直接拼 JSON：工具层只关心「是音频还是图」，
+ * 具体字段名（`input_audio.data` / `image_url.url`）只有 `LlmClient` 知道，
+ * 换 provider 时也只改那一处。
+ */
+sealed class LlmContentPart {
+    /** 文字（通常是与媒体一起回灌的一句说明）。 */
+    data class Text(val text: String) : LlmContentPart()
+
+    /** 一张图：http(s) 链接，或 `data:image/jpeg;base64,…`（`watch` 的关键帧走后者）。 */
+    data class ImageUrl(val url: String) : LlmContentPart()
+
+    /** 一段音频：base64 原始字节 + provider 认的格式（`m4a` / `mp3` / `wav` / `ogg`）。 */
+    data class InputAudio(val base64: String, val format: String) : LlmContentPart()
 }
 
 /** 一轮模型输出：文字 + 用量 + 它想调用的工具（没有工具时 `toolCalls` 为空）。 */

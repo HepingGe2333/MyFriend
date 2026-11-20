@@ -339,7 +339,7 @@ class ToolProtocolTest {
     @Test
     fun catalogExposesSpecsByName() {
         // 0.13：多了 stay_silent（已读不回，spec/mood §4）。
-        assertEquals(15, ToolCatalog.all.size)
+        assertEquals(17, ToolCatalog.all.size)
         assertEquals(ToolCatalog.WEB_SEARCH, ToolCatalog.byName(" web_search ").let { it?.name })
         assertEquals(ToolCatalog.RECALL, ToolCatalog.byName(ToolCatalog.RECALL)?.name)
         assertNull(ToolCatalog.byName("no_such_tool"))
@@ -371,6 +371,6 @@ class ToolProtocolTest {
         assertTrue("关掉联网后不能再出现这个工具行", !offline.contains("- ${ToolCatalog.WEB_SEARCH}："))
         assertTrue(offline.contains("没有联网能力"))
         // 这一段是「模型该知道的手」，不是手册：≤ 2600 字（内容由工具注册表生成，见 ToolCapabilitySectionTest）。
-        assertTrue(offline.length <= 2600)
+        assertTrue("离线能力段不应无限膨胀（${offline.length} 字）", offline.length <= 3200)
     }
 }

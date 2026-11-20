@@ -485,7 +485,9 @@ class DataErasureContractTest {
             "diary_notes" to "他写的备忘：在 RoomErasureStore 的 PERSONAS 分支跟着人格一起删除",
             // 0.13（schema v16）：表情包。同样不能进 `ErasableTable`（:agentcore 本轮不许改），
             // 「删除全部数据」时由 `ChatRepository.wipeAllData` 显式清行 + 清文件。
-            "stickers" to "收藏的表情：在 ChatRepository.wipeAllData 里清行与文件"
+            "stickers" to "收藏的表情：在 ChatRepository.wipeAllData 里清行与文件",
+            "mental_activities" to "0.14 心理活动：在 RoomErasureStore 的 PERSONAS 分支跟着人格删除，清空聊天时也显式清空",
+            "session_memory" to "0.14 会话备忘录：在 RoomErasureStore 的 SESSIONS 分支跟着会话删除"
         )
         val missing = entities.filter { it !in known && it !in derived }
         assertEquals(

@@ -15,7 +15,7 @@ import java.io.File
  * 这种只会在用户手机上才看得见的问题。所以这里用两份清单把它钉住：
  *
  * 1. **谁能直接写 messages**：只有 `MessageBlocksWriter`（`MessageBlockWriter`）。
- *    其它仓库/仓库外的写路径都必须调它（发送、回复、中断、失败、重新生成、编辑、
+ *    其它仓库/仓库外的写路径都必须调它（发送、回复、中断、失败、编辑、
  *    删除、清空、删会话、删人格、主动消息、心跳、备份导入、擦除）；
  * 2. **擦除路径必须连带块表**：`RoomErasureStore` 的 `MESSAGES` 分支要同时清块行，
  *    并在 `SESSIONS` 之后回收孤儿块。
@@ -63,8 +63,7 @@ class MessageBlockContractTest {
         // 发送 / 回复 / 中断 / 失败
         assertTrue("用户发消息要追加块", chatRepo.contains("blockWriter.append(message)"))
         assertTrue("助手回复要追加块", chatRepo.contains("blockWriter.append(assistant)"))
-        // 重新生成（删最后一条）
-        assertTrue("重新生成删最新回复要走删除规则", chatRepo.contains("blockWriter.deleteMessage(latest)"))
+        // §10：不再有「重新生成」写路径（它以前是唯一删最后一条助手消息的地方）。
         // 编辑用户消息（按锚点插入）
         assertTrue("编辑用户消息按锚点重落", chatRepo.contains("blockWriter.replaceAtAnchor("))
         assertTrue("编辑之后删后续消息要重算受影响的块", chatRepo.contains("blockWriter.deleteAfterCursor("))

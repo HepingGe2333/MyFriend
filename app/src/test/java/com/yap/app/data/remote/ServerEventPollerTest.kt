@@ -81,6 +81,18 @@ class ServerEventPollerTest {
         }
     }
 
+    private class FakeTyping : ServerTypingSink {
+        val started = mutableListOf<String>()
+        val stopped = mutableListOf<String>()
+        override fun typingStarted(sessionId: String) {
+            started += sessionId
+        }
+
+        override fun typingStopped(sessionId: String) {
+            stopped += sessionId
+        }
+    }
+
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private fun event(
@@ -114,10 +126,11 @@ class ServerEventPollerTest {
 
     private fun poller(
         remote: FakeRemote?,
-        store: FakeLocalStore = FakeLocalStore(),
+        store: ServerLocalStore = FakeLocalStore(),
         sink: FakeSink = FakeSink(),
-        notifier: FakeNotifier = FakeNotifier()
-    ) = Triple(ServerEventPoller(provider(remote), store, sink, notifier), sink, notifier)
+        notifier: FakeNotifier = FakeNotifier(),
+        typing: ServerTypingSink = ServerTypingSink.None
+    ) = Triple(ServerEventPoller(provider(remote), store, sink, notifier, typing), sink, notifier)
 
     // ------------------------------------------------------------------ 正常事件
 
@@ -180,7 +193,7 @@ class ServerEventPollerTest {
             ServerEvents(
                 cursor = 3,
                 events = listOf(
-                    event(2, "typing.started", """{"who":"p1"}"""),
+                    event(2, "heartbeat", """{"who":"p1"}"""),
                     messageEvent(3)
                 )
             )
@@ -191,7 +204,7 @@ class ServerEventPollerTest {
 
         assertEquals(2, outcome.events)
         assertTrue(sink.changes[0] is ServerEventChange.Unknown)
-        assertEquals("typing.started", (sink.changes[0] as ServerEventChange.Unknown).type)
+        assertEquals("heartbeat", (sink.changes[0] as ServerEventChange.Unknown).type)
         assertEquals(1, notifier.calls.size)
     }
 
@@ -244,6 +257,74 @@ class ServerEventPollerTest {
 
         assertEquals(100L, outcome.cursor)
         assertEquals(100L, store.currentCursor)
+    }
+
+    // ------------------------------------------------------------------ typing（§8）
+
+    @Test
+    fun `typing 事件只更新输入指示 不落库不通知 游标照常前进`() = runBlocking {
+        val remote = FakeRemote {
+            ServerEvents(
+                cursor = 12,
+                events = listOf(
+                    event(11, "typing.started"),
+                    messageEvent(12)
+                )
+            )
+        }
+        val store = FakeLocalStore(currentCursor = 10)
+        val typing = FakeTyping()
+        val (poller, sink, notifier) = poller(remote, store, typing = typing)
+
+        val outcome = poller.pollOnce()
+
+        assertTrue(outcome.success)
+        assertEquals(2, outcome.events)
+        assertEquals(listOf("s1"), typing.started)
+        assertTrue(typing.stopped.isEmpty())
+        // typing 不进 Room：sink 只收到那一条真正的新消息。
+        assertEquals(1, sink.changes.size)
+        assertTrue(sink.changes.single() is ServerEventChange.MessageCreated)
+        assertEquals(1, notifier.calls.size)
+        assertEquals(12L, store.currentCursor)
+    }
+
+    @Test
+    fun `typing 事件先做 server 到 local 的会话映射`() = runBlocking {
+        val remote = FakeRemote {
+            ServerEvents(cursor = 2, events = listOf(event(1, "typing.started"), event(2, "typing.stopped")))
+        }
+        val store = object : ServerLocalStore by FakeLocalStore() {
+            override suspend fun localSessionId(serverSessionId: String): String? = "local-$serverSessionId"
+        }
+        val typing = FakeTyping()
+        val (poller, _, _) = poller(remote, store, typing = typing)
+
+        poller.pollOnce()
+
+        assertEquals(listOf("local-s1"), typing.started)
+        assertEquals(listOf("local-s1"), typing.stopped)
+    }
+
+    @Test
+    fun `typing 事件缺 sessionId 时解码成 Unknown`() {
+        val change = ServerEventDecoder.decode(event(1, "typing.started", sessionId = null, personaId = null))
+        assertTrue(change is ServerEventChange.Unknown)
+        assertEquals("typing.started", (change as ServerEventChange.Unknown).type)
+    }
+
+    @Test
+    fun `typing 事件顶层缺字段时从 payload 兜底`() {
+        val change = ServerEventDecoder.decode(
+            event(
+                1,
+                "typing.stopped",
+                """{"sessionId":"s1","personaId":"p1"}""",
+                sessionId = null,
+                personaId = null
+            )
+        )
+        assertEquals(ServerEventChange.TypingStopped("s1", "p1"), change)
     }
 
     // ------------------------------------------------------------------ presence 映射

@@ -340,7 +340,7 @@ fun ChatScreen(
                 presence = state.presence,
                 config = state.config,
                 session = state.session,
-                typing = state.isGenerating && state.hasStarted,
+                typing = state.typing,
                 onBack = onBack,
                 onProfile = { showProfileSheet = true },
                 onOpenMenu = { showMenu = true }
@@ -372,7 +372,6 @@ fun ChatScreen(
                             haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                             selectedMessage = message
                         },
-                        onRetry = viewModel::regenerate,
                         onViewImage = { viewingImage = it },
                         loadStickerFrames = viewModel::loadStickerFrames,
                         resolveMedia = viewModel::playableFile,
@@ -541,7 +540,6 @@ fun ChatScreen(
         }
         MessageActionSheet(
             message = message,
-            isLastAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == message.id,
             onDismiss = { selectedMessage = null },
             canSaveSticker = messageHasSticker,
             onSaveSticker = {
@@ -556,10 +554,6 @@ fun ChatScreen(
             onEdit = {
                 selectedMessage = null
                 editMessage = message
-            },
-            onRegenerate = {
-                selectedMessage = null
-                viewModel.regenerate()
             },
             onDelete = {
                 selectedMessage = null
@@ -898,7 +892,6 @@ private fun ChatMessageList(
     /** 「回到底部」按钮：直接回到最新一屏（只保留最新一块）。 */
     onShowLatest: () -> Unit,
     onLongPress: (MessageEntity) -> Unit,
-    onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
     onSuggestion: (String) -> Unit,
     /** 按需解一张表情的帧（本地文件 / 服务端媒体都走这条）。 */
@@ -937,9 +930,6 @@ private fun ChatMessageList(
             }
         }
     }
-    val extraItems = if (state.isGenerating) 1 else 0
-    val totalItems = displayItems.size + extraItems
-
     // 列表顶部这一行：还有更早的消息 / 正在加载更早。它是 LazyColumn 的第 0 项，
     // 所以下面算「消息在列表里的绝对下标」时要带上这个偏移。
     val showLoadEarlier = state.hasMoreOlder || state.loadingOlder
@@ -1089,7 +1079,6 @@ private fun ChatMessageList(
                                 userAvatarUri = state.settings.userAvatarUri,
                                 userAvatarFallbackUri = state.settings.userAvatarLocalUri,
                                 highlighted = item.message.id == focusMessageId,
-                                isLatestAssistant = state.messages.lastOrNull { it.role == MessageRole.ASSISTANT }?.id == item.message.id,
                                 // 规格 §2.3：只有「他已读」且「这一轮没有助手回复」时才显示「已读」，
                                 // 否则每条用户消息都挂一个小字，会像回执系统而不像一个人。
                                 // 0.11.0（审计 P2-10）：「最后一条助手消息」由 ViewModel 一次算好
@@ -1101,7 +1090,6 @@ private fun ChatMessageList(
                                     lastAssistantAt = state.lastAssistantAt
                                 ),
                                 onLongPress = { onLongPress(item.message) },
-                                onRetry = onRetry,
                                 onViewImage = onViewImage,
                                 loadStickerFrames = loadStickerFrames,
                                 resolveMedia = resolveMedia,
@@ -1110,14 +1098,21 @@ private fun ChatMessageList(
                         }
                     }
                 }
-                if (state.isGenerating && state.hasStarted) {
-                    item(key = "streaming") {
-                        StreamingBubble(
-                            text = state.streamingText,
-                            settings = state.settings,
-                            traces = state.streamingTraces,
-                            onOpenLink = onOpenLink
-                        )
+                if (state.typing || state.streamingText.isNotBlank()) {
+                    // 首字到达前（以及连发之间）只显示输入指示，不画带「…」的占位气泡。
+                    // 服务端模式：只有前台收到 typing.started 才为 true（§8）；离线同步不补动画。
+                    // 老服务端若仍走 delta，也保留暂存气泡的兼容显示（新服务端 message.created 直接入 Room）。
+                    if (state.streamingText.isBlank()) {
+                        item(key = "typing") { TypingRow() }
+                    } else {
+                        item(key = "streaming") {
+                            StreamingBubble(
+                                text = state.streamingText,
+                                settings = state.settings,
+                                traces = state.streamingTraces,
+                                onOpenLink = onOpenLink
+                            )
+                        }
                     }
                 }
                 if (state.hasMoreNewer || state.loadingNewer) {
@@ -1336,10 +1331,8 @@ private fun MessageBubble(
     userAvatarFallbackUri: String? = null,
     /** 从检索结果定位过来时短暂亮一下（见 ChatScreen 的 focusedMessageId）。 */
     highlighted: Boolean = false,
-    isLatestAssistant: Boolean,
     showRead: Boolean = false,
     onLongPress: () -> Unit,
-    onRetry: () -> Unit,
     onViewImage: (MessageAttachment) -> Unit,
     /** 表情要逐帧播放，所以这里要一个「异步解帧」的口子（Coil 的动图支持在额外依赖里）。 */
     loadStickerFrames: suspend (String) -> com.yap.app.domain.StickerSource?,
@@ -1414,12 +1407,28 @@ private fun MessageBubble(
             .padding(vertical = if (settings.bubbleStyle == BubbleStyle.COMPACT) 1.dp else 2.dp),
         contentAlignment = if (outgoing) Alignment.CenterEnd else Alignment.CenterStart
     ) {
-        Surface(
-            modifier = Modifier
-                .widthIn(min = 56.dp, max = 560.dp)
-                // 头像占 28dp + 6dp 间距：气泡整体往左让出这条槽，两者不会叠在一起。
-                .padding(end = if (showUserAvatar) 34.dp else 0.dp)
-                .combinedClickable(onClick = {}, onLongClick = onLongPress),
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = if (outgoing) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // 0.14 拉黑：红色感叹号在气泡左侧，提示与气泡分开，不挤占正文。
+            if (outgoing && message.blocked) {
+                Icon(
+                    imageVector = Icons.Outlined.ErrorOutline,
+                    contentDescription = stringResource(R.string.chat_blocked_icon_desc),
+                    modifier = Modifier
+                        .size(16.dp)
+                        .padding(end = 5.dp),
+                    tint = MaterialTheme.colorScheme.error
+                )
+            }
+            Surface(
+                modifier = Modifier
+                    .widthIn(min = 56.dp, max = 560.dp)
+                    // 头像占 28dp + 6dp 间距：气泡整体往左让出这条槽，两者不会叠在一起。
+                    .padding(end = if (showUserAvatar) 34.dp else 0.dp)
+                    .combinedClickable(onClick = {}, onLongClick = onLongPress),
             shape = shape,
             color = background,
             border = border,
@@ -1561,17 +1570,6 @@ private fun MessageBubble(
                             )
                         }
                     }
-                    if (isLatestAssistant) {
-                        TextButton(
-                            onClick = onRetry,
-                            contentPadding = PaddingValues(horizontal = 2.dp, vertical = 2.dp),
-                            modifier = Modifier.height(32.dp)
-                        ) {
-                            Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = contentColor)
-                            Spacer(Modifier.width(5.dp))
-                            Text(stringResource(R.string.chat_regenerate), style = MaterialTheme.typography.labelSmall, color = contentColor)
-                        }
-                    }
                 }
                 if (traceItems.isNotEmpty() && message.status == MessageStatus.COMPLETE) {
                     // 出向气泡（用户消息）一般没有动作痕迹；真有时退回气泡自身文字色，避免在 accent 底上看不清。
@@ -1608,6 +1606,19 @@ private fun MessageBubble(
                         ),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    // 0.14 拉黑：提示挂在时间戳行，红叹号在气泡左侧外面（见上面的 Row）。
+                    if (com.yap.app.domain.BlockPolicy.showsBlockedIndicator(
+                            roleIsUser = outgoing,
+                            blocked = message.blocked
+                        )
+                    ) {
+                        Text(
+                            stringResource(R.string.chat_blocked_hint),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Spacer(Modifier.width(6.dp))
+                    }
                     if (message.status == MessageStatus.STOPPED) {
                         Text(
                             stringResource(R.string.chat_status_stopped),
@@ -1636,6 +1647,7 @@ private fun MessageBubble(
                     }
                 }
             }
+        }
         }
         if (showUserAvatar) {
             // 像 Telegram 的「自己这一侧」：小头像贴在这条消息的右下角，只占一条窄槽。
@@ -1670,19 +1682,16 @@ private fun StreamingBubble(
         border = androidx.compose.foundation.BorderStroke(0.7.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f))
     ) {
         Column(Modifier.padding(horizontal = 14.dp, vertical = 11.dp)) {
-            if (text.isBlank()) {
-                TypingIndicator()
-            } else {
-                MarkdownText(
-                    text = text,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    isOutgoing = false,
-                    compact = settings.bubbleStyle == BubbleStyle.COMPACT,
-                    onOpenLink = onOpenLink,
-                    selectable = false
-                )
-                BlinkingCursor()
-            }
+            // 调用方保证这里 text 非空；空文本由 TypingRow 负责，不再生成占位气泡。
+            MarkdownText(
+                text = text,
+                color = MaterialTheme.colorScheme.onSurface,
+                isOutgoing = false,
+                compact = settings.bubbleStyle == BubbleStyle.COMPACT,
+                onOpenLink = onOpenLink,
+                selectable = false
+            )
+            BlinkingCursor()
             if (traces.isNotEmpty()) {
                 Spacer(Modifier.height(6.dp))
                 StreamingTraceRow(
@@ -1852,6 +1861,23 @@ private fun ToolTraceDetail(
                 }
             }
         }
+    }
+}
+
+/**
+ * 生成中的输入指示：一行三个点，没有气泡、没有「…」、不占一条消息。
+ *
+ * 这是 0.14 规范 §1 的核心：宁可只显示「他正在输入」，也不要在列表里先放一个空气泡。
+ */
+@Composable
+private fun TypingRow() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 6.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        TypingIndicator()
     }
 }
 
@@ -2569,11 +2595,9 @@ private fun PersonaPickerSheet(
 @Composable
 private fun MessageActionSheet(
     message: MessageEntity,
-    isLastAssistant: Boolean,
     onDismiss: () -> Unit,
     onCopy: () -> Unit,
     onEdit: () -> Unit,
-    onRegenerate: () -> Unit,
     onDelete: () -> Unit,
     /** 这条消息里有表情时为 true：菜单多一项「添加到我的表情」。 */
     canSaveSticker: Boolean,
@@ -2615,9 +2639,8 @@ private fun MessageActionSheet(
             }
             if (message.role == MessageRole.USER) {
                 SheetActionRow(Icons.Outlined.Edit, stringResource(R.string.chat_edit_and_resend), onClick = onEdit)
-            } else if (isLastAssistant) {
-                SheetActionRow(Icons.Outlined.Refresh, stringResource(R.string.chat_regenerate), onClick = onRegenerate)
             }
+            // §10：不再提供「重新生成」——失败只提示，用户自己决定要不要再说一句。
             SheetActionRow(
                 Icons.Outlined.DeleteOutline,
                 stringResource(R.string.chat_delete_message),

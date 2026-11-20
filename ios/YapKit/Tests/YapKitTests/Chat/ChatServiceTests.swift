@@ -582,13 +582,11 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(api.statusCode, 401)
         XCTAssertEqual(api.message, "API Key 无效或未授权（401）：invalid key")
 
+        // 0.14 §1「不产生空消息」：一个字都没吐出来就失败时，不再存一条空的失败气泡，
+        // 错误交给界面（`ChatViewModel` 弹一行 toast）。用户那句话仍然在库里。
         let stored = try messages()
-        XCTAssertEqual(stored.map(\.role), [.user, .assistant])
-        XCTAssertEqual(stored[1].status, .error)
-        XCTAssertEqual(stored[1].errorMessage, "API Key 无效或未授权（401）：invalid key")
-        XCTAssertEqual(stored[1].content, "", "没有部分正文时正文为空，界面只显示失败")
-        // 失败也要给界面一个「落库后的消息」，否则气泡无 id 可点。
-        XCTAssertEqual(doneEvent(events)?.message.id, stored[1].id)
+        XCTAssertEqual(stored.map(\.role), [.user])
+        XCTAssertNil(doneEvent(events), "没有落库消息时不该发 done（避免界面拿到一条空气泡）")
     }
 
     /// 没填 Key：本地就说清楚，不发请求、不白花一次往返。
@@ -608,9 +606,9 @@ final class ChatServiceTests: XCTestCase {
             "还没有填 API Key：请在设置里为这个 API 配置补上密钥"
         )
         XCTAssertTrue(StubURLProtocol.recordedRequests.isEmpty, "没 Key 不该发出请求")
-        // 用户消息仍然留着（他说的话不能丢），失败原因落在助手消息上。
-        XCTAssertEqual(try messages().map(\.role), [.user, .assistant])
-        XCTAssertEqual(try messages().last?.status, .error)
+        // 用户消息仍然留着（他说的话不能丢）；0.14 起不再为「一个字都没说」的失败
+        // 落一条空助手消息（错误由界面 toast 呈现）。
+        XCTAssertEqual(try messages().map(\.role), [.user])
     }
 
     func testMissingApiConfigFailsBeforePersistingAnything() async throws {
@@ -677,33 +675,6 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(assistant.role, .assistant)
         XCTAssertEqual(assistant.status, .stopped)
         XCTAssertTrue(assistant.content.hasPrefix("第一句"), "半截正文要保住：\(assistant.content)")
-    }
-
-    // MARK: - 重新生成
-
-    func testRegenerateDeletesLastAssistantAndRunsAgain() async throws {
-        try seedReadySession()
-        StubURLProtocol.enqueue(.sse(textDeltas: ["第一次回复"]))
-        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
-        XCTAssertEqual(try messages().count, 2)
-
-        StubURLProtocol.enqueue(.sse(textDeltas: ["第二次回复"]))
-        let events = try await collect(service.regenerate(sessionId: sessionId))
-        XCTAssertEqual(doneEvent(events)?.message.content, "第二次回复")
-        let stored = try messages()
-        XCTAssertEqual(stored.count, 2, "旧回复被删掉，不该留下两条助手消息")
-        XCTAssertEqual(stored.map(\.content), ["在吗", "第二次回复"])
-    }
-
-    func testRegenerateWithoutUserMessageFails() async throws {
-        try seedReadySession()
-        var thrown: Error?
-        do {
-            _ = try await collect(service.regenerate(sessionId: sessionId))
-        } catch {
-            thrown = error
-        }
-        XCTAssertEqual((thrown as? ApiException)?.message, "没有可以重新生成的消息")
     }
 
     // MARK: - 后台任务
@@ -974,7 +945,7 @@ final class ChatServiceTests: XCTestCase {
             snapshot.contains { $0.method == "bySession" },
             "长会话不该整段读历史（实际读到：\(snapshot)）"
         )
-        let contextReads = snapshot.filter { $0.method == "recent" }
+        let contextReads = snapshot.filter { $0.method == "recentVisible" }
         XCTAssertEqual(contextReads.count, 1, "上下文窗口只查一次，实际：\(snapshot)")
         XCTAssertEqual(
             contextReads.first?.rows, PromptBuilder.contextRecentLimit,
@@ -1041,7 +1012,12 @@ private final class RecordingTools: ToolRunning {
     var resultFor: ((ToolInvocation) -> ToolResult)?
     private(set) var callCount = 0
 
-    func run(_ invocation: ToolInvocation, persona: PersonaEntity, sessionId: String) async -> ToolResult {
+    func run(
+        _ invocation: ToolInvocation,
+        persona: PersonaEntity,
+        sessionId: String,
+        userMessageId: String?
+    ) async -> ToolResult {
         callCount += 1
         if let resultFor { return resultFor(invocation) }
         return ToolResult(invocation: invocation, ok: true, summary: "做完了", contentForModel: "结果")

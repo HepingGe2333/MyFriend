@@ -193,6 +193,143 @@ final class ServerEventServiceTests: XCTestCase {
         XCTAssertEqual(cursor, 9)
     }
 
+    // MARK: - 0.14.1 §8：typing 事件与多条 message.created
+
+    private static func typingEvent(
+        type: String,
+        cursor: Int64,
+        sessionId: String = "s1"
+    ) -> String {
+        """
+        { "cursor": \(cursor), "type": "\(type)", "at": 2000, "sessionId": "\(sessionId)",
+          "personaId": "p1",
+          "payload": { "sessionId": "\(sessionId)", "personaId": "p1" } }
+        """
+    }
+
+    private static func multiMessageEvent(cursor: Int64) -> String {
+        """
+        { "cursor": \(cursor), "type": "message.created", "at": 2000, "sessionId": "s1",
+          "personaId": "p1",
+          "payload": { "messages": [
+            { "id": "m1", "sessionId": "s1", "blockIndex": 1, "role": "ASSISTANT",
+              "content": "第一句", "createdAt": 2000, "readAt": null, "attachments": [],
+              "source": "CHAT", "clientMessageId": null, "replyTo": null },
+            { "id": "m2", "sessionId": "s1", "blockIndex": 1, "role": "ASSISTANT",
+              "content": "第二句", "createdAt": 2001, "readAt": null, "attachments": [],
+              "source": "CHAT", "clientMessageId": null, "replyTo": null },
+            { "id": "m3", "sessionId": "s1", "blockIndex": 1, "role": "ASSISTANT",
+              "content": "第三句", "createdAt": 2002, "readAt": null, "attachments": [],
+              "source": "CHAT", "clientMessageId": null, "replyTo": null }
+          ] } }
+        """
+    }
+
+    /// 前台收到 `typing.started` → 活状态里这个会话在输入；`typing.stopped` → 收起。
+    func testTypingStartedAndStoppedDriveLiveState() async throws {
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.typingEvent(type: "typing.started", cursor: 12)
+        ], cursor: 12)))
+        let service = makeService()
+
+        let started = try await service.pollOnce()
+        XCTAssertTrue(started.typingChanged)
+        let liveAfterStart = await service.liveState()
+        XCTAssertTrue(liveAfterStart.isTyping(sessionId: "s1"))
+        XCTAssertTrue(liveAfterStart.typing.keys.contains("s1"), "存的是本地会话 id")
+
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.typingEvent(type: "typing.stopped", cursor: 13)
+        ], cursor: 13)))
+        let stopped = try await service.pollOnce()
+        XCTAssertTrue(stopped.typingChanged)
+        let liveAfterStop = await service.liveState()
+        XCTAssertFalse(liveAfterStop.isTyping(sessionId: "s1"))
+    }
+
+    /// 进后台要清掉输入指示：否则回前台时离线同步的消息前面会补演一次「正在输入」。
+    func testClearTypingRemovesTransientState() async throws {
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.typingEvent(type: "typing.started", cursor: 12)
+        ], cursor: 12)))
+        let service = makeService()
+        _ = try await service.pollOnce()
+        var live = await service.liveState()
+        XCTAssertTrue(live.isTyping(sessionId: "s1"))
+
+        await service.clearTyping()
+
+        live = await service.liveState()
+        XCTAssertFalse(live.isTyping(sessionId: "s1"))
+        XCTAssertTrue(live.typing.isEmpty)
+    }
+
+    /// 后台（非前台）收到 typing 事件：不点亮输入指示（规范 §8）。
+    func testTypingIgnoredWhenNotForeground() async throws {
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.typingEvent(type: "typing.started", cursor: 12)
+        ], cursor: 12)))
+        let service = makeService(foreground: false)
+
+        let report = try await service.pollOnce()
+
+        XCTAssertFalse(report.typingChanged)
+        let live = await service.liveState()
+        XCTAssertFalse(live.isTyping(sessionId: "s1"))
+        XCTAssertEqual(report.cursor, 12, "未知/忽略的事件也要推进游标")
+    }
+
+    /// `message.created` 到了就等于「不再输入」：立刻收起输入指示，并且消息按顺序落库。
+    func testMessageCreatedStopsTypingAndKeepsMultipleMessagesInOrder() async throws {
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.typingEvent(type: "typing.started", cursor: 12)
+        ], cursor: 12)))
+        let service = makeService()
+        _ = try await service.pollOnce()
+        var live = await service.liveState()
+        XCTAssertTrue(live.isTyping(sessionId: "s1"))
+
+        ServerURLProtocolStub.enqueue(.json(Self.eventsJSON([
+            Self.multiMessageEvent(cursor: 13)
+        ], cursor: 13)))
+        let report = try await service.pollOnce()
+
+        XCTAssertTrue(report.typingChanged, "消息到了要收起输入指示")
+        XCTAssertEqual(report.newMessages.map(\.id), ["m1", "m2", "m3"], "按服务端给的顺序")
+        live = await service.liveState()
+        XCTAssertFalse(live.isTyping(sessionId: "s1"))
+
+        let stored = try temp.stores.messages.bySession("s1")
+        XCTAssertEqual(stored.map(\.content), ["第一句", "第二句", "第三句"])
+    }
+
+    /// 离线同步回来的消息不写 typing 状态：不补打字动画、不再延迟（规范 §8）。
+    func testOfflineSyncedMessagesDoNotSetTypingState() async throws {
+        let service = makeService()
+        let gateway = ServerChatGateway(
+            client: ServerTestSupport.client(),
+            stores: temp.stores,
+            now: { 1_800_000_000_000 },
+            log: { _ in }
+        )
+        let page = ServerMessagePage(
+            sessionId: "s1",
+            blockIndex: 1,
+            messages: [
+                ServerMessage(
+                    id: "sync-1", sessionId: "s1", role: "ASSISTANT",
+                    content: "离线时说的", createdAt: 1_500
+                )
+            ]
+        )
+        try gateway.cache(page: page, localSessionId: "s1")
+
+        let live = await service.liveState()
+        XCTAssertTrue(live.typing.isEmpty, "同步不是 typing 事件，不能点亮输入指示")
+        XCTAssertFalse(ServerTypingPolicy.showsTypingAnimation(for: .offlineSync))
+        XCTAssertEqual(ServerTypingPolicy.extraDelaySeconds(serverMode: true, arrival: .offlineSync), 0)
+    }
+
     // MARK: - 心情 / 在场
 
     func testMoodAndPresenceEventsUpdateLiveStateAndCache() async throws {

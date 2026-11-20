@@ -1634,12 +1634,24 @@ public struct BackupImportPreparation: Equatable, Sendable {
 public enum BackupImportLoader {
 
     /// 读并预解析。错误（超限 / 读不出来）原样交回调用点显示。
-    public static func load(at url: URL) async -> Result<BackupImportPreparation, Error> {
+    ///
+    /// - Parameter adaptServerBackup: 服务端模式（`spec/experience/README.md` §11）：
+    ///   读进来的可能是 `GET /v1/backup` 的服务端形状（`avatarUrl` / 0–100 重要度 /
+    ///   `unread` / `attachments` 数组 / `client_extras`）。预览必须过同一层适配，
+    ///   否则用户会看到「记忆与对话被当成坏条目」的假警告。原始 `text` 原样保留给导入
+    ///   （交给服务端的仍是原文；本地缓存由 `ServerWriteService` 自己再适配一次）。
+    public static func load(
+        at url: URL,
+        adaptServerBackup: Bool = false
+    ) async -> Result<BackupImportPreparation, Error> {
         await Task.detached(priority: .userInitiated) {
             do {
                 let text = try BackupService.readBoundedText(at: url)
+                let readable = adaptServerBackup
+                    ? (ServerBackupAdapter.toLocalBackupJSON(text) ?? text)
+                    : text
                 return .success(
-                    BackupImportPreparation(text: text, decoded: BackupCodec.decode(text))
+                    BackupImportPreparation(text: text, decoded: BackupCodec.decode(readable))
                 )
             } catch {
                 return .failure(error)

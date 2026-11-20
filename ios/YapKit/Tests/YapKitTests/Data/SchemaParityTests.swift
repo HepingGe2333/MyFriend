@@ -172,14 +172,15 @@ final class SchemaParityTests: XCTestCase {
                 "personas.\(column.name) 两端都可空（null = 还没判定过）"
             )
         }
-        // 列序也要一致：Android 追加在表尾（ADD COLUMN 只能加在末尾），
-        // iOS 的新库 DDL 与升级路径也必须落到同样的位置，否则两份库 diff 起来会差三行。
+        // 列序也要一致：v17 的三维心情与 v18 的拉黑三列都是 ADD COLUMN 追加在表尾，
+        // 所以表尾六列的**相对顺序**两端必须一样，否则两份库 diff 起来会错位。
         let expectedTail = Schema.personaMoodDimensionColumns.map(\.name)
+            + Schema.personaBlockColumns.map(\.name)
         let androidNames = fields.compactMap { $0["columnName"] as? String }
         XCTAssertEqual(Array(androidNames.suffix(expectedTail.count)), expectedTail,
-                       "Android 17.json 里三维心情应在表尾")
+                       "Android 18.json 里心情三维 + 拉黑三列应在表尾（且顺序一致）")
         XCTAssertEqual(Array(iosColumns.suffix(expectedTail.count)), expectedTail,
-                       "iOS 建表语句里三维心情也应在表尾")
+                       "iOS 建表语句里心情三维 + 拉黑三列也应在表尾")
     }
 
     /// v15 的两张新表：`diary_notes`（`spec/diary/README.md`）与
@@ -254,6 +255,42 @@ final class SchemaParityTests: XCTestCase {
         for column in ["file", "mime", "source", "createdBy", "createdAt"] {
             XCTAssertEqual(byName[column]?["notNull"] as? Bool ?? false, true,
                            "stickers.\(column) 必须 NOT NULL")
+        }
+    }
+
+    /// v18 的两张新表（心理活动 / 会话备忘录）与 `messages.blocked`、`personas` 的拉黑三列：
+    /// 列名/顺序/可空/主键/索引名都与 Android 的 `18.json` 逐字一致
+    ///（`spec/experience/README.md` §2/§3/§6）。
+    ///
+    /// Android 还没导出 v18 时整条跳过（与上面几条同一个口径）。
+    func testV18TablesMatchAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        for table in [Schema.mentalActivitiesTable, Schema.sessionMemoryTable] {
+            let entity = try XCTUnwrap(entities[table], "Android v\(Schema.version) 里没有这张表：\(table)")
+            try assertColumns(table: table, match: entity)
+            try assertPrimaryKey(table: table, match: entity)
+            try assertIndices(table: table, match: entity)
+        }
+        // 拉黑期间的消息列：`blocked INTEGER NOT NULL DEFAULT 0`（老库升级不需要回填）。
+        let messages = try XCTUnwrap(entities["messages"])
+        try assertColumns(table: "messages", match: messages)
+        // 人格的拉黑三列：都追加在表尾，且都可空（null = 未拉黑 / 没有提议）。
+        let persona = try XCTUnwrap(entities["personas"])
+        let fields = try XCTUnwrap(persona["fields"] as? [[String: Any]])
+        let byName = Dictionary(uniqueKeysWithValues: fields.compactMap { field -> (String, [String: Any])? in
+            guard let name = field["columnName"] as? String else { return nil }
+            return (name, field)
+        })
+        let iosColumns = try columnNames(table: "personas")
+        for column in Schema.personaBlockColumns {
+            XCTAssertTrue(iosColumns.contains(column.name), "iOS 缺列：personas.\(column.name)")
+            let field = try XCTUnwrap(
+                byName[column.name], "Android v\(Schema.version) 的 personas 缺列：\(column.name)"
+            )
+            XCTAssertEqual(
+                field["notNull"] as? Bool ?? true, false,
+                "personas.\(column.name) 两端都可空（null = 未拉黑 / 没有提议）"
+            )
         }
     }
 

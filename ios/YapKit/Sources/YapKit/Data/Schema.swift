@@ -38,11 +38,16 @@ public enum Schema {
     ///（`spec/mood/README.md` §1）。规范里的 `moodLabel` 就是**已有的 `mood` 列**
     ///（两端都不改名，改名只会让老数据回填变成一次高风险重建），所以 16→17 只有三列加法 +
     /// 旧数据映射（只有 label/intensity 时按词表推三维）。
-    public static let version: Int32 = 17
+    /// 0.14（体验版）= v18：拉黑（`personas.blockedUntil` / `blockReason`、`messages.blocked`）
+    /// 与两张新表 `mental_activities`（心理活动）`session_memory`（会话备忘录），
+    /// 见 `spec/experience/README.md` §2/§3/§6。17→18 是「加两列 + 建两张表」，
+    /// 没有数据回填；新列可空/有默认值，老库升级后行为不变（未拉黑、全部消息可见）。
+    public static let version: Int32 = 18
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
-    /// 前 13 张是 iOS 第一版就有的，0.13 补了两张（日记板 / 待确认人格变化）；
+    /// 前 13 张是 iOS 第一版就有的，0.13 补了两张（日记板 / 待确认人格变化），
+    /// v16 一张（表情包），v18 两张（心理活动 / 会话备忘录）；
     /// `supplementaryTables` 里那两张是 1.8 遗留的缺表，
     /// 0.9.1 补进了建表语句（见下面的常量说明），`derivedTables` 是 v11 的派生表 ——
     /// **完整表清单**是 `allTables`。
@@ -64,7 +69,10 @@ public enum Schema {
         "diary_notes",
         "persona_pending_patches",
         // v16：表情包（`spec/stickers/SCHEMA.md`）。
-        "stickers"
+        "stickers",
+        // v18：心理活动与会话备忘录（`spec/experience/README.md` §3/§6）。
+        mentalActivitiesTable,
+        sessionMemoryTable
     ]
 
     /// 一人一段会话的唯一索引名（迁移与测试都按这个名字找它）。
@@ -115,14 +123,14 @@ public enum Schema {
     /// 派生表：内容完全由 `messages` 决定（表里的每一行都能从消息重算出来），
     /// 所以它没有独立的业务实体/仓储，迁移与写入都走 `MessageBlockStore`。
     ///
-    /// 与 `tables` 分开列，是为了让「记录型表 13 张」「派生表 1 张」这两件事在测试里
+    /// 与 `tables` 分开列，是为了让「记录型表 N 张」「派生表 1 张」这两件事在测试里
     /// 各自可断言 —— 两者混在一起会让「一张表一个实体」这条约定失效。
     public static let derivedTables: [String] = [messageBlocksTable]
 
-    /// 完整表清单（16 张记录型 + 4 张服务层用表 + 1 张派生表 = 21）。
+    /// 完整表清单（18 张记录型 + 4 张服务层用表 + 1 张派生表 = 23）。
     ///
     /// 0.13 起记录型从 13 张变成 15 张（`diary_notes` / `persona_pending_patches`），
-    /// v16 再加一张 `stickers`。
+    /// v16 再加一张 `stickers`，v18 再加两张（`mental_activities` / `session_memory`）。
     public static let allTables: [String] = tables + supplementaryTables + derivedTables
 
     /// `message_blocks` 的建表语句。
@@ -274,6 +282,11 @@ public enum Schema {
             moodValence INTEGER,
             moodArousal INTEGER,
             moodDominance INTEGER,
+            -- v18 的拉黑：到期时间与原因（`spec/experience/README.md` §2）。
+            -- 同样追加在表尾（ADD COLUMN 只能加在末尾）。
+            blockedUntil INTEGER,
+            blockReason TEXT,
+            blockProposalJson TEXT,
             PRIMARY KEY (id)
         )
         """,
@@ -380,6 +393,8 @@ public enum Schema {
             toolTraceJson TEXT,
             readAt INTEGER,
             blockIndex INTEGER NOT NULL DEFAULT 0,
+            -- v18：拉黑期间用户发来的消息（模型永久看不到，`spec/experience/README.md` §2）。
+            blocked INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (id)
         )
         """,
@@ -624,6 +639,11 @@ public enum Schema {
     // v16：表情包（`spec/stickers/SCHEMA.md`）。
     + [stickersDDL]
     + stickersIndexStatements
+    // v18：心理活动与会话备忘录（`spec/experience/README.md` §3/§6）。
+    + [mentalActivitiesDDL]
+    + mentalActivitiesIndexStatements
+    + [sessionMemoryDDL]
+    + sessionMemoryIndexStatements
 
     // MARK: - v15 的两张新表
 
@@ -723,6 +743,102 @@ public enum Schema {
         "CREATE INDEX IF NOT EXISTS index_stickers_personaId ON stickers (personaId)"
     ]
 
+    // MARK: - v18：拉黑、心理活动、会话备忘录（`spec/experience/README.md`）
+
+    /// 心理活动表名：他每 3 分钟 / 每 3 轮写下的一句私密念头。
+    public static let mentalActivitiesTable = "mental_activities"
+
+    /// 会话备忘录表名：`shortSummary`（最近 5 轮）+ `longSummary`（更早的对话）。
+    public static let sessionMemoryTable = "session_memory"
+
+    /// v18 给 `personas` 加的两列：拉黑到期时间与原因（`spec/experience/README.md` §2）。
+    ///
+    /// 都可空：`blockedUntil` 为 null = 没被拉黑（或已到期解除）。
+    /// 时间用毫秒时间戳（与全库一致），**到期即视为解除**，不写第二列状态位：
+    /// 那样会多出一种「已经到期但状态还是 BLOCKED」的坏数据。
+    public static let personaBlockColumns: [(name: String, ddl: String)] = [
+        ("blockedUntil", "INTEGER"),
+        ("blockReason", "TEXT"),
+        // 未确认的拉黑提议（10 分钟有效）。放在人格行上而不是另建表：
+        // Android 18.json 就是这么排的，两端 schema 必须逐字一致。
+        ("blockProposalJson", "TEXT")
+    ]
+
+    /// v18 给 `messages` 加的列：拉黑期间用户发来的消息（模型永久看不到）。
+    ///
+    /// `NOT NULL DEFAULT 0` 与 Room 的 `@ColumnInfo(defaultValue = "0")` 对齐：
+    /// 老库里每一条消息都自动是「未被屏蔽」，迁移不需要回填。
+    public static let messageBlockedColumn = (name: "blocked", ddl: "INTEGER NOT NULL DEFAULT 0")
+
+    /// `mental_activities` 的建表语句（迁移与 `createStatements` 共用同一份 DDL）。
+    ///
+    /// 列形状按规范 §3「会话 / 人格 / 时间 / 念头 / 心情快照」：
+    /// - `thought` 是 ≤60 字的私密念头（**不发给用户**）；
+    /// - 心情快照写的是**微调之后**的三维 + label/intensity，这样「他那时候是什么心情」
+    ///   在事后回看时是自洽的（只存 delta 会让回看得靠链式重算）。
+    public static let mentalActivitiesDDL = """
+        CREATE TABLE IF NOT EXISTS mental_activities (
+            id TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            sessionId TEXT,
+            at INTEGER NOT NULL,
+            thought TEXT NOT NULL,
+            moodLabel TEXT,
+            moodIntensity INTEGER,
+            moodValence INTEGER,
+            moodArousal INTEGER,
+            moodDominance INTEGER,
+            PRIMARY KEY (id)
+        )
+        """
+
+    /// 与 Android 18.json 逐字一致的三条索引（含 `at` 那一条：清理「只留 50 条」时按时间扫）。
+    public static let mentalActivitiesIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_mental_activities_personaId_at "
+            + "ON mental_activities (personaId, at)",
+        "CREATE INDEX IF NOT EXISTS index_mental_activities_sessionId_at "
+            + "ON mental_activities (sessionId, at)",
+        "CREATE INDEX IF NOT EXISTS index_mental_activities_at ON mental_activities (at)"
+    ]
+
+    /// `session_memory` 的建表语句（规范 §6）。
+    ///
+    /// 主键就是 `sessionId`（一人一段会话，会话级摘要天然一行一条）。
+    /// `shortUpTo` / `longUpTo` 记的是「生成这份摘要时，会话里已有多少条**用户消息**」——
+    /// 节流（每 5 / 30 条更新一次）与「失败保留旧摘要」都靠它：
+    /// 失败时不写这一行，下一次回复会重试，不会因为「更新过」而把旧摘要永久钉住。
+    public static let sessionMemoryDDL = """
+        CREATE TABLE IF NOT EXISTS session_memory (
+            sessionId TEXT NOT NULL,
+            personaId TEXT NOT NULL,
+            shortSummary TEXT,
+            longSummary TEXT,
+            shortUserCount INTEGER NOT NULL,
+            longUserCount INTEGER NOT NULL,
+            shortUpdatedAt INTEGER,
+            longUpdatedAt INTEGER,
+            updatedAt INTEGER NOT NULL,
+            PRIMARY KEY (sessionId)
+        )
+        """
+
+    public static let sessionMemoryIndexStatements: [String] = [
+        "CREATE INDEX IF NOT EXISTS index_session_memory_personaId ON session_memory (personaId)",
+        "CREATE INDEX IF NOT EXISTS index_session_memory_updatedAt ON session_memory (updatedAt)"
+    ]
+
+    /// v18 的两张新表（幂等）。`createStatements` 里也包含它们，两处用的是同一份常量。
+    static func ensureV18Tables(_ database: SQLiteDatabase) throws {
+        try database.execute(mentalActivitiesDDL)
+        for statement in mentalActivitiesIndexStatements {
+            try database.execute(statement)
+        }
+        try database.execute(sessionMemoryDDL)
+        for statement in sessionMemoryIndexStatements {
+            try database.execute(statement)
+        }
+    }
+
     /// 建库入口：App 首次启动、以及测试里建临时库都走这里。
     ///
     /// 幂等（全部 `IF NOT EXISTS`），所以每次启动都可以无脑调用；
@@ -821,6 +937,16 @@ public enum Schema {
         try ensureV16Tables(database)
         // v17：旧心情（只有 label + intensity）映射到三维；只回填「还没判过」的行。
         try backfillMoodDimensions(database)
+        // v18：拉黑两列（可空）+ 两张新表（心理活动 / 会话备忘录）。
+        // 17→18 没有数据回填：老库里每一行消息都自动是 blocked = 0，人格都是「未拉黑」。
+        for column in personaBlockColumns {
+            try addColumnIfMissing(database, table: "personas", column: column.name, type: column.ddl)
+        }
+        try addColumnIfMissing(
+            database, table: "messages",
+            column: messageBlockedColumn.name, type: messageBlockedColumn.ddl
+        )
+        try ensureV18Tables(database)
     }
 
     /// 16 → 17 的旧数据映射（`spec/mood/README.md` §1）：

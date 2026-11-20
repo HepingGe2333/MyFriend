@@ -68,6 +68,10 @@ class ChineseLiteralGuardTest {
             "记忆整理提示词：进模型上下文，界面只读整理结果里的数字",
         "src/main/java/com/yap/app/data/repo/MemoryReconsolidator.kt" to
             "记忆重构提示词（想起旧事时的措辞）",
+        "src/main/java/com/yap/app/data/repo/MentalActivityRepository.kt" to
+            "0.14 心理活动：私密念头的 system/user 提示词与模型回灌说明，不直接展示给用户",
+        "src/main/java/com/yap/app/data/repo/SessionMemoryRepository.kt" to
+            "0.14 会话备忘录：摘要提示词与模型上下文，不直接展示给用户",
         "src/main/java/com/yap/app/data/repo/MemoryRepository.kt" to
             "记忆抽取提示词与「你记得的事」上下文块",
         "src/main/java/com/yap/app/data/repo/PersonaEvolutionRepository.kt" to

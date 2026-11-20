@@ -56,6 +56,9 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
     STICKER_SAVE(R.string.tool_trace_sticker_save),
     LISTEN(R.string.tool_trace_listen),
     WATCH(R.string.tool_trace_watch),
+    SEND_MESSAGE(R.string.tool_trace_send_message),
+    BLOCK_USER(R.string.tool_trace_block_user),
+    BLOCK_USER_APPLIED(R.string.tool_trace_block_user_applied),
     UNKNOWN(R.string.tool_trace_unknown);
 
     companion object {
@@ -76,6 +79,8 @@ enum class ToolTraceTitle(@StringRes val res: Int) {
             ToolCatalog.STICKER -> STICKER
             ToolCatalog.LISTEN -> LISTEN
             ToolCatalog.WATCH -> WATCH
+            ToolCatalog.SEND_MESSAGE -> SEND_MESSAGE
+            ToolCatalog.BLOCK_USER -> BLOCK_USER
             else -> UNKNOWN
         }
     }

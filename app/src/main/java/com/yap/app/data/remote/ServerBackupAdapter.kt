@@ -41,7 +41,21 @@ object ServerBackupAdapter {
 
     fun toLocalBackup(root: JsonObject): JsonObject {
         val fields = linkedMapOf<String, JsonElement>()
-        root.forEach { (key, value) -> if (key !in SECTIONS) fields[key] = value }
+        val clientExtras = root["client_extras"] as? JsonObject
+        root.forEach { (key, value) ->
+            // 0.14.1 §11：`extensions` 是服务端专有数据，客户端明确忽略（不写进本机缓存，
+            // 也不让它在本地备份里冒充客户端段）；`client_extras` 在下面拆到顶层。
+            if (key in SECTIONS || key == "extensions" || key == "client_extras") return@forEach
+            fields[key] = value
+        }
+        // 客户端独有段（proactiveRules/agentIntents/memoryConsolidations 等）可能被服务端
+        // 原样收在 `client_extras` 里；提到顶层，本地解码才能接回来。顶层已有值时以顶层为准。
+        clientExtras?.forEach { (key, value) ->
+            val current = fields[key]
+            // 顶层空数组视为「没写」：真正的客户端独有段在夹层里，不能因为占位空段就丢掉。
+            val missing = current == null || (current is JsonArray && current.isEmpty())
+            if (missing) fields[key] = value
+        }
 
         root["personas"]?.let { fields["personas"] = mapArray(it) { persona ->
             val out = LinkedHashMap(persona)

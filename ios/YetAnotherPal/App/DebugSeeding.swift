@@ -525,6 +525,8 @@ enum DebugSeeding {
                         log("[debug] tool started: \(trace.name)")
                     case .toolFinished(let trace):
                         log("[debug] tool finished: \(trace.name) ok=\(trace.ok)")
+                    case .appended(let message):
+                        log("[debug] appended: \(message.content.prefix(120))")
                     case .done(let completion):
                         log("[debug] done: \(completion.message.content.prefix(120))")
                     case .noReply(let reason):

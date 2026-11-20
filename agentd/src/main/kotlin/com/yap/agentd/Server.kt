@@ -302,6 +302,12 @@ object AgentdServer {
             return
         }
 
+        // 0.14.1（§8）：任何 /v1/ 请求都算「客户端还在前台」（60 秒窗口，见 ClientPresence）。
+        // 用它决定新 assistant 消息是延迟投递（typing）还是直接落库；/health 与 /v1/core 不算。
+        if (head.target.startsWith("/v1/")) {
+            services.presence.markSeen()
+        }
+
         // 备份的两条路径都不允许「整份进内存」，所以必须在 readBody 之前分流：
         // - `GET  /v1/backup`：chunked 流式写响应（边读磁盘边写 socket）；
         // - `POST /v1/backup`：请求体流式落到 `--data` 下的 `.staging/` 临时文件，再增量解析。

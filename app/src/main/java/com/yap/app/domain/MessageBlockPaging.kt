@@ -133,7 +133,7 @@ object MessageBlockPaging {
     /**
      * 当前窗口是不是已经在最新一块。
      *
-     * 用户发消息/重新生成之前用它判断要不要先「回到最新」：新消息永远落在最新块，
+     * 用户发消息/编辑重发之前用它判断要不要先「回到最新」：新消息永远落在最新块，
      * 停在旧块里的话，他刚说的话根本不在列表里（旧的定位窗口踩过同一个坑）。
      */
     fun isAtNewestBlock(state: State, lastBlockIndex: Int?): Boolean =

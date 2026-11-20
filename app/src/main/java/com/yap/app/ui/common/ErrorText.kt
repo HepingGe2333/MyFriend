@@ -133,6 +133,7 @@ object ErrorText {
         DomainErrorCode.MESSAGE_EMPTY -> R.string.error_message_empty
         DomainErrorCode.MESSAGE_TOO_LONG -> R.string.error_message_too_long
         DomainErrorCode.TITLE_EMPTY -> R.string.error_title_empty
+        // §10：不再有「重新生成」入口；这个历史错误码只剩兜底文案（正常路径不会产生）。
         DomainErrorCode.NOTHING_TO_REGENERATE -> R.string.error_nothing_to_regenerate
         DomainErrorCode.ONLY_USER_MESSAGE_EDITABLE -> R.string.error_only_user_message_editable
         DomainErrorCode.NOTHING_TO_REPLY -> R.string.error_nothing_to_reply

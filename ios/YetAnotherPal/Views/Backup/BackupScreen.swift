@@ -355,7 +355,7 @@ struct BackupScreen: View {
                 // 0.11.1 审计 P2-9：读文件 + JSON 预解析都在后台（`BackupImportLoader` 内部是
                 // `Task.detached` + 分块有界读取），主线程只 await 结果。256 MB 的 JSON 在
                 // main runloop 上做 UTF-8 解码 + JSONSerialization 是秒级卡顿。
-                let outcome = await BackupImportLoader.load(at: url)
+                let outcome = await BackupImportLoader.load(at: url, adaptServerBackup: env.serverModeActive)
                 if scoped { url.stopAccessingSecurityScopedResource() }
                 await MainActor.run {
                     busy = false

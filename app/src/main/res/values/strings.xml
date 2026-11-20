@@ -269,12 +269,11 @@
     <string name="chat_clear_context_action">清空</string>
     <string name="chat_copy">复制</string>
     <string name="chat_copied">已复制</string>
-    <string name="chat_regenerate">重新生成</string>
     <string name="chat_your_message">你的消息</string>
     <string name="chat_reply">回复</string>
     <string name="chat_empty_message">空消息</string>
     <string name="chat_edit_title">编辑消息</string>
-    <string name="chat_edit_save">保存并重新生成</string>
+    <string name="chat_edit_save">保存并重发</string>
     <string name="chat_edit_and_resend">编辑并重新请求</string>
     <string name="chat_delete_message">删除这条消息</string>
     <string name="chat_delete_message_title">删除这条消息？</string>
@@ -364,7 +363,6 @@
     <!-- ChatViewModel：snackbar 与错误提示 -->
     <string name="chat_image_load_failed">图片读取失败，请换一张试试</string>
     <string name="chat_send_failed">发送失败</string>
-    <string name="chat_regenerate_failed">无法重新生成</string>
     <string name="chat_edit_failed">编辑失败</string>
     <string name="chat_delete_failed">删除失败</string>
     <string name="chat_context_cleared">上下文已清空</string>
@@ -1281,7 +1279,7 @@
     <string name="error_message_empty">消息不能为空</string>
     <string name="error_message_too_long">消息过长</string>
     <string name="error_title_empty">标题不能为空</string>
-    <string name="error_nothing_to_regenerate">没有可以重新生成的消息</string>
+    <string name="error_nothing_to_regenerate">没有可以重发的消息</string>
     <string name="error_only_user_message_editable">只能编辑用户消息</string>
     <string name="error_nothing_to_reply">还没有可以回复的消息</string>
     <string name="error_no_conversation_yet">该人格还没有对话</string>
@@ -1562,6 +1560,13 @@
     <string name="tool_trace_diary_removed_detail">这一页撕掉了。</string>
     <string name="tool_trace_diary_not_found_detail">本子上没有这一条，可能已经撕掉了。</string>
     <string name="tool_trace_diary_empty_detail">日记本上还没有东西。</string>
+    <string name="tool_trace_send_message">发消息</string>
+    <string name="tool_trace_block_user">拉黑提议</string>
+    <string name="tool_trace_block_user_applied">已拉黑</string>
+    <string name="tool_trace_block_user_pending_detail">已经把提议记下来了；等对方再发一条消息之后，你才能真正确认。</string>
+    <string name="tool_trace_block_user_applied_detail">已生效，到期自动解除。</string>
+    <string name="chat_blocked_hint">对方已将你拉黑</string>
+    <string name="chat_blocked_icon_desc">被拉黑的消息</string>
     <string name="tool_trace_unknown">动作</string>
 
     <!-- 表情包（spec/stickers）：工具 sticker 的痕迹与聊天里的表情界面 -->

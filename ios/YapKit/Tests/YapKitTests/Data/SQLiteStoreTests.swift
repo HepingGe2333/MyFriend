@@ -28,14 +28,14 @@ final class SQLiteStoreTests: XCTestCase {
 
     // MARK: - 建表
 
-    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV17() throws {
-        XCTAssertEqual(Schema.version, 17,
-                       "v17 = 多维心情三列（spec/mood/README.md）")
-        XCTAssertEqual(Schema.tables.count, 16,
-                       "16 张记录型表（v15 的日记板/待确认变化 + v16 的 stickers）")
+    func testSchemaCreatesEveryTableAndSetsUserVersionToRoomV18() throws {
+        XCTAssertEqual(Schema.version, 18,
+                       "v18 = 拉黑 + 心理活动 + 会话备忘录（spec/experience/README.md）")
+        XCTAssertEqual(Schema.tables.count, 18,
+                       "18 张记录型表（v15 两张 + v16 stickers + v18 两张）")
         XCTAssertEqual(Schema.supplementaryTables.count, 4, "四张服务层用表（两张 1.8 遗留 + 两张服务端模式）")
         XCTAssertEqual(Schema.derivedTables, ["message_blocks"], "1 张派生表（块元数据）")
-        XCTAssertEqual(Schema.allTables.count, 21, "16 + 4 + message_blocks")
+        XCTAssertEqual(Schema.allTables.count, 23, "18 + 4 + message_blocks")
 
         let names = try stores.database.tableNames()
         for table in Schema.allTables {
@@ -46,6 +46,8 @@ final class SQLiteStoreTests: XCTestCase {
         XCTAssertTrue(names.contains(Schema.diaryNotesTable), "v15 必须建 diary_notes")
         XCTAssertTrue(names.contains(Schema.personaPendingPatchesTable), "v15 必须建 persona_pending_patches")
         XCTAssertTrue(names.contains(Schema.stickersTable), "v16 必须建 stickers")
+        XCTAssertTrue(names.contains(Schema.mentalActivitiesTable), "v18 必须建 mental_activities")
+        XCTAssertTrue(names.contains(Schema.sessionMemoryTable), "v18 必须建 session_memory")
         XCTAssertEqual(try stores.database.userVersion(), Schema.version)
     }
 
@@ -69,7 +71,9 @@ final class SQLiteStoreTests: XCTestCase {
             (ApiUsageEntity.tableName, ApiUsageEntity.columns),
             (DiaryNoteEntity.tableName, DiaryNoteEntity.columns),
             (PersonaPendingPatchEntity.tableName, PersonaPendingPatchEntity.columns),
-            (StickerEntity.tableName, StickerEntity.columns)
+            (StickerEntity.tableName, StickerEntity.columns),
+            (MentalActivityEntity.tableName, MentalActivityEntity.columns),
+            (SessionMemoryEntity.tableName, SessionMemoryEntity.columns)
         ]
         XCTAssertEqual(Set(mappings.map(\.0)), Set(Schema.tables + Schema.derivedTables))
 

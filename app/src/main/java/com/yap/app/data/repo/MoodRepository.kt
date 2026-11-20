@@ -171,6 +171,34 @@ class MoodRepository @Inject constructor(
         return next
     }
 
+    /**
+     * 心理活动带来的微调（0.14）：每个维度最多动 1。
+     *
+     * 不直接复用 [setReading] 是因为调用方只有「相对变化」，没有完整快照；
+     * 标签/强度保留原来的（除非原来是空），避免一次心里想事情就换掉他对外说的心情词。
+     */
+    suspend fun adjustDimensions(
+        personaId: String,
+        valenceDelta: Int,
+        arousalDelta: Int,
+        dominanceDelta: Int,
+        now: Long = System.currentTimeMillis()
+    ): MoodReading? {
+        if (personaDao.getById(personaId) == null) return null
+        val current = reading(personaId, now)
+        val next = MoodDimensions.normalize(
+            label = current.label.ifBlank { MoodLexicon.BASELINE },
+            intensity = current.intensity.coerceIn(1, 5),
+            valence = current.valence + valenceDelta.coerceIn(-1, 1),
+            arousal = current.arousal + arousalDelta.coerceIn(-1, 1),
+            dominance = current.dominance + dominanceDelta.coerceIn(-1, 1),
+            reason = current.reason,
+            updatedAt = now
+        )
+        write(personaId, next)
+        return next
+    }
+
     /** 从上次动过心情（或上次被问过）到现在，他自己说了几句（跨会话）。 */
     private suspend fun spokenSinceTouch(personaId: String, since: Long): Int =
         messageDao.countAssistantSince(personaId, since.coerceAtLeast(0L))

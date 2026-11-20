@@ -31,6 +31,7 @@ import com.yap.app.data.repo.ProactiveRepository
 import com.yap.app.data.repo.ProactiveScheduler
 import com.yap.app.data.repo.PersonaRepository
 import com.yap.app.data.repo.PersonaTranslationCoordinator
+import com.yap.app.data.remote.ServerTypingState
 import com.yap.app.domain.AudioVideoPolicy
 import com.yap.app.domain.MediaRejection
 import com.yap.app.domain.MediaSendGuard
@@ -99,6 +100,13 @@ data class ChatUiState(
     val streamingText: String = "",
     val streamingTraces: List<ToolTraceItem> = emptyList(),
     val isGenerating: Boolean = false,
+    /**
+     * 界面上要不要显示「正在输入…」。
+     *
+     * 本地模式 = 这一轮真的开始出字了（[hasStarted]）；服务端权威模式 = **只**看服务端发来的
+     * `typing.started/typing.stopped`（§8）——客户端不自己加延迟、不自己播动画。
+     */
+    val typing: Boolean = false,
     /** 正在读库、组装并编码导出文本（在 IO 线程上）：界面显示进行中并避免重复点。 */
     val isExporting: Boolean = false,
     /**
@@ -167,6 +175,8 @@ data class ChatEphemeral(
     val streamingTraces: List<ToolTraceItem> = emptyList(),
     val isGenerating: Boolean = false,
     val hasStarted: Boolean = false,
+    /** 服务端模式下的「他正在输入」：只由 typing 事件驱动（§8），离线同步不补动画。 */
+    val serverTyping: Boolean = false,
     val switchingPersona: Boolean = false,
     val isExporting: Boolean = false,
     val snackbar: String? = null,
@@ -223,6 +233,13 @@ class ChatViewModel @Inject constructor(
     private val stickerRepository: StickerRepository,
     /** 语音/视频（0.13）：气泡播放要先把服务端媒体缓存成本地文件。 */
     private val audioVideoRepository: AudioVideoRepository,
+    /**
+     * 0.14.1：服务端模式「他正在输入」的进程级瞬时状态（§8）。
+     *
+     * 为什么放在 ViewModel 之外：轮询器在 Application 级运行时里跑，聊天页只是观察者；
+     * 同一个会话的 typing 事件不该因为 Activity 重建而丢。
+     */
+    private val serverTypingState: ServerTypingState,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
 
@@ -311,6 +328,12 @@ class ChatViewModel @Inject constructor(
                 .map { it.createdAt }
         )
         val presence = ambient.second ?: Presence()
+        // §8：服务端权威模式下「正在输入」只听服务端事件；本地模式仍是「这一轮开始出字」。
+        val typing = if (chatRepository.isServerMode()) {
+            local.serverTyping
+        } else {
+            local.isGenerating && local.hasStarted
+        }
         ChatUiState(
             session = details.session,
             messages = details.messages,
@@ -326,6 +349,7 @@ class ChatViewModel @Inject constructor(
             streamingText = local.streamingText,
             streamingTraces = local.streamingTraces,
             isGenerating = local.isGenerating,
+            typing = typing,
             hasStarted = local.hasStarted,
             switchingPersona = local.switchingPersona,
             isExporting = local.isExporting,
@@ -379,7 +403,7 @@ class ChatViewModel @Inject constructor(
     private var draftWindowClosed = false
 
     /**
-     * 一次「发送 / 重新生成 / 编辑」从落库到开始出字之间有几十毫秒空档。
+     * 一次「发送 / 编辑重发」从落库到开始出字之间有几十毫秒空档。
      * 没有它，连着点两下会写进两条一样的消息——这是原来 isPreparing 顺带挡住的事。
      */
     private var operationInFlight = false
@@ -409,6 +433,13 @@ class ChatViewModel @Inject constructor(
         if (chatRepository.isServerMode()) {
             viewModelScope.launch {
                 runCatching { chatRepository.openServerSession(sessionId) }
+            }
+        }
+        // 0.14.1：前台收到 typing.started/stopped 就显示/收起输入指示（§8）。
+        // 只观察本会话；离线同步回来的消息不经过这里，所以不会补打字动画。
+        viewModelScope.launch {
+            serverTypingState.observe(sessionId).collect { typing ->
+                ephemeral.update { it.copy(serverTyping = typing) }
             }
         }
         // 开聊之前先把人设翻译好：异步、不阻塞首屏；失败静默（用原文）。
@@ -475,7 +506,7 @@ class ChatViewModel @Inject constructor(
     }
 
     /**
-     * 用户主动写消息（发送 / 重新生成 / 编辑）之前，若停在更早的块里，先回到最新块。
+     * 用户主动写消息（发送 / 编辑重发）之前，若停在更早的块里，先回到最新块。
      *
      * 留在旧块里的话：新写的消息落在最新块，列表里根本看不到——用户感知是
      * 「发出去的话消失了、他也不理我」；随后助手回复同样落在窗口之外。
@@ -964,15 +995,15 @@ class ChatViewModel @Inject constructor(
                     }
                     return@launch
                 }
-                // 1.9：「读消息的节奏」不再是设置项，固定用自然速度。
-                // 具体什么时候回、回不回，交给模型自己的 defer_reply 与睡眠判定。
-                val readDelay = HumanTiming.readDelayMillis(
-                    textLength = text.length,
-                    images = images.size,
-                    paceFactor = 1f
-                )
+                // 0.14：拉黑期间消息已经落库并标了 blocked，但这一轮不启动生成。
+                if (chatRepository.isBlocked(sessionId)) {
+                    ephemeral.update { it.copy(draft = "", images = emptyList(), snackbar = null) }
+                    return@launch
+                }
                 ephemeral.update { it.copy(draft = "", images = emptyList(), snackbar = null) }
-                startGeneration(readDelay)
+                // 首条消息的「正在输入」延迟由仓库在看到首批字/第一条连发时按真实字数计算；
+                // 这里不再额外等一次，否则同一句话会被延迟两遍。
+                startGeneration(0L)
             } finally {
                 operationInFlight = false
             }
@@ -1003,11 +1034,21 @@ class ChatViewModel @Inject constructor(
                 }
                 val result = chatRepository.sendServerMessage(sessionId, text, images) { event ->
                     when (event) {
-                        is com.yap.app.data.remote.ServerSendEvent.Accepted ->
-                            ephemeral.update { it.copy(hasStarted = true) }
+                        // 0.14.1 §8：服务端确认落库不再等于「开始打字」——输入指示只听 typing 事件。
+                        is com.yap.app.data.remote.ServerSendEvent.Accepted -> Unit
 
                         is com.yap.app.data.remote.ServerSendEvent.Delta ->
                             ephemeral.update { it.copy(streamingText = it.streamingText + event.text) }
+
+                        // 0.14.1 §8：这条完整消息已经由网关**收到即落库**，界面靠 Room 直接上屏；
+                        // 不再先塞进暂存气泡，也不在客户端补打字延迟/动画。
+                        is com.yap.app.data.remote.ServerSendEvent.MessageCreated -> Unit
+
+                        is com.yap.app.data.remote.ServerSendEvent.TypingStarted ->
+                            serverTypingState.typingStarted(sessionId)
+
+                        is com.yap.app.data.remote.ServerSendEvent.TypingStopped ->
+                            serverTypingState.typingStopped(sessionId)
 
                         is com.yap.app.data.remote.ServerSendEvent.Tool ->
                             ephemeral.update {
@@ -1054,9 +1095,11 @@ class ChatViewModel @Inject constructor(
                 }
             } catch (cancel: CancellationException) {
                 // 用户点了停止：SSE 连接关闭，服务端继续生成并落库；本机下一次同步/事件会拿到。
+                serverTypingState.typingStopped(sessionId)
                 ephemeral.update { it.copy(isGenerating = false, hasStarted = false, streamingText = "") }
                 throw cancel
             } catch (error: Exception) {
+                serverTypingState.typingStopped(sessionId)
                 ephemeral.update {
                     it.copy(
                         isGenerating = false,
@@ -1067,6 +1110,8 @@ class ChatViewModel @Inject constructor(
                     )
                 }
             } finally {
+                // 流结束/失败都收掉指示器：typing.stopped 丢包时也不会一直转圈。
+                serverTypingState.typingStopped(sessionId)
                 operationInFlight = false
             }
         }
@@ -1080,7 +1125,9 @@ class ChatViewModel @Inject constructor(
         ephemeral.update {
             it.copy(
                 isGenerating = true,
-                hasStarted = false,
+                // 从按下发送那一刻就显示「正在输入」——读消息的延迟也是生成的一部分。
+                // 睡眠/免打扰/已读不回会在 Started 之前发 Silent，界面随即收掉。
+                hasStarted = true,
                 streamingText = "",
                 streamingTraces = emptyList(),
                 snackbar = null
@@ -1093,10 +1140,14 @@ class ChatViewModel @Inject constructor(
                     when (event) {
                         // 新一轮真的开始出字了：上一轮的「他睡着了」提示立刻作废。
                         GenerationEvent.Started -> ephemeral.update {
-                            it.copy(hasStarted = true, silentReason = null)
+                            it.copy(hasStarted = true, streamingText = "", silentReason = null)
                         }
                         is GenerationEvent.Delta -> ephemeral.update {
                             it.copy(streamingText = event.fullText, silentReason = null)
+                        }
+                        // 连发的一条完整消息落库了：收起暂存气泡，等下一段「正在输入」。
+                        is GenerationEvent.MessageSent -> ephemeral.update {
+                            it.copy(streamingText = "", streamingTraces = emptyList(), hasStarted = true)
                         }
                         is GenerationEvent.ToolCall -> ephemeral.update { it.copy(streamingTraces = event.traces) }
                         is GenerationEvent.Completed -> {
@@ -1164,31 +1215,6 @@ class ChatViewModel @Inject constructor(
     fun stopGeneration() {
         streamJob?.cancel()
         ephemeral.update { it.copy(isGenerating = false, streamingText = "") }
-    }
-
-    fun regenerate() {
-        if (chatRepository.isServerMode()) {
-            ephemeral.update { it.copy(snackbar = context.getString(R.string.chat_server_action_unsupported)) }
-            return
-        }
-        if (ephemeral.value.isGenerating || operationInFlight) return
-        viewModelScope.launch {
-            if (operationInFlight) return@launch
-            operationInFlight = true
-            try {
-                // 审计 P1-1：定位窗口里重新生成 → 新回复会落在窗口外，先回到最新一屏。
-                leaveJumpWindowForNewMessage()
-                // 同上：重新生成也不等后台抽记忆。
-                val result = chatRepository.prepareRegeneration(sessionId)
-                if (result.isFailure) {
-                    ephemeral.update { it.copy(snackbar = ErrorText.of(context, result.exceptionOrNull(), R.string.chat_regenerate_failed)) }
-                    return@launch
-                }
-                startGeneration(HumanTiming.REGENERATE_MS)
-            } finally {
-                operationInFlight = false
-            }
-        }
     }
 
     fun editUserMessage(messageId: String, content: String) {
