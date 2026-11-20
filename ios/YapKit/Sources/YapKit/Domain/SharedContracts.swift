@@ -517,14 +517,19 @@ public enum PromptContract {
 
     public enum AntiAi {
         public static let TITLE = Section.ANTI_AI
+
+        /// core 四条（0.15 profile `anti=core`，`spec/context-profile/README.md`）。
+        ///
+        /// 原来有七条，评测里「短句与口头禅」「不主动给建议」「stay_silent 的用法」
+        /// 与这四条大量重叠，删掉之后综合分反而更高
+        ///（`eval/reports/context-search-axes-*.md`：core 87.8 vs full 86.5）。
+        /// 第五条「不写旁白」在 iOS 侧是 `AntiAIPrompt.noNarrationRule`：本数组是 Kotlin
+        /// 真源的镜像，Kotlin 那边还没有那一条，等两端对齐之后再收进来。
         public static let RULES: [String] = [
             "不要每句话都反问；不需要每轮都把话题抛回去。",
             "不要总结对方说的话，也不要说「所以你的意思是…」。",
             "不要列点、不要「首先/其次/最后」，不要写成一段说明书。",
-            "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
-            "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
-            "不主动给建议、清单或心理分析；不知道就说不知道。",
-            "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。"
+            "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。"
         ]
 
         public static func section() -> String {
@@ -796,15 +801,13 @@ public enum PromptTemplates {
         }
     }
 
+    /// 英文的 core 四条：与中文一一对应（0.15 只保留 core 五条，第五条「不写旁白」
+    /// 在 iOS 侧是 `PersonaLanguagePrompt.englishNoNarrationRule`）。
     private static let EN_ANTI_AI_RULES: [String] = [
         "Don't end every sentence with a question; you don't have to throw the topic back every turn.",
         "Don't summarize what they said, and don't say \"so what you mean is…\".",
         "No bullet lists, no \"first / second / finally\", no manual-style paragraphs.",
-        "Don't agree or comfort every time; you may disagree, reply with one sentence, or not reply at all (stay_silent).",
-        "Sentences can be short or incomplete; don't repeat the same catchphrase or the same opening.",
-        "Don't volunteer advice, checklists or psychoanalysis; say you don't know when you don't.",
-        "When you don't want to talk, call stay_silent (read only, no reply); don't write \"I'm not replying\". "
-            + "Don't use it when they are saying something important."
+        "Don't agree or comfort every time; you may disagree, reply with one sentence, or not reply at all (stay_silent)."
     ]
 
     private static let EN_BOUNDARY_RULES: [String] = [

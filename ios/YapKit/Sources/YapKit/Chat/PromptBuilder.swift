@@ -13,9 +13,21 @@ import Foundation
 //   - 主动唤醒能力：`ProactiveProtocol.CAPABILITY_PROMPT`（iOS 还没移植，常量先放这里）
 //   - 工具能力：`ToolCatalog.capabilityPrompt`（Chat/ToolProtocol.swift）
 //
-// **分段顺序是有意义的**，不是审美：人格在最前（模型的「自我」优先），记忆与摘要紧随
-// （让「他记得」比「他会用工具」更早进入注意力），工具与输出格式放最后（属于规则，
-// 放在尾巴上模型更容易当成指令而不是设定）。改顺序等于改提示词，必须两端一起改。
+// **分段顺序是有意义的**，不是审美。0.15 按 Bench v2 的搜索结果改成了 **state_first**
+//（`spec/context-profile/README.md`，`eval/reports/context-search-combine-*.md`：
+// 5 样本 85.3 vs 旧顺序 84.3，硬失败率 23.3% vs 26.7%）：
+//
+// ```
+// 当前状态（时间/活动/心情/引导）→ 人设（身份/世界/话风/关系）→ 工具
+// → 反 AI → 记忆/备忘录 → 语言 → 边界
+// ```
+//
+// 为什么「状态在前」：模型最早读到的应该是「现在是几点、他在做什么、他什么心情、
+// 这一轮怎么说话」——这些是**这一轮**的坐标；人设是常年不变的背景。先给坐标，
+// 回复才落在当下；先给人设，模型容易从「角色介绍」开始演。
+//
+// 顺序只在 `PromptSection.stateFirstOrder` 一处定义（`sections(_:)` 按它渲染，
+// `ContextAssemblerV2` 也按它拼）。改顺序等于改提示词，必须两端一起改。
 //
 // 为什么要一个「拼装器」而不是在聊天服务里 `append`：这个字符串是**产品**——
 // 段落、标题、空行都有人对着两端逐字比对；把它做成纯函数，测试才能钉住
@@ -67,6 +79,11 @@ public struct SystemPromptInput {
     public var moodBlock: String
     /// 心情驱动的语气分寸（`MoodBehavior.promptLine(mood)`）。
     public var moodPaceBlock: String
+    /// 「# 引导」那一段（`PromptGuidance.section(...)`，0.15 profile）。
+    ///
+    /// 位置固定：心情之后、话风之前（见 `PromptSection.stateFirstOrder`）。
+    /// 空串 = 这一轮不加（只有测试与「引导静音」的特殊场景会这么用）。
+    public var guidanceBlock: String
     /// 「他此刻在做什么」那一段；为空表示不加（状态不该成为聊天里的障碍）。
     ///
     /// 0.12 起由 `stateBlock` 承担（它把时间、活动、在场合成一段）；
@@ -97,6 +114,7 @@ public struct SystemPromptInput {
         mentalActivityBlock: String = "",
         moodBlock: String = "",
         moodPaceBlock: String = "",
+        guidanceBlock: String = "",
         presenceBlock: String = "",
         moodNudgeBlock: String = "",
         proactiveCapability: String = ProactiveCapabilityPrompt.text,
@@ -117,6 +135,7 @@ public struct SystemPromptInput {
         self.mentalActivityBlock = mentalActivityBlock
         self.moodBlock = moodBlock
         self.moodPaceBlock = moodPaceBlock
+        self.guidanceBlock = guidanceBlock
         self.presenceBlock = presenceBlock
         self.moodNudgeBlock = moodNudgeBlock
         self.proactiveCapability = proactiveCapability
@@ -136,6 +155,75 @@ public enum ProactiveCapabilityPrompt {
     public static let blockLanguage = ProactiveProtocol.blockLanguage
 
     public static let text: String = ProactiveProtocol.capabilityPrompt
+}
+
+/// system 提示词里的**可组合段**（0.15，`spec/context-profile/README.md`）。
+///
+/// 一个枚举值 = 一段有独立语义的文本：状态（时间/活动/心情/引导）、引导、人设
+///（身份/世界/话风/关系）、工具、反 AI、记忆/备忘录、语言、边界。
+///
+/// 为什么值得一个类型：改顺序（这次从「人设在前」改成「状态在前」）不许碰任何一段的
+/// 内容来源，只许碰这个数组。测试直接钉 `stateFirstOrder`，`ContextAssemblerV2` 也读它，
+/// 所以「完整 prompt」与「v2 装配的 prompt」不可能有两种顺序。
+public enum PromptSection: String, CaseIterable, Sendable {
+
+    /// 当前状态：时间、此刻的活动/在场、心情、心情分寸、心里那句话、心情引导。
+    case state
+    /// 这一轮的语气分寸（`# 引导`，`PromptGuidance`）。
+    case guidance
+    /// 人设：身份 / 世界 / 话风 / 关系。
+    case persona
+    /// 主动唤醒能力 + 工具清单。
+    case tools
+    /// 反 AI 味（core 五条）。
+    case antiAI
+    /// 记忆 / 更早记得的 / 备忘录（v2 里由 `ContextAssemblerV2` 按预算裁剪）。
+    case memory
+    /// 「用对方的语言回答」。
+    case language
+    /// 边界（硬约束，永远收尾）。
+    case boundary
+
+    /// **唯一的顺序定义**：state_first
+    ///（状态 → 引导 → 人设 → 工具 → 反AI → 记忆 → 语言 → 边界）。
+    public static let stateFirstOrder: [PromptSection] = [
+        .state, .guidance, .persona, .tools, .antiAI, .memory, .language, .boundary
+    ]
+
+    /// 这一段的文本（不带前导空行、不带段间分隔线；空串 = 这一轮不出现）。
+    func text(_ input: SystemPromptInput) -> String {
+        switch self {
+        case .state:
+            return PromptBuilder.stack([
+                PromptBuilder.stateSection(input.stateBlock, legacyPresence: input.presenceBlock),
+                input.moodBlock,
+                input.moodPaceBlock,
+                input.mentalActivityBlock,
+                input.moodNudgeBlock
+            ])
+        case .guidance:
+            return input.guidanceBlock
+        case .persona:
+            return PromptBuilder.stack([
+                PromptBuilder.identityBlock(input.personaText, name: input.personaName),
+                input.worldBlock,
+                input.speechStyleBlock,
+                input.relationshipBlock
+            ])
+        case .tools:
+            return PromptBuilder.stack([input.proactiveCapability, input.toolsCapability])
+        case .antiAI:
+            return input.antiAIPrompt
+        case .memory:
+            return PromptBuilder.stack([
+                input.memoriesBlock, input.earlierMemoryBlock, input.memoBlock
+            ])
+        case .language:
+            return input.languageDirective
+        case .boundary:
+            return input.boundaryBlock
+        }
+    }
 }
 
 public enum PromptBuilder {
@@ -165,74 +253,61 @@ public enum PromptBuilder {
     /// 分段之间的固定分隔：一个显眼的横线，让「设定」与「规则」在长上下文里也分得开。
     static let sectionSeparator = "\n\n---\n"
 
-    // MARK: - system
-
-    /// 把各段拼起来。
+    /// 把若干「已经带前导换行的片段」叠成一段：非空的按 `\n\n` 连接、首尾空白去掉。
     ///
-    /// 顺序按 `spec/persona-guidance/README.md` §1（**规范：越靠前越强，顺序不可乱**）：
-    ///
-    /// ```
-    /// # 你是谁       —— 身份、第一人称、不是助手
-    /// # 你所在的世界  —— 世界预设（World Preset）
-    /// # 你此刻的状态  —— 时间、当前活动/忙碌、心情、在场
-    /// 刚才心里想      —— 最近一次心理活动（0.14，私密念头）
-    /// # 你怎么说话    —— 话风（tone/habits/avoid + 常用语）
-    /// # 你们的关系    —— 与用户的关系、亲密度、称呼
-    /// 记忆 / 滚动摘要 / 备忘录  —— 「他记得什么」（不属于人设引导，紧跟关系之后）
-    /// ---
-    /// 主动唤醒能力 / 工具能力
-    /// # 边界         —— 不暴露 AI、不旁白、不总结人设、不替用户决定
-    /// 心情引导 / 语言
-    /// ```
-    ///
-    /// 「边界」放在能力说明之后、最后的输出规则之前：它是**规则**，不是设定；
-    /// 压在尾巴上模型更容易当成硬约束而不是「人物简介的一部分」。
-    public static func systemPrompt(_ input: SystemPromptInput) -> String {
-        var text = identityBlock(input.personaText, name: input.personaName)
-        text += input.worldBlock
-        text += stateSection(input.stateBlock, legacyPresence: input.presenceBlock)
-        text += input.moodBlock
-        text += input.moodPaceBlock
-        // 0.14：他刚才心里想的那一句（紧跟在心情之后，读起来是自省而不是旁白）。
-        text += input.mentalActivityBlock
-        text += input.speechStyleBlock
-        text += input.relationshipBlock
-        text += input.memoriesBlock
-        text += input.earlierMemoryBlock
-        // 0.14：会话备忘录（短期在前、长期在后，属于可变区域）。
-        text += input.memoBlock
-        text += sectionSeparator
-        text += input.proactiveCapability
-        text += "\n\n"
-        text += input.toolsCapability
-        // 反 AI 味（`spec/mood/README.md` §5）：与 `# 边界` 一样是**规则**，
-        // 放在边界**之前**（与 Android 的拼接顺序一致：能力段 → 反 AI → 可变块 → 边界）。
-        text += antiAIBlock(input.antiAIPrompt)
-        text += boundaryBlock(input.boundaryBlock)
-        text += input.moodNudgeBlock
-        text += languageSection(input.languageDirective)
-        return text
+    /// 各段渲染器（`stateSection` / `moodBlock` / `worldSection` …）历史上都会自己带
+    /// `"\n\n"` 前缀（那是给「字符串相加」的旧拼法用的）。这里统一在**段内**再拼一次，
+    /// 所以顺序变了也不会出现「黏在一起」或「三个空行」。
+    static func stack(_ pieces: [String]) -> String {
+        pieces
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
     }
 
-    /// 0.15 上下文装配 v2 的第 1 段：**完整设定 + 工具**（不含记忆/状态/主题/历史）。
+    // MARK: - system
+
+    /// 把各段拼起来（顺序见 `PromptSection.stateFirstOrder`）。
     ///
-    /// 为什么从 `systemPrompt` 里拆出来：v2 的固定顺序是
-    /// 「完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 主题总结 → 最近历史」，
-    /// 记忆与状态要插在人设之后、历史之前；把「人设 + 工具」做成独立一段，
-    /// 顺序就由 `ContextAssemblerV2` 一处决定，而不是在两个函数里各拼一半。
+    /// 这是一个**薄壳**：真正的分段在 `sections(_:)` 里，这里只负责用一条横线把
+    /// 「设定区」与「规则区」分开（`---` 出现在工具段之前，与 0.13 的形状一致）。
+    /// 拆开的原因是 0.15 的 `ContextAssemblerV2` 要按**同一个顺序**把记忆/主题塞进去：
+    /// 顺序只能有一处定义，否则「完整 prompt」与「v2 装配的 prompt」会悄悄分叉。
+    public static func systemPrompt(_ input: SystemPromptInput) -> String {
+        joined(sections(input))
+    }
+
+    /// 按固定顺序返回**每一段的文本**（空段不出现）。
     ///
-    /// 内容与 `systemPrompt` 完全一致（同一个渲染器），只是把六段可变内容清空。
-    public static func personaAndToolsPrompt(_ input: SystemPromptInput) -> String {
-        var fixed = input
-        fixed.stateBlock = ""
-        fixed.presenceBlock = ""
-        fixed.memoriesBlock = ""
-        fixed.earlierMemoryBlock = ""
-        fixed.memoBlock = ""
-        fixed.mentalActivityBlock = ""
-        fixed.moodBlock = ""
-        fixed.moodPaceBlock = ""
-        return systemPrompt(fixed)
+    /// 这就是「可组合段」：调用方既可以整体拼（`systemPrompt`），也可以只取其中几段
+    ///（`ContextAssemblerV2` 拿状态/引导/人设/工具/反AI/语言/边界，记忆由它自己按预算裁）。
+    /// 每段都**不带**前导空行、不带分隔线——拼接是调用方的事。
+    public static func sections(_ input: SystemPromptInput) -> [(section: PromptSection, text: String)] {
+        PromptSection.stateFirstOrder.map { section in
+            (section, section.text(input))
+        }
+    }
+
+    /// 只取某几段拼起来（`ContextAssemblerV2` 与老调用点用）。
+    public static func prompt(_ input: SystemPromptInput, sections wanted: [PromptSection]) -> String {
+        joined(sections(input).filter { wanted.contains($0.section) })
+    }
+
+    /// 按 `stateFirstOrder` 拼：段与段之间一个空行；工具段之前换成一条横线
+    ///（「设定」与「规则」的分界，0.13 起就是这个形状，只在顺序上改过）。
+    static func joined(_ sections: [(section: PromptSection, text: String)]) -> String {
+        var text = ""
+        for entry in sections {
+            let block = entry.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !block.isEmpty else { continue }
+            if text.isEmpty {
+                text = block
+                continue
+            }
+            text += entry.section == .tools ? sectionSeparator : "\n\n"
+            text += block
+        }
+        return text
     }
 
     /// 「用对方的语言回答」这一节。
@@ -454,11 +529,22 @@ public enum PromptBuilder {
     /// - 真正的 `input_audio`（base64）与视频关键帧只给**当轮那一条**消息
     ///   （`mediaParts` 里按消息 id 给）：历史里的语音如果再发一遍，一次请求会被
     ///   几段几十 MB 的 base64 撑爆，而它们早就被模型听过了。
+    ///
+    /// 时间戳（0.15，`history=timestamped`）：每条历史前面加 `[21:04] 用户：` /
+    /// `[21:06] 他：`，跨天换 `[11-19 21:04]`（见 `HistoryTimestamp`）。
+    /// - `now` 是这一轮发请求的时刻（「今天」的参照），由 `ChatService` 传；
+    /// - 工具结果 / 系统消息**不加**：它们不是他说过的话（而且工具回路里的那几条
+    ///   WireMessage 是在 `history` 之外自己拼的，永远走不到这里）；
+    /// - `timestamped: false` 只给老调用点/测试用（回到 0.14 的样子）。
     public static func history(
         messages: [MessageEntity],
         summarizedUpTo: Int64?,
         imageResolver: ((MessageAttachment) -> String?)? = nil,
-        mediaParts: [String: MediaWireParts] = [:]
+        mediaParts: [String: MediaWireParts] = [:],
+        now: Int64 = 0,
+        language: PromptLanguage = .zh,
+        timestamped: Bool = true,
+        calendar: Calendar = ServiceTime.calendar()
     ) -> [WireMessage] {
         let cutoff = summarizedUpTo.flatMap { $0 > 0 ? $0 : nil }
         // 先筛出「真的要发给模型的那几条」，再定哪几条的图值得带上（与 Android 的
@@ -488,7 +574,6 @@ public enum PromptBuilder {
 
         var result: [WireMessage] = []
         for message in visible {
-            let content = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
             let decoded = AttachmentsCodec.decode(message.attachmentsJson)
 
             var images: [String] = []
@@ -527,6 +612,15 @@ public enum PromptBuilder {
             // 语音/视频消息的正文里已经有 `mediaContextLine`，不会走到这里。
             if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 text = "（发来一张图片）"
+            }
+
+            // 0.15：给「他说过的话」前面挂上本地时刻与说话人（工具/系统消息不加）。
+            if timestamped {
+                let prefix = HistoryTimestamp.prefix(
+                    createdAt: message.createdAt, now: now, role: message.role,
+                    language: language, calendar: calendar
+                )
+                if !prefix.isEmpty { text = prefix + text }
             }
 
             result.append(WireMessage(

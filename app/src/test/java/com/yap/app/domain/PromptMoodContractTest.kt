@@ -90,28 +90,67 @@ class PromptMoodContractTest {
 
     // ------------------------------------------------------------- 反 AI 味
 
-    @Test
-    fun `反 AI 味段存在且规则齐全`() {
-        val text = PromptBuilder.system(inputs(mood = MoodReading.of(MoodState())))
-        assertTrue("要有独立的一段", text.contains(PromptBuilder.SECTION_ANTI_AI))
-        val section = text.substringAfter(PromptBuilder.SECTION_ANTI_AI)
-            .substringBefore(PromptBuilder.Scaffold.SECTION_BOUNDARIES)
-        assertTrue("不要每句反问", section.contains("反问"))
-        assertTrue("不要总结对方", section.contains("总结对方"))
-        assertTrue("不要列点", section.contains("列点"))
-        assertTrue("不要总安慰/认同", section.contains("安慰"))
-        assertFalse("必须允许沉默", !section.contains("不回"))
-        assertTrue("不重复口头禅", section.contains("口头禅"))
-        assertTrue("不主动给清单/心理分析", section.contains("心理分析"))
-        assertTrue("不知道就说不知道", section.contains("不知道就说不知道"))
-        assertTrue("可以沉默要指向 stay_silent 工具", section.contains(ToolCatalog.STAY_SILENT))
+    /** 反 AI 段的正文：到下一段（语言段，没有语言段时是边界段）为止。 */
+    private fun antiAiBody(text: String): String {
+        val rest = text.substringAfter(PromptBuilder.SECTION_ANTI_AI)
+        val cut = listOf(PromptContract.Section.LANGUAGE, PromptBuilder.Scaffold.SECTION_BOUNDARIES)
+            .map { rest.indexOf(it) }
+            .filter { it >= 0 }
+            .minOrNull() ?: rest.length
+        return rest.take(cut)
     }
 
     @Test
-    fun `反 AI 味段在边界之前 边界仍然是最后一段`() {
+    fun `反 AI 味段存在且就是 core 五条`() {
+        val text = PromptBuilder.system(inputs(mood = MoodReading.of(MoodState())))
+        assertTrue("要有独立的一段", text.contains(PromptBuilder.SECTION_ANTI_AI))
+        val section = antiAiBody(text)
+        // `spec/context-profile/README.md`：只保留不反问/不总结/不列点/不总安慰/不旁白五条，逐字固定。
+        val rules = section.lines().filter { it.startsWith("- ") }.map { it.removePrefix("- ") }
+        assertEquals("反 AI 段恰好五条（core）", 5, rules.size)
+        assertEquals(PromptBuilder.ANTI_AI_RULES, rules)
+        rules.forEach { assertTrue("每条都要逐字进提示词：$it", text.contains("- $it")) }
+        // 五条各覆盖一个禁忌。
+        assertTrue(rules[0].contains("反问"))
+        assertTrue(rules[1].contains("总结对方"))
+        assertTrue(rules[2].contains("列点"))
+        assertTrue(rules[3].contains("安慰"))
+        assertTrue("可以沉默要指向 stay_silent 工具", rules[3].contains(ToolCatalog.STAY_SILENT))
+        assertTrue("第五条是旁白/舞台说明", rules[4].contains("旁白") && rules[4].contains("舞台说明"))
+    }
+
+    @Test
+    fun `删掉的两条反 AI 规则不再出现`() {
+        val text = PromptBuilder.system(inputs(mood = MoodReading.of(MoodState())))
+        // 「句子可以短、可以不完整」与「不主动给建议」两条在 0.15 被删（Bench v2 core profile）。
+        assertFalse("不再要求句子短/不完整", text.contains("句子可以短、可以不完整"))
+        assertFalse("不再写「不主动给建议」", text.contains("不主动给建议"))
+        // 「心理分析」只剩边界段那一条（「不要心理分析对方」），不再是反 AI 段的独立规则。
+        assertFalse("反 AI 段里不该再有心理分析", antiAiBody(text).contains("心理分析"))
+    }
+
+    @Test
+    fun `英文人格的反 AI 也是五条 且与中文一一对应`() {
+        val en = PromptBuilder.antiAiSection(PromptLanguage.EN)
+        assertTrue("英文人格要有英文标题", en.startsWith("# Don't sound like an AI"))
+        val rules = en.lines().drop(1).filter { it.startsWith("- ") }.map { it.removePrefix("- ") }
+        assertEquals("英文人格也恰好五条", 5, rules.size)
+        assertEquals(PromptBuilder.EN_ANTI_AI_RULES, rules)
+        assertTrue("不反问", rules[0].contains("question"))
+        assertTrue("不总结", rules[1].contains("summarize"))
+        assertTrue("不列点", rules[2].contains("bullet lists"))
+        assertTrue("不总安慰", rules[3].contains("comfort"))
+        assertTrue("不旁白", rules[4].contains("narration"))
+        assertTrue("可以沉默指向 stay_silent", rules[3].contains("stay_silent"))
+    }
+
+    @Test
+    fun `反 AI 味段在工具之后 边界仍然是最后一段`() {
         val text = PromptBuilder.system(inputs(mood = MoodReading.of(MoodState())))
         val anti = text.indexOf(PromptBuilder.SECTION_ANTI_AI)
         val boundaries = text.indexOf(PromptBuilder.Scaffold.SECTION_BOUNDARIES)
+        val tools = text.indexOf("# 你能做什么")
+        assertTrue("反 AI 在工具之后（state_first profile）", tools in 0..<anti)
         assertTrue(anti in 0..<boundaries)
         assertFalse(
             "边界之后不该再有段",

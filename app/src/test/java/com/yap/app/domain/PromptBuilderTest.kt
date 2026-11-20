@@ -77,37 +77,57 @@ class PromptBuilderTest {
         moodBlock = "\n\n## 你现在的心情\n有点累（强度 3/5，明显）。",
         asleep = false,
         extraStatus = "今天话不多。",
+        capabilitiesSection = "# 你能做什么\n- remember(内容)：记住这件事",
         variableBlocks = listOf(
-            "## 你记得的事\n- 对方下个月要去哈尔滨。",
-            "## 你可以调用这些工具\ntool list"
+            "## 你记得的事\n- 对方下个月要去哈尔滨。"
         ),
         languageSection = "\n\n## 语言\n用中文回答。"
     )
 
     @Test
-    fun `六段顺序与边界位置都符合规范`() {
+    fun `state_first 顺序 状态 引导 人设 工具 反AI 记忆 语言 边界`() {
+        // `spec/context-profile/README.md`：架构 state_first。段内容来源不变，只调顺序。
         val text = PromptBuilder.system(inputs())
+        val state = text.indexOf(scaffold.SECTION_STATE)
+        val guidance = text.indexOf(PromptBuilder.SECTION_GUIDANCE)
         val who = text.indexOf(scaffold.SECTION_IDENTITY)
         val where = text.indexOf(scaffold.SECTION_WORLD)
-        val state = text.indexOf(scaffold.SECTION_STATE)
         val how = text.indexOf(scaffold.SECTION_VOICE)
         val relation = text.indexOf(scaffold.SECTION_RELATIONSHIP)
+        // 工具位 = 能力段（`# 你能做什么`），由调用方的 capabilitiesSection 提供。
+        val tool = text.indexOf("# 你能做什么")
+        val antiAi = text.indexOf(PromptBuilder.SECTION_ANTI_AI)
         val variable = text.indexOf("## 你记得的事")
-        val tool = text.indexOf("## 你可以调用这些工具")
+        val language = text.indexOf("## 语言")
         val boundary = text.indexOf(scaffold.SECTION_BOUNDARIES)
-        listOf(who, where, state, how, relation, variable, tool, boundary).forEach {
+        listOf(state, guidance, who, where, how, relation, tool, antiAi, variable, language, boundary).forEach {
             assertTrue("缺少某一段（index=$it）：\n$text", it >= 0)
         }
-        assertTrue("身份要在世界之前", who < where)
-        assertTrue("世界要在状态之前", where < state)
-        assertTrue("状态要在话风之前", state < how)
-        assertTrue("话风要在关系之前", how < relation)
-        assertTrue("记忆/工具说明要在关系之后", relation < variable && relation < tool)
-        assertTrue("边界要在可变部分之后（最后一段）", boundary > variable && boundary > tool)
+        assertTrue("状态要在最前（state_first）", state < guidance)
+        assertTrue("引导在心情之后、话风之前", state < guidance && guidance < who)
+        assertTrue("人设内部顺序不变：身份 → 世界 → 话风 → 关系", who < where && where < how && how < relation)
+        assertTrue("人设之后是工具", relation < tool)
+        assertTrue("工具之后是反 AI", tool < antiAi)
+        assertTrue("反 AI 之后是记忆/念头", antiAi < variable)
+        assertTrue("记忆之后是语言", variable < language)
+        assertTrue("边界要在最后（语言之后）", language < boundary)
         assertTrue(
             "提示词以脚手架最后一条边界规则结束",
             text.trimEnd().endsWith("- " + scaffold.BOUNDARY_RULES.last())
         )
+    }
+
+    @Test
+    fun `引导段在心情之后 状态段之内`() {
+        val text = PromptBuilder.system(inputs())
+        val mood = text.indexOf("心情：有点累（强度 3/5）。")
+        val guidance = text.indexOf(PromptBuilder.SECTION_GUIDANCE)
+        val voice = text.indexOf(scaffold.SECTION_VOICE)
+        assertTrue("心情要在引导之前", mood in 0..<guidance)
+        assertTrue("引导要在话风之前", guidance < voice)
+        // 没有多维心情 → g17（判不了就不假装他防备）。
+        assertTrue(text.contains("这一轮：只聊此刻，不翻旧账"))
+        assertFalse(text.contains("这一轮：有点防备，不轻易示弱"))
     }
 
     @Test

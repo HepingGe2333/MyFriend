@@ -368,12 +368,22 @@ class PersonaPromptScaffoldContractTest {
 
     // ------------------------------------------------------------------ 工具
 
+    /**
+     * 段的**文案**来自 scaffold.json，段的**顺序**自 0.15 起由
+     * `spec/context-profile/README.md` 的 state_first 决定：
+     *
+     * 状态 → 引导 → 人设（身份/世界/话风/关系）→ 工具 → 反 AI →（记忆）→ 语言 → 边界。
+     *
+     * 这是本测试与 spec 唯一的分歧点：scaffold.json 里 `sections` 的书写顺序还是
+     * 「身份 → 世界 → 状态 → 话风 → 关系」（0.14 的协议）。0.15 的 profile 只调顺序、
+     * 不改任何一句文案，所以「逐字一致」这条仍然成立；顺序按新 profile 断言。
+     */
     private fun assertSectionsInSpecOrder(text: String) {
-        // 顺序就是 spec 里 `sections` 的书写顺序：越靠前越强（§1）。
         val order = listOf(
+            scaffold.SECTION_STATE,
+            PromptBuilder.SECTION_GUIDANCE,
             scaffold.SECTION_IDENTITY,
             scaffold.SECTION_WORLD,
-            scaffold.SECTION_STATE,
             scaffold.SECTION_VOICE,
             scaffold.SECTION_RELATIONSHIP,
             scaffold.SECTION_BOUNDARIES
@@ -384,7 +394,7 @@ class PersonaPromptScaffoldContractTest {
             assertEquals("段落标题「$header」出现了不止一次", 1, Regex(Regex.escape(header)).findAll(text).count())
             index
         }
-        assertEquals("段落顺序必须与 spec 的 sections 顺序一致", positions.sorted(), positions)
+        assertEquals("段落顺序必须是 state_first（状态 → 引导 → 人设 → … → 边界）", positions.sorted(), positions)
     }
 
     private fun assertBoundariesLast(text: String) {

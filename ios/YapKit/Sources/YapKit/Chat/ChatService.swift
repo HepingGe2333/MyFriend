@@ -708,13 +708,21 @@ public final class ChatService {
                     sentVideo = !parts.images.isEmpty
                 }
             }
+            // 「这一轮」的坐标只取一次时钟：状态段那行「现在是…」、心情判定、历史时间戳
+            // 都必须是同一个瞬间，否则跨零点的对话会出现「状态写 23:59、历史写 00:01」。
+            let timestamp = now()
+            // 0.15：提示词语言是**人格属性**，与页面语言无关（`languageTag`，schema v19）。
+            let personaLanguage = PersonaLanguagePrompt.language(for: persona)
             let history = PromptBuilder.history(
                 messages: recent,
                 summarizedUpTo: session.historySummarizedUpTo,
                 // 只有最近两条带图消息会真的把图交给模型（见 `AttachmentsCodec`）。
                 imageResolver: { attachment in mediaStorage.dataURL(for: attachment) },
                 // 当轮那一条的语音/视频（历史里不重复发 base64）。
-                mediaParts: currentMediaParts
+                mediaParts: currentMediaParts,
+                // 0.15：`[21:04] 用户：…` —— 每条历史都带本地时刻（跨天带日期）。
+                now: timestamp,
+                language: personaLanguage
             )
             // 用最近一句对方说的话当检索线索，挑「此刻最相关」的记忆。
             // 1.9 起记忆**内置开启**：没有开关可关（§一）。
@@ -726,13 +734,10 @@ public final class ChatService {
             )
             let memoriesBlock = memory.formatForPrompt(memories)
 
-            let timestamp = now()
             // 心情只读一次：提示词那一段与「他今天话多话少」都由这一份状态换算出来。
             // `MoodRepository` 会顺手做两件事（与 Android 一致）：让时间冲淡、把「已经问过心情」记下来。
             let moodState = mood.current(personaId: persona.id, now: timestamp)
             let nudge = mood.reflectionNudge(personaId: persona.id, now: timestamp)
-            // 0.15：提示词语言是**人格属性**，与页面语言无关（`languageTag`，schema v19）。
-            let personaLanguage = PersonaLanguagePrompt.language(for: persona)
             // 0.14 §3：「你刚才心里想：…」——最近一次心理活动（不新鲜 / 没有就是空串）。
             // 0.15：非中文人格用对应语言的注入行（念头本身是数据，不翻译）。
             let mentalActivityBlock: String
@@ -763,29 +768,41 @@ public final class ChatService {
             let world = WorldPreset.decode(speakingPersona.worldJson)
             let speechStyle = SpeechStyle.decode(speakingPersona.speechStyleJson)
             let activity = PersonaActivity.decode(speakingPersona.activityJson, now: timestamp)
-            // 0.15 上下文装配 v2（`docs/design/context-memory-v2.md`）：
-            // 完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 对话主题 → 最近历史。
+            // 0.15 上下文装配 v2（`docs/design/context-memory-v2.md` + `spec/context-profile/README.md`）：
+            // 当前状态 → 引导 → 人设 → 工具 → 反AI → 记忆/备忘录 → 语言 → 边界 → 最近历史。
             //
-            // 人设与前五段分开渲染：人设/工具用 `PromptBuilder.personaAndToolsPrompt`，
-            // 记忆/状态/主题由 `ContextAssemblerV2` 按固定顺序插进去，预算与裁剪也归它。
+            // 这里只负责**填字段**：段怎么排由 `PromptBuilder.PromptSection.stateFirstOrder`
+            // 一处决定，记忆与主题由 `ContextAssemblerV2` 按预算插进去（都在它那里裁）。
             let sessionMemo = memo.memory(sessionId: sessionId)
-            let fixedPrompt = PromptBuilder.personaAndToolsPrompt(SystemPromptInput(
-                personaText: personaText?(speakingPersona)
-                    ?? PromptBuilder.personaSection(speakingPersona),
-                personaName: speakingPersona.name,
-                worldBlock: PromptBuilder.worldSection(world),
-                speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
-                relationshipBlock: PromptBuilder.relationshipSection(persona: speakingPersona),
-                boundaryBlock: PersonaLanguagePrompt.boundariesSection(language: personaLanguage),
-                antiAIPrompt: PersonaLanguagePrompt.antiAISection(language: personaLanguage),
-                moodNudgeBlock: nudge ?? "",
-                proactiveCapability: ProactiveCapabilityPrompt.text,
-                toolsCapability: PersonaLanguagePrompt.capabilitiesSection(
-                    webEnabled: config.webToolsEnabled, language: personaLanguage
-                ),
-                // 「用对方的语言回答」= 人格语言（不是页面语言）。
-                languageDirective: PersonaLanguagePrompt.languageSection(language: personaLanguage)
-            ))
+            let promptSections = Dictionary(
+                uniqueKeysWithValues: PromptBuilder.sections(SystemPromptInput(
+                    personaText: personaText?(speakingPersona)
+                        ?? PromptBuilder.personaSection(speakingPersona),
+                    personaName: speakingPersona.name,
+                    worldBlock: PromptBuilder.worldSection(world),
+                    stateBlock: PromptBuilder.stateSection(
+                        now: timestamp,
+                        activity: activity,
+                        presenceDetail: presenceDetail?(persona.id)
+                    ),
+                    speechStyleBlock: PromptBuilder.speechStyleSection(speechStyle),
+                    relationshipBlock: PromptBuilder.relationshipSection(persona: speakingPersona),
+                    boundaryBlock: PersonaLanguagePrompt.boundariesSection(language: personaLanguage),
+                    antiAIPrompt: PersonaLanguagePrompt.antiAISection(language: personaLanguage),
+                    mentalActivityBlock: mentalActivityBlock,
+                    moodBlock: PersonaLanguagePrompt.moodSection(moodState, language: personaLanguage),
+                    moodPaceBlock: MoodBehavior.promptLine(moodState, now: timestamp) + blockNote,
+                    // 0.15 profile：这一轮的语气分寸（心情偏负/低唤醒 → g12，否则 g17）。
+                    guidanceBlock: PromptGuidance.section(for: moodState, language: personaLanguage),
+                    moodNudgeBlock: nudge ?? "",
+                    proactiveCapability: ProactiveCapabilityPrompt.text,
+                    toolsCapability: PersonaLanguagePrompt.capabilitiesSection(
+                        webEnabled: config.webToolsEnabled, language: personaLanguage
+                    ),
+                    // 「用对方的语言回答」= 人格语言（不是页面语言）。
+                    languageDirective: PersonaLanguagePrompt.languageSection(language: personaLanguage)
+                )).map { ($0.section, $0.text) }
+            )
             // 长期记忆：稳定事实（记忆库）+ 会话长期摘要 + 「更早记得的」滚动摘要，合计 ≤500。
             // 短期记忆：这几轮定下的计划/待办（≤200）。
             let longTerm = [
@@ -797,22 +814,10 @@ public final class ChatService {
                 )
             ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
                 .joined(separator: "\n")
-            let currentState = [
-                PromptBuilder.stateSection(
-                    now: timestamp,
-                    activity: activity,
-                    presenceDetail: presenceDetail?(persona.id)
-                ),
-                PersonaLanguagePrompt.moodSection(moodState, language: personaLanguage),
-                MoodBehavior.promptLine(moodState, now: timestamp) + blockNote,
-                mentalActivityBlock
-            ].filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                .joined(separator: "\n\n")
             let assembled = ContextAssemblerV2.assemble(ContextV2Input(
-                personaAndTools: fixedPrompt,
+                sections: promptSections,
                 longTermMemory: longTerm,
                 shortTermMemory: sessionMemo?.shortSummary ?? "",
-                currentState: currentState,
                 topics: sessionMemo?.topics ?? [],
                 history: history,
                 contextWindowTokens: PromptBuilder.contextTokenBudget(configured: nil),

@@ -291,8 +291,9 @@ class SessionMemoryTest {
                 prompt.indexOf("## 短期记忆") < prompt.indexOf("## 对话主题")
         )
         assertTrue(
-            "备忘录属于「他记住了什么」，排在完整设定之后（边界之后）",
-            prompt.indexOf("# 边界") < prompt.indexOf("# 你的备忘录")
+            "备忘录属于「他记住了什么」，排在完整设定/工具/反 AI 之后、边界（最后一段）之前",
+            prompt.indexOf("# 边界") > prompt.indexOf("# 你的备忘录") &&
+                prompt.indexOf("# 别像 AI") < prompt.indexOf("# 你的备忘录")
         )
     }
 

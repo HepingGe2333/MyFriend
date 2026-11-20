@@ -82,10 +82,13 @@ public enum PersonaLanguagePrompt {
 
     /// 「# 别像 AI」段。
     ///
-    /// - 中文：逐字复用 `AntiAIPrompt.text()`（与 Android `SECTION_ANTI_AI` 同一份文案，
-    ///   含 iOS 独有的「不要旁白」那条）；
-    /// - 非中文：`PromptTemplates.render(.antiAi, .en)`（英文七条，与中文一一对应）
+    /// - 中文：逐字复用 `AntiAIPrompt.text()`（core 四条 + iOS 独有的「不要旁白」，
+    ///   与 Android 的 `ANTI_AI_RULES` 同一份文案前缀）；
+    /// - 非中文：`PromptTemplates.render(.antiAi, .en)`（英文 core 四条，与中文一一对应）
     ///   + 一条英文的「不要旁白」（对应 `AntiAIPrompt.noNarrationRule`）。
+    ///
+    /// 0.15 profile 把反 AI 从七条收到 core 五条（`spec/context-profile/README.md`）：
+    /// 中英文都必须**同步**是这五条，否则中文人格不列点、英文人格列点，两端观感又分叉了。
     public static func antiAISection(language: PromptLanguage) -> String {
         guard language != .zh else { return AntiAIPrompt.text() }
         return PromptTemplates.render(section: .antiAi, language: language)

@@ -121,7 +121,10 @@ final class MultimodalPayloadTests: XCTestCase {
             message(id: "m2", role: .assistant, content: "在", at: 2)
         ]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: nil)
-        XCTAssertEqual(history.map(\.content), ["在吗", "在"])
+        // 0.15：每条带 `[HH:mm] 说话人：` 前缀（这里只关心「媒体字段没变」）。
+        XCTAssertEqual(history.count, 2)
+        XCTAssertTrue(history[0].content.hasSuffix("用户：在吗"), history[0].content)
+        XCTAssertTrue(history[1].content.hasSuffix("他：在"), history[1].content)
         XCTAssertTrue(history.allSatisfy { $0.audio.isEmpty && $0.images.isEmpty })
     }
 

@@ -74,22 +74,25 @@ class ChatPromptBuilderTest {
         seedRichPersona()
         val prompt = builder.systemPrompt(persona(), mood(), activity = null, now = now)
 
-        // 0.15 上下文/记忆 v2 的固定顺序：完整设定 + 工具 → （记忆为空则省略）→
-        // 当前状态（此刻 + 心情）；「别像 AI」挂在边界之后。
+        // 0.15 上下文 profile（state_first）的固定顺序：
+        // 状态（此刻 + 心情 + 引导）→ 人设 → 工具 → 反 AI → （记忆为空则省略）→ 边界。
         val titles = listOf(
+            "# 你此刻的状态",
+            "# 你的心情",
+            "# 引导",
             "# 你是谁",
             "# 你所在的世界",
             "# 你怎么说话",
             "# 你们的关系",
             "# 你能做什么",
-            "# 边界",
             "# 别像 AI",
-            "# 你此刻的状态",
-            "# 你的心情"
+            "# 边界"
         )
         val positions = titles.map { prompt.indexOf(it) }
         assertTrue("这些段都必须出现：$positions", positions.all { it >= 0 })
-        assertEquals("段顺序不可乱", positions.sorted(), positions)
+        assertEquals("段顺序不可乱（state_first）", positions.sorted(), positions)
+        assertTrue("状态段排在最前", prompt.startsWith("# 你此刻的状态"))
+        assertTrue("边界是最后一段", prompt.trimEnd().endsWith("同一个口头禅开头。"))
     }
 
     @Test
@@ -117,6 +120,67 @@ class ChatPromptBuilderTest {
         assertTrue(prompt.contains("你没有特别的世界设定"))
         assertFalse("没有心情就不写心情段", prompt.contains("# 你的心情"))
         assertTrue(prompt.contains("# 边界"))
+        assertTrue("没有心情也必须有引导（g17 兜底）", prompt.contains("# 引导"))
+    }
+
+    @Test
+    fun `a negative or low arousal mood picks g12 and puts it between mood and voice`() {
+        val prompt = builder.systemPrompt(persona(), mood(), activity = null, now = now)
+
+        assertTrue(prompt.contains("# 引导"))
+        assertTrue("valence -1 / arousal 2 → g12", prompt.contains("这一轮：有点防备，不轻易示弱"))
+        assertTrue(prompt.contains("- 用短句挡一下"))
+        assertTrue(prompt.contains("- 被问急了才多露半句"))
+        assertTrue(prompt.contains("- 不要掏心掏肺。"))
+        assertFalse("不该同时出现 g17", prompt.contains("只聊此刻"))
+
+        val stateIndex = prompt.indexOf("# 你此刻的状态")
+        val moodIndex = prompt.indexOf("# 你的心情")
+        val guidanceIndex = prompt.indexOf("# 引导")
+        val voiceIndex = prompt.indexOf("# 你怎么说话")
+        assertTrue("引导在心情之后、话风之前", stateIndex < moodIndex && moodIndex < guidanceIndex)
+        assertTrue("引导是人设之前的最后一段", guidanceIndex < voiceIndex)
+    }
+
+    @Test
+    fun `a positive mood picks g17 and missing mood falls back to g17`() {
+        val positive = mood().copy(label = "挺开心", valence = 1, arousal = 4)
+        val fromPositive = builder.systemPrompt(persona(), positive, activity = null, now = now)
+        assertTrue("正向高唤醒 → g17", fromPositive.contains("这一轮：只聊此刻，不翻旧账"))
+        assertTrue(fromPositive.contains("- 回应现在这句话"))
+        assertTrue(fromPositive.contains("- 不延伸过去"))
+        assertFalse("不该同时出现 g12", fromPositive.contains("有点防备"))
+
+        val fromMissing = builder.systemPrompt(persona(), mood = null, activity = null, now = now)
+        assertTrue("心情缺失 → g17", fromMissing.contains("这一轮：只聊此刻，不翻旧账"))
+
+        // 边界：valence 0 但 arousal 1（低唤醒）算偏负档；arousal 2（平静）不算。
+        val lowArousal = builder.systemPrompt(persona(), mood().copy(valence = 0, arousal = 1), activity = null, now = now)
+        assertTrue("arousal < 2 → g12", lowArousal.contains("这一轮：有点防备，不轻易示弱"))
+        val calm = builder.systemPrompt(persona(), mood().copy(valence = 0, arousal = 2), activity = null, now = now)
+        assertTrue("arousal = 2（平静）→ g17", calm.contains("这一轮：只聊此刻，不翻旧账"))
+
+        // 边界：valence 0 且 arousal 3 → 正常档。
+        val neutral = builder.systemPrompt(persona(), mood().copy(valence = 0, arousal = 3), activity = null, now = now)
+        assertTrue("neutral → g17", neutral.contains("这一轮：只聊此刻，不翻旧账"))
+    }
+
+    @Test
+    fun `the anti ai section is exactly the five core rules`() {
+        val prompt = builder.systemPrompt(persona(), mood(), activity = null, now = now)
+        val section = prompt.substringAfter("# 别像 AI").substringBefore("\n\n# ")
+        val rules = section.lines().map { it.trim() }.filter { it.startsWith("- ") }
+
+        assertEquals("core 只留五条：$rules", 5, rules.size)
+        assertTrue("不反问", section.contains("不要每句话都反问"))
+        assertTrue("不总结", section.contains("不要总结对方说的话"))
+        assertTrue("不列点", section.contains("不要列点"))
+        assertTrue("不总安慰", section.contains("不要每次都认同或安慰"))
+        assertTrue("不旁白", section.contains("旁白") && section.contains("沉默了一会儿"))
+        assertFalse("节奏那条删了", section.contains("句子可以短、可以不完整"))
+        assertFalse("建议那条删了", section.contains("不主动给建议"))
+        assertFalse("stay_silent 那条删了（工具说明里有）", section.contains("不想说话时调用"))
+        assertTrue("工具段仍然带着 stay_silent 的用法", prompt.contains("stay_silent"))
     }
 
     @Test
@@ -151,46 +215,57 @@ class ChatPromptBuilderTest {
     fun `chat messages map history roles and keep the system prompt first`() {
         seedRichPersona()
         val messages = mutableListOf(
-            com.yap.agentd.store.Message(
-                id = "m1", sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
-                role = MessageRole.USER, content = "在干嘛", createdAt = 1, readAt = null,
-                attachments = emptyList(), source = "CHAT", clientMessageId = null,
-                replyTo = null, promptTokens = null, completionTokens = null
-            ),
-            com.yap.agentd.store.Message(
-                id = "m2", sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
-                role = MessageRole.ASSISTANT, content = "在改图。", createdAt = 2, readAt = null,
-                attachments = emptyList(), source = "CHAT", clientMessageId = null,
-                replyTo = null, promptTokens = null, completionTokens = null
-            ),
-            com.yap.agentd.store.Message(
-                id = "m3", sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
-                role = MessageRole.USER, content = "几点完", createdAt = 3, readAt = null,
-                attachments = listOf("/v1/media/img-1"), source = "CHAT", clientMessageId = null,
-                replyTo = null, promptTokens = null, completionTokens = null
+            message("m1", MessageRole.USER, "在干嘛", createdAt = now - 5 * 60_000L),
+            message("m2", MessageRole.ASSISTANT, "在改图。", createdAt = now - 4 * 60_000L),
+            message(
+                "m3", MessageRole.USER, "几点完", createdAt = now - 60_000L,
+                attachments = listOf("/v1/media/img-1")
             )
         )
         val built = builder.chatMessages(persona(), mood(), null, messages, now)
 
         assertEquals(listOf("system", "user", "assistant", "user"), built.map { it.role })
-        assertEquals("在干嘛", built[1].content)
+        assertEquals("profile 的 timestamped 历史：`[HH:mm] 用户：…`", "[19:35] 用户：在干嘛", built[1].content)
+        assertEquals("[19:36] 他：在改图。", built[2].content)
+        assertTrue("用户消息用「用户：」前缀", built[3].content.startsWith("[19:39] 用户：几点完"))
         assertTrue("附件要告诉模型「你看不到内容」", built[3].content.contains("看不到内容"))
+    }
+
+    @Test
+    fun `history timestamps switch to month-day across days and skip tool messages`() {
+        val messages = listOf(
+            // 前一天晚上 21:05（本地）→ 跨天，要带月日
+            message("d1", MessageRole.USER, "昨天那句", createdAt = Instant.parse("2026-11-14T13:05:00Z").toEpochMilli()),
+            message("d2", MessageRole.ASSISTANT, "嗯。", createdAt = Instant.parse("2026-11-14T13:06:00Z").toEpochMilli()),
+            // 今天 → 只写时:分
+            message("d3", MessageRole.USER, "今天继续", createdAt = Instant.parse("2026-11-15T11:35:00Z").toEpochMilli()),
+            // 工具/系统消息不加时间戳
+            message("d4", MessageRole.SYSTEM, "导入的一条系统消息", createdAt = Instant.parse("2026-11-15T11:36:00Z").toEpochMilli()),
+            // 时间缺失（导入老数据）也不加
+            message("d5", MessageRole.USER, "没有时间的那条", createdAt = 0L)
+        )
+        val built = builder.chatMessages(persona(), null, null, messages, now, historyLimit = 10)
+
+        assertEquals("[11-14 21:05] 用户：昨天那句", built[1].content)
+        assertEquals("[11-14 21:06] 他：嗯。", built[2].content)
+        assertEquals("[19:35] 用户：今天继续", built[3].content)
+        assertEquals("系统消息原样透传", "导入的一条系统消息", built[4].content)
+        assertEquals("没有 createdAt 的历史不加假时间", "没有时间的那条", built[5].content)
     }
 
     @Test
     fun `the remaining budget decides history length instead of a fixed forty cap`() {
         val messages = (1..60).map { index ->
-            com.yap.agentd.store.Message(
-                id = "m$index", sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
+            message(
+                id = "m$index",
                 role = if (index % 2 == 0) MessageRole.ASSISTANT else MessageRole.USER,
-                content = "第 $index 句", createdAt = index.toLong(), readAt = null,
-                attachments = emptyList(), source = "CHAT", clientMessageId = null,
-                replyTo = null, promptTokens = null, completionTokens = null
+                content = "第 $index 句",
+                createdAt = now - (60 - index) * 60_000L
             )
         }
         val built = builder.chatMessages(persona(), null, null, messages, now)
         assertEquals("60 条短消息全都在预算内（不再被 40 条截断）", 61, built.size)
-        assertEquals("顺序仍然是升序", "第 60 句", built.last().content)
+        assertEquals("顺序仍然是升序", "第 60 句", built.last().content.substringAfter("："))
     }
 
     @Test
@@ -211,5 +286,19 @@ class ChatPromptBuilderTest {
         arousal = 2,
         dominance = 3,
         reason = "连着加班"
+    )
+
+    /** 一条存储层消息（默认 CHAT 来源、无附件；测试只关心角色/内容/时间）。 */
+    private fun message(
+        id: String,
+        role: String,
+        content: String,
+        createdAt: Long,
+        attachments: List<String> = emptyList()
+    ) = com.yap.agentd.store.Message(
+        id = id, sessionId = FileStore.SEED_SESSION_ID, blockIndex = 0,
+        role = role, content = content, createdAt = createdAt, readAt = null,
+        attachments = attachments, source = "CHAT", clientMessageId = null,
+        replyTo = null, promptTokens = null, completionTokens = null
     )
 }

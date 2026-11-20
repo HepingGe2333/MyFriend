@@ -7,10 +7,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 上下文装配 v2（`docs/design/context-memory-v2.md`）的纯规则测试。
+ * 上下文装配 v2 + 0.15 上下文 profile（`docs/design/context-memory-v2.md`、
+ * `spec/context-profile/README.md`）的纯规则测试。
  *
  * 钉住四件事：
- * 1. **顺序固定**：完整设定+工具 → 长期 → 短期 → 当前状态 → 主题 → 历史（心理活动在主题之后）；
+ * 1. **顺序固定（state_first）**：当前状态（含 `# 引导`）→ 人设 → 工具 → 反 AI → 备忘录
+ *    → 主题 → 心理活动 → 边界；
  * 2. **预算是硬约束**：system + 历史总字符 ≤ `practicalPlan().historyCharBudget`（默认 28,000）；
  * 3. **超限先压主题再减历史**：主题从旧到新丢，历史永远从最新往前取；
  * 4. **段标题来自共享契约**：`# 你的备忘录` / `## 长期记忆` / `## 短期记忆` / `## 对话主题`。
@@ -33,6 +35,11 @@ class ContextAssemblerTest {
         "# 你能做什么",
         "- `remember`：记下来",
         "",
+        "# 别像 AI",
+        "- 不要每句话都反问。"
+    ).joinToString("\n")
+
+    private fun boundaries(): String = listOf(
         "# 边界",
         "- 不编造"
     ).joinToString("\n")
@@ -54,33 +61,57 @@ class ContextAssemblerTest {
                 longTerm = "你们认识三年了。",
                 shortTerm = "下周要去哈尔滨。",
                 currentState = "# 你此刻的状态\n现在是 19:40。\n\n# 你的心情\n心情：有点累（强度 3/5）。",
+                guidance = "# 引导\n这一轮：有点防备，不轻易示弱\n- 用短句挡一下\n- 被问急了才多露半句\n- 不要掏心掏肺。",
                 topics = listOf(MemoryContract.TopicSegment("2026-11-18 晚", "加班与方案改版")),
                 mentalActivity = "刚才那句话有点戳到我",
+                boundaries = boundaries(),
                 history = history(4)
             )
         )
         assertEquals(
             listOf(
+                "# 你此刻的状态",
+                "# 你的心情",
+                "# 引导",
                 "# 你是谁",
                 "# 你所在的世界",
                 "# 你怎么说话",
                 "# 你们的关系",
                 "# 你能做什么",
-                "# 边界",
+                "# 别像 AI",
                 "# 你的备忘录",
                 "## 长期记忆",
                 "## 短期记忆",
-                "# 你此刻的状态",
-                "# 你的心情",
                 "## 对话主题",
-                "# 你刚才心里想"
+                "# 你刚才心里想",
+                "# 边界"
             ),
             result.sectionOrder()
         )
+        assertTrue("状态段在最前", result.system.startsWith("# 你此刻的状态"))
+        assertTrue("边界是最后一段", result.system.trimEnd().endsWith("- 不编造"))
         // 历史按时间升序（最后一条是这一轮的用户消息）。
         assertEquals(4, result.history.size)
         assertTrue(result.history.last().content.startsWith("第 4 条消息"))
         assertTrue(result.history.first().content.startsWith("第 1 条消息"))
+    }
+
+    @Test
+    fun `the guidance section survives even when the state block is clipped`() {
+        val plan = ExperienceContract.planForBudget(4_000)
+        val assembler = ContextAssembler(plan)
+        val guidance = "# 引导\n这一轮：只聊此刻，不翻旧账\n- 回应现在这句话\n- 不延伸过去\n- 不要反问。"
+        val result = assembler.assemble(
+            ContextAssembler.Input(
+                personaAndTools = persona(),
+                currentState = "# 你此刻的状态\n" + "状态".repeat(2000),
+                guidance = guidance,
+                boundaries = boundaries(),
+                history = history(4)
+            )
+        )
+        assertTrue("引导不能被状态段的裁剪吃掉", result.system.contains(guidance))
+        assertTrue("引导紧跟心情/状态之后、人设之前", result.sectionOrder().take(2) == listOf("# 你此刻的状态", "# 引导"))
     }
 
     @Test

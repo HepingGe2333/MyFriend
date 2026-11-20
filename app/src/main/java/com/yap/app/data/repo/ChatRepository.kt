@@ -39,6 +39,7 @@ import com.yap.app.domain.ChatExport
 import com.yap.app.domain.ExportFile
 import com.yap.app.domain.GenerationEvent
 import com.yap.app.domain.HistoryCompression
+import com.yap.app.domain.HistoryTimestamps
 import com.yap.app.domain.LlmLane
 import com.yap.app.domain.ImageContextBudget
 import com.yap.app.domain.InterruptedReply
@@ -1963,6 +1964,9 @@ class ChatRepository @Inject constructor(
         // （`spec/persona-translation/README.md` §1；缓存的写入口在
         // [PersonaTranslationCoordinator]，这里只读）。
         val persona = PersonaPromptLocalization.effective(rawPersona)
+        // 这一轮的时间：状态段的时钟、心情/念头的读取、以及历史时间戳（[HistoryTimestamps]）
+        // 全都用同一个 now，避免「现在 19:40」和「[19:41] 用户：」这种一毫秒的错位。
+        val now = System.currentTimeMillis()
         // 近处这一段按时间正序排好；已经被摘要盖住的那部分不再逐字塞进来
         // ——它已经在 system 里那一段「更早之前你记得的」里了，同一个意思说两遍只会让他混乱。
         val summarizedUpTo = session.historySummarizedUpTo?.takeIf { it > 0L }
@@ -2069,11 +2073,21 @@ class ChatRepository @Inject constructor(
                 }
             }
             // 「视频：N 帧，时长 X 秒」写进正文，模型才知道自己看的是抽样画面。
-            val content = if (isRound && roundCaption != null) {
+            val body = if (isRound && roundCaption != null) {
                 "$baseContent\n$roundCaption"
             } else {
                 baseContent
             }
+            // 0.15（`spec/context-profile/README.md` history=timestamped）：
+            // 每条聊天原文前加 `[HH:mm] 用户：` / `[HH:mm] 他：`，跨天补 `MM-dd`。
+            // 只给用户/人格说过的话加——工具结果与系统消息由各自的协议行负责，不在这里糊时间。
+            val content = HistoryTimestamps.decorate(
+                content = body,
+                createdAt = message.createdAt,
+                now = now,
+                zone = ZoneId.systemDefault(),
+                outgoing = outgoing
+            )
             WireMessage(
                 role = if (outgoing) "user" else "assistant",
                 content = content,
@@ -2091,9 +2105,6 @@ class ChatRepository @Inject constructor(
         val presenceLine = presenceLine(persona.id)
         // 更早之前他记得的：只有真的压过（有摘要、也有压到哪一条的时间点）才注入。
         val memoryOfEarlier = HistoryCompression.memoryBlock(session.historySummary, session.historySummarizedUpTo)
-        // 0.12 人设引导：系统提示词按规范 §1 的五段顺序拼（身份 → 世界 → 此刻状态 → 话风 → 关系），
-        // 记忆 / 念头 / 工具说明放在边界之前；边界与语言指令由 PromptBuilder 统一收尾。
-        val now = System.currentTimeMillis()
         // 0.15：刚想过的私密念头 + 三段会话缓存（长期 / 短期 / 主题总结）。
         val mentalBlock = runCatching { mentalActivityRepository.promptBlock(persona.id, now) }.getOrDefault("")
         val memo = runCatching { sessionMemoryRepository.snapshot(session.id) }
@@ -2143,20 +2154,27 @@ class ChatRepository @Inject constructor(
                 webEnabled = config.webToolsEnabled,
                 language = personaLanguage
             ),
-            languageSection = "\n\n" + PromptBuilder.languageSectionFor(persona.languageTag),
+            languageSection = PromptBuilder.languageSectionFor(persona.languageTag),
             language = personaLanguage
         )
-        // 0.15 上下文装配 v2（docs/design/context-memory-v2.md）：
-        // 完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 主题总结 → 附加块 → 剩余预算给原文。
+        // 0.15 上下文装配 v2 + state_first profile（docs/design/context-memory-v2.md、
+        // spec/context-profile/README.md）：
+        // 当前状态 → 引导 → 人设 → 工具 → 反 AI → 备忘录 → 附加块 → 语言 → 边界 → 剩余预算给原文。
+        // 每段都由 PromptBuilder 的可组合段函数生成，这里只负责把它们按顺序交给 ContextAssembly。
         val assembly = ContextAssembly.assemble(
             ContextAssembly.Inputs(
-                personaAndTools = PromptBuilder.personaAndTools(promptInputs),
+                state = PromptBuilder.currentStateBody(promptInputs),
+                guidance = PromptBuilder.guidanceBlock(promptInputs),
+                persona = PromptBuilder.personaBlock(promptInputs),
+                tools = PromptBuilder.toolsBlock(promptInputs),
+                antiAi = PromptBuilder.antiAiSection(personaLanguage),
                 memo = ContextAssembly.Memo(
                     longTerm = memo.longSummary,
                     shortTerm = memo.shortSummary,
                     topics = memo.topics
                 ),
-                currentState = PromptBuilder.currentStateBody(promptInputs),
+                language = PromptBuilder.languageBlock(promptInputs),
+                boundaries = PromptBuilder.boundaries(personaLanguage),
                 extras = listOfNotNull(
                     // 长期记忆库（他不是摘要，检索出来的是「他记得的具体事」）。
                     memoryRepository.formatForPrompt(memories).takeIf { memories.isNotEmpty() },

@@ -1,5 +1,6 @@
 package com.yap.app.data.repo
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -22,10 +23,35 @@ class MemoryV2WiringContractTest {
     fun `聊天上下文用 ContextAssembly 装配 而不是旧 trimHistory`() {
         val chat = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
         assertTrue(chat.contains("ContextAssembly.assemble("))
-        assertTrue(chat.contains("PromptBuilder.personaAndTools("))
         assertTrue(chat.contains("PromptBuilder.currentStateBody("))
         assertTrue("三段备忘要从 sessionMemoryRepository 快照来", chat.contains("sessionMemoryRepository.snapshot("))
         assertFalse("旧的逐条裁剪不能再留着做第二套预算", chat.contains("private fun trimHistory("))
+    }
+
+    @Test
+    fun `state_first profile 的每一段都由 PromptBuilder 的可组合段接线`() {
+        val chat = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
+        // 顺序：状态 → 引导 → 人设 → 工具 → 反AI →（记忆）→ 语言 → 边界。
+        val state = chat.indexOf("state = PromptBuilder.currentStateBody(")
+        val guidance = chat.indexOf("guidance = PromptBuilder.guidanceBlock(")
+        val persona = chat.indexOf("persona = PromptBuilder.personaBlock(")
+        val tools = chat.indexOf("tools = PromptBuilder.toolsBlock(")
+        val antiAi = chat.indexOf("antiAi = PromptBuilder.antiAiSection(")
+        val memo = chat.indexOf("memo = ContextAssembly.Memo(")
+        val language = chat.indexOf("language = PromptBuilder.languageBlock(")
+        val boundaries = chat.indexOf("boundaries = PromptBuilder.boundaries(")
+        listOf(state, guidance, persona, tools, antiAi, memo, language, boundaries).forEach {
+            assertTrue("装配参数缺了一段：$it", it >= 0)
+        }
+        val order = listOf(state, guidance, persona, tools, antiAi, memo, language, boundaries)
+        assertEquals("装配参数的书写顺序也要与注入顺序一致：$order", order.sorted(), order)
+    }
+
+    @Test
+    fun `历史消息带时间戳 且只给用户与人格的原文加`() {
+        val chat = source("src/main/java/com/yap/app/data/repo/ChatRepository.kt")
+        assertTrue("历史要过 HistoryTimestamps.decorate", chat.contains("HistoryTimestamps.decorate("))
+        assertTrue("用户/人格之外的 role 不进历史", chat.contains("it.role == MessageRole.USER || it.role == MessageRole.ASSISTANT"))
     }
 
     @Test

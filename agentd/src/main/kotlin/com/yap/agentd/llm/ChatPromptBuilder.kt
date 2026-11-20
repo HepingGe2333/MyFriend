@@ -24,24 +24,36 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * 服务端系统提示词拼装 v2（0.15 上下文/记忆 v2，`docs/design/context-memory-v2.md`）。
+ * 服务端系统提示词拼装 v2（0.15 上下文/记忆 v2 + Bench v2 搜索出的上下文 profile，
+ * `docs/design/context-memory-v2.md`、`spec/context-profile/README.md`）。
  *
  * **规范中文只来自 `:agentcore`**：段标题、行模板、边界四条、常用语与世界的渲染规则都在
  * 共享脚手架/契约里（Android / iOS / 服务端调的是同一份）。这里只做两件事：
  *
  * 1. **喂数据**：人格（名字/年龄/职业/世界/话风/关系/四组值）、此刻（时间/占用时间/睡眠）、
  *    多维心情、会话记忆（长期/短期/主题）、最近一次心理活动——全部来自服务端自己的存储；
- * 2. **按 v2 的固定顺序装配**：
- *    `完整设定+工具（身份 → 世界 → 话风 → 关系 → 你能做什么 → 边界）→ 长期记忆 → 短期记忆
- *     → 当前状态（此刻 + 心情）→ 对话主题 → 他刚才心里想 → 剩余预算的最近历史`。
+ * 2. **按 profile 的固定顺序装配**（**state_first**）：
+ *    `当前状态（此刻 → 睡眠 → 心情 → # 引导）
+ *     → 人设（身份 → 世界 → 话风 → 关系）→ 工具（你能做什么）→ 反 AI（5 条 core）
+ *     → 记忆/备忘录（长期 → 短期 → 对话主题）→ 心理活动 → 边界`。
+ *
+ * 与 0.14 的三处差别（都是 profile 的选择，内容来源一个没变）：
+ * - **状态在最前面**：状态/心情先读到，模型先站到「此刻的自己」上再读人设；
+ * - **`# 引导` 新段**：心情偏负/低唤醒用 g12（有点防备），否则 g17（只聊此刻），见 [PromptGuidance]；
+ * - **反 AI 收敛成 5 条**：不反问/不总结/不列点/不总安慰/不旁白，见 [AntiAiCore]；
+ * - 历史带时间戳（`[HH:mm] 用户：…` / `[HH:mm] 他：…`，跨天 `[MM-dd HH:mm]`），
+ *   工具/系统消息不加，见 [HistoryTimestamps]。
+ *
+ * profile 里「语言」在记忆之后、边界之前：服务端从来没有 `## 语言` 段（多语言标题由两端各自
+ * 注入），本 profile 只调顺序、不新增内容来源，所以这里没有它。
  *
  * 预算与裁剪**全部交给 [ContextAssembler]**（`ExperienceContract.practicalPlan()`）：
  * 本文件不再自己算「历史条数/字符」，也不再把记忆拼成 0.14 的「最近你记得：…」——
  * 段标题统一成 `# 你的备忘录` / `## 长期记忆` / `## 短期记忆` / `## 对话主题`。
  *
  * 为什么「此刻/心情」要从脚手架里拆出来再插回去：脚手架按「他是谁」的顺序排六段，
- * 而 v2 要求**当前状态排在记忆之后**（先看长期/短期记忆，再看此刻，最后看主题）。
- * 硬改脚手架会同时影响 Android/iOS 的提示词，所以这里只做段重组，文案一字不改。
+ * 而 profile 要求**当前状态排在人设之前**、**边界排到最后**。硬改脚手架会同时影响
+ * Android/iOS 的提示词，所以这里只做段重组，文案一字不改。
  */
 class ChatPromptBuilder(
     private val zone: ZoneId = ZoneId.systemDefault(),
@@ -100,12 +112,7 @@ class ChatPromptBuilder(
             now = now,
             sessionMemory = sessionMemory,
             mentalActivity = mentalActivity,
-            history = selected.map { message ->
-                ContextAssembler.HistoryMessage(
-                    role = message.role,
-                    content = withAttachmentNote(message)
-                )
-            }
+            history = selected.map { message -> historyMessage(message, now) }
         )
         return listOf(LlmMessage.system(context.system)) +
             context.history.map { LlmMessage.fromStoreRole(it.role, it.content) }
@@ -133,12 +140,7 @@ class ChatPromptBuilder(
             now = now,
             sessionMemory = sessionMemory,
             mentalActivity = mentalActivity,
-            history = history.takeLast(historyLimit.coerceAtLeast(0)).map { message ->
-                ContextAssembler.HistoryMessage(
-                    role = message.role,
-                    content = withAttachmentNote(message)
-                )
-            }
+            history = history.takeLast(historyLimit.coerceAtLeast(0)).map { message -> historyMessage(message, now) }
         )
         val system = context.system + "\n\n" + PROACTIVE_INSTRUCTION
         val messages = mutableListOf<LlmMessage>(LlmMessage.system(system))
@@ -149,7 +151,7 @@ class ChatPromptBuilder(
 
     // ------------------------------------------------------------------ 装配
 
-    /** 装配一次上下文（前五段 + 历史选择都在 [ContextAssembler] 里）。 */
+    /** 装配一次上下文（段顺序/预算/历史选择都在 [ContextAssembler] 里）。 */
     private fun build(
         persona: Persona,
         mood: Mood?,
@@ -193,8 +195,10 @@ class ChatPromptBuilder(
         val sections = PersonaPromptScaffold.build(input)
             .split("\n\n")
             .toMutableList()
-        // 「此刻的状态」要挪到记忆之后（v2 固定顺序）：先原样摘出来，最后再放回去。
+        // state_first：把「此刻的状态」摘出来放到最前；「边界」也摘出来，留到最后一段。
+        // 脚手架本身的文案/顺序一个字不改（两端还在用），这里只做段重组。
         val stateSection = removeSection(sections, PersonaPromptScaffold.Section.STATE)
+        val boundariesSection = removeSection(sections, PersonaPromptScaffold.Section.BOUNDARIES)
 
         // 身份段之后补人格数据（性格/喜欢/习惯/设定/描述/作息），它们是数据不是规范文案。
         val identityExtras = buildList {
@@ -221,17 +225,14 @@ class ChatPromptBuilder(
             appendToSection(sections, PersonaPromptScaffold.Section.VOICE, voiceExtras.joinToString("\n"))
         }
 
-        // 「你能做什么」：规范 §1.3 固定在关系之后、边界之前；内容来自工具注册表。
+        // 「你能做什么」：紧跟关系段（profile 顺序：人设 → 工具）。
         insertAfterSection(sections, PersonaPromptScaffold.Section.RELATIONSHIP, capabilities)
 
-        // 「别像 AI」：七条共享规则 + 0.15 的服务端补充（评测里反复出现的旁白/动作描写）。
-        insertAfterSection(
-            sections,
-            PersonaPromptScaffold.Section.BOUNDARIES,
-            PromptContract.AntiAi.section() + "\n" + SERVER_ANTI_NARRATION_RULES
-        )
+        // 「别像 AI」：profile 的 core 五条（不反问/不总结/不列点/不总安慰/不旁白），
+        // 放在工具之后、记忆之前——先知道「能做什么」，再知道「别像谁」。
+        insertAfterSection(sections, PromptContract.Section.CAPABILITIES, AntiAiCore.section())
 
-        // ---- 第 4 段：当前状态（此刻 + 睡眠 + 心情直觉标签与三维）
+        // ---- 第 1 段：当前状态（此刻 + 睡眠 + 心情直觉标签与三维）
         val currentState = buildString {
             if (stateSection.isNotBlank()) append(stateSection)
             // 睡眠/安静时段：`set_quiet_hours` 写下的作息；跨夜判断由 QuietHours 负责，这里只展示。
@@ -245,6 +246,7 @@ class ChatPromptBuilder(
             }
         }
 
+        // ---- 第 2 段：人设（身份/世界/话风/关系）+ 工具 + 反 AI；边界单独留到最后
         val personaAndTools = sections
             .map { it.trim() }
             .filter { it.isNotEmpty() }
@@ -256,8 +258,11 @@ class ChatPromptBuilder(
                 longTerm = sessionMemory?.longSummary,
                 shortTerm = sessionMemory?.shortSummary,
                 currentState = currentState,
+                // 引导紧跟在心情之后（心情缺失也有 g17）；职责是「这一轮怎么站」，不是心情判定。
+                guidance = PromptGuidance.section(mood?.takeIf { it.label.isNotBlank() }),
                 topics = sessionMemory?.topics.orEmpty(),
                 mentalActivity = mentalActivity?.thought?.takeIf { it.isNotBlank() },
+                boundaries = boundariesSection,
                 history = history
             )
         )
@@ -309,6 +314,24 @@ class ChatPromptBuilder(
         }
         return if (content.isEmpty()) note else "$content\n$note"
     }
+
+    /**
+     * 一条历史消息 → [ContextAssembler.HistoryMessage]：附件说明 + 时间戳/说话人前缀。
+     *
+     * profile 的 `history=timestamped`：`[19:40] 用户：在干嘛` / `[19:41] 他：在改图。`；
+     * 跨天用 `[11-14 21:05]`；工具结果与 `SYSTEM`（导入数据）不加前缀（[HistoryTimestamps]）。
+     */
+    private fun historyMessage(message: Message, now: Long): ContextAssembler.HistoryMessage =
+        ContextAssembler.HistoryMessage(
+            role = message.role,
+            content = HistoryTimestamps.render(
+                role = message.role,
+                content = withAttachmentNote(message),
+                createdAt = message.createdAt,
+                now = now,
+                zone = zone
+            )
+        )
 
     private fun indexOfSection(sections: List<String>, title: String): Int {
         val index = sections.indexOfFirst { it.startsWith(title) }
@@ -377,17 +400,14 @@ class ChatPromptBuilder(
         const val MEMO_SECTION = PromptContract.Section.MEMO
 
         /**
-         * 0.15 评测补充的反旁白规则（挂在共享的「# 别像 AI」段末尾）。
+         * 反 AI 段（core 五条）与引导段（g12/g17）的标题。
          *
-         * 真实问题：模型会把动作/神态写成旁白（「他沉默了一会儿」「顿了顿」），
-         * 一条消息里出现两三次就像小说旁白，不像聊天。这里只加**服务端**的三条：
-         * 共享七条（`PromptContract.AntiAi.RULES`）不改，避免影响两端已经对齐的文案。
+         * 文案在 [AntiAiCore] / [PromptGuidance]（`:agentcore` 暂无「引导」这条常量）。
          */
-        val SERVER_ANTI_NARRATION_RULES: String = listOf(
-            "- 不要写旁白、动作或神态（「沉默了一会儿」「顿了顿」「笑了笑」「叹了口气」「（他沉默）」）——只写说出口的话。",
-            "- 不要用括号补充动作或心理；想表达情绪就靠措辞、标点和长短句。",
-            "- 一条消息里只写你要说的话，不要「他说：」这种第三人称转述。"
-        ).joinToString("\n")
+        const val ANTI_AI_SECTION = AntiAiCore.TITLE
+
+        /** 引导段标题（0.15 profile：心情之后、话风之前）。 */
+        const val GUIDANCE_SECTION = PromptGuidance.TITLE
 
         private val HH_MM = DateTimeFormatter.ofPattern("HH:mm", Locale.ROOT)
         private val YYYY_MM_DD = DateTimeFormatter.ofPattern("yyyy-MM-dd", Locale.ROOT)

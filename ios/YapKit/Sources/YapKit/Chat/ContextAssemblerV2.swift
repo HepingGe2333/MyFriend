@@ -1,24 +1,35 @@
 import Foundation
 
 // ---------------------------------------------------------------------------
-// 0.15 上下文装配 v2（`docs/design/context-memory-v2.md`）。
+// 0.15 上下文装配 v2（`docs/design/context-memory-v2.md` + `spec/context-profile/README.md`）。
 //
-// 固定顺序（顺序就是语义，不能乱）：
+// 固定顺序（顺序就是语义，不能乱；与 `PromptBuilder.PromptSection.stateFirstOrder` 同源）：
 //
 // ```
-// 1. 完整设定 + 工具        ← 调用方渲染好的整段（人设 / 世界 / 话风 / 关系 / 边界 / 工具清单）
-// 2. 长期记忆（≤500 字）    ← # 你的备忘录 / ## 长期记忆
-// 3. 短期记忆（≤200 字）    ← ## 短期记忆
-// 4. 当前状态              ← 时间 / 在做什么 / 心情（直觉标签 + 三维）
-// 5. 对话主题总结          ← ## 对话主题（每段 ≤120 字、最多 12 段、带时间段）
-// 6. 最近聊天原文          ← 剩余预算全部给历史
+// 1. 当前状态              ← 时间 / 在做什么 / 心情（直觉标签 + 三维）
+// 2. 引导                  ← 这一轮的语气分寸（g12 / g17）
+// 3. 人设                  ← 身份 / 世界 / 话风 / 关系
+// 4. 工具                  ← 主动唤醒能力 + 工具清单
+// 5. 反 AI                 ← core 五条
+// 6. 记忆 / 备忘录          ← 长期（≤500）/ 短期（≤200）/ 对话主题
+// 7. 语言                  ← 「用对方的语言回答」
+// 8. 边界                  ← 硬约束，永远收尾
+// ---
+// 9. 最近聊天原文           ← 剩余预算全部给历史（带 [HH:mm] 时间戳）
 // ```
+//
+// 0.15 有两处变化，都是 Bench v2 搜出来的（`eval/reports/context-search-combine-*.md`）：
+// - **state_first**：状态与引导挪到人设前面（5 样本 85.3 vs 84.3，硬失败率 23.3% vs 26.7%）；
+// - **分段可组合**：原来「人设+工具+反AI+边界」是一整块塞在第 1 段，现在按
+//   `PromptSection` 一段一段排；记忆与主题插在反 AI 之后、语言之前。
 //
 // 预算（硬约束，`ExperienceContract.practicalPlan`）：
 // - 段上限来自共享契约：长期 500 / 短期 200 / 主题 120×12；
 // - 实际字符超限时**先压主题总结**（逐段截到 120 → 从最旧的一段开始丢），
 //   再减少历史条数（从最旧的一条开始丢）；
 // - 最新一条历史一定保留：一句话都不发的一轮请求没有意义（预算为 0 时才不留）。
+// - 状态段会被段预算截断（时间行在最前，截尾不会丢「现在几点」）；**引导段不截**：
+//   它是这一轮的行为指令，截一半比没有更糟。
 //
 // 为什么单独一个装配器：`PromptBuilder` 负责「每一段怎么写」，这里负责
 // 「按什么顺序拼、每段还能占多少字」。两者分开之后，预算与裁剪能被穷举测试，
@@ -26,17 +37,27 @@ import Foundation
 // ---------------------------------------------------------------------------
 
 public struct ContextV2Input {
-    /// 第 1 段：完整设定 + 工具清单（已经渲染好的多段文本）。
-    public var personaAndTools: String
-    /// 第 2 段：长期记忆摘要（≤500 字；空串 = 还没有）。
-    public var longTermMemory: String
-    /// 第 3 段：短期记忆摘要（≤200 字；空串 = 还没有）。
-    public var shortTermMemory: String
-    /// 第 4 段：当前状态（时间 / 活动 / 睡眠 / 心情）。
+    /// 第 1 段：当前状态（时间 / 活动 / 在场 / 心情 / 心情分寸 / 心里那句话）。
     public var currentState: String
-    /// 第 5 段：对话主题总结（按时间从旧到新）。
+    /// 第 2 段：引导（`# 引导`，g12 / g17；空串 = 这一轮不加）。
+    public var guidance: String
+    /// 第 3 段：人设（身份 / 世界 / 话风 / 关系）。
+    public var persona: String
+    /// 第 4 段：主动唤醒能力 + 工具清单。
+    public var tools: String
+    /// 第 5 段：反 AI 味（core 五条）。
+    public var antiAI: String
+    /// 第 6 段：长期记忆摘要（≤500 字；空串 = 还没有）。
+    public var longTermMemory: String
+    /// 第 6 段：短期记忆摘要（≤200 字；空串 = 还没有）。
+    public var shortTermMemory: String
+    /// 第 6 段：对话主题总结（按时间从旧到新）。
     public var topics: [MemoryContract.TopicSegment]
-    /// 第 6 段：最近聊天原文（从旧到新）。
+    /// 第 7 段：「## 语言」小节的完整文本（空串 = 不加）。
+    public var languageDirective: String
+    /// 第 8 段：边界（`# 边界`）。
+    public var boundary: String
+    /// 第 9 段：最近聊天原文（从旧到新，已带时间戳）。
     public var history: [WireMessage]
     /// 模型上下文窗口（tokens）。
     public var contextWindowTokens: Int
@@ -49,10 +70,49 @@ public struct ContextV2Input {
     public var language: PromptLanguage
 
     public init(
-        personaAndTools: String,
+        currentState: String = "",
+        guidance: String = "",
+        persona: String = "",
+        tools: String = "",
+        antiAI: String = "",
         longTermMemory: String = "",
         shortTermMemory: String = "",
-        currentState: String = "",
+        topics: [MemoryContract.TopicSegment] = [],
+        languageDirective: String = "",
+        boundary: String = "",
+        history: [WireMessage] = [],
+        contextWindowTokens: Int = ExperienceContract.DEFAULT_CONTEXT_WINDOW_TOKENS,
+        maxOutputTokens: Int = ExperienceContract.DEFAULT_MAX_OUTPUT_TOKENS,
+        practicalChars: Int = ExperienceContract.PRACTICAL_HISTORY_CHARS,
+        language: PromptLanguage = .zh
+    ) {
+        self.currentState = currentState
+        self.guidance = guidance
+        self.persona = persona
+        self.tools = tools
+        self.antiAI = antiAI
+        self.longTermMemory = longTermMemory
+        self.shortTermMemory = shortTermMemory
+        self.topics = topics
+        self.languageDirective = languageDirective
+        self.boundary = boundary
+        self.history = history
+        self.contextWindowTokens = contextWindowTokens
+        self.maxOutputTokens = maxOutputTokens
+        self.practicalChars = practicalChars
+        self.language = language
+    }
+
+    /// 从 `PromptBuilder.sections(_:)` 的结果直接装：调用方只负责「把字段填进
+    /// `SystemPromptInput`」，段怎么排由 `PromptSection.stateFirstOrder` 决定，
+    /// 记忆与主题由本装配器按预算插进去。
+    ///
+    /// 注意：字典里的 `.memory` 键会被**忽略**——那一段必须由本装配器按
+    /// 长期/短期/主题的预算重新拼（否则「完整 prompt」那条路上的摘要会绕过预算检查）。
+    public init(
+        sections: [PromptSection: String],
+        longTermMemory: String = "",
+        shortTermMemory: String = "",
         topics: [MemoryContract.TopicSegment] = [],
         history: [WireMessage] = [],
         contextWindowTokens: Int = ExperienceContract.DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -60,16 +120,23 @@ public struct ContextV2Input {
         practicalChars: Int = ExperienceContract.PRACTICAL_HISTORY_CHARS,
         language: PromptLanguage = .zh
     ) {
-        self.personaAndTools = personaAndTools
-        self.longTermMemory = longTermMemory
-        self.shortTermMemory = shortTermMemory
-        self.currentState = currentState
-        self.topics = topics
-        self.history = history
-        self.contextWindowTokens = contextWindowTokens
-        self.maxOutputTokens = maxOutputTokens
-        self.practicalChars = practicalChars
-        self.language = language
+        self.init(
+            currentState: sections[.state] ?? "",
+            guidance: sections[.guidance] ?? "",
+            persona: sections[.persona] ?? "",
+            tools: sections[.tools] ?? "",
+            antiAI: sections[.antiAI] ?? "",
+            longTermMemory: longTermMemory,
+            shortTermMemory: shortTermMemory,
+            topics: topics,
+            languageDirective: sections[.language] ?? "",
+            boundary: sections[.boundary] ?? "",
+            history: history,
+            contextWindowTokens: contextWindowTokens,
+            maxOutputTokens: maxOutputTokens,
+            practicalChars: practicalChars,
+            language: language
+        )
     }
 }
 
@@ -145,7 +212,7 @@ public enum ContextAssemblerV2 {
         }
     }
 
-    /// 把六段按固定顺序拼成 system，并按预算裁历史。
+    /// 把固定段按 `PromptSection.stateFirstOrder` 拼成 system，并按预算裁历史。
     public static func assemble(_ input: ContextV2Input) -> ContextV2Output {
         let contract = ExperienceContract.shared
         let plan = contract.practicalPlan(
@@ -154,16 +221,38 @@ public enum ContextAssemblerV2 {
             practicalChars: input.practicalChars
         )
 
-        // 1. 完整设定 + 工具：**不可裁**（人设不完整比历史少几条更糟）。
-        var blocks: [String] = []
         var segmentChars: [ExperienceContract.ContextSegment: Int] = [:]
-        let personaText = input.personaAndTools.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !personaText.isEmpty { blocks.append(personaText) }
-        segmentChars[.fullPersonaAndTools] = personaText.count
+        var sections: [PromptSection: String] = [:]
+
+        // 1. 当前状态：受段预算约束，超了就截（时间行永远在最前，截尾不会丢「现在几点」）。
+        let stateLimit = max(plan.charLimit(for: .currentState), 0)
+        let stateText = clipState(input.currentState, limit: stateLimit)
+        sections[.state] = stateText
+
+        // 2. 引导：**不裁**（这一轮的行为指令，截一半比没有更糟）。
+        let guidanceText = input.guidance.trimmingCharacters(in: .whitespacesAndNewlines)
+        sections[.guidance] = guidanceText
+        segmentChars[.currentState] = stateText.count + guidanceText.count
+
+        // 3/4/5/7/8. 人设、工具、反 AI、语言、边界：**不可裁**
+        //（人设不完整比历史少几条更糟；规则段截断会变成半句话）。
+        let personaText = input.persona.trimmingCharacters(in: .whitespacesAndNewlines)
+        let toolsText = input.tools.trimmingCharacters(in: .whitespacesAndNewlines)
+        let antiAIText = input.antiAI.trimmingCharacters(in: .whitespacesAndNewlines)
+        let languageText = input.languageDirective.trimmingCharacters(in: .whitespacesAndNewlines)
+        let boundaryText = input.boundary.trimmingCharacters(in: .whitespacesAndNewlines)
+        sections[.persona] = personaText
+        sections[.tools] = toolsText
+        sections[.antiAI] = antiAIText
+        sections[.language] = languageText
+        sections[.boundary] = boundaryText
+        segmentChars[.fullPersonaAndTools] = personaText.count + toolsText.count
+            + antiAIText.count + languageText.count + boundaryText.count
 
         let titles = Titles.of(input.language)
 
-        // 2. 长期记忆：硬顶 500，同时受预算段上限约束。
+        // 6. 记忆 / 备忘录：长期（硬顶 500）→ 短期（硬顶 200）→ 对话主题。
+        var memoBlocks: [String] = []
         let longLimit = min(plan.charLimit(for: .longTermMemory),
                             MemoryContract.Summary.LONG_TERM_MAX_CHARS)
         let longText = MemoryContract.Injection.clipParagraph(
@@ -171,10 +260,9 @@ public enum ContextAssemblerV2 {
         )
         segmentChars[.longTermMemory] = longText.count
         if !longText.isEmpty {
-            blocks.append(titles.memo + "\n" + titles.longTerm + "\n- " + longText)
+            memoBlocks.append(titles.memo + "\n" + titles.longTerm + "\n- " + longText)
         }
 
-        // 3. 短期记忆：硬顶 200。
         let shortLimit = min(plan.charLimit(for: .shortTermMemory),
                              MemoryContract.Summary.SHORT_TERM_MAX_CHARS)
         let shortText = MemoryContract.Injection.clipParagraph(
@@ -184,19 +272,13 @@ public enum ContextAssemblerV2 {
         if !shortText.isEmpty {
             // 长期记忆已经写过 `# 你的备忘录` 时不再重复总标题。
             if longText.isEmpty {
-                blocks.append(titles.memo + "\n" + titles.shortTerm + "\n- " + shortText)
+                memoBlocks.append(titles.memo + "\n" + titles.shortTerm + "\n- " + shortText)
             } else {
-                blocks.append(titles.shortTerm + "\n- " + shortText)
+                memoBlocks.append(titles.shortTerm + "\n- " + shortText)
             }
         }
 
-        // 4. 当前状态：受段预算约束，超了就截（时间行永远在最前，截尾不会丢「现在几点」）。
-        let stateLimit = max(plan.charLimit(for: .currentState), 0)
-        let stateText = clipState(input.currentState, limit: stateLimit)
-        segmentChars[.currentState] = stateText.count
-        if !stateText.isEmpty { blocks.append(stateText) }
-
-        // 5. 对话主题总结：**先压这里**（逐段截 120 → 从最旧的丢）。
+        // 对话主题总结：**先压这里**（逐段截 120 → 从最旧的丢）。
         let topicBudget = max(plan.charLimit(for: .topicSummary), 0)
         let topics = compressTopics(
             input.topics,
@@ -210,9 +292,17 @@ public enum ContextAssemblerV2 {
                 .compactMap { MemoryContract.Injection.topicLine($0) }
                 .joined(separator: "\n")
             topicLinesChars = block.count
-            blocks.append(block)
+            memoBlocks.append(block)
         }
         segmentChars[.topicSummary] = topicLinesChars
+        sections[.memory] = memoBlocks.joined(separator: "\n\n")
+
+        // 按**唯一的顺序定义**拼（顺序不在这里写第二遍）。
+        let blocks = PromptSection.stateFirstOrder
+            .compactMap { section -> String? in
+                let text = sections[section]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                return text.isEmpty ? nil : text
+            }
 
         // 固定段合计 vs 预算：只有「固定段自己就超了」才需要动历史。
         let fixedChars = blocks.reduce(0) { $0 + $1.count } + sectionSeparator.count * max(blocks.count - 1, 0)
@@ -222,14 +312,15 @@ public enum ContextAssemblerV2 {
         let overflow = max(fixedChars - plannedFixed, 0)
         let historyBudget = max(plan.charLimit(for: .remainingHistory) - overflow, 0)
 
-        // 6. 历史：从新到旧保留；至少留最新一条（预算 > 0 时）。
+        // 9. 历史：从新到旧保留；至少留最新一条（预算 > 0 时）。
+        let system = blocks.joined(separator: sectionSeparator)
         let trimmed = trimHistory(input.history, budget: historyBudget)
         if historyBudget > 0, trimmed.isEmpty, let last = input.history.last {
             // 最新一句就算超预算也发（否则这轮请求没有可回应的内容）。
             let fallback = [last]
             segmentChars[.remainingHistory] = last.content.count
             return ContextV2Output(
-                system: join(blocks),
+                system: system,
                 history: fallback,
                 plan: plan,
                 segmentChars: segmentChars,
@@ -242,7 +333,7 @@ public enum ContextAssemblerV2 {
         }
         segmentChars[.remainingHistory] = trimmed.reduce(0) { $0 + $1.content.count }
         return ContextV2Output(
-            system: join(blocks),
+            system: system,
             history: trimmed,
             plan: plan,
             segmentChars: segmentChars,
@@ -294,7 +385,7 @@ public enum ContextAssemblerV2 {
             return CompressedTopics(segments: [], dropped: usable.count, truncated: false)
         }
         var truncated = false
-        var clipped: [MemoryContract.TopicSegment] = usable.map { topic in
+        let clipped: [MemoryContract.TopicSegment] = usable.map { topic in
             let summary = MemoryContract.Injection.flatten(topic.summary)
             if summary.count > segmentChars {
                 truncated = true
@@ -310,18 +401,18 @@ public enum ContextAssemblerV2 {
         }
         // 最多 12 段：超出时同样从最旧的丢。
         var dropped = max(clipped.count - maxSegments, 0)
-        if dropped > 0 { clipped = Array(clipped.suffix(maxSegments)) }
+        var kept = dropped > 0 ? Array(clipped.suffix(maxSegments)) : clipped
         // 段预算：`## 对话主题` 标题 + 每行的「- 时间段：」都要算进去，留一点余量。
         let headerChars = MemoryContract.Injection.TOPIC_TITLE.count + 1
-        while !clipped.isEmpty {
-            let block = headerChars + clipped
+        while !kept.isEmpty {
+            let block = headerChars + kept
                 .compactMap { MemoryContract.Injection.topicLine($0) }
                 .reduce(0) { $0 + $1.count + 1 }
             if block <= budget { break }
-            clipped.removeFirst()
+            kept.removeFirst()
             dropped += 1
         }
-        return CompressedTopics(segments: clipped, dropped: dropped, truncated: truncated)
+        return CompressedTopics(segments: kept, dropped: dropped, truncated: truncated)
     }
 
     // MARK: - 小工具
@@ -333,12 +424,5 @@ public enum ContextAssemblerV2 {
         guard limit > 0 else { return "" }
         if text.count <= limit { return text }
         return String(text.prefix(max(limit - 1, 0))).trimmingCharacters(in: .whitespaces) + "…"
-    }
-
-    private static func join(_ blocks: [String]) -> String {
-        blocks
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .joined(separator: sectionSeparator)
     }
 }

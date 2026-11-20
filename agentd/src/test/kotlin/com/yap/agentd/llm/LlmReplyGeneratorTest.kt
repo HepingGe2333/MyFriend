@@ -158,6 +158,11 @@ class LlmReplyGeneratorTest {
             listOf("user", "assistant", "user"),
             messages.drop(1).map { it.str("role") }
         )
-        assertEquals("今天继续吗", messages.last().str("content"))
+        // 历史带时间戳前缀（profile 的 timestamped）：`[HH:mm] 用户：今天继续吗`；
+        // 这个测试的存储时钟是 1970，跟真实的「现在」不同天，所以前缀是 `[MM-dd HH:mm]`。
+        assertTrue(
+            "历史最后一条是这一轮用户消息（带时间戳前缀）",
+            messages.last().str("content").matches(Regex("""\[[^\]]+] 用户：今天继续吗"""))
+        )
     }
 }

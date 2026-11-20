@@ -22,33 +22,39 @@ final class PromptBuilderTests: XCTestCase {
         )
     }
 
-    // MARK: - 段落顺序
+    // MARK: - 段落顺序（0.15：state_first）
 
-    func testSystemPromptSegmentOrderMatchesAndroid() {
+    /// 0.15 的段顺序：状态（含心情/引导）→ 人设（身份/世界/话风/关系）→ 工具
+    /// → 反 AI → 记忆/备忘录 → 语言 → 边界。
+    ///
+    /// 这条顺序是 Bench v2 搜出来的（`spec/context-profile/README.md`），由
+    /// `PromptSection.stateFirstOrder` 一处定义；这里把它钉死，防止有人「顺手」挪回去。
+    func testSystemPromptSegmentOrderIsStateFirst() {
         var input = fullInput()
         input.personaName = "林深"
         input.worldBlock = "\n\n# 你所在的世界\n当代，沿海城市。"
         input.speechStyleBlock = "\n\n# 你怎么说话\n- 句子短。"
         input.relationshipBlock = "\n\n# 你们的关系\n认识很多年。"
+        input.guidanceBlock = PromptGuidance.section(.presentOnly)
         let text = PromptBuilder.systemPrompt(input)
         let firstPersonRuleText = PromptBuilder.firstPersonRule(name: "林深")
-        // 规范 §1 的顺序：身份 → 世界 → 此刻状态 → 心情 → 话风 → 关系 → 记忆 → 摘要 →
-        // `---` → 主动能力 → 工具 → 边界 → 心情引导。
         let markers = [
-            "【人格】",
-            "# 你所在的世界",
-            "## 你此刻的状态",
+            "## 你此刻的状态",          // 1. 状态
             "## 你现在的心情",
             "今天话可以少一点",
+            "## 心里那句话",
+            "# 引导",                   // 2. 引导（心情之后、话风之前）
+            "【人格】",                  // 3. 人设
+            "# 你所在的世界",
             "# 你怎么说话",
             "# 你们的关系",
-            "## 你记得的事",
-            "【更早之前你记得的】",
-            "\n\n---\n",
-            "## 你可以主动联系对方",
+            "\n\n---\n",                // 设定 → 规则的分界线
+            "## 你可以主动联系对方",     // 4. 工具
             "## 你可以调用这些工具",
-            "# 边界",
-            "## 心里那句话"
+            "# 别像 AI",                // 5. 反 AI
+            "## 你记得的事",             // 6. 记忆
+            "【更早之前你记得的】",
+            "# 边界"                    // 7. 边界（收尾）
         ]
         var lastIndex = text.startIndex
         for marker in markers {
@@ -58,11 +64,38 @@ final class PromptBuilderTests: XCTestCase {
             }
             lastIndex = range.upperBound
         }
-        // 身份在最前（`# 你是谁` + 第一人称规则，正文紧跟）、心情引导在最后：
-        // 这两条是最容易被人「顺手」挪动的。
-        XCTAssertTrue(text.hasPrefix("# 你是谁"))
+        // 状态在最前（时间/心情是第一眼的坐标）、身份紧随其后且带第一人称规则。
+        XCTAssertTrue(text.hasPrefix("## 你此刻的状态"), "状态段必须打头：\(text.prefix(40))")
         XCTAssertTrue(text.contains(firstPersonRuleText))
-        XCTAssertTrue(text.hasSuffix("……"))
+        XCTAssertTrue(text.hasSuffix(PromptBuilder.defaultBoundary), "边界收尾")
+    }
+
+    /// 段顺序的**唯一真源**：`PromptSection.stateFirstOrder` 必须就是文档里那一行。
+    ///
+    /// 改顺序只能改这里（`systemPrompt` 与 `ContextAssemblerV2` 都读它），
+    /// 所以这条测试红了就说明「文档、完整 prompt、v2 装配」三者之一漂了。
+    func testPromptSectionOrderIsTheDocumentedOne() {
+        XCTAssertEqual(PromptSection.stateFirstOrder, [
+            .state, .guidance, .persona, .tools, .antiAI, .memory, .language, .boundary
+        ])
+        XCTAssertEqual(PromptSection.allCases.count, 8, "新增段必须同时进 stateFirstOrder")
+        XCTAssertEqual(Set(PromptSection.stateFirstOrder).count, 8, "顺序表里不许有重复段")
+        // 两段最容易被人「顺手」挪走的边界条件：状态在最前、边界在最后。
+        XCTAssertEqual(PromptSection.stateFirstOrder.first, .state)
+        XCTAssertEqual(PromptSection.stateFirstOrder.last, .boundary)
+    }
+
+    /// 引导段的位置：**心情之后、话风之前**（`spec/context-profile/README.md` §注入规则）。
+    func testGuidanceSitsBetweenMoodAndVoice() throws {
+        var input = fullInput()
+        input.speechStyleBlock = "\n\n# 你怎么说话\n- 句子短。"
+        input.guidanceBlock = PromptGuidance.section(.defensive)
+        let text = PromptBuilder.systemPrompt(input)
+        let mood = try XCTUnwrap(text.range(of: "## 你现在的心情"))
+        let guidance = try XCTUnwrap(text.range(of: "# 引导"))
+        let voice = try XCTUnwrap(text.range(of: "# 你怎么说话"))
+        XCTAssertLessThan(mood.lowerBound, guidance.lowerBound, "引导在心情之后")
+        XCTAssertLessThan(guidance.lowerBound, voice.lowerBound, "引导在话风之前")
     }
 
     func testSeparatorSitsBetweenStateAndCapabilities() throws {
@@ -116,7 +149,7 @@ final class PromptBuilderTests: XCTestCase {
 
     // MARK: - 「## 语言」小节（0.10.0）
 
-    /// 中文界面：指令是中文模板 + 语言名「中文」，压在 system 最后。
+    /// 中文界面：指令是中文模板 + 语言名「中文」，压在边界**之前**（0.15 顺序）。
     func testLanguageSectionChinese() {
         let directive = String(
             format: "## 语言\n对方现在用%1$@跟你说话。请用同一种语言回答，专有名词可以保留原文。",
@@ -125,7 +158,9 @@ final class PromptBuilderTests: XCTestCase {
         var input = fullInput()
         input.languageDirective = directive
         let text = PromptBuilder.systemPrompt(input)
-        XCTAssertTrue(text.hasSuffix("\n\n" + directive), "语言小节应完整压轴：\(String(text.suffix(140)))")
+        XCTAssertTrue(text.contains("\n\n" + directive + "\n\n" + PromptBuilder.defaultBoundary),
+                      "语言段应紧挨着边界之前：\(String(text.suffix(200)))")
+        XCTAssertTrue(text.hasSuffix(PromptBuilder.defaultBoundary), "边界永远收尾")
         XCTAssertTrue(text.contains("## 语言\n对方现在用中文跟你说话。"))
         XCTAssertEqual(PromptBuilder.languageSection(directive), "\n\n" + directive)
     }
@@ -140,10 +175,11 @@ final class PromptBuilderTests: XCTestCase {
         input.languageDirective = directive
         let text = PromptBuilder.systemPrompt(input)
         XCTAssertTrue(
-            text.hasSuffix("\n\n## Language\nThey are speaking to you in English right now." +
-                           " Answer in the same language; proper nouns can stay as they are."),
+            text.contains("\n\n## Language\nThey are speaking to you in English right now." +
+                          " Answer in the same language; proper nouns can stay as they are."),
             "英文界面下语言小节格式变了：\(String(text.suffix(160)))"
         )
+        XCTAssertTrue(text.hasSuffix(PromptBuilder.defaultBoundary), "边界永远收尾")
         // 前面的人格 / 记忆段落不受影响（脚手架主体仍是原来那些中文段落）。
         XCTAssertTrue(text.contains("## 你记得的事"))
     }
@@ -180,7 +216,10 @@ final class PromptBuilderTests: XCTestCase {
         ]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: nil)
         XCTAssertEqual(history.map(\.role), ["user", "assistant", "user"])
-        XCTAssertEqual(history.map(\.content), ["你好", "在", "睡了吗"])
+        // 0.15：每条前面带 `[HH:mm] 用户：` / `[HH:mm] 他：`（细节见 `HistoryTimestampTests`）。
+        XCTAssertTrue(history[0].content.hasSuffix("用户：你好"), history[0].content)
+        XCTAssertTrue(history[1].content.hasSuffix("他：在"), history[1].content)
+        XCTAssertTrue(history[2].content.hasSuffix("用户：睡了吗"), history[2].content)
     }
 
     /// 已经被摘要盖住的那一段不再逐字塞进来（否则同一个意思会说两遍）。
@@ -191,7 +230,8 @@ final class PromptBuilderTests: XCTestCase {
             message(.user, "新消息", at: 200)
         ]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: 101)
-        XCTAssertEqual(history.map(\.content), ["新消息"])
+        XCTAssertEqual(history.count, 1)
+        XCTAssertTrue(history[0].content.hasSuffix("用户：新消息"), history[0].content)
         // 0 / nil 表示没压过，全留。
         XCTAssertEqual(PromptBuilder.history(messages: messages, summarizedUpTo: 0).count, 3)
     }
@@ -200,7 +240,8 @@ final class PromptBuilderTests: XCTestCase {
     func testAttachmentOnlyMessageGetsPlaceholder() {
         let messages = [message(.user, "", at: 1, attachments: #"[{"uri":"file:///x.jpg"}]"#)]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: nil)
-        XCTAssertEqual(history.map(\.content), ["（发来一张图片）"])
+        XCTAssertEqual(history.count, 1)
+        XCTAssertTrue(history[0].content.hasSuffix("用户：（发来一张图片）"), history[0].content)
     }
 
     /// 字数预算：从最新往前留，最新那条即使超预算也要留着。
@@ -387,14 +428,14 @@ final class PromptBuilderTests: XCTestCase {
         )
         let text = PromptBuilder.systemPrompt(input)
 
-        // 六节齐全，且顺序固定（身份 → 世界 → 状态 → 话风 → 关系 → 边界）。
-        for marker in ["# 你是谁", "# 你所在的世界", "# 你此刻的状态", "# 你怎么说话",
-                       "# 你们的关系", "# 边界"] {
+        // 六节齐全，且顺序固定（状态 → 身份 → 世界 → 话风 → 关系 → 边界，0.15 state_first）。
+        let order = ["# 你此刻的状态", "# 你是谁", "# 你所在的世界", "# 你怎么说话",
+                     "# 你们的关系", "# 边界"]
+        for marker in order {
             XCTAssertTrue(text.contains(marker), "缺这一节：\(marker)")
         }
         var cursor = text.startIndex
-        for marker in ["# 你是谁", "# 你所在的世界", "# 你此刻的状态", "# 你怎么说话",
-                       "# 你们的关系", "# 边界"] {
+        for marker in order {
             guard let range = text.range(of: marker, range: cursor..<text.endIndex) else {
                 XCTFail("顺序错位：\(marker)")
                 return
@@ -461,7 +502,8 @@ final class PromptBuilderTests: XCTestCase {
 
         XCTAssertEqual(asked, ["file:///a.jpg"], "只有带图的消息才去解图")
         XCTAssertEqual(history.first?.images, ["data:image/jpeg;base64,QUJD"])
-        XCTAssertEqual(history.first?.content, "（发来一张图片）", "正文为空时补一句话，别让模型只看到一张图")
+        XCTAssertTrue(history.first?.content.hasSuffix("（发来一张图片）") == true,
+                      "正文为空时补一句话，别让模型只看到一张图")
         XCTAssertTrue(history[1].images.isEmpty, "助手的消息不带图")
     }
 
@@ -470,7 +512,7 @@ final class PromptBuilderTests: XCTestCase {
         let messages = [message(.user, "", at: 1, attachments: #"[{"uri":"file:///gone.jpg"}]"#)]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: nil) { _ in nil }
         XCTAssertEqual(history.count, 1)
-        XCTAssertEqual(history[0].content, "（发来一张图片）")
+        XCTAssertTrue(history[0].content.hasSuffix("（发来一张图片）"), history[0].content)
         XCTAssertTrue(history[0].images.isEmpty)
     }
 
@@ -486,7 +528,9 @@ final class PromptBuilderTests: XCTestCase {
         XCTAssertEqual(withImages.count, AttachmentsCodec.maxImageMessagesInContext)
         XCTAssertEqual(withImages.last?.images.first, "data:image/jpeg;base64,file:///4.jpg")
         // 没带图的那两条仍然保留「发来一张图片」，模型知道发生过这件事。
-        XCTAssertEqual(history.filter { $0.images.isEmpty }.map(\.content), ["（发来一张图片）", "（发来一张图片）"])
+        let placeholders = history.filter { $0.images.isEmpty }.map(\.content)
+        XCTAssertEqual(placeholders.count, 2)
+        XCTAssertTrue(placeholders.allSatisfy { $0.hasSuffix("用户：（发来一张图片）") }, "\(placeholders)")
     }
 
     /// 一条消息最多带四张图（`MAX_IMAGES_PER_MESSAGE`），多余的不发。
@@ -504,7 +548,8 @@ final class PromptBuilderTests: XCTestCase {
     func testHistoryWithoutResolverKeepsOldBehavior() {
         let messages = [message(.user, "", at: 1, attachments: #"[{"uri":"file:///a.jpg"}]"#)]
         let history = PromptBuilder.history(messages: messages, summarizedUpTo: nil)
-        XCTAssertEqual(history.map(\.content), ["（发来一张图片）"])
+        XCTAssertEqual(history.count, 1)
+        XCTAssertTrue(history[0].content.hasSuffix("（发来一张图片）"), history[0].content)
         XCTAssertTrue(history.allSatisfy { $0.images.isEmpty })
     }
 }

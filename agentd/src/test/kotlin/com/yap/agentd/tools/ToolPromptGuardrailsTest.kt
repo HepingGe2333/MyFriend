@@ -23,7 +23,7 @@ import java.time.ZoneId
  *
  * 1. 模型会说「我记住了」却不调 `remember` → 能力段必须点名「必须调用 `remember`」；
  * 2. 模型想不起旧事会编 → 能力段必须指引 `memorize` / `recall`；
- * 3. 模型爱写旁白/动作（「沉默了一会儿」）→ 共享「# 别像 AI」之外再加三条服务端规则。
+ * 3. 模型爱写旁白/动作（「沉默了一会儿」）→ 共享「# 别像 AI」段收敛成 core 五条后，旁白仍占一条。
  *
  * 同时验证 `memorize` 工具真的能检索并输出 `<回忆：…>`（设计文档的注入形状）。
  */
@@ -65,8 +65,9 @@ class ToolPromptGuardrailsTest {
             now = now
         )
         assertTrue(prompt.contains(PromptContract.AntiAi.TITLE))
-        assertTrue("旁白要禁掉", prompt.contains("不要写旁白"))
+        assertTrue("旁白要禁掉（core 五条里的第五条）", prompt.contains("心理描写式的旁白"))
         assertTrue(prompt.contains("沉默了一会儿"))
+        assertTrue(prompt.contains("- 不要写旁白或动作")) // 工具段自己那一条：必须调用工具，不要假装
         assertTrue("不要在正文里写 XML 工具标签", prompt.contains("<tool_call>"))
         assertTrue("只写说出口的话", prompt.contains("只写说出口的话"))
     }

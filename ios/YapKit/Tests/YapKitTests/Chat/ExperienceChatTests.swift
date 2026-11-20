@@ -288,10 +288,11 @@ final class ExperienceChatTests: XCTestCase {
         XCTAssertTrue(system.contains("最近他在赶方案"))
         XCTAssertTrue(system.contains("你刚才心里想："))
         XCTAssertTrue(system.contains("他今天声音好轻"))
-        // 0.15 上下文 v2：短期记忆在「当前状态」（含「你刚才心里想」）之前。
+        // 0.15 上下文 v2（state_first）：备忘录（记忆段）在「当前状态」（含「你刚才心里想」）
+        // **之后**——状态是这一轮的坐标，记忆是背景。
         XCTAssertLessThan(
-            try XCTUnwrap(system.range(of: "你的备忘录")).lowerBound,
-            try XCTUnwrap(system.range(of: "你刚才心里想：")).lowerBound
+            try XCTUnwrap(system.range(of: "你刚才心里想：")).lowerBound,
+            try XCTUnwrap(system.range(of: "你的备忘录")).lowerBound
         )
     }
 }

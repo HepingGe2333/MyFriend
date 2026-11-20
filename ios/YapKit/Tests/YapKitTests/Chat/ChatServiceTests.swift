@@ -325,7 +325,8 @@ final class ChatServiceTests: XCTestCase {
         let requestMessages = try XCTUnwrap(body["messages"] as? [[String: Any]])
         XCTAssertEqual(requestMessages.count, 2)
         XCTAssertEqual(requestMessages[0]["role"] as? String, "system")
-        XCTAssertEqual(requestMessages[1]["content"] as? String, "在吗")
+        XCTAssertTrue((requestMessages[1]["content"] as? String ?? "").hasSuffix("用户：在吗"),
+                      "\(String(describing: requestMessages[1]["content"]))")
     }
 
     /// system 里该有的段落：人格、工具、主动唤醒、闲聊时也不该硬塞记忆块。
@@ -758,7 +759,8 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertEqual(requestMessages.count, 2)
         let parts = try XCTUnwrap(requestMessages[1]["content"] as? [[String: Any]])
         XCTAssertEqual(parts.first?["type"] as? String, "text")
-        XCTAssertEqual(parts.first?["text"] as? String, "（发来一张图片）")
+        XCTAssertTrue((parts.first?["text"] as? String ?? "").hasSuffix("用户：（发来一张图片）"),
+                      "\(String(describing: parts.first?["text"]))")
         XCTAssertEqual(parts.last?["type"] as? String, "image_url")
         let url = try XCTUnwrap((parts.last?["image_url"] as? [String: Any])?["url"] as? String)
         XCTAssertTrue(url.hasPrefix("data:image/jpeg;base64,"))
@@ -908,7 +910,8 @@ final class ChatServiceTests: XCTestCase {
         _ = try await collect(service.send(sessionId: sessionId, text: "还在吗"))
 
         let requestMessages = try XCTUnwrap(try requestBody()["messages"] as? [[String: Any]])
-        XCTAssertEqual(requestMessages[1]["content"] as? String, "（发来一张图片）")
+        XCTAssertTrue((requestMessages[1]["content"] as? String ?? "").hasSuffix("用户：（发来一张图片）"),
+                      "\(String(describing: requestMessages[1]["content"]))")
         XCTAssertEqual(requestMessages.count, 3)
     }
 
@@ -955,7 +958,8 @@ final class ChatServiceTests: XCTestCase {
         // 报文里也只带窗口内的消息：system + 窗口那 200 条（最后一条就是刚发的这句）。
         let requestMessages = try XCTUnwrap(try requestBody()["messages"] as? [[String: Any]])
         XCTAssertEqual(requestMessages.count, PromptBuilder.contextRecentLimit + 1)
-        XCTAssertEqual(requestMessages.last?["content"] as? String, "在吗")
+        XCTAssertTrue((requestMessages.last?["content"] as? String ?? "").hasSuffix("用户：在吗"),
+                      "\(String(describing: requestMessages.last?["content"]))")
     }
 
     // MARK: - 造图
@@ -982,7 +986,8 @@ final class ChatServiceTests: XCTestCase {
     }
     // MARK: - 0.15 上下文 v2（固定顺序 / 预算 / 人格语言 / 工具轮数）
 
-    /// 固定顺序：完整设定+工具 → 长期记忆 → 短期记忆 → 当前状态 → 对话主题 → 历史。
+    /// 固定顺序（0.15 state_first）：当前状态 → 引导 → 人设 → 工具 → 反AI
+    /// → 记忆/备忘录（长期 → 短期 → 主题）→ 语言 → 边界 → 历史。
     func testContextV2AssemblesFixedSegmentOrder() async throws {
         try seedReadySession()
         let memo = SessionMemoryRepository(stores: stores, now: { 1 })
@@ -1004,10 +1009,16 @@ final class ChatServiceTests: XCTestCase {
         let state = try XCTUnwrap(system.range(of: PersonaPromptScaffold.stateSection))
         let topic = try XCTUnwrap(system.range(of: MemoryContract.Injection.TOPIC_TITLE))
         let tools = try XCTUnwrap(system.range(of: ToolCatalog.capabilitySection))
-        XCTAssertLessThan(tools.lowerBound, long.lowerBound, "工具清单属于第 1 段，必须在长期记忆之前")
+        let guidance = try XCTUnwrap(system.range(of: PromptGuidance.sectionTitle))
+        let persona = try XCTUnwrap(system.range(of: "# 你是谁"))
+        let antiAI = try XCTUnwrap(system.range(of: AntiAIPrompt.section))
+        XCTAssertLessThan(state.lowerBound, guidance.lowerBound, "状态在引导之前")
+        XCTAssertLessThan(guidance.lowerBound, persona.lowerBound, "引导在人设（话风）之前")
+        XCTAssertLessThan(persona.lowerBound, tools.lowerBound, "人设在工具之前")
+        XCTAssertLessThan(tools.lowerBound, antiAI.lowerBound, "工具在反 AI 之前")
+        XCTAssertLessThan(antiAI.lowerBound, long.lowerBound, "反 AI 在记忆之前")
         XCTAssertLessThan(long.lowerBound, short.lowerBound, "长期在短期之前")
-        XCTAssertLessThan(short.lowerBound, state.lowerBound, "短期在当前状态之前")
-        XCTAssertLessThan(state.lowerBound, topic.lowerBound, "当前状态在主题总结之前")
+        XCTAssertLessThan(short.lowerBound, topic.lowerBound, "短期在主题总结之前")
         XCTAssertTrue(system.contains("他换了工作"))
         XCTAssertTrue(system.contains("最近在赶方案"))
         XCTAssertTrue(system.contains("- 2026-11-18 晚：加班与改方案"))

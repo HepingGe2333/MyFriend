@@ -7,19 +7,26 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * 聊天系统提示词的拼装（`spec/persona-guidance/README.md` §1 / §6.3）。
- *
- * 顺序是规范里写死的，越靠前越强：
+ * 聊天系统提示词的拼装（`spec/persona-guidance/README.md` §1 / §6.3），
+ * 0.15 按 `spec/context-profile/README.md` 的 **state_first** 顺序重排：
  *
  * ```
- * # 你是谁        —— 身份、第一人称、不是助手
- * # 你所在的世界   —— WorldPreset
- * # 你此刻的状态   —— 时间、当前活动、心情、安静时段
- * # 你怎么说话     —— SpeechStyle
- * # 你们的关系     —— 关系、称呼、你们之间
- * （可变部分：记忆 / 念头 / 工具说明 / 语言指令）
+ * # 你此刻的状态   —— 时间、当前活动、心情、安静时段           （当前状态）
+ * # 引导          —— g12 / g17：这一轮怎么拿捏语气              （当前状态的一部分）
+ * # 你是谁        —— 身份、第一人称、不是助手                    （人设）
+ * # 你所在的世界   —— WorldPreset                              （人设）
+ * # 你怎么说话     —— SpeechStyle                               （人设）
+ * # 你们的关系     —— 关系、称呼、你们之间                       （人设）
+ * # 你能做什么     —— 工具清单                                  （工具）
+ * # 别像 AI       —— 反 AI 五条                                 （反 AI）
+ * （可变部分：记忆 / 念头 —— 由 ContextAssembly 插在这里）
+ * ## 语言         —— 语言指令
  * # 边界          —— 不暴露 AI、不旁白、不总结人设、不替用户决定
  * ```
+ *
+ * 为什么状态在前：Bench v2 的坐标下降里 state_first 比「人设在前」高（85.3 vs 84.3，
+ * 硬失败率 23.3% vs 26.7%）。指引只说「调顺序」，所以每段**内容来源不变**，
+ * 只是从「人设 → 状态」改成「状态 → 人设」。
  *
  * 这一段里所有**固定中文**都来自 [Scaffold]：它是 `spec/persona-guidance/scaffold.json` 的逐字副本，
  * 由 `PersonaPromptScaffoldContractTest` 双向比对（spec 有的键必须有常量、常量不许比 spec 多一个字符）。
@@ -224,55 +231,139 @@ object PromptBuilder {
         DayOfWeek.SUNDAY to "周日"
     )
 
-    /** 完整系统提示词：五段人设 + 可变部分 + 语言指令 + 边界（0.14 顺序，保留给旧调用方）。 */
+    /**
+     * 完整系统提示词（state_first）：当前状态 + 引导 → 人设 → 工具 → 反 AI → 记忆/念头 → 语言 → 边界。
+     *
+     * 这是不开 [ContextAssembly] 的调用方（测试生成、主动消息预览）用的整份拼装；
+     * 聊天主路径由 [ContextAssembly] 按同一顺序拼，记忆段插在反 AI 之后。
+     */
     fun system(input: Inputs): String = buildString {
-        append(base(input))
-        append("\n\n").append(antiAiSection(input.language))
-        input.variableBlocks.map { it.trim() }.filter { it.isNotBlank() }.forEach {
-            append("\n\n").append(it)
-        }
-        if (input.languageSection.isNotBlank()) {
-            append(input.languageSection.trimEnd())
-        }
-        append("\n\n").append(boundaries(input.language))
+        append(stateBodyWithHeading(input))
+        appendSection(guidanceBlock(input))
+        appendSection(personaBlock(input))
+        appendSection(toolsBlock(input))
+        appendSection(antiAiSection(input.language))
+        input.variableBlocks.map { it.trim() }.filter { it.isNotBlank() }.forEach { appendSection(it) }
+        appendSection(input.languageSection.trim())
+        appendSection(boundaries(input.language))
     }.trim()
-
-    /** 只有五段人设（不含记忆/工具/边界）；给主动思考这类需要自己接尾巴的调用方用。 */
-    fun base(input: Inputs): String {
-        val sections = buildList {
-            add(identitySection(input))
-            add(worldSection(input.world))
-            add(statusSection(input))
-            add(speechSection(input))
-            add(relationshipSection(input))
-            // 五段之后是「我能用什么」：没有这一段，模型不知道自己有手，只会空口答应。
-            input.capabilitiesSection.trim().takeIf { it.isNotBlank() }?.let { add(it) }
-        }
-        return sections.joinToString("\n\n").trim()
-    }
 
     /**
-     * 0.15 上下文装配的第一段：**完整设定 + 工具**（身份/世界/话风/关系/工具/反 AI/语言/边界）。
+     * 状态 + 人设 + 工具（不含引导/反 AI/记忆/语言/边界）；
+     * 给主动思考这类需要自己接尾巴的调用方用（`PersonaCardRepository.systemText`）。
      *
-     * 与 [system] 的区别只有一处：「你此刻的状态」被拆出去，由 [ContextAssembly] 放在
-     * 长期/短期记忆之后（`docs/design/context-memory-v2.md` 的固定顺序）。
-     * 顺序、分隔符与 [system] 完全一致，所以两段拼起来与旧版 system 的差别只在状态段的位置。
+     * 顺序与 [system] 一致：状态在最前，人设与工具依次跟上；只是没有「这一轮」才需要的
+     * 引导与反 AI 段——主动消息没有对话搭档，不该背一份「不要总结对方」。
      */
-    fun personaAndTools(input: Inputs): String = buildString {
-        val sections = buildList {
-            add(identitySection(input))
-            add(worldSection(input.world))
-            add(speechSection(input))
-            add(relationshipSection(input))
-            input.capabilitiesSection.trim().takeIf { it.isNotBlank() }?.let { add(it) }
-        }
-        append(sections.joinToString("\n\n").trim())
-        append("\n\n").append(antiAiSection(input.language))
-        if (input.languageSection.isNotBlank()) {
-            append("\n\n").append(input.languageSection.trim().trimEnd())
-        }
-        append("\n\n").append(boundaries(input.language))
+    fun base(input: Inputs): String = buildString {
+        appendSection(stateBodyWithHeading(input))
+        appendSection(personaBlock(input))
+        appendSection(toolsBlock(input))
     }.trim()
+
+    // -------------------------------------------------- 0.15 可组合段（state_first）
+
+    /**
+     * 状态段（含 `# 你此刻的状态` 标题）。
+     *
+     * 与 [currentStateBody] 的区别只有标题：聊天主路径用 [currentStateBody]，
+     * 让 [ContextAssembly] 用共享契约的标题来拼；其它调用方（[system] / [base]）用这一份。
+     */
+    fun stateBodyWithHeading(input: Inputs): String =
+        Scaffold.SECTION_STATE + "\n" + statusBody(input)
+
+    /** 人设四段：身份 → 世界 → 话风 → 关系（内容来源不变，只负责拼装）。 */
+    fun personaBlock(input: Inputs): String = listOf(
+        identitySection(input),
+        worldSection(input.world),
+        speechSection(input),
+        relationshipSection(input)
+    ).joinToString("\n\n").trim()
+
+    /** 工具段（「# 你能做什么」）：没有能力段时返回空串，由调用方整段省略。 */
+    fun toolsBlock(input: Inputs): String = input.capabilitiesSection.trim()
+
+    /** 语言小节（`## 语言` / `## Language`）：去掉调用方可能带的前导换行。 */
+    fun languageBlock(input: Inputs): String = input.languageSection.trim()
+
+    /** 拼一段：空段整段跳过，段之间固定两个换行。 */
+    private fun StringBuilder.appendSection(text: String) {
+        val block = text.trim()
+        if (block.isEmpty()) return
+        if (isNotEmpty()) append("\n\n")
+        append(block)
+    }
+
+    // ------------------------------------------------------------------ 引导
+
+    /** `spec/context-profile/README.md` 的「# 引导」段标题（不在 scaffold.json 里，单独一段）。 */
+    const val SECTION_GUIDANCE = "# 引导"
+
+    /** 英文人格的引导段标题（与 [SECTION_GUIDANCE] 对应）。 */
+    private const val SECTION_GUIDANCE_EN = "# Guidance"
+
+    /**
+     * g12：心情偏负 / 低唤醒时「有点防备，不轻易示弱」。
+     *
+     * 逐字固定（`spec/context-profile/README.md`「注入规则」）：第一条是这一轮的总调子，
+     * 后三条是具体的说话动作。只在 [guidanceBlock] 里渲染，不在别处另写一份。
+     */
+    val GUIDANCE_G12: List<String> = listOf(
+        "这一轮：有点防备，不轻易示弱",
+        "用短句挡一下",
+        "被问急了才多露半句",
+        "不要掏心掏肺。"
+    )
+
+    /** g17：其余情况「只聊此刻，不翻旧账」。 */
+    val GUIDANCE_G17: List<String> = listOf(
+        "这一轮：只聊此刻，不翻旧账",
+        "回应现在这句话",
+        "不延伸过去",
+        "不要反问。"
+    )
+
+    /**
+     * 「# 引导」段：按这一轮的心情选 g12 或 g17（`spec/context-profile/README.md`）。
+     *
+     * 判定只有一条线，且不改心情数值/判定逻辑：
+     * - 愉快度 < 0 或唤醒度 ≤ 2（偏低/低能量）→ g12（有点防备）；
+     * - 其余（心情明显不错、能量也够）→ g17（只聊此刻）；
+     * - 没有多维心情（老调用方、人格卡预览、读库失败）→ g17：**判不了就不假装他防备**。
+     *
+     * 位置固定：心情之后（状态段末尾）、话风之前（[ContextAssembly] / [system] 里的状态块最后一段）。
+     */
+    fun guidanceBlock(input: Inputs): String {
+        // 空标签 = 还没有心情（与服务端 `PromptGuidance.select` 同一口径：判不出就当没有）。
+        val mood = input.moodDetail?.takeIf { !it.isEmpty() }
+        val guarded = mood != null && (mood.valence < 0 || mood.arousal < 2)
+        val lines = if (input.language == PromptLanguage.ZH) {
+            if (guarded) GUIDANCE_G12 else GUIDANCE_G17
+        } else {
+            if (guarded) GUIDANCE_G12_EN else GUIDANCE_G17_EN
+        }
+        val title = if (input.language == PromptLanguage.ZH) SECTION_GUIDANCE else SECTION_GUIDANCE_EN
+        return buildString {
+            append(title)
+            lines.forEachIndexed { index, line ->
+                if (index == 0) append("\n").append(line) else append("\n- ").append(line)
+            }
+        }
+    }
+
+    private val GUIDANCE_G12_EN: List<String> = listOf(
+        "This turn: a little guarded; don't show weakness easily",
+        "Deflect with short sentences",
+        "Only open up half a line if they push",
+        "Don't pour your heart out."
+    )
+
+    private val GUIDANCE_G17_EN: List<String> = listOf(
+        "This turn: only talk about right now; don't dredge up the past",
+        "Answer this sentence",
+        "Don't extend into the past",
+        "Don't ask questions back."
+    )
 
     /**
      * 0.15：语言小节按**人格自己的语言**生成（与界面语言无关）。
@@ -318,6 +409,7 @@ object PromptBuilder {
         Scaffold.SECTION_STATE to "# Your state right now",
         Scaffold.SECTION_VOICE to "# How you speak",
         Scaffold.SECTION_RELATIONSHIP to "# Your relationship",
+        SECTION_GUIDANCE to SECTION_GUIDANCE_EN,
         PromptContract.Section.MEMO to PromptTemplates.title(
             PromptTemplates.CoreSection.MEMO,
             PromptLanguage.EN
@@ -332,10 +424,10 @@ object PromptBuilder {
     )
 
     /**
-     * 0.15 上下文装配的第四段：**当前状态**正文（不含 `# 你此刻的状态` 标题）。
+     * 0.15 上下文装配的**第一段**（state_first）：**当前状态**正文（不含 `# 你此刻的状态` 标题）。
      *
      * 标题由调用方（[ContextAssembly]）用共享契约 [PromptContract.Section.STATE] 补，
-     * 保证「状态段写什么」与「标题在哪里」各只有一份。
+     * 保证「状态段写什么」与「标题在哪里」各只有一份；[guidanceBlock] 紧接其后单独成段。
      */
     fun currentStateBody(input: Inputs): String = statusBody(input)
 
@@ -343,38 +435,56 @@ object PromptBuilder {
     const val SECTION_ANTI_AI = "# 别像 AI"
 
     /**
-     * 反 AI 味约束（`spec/mood/README.md` §5）。
+     * 反 AI 味约束（`spec/mood/README.md` §5；0.15 收敛成 **core 五条**，
+     * `spec/context-profile/README.md`「反 AI 规则 core」）。
      *
      * 为什么单独一段而不是并进「你怎么说话」：话风是**用户/模型学来的数据**（句子短、少感叹号），
-     * 这一段是**产品级的行为禁忌**（不要每句反问、不要总结对方、不要列点、不要总安慰、可以沉默、
-     * 不重复口头禅），对所有人生效、也不该被用户填的话风覆盖。放在边界之前、人设之后，
-     * 顺序上仍然「越靠前越强」，同时不改变脚手架六段的既有位置。
+     * 这一段是**产品级的行为禁忌**（不反问、不总结、不列点、不总安慰、不旁白），
+     * 对所有人生效、也不该被用户填的话风覆盖。state_first 顺序里放在工具之后、记忆之前，
+     * 与「越靠前越强」一致；它不占用脚手架六段的位置（标题也不在 scaffold.json 里）。
+     *
+     * 0.15 删掉的两条（Bench v2 实测偏弱、还和话风段重复）：
+     * 「句子可以短、可以不完整」「不主动给建议、清单或心理分析」。留下五条逐字固定，
+     * 中英文人格各有一一对应的五条（[ANTI_AI_RULES] / [EN_ANTI_AI_RULES]）。
      */
-    fun antiAiSection(language: PromptLanguage = PromptLanguage.ZH): String =
-        // 0.15：人格语言不是中文时用共享的英文模板（与中文七条一一对应），
-        // 中文仍走下面的常量与 `PromptContract.AntiAi.RULES` 逐字对照测试。
-        if (language == PromptLanguage.ZH) {
-            buildString {
-                append(SECTION_ANTI_AI)
-                ANTI_AI_RULES.forEach { append("\n- ").append(it) }
-            }
+    fun antiAiSection(language: PromptLanguage = PromptLanguage.ZH): String {
+        val title = if (language == PromptLanguage.ZH) {
+            SECTION_ANTI_AI
         } else {
-            PromptTemplates.render(PromptTemplates.CoreSection.ANTI_AI, language) +
-                "\n- No narration, stage directions, or descriptions of your actions/face " +
-                "(\"stayed silent for a while\", \"sighed\"). Just talk."
+            PromptTemplates.title(PromptTemplates.CoreSection.ANTI_AI, language)
         }
+        val rules = if (language == PromptLanguage.ZH) ANTI_AI_RULES else EN_ANTI_AI_RULES
+        return buildString {
+            append(title)
+            rules.forEach { append("\n- ").append(it) }
+        }
+    }
 
-    private val ANTI_AI_RULES = listOf(
+    /**
+     * 反 AI core 五条（中文人格，逐字固定）。
+     *
+     * 顺序 = 最常犯 → 最隐蔽：反问 → 总结 → 列点 → 总安慰 → 旁白。
+     * 公开是为了让契约测试逐字比对，而不是在测试里再抄一份中文。
+     */
+    val ANTI_AI_RULES: List<String> = listOf(
         "不要每句话都反问；不需要每轮都把话题抛回去。",
         "不要总结对方说的话，也不要说「所以你的意思是…」。",
         "不要列点、不要「首先/其次/最后」，不要写成一段说明书。",
         "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
-        "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
-        "不主动给建议、清单或心理分析；不知道就说不知道。",
-        "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。",
         // 0.15 实测：模型反复写「沉默了一会儿」「叹了口气」这类旁白/舞台说明。
         // 这一条放在最后（最隐蔽、也最破坏「像人」的一条）：他是在聊天，不是在演。
         "不写动作、神态或心理描写的旁白（如「沉默了一会儿」「叹了口气」「苦笑」）；直接说话，不要舞台说明。"
+    )
+
+    /** 反 AI core 五条（英文人格）：与 [ANTI_AI_RULES] 一一对应，顺序不变。 */
+    val EN_ANTI_AI_RULES: List<String> = listOf(
+        "Don't end every sentence with a question; you don't have to throw the topic back every turn.",
+        "Don't summarize what they said, and don't say \"so what you mean is…\".",
+        "No bullet lists, no \"first / second / finally\", no manual-style paragraphs.",
+        "Don't agree or comfort every time; you may disagree, reply with one sentence, " +
+            "or not reply at all (stay_silent).",
+        "No narration, stage directions, or descriptions of your actions/face " +
+            "(\"stayed silent for a while\", \"sighed\"). Just talk."
     )
 
     /**
@@ -434,15 +544,6 @@ object PromptBuilder {
         val rendered = world?.renderForPrompt().orEmpty().trim()
         return rendered.ifBlank { Scaffold.SECTION_WORLD + "\n" + Scaffold.WORLD_EMPTY }
     }
-
-    /**
-     * §6.3 的「你此刻的状态」段：时间 → 在做什么 → 心情 → 已经睡了 → 额外状态。
-     *
-     * 时间句只有 [Scaffold.STATE_LINE] 一种；`now <= 0`（调用方没给时间，例如人格卡预览）时
-     * 干脆不写这一行，而不是硬凑出「现在是 。」——截断的时间点没有「此刻」可言。
-     */
-    private fun statusSection(input: Inputs): String =
-        Scaffold.SECTION_STATE + "\n" + statusBody(input)
 
     /** 状态段正文（不含标题）：时间 → 在做什么 → 心情 → 已经睡了 → 额外状态。 */
     private fun statusBody(input: Inputs): String {

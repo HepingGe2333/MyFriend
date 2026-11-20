@@ -113,8 +113,10 @@ final class ToolProtocolXMLTests: XCTestCase {
         let text = AntiAIPrompt.text()
         XCTAssertTrue(text.contains("旁白") || text.contains("舞台说明"))
         XCTAssertTrue(text.contains("沉默了一会儿"), "要给模型一个具体的反例")
-        // 共享的七条不许被改长（与 Android / `PromptContract.AntiAi.RULES` 逐字一致）。
-        XCTAssertEqual(AntiAIPrompt.rules.count, 7)
+        // 0.15 profile 的 core：四条「不要」+ 旁白 = 五条，不多不少
+        //（与 `PromptContract.AntiAi.RULES` 的四条逐字一致）。
+        XCTAssertEqual(AntiAIPrompt.rules.count, 4)
+        XCTAssertEqual(AntiAIPrompt.coreRules.count, 5)
         XCTAssertFalse(AntiAIPrompt.rules.contains(AntiAIPrompt.noNarrationRule))
     }
 

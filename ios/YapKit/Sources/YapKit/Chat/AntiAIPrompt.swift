@@ -10,8 +10,15 @@ import Foundation
 // 为什么单独一个文件：它是所有端逐字一致的规则（和 `# 边界` 同一性质），
 // 散落在调用点就会某一端少一条；`PromptBuilder` 只负责把它拼在 `# 边界` 之前。
 //
-// **两端逐字一致**：文案与 Android `PromptBuilder.ANTI_AI_RULES` / `SECTION_ANTI_AI`
-// 相同（那一份不在 `scaffold.json` 里，所以由两边各自钉住；改动要两端一起改）。
+// **0.15 起只保留 core 五条**（`spec/context-profile/README.md`，Bench v2 搜索结论
+// `anti=core`）：不反问 / 不总结 / 不列点 / 不总安慰 / 不旁白。
+// 另外三条（短句与口头禅、不主动给建议、stay_silent 的用法）在评测里互相重复、
+// 且「短句」「不列点」已经覆盖了它们的行为，删掉之后提示词更短、综合分更高
+//（`eval/reports/context-search-axes-*.md`：core 87.8 vs full 86.5，硬失败率 16.7% vs 25.0%）。
+//
+// **两端逐字一致**：文案与 Android `PromptBuilder.ANTI_AI_RULES` / 共享契约
+// `PromptContract.AntiAi.RULES` 相同（那一份不在 `scaffold.json` 里，所以由两边各自钉住；
+// 改动要两端一起改）。
 // ---------------------------------------------------------------------------
 
 public enum AntiAIPrompt {
@@ -20,34 +27,33 @@ public enum AntiAIPrompt {
     /// 「Output constraints」这类机械标题高。
     public static let section = "# 别像 AI"
 
-    /// 六条硬约束（规范 §5 逐条对应）。
+    /// core 的四条「不要」（规范 §5 的第 1–4 条）。
     ///
     /// 顺序按「最常犯 → 最隐蔽」：反问与总结是第一眼就能看出的 AI 味，
-    /// 口头禅与「总在给建议」是聊久了才发现的。
+    /// 「每次都安慰」是聊久了才发现的。
+    ///
+    /// **逐字复用共享契约**（`PromptContract.AntiAi.RULES`，Kotlin 真源的镜像），
+    /// 不再在这里抄第二份：反 AI 文案是两端逐字一致的规则，抄两份迟早会漂。
     ///
     /// 与 `# 边界` 的分工：边界是「不许暴露身份 / 不许旁白」，这里是「不许像客服」。
-    public static let rules: [String] = [
-        "不要每句话都反问；不需要每轮都把话题抛回去。",
-        "不要总结对方说的话，也不要说「所以你的意思是…」。",
-        "不要列点、不要「首先/其次/最后」，不要写成一段说明书。",
-        "不要每次都认同或安慰；可以不同意、可以只回一句、也可以不回（stay_silent）。",
-        "句子可以短、可以不完整；不要重复同一个口头禅或同一个开头。",
-        "不主动给建议、清单或心理分析；不知道就说不知道。",
-        "不想说话时调用 stay_silent（只已读不回），不要用文字说「我不回」；对方在说重要的事时不要用。"
-    ]
+    public static let rules: [String] = PromptContract.AntiAi.RULES
 
-    /// 0.15 追加的一条：**旁白 / 舞台说明**（评测里反复出现「沉默了一会儿」「他看着你」）。
+    /// core 的第五条：**旁白 / 舞台说明**（评测里反复出现「沉默了一会儿」「他看着你」）。
     ///
-    /// 为什么单独一条、不放 `rules` 里：`rules` 与 Android 的 `ANTI_AI_RULES` 逐字一致
-    ///（共享契约 `PromptContract.AntiAi.RULES` 也是七条）；这一条是 iOS 在这轮补的
-    /// 硬约束，等 Android 也补上之后再收进共享契约。
+    /// 为什么单独一条、不放 `rules` 里：`rules` 是规范 §5 的四条「不要」，与 Android 的
+    /// `ANTI_AI_RULES` 逐字一致；旁白这一条是 0.15 补进 core 的硬约束，等 Android 的共享契约
+    /// 也收进去之后再合并成一个数组。
     public static let noNarrationRule =
         "不要写动作、旁白或舞台说明（「沉默了一会儿」「他顿了顿」「他看着你」），"
         + "不要用括号写神态或心理描写；只说他会说出口的那句话。"
 
-    /// 拼好的整段（`# 别像 AI` + 七条 + 旁白禁止）。
+    /// core 五条（四条「不要」+ 旁白）。测试与跨端契约按这个数**对得上**：
+    /// 提示词里必须正好是这五条，不多不少。
+    public static var coreRules: [String] { rules + [noNarrationRule] }
+
+    /// 拼好的整段（`# 别像 AI` + core 五条）。
     public static func text() -> String {
-        ([section] + rules.map { "- " + $0 } + ["- " + noNarrationRule]).joined(separator: "\n")
+        ([section] + coreRules.map { "- " + $0 }).joined(separator: "\n")
     }
 
     /// 「这一轮没有别的规则」时的空实现（测试与特殊场景用）。
