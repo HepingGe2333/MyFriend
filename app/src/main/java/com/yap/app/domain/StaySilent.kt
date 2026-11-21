@@ -46,4 +46,40 @@ object StaySilent {
     /** 落进工具摘要的一句话（回灌给模型看，不直接展示）。 */
     fun summary(reason: String): String =
         if (reason.isBlank()) "这一轮不回" else "这一轮不回：${reason.take(20)}"
+
+    // ---------------------------------------------------------------- 一轮里的调用编排（0.15）
+
+    /** 一次工具调用批次里与「沉默」有关的决定。 */
+    data class Batch(
+        /** 按执行顺序排好的调用：`stay_silent` 永远排最前。 */
+        val calls: List<ToolInvocation>,
+        /** 这一批里有 `stay_silent`：执行完必须立刻结束这一轮，不再让模型补话。 */
+        val requestsSilence: Boolean
+    )
+
+    /** 这个调用是不是 `stay_silent`（大小写、空白都容忍）。 */
+    fun isSilence(call: ToolInvocation): Boolean =
+        call.name.trim().equals(ToolCatalog.STAY_SILENT, ignoreCase = true)
+
+    /**
+     * 把一批调用排成执行顺序：`stay_silent` 先执行，其余保持原顺序。
+     *
+     * 为什么必须先执行：模型可能在同一批里既调用 `send_message` 又调用 `stay_silent`。
+     * 如果按原顺序先把消息发出去，「这一轮只已读」就破了——`stay_silent` 的语义是
+     * **这一轮绝不产生任何 assistant 正文**，所以它必须先落定，后续调用一律跳过。
+     */
+    fun planBatch(calls: List<ToolInvocation>): Batch {
+        if (calls.none(::isSilence)) return Batch(calls = calls, requestsSilence = false)
+        val silence = calls.filter(::isSilence)
+        val rest = calls.filterNot(::isSilence)
+        return Batch(calls = silence + rest, requestsSilence = true)
+    }
+
+    /**
+     * 这一轮已经发过消息时还能不能沉默。
+     *
+     * 不能：消息已经上屏了，「这轮不回」只会让用户看到半截话。这种情况按「拒绝沉默」处理
+     * （与连续超过 2 轮同一条路径），让模型把话说完。
+     */
+    fun canHonor(sentThisRound: Boolean): Boolean = !sentThisRound
 }

@@ -607,6 +607,11 @@ public final class ChatService {
         var sentCount = 0
         /// 0.14：这一轮总共落了几条助手消息（工具连发 + 正文拆分），用于「只有首条付打字延迟」。
         var deliveredCount = 0
+        /// 0.15：这一轮模型有没有调用过 `remember`。
+        ///
+        /// 用途只有一处：高置信自动记忆（`HighConfidenceMemory`）只在模型**没调** `remember`
+        /// 时兜底补一条。调过就不再补——哪怕那次调用最后被筛查拒了（「这次先不记」是它自己的判断）。
+        var rememberRequested = false
         do {
             let resolved = try resolveSession(sessionId: sessionId)
             let session = resolved.session
@@ -697,6 +702,9 @@ public final class ChatService {
             // 历史里的语音/视频只留一行说明（`PromptBuilder.history` 会补「这条消息是一段语音…」）：
             // 每次都重发 base64 等于拿几 MB 的旧音频去烧上下文，而那些内容模型早就听过了。
             let currentUserMessage = recent.last(where: { $0.role == .user })
+            /// 这一轮用户说的那句原文：高置信自动记忆与危机兜底都只看它（不改写、不猜）。
+            let currentUserText = currentUserMessage?.content
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             var currentMediaParts: [String: MediaWireParts] = [:]
             if let currentUserMessage {
                 let playable = AttachmentsCodec.decode(currentUserMessage.attachmentsJson)
@@ -889,7 +897,11 @@ public final class ChatService {
                     $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.staySilent
                 }) {
                     let silentAt = now()
-                    let allowed = rhythm?.canStaySilent(personaId: persona.id, now: silentAt) ?? true
+                    // 0.15 与 Android `StaySilent.canHonor` 对齐：这一轮**已经发出去过消息**时，
+                    // 不再认这次沉默 —— 话都说了，再「装没回」只会让对方以为那条消息发错了。
+                    let spokeThisTurn = producedMessage != nil
+                    let allowed = (rhythm?.canStaySilent(personaId: persona.id, now: silentAt) ?? true)
+                        && !spokeThisTurn
                     if allowed {
                         rhythm?.handleStayedSilent(
                             personaId: persona.id, sessionId: sessionId, at: silentAt
@@ -899,11 +911,20 @@ public final class ChatService {
                             log("[chat] stay_silent：这一轮只标已读"
                                 + (reason.isEmpty ? "" : "（\(reason)）"))
                         }
+                        // 0.15 严格语义（体验审计 P1）：`stay_silent` 是「这一轮不回」，
+                        // 模型同一轮里顺手写出来的正文**一个字都不该留给用户**。
+                        // 流式阶段那段文字可能已经推给界面了（协议块永远在正文之后才到），
+                        // 所以这里先推一次空正文把它抹掉，再发「没回」：
+                        // - 不落库（下面直接 return，不经过 `saveAssistant`）；
+                        // - 不留工具卡片（`stay_silent` 不执行、不进 `traces`）；
+                        // - 只留下已读（用户消息在本轮开始时就标过了）。
+                        shownText = ""
+                        continuation.yield(.delta(""))
                         continuation.yield(.noReply(.stayedSilent))
                         continuation.finish()
                         return
                     }
-                    // 已经连着沉默两轮：这次不认，逼他说一句（哪怕很短）。
+                    // 已经连着沉默两轮 / 这一轮已经发过消息：这次不认，逼他说一句（哪怕很短）。
                     round += 1
                     if round > toolRoundLimit {
                         // 他还是坚持不说：按「模型没有返回任何文字」走失败流，
@@ -917,9 +938,14 @@ public final class ChatService {
                         invocation: silent,
                         ok: false,
                         summary: String(localized: "这一轮得说句话"),
-                        contentForModel: "你刚刚已经连着两轮只标已读、没有说话了。这一轮必须说点什么，"
-                            + "哪怕只有两三个字（「嗯」「在」「累」都行），别再用 stay_silent。",
-                        errorMessage: String(localized: "不能连续沉默超过两轮")
+                        contentForModel: spokeThisTurn
+                            ? "你这一轮已经发出去过消息了，不能再用 stay_silent 装没回。"
+                                + "把剩下的话说完（哪怕只有两三个字），或者直接结束这一轮。"
+                            : "你刚刚已经连着两轮只标已读、没有说话了。这一轮必须说点什么，"
+                                + "哪怕只有两三个字（「嗯」「在」「累」都行），别再用 stay_silent。",
+                        errorMessage: spokeThisTurn
+                            ? String(localized: "这一轮已经发过消息了，不能再沉默")
+                            : String(localized: "不能连续沉默超过两轮")
                     )
                     shownText = ""
                     continuation.yield(.delta(""))
@@ -966,6 +992,15 @@ public final class ChatService {
                     continuation.yield(.noReply(.deferred(minutes: plan.minutes, reason: plan.reason)))
                     continuation.finish()
                     return
+                }
+
+                // 0.15 高置信自动记忆的判据：这一轮**模型有没有自己调 `remember`**。
+                // 放在「轮数上限」判定之前：最后一轮里写的 `remember` 虽然不再执行，
+                // 但模型确实做了这件事，自动兜底就不该再写一条重复的。
+                if calls.contains(where: {
+                    $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.remember
+                }) {
+                    rememberRequested = true
                 }
 
                 if calls.isEmpty || round >= toolRoundLimit {
@@ -1098,10 +1133,34 @@ public final class ChatService {
                 // 把正文并进最后一条）：模型不再写正文是正常用法，不是「走神」。
                 // 直接把那条消息当成这一轮的产物结束掉，不要再落一条空助手消息。
                 completed = true
+                // 0.15 危机兜底：这一轮的话全从工具发出去的（连发 / 表情），安全锚点也得补上，
+                // 否则用户看到的就是「他说了句别的，没接住我这句」。
+                var finalMessage = producedMessage
+                let anchored = SafetyGuard.appendingSafetyNetIfNeeded(
+                    reply: finalMessage.content,
+                    userMessage: currentUserText,
+                    language: personaLanguage
+                )
+                if anchored != finalMessage.content {
+                    finalMessage.content = anchored
+                    if (try? stores.messages.upsert(finalMessage)) != nil {
+                        continuation.yield(.appended(finalMessage))
+                    } else {
+                        // 没落库就保持库里那一份：库里存的与界面看到的必须是同一句话。
+                        finalMessage = producedMessage
+                    }
+                }
+                // 回复已经落库：高置信自动记忆兜底（模型这一轮没调 `remember` 时）。
+                autoRememberIfNeeded(
+                    userText: currentUserText,
+                    personaId: persona.id,
+                    sessionId: sessionId,
+                    rememberRequested: rememberRequested
+                )
                 // 他其实说过了（用表情 / 连发）：连续沉默清零。
                 rhythm?.handleReplied(personaId: persona.id, at: now())
                 continuation.yield(.done(ChatCompletion(
-                    message: producedMessage,
+                    message: finalMessage,
                     toolTraces: traces,
                     pendingMemory: false,
                     proactiveProposalJson: proposalJson
@@ -1115,6 +1174,16 @@ public final class ChatService {
                     message: traces.isEmpty
                     ? String(localized: "模型没有返回任何文字")
                     : String(localized: "他查完了东西，怕是走神了，再发一条试试")
+                )
+            }
+            // 0.15 危机兜底（`SafetyGuard`）：用户这一轮说了「不想活 / 自杀 / 安眠药……」
+            // 而这句话里没有任何安全锚点时，在正文末尾追加 1–2 句（只追加、不改写）。
+            // 放在落库之前：用户看到的和库里存的必须是同一份（否则重进会话就消失了）。
+            if !finalText.isEmpty {
+                finalText = SafetyGuard.appendingSafetyNetIfNeeded(
+                    reply: finalText,
+                    userMessage: currentUserText,
+                    language: personaLanguage
                 )
             }
             // 最终正文可能和流里那一份不一样（去掉代码块、trim）：补一次，界面才对得上库里的内容。
@@ -1170,6 +1239,14 @@ public final class ChatService {
                 throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
             }
             completed = true
+            // 0.15 高置信自动记忆：回复已经落库了，再看要不要替模型补一条 `remember`。
+            // 顺序刻意放在「回复落库之后」：这一步写库失败也绝不能让用户少看到那句话。
+            autoRememberIfNeeded(
+                userText: currentUserText,
+                personaId: persona.id,
+                sessionId: sessionId,
+                rememberRequested: rememberRequested
+            )
 
             let count = try stores.messages.count(sessionId: sessionId)
             let freshSession = try stores.sessions.byId(sessionId)
@@ -1360,6 +1437,48 @@ public final class ChatService {
         ) else { return nil }
         continuation.yield(.appended(saved))
         return saved
+    }
+
+    // MARK: - 高置信自动记忆（0.15）
+
+    /// 模型这一轮没调 `remember`，而用户的话里明确有高置信事实时，替它补写一条 `USER` 记忆。
+    ///
+    /// 为什么需要这条兜底：提示词已经写了「只在正文里说『记住了』不算」，但模型遵守率不是 100%，
+    /// 而「对方对花生过敏」这种信息漏一次的代价太大。规则本身在
+    /// `HighConfidenceMemory`（纯函数），这里只负责「什么时候写、写到哪、写失败怎么办」：
+    /// - **调过就不补**：模型自己记了（哪怕被筛查判成「这次先不记」）就不再插手，避免一条事实写两遍；
+    /// - **重复就不补**：仓储里已有同一件事（归一化后包含）时跳过；
+    /// - **失败只写日志**：记忆写不进去不该影响这一轮已经落库的回复。
+    private func autoRememberIfNeeded(
+        userText: String,
+        personaId: String,
+        sessionId: String,
+        rememberRequested: Bool
+    ) {
+        guard !rememberRequested else { return }
+        guard let hit = HighConfidenceMemory.detect(userText) else { return }
+        let existing = (try? memory.getAllForPersona(personaId))?.map(\.content) ?? []
+        guard !HighConfidenceMemory.isDuplicate(of: hit.content, among: existing) else {
+            log?("[chat] 高置信自动记忆：已经记过「\(hit.content)」，跳过")
+            return
+        }
+        let written = memory.addDetailed(
+            personaId: personaId,
+            content: hit.content,
+            category: .fact,
+            importance: hit.importance,
+            drawer: MemoryDrawer.user.rawValue,
+            sourceQuote: String(userText.prefix(300)),
+            sourceSessionId: sessionId,
+            tags: hit.tags
+        )
+        switch written {
+        case .success(let id):
+            log?("[chat] 高置信自动记忆已写入 \(id)（\(hit.rule.rawValue)，"
+                + "importance \(hit.importance)）：\(hit.content)")
+        case .failure(let error):
+            log?("[chat] 高置信自动记忆没写成：\(error.localizedDescription)")
+        }
     }
 
     // MARK: - 落库

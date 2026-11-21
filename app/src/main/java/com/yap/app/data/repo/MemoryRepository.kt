@@ -13,6 +13,7 @@ import com.yap.app.data.local.MessageRole
 import com.yap.app.data.local.PersonaDao
 import com.yap.app.data.prefs.SettingsRepository
 import com.yap.app.domain.ChineseTerms
+import com.yap.app.domain.AutoMemory
 import com.yap.app.domain.DomainErrorCode
 import com.yap.app.domain.ImportanceScoring
 import com.yap.app.domain.MemoryDecision
@@ -505,6 +506,44 @@ class MemoryRepository @Inject constructor(
         memoryDao.insert(memory)
         rebuildTermIndex(memory.id, text)
         memoryVectorIndex.upsert(memory.id, text)
+    }
+
+    /**
+     * 高置信自动记忆（0.15）：规则命中后由聊天流程调用，写一条 `USER` 记忆。
+     *
+     * 与 `remember` 的分工：
+     * - 来源是**规则**而不是模型——用户把长期事实说得很明确、这一轮模型又没调用 `remember` 时兜底；
+     * - 内容用 [AutoMemory.detect] 取的原句片段，不改写、不推断；
+     * - 抽屉固定 `USER`（关于对方）、importance 4–5、标签带 `auto`（记忆抽屉据此显示「自动记下」）；
+     * - 已有相似记忆时不写第二条（返回 false），避免同一件事在抽屉里堆两行。
+     *
+     * 返回 true = 新写了一条；false = 已记过。失败（例如服务端模式写失败）照常抛给调用方，
+     * 由聊天流程记一行日志——自动记忆失败不该影响这一轮回复。
+     */
+    suspend fun addAutoMemory(
+        personaId: String,
+        content: String,
+        importance: Int,
+        sourceQuote: String,
+        sourceSessionId: String?,
+        tags: List<String> = listOf(AutoMemory.TAG)
+    ): Result<Boolean> = runCatching {
+        val text = content.trim()
+        if (text.isBlank()) return@runCatching false
+        // 去重看这个人的全部记忆（含归档）：归档的同一件事再写一条没有意义。
+        val existing = memoryDao.getAllForPersona(personaId).map { it.content }
+        if (AutoMemory.isDuplicate(existing, text)) return@runCatching false
+        addDetailed(
+            personaId = personaId,
+            content = text,
+            category = MemoryCategory.FACT,
+            importance = importance.coerceIn(4, 5),
+            drawer = MemoryDrawer.USER.name,
+            sourceQuote = sourceQuote,
+            sourceSessionId = sourceSessionId,
+            tags = tags
+        ).getOrThrow()
+        true
     }
 
     suspend fun update(memory: MemoryEntity, content: String, category: MemoryCategory, importance: Int): Result<Unit> = runCatching {

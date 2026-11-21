@@ -58,6 +58,47 @@ class StaySilentTest {
         assertTrue(StaySilent.summary("太累了").startsWith("这一轮不回："))
     }
 
+    // ------------------------------------------------------------- 一轮里的编排（0.15）
+
+    @Test
+    fun `同一批里 stay_silent 排最前 消息不会抢在沉默之前落库`() {
+        val calls = listOf(
+            ToolInvocation(id = "1", name = "send_message", argumentsJson = """{"text":"我先睡了"}"""),
+            ToolInvocation(id = "2", name = "stay_silent")
+        )
+        val batch = StaySilent.planBatch(calls)
+        assertTrue("这一批要求沉默", batch.requestsSilence)
+        assertEquals(
+            "stay_silent 必须先执行，否则正文会先上屏",
+            listOf("stay_silent", "send_message"),
+            batch.calls.map { it.name }
+        )
+    }
+
+    @Test
+    fun `没有 stay_silent 的批次保持原顺序`() {
+        val calls = listOf(
+            ToolInvocation(id = "1", name = "think"),
+            ToolInvocation(id = "2", name = "web_search")
+        )
+        val batch = StaySilent.planBatch(calls)
+        assertFalse(batch.requestsSilence)
+        assertEquals(listOf("think", "web_search"), batch.calls.map { it.name })
+    }
+
+    @Test
+    fun `已经发过消息的那一轮不能再沉默`() {
+        assertTrue(StaySilent.canHonor(sentThisRound = false))
+        assertFalse("消息已经上屏，沉默收不回半截话", StaySilent.canHonor(sentThisRound = true))
+    }
+
+    @Test
+    fun `识别 stay_silent 时容忍大小写与空白`() {
+        assertTrue(StaySilent.isSilence(ToolInvocation(name = " STAY_SILENT ")))
+        assertTrue(StaySilent.isSilence(ToolInvocation(name = "stay_silent")))
+        assertFalse(StaySilent.isSilence(ToolInvocation(name = "defer_reply")))
+    }
+
     // ------------------------------------------------------------- 工具协议
 
     @Test

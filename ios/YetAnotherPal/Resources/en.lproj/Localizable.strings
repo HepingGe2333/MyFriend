@@ -1308,6 +1308,7 @@
 
 // 0.13：`stay_silent` 与主动对话诊断（Kit 的 String(localized:)）
 "不能连续沉默超过两轮" = "Can't stay silent more than two turns in a row";
+"这一轮已经发过消息了，不能再沉默" = "You already sent a message this turn, so you can't stay silent";
 "今天说够了" = "Already reached today's limit";
 "他这次一直没说话，再发一条试试" = "He didn't say anything this time — try sending another message";
 "刚想过一回" = "Just thought about it a moment ago";

@@ -1,4 +1,10 @@
-"""确定性硬检查（不依赖 judge）：事实/工具/沉默/语言/旁白/重复。"""
+"""确定性硬检查（不依赖 judge）：事实/工具/沉默/语言/旁白/重复。
+
+工具调用一律从 ``conv.turns[].tool_calls`` 读取（原生 tool_calls 与文本 yap-tool 都会记录）。
+必需/禁用工具只由场景的 ``required_tools`` / ``forbidden_tools`` 决定：
+``memorize`` 不再隐式强制（上下文已有答案时直接答对即可）；``set_activity`` 表示
+「AI 自己在忙」，用户去开会的场景用 ``forbidden_tools=["set_activity"]`` 反向检查。
+"""
 
 from __future__ import annotations
 
@@ -60,12 +66,19 @@ def score_conversation(conv: Conversation) -> dict[str, Any]:
         hard.append("missing_required_fact")
         missing_facts = required_any
     required_tools = [str(item) for item in (scenario.get("required_tools") or []) if str(item)]
-    called = [call["name"] for turn in conv.turns for call in turn.tool_calls]
+    records = [call for turn in conv.turns for call in turn.tool_calls]
+    attempted = [str(call.get("name") or "") for call in records if call.get("name")]
+    # 坏参数（原生 tool_call 的 arguments 不是合法 JSON）不算成功调用：为了「remember」必需
+    # 场景不被一次坏 JSON 混过去，必需工具只认无 error 的记录；但禁用工具仍按「尝试」判违规。
+    successful = [str(call.get("name") or "") for call in records
+                  if call.get("name") and not call.get("error")]
+    invalid_calls = [{"name": str(call.get("name") or ""), "error": str(call.get("error"))}
+                     for call in records if call.get("error")]
     for tool in required_tools:
-        if tool not in called:
+        if tool not in successful:
             hard.append(f"missing_tool:{tool}")
     for tool in [str(item) for item in (scenario.get("forbidden_tools") or []) if str(item)]:
-        if tool in called:
+        if tool in attempted:
             hard.append(f"forbidden_tool:{tool}")
     if scenario.get("expect_silence_or_max_chars") is not None:
         limit = int(scenario["expect_silence_or_max_chars"])
@@ -96,6 +109,10 @@ def score_conversation(conv: Conversation) -> dict[str, Any]:
         "deterministic_score": deterministic,
         "chars": chars,
         "questions": questions,
-        "tool_calls": called,
+        "tool_calls": successful,
+        "attempted_tools": attempted,
+        "invalid_tool_calls": invalid_calls,
+        "native_tool_calls": sum(1 for call in records if call.get("source") == "native"),
+        "text_tool_calls": sum(1 for call in records if call.get("source") == "text"),
         "missing_facts": missing_facts,
     }

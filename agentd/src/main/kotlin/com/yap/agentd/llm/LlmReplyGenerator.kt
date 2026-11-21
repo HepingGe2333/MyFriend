@@ -153,9 +153,12 @@ class LlmReplyGenerator(
                 sentMultimodal = true
             }
             if (silentThisRound) {
-                // 只有「一句话都没说」才算 silent：模型先说了半句又调 `stay_silent` 是自相矛盾的，
-                // 这时以已经说出口的话为准（否则客户端看到了 delta、库里却没有对应消息）。
-                suppressed = textSoFar.isEmpty()
+                // 0.15 严格语义：**只要这一轮调用了 `stay_silent`，就不落任何 assistant 正文**。
+                // 模型可能先说了半句再调工具（流式下这半句已经作为 delta 发出去了，收不回来），
+                // 但落库必须是「什么都没说」：否则库里有正文、`done.silent` 又为 true，
+                // 客户端同步/重放时会把这段文字重新捡起来，和「只标已读」自相矛盾。
+                // 已流出的 delta 只当「正在输入」的进度，`ChatService` 会按 suppressed 整轮丢弃。
+                suppressed = true
                 break
             }
             if (clock.millis() > deadline) break

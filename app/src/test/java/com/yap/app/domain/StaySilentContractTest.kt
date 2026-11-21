@@ -33,7 +33,12 @@ class StaySilentContractTest {
 
     @Test
     fun `聊天生成流程在 stay_silent 时直接结束 不落 assistant 消息`() {
-        val branch = chatRepository.indexOf("if (silenced) {")
+        // 循环里还有一处 `if (silenced)`（挡住同批剩余的 send_message）；这里要的是
+        // 「回合结束后」的真正收尾分支，用它的说明文字定位，避免取错位置。
+        val branch = chatRepository.lastIndexOf(
+            "if (silenced) {",
+            chatRepository.indexOf("// stay_silent：只把用户消息标成已读")
+        )
         assertTrue("ChatRepository 里没有 stay_silent 的结束分支", branch >= 0)
         val body = chatRepository.substring(branch, minOf(chatRepository.length, branch + 700))
         assertTrue("这一轮必须把用户消息标已读", body.contains("markUserMessagesRead"))
@@ -48,10 +53,11 @@ class StaySilentContractTest {
 
     @Test
     fun `stay_silent 不写念头 与 defer_reply 的语义保持分开`() {
-        val branch = chatRepository.substring(
-            chatRepository.indexOf("if (silenced) {"),
-            chatRepository.indexOf("if (silenced) {") + 700
+        val branchStart = chatRepository.lastIndexOf(
+            "if (silenced) {",
+            chatRepository.indexOf("// stay_silent：只把用户消息标成已读")
         )
+        val branch = chatRepository.substring(branchStart, branchStart + 700)
         assertFalse("stay_silent 不该留下到点会想起来的念头", branch.contains("intentRepository.plan"))
         assertFalse("stay_silent 不该写 REACH_OUT", branch.contains("REACH_OUT"))
 

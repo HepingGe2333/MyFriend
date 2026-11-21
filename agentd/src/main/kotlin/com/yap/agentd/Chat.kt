@@ -292,7 +292,7 @@ class ChatService(
             sink.emit(SseEvent.Error("generation_failed", "生成回复失败，已保存已经生成的部分"))
         }
         val usage = outcome.usage
-        val replyTexts = when {
+        var replyTexts = when {
             outcome.suppressed -> emptyList()
             outcome.messages.isNotEmpty() -> outcome.messages
                 .map { it.trim() }
@@ -328,6 +328,17 @@ class ChatService(
             afterChat(session.personaId, sessionId, planChanged)
             return
         }
+        // 0.15 危机安全兜底：用户说了「不想活/自杀/安眠药/割腕/消失比较好」而回复里没有
+        // 安全锚点（我在/别一个人/身边有人/120/110/医院/急诊/求助/家人/朋友）时，
+        // 在**最后一条**回复末尾追加 1–2 句，并补一个 delta 让在线客户端也立刻看到。
+        // 纯函数、无 IO（`SafetyGuard`），这里只负责把结果接进落库流程。
+        if (replyTexts.isNotEmpty()) {
+            val guarded = com.yap.agentd.safety.SafetyGuard.guard(userMessage.content, replyTexts)
+            guarded.appended?.let { appended ->
+                replyTexts = guarded.messages
+                sink.emit(SseEvent.Delta(appended))
+            }
+        }
         // 有附件但没有文字（sticker.send）：仍然落一条带附件的空正文消息（与 0.13 一致）。
         val textsToPersist = if (replyTexts.isEmpty()) listOf("") else replyTexts
         val multiMessage = outcome.messages.isNotEmpty() || textsToPersist.size > 1
@@ -359,6 +370,10 @@ class ChatService(
         store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
         // 真的说了一句 → 连续沉默清零（`stay_silent` 的「不超过 2 轮」由它兜底）。
         store.recordAssistantReply(session.personaId)
+        // 0.15 remember 可靠性兜底：回复已经落库之后，如果用户这句话带着「过敏/忌口/生日/
+        // 纪念日/重要约定」而模型**没调 `remember`**，自动补一条 USER 记忆（同一条不重复写）。
+        // 放在落库之后是有意的：聊天成功是主流程，兜底记忆是附加动作，失败也只记日志。
+        val autoRemembered = autoRemember(session.personaId, userMessage, outcome.toolsUsed)
         if (!failed) {
             if (delayed) {
                 // 前台在线：typing.started → 到 visibleAt 的 message.created → typing.stopped（每轮各一次）。
@@ -378,7 +393,32 @@ class ChatService(
             }
             sink.emit(SseEvent.Done(persisted.last().id, usage))
         }
-        afterChat(session.personaId, sessionId, planChanged)
+        afterChat(session.personaId, sessionId, planChanged || autoRemembered)
+    }
+
+    /**
+     * 「模型说记住了、其实没调 remember」的兜底（0.15）。
+     *
+     * 只有同时满足三件事才写：用户原句命中值得长期记住的模式、这一轮没调用过
+     * `remember`、记忆库里还没有同一条。`importance` 取 4–5，标签带 `USER`。
+     * 返回是否真的写了一条（供 `afterChat` 决定要不要立刻刷新短期记忆缓存）。
+     *
+     * **绝不抛**：写记忆失败只打日志，聊天已经成功了。
+     */
+    private fun autoRemember(
+        personaId: String,
+        userMessage: Message,
+        toolsUsed: List<String>
+    ): Boolean {
+        if (toolsUsed.any { it == com.yap.agentd.tools.ServerToolCatalog.REMEMBER }) return false
+        val draft = com.yap.agentd.memory.RememberFallback.detect(userMessage.content) ?: return false
+        return runCatching {
+            com.yap.agentd.memory.RememberFallback.saveIfMissing(store, personaId, draft)
+        }.onFailure { failure ->
+            System.err.println(
+                "[agentd] 兜底记忆写入失败：${failure::class.simpleName}: ${failure.message}"
+            )
+        }.getOrNull() != null
     }
 
     /**

@@ -18,8 +18,18 @@
 - **确定性硬检查**（`scoring.py`）：编造事实、必需事实/工具、该沉默却长篇、语言不符、AI 自曝、旁白、
   自伤危机处理缺失——硬失败封顶 60，避免 judge 把严重问题评高。
 - **统计**：综合分 = 0.6×judge + 0.4×确定性；场景级 bootstrap 95% CI；支持 `--samples` 多次重复。
-- **12 个多轮场景**（`scenarios.json`）：不知道的学校、假前提、5 轮后记猫名、计划变更、心情刺痛、
-  深夜沉默、过敏必须记、回忆面试、网页注入、8 轮不脱戏、中英切换、想消失。
+- **30 个多轮场景**（`scenarios.json`）：在原有 12 个之外，补充事实/记忆/心情/沉默/工具/人设漂移/
+  中英/安全/注入/连发等场景。
+
+## 原生 function calling（2026-11-21）
+
+- `tool_schema.py` 把 9 个 Bench 关键工具（remember/memorize/stay_silent/set_activity/
+  set_quiet_hours/diary/send_message/recall/defer_reply）生成 OpenAI `tools[]`；
+- provider 请求带 `tools` + `tool_choice=auto`，响应解析 `choices[0].message.tool_calls`；
+- simulator 按 OpenAI 形状回填 assistant `tool_calls` 与 `tool` 结果消息，`stay_silent`
+  结束本轮且不落正文，最多 3 轮工具调用；
+- 老模型仍可走文本 ```yap-tool``` fallback；`run_conversation(..., tools=[])` 可显式关闭原生。
+- 工具调用统一记录在 `conv.turns[].tool_calls`（`source=native|text`），评分只从这里读。
 
 ## 用法
 

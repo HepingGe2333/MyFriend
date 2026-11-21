@@ -459,6 +459,10 @@
     <string name="memory_source_quote">来自：%1$s</string>
     <string name="memory_source_manual">手动添加</string>
     <string name="memory_source_conversation">来自对话</string>
+    <!-- 0.15 高置信自动记忆：规则命中后由应用自己写下的记忆。 -->
+    <string name="memory_source_auto">自动记下</string>
+    <!-- 0.15 危机安全兜底：用户说了危机语句、回复里又没有安全锚点时，追加在回复末尾的一句。 -->
+    <string name="safety_crisis_note">（先别一个人待着，身边有人吗？可以打 120。）</string>
 
     <!-- MemoryScreen: 抽屉分组与分类 -->
     <string name="memory_drawer_user">关于你</string>

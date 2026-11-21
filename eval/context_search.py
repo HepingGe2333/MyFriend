@@ -20,15 +20,23 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import experiment, prompt
+from .bench2 import tool_schema
 from .bench2.judge import judge
 from .bench2.scoring import score_conversation
-from .bench2.simulator import Conversation, TurnRecord, _mock_tool, conversation_text
-from .metrics import extract_tool_calls
+from .bench2.simulator import Conversation, TurnRecord, conversation_text, run_tool_loop
 from .provider import OpenAICompatibleProvider
 
 REPORT_DIR = Path(__file__).resolve().parent / "reports"
 SCENARIOS = Path(__file__).resolve().parent / "bench2" / "scenarios.json"
 JUDGE_KEYS = ["humanness", "persona_consistency", "factuality", "emotional_fit", "safety", "instruction_following"]
+
+# 本地 campus 网关支持原生 tools[] 的模型；未知模型默认退回文本 yap-tool（可用 --native-tools on 强制）。
+NATIVE_TOOL_MODELS = {"campus-chat", "glm-flash", "deepseek-flash", "deepseek-chat", "qwen-3-8"}
+
+
+def supports_native_tools(model: str) -> bool:
+    name = (model or "").strip().lower()
+    return name in NATIVE_TOOL_MODELS or "glm" in name or name.startswith("campus")
 
 ANTI_FULL = [
     "不要每句话都反问；不需要每轮都把话题抛回去。",
@@ -77,6 +85,19 @@ def _tools(level: str, persona: dict[str, Any]) -> str:
     if level == "compact":
         return "# 你能做什么\n" + "\n".join("- " + line for line in TOOLS_COMPACT)
     return prompt._capabilities_section(persona)
+
+
+def _native_tools(profile: dict[str, str], scenario: dict[str, Any], enabled: bool = True) -> list[dict[str, Any]]:
+    """按 profile 的 tools 维度决定是否发原生 tools[]。
+
+    ``tools=none`` 或人设关闭工具时两者都不发；``compact`` 只是提示词更短，
+    原生 schema 仍完整（否则测到的不是同一套工具能力）。
+    """
+    if not enabled or profile.get("tools") == "none":
+        return []
+    if not (scenario.get("persona") or {}).get("tools_enabled", True):
+        return []
+    return tool_schema.openai_tools()
 
 
 def _state(scenario: dict[str, Any], level: str, guidance: str, mood: str) -> str:
@@ -169,47 +190,53 @@ def _history_messages(conv: Conversation, mode: str) -> list[dict[str, str]]:
 
 
 def run_conversation(scenario: dict[str, Any], provider: OpenAICompatibleProvider,
-                     profile: dict[str, str], *, max_tool_rounds: int = 3, max_tokens: int = 500) -> Conversation:
+                     profile: dict[str, str], *, max_tool_rounds: int = 3, max_tokens: int = 500,
+                     tools: list[dict[str, Any]] | None = None) -> Conversation:
     conv = Conversation(scenario=scenario, variant=None)  # type: ignore[arg-type]
+    if tools is None:
+        # 直接调用时也遵守 profile 的 tools 维度（tools=none 不悄悄发原生 schema）。
+        tools = _native_tools(profile, scenario)
     system_base = build_system(scenario, profile)
     turns = [str(t) for t in scenario.get("turns") or []]
     for user_text in turns:
         conv.turns.append(TurnRecord(user=user_text, assistant=""))
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_base}]
+        messages: list[dict[str, Any]] = [{"role": "system", "content": system_base}]
         prefix = conv.turns[:-1]
         tmp = Conversation(scenario=scenario, variant=None)  # type: ignore[arg-type]
         tmp.turns = prefix
         messages.extend(_history_messages(tmp, profile["history"]))
         messages.append({"role": "user", "content": user_text})
-        final_text = ""
-        silent = False
-        for round_index in range(max_tool_rounds + 1):
-            reply = provider.complete(messages, scenario_id=str(scenario.get("id")))
-            visible, calls = extract_tool_calls(reply.text or "")
-            if calls and round_index < max_tool_rounds:
-                for call in calls:
-                    conv.turns[-1].tool_calls.append({"name": call.name, "arguments": call.arguments})
-                    result = _mock_tool(call.name, call.arguments, conv)
-                    if call.name == "stay_silent":
-                        silent = True
-                    messages.append({"role": "assistant", "content": reply.text})
-                    messages.append({"role": "user", "content": f"[工具结果：{call.name}]\n{result}"})
-                if silent:
-                    break
-                continue
-            final_text = visible.strip()
-            break
+        final_text, silent = run_tool_loop(
+            provider,
+            messages,
+            conv,
+            tools=tools,
+            max_tool_rounds=max_tool_rounds,
+        )
         conv.turns[-1].assistant = "" if silent else final_text
         conv.turns[-1].silent = silent
     return conv
 
 
+def _tool_source_counts(conv: Conversation) -> tuple[int, int]:
+    native = text = 0
+    for turn in conv.turns:
+        for call in turn.tool_calls:
+            if call.get("source") == "native":
+                native += 1
+            else:
+                text += 1
+    return native, text
+
+
 def evaluate(scenario: dict[str, Any], profile: dict[str, str], provider: OpenAICompatibleProvider,
-             judge_provider: OpenAICompatibleProvider) -> dict[str, Any]:
+             judge_provider: OpenAICompatibleProvider, *, native_tools: bool = True) -> dict[str, Any]:
     started = time.monotonic()
     try:
-        conv = run_conversation(scenario, provider, profile)
+        tools = _native_tools(profile, scenario, enabled=native_tools)
+        conv = run_conversation(scenario, provider, profile, tools=tools)
         det = score_conversation(conv)
+        native_calls, text_calls = _tool_source_counts(conv)
         judged = judge(judge_provider, scenario, conversation_text(conv))
         dims = judged.get("dimensions") or {}
         judge_score = round(statistics.mean(dims.values()) * 20, 1) if dims else None
@@ -219,11 +246,13 @@ def evaluate(scenario: dict[str, Any], profile: dict[str, str], provider: OpenAI
         return {"scenario": scenario["id"], "profile": profile, "judge": dims, "judge_score": judge_score,
                 "deterministic": det["deterministic_score"], "combined": combined,
                 "hard_failures": det["hard_failures"], "chars": det["chars"], "tool_calls": det["tool_calls"],
+                "native_tool_calls": native_calls, "text_tool_calls": text_calls,
                 "error": judged.get("error"), "elapsed_ms": int((time.monotonic() - started) * 1000)}
     except Exception as error:  # noqa: BLE001
         return {"scenario": scenario["id"], "profile": profile, "judge": {}, "judge_score": None,
                 "deterministic": 0.0, "combined": 0.0, "hard_failures": ["provider"], "chars": 0,
-                "tool_calls": [], "error": str(error)[:240], "elapsed_ms": int((time.monotonic() - started) * 1000)}
+                "tool_calls": [], "native_tool_calls": 0, "text_tool_calls": 0,
+                "error": str(error)[:240], "elapsed_ms": int((time.monotonic() - started) * 1000)}
 
 
 def summarize(name: str, rows: list[dict[str, Any]], profile: dict[str, str]) -> dict[str, Any]:
@@ -233,6 +262,8 @@ def summarize(name: str, rows: list[dict[str, Any]], profile: dict[str, str]) ->
             "judge": round(statistics.mean([r["judge_score"] for r in valid]), 1) if valid else 0.0,
             "deterministic": round(statistics.mean([r["deterministic"] for r in rows]), 1),
             "hard_rate": round(100.0 * sum(1 for r in rows if r["hard_failures"]) / max(1, len(rows)), 1),
+            "native_tool_calls": sum(int(r.get("native_tool_calls") or 0) for r in rows),
+            "text_tool_calls": sum(int(r.get("text_tool_calls") or 0) for r in rows),
             "dims": {k: round(statistics.mean([r["judge"][k] for r in valid]), 2) for k in JUDGE_KEYS if valid},
             "rows": rows}
 
@@ -250,10 +281,15 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--max-tokens", type=int, default=4000)
     parser.add_argument("--reasoning-effort", default=os.environ.get("CAMPUS_REASONING", "max"))
     parser.add_argument("--timeout", type=float, default=120.0)
+    parser.add_argument("--native-tools", choices=["auto", "on", "off"], default="auto",
+                        help="auto：campus-chat/glm-flash 等已知模型发原生 tools[]；on/off 强制开关")
     args = parser.parse_args(list(argv) if argv is not None else None)
     key = args.api_key or os.environ.get("CAMPUS_API_KEY") or os.environ.get("PROXY_API_KEY")
     if not key:
         raise SystemExit("缺少 key")
+    native_tools = args.native_tools == "on" or (
+        args.native_tools == "auto" and supports_native_tools(args.model)
+    )
     scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))
     provider = OpenAICompatibleProvider(base_url=args.base_url, api_key=key, model=args.model,
                                         temperature=0.75, max_tokens=args.max_tokens, timeout=args.timeout, retries=2,
@@ -281,7 +317,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     results: list[Any] = [None] * len(jobs)
     started = time.monotonic()
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        futures = {pool.submit(evaluate, scenario, profile, provider, judge_provider): i
+        futures = {pool.submit(evaluate, scenario, profile, provider, judge_provider,
+                               native_tools=native_tools): i
                    for i, (name, profile, scenario, sample) in enumerate(jobs)}
         done = 0
         for future in concurrent.futures.as_completed(futures):
@@ -303,15 +340,16 @@ def main(argv: Iterable[str] | None = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({"meta": {"generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
                                         "model": args.model, "samples": args.samples,
+                                        "native_tools": native_tools,
                                         "elapsed_ms": int((time.monotonic() - started) * 1000)},
                                "summaries": summaries}, ensure_ascii=False, indent=2), encoding="utf-8")
     md = [f"# 上下文工程参数搜索（{args.stage}）", "",
-          f"- campus-chat；12 个多轮场景；samples={args.samples}", "",
-          "| 方案 | 综合分 | Judge | 确定性 | 硬失败率 | " + " | ".join(JUDGE_KEYS) + " |",
-          "|" + "---|" * (4 + len(JUDGE_KEYS))]
+          f"- {args.model}；{len(scenarios)} 个多轮场景；samples={args.samples}；native tools={native_tools}", "",
+          "| 方案 | 综合分 | Judge | 确定性 | 硬失败率 | 原生/文本工具 | " + " | ".join(JUDGE_KEYS) + " |",
+          "|" + "---|" * (5 + len(JUDGE_KEYS))]
     for s in summaries:
         md.append(f"| {s['name']} | **{s['combined']:.1f}** | {s['judge']:.1f} | {s['deterministic']:.1f} | "
-                  f"{s['hard_rate']:.1f}% | " + " | ".join(f"{s['dims'].get(k, 0):.2f}" for k in JUDGE_KEYS) + " |")
+                  f"{s['hard_rate']:.1f}% | {s['native_tool_calls']}/{s['text_tool_calls']} | " + " | ".join(f"{s['dims'].get(k, 0):.2f}" for k in JUDGE_KEYS) + " |")
     md += ["", "## 最优 profile", "", "```json", json.dumps(summaries[0]["profile"], ensure_ascii=False, indent=2), "```"]
     md_path = out.with_suffix(".md")
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")

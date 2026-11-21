@@ -57,12 +57,41 @@ class ProviderError(RuntimeError):
 
 
 @dataclass
+class ToolCall:
+    """一次原生 function calling 返回的调用。
+
+    ``arguments`` 是解析后的 dict（坏 JSON 时为空 dict），``arguments_text`` 保留模型
+    给的原始字符串，供回灌 assistant ``tool_calls`` 时原样带回；``error`` 非空表示这条
+    调用不能执行（参数不是合法 JSON / 缺少函数名），但仍会记录并回一条 tool 消息。
+    """
+
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+    arguments_text: str = ""
+    error: str = ""
+
+    def as_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "id": self.id,
+            "name": self.name,
+            "arguments": dict(self.arguments),
+        }
+        if self.arguments_text:
+            data["arguments_text"] = self.arguments_text
+        if self.error:
+            data["error"] = self.error
+        return data
+
+
+@dataclass
 class Reply:
     text: str
     model: str = ""
     latency_ms: int = 0
     usage: dict[str, int] = field(default_factory=dict)
     attempts: int = 1
+    tool_calls: list[ToolCall] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -71,7 +100,63 @@ class Reply:
             "latency_ms": self.latency_ms,
             "usage": dict(self.usage),
             "attempts": self.attempts,
+            "tool_calls": [call.as_dict() for call in self.tool_calls],
         }
+
+
+def _parse_arguments(raw: Any) -> tuple[dict[str, Any], str, str]:
+    """把 tool_call.function.arguments 解析成 ``(dict, 原始文本, 错误)``。
+
+    OpenAI 兼容接口的 arguments 是 JSON **字符串**；少数网关会直接给 dict。
+    空字符串按「无参数」处理（stay_silent 这类工具常见）；坏 JSON 不抛异常，
+    只标 error，让 simulator 回一条可读的 tool 结果，评测继续。
+    """
+    if raw is None:
+        return {}, "", ""
+    if isinstance(raw, dict):
+        return dict(raw), json.dumps(raw, ensure_ascii=False), ""
+    if not isinstance(raw, str):
+        return {}, json.dumps(raw, ensure_ascii=False), "工具参数不是 JSON 对象"
+    text = raw.strip()
+    if not text:
+        return {}, "", ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return {}, raw, "工具参数不是合法 JSON"
+    if not isinstance(data, dict):
+        return {}, raw, "工具参数不是 JSON 对象"
+    return data, raw, ""
+
+
+def parse_tool_calls(raw_calls: Any) -> list[ToolCall]:
+    """解析 ``choices[0].message.tool_calls``（数组）；形状不对时返回空列表。"""
+    if isinstance(raw_calls, dict):
+        raw_calls = [raw_calls]
+    if not isinstance(raw_calls, list):
+        return []
+    calls: list[ToolCall] = []
+    for index, item in enumerate(raw_calls, start=1):
+        if not isinstance(item, dict):
+            calls.append(ToolCall(id=f"call_{index}", name="", error="工具调用不是对象"))
+            continue
+        function = item.get("function")
+        if not isinstance(function, dict):
+            function = {}
+        name = str(function.get("name") or item.get("name") or "").strip()
+        arguments, arguments_text, error = _parse_arguments(function.get("arguments"))
+        if not name:
+            error = error or "工具调用缺少函数名"
+        calls.append(
+            ToolCall(
+                id=str(item.get("id") or f"call_{index}"),
+                name=name,
+                arguments=arguments,
+                arguments_text=arguments_text,
+                error=error,
+            )
+        )
+    return calls
 
 
 class Provider:
@@ -81,9 +166,11 @@ class Provider:
 
     def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         scenario_id: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> Reply:  # pragma: no cover - 抽象方法
         raise NotImplementedError
 
@@ -112,14 +199,19 @@ def _endpoint(base_url: str) -> str:
 
 
 def build_payload(
-    messages: list[dict[str, str]],
+    messages: list[dict[str, Any]],
     *,
     model: str,
     temperature: float | None,
     max_tokens: int | None,
     reasoning_effort: str | None = None,
+    tools: list[dict[str, Any]] | None = None,
+    tool_choice: str | dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """请求体只放必要字段，和 App 的 ``buildChatCompletionPayload`` 保持同一形状。"""
+    """请求体只放必要字段，和 App 的 ``buildChatCompletionPayload`` 保持同一形状。
+
+    不传 ``tools`` 时请求体与旧版完全一致（老模型/纯文本链路不受影响）。
+    """
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -131,6 +223,9 @@ def build_payload(
         payload["max_tokens"] = int(max_tokens)
     if reasoning_effort:
         payload["reasoning_effort"] = reasoning_effort
+    if tools:
+        payload["tools"] = tools
+        payload["tool_choice"] = tool_choice or "auto"
     return payload
 
 
@@ -176,9 +271,11 @@ class OpenAICompatibleProvider(Provider):
 
     def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         scenario_id: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> Reply:
         payload = build_payload(
             messages,
@@ -186,6 +283,8 @@ class OpenAICompatibleProvider(Provider):
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
+            tools=tools,
+            tool_choice=tool_choice,
         )
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers = {
@@ -284,6 +383,7 @@ class OpenAICompatibleProvider(Provider):
             latency_ms=int((time.monotonic() - started) * 1000),
             usage=dict(self.last_usage),
             attempts=attempts,
+            tool_calls=parse_tool_calls(message.get("tool_calls")),
         )
 
 
@@ -320,11 +420,13 @@ class FakeProvider(Provider):
 
     def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         scenario_id: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
     ) -> Reply:
-        self.calls.append({"scenario_id": scenario_id, "messages": messages})
+        self.calls.append({"scenario_id": scenario_id, "messages": messages, "tools": tools})
         key = scenario_id or ""
         if key in self.responses:
             text = self.responses[key]

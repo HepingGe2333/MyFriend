@@ -463,6 +463,10 @@
     <string name="memory_source_quote">From: %1$s</string>
     <string name="memory_source_manual">Added by hand</string>
     <string name="memory_source_conversation">From a conversation</string>
+    <!-- 0.15 high-confidence auto memory: written by the app itself when a rule matches. -->
+    <string name="memory_source_auto">Auto-saved</string>
+    <!-- 0.15 crisis safety net: one short line appended when the reply has no safety anchor. -->
+    <string name="safety_crisis_note">(Please don\'t stay on your own — is anyone with you? You can call 120 or your local emergency number.)</string>
 
     <!-- MemoryScreen: drawers and categories -->
     <string name="memory_drawer_user">About you</string>

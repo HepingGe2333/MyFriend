@@ -10,6 +10,9 @@
 | `run-20261120-162847.json/.md` | 旁白证据：`low-001` 回复「（沉默了一会儿）…」 |
 | `run-20261120-162939.json/.md` | 幻觉证据：`fact-003` 回复「没说过吧。在天津读的。」 |
 | `run-20261120-162246.json/.md` | 更早的幻觉证据：`fact-003` 回复「建筑系，沿海那个，你知道的。」 |
+| `bench2-native-tools-20261121-212252.md` | **Bench v2 原生 function calling 升级报告**；双模型 baseline（30 场景×1 样本、并发 15）：campus 93.8 / glm 95.3，硬失败均 3.3%，17+47 次原生调用、1 次文本 fallback |
+| `bench2-native-campus-20261121-211650.json/.md` | campus-chat 原生 tools 基线原始报告 |
+| `bench2-native-glm-20261121-212107.json/.md` | glm-flash 原生 tools 基线原始报告 |
 | `fake-smoke.json/.md` | `--provider fake` 离线冒烟，31/31 通过；只证明管线，不代表模型质量 |
 
 报告里的 `meta.generated_at`、`summary.overall`、`summary.dimensions` 是判断基线是否过期的依据；

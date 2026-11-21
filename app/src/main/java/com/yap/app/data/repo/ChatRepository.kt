@@ -26,6 +26,7 @@ import com.yap.app.domain.NotificationDeepLink
 import com.yap.app.domain.AttachmentsCodec
 import com.yap.app.domain.AudioVideoKind
 import com.yap.app.domain.AudioVideoText
+import com.yap.app.domain.AutoMemory
 import com.yap.app.domain.BlockPolicy
 import com.yap.app.domain.CurrentMedia
 import com.yap.app.domain.ExperienceRhythm
@@ -73,8 +74,10 @@ import com.yap.app.domain.UserErrorTokens
 import com.yap.app.domain.SleepDecision
 import com.yap.app.domain.SleepInput
 import com.yap.app.domain.SleepPolicy
+import com.yap.app.domain.SafetyGuard
 import com.yap.app.domain.SilentReason
 import com.yap.app.domain.SpeechStyleCodec
+import com.yap.app.domain.StaySilent
 import com.yap.app.domain.ToolCatalog
 import com.yap.app.domain.ToolProtocol
 import com.yap.app.domain.ToolResult
@@ -803,6 +806,9 @@ class ChatRepository @Inject constructor(
             emit(GenerationEvent.Failed(UserError.Domain(DomainErrorCode.NOTHING_TO_REPLY), null))
             return@flow
         }
+        // 这一轮「对方说了什么」：安全兜底与高置信自动记忆都要看用户原话（最近一条 user 消息）。
+        // recentBySession 按 createdAt 倒序返回，所以最近一条 user 消息就是 firstOrNull。
+        val latestUserText = recentHistory.firstOrNull { it.role == MessageRole.USER }?.content.orEmpty()
         val now0 = System.currentTimeMillis()
         // 睡眠 / 免打扰 / 唤醒阈值（规格 §六）。判定是纯函数，这里只负责拿数据、落痕迹。
         val sleepDecision = evaluateSleep(persona, sessionId, now0)
@@ -880,6 +886,8 @@ class ChatRepository @Inject constructor(
             var deferred = false
             // `stay_silent`：这一轮只标已读、不落任何 assistant 消息（与 defer 的区别是「什么都不留」）。
             var silenced = false
+            // 0.15：这一轮模型有没有自己调用 `remember`（调用过就不再自动补记忆）。
+            var rememberCalled = false
             while (true) {
                 val buffer = StringBuilder()
                 adapter.streamChat(
@@ -925,13 +933,42 @@ class ChatRepository @Inject constructor(
                     // 数字（原生 tool_calls）与字符串（代码块）都认，见 ToolRounds.requested。
                     maxToolRounds = ToolRounds.merge(maxToolRounds, ToolRounds.requested(call))
                 }
-                if (calls.isEmpty() || round >= maxToolRounds) {
+                // stay_silent 是「这一轮不回」的控制信号，不算一次工具轮：
+                // 即使轮数刚好用尽，也不能把同一响应里的正文落库（规范：工具 + 正文只沉默）。
+                val silenceInCalls = calls.any(StaySilent::isSilence)
+                if (calls.isEmpty() || (round >= maxToolRounds && !silenceInCalls)) {
                     finalBody = body.ifBlank { if (calls.isEmpty()) buffer.toString().trim() else "" }
                     break
                 }
                 round++
                 val results = mutableListOf<ToolResult>()
-                for (call in calls) {
+                // 0.15：同一批里既 `send_message` 又 `stay_silent` 时，先执行沉默——
+                // 否则消息已经上屏，「这一轮只已读」就破了（见 StaySilent.planBatch）。
+                val batch = StaySilent.planBatch(calls)
+                for (call in batch.calls) {
+                    if (silenced) {
+                        // 这一轮已经决定不回：后面的工具一律不执行（尤其不能再把 send_message 发出去），
+                        // 但每个调用都要给模型一个结果，免得它以为工具坏了反复重试。
+                        results += ToolResult(
+                            invocation = call,
+                            ok = true,
+                            summary = "这一轮已经决定不回",
+                            contentForModel = "这一轮已经决定不回，别再执行别的工具，也别再输出任何文字。"
+                        )
+                        continue
+                    }
+                    // 这一轮已经发过消息：沉默收不回已经上屏的话，按「拒绝沉默」处理（与连续超限同一条路径）。
+                    if (StaySilent.isSilence(call) && !StaySilent.canHonor(sentMessages.isNotEmpty())) {
+                        results += ToolResult(
+                            invocation = call,
+                            ok = false,
+                            summary = "已经发过消息",
+                            contentForModel = "这一轮你已经发出过消息了，现在不能再沉默；把剩下的话说完。"
+                        )
+                        continue
+                    }
+                    // 模型自己调用过 remember：这一轮的高置信自动记忆不再重复写。
+                    if (call.name.trim().equals(ToolCatalog.REMEMBER, ignoreCase = true)) rememberCalled = true
                     // 0.14 连发：聊天层直接落库，不交给通用工具执行器（它没有「发消息」的写路径）。
                     if (call.name.trim().equals(ToolCatalog.SEND_MESSAGE, ignoreCase = true)) {
                         val text = ExperienceRhythm.clampSendText(call.argument("text").orEmpty())
@@ -1033,6 +1070,12 @@ class ChatRepository @Inject constructor(
                     finalBody = ""
                     break
                 }
+                if (silenced) {
+                    // stay_silent：立刻结束，不再向模型要下一轮。
+                    // 即使模型在同一个响应里还写了文字，那些字也只停在暂存气泡里，不会落库。
+                    finalBody = ""
+                    break
+                }
                 // 过程话不算数：先把气泡里的临时文字清干净，等最后那一轮的真话。
                 shownText = ""
                 emit(GenerationEvent.Delta(""))
@@ -1085,6 +1128,33 @@ class ChatRepository @Inject constructor(
             }
             val rawFinalText = finalBody.trim()
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
+            // 危机安全兜底（0.15）：用户说了危机语句、而他这一轮的话里没有任何安全锚点时，
+            // 只在末尾补一句很短的提示——不覆盖他原本的话，也不改人设语气。
+            val safetyNote = SafetyGuard.noteIfNeeded(
+                userMessage = latestUserText,
+                reply = (sentMessages.map { it.content } + finalText).joinToString("\n"),
+                note = appContext.getString(R.string.safety_crisis_note)
+            )
+            var replyText = finalText
+            if (safetyNote != null) {
+                if (replyText.isNotBlank()) {
+                    replyText = replyText.trimEnd() + "\n" + safetyNote
+                } else if (sentMessages.isNotEmpty()) {
+                    // 正文已经用 send_message 一条条发出去了：把提示补到最后一条上，
+                    // 不再造第 5 个气泡（规范 §4 的硬上限）。
+                    val previous = sentMessages.last()
+                    val merged = previous.copy(
+                        content = previous.content.trimEnd() + "\n" + safetyNote,
+                        updatedAt = nextTimestamp(sessionId)
+                    )
+                    runCatching {
+                        messageDao.update(merged)
+                        sentMessages[sentMessages.lastIndex] = merged
+                        lastSaved = merged
+                        refreshPreview(session)
+                    }
+                }
+            }
             // 0.14：不带工具的回复按空行拆成 1–3 条，逐条落库（规范 §4）。
             // 已经用 send_message 发过时，正文最多再补 1 条；4 条是这一轮的硬上限。
             val remainingSlots = (ExperienceRhythm.MAX_MESSAGES_PER_ROUND - sentMessages.size).coerceAtLeast(0)
@@ -1093,15 +1163,15 @@ class ChatRepository @Inject constructor(
             } else {
                 minOf(ExperienceRhythm.MAX_SPLIT_MESSAGES, remainingSlots)
             }
-            val chunks = ExperienceRhythm.splitPlainReply(finalText).let { raw ->
+            val chunks = ExperienceRhythm.splitPlainReply(replyText).let { raw ->
                 if (raw.size <= chunkLimit) raw else raw.take(chunkLimit)
             }
             val pendingAttachments = toolAttachments.take(MAX_IMAGES_PER_MESSAGE)
-            if (chunkLimit == 0 && finalText.isNotBlank() && lastSaved != null) {
+            if (chunkLimit == 0 && replyText.isNotBlank() && lastSaved != null) {
                 // 已经发满 4 条：正文并进最后一条，不再造第 5 个气泡（规范 §4 的硬上限）。
                 val previous = sentMessages.last()
                 val merged = previous.copy(
-                    content = (previous.content + "\n\n" + finalText.trim()).trim(),
+                    content = (previous.content + "\n\n" + replyText.trim()).trim(),
                     updatedAt = nextTimestamp(sessionId)
                 )
                 runCatching {
@@ -1187,7 +1257,8 @@ class ChatRepository @Inject constructor(
                 val saved = saveAssistantMessage(
                     sessionId = sessionId,
                     personaId = persona.id,
-                    content = "",
+                    // 只有表情、但这一轮触发过危机兜底时，把那句提示带上；正常情况仍然是空正文。
+                    content = if (safetyNote != null && sentMessages.isEmpty()) safetyNote else "",
                     model = session.model.ifBlank { config.model },
                     toolAttachments = pendingAttachments,
                     toolTraceJson = ToolTraceCodec.encode(traces),
@@ -1207,6 +1278,10 @@ class ChatRepository @Inject constructor(
             completed = true
             // 他回了一句：连续「已读不回」的计数清零（规范 §4 的连续性只按连续轮次算）。
             runCatching { settingsRepository.resetStaySilentStreak() }
+            // 0.15 高置信自动记忆：只在正文说「记住了」不算；模型这一轮没有调用 remember 时，
+            // 由规则把明确的长期事实（过敏/忌口/生日/纪念日/约定）兜底写进记忆抽屉。
+            // 写在回复落库之后，失败只记日志，不回滚、不影响这一轮。
+            runCatching { autoRemember(persona.id, sessionId, latestUserText, rememberCalled) }
             // 这一轮聊完了：让他在后台把「已经聊过去的那一段」收成一段记忆。
             // 异步、不 await：压缩再慢也晚不了一毫秒回话，失败也当没发生。
             // 服务端模式下上下文由服务端维护，本机不再压缩（否则两边各花一次模型调用）。
@@ -1339,6 +1414,44 @@ class ChatRepository @Inject constructor(
         ) return
         runCatching {
             chatNotifier.notifyMessage(appContext, persona, sessionId, message.content)
+        }
+    }
+
+    /**
+     * 高置信自动记忆（0.15）：规则命中后写一条 `USER` 记忆，并在日志里标 `auto`。
+     *
+     * 三件事缺一不可：用户这句话确实包含明确的长期事实（[AutoMemory.detect]）、
+     * 这一轮模型没有自己调用 `remember`（调用方判断）、已有的记忆里没有同一件事（仓储去重）。
+     * 只写一条、内容用原句；失败不抛出——记忆是锦上添花，不能把这一轮回复弄成失败。
+     */
+    private suspend fun autoRemember(
+        personaId: String,
+        sessionId: String,
+        userMessage: String,
+        rememberCalled: Boolean
+    ) {
+        val hit = AutoMemory.detectThisTurn(userMessage, rememberCalled) ?: return
+        memoryRepository.addAutoMemory(
+            personaId = personaId,
+            content = hit.content,
+            importance = hit.importance,
+            sourceQuote = userMessage.take(120),
+            sourceSessionId = sessionId,
+            tags = hit.tags
+        ).onSuccess { added ->
+            if (added) {
+                android.util.Log.i(
+                    "ChatRepository",
+                    "auto remember(kind=${hit.kind.tag}, importance=${hit.importance}): ${hit.content}"
+                )
+            } else {
+                android.util.Log.d(
+                    "ChatRepository",
+                    "auto remember skipped (duplicate, kind=${hit.kind.tag})"
+                )
+            }
+        }.onFailure { error ->
+            android.util.Log.w("ChatRepository", "auto remember failed: ${error.javaClass.simpleName}")
         }
     }
 

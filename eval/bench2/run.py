@@ -62,6 +62,12 @@ def evaluate_one(
     try:
         conv = run_conversation(scenario, provider, variant)
         det = score_conversation(conv)
+        call_records = [
+            {"name": call.get("name", ""), "source": call.get("source", "text"),
+             **({"id": call["id"]} if call.get("id") else {}),
+             **({"error": call["error"]} if call.get("error") else {})}
+            for turn in conv.turns for call in turn.tool_calls
+        ]
         judged = judge(judge_provider, scenario, conversation_text(conv))
         dims = judged.get("dimensions") or {}
         judge_score = round(statistics.mean(dims.values()) * 20, 1) if dims else None
@@ -81,6 +87,9 @@ def evaluate_one(
             "chars": det["chars"],
             "questions": det["questions"],
             "tool_calls": det["tool_calls"],
+            "tool_call_records": call_records,
+            "native_tool_calls": det.get("native_tool_calls", 0),
+            "text_tool_calls": det.get("text_tool_calls", 0),
             "turns": len(conv.turns),
             "error": judged.get("error"),
             "elapsed_ms": int((time.monotonic() - started) * 1000),
@@ -90,7 +99,8 @@ def evaluate_one(
         return {
             "scenario": scenario["id"], "variant": variant.key, "judge": {}, "judge_score": None,
             "deterministic": 0.0, "combined": 0.0, "hard_failures": ["provider"],
-            "chars": 0, "questions": 0, "tool_calls": [], "turns": 0,
+            "chars": 0, "questions": 0, "tool_calls": [], "tool_call_records": [],
+            "native_tool_calls": 0, "text_tool_calls": 0, "turns": 0,
             "error": str(error)[:240], "elapsed_ms": int((time.monotonic() - started) * 1000),
             "transcript": "",
         }
@@ -121,6 +131,8 @@ def summarize(variant: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
         "combined": round(statistics.mean(combined), 1) if combined else 0.0,
         "ci": bootstrap_ci(combined),
         "hard_failure_rate": round(100.0 * hard / len(rows), 1) if rows else 0.0,
+        "native_tool_calls": sum(int(r.get("native_tool_calls") or 0) for r in rows),
+        "text_tool_calls": sum(int(r.get("text_tool_calls") or 0) for r in rows),
         "dimensions": dims,
         "avg_chars": round(statistics.mean([r["chars"] for r in rows]), 1),
         "errors": sum(1 for r in rows if r["error"]),
@@ -203,13 +215,14 @@ def main(argv: Iterable[str] | None = None) -> int:
     md = ["# Bench v2（多轮 + 工具 + judge）", "",
           f"- 模型：{args.model} @ {args.base_url}；场景 {len(scenarios)}；样本 {args.samples}；并发 {args.concurrency}",
           f"- 综合分 = 0.6×judge + 0.4×确定性；有硬失败封顶 60；95% CI 为场景级 bootstrap", ""]
-    headers = ["方案", "综合分", "95% CI", "Judge", "确定性", "硬失败率"] + JUDGE_KEYS
+    headers = ["方案", "综合分", "95% CI", "Judge", "确定性", "硬失败率", "原生/文本工具"] + JUDGE_KEYS
     md.append("| " + " | ".join(headers) + " |")
     md.append("|" + "---|" * len(headers))
     for item in sorted(summaries, key=lambda x: -x["combined"]):
         dims = [f"{item['dimensions'].get(key, 0):.2f}" for key in JUDGE_KEYS]
         md.append(f"| {item['variant']} | **{item['combined']:.1f}** | {item['ci'][0]:.1f}–{item['ci'][1]:.1f} | "
                   f"{item['judge_score']:.1f} | {item['deterministic']:.1f} | {item['hard_failure_rate']:.1f}% | "
+                  f"{item['native_tool_calls']}/{item['text_tool_calls']} | "
                   + " | ".join(dims) + " |")
     md += ["", "## 分场景", "", "| 场景 | " + " | ".join(item["variant"] for item in summaries) + " |",
            "|" + "---|" * (len(summaries) + 1)]

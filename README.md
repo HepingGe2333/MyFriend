@@ -18,7 +18,7 @@ YetAnotherPal（Yap）是一个 Android + iOS 的 AI 陪伴应用：把「人格
 | 数据库 schema | v13（消息按 200 条一块；人格带世界预设/话风/当前活动；两端版本号对齐） |
 | 备份格式 | v5（`format = "myfriend.backup"`、`formatVersion = 5`，图片/头像、搜索 provider、世界预设与话风随备份走；v1–v4 仍可读）。格式名为历史兼容保留，产品名已改为 YetAnotherPal（Yap） |
 | 构建号 | Android `versionCode` 与 iOS `CURRENT_PROJECT_VERSION` 保持相等 |
-| 单元测试 | Android 2279 条（219 类）+ 56 条 instrumented、`:agentcore` 179 条、`:agentd` 730 条、iOS 2398 条（`swift test`）+ 16 条 App-hosted |
+| 单元测试 | Android 2308 条（219 类）+ 56 条 instrumented、`:agentcore` 179 条、`:agentd` 745 条、iOS 2437 条（`swift test`）+ 16 条 App-hosted |
 | 持续集成 | GitHub Actions：Linux 跑 Android / `:agentcore` / `:agentd`，macOS 跑 `swift test` + iOS `build-for-testing` |
 
 ## 特性概览

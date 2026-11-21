@@ -70,7 +70,9 @@ import com.yap.app.R
 import com.yap.app.data.local.MemoryCategory
 import com.yap.app.data.local.MemoryConsolidationEntity
 import com.yap.app.data.local.MemoryEntity
+import com.yap.app.domain.AutoMemory
 import com.yap.app.domain.MemoryDrawer
+import com.yap.app.domain.MemoryTags
 import com.yap.app.domain.MemoryTier
 import com.yap.app.ui.components.AppHeader
 import com.yap.app.ui.components.BackNavigation
@@ -543,14 +545,26 @@ private fun MemoryCard(
                 overflow = TextOverflow.Ellipsis
             )
             Spacer(Modifier.height(6.dp))
-            Text(
-                memorySourceLabel(memory),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (tier == MemoryTier.ACTIVE) 0.7f else 0.45f),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(end = 9.dp)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    memorySourceLabel(memory),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (tier == MemoryTier.ACTIVE) 0.7f else 0.45f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false).padding(end = 9.dp)
+                )
+                // 0.15 高置信自动记忆：规则命中后由应用自己写下的，和「手动添加 / 来自对话」区分开。
+                if (AutoMemory.isAuto(MemoryTags.decode(memory.tags))) {
+                    Text(
+                        stringResource(R.string.memory_source_auto),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = LocalAccentColor.current.copy(alpha = 0.85f * bodyAlpha),
+                        maxLines = 1,
+                        modifier = Modifier.padding(end = 9.dp)
+                    )
+                }
+            }
             Spacer(Modifier.height(3.dp))
             Text(
                 formatFullDateTime(LocalContext.current, memory.updatedAt),
