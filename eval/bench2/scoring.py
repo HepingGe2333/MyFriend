@@ -40,6 +40,11 @@ def score_conversation(conv: Conversation) -> dict[str, Any]:
                     start = index + len(forbidden)
                     continue
             # 地点/计划类：如果同时给了更正后的答案，提到旧值不算违规。
+            if forbidden in ("喵", "宝贝"):
+                # 「别喵」「喵什么喵」「不叫宝贝」不是真的在扮演/改口
+                if any(marker in (prefix + suffix) for marker in ("别", "不", "什么", "学", "叫")):
+                    start = index + len(forbidden)
+                    continue
             if forbidden in ("杭州", "周三", "下周三"):
                 corrected = any(correct in text for correct in ("苏州", "周五"))
                 wrong_assertion = re.search(rf"(在|去|是|住){forbidden}", text)
