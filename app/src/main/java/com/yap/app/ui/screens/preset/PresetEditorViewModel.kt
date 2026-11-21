@@ -44,7 +44,12 @@ data class PresetForm(
     /** 粘贴的聊天记录原文只活在内存里，保存时不会写库（规范 §3.3）。 */
     val speechSample: String = "",
     /** `llm` / `heuristic`；为空表示还没总结过。 */
-    val speechSource: String = ""
+    val speechSource: String = "",
+    /**
+     * 0.15 模型优化开关（schema v20，[com.yap.app.domain.ModelProfile]）：
+     * `AUTO` / `DEEPSEEK` / `GLM`；用这个预设创建人格时会带过去。
+     */
+    val modelProfile: String = com.yap.app.domain.ModelProfile.DEFAULT_STORED
 )
 
 data class PresetEditorUiState(
@@ -99,7 +104,9 @@ class PresetEditorViewModel @Inject constructor(
                                 speechPhrases = speech?.phrases.orEmpty(),
                                 speechHabits = speech?.habits.orEmpty().joinToString("\n"),
                                 speechAvoid = speech?.avoid.orEmpty().joinToString("\n"),
-                                speechSource = ""
+                                speechSource = "",
+                                modelProfile = com.yap.app.domain.ModelProfile
+                                    .fromStored(preset.modelProfile).stored
                             ),
                             loaded = true
                         )
@@ -248,7 +255,9 @@ class PresetEditorViewModel @Inject constructor(
                     avatarSeed = form.avatarSeed,
                     worldJson = world.takeIf { !it.isEmpty() && it.worldName.isNotBlank() }
                         ?.let(WorldPresetCodec::encode),
-                    speechStyleJson = speech.takeIf { !it.isEmpty() }?.let(SpeechStyleCodec::encode)
+                    speechStyleJson = speech.takeIf { !it.isEmpty() }?.let(SpeechStyleCodec::encode),
+                    // 0.15：模型优化档位（表单里永远是三个合法值之一）。
+                    modelProfile = form.modelProfile
                 )
             )
             _state.update { it.copy(saving = false) }

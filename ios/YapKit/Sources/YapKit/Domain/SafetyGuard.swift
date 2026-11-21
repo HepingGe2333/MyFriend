@@ -17,6 +17,11 @@ import Foundation
 // 为什么放 Domain 而不是 ChatService 里：这是纯函数（不碰库、不碰网络、不读时钟），
 // 「哪些话算危机」「什么算已经有锚点」「追加哪两句」都必须能被直接钉死。
 //
+// 0.15 起它只是**第一段**：`isCrisis` 的词表结论为 true 时，`CrisisClassifier` 还会用当前
+// API 配置问模型一次「这是不是真实的危机」；模型明确说 false 时调用方会传 `crisis: false`
+// 进来（`needsSafetyNet` / `appendingSafetyNetIfNeeded` 的 `crisis` 参数），
+// 于是这里补话的那一步也跟着不执行 —— 两段式判定的结论必须贯穿到底。
+//
 // 规则集合与 Android `domain/SafetyGuard.kt` 同一套语义（0.15 两端一致）：
 // 判断刻意保守——宁可多补一句，也别漏掉真正的求助；但「想死你了」「笑死」这类
 // 想念 / 夸张说法不算危机（见 `crisisPatterns` 里的负向先行断言）。
@@ -95,20 +100,33 @@ public enum SafetyGuard {
     }
 
     /// 要不要补安全提示：用户命中危机，而回复里一个锚点都没有。
-    public static func needsSafetyNet(userMessage: String, reply: String) -> Bool {
-        isCrisis(userMessage) && !hasSafetyAnchor(reply)
+    ///
+    /// - Parameter crisis: **已经判定过的**危机结论（0.15 的两段式判定：词表 + 模型复核）。
+    ///   传 `nil` = 现场跑第一段词表（老调用点与纯逻辑测试的行为，一个字都不变）。
+    ///   为什么要这个参数：`CrisisClassifier` 可能把词表命中的夸张说法判成 `false`，
+    ///   那时「不进入兜底」必须贯穿到追加这一步，否则下面会在回复末尾又补一句，
+    ///   等于两段式判定的第二段白做。
+    public static func needsSafetyNet(
+        userMessage: String,
+        reply: String,
+        crisis: Bool? = nil
+    ) -> Bool {
+        (crisis ?? isCrisis(userMessage)) && !hasSafetyAnchor(reply)
     }
 
     /// 需要就补在末尾（同一条消息里另起一行），不需要就原样返回。
     ///
     /// 只追加、不改写：模型说的那句可能已经安慰到了，我们只是确保「别一个人 / 可以求助」
     /// 这两件事至少出现一次。空回复直接给安全提示（不然这一轮什么安全信息都没有）。
+    ///
+    /// - Parameter crisis: 同 `needsSafetyNet`：`nil` = 现场跑词表（老行为）。
     public static func appendingSafetyNetIfNeeded(
         reply: String,
         userMessage: String,
-        language: PromptLanguage = .zh
+        language: PromptLanguage = .zh,
+        crisis: Bool? = nil
     ) -> String {
-        guard needsSafetyNet(userMessage: userMessage, reply: reply) else { return reply }
+        guard needsSafetyNet(userMessage: userMessage, reply: reply, crisis: crisis) else { return reply }
         let net = safetyNetText(language: language)
         let trimmed = reply.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty { return net }

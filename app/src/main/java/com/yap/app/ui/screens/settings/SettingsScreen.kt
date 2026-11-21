@@ -34,6 +34,7 @@ import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.CleaningServices
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.Feedback
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.LightMode
@@ -137,6 +138,9 @@ fun SettingsScreen(
         scope.launch { snackbar.showSnackbar(message) }
     }
     var showClearChatsConfirm by remember { mutableStateOf(false) }
+    // 反馈：弹窗开着时内容由用户自己留住；保存失败不清空（他还能重试）。
+    var showFeedback by remember { mutableStateOf(false) }
+    var feedbackSaving by remember { mutableStateOf(false) }
     var showWipeConfirm by remember { mutableStateOf(false) }
     var customHex by remember { mutableStateOf("") }
     var notificationsGranted by remember { mutableStateOf(BackgroundKeeper.hasNotificationPermission(context)) }
@@ -188,11 +192,22 @@ fun SettingsScreen(
                 is SettingsEvent.ExportReady -> {
                     exportLauncher.launch(event.fileName)
                 }
+                is SettingsEvent.FeedbackReady -> {
+                    // 先保存、再打开浏览器（顺序在仓储层已经保证）。浏览器打不开时内容仍在本地，
+                    // 这里只补一句「没能打开」，不让用户以为反馈丢了。
+                    feedbackSaving = false
+                    showFeedback = false
+                    if (!openFeedbackIssue(context, event.issueUrl)) {
+                        snackbar.showSnackbar(context.getString(R.string.feedback_saved_open_failed))
+                    }
+                }
             }
         }
     }
     LaunchedEffect(state.message) {
         val message = state.message ?: return@LaunchedEffect
+        // 任何一条提示都意味着这次提交有结论了：保存失败时把按钮恢复，弹窗留在原地。
+        feedbackSaving = false
         snackbar.showSnackbar(message)
         viewModel.dismissMessage()
     }
@@ -681,6 +696,16 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 6.dp, vertical = 12.dp)
                 )
+                SectionLabel(stringResource(R.string.settings_section_feedback))
+                SettingCard {
+                    SettingRow(
+                        title = stringResource(R.string.settings_feedback_title),
+                        description = stringResource(R.string.settings_feedback_desc),
+                        icon = Icons.Outlined.Feedback,
+                        onClick = { showFeedback = true },
+                        showDivider = false
+                    )
+                }
                 TextButton(onClick = onOpenAbout, modifier = Modifier.padding(horizontal = 2.dp)) {
                     Text(stringResource(R.string.settings_about_entry))
                 }
@@ -713,6 +738,17 @@ fun SettingsScreen(
                 viewModel.deleteAllData()
             },
             onDismiss = { showWipeConfirm = false }
+        )
+    }
+    if (showFeedback) {
+        // 反馈：保存成功后才关弹窗（内容不会因为一次失败就丢），失败提示走下面的 snackbar。
+        FeedbackDialog(
+            saving = feedbackSaving,
+            onDismiss = { if (!feedbackSaving) showFeedback = false },
+            onSubmit = { kind, content, contact ->
+                feedbackSaving = true
+                viewModel.submitFeedback(kind, content, contact)
+            }
         )
     }
 }

@@ -1051,6 +1051,79 @@ final class ChatServiceTests: XCTestCase {
         XCTAssertFalse(system.contains("# Your mood"))
     }
 
+    // MARK: - 模型优化开关（0.15，schema v20）
+
+    /// `AUTO`（默认）+ DeepSeek 模型名 → 注入「# 工具使用」，而且排在工具能力清单之后。
+    func testAutoProfileWithDeepSeekModelInjectsToolUsage() async throws {
+        try seedReadySession()
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        let system = try systemPrompt()
+        XCTAssertTrue(system.contains(ModelProfilePrompt.section), "DeepSeek 档要注入工具使用")
+        XCTAssertTrue(system.contains(ToolCatalog.setActivity))
+        XCTAssertTrue(system.contains(ToolCatalog.memorize))
+        XCTAssertTrue(system.contains(ToolCatalog.webSearch))
+        let capability = try XCTUnwrap(system.range(of: ToolCatalog.capabilitySection))
+        let toolUsage = try XCTUnwrap(system.range(of: ModelProfilePrompt.section))
+        XCTAssertLessThan(capability.lowerBound, toolUsage.lowerBound,
+                          "工具使用规则排在工具能力清单之后（同一段里）")
+    }
+
+    /// `AUTO` + 模型名含 `glm` → lean（不注入）。
+    func testAutoProfileWithGLMModelSkipsToolUsage() async throws {
+        try seedReadySession()
+        var config = try XCTUnwrap(try stores.apiConfigs.byId(configId))
+        config.model = "glm-4-flash"
+        try stores.apiConfigs.upsert(config)
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        let system = try systemPrompt()
+        XCTAssertFalse(system.contains(ModelProfilePrompt.section), "GLM 走 lean，不注入：\(system)")
+    }
+
+    /// 显式选择优先于模型名：人格选了 DeepSeek，即使用 GLM 也不该 lean。
+    func testExplicitDeepSeekProfileWinsOverGLMModelName() async throws {
+        try seedReadySession()
+        var persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        persona.modelProfile = .deepseek
+        try stores.personas.upsert(persona)
+        var config = try XCTUnwrap(try stores.apiConfigs.byId(configId))
+        config.model = "glm-4-flash"
+        try stores.apiConfigs.upsert(config)
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        XCTAssertTrue(try systemPrompt().contains(ModelProfilePrompt.section))
+    }
+
+    /// 显式选择优先于模型名：人格选了 GLM，即使模型叫 deepseek 也不注入。
+    func testExplicitGLMProfileSkipsToolUsageOnDeepSeekModel() async throws {
+        try seedReadySession()
+        var persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        persona.modelProfile = .glm
+        try stores.personas.upsert(persona)
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        XCTAssertFalse(try systemPrompt().contains(ModelProfilePrompt.section))
+    }
+
+    /// 英文人格的工具使用段用英文标题（不能把中文小标题塞进英文提示词）。
+    func testEnglishPersonaGetsEnglishToolUsageBlock() async throws {
+        try seedReadySession()
+        var persona = try XCTUnwrap(try stores.personas.byId(personaId))
+        persona.languageTag = "en"
+        try stores.personas.upsert(persona)
+        StubURLProtocol.enqueue(.sse(textDeltas: ["Sure."]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "hi"))
+
+        let system = try systemPrompt()
+        XCTAssertTrue(system.contains(ModelProfilePrompt.sectionEN))
+        XCTAssertFalse(system.contains(ModelProfilePrompt.section))
+    }
+
     /// 模型用 `think.rounds` 指定这一次最多几轮工具：默认 5、指定值夹到 1..15。
     ///
     /// 逻辑在 `ChatService.toolRoundLimit(requested:)`（纯函数）：整条聊天链路里唯一的

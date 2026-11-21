@@ -172,7 +172,9 @@ extension PersonaEntity: SQLiteRecord {
         "blockedUntil", "blockReason",
         // v19：人格自己的提示词语言（可空 = 默认中文，见 `PromptLanguage`）。
         // 顺序跟 Android 19.json 一致：languageTag 在 blockProposalJson 之前。
-        "languageTag", "blockProposalJson"
+        "languageTag", "blockProposalJson",
+        // v20：模型优化档位（NOT NULL DEFAULT 'AUTO'；与 Android 20.json 对齐）。
+        "modelProfile"
     ]
 
     public var bindings: [SQLiteValue] {
@@ -194,7 +196,8 @@ extension PersonaEntity: SQLiteRecord {
             .optionalText(translationJson), .optionalText(translationLang),
             .optionalInt(moodValence), .optionalInt(moodArousal), .optionalInt(moodDominance),
             .optionalInt(blockedUntil), .optionalText(blockReason),
-            .optionalText(languageTag), .optionalText(blockProposalJson)
+            .optionalText(languageTag), .optionalText(blockProposalJson),
+            .text(modelProfile.stored)
         ]
     }
 
@@ -251,7 +254,9 @@ extension PersonaEntity: SQLiteRecord {
             blockedUntil: try row.optionalInt64("blockedUntil"),
             blockReason: try row.optionalText("blockReason"),
             blockProposalJson: try row.optionalText("blockProposalJson"),
-            languageTag: try row.optionalText("languageTag")
+            languageTag: try row.optionalText("languageTag"),
+            // v20：老库（升级后）这一列是 'AUTO'；认不出的值也回落 AUTO。
+            modelProfile: ModelProfile(stored: try row.optionalText("modelProfile"))
         )
     }
 }
@@ -543,14 +548,15 @@ extension PersonaPresetEntity: SQLiteRecord {
     public static let tableName = "persona_presets"
     public static let columns = [
         "id", "name", "description", "prompt", "category", "avatarUri", "avatarSeed",
-        "createdAt", "updatedAt", "worldJson", "speechStyleJson"
+        "createdAt", "updatedAt", "worldJson", "speechStyleJson", "modelProfile"
     ]
 
     public var bindings: [SQLiteValue] {
         [
             .text(id), .text(name), .text(description), .text(prompt), .text(category),
             .optionalText(avatarUri), .int(avatarSeed), .int(createdAt), .int(updatedAt),
-            .optionalText(worldJson), .optionalText(speechStyleJson)
+            .optionalText(worldJson), .optionalText(speechStyleJson),
+            .text(modelProfile.stored)
         ]
     }
 
@@ -566,7 +572,8 @@ extension PersonaPresetEntity: SQLiteRecord {
             createdAt: try row.int64("createdAt"),
             updatedAt: try row.int64("updatedAt"),
             worldJson: try row.optionalText("worldJson"),
-            speechStyleJson: try row.optionalText("speechStyleJson")
+            speechStyleJson: try row.optionalText("speechStyleJson"),
+            modelProfile: ModelProfile(stored: try row.optionalText("modelProfile"))
         )
     }
 }

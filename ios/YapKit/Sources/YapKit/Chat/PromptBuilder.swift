@@ -95,6 +95,11 @@ public struct SystemPromptInput {
     public var proactiveCapability: String
     /// 工具能力说明（`ToolCatalog.capabilityPrompt(webEnabled:)`）。
     public var toolsCapability: String
+    /// 「# 工具使用」段（0.15 模型优化开关，`ModelProfilePrompt`）。
+    ///
+    /// 空串 = 这一轮不注入（GLM 的 lean 档 / 老调用点 / 测试）。它是**工具段的一部分**
+    /// （排在能力清单之后），所以段顺序与 `ContextAssemblerV2` 都不需要为它改一行。
+    public var toolUsageBlock: String
     /// 「## 语言」小节的完整文本（模板由 App 层按界面语言从资源里取，见 `AppLanguage.languageDirective`）。
     /// 空串 = 不加这一节（老调用点与测试不用改签名）。
     public var languageDirective: String
@@ -119,6 +124,7 @@ public struct SystemPromptInput {
         moodNudgeBlock: String = "",
         proactiveCapability: String = ProactiveCapabilityPrompt.text,
         toolsCapability: String = ToolCatalog.capabilityPrompt(),
+        toolUsageBlock: String = "",
         languageDirective: String = ""
     ) {
         self.personaText = personaText
@@ -140,6 +146,7 @@ public struct SystemPromptInput {
         self.moodNudgeBlock = moodNudgeBlock
         self.proactiveCapability = proactiveCapability
         self.toolsCapability = toolsCapability
+        self.toolUsageBlock = toolUsageBlock
         self.languageDirective = languageDirective
     }
 }
@@ -211,7 +218,9 @@ public enum PromptSection: String, CaseIterable, Sendable {
                 input.relationshipBlock
             ])
         case .tools:
-            return PromptBuilder.stack([input.proactiveCapability, input.toolsCapability])
+            return PromptBuilder.stack([
+                input.proactiveCapability, input.toolsCapability, input.toolUsageBlock
+            ])
         case .antiAI:
             return input.antiAIPrompt
         case .memory:

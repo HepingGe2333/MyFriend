@@ -46,7 +46,12 @@ public enum Schema {
     /// 0.15（上下文/记忆 v2）= v19：`personas.languageTag`（人格自己的提示词语言）
     /// 与 `session_memory` 的三列主题总结（`topicsJson` / `topicUserCount` / `topicUpdatedAt`）。
     /// 18→19 同样只有 ADD COLUMN（不回填），老库升级后行为不变（默认中文、还没总结过）。
-    public static let version: Int32 = 19
+    ///
+    /// 0.15（模型优化）= v20：`personas.modelProfile` 与 `persona_presets.modelProfile`
+    ///（`TEXT NOT NULL DEFAULT 'AUTO'`；`AUTO` / `DEEPSEEK` / `GLM`，见 `ModelProfile`）。
+    /// 19→20 只有两列 ADD COLUMN：默认 `AUTO` 让老库里的每一个人格/预设都保持
+    /// 「按当前模型名推断」，升级后行为与 0.15 之前一致，没有数据回填。
+    public static let version: Int32 = 20
 
     /// 「记录型」表名（每张表都有一个 `SQLiteRecord` 实体 + 仓储，测试用它核对「一张不少」）。
     ///
@@ -295,6 +300,9 @@ public enum Schema {
             -- 两端「新装的库」列表必须逐字一致（升级上来的库列序不同，但读的是列名）。
             languageTag TEXT,
             blockProposalJson TEXT,
+            -- v20：模型优化（AUTO / DEEPSEEK / GLM；默认 AUTO = 按当前模型名推断）。
+            -- NOT NULL DEFAULT 让 19→20 的 ADD COLUMN 不需要回填。
+            modelProfile TEXT NOT NULL DEFAULT 'AUTO',
             PRIMARY KEY (id)
         )
         """,
@@ -314,6 +322,8 @@ public enum Schema {
             updatedAt INTEGER NOT NULL,
             worldJson TEXT,
             speechStyleJson TEXT,
+            -- v20：预设也带模型优化档位（应用到人格时一起拷过去）。
+            modelProfile TEXT NOT NULL DEFAULT 'AUTO',
             PRIMARY KEY (id)
         )
         """,
@@ -778,6 +788,23 @@ public enum Schema {
     /// 只给**人格**加列，不给预设加：预设是模板，套用时可以不带语言（报告里写明了取舍）。
     public static let personaLanguageColumn: (name: String, ddl: String) = ("languageTag", "TEXT")
 
+    /// v20 给 `personas` 加的列：模型优化档位（0.15，`ModelProfile`）。
+    ///
+    /// `NOT NULL DEFAULT 'AUTO'`：老库 ADD COLUMN 时每一行自动是 `AUTO`
+    ///（= 按当前模型名推断），所以 19→20 没有数据回填，行为与升级前一致。
+    /// 与 Android 的 `20.json` 对齐时列名/类型/默认值都要逐字一致（见 `SchemaParityTests`）。
+    public static let personaModelProfileColumn: (name: String, ddl: String) = (
+        "modelProfile", "TEXT NOT NULL DEFAULT 'AUTO'"
+    )
+
+    /// v20 给 `persona_presets` 加的列：预设也带同一个档位。
+    ///
+    /// 预设没有 `activityJson` 那种「此刻状态」，但模型优化是**设定**（换模型时整份预设一起走），
+    /// 所以它和 `worldJson` / `speechStyleJson` 一样属于预设。
+    public static let presetModelProfileColumn: (name: String, ddl: String) = (
+        "modelProfile", "TEXT NOT NULL DEFAULT 'AUTO'"
+    )
+
     /// v19 给 `session_memory` 加的三列：主题总结（0.15 上下文/记忆 v2）。
     ///
     /// `topicUserCount` 有 DEFAULT 0：老库里的会话行读出来就是「还没总结过」，迁移不回填。
@@ -983,6 +1010,16 @@ public enum Schema {
             try addColumnIfMissing(database, table: sessionMemoryTable,
                                    column: column.name, type: column.ddl)
         }
+        // v20：模型优化档位。`NOT NULL DEFAULT 'AUTO'` 让老行自动落到「按模型名推断」，
+        // 同样没有回填；预设表也要补（应用预设时会把这一档拷到人格）。
+        try addColumnIfMissing(
+            database, table: "personas",
+            column: personaModelProfileColumn.name, type: personaModelProfileColumn.ddl
+        )
+        try addColumnIfMissing(
+            database, table: "persona_presets",
+            column: presetModelProfileColumn.name, type: presetModelProfileColumn.ddl
+        )
     }
 
     /// 16 → 17 的旧数据映射（`spec/mood/README.md` §1）：

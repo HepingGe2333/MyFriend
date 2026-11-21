@@ -176,6 +176,17 @@ object PromptBuilder {
          * 记忆/念头之前：模型先知道自己是谁、在哪、能做什么，再看这一轮想起了什么。
          */
         val capabilitiesSection: String = "",
+        /**
+         * 模型优化档（schema v20，[ModelProfile]）：决定 `# 工具使用` 这一段注入不注入。
+         *
+         * 只影响这一段；其它段（人设/世界/话风/记忆/边界）与 [ModelProfile.GLM] 一律无关，
+         * 所以「换优化档」不会让人格说话换一个样子。
+         */
+        val modelProfile: ModelProfile = ModelProfile.AUTO,
+        /** 这一轮真正要发出去的 model 名；[ModelProfile.AUTO] 靠它推断（含 `glm` → GLM）。 */
+        val modelName: String = "",
+        /** 配置里有没有联网能力：没有时 `# 工具使用` 不提 `web_search`。 */
+        val webToolsEnabled: Boolean = true,
         /** 记忆、念头……放在边界之前。 */
         val variableBlocks: List<String> = emptyList(),
         /** 语言指令（`LanguageDirective.section`），放在边界之前。 */
@@ -280,8 +291,21 @@ object PromptBuilder {
         relationshipSection(input)
     ).joinToString("\n\n").trim()
 
-    /** 工具段（「# 你能做什么」）：没有能力段时返回空串，由调用方整段省略。 */
-    fun toolsBlock(input: Inputs): String = input.capabilitiesSection.trim()
+    /**
+     * 工具段：`# 你能做什么`（工具清单，永远有）+ `# 工具使用`（DeepSeek 专属规则）。
+     *
+     * 0.15 的模型优化开关只改第二段：GLM（含 AUTO + 模型名含 glm）是 lean，不注入；
+     * DeepSeek 注入。两段内容都不为空时用空行隔开，和别的段一样由 [appendSection] 处理。
+     */
+    fun toolsBlock(input: Inputs): String = listOf(
+        input.capabilitiesSection.trim(),
+        ModelProfilePrompt.toolsSection(
+            profile = input.modelProfile,
+            modelName = input.modelName,
+            webEnabled = input.webToolsEnabled,
+            language = input.language
+        )
+    ).filter { it.isNotBlank() }.joinToString("\n\n")
 
     /** 语言小节（`## 语言` / `## Language`）：去掉调用方可能带的前导换行。 */
     fun languageBlock(input: Inputs): String = input.languageSection.trim()

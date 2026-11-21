@@ -161,7 +161,18 @@ data class PersonaEntity(
      * 也不会出现「提议表有孤儿人格」。老库里的 0.14.0 形状（at/afterUserCount）由
      * `BlockPolicy.decode` 兼容读取。
      */
-    val blockProposalJson: String? = null
+    val blockProposalJson: String? = null,
+
+    // ---- 0.15 模型优化开关（schema v20） ---------------------------------------
+    /**
+     * 提示词里要不要注入 `# 工具使用` 规则段（[com.yap.app.domain.ModelProfile]）。
+     *
+     * `AUTO`（默认）= 按当前 API 配置的 model 名推断（含 `glm` → GLM，否则 DeepSeek）；
+     * `DEEPSEEK` / `GLM` 是用户在人格编辑页里显式选的档位。
+     * 只影响提示词装配，不影响请求参数、也不改人设正文。
+     */
+    @ColumnInfo(defaultValue = "AUTO")
+    val modelProfile: String = "AUTO"
 )
 
 @Entity(
@@ -391,7 +402,13 @@ data class PersonaPresetEntity(
     /** 世界预设 JSON（v13）；预设应用到人格时复制一份，之后互不覆盖。 */
     val worldJson: String? = null,
     /** 话风 JSON（v13）。 */
-    val speechStyleJson: String? = null
+    val speechStyleJson: String? = null,
+    /**
+     * 0.15 模型优化开关（schema v20）：与 [PersonaEntity.modelProfile] 同一套取值与语义。
+     * 用这个预设创建人格时会被复制过去（之后互不覆盖）。
+     */
+    @ColumnInfo(defaultValue = "AUTO")
+    val modelProfile: String = "AUTO"
 )
 
 @Entity(

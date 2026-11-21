@@ -1,5 +1,6 @@
 package com.yap.agentd
 
+import com.yap.agentd.safety.CrisisClassifier
 import com.yap.agentd.safety.SafetyGuard
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.Message
@@ -29,7 +30,15 @@ data class ReplyRequest(
      * `null` = 默认 5 轮；越界由 `ExperienceContract.clampToolRounds` 夹到 1..15
      * （客户端传 0/负数/100 都不会打乱服务端）。
      */
-    val requestedToolRounds: Int? = null
+    val requestedToolRounds: Int? = null,
+    /**
+     * 0.15.2：这一轮的两段式危机判定结果（词表 + 一次模型确认，见 `safety/CrisisClassifier`）。
+     *
+     * 由 [ChatService] 在**生成之前**算好并传进来：生成器要在工具回路里决定「`stay_silent` /
+     * `defer_reply` 能不能执行」，所以它必须比流式输出更早拿到结论。
+     * `null` = 调用方没有判（直接调用生成器的测试/脚本）→ 生成器退回词表判定，行为与 0.15.1 一致。
+     */
+    val crisis: Boolean? = null
 )
 
 /**
@@ -161,6 +170,15 @@ data class SendMessageRequest(
  * 有正文用正文；没有正文就把安全提示作为唯一正文。`llm/LlmReplyGenerator` 还会在工具回路里
  * 直接拦掉 `stay_silent` / `defer_reply`（不执行、不发卡片、不写 defer 念头），这里再兜一次底，
  * 所以换掉生成器（测试/降级）也不会把这条安全底线漏掉。
+ *
+ * ### 危机两段式判定（0.15.2）
+ * 「命中词表就算危机」太宽（「想死你了」「累得要死」），所以判定拆成两段：词表（`SafetyGuard`）
+ * 先筛，**命中之后**才问一次模型（`safety/CrisisClassifier`，低温度、5 秒超时）。
+ * 模型明确说「不是真实危机」→ 这一轮就是普通聊天，不做任何危机兜底（不补安全提示、不拦沉默工具）；
+ * 模型说是、或者判定本身失败/超时/坏 JSON/没配置 → 按危机处理（安全优先）。
+ *
+ * 判定在**生成之前**做一次，结果随 [ReplyRequest.crisis] 交给生成器，原因有两条：
+ * 生成器要在工具回路里提前决定「沉默工具能不能执行」；同一条用户消息也只能问一次模型。
  */
 class ChatService(
     private val store: FileStore,
@@ -189,7 +207,15 @@ class ChatService(
      * 时机是「落完用户消息、组提示词之前」：这一轮回复的语气必须反映**刚看到这句话之后**的心情。
      * 失败只记日志（`MoodService` 自己会按时间衰减），绝不影响回复。
      */
-    private val moodJudge: com.yap.agentd.mood.MoodService? = null
+    private val moodJudge: com.yap.agentd.mood.MoodService? = null,
+    /**
+     * 0.15.2（危机两段式）：词表命中后再问一次模型「这是不是真的危险」。
+     *
+     * `null` = 没有接模型（测试/降级）：退回 0.15.1 的纯词表判定，行为完全不变。
+     * 判定在生成之前做一次（[CrisisClassifier.newRequest] 的请求级缓存），
+     * 结果随 [ReplyRequest.crisis] 传给生成器，所以同一轮只会请求一次模型。
+     */
+    private val crisisClassifier: CrisisClassifier? = null
 ) {
 
     /** 同一 `(sessionId, clientMessageId)` 的并发生成只允许一个；生成完把锁从表里摘掉。 */
@@ -270,6 +296,22 @@ class ChatService(
                 }
             runCatching { store.recordMoodAutoEval(session.personaId, now) }
         }
+        // 0.15.2 危机两段式判定：词表先筛，命中后才问一次模型（同一请求内只问一次）。
+        // 必须放在生成**之前**：生成器要靠这个结论决定 `stay_silent` / `defer_reply` 能不能执行。
+        // 没有注入判定器（测试/降级）= 退回 0.15.1 的纯词表，行为一字不变。
+        val crisisVerdict = crisisClassifier?.newRequest()?.verdict(userMessage.content)
+        crisisVerdict?.takeIf { it.modelChecked }?.let { verdict ->
+            val outcome = when {
+                verdict.source == CrisisClassifier.Source.FALLBACK ->
+                    "判定失败，按安全优先进入危机兜底"
+
+                verdict.risk -> "模型判定为真实危机"
+                else -> "模型判定为不是真实危机，不进入危机兜底"
+            }
+            val why = verdict.reason.takeIf { it.isNotBlank() }?.let { "：$it" }.orEmpty()
+            System.err.println("[agentd] 危机两段式判定（词表命中 → $outcome）$why")
+        }
+        val crisis = crisisVerdict?.risk ?: SafetyGuard.isCrisis(userMessage.content)
         // 模型上下文**永久排除**拉黑期间的消息（解除后也不可见）：includeBlocked = false。
         val history = store.latestMessages(sessionId, historyLimit, includeBlocked = false)
         val request = ReplyRequest(
@@ -280,7 +322,9 @@ class ChatService(
             sessionMemory = store.sessionMemory(sessionId),
             mentalActivity = store.latestMentalActivity(session.personaId)
                 ?.takeIf { now - it.at <= MENTAL_ACTIVITY_CONTEXT_MS },
-            requestedToolRounds = toolRounds
+            requestedToolRounds = toolRounds,
+            // 同一轮只判一次：生成器复用这个结论，不会自己再问一次模型。
+            crisis = crisis
         )
         val builder = StringBuilder()
         var outcome = ReplyOutcome(Usage.ZERO)
@@ -308,9 +352,9 @@ class ChatService(
             sink.emit(SseEvent.Error("generation_failed", "生成回复失败，已保存已经生成的部分"))
         }
         val usage = outcome.usage
-        // 0.15.1 危机优先于沉默：用户这句话命中危机词表时，本轮**必须**留下可见的 assistant 消息。
-        // 放在这里而不是只靠生成器拦截：生成器可替换（测试/降级），而这是安全底线。
-        val crisis = SafetyGuard.isCrisis(userMessage.content)
+        // 0.15.1 危机优先于沉默：`crisis`（两段式判定，见上面 0.15.2 的注释）为真时，
+        // 本轮**必须**留下可见的 assistant 消息。放在这里而不是只靠生成器拦截：
+        // 生成器可替换（测试/降级），而这是安全底线。
         var replyTexts = when {
             outcome.suppressed -> emptyList()
             outcome.messages.isNotEmpty() -> outcome.messages
@@ -371,12 +415,13 @@ class ChatService(
             replyTexts = listOf(SafetyGuard.crisisNote(userMessage.content))
             crisisOverride = true
         }
-        // 0.15 危机安全兜底：用户说了「不想活/自杀/安眠药/割腕/消失比较好」而回复里没有
-        // 安全锚点（我在/别一个人/身边有人/120/110/医院/急诊/求助/家人/朋友）时，
+        // 0.15 危机安全兜底：两段式判定为危机、而回复里没有安全锚点
+        // （我在/别一个人/身边有人/120/110/医院/急诊/求助/家人/朋友）时，
         // 在**最后一条**回复末尾追加 1–2 句，并补一个 delta 让在线客户端也立刻看到。
         // 纯函数、无 IO（`SafetyGuard`），这里只负责把结果接进落库流程。
         // 连发已满 4 条时提示并进最后一条（规范 §4 的硬上限），不会多造第 5 个气泡。
-        if (replyTexts.isNotEmpty()) {
+        // 模型明确判定「不是真实危机」（risk=false）时整段跳过：那一轮的回复一个字都不改。
+        if (crisis && replyTexts.isNotEmpty()) {
             val guarded = SafetyGuard.guard(userMessage.content, replyTexts)
             guarded.appended?.let { appended ->
                 replyTexts = guarded.messages

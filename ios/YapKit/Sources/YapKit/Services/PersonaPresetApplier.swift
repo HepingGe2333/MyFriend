@@ -37,6 +37,8 @@ public enum PersonaPresetApplier {
         updated.category = preset.category
         updated.worldJson = PromptGuidanceJSON.clean(preset.worldJson)
         updated.speechStyleJson = PromptGuidanceJSON.clean(preset.speechStyleJson)
+        // 0.15（v20）：模型优化档位属于「设定」，应用预设时一起拷过去（之后两边互不影响）。
+        updated.modelProfile = preset.modelProfile
         // 预设也可能带结构化人设卡：它的 JSON 不在预设列里，所以这里只拷用户能看到的文本字段。
         updated.translationJson = nil
         updated.translationLang = nil
@@ -71,7 +73,8 @@ public enum PersonaPresetApplier {
             // 让它继承实体的 `true` 会让新建的人在夜里只标已读（0.12 续 7）。
             sleepEnabled: false,
             worldJson: PromptGuidanceJSON.clean(preset.worldJson),
-            speechStyleJson: PromptGuidanceJSON.clean(preset.speechStyleJson)
+            speechStyleJson: PromptGuidanceJSON.clean(preset.speechStyleJson),
+            modelProfile: preset.modelProfile
         )
     }
 }

@@ -67,7 +67,11 @@ final class ChatReliabilityTests: XCTestCase {
         try super.tearDownWithError()
     }
 
-    private func makeService() -> ChatService {
+    /// 危机判定的第二段用**假 provider**：这组用例只关心「危机轮写了什么」，
+    /// 不该让每次命中词表都真的再发一次 HTTP（那会把 StubURLProtocol 的 FIFO 队列挤歪）。
+    private func makeService(
+        crisis: CrisisClassifier = CrisisClassifier(provider: { _ in #"{"risk":true,"reason":"测试"}"# })
+    ) -> ChatService {
         ChatService(
             stores: db.stores,
             apiKeys: apiKeys,
@@ -82,6 +86,7 @@ final class ChatReliabilityTests: XCTestCase {
             mood: mood,
             sleep: { _ in },
             rhythm: rhythm,
+            crisis: crisis,
             now: { self.now }
         )
     }
@@ -366,6 +371,67 @@ final class ChatReliabilityTests: XCTestCase {
         XCTAssertTrue(only.content.contains("120") || only.content.contains("110"),
                       "工具发出去的回复同样要补安全锚点")
         XCTAssertEqual(["think", "send_message"], tools.names, "第二轮的工具块不该被执行")
+    }
+
+    // MARK: - 3b. 危机两段式（0.15）：词表第一段 + 模型复核
+
+    /// 模型复核说「不是真实危机」→ **不进入兜底**：正文一个字都不改。
+    func testClassifierRiskFalseSkipsSafetyNet() async throws {
+        service = makeService(crisis: CrisisClassifier(
+            provider: { _ in #"{"risk":false,"reason":"只是夸张说法"}"# }
+        ))
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯，那你早点休息。"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "我真的不想活了"))
+
+        let assistant = try XCTUnwrap(try messages().first { $0.role == .assistant })
+        XCTAssertEqual("嗯，那你早点休息。", assistant.content,
+                       "risk=false 不该在末尾追加安全提示")
+    }
+
+    /// 同上，`stay_silent` 也不为它让路（沉默只在真实危机时才被拒绝）。
+    func testClassifierRiskFalseHonorsStaySilent() async throws {
+        service = makeService(crisis: CrisisClassifier(
+            provider: { _ in #"{"risk":false,"reason":"只是夸张说法"}"# }
+        ))
+        StubURLProtocol.enqueue(.sse(textDeltas: [silentBlock()]))
+        let events = try await collect(service.send(sessionId: sessionId, text: "我不想活了"))
+
+        XCTAssertTrue(eventKinds(events).contains("noReply"), "risk=false 时沉默照旧生效")
+        XCTAssertNil(try messages().first { $0.role == .assistant })
+    }
+
+    /// 两段式的第二段真的发了一次「当前 API 配置」的低温度 completion：
+    /// 请求体里 system 是固定的判定指令、user 只有最近一条消息、stream=false、temperature=0。
+    func testClassifierRequestUsesCurrentApiConfig() async throws {
+        // provider 传 nil = 走 ChatService 用当轮配置拼的那个真 provider（假服务端按 FIFO 收）。
+        service = makeService(crisis: CrisisClassifier())
+        StubURLProtocol.enqueue(.json(
+            #"{"choices":[{"message":{"content":"{\"risk\":false,\"reason\":\"夸张\"}"}}]}"#
+        ))
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯。"]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "我真的不想活了"))
+
+        // 判定在后台 Task 里跑（不挡第一句回复），所以两次请求的到达顺序不保证：
+        // 按 `stream` 字段区分「判定」与「聊天」，不去假定谁先谁后。
+        let bodies = StubURLProtocol.recordedBodies
+        XCTAssertEqual(2, bodies.count, "一次判定 + 一次聊天，一共两次请求")
+        let parsed = try bodies.map { body -> [String: Any] in
+            try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        }
+        let judgeBody = try XCTUnwrap(parsed.first { $0["stream"] as? Bool == false },
+                                      "没有找到非流式的判定请求")
+        let chatBody = try XCTUnwrap(parsed.first { $0["stream"] as? Bool == true },
+                                     "没有找到流式的聊天请求")
+        XCTAssertEqual(judgeBody["model"] as? String, "deepseek-chat", "判定用当前 API 配置的模型")
+        XCTAssertEqual(judgeBody["temperature"] as? Double, 0, "判定用低温度（0）")
+        XCTAssertEqual(judgeBody["max_tokens"] as? Int, CrisisJudgement.maxOutputTokens)
+        let judgeMessages = try XCTUnwrap(judgeBody["messages"] as? [[String: Any]])
+        XCTAssertEqual(judgeMessages.first?["role"] as? String, "system")
+        XCTAssertEqual(judgeMessages.first?["content"] as? String, CrisisClassifier.systemPrompt)
+        XCTAssertEqual(judgeMessages.last?["role"] as? String, "user")
+        XCTAssertEqual(judgeMessages.last?["content"] as? String, "我真的不想活了",
+                       "只判最近一条用户消息")
+        XCTAssertNotNil(chatBody)
     }
 
     // MARK: - 4. 危机优先于沉默（0.15）

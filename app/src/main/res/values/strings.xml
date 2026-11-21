@@ -548,6 +548,13 @@
     <string name="persona_editor_model_override_label">模型覆盖（可选）</string>
     <string name="persona_editor_model_override_placeholder">留空使用 API 配置中的模型</string>
     <string name="persona_editor_model_override_support">人格可以独立使用某个模型 ID，不改变 API 配置的默认模型。</string>
+    <string name="model_profile_label">模型优化</string>
+    <string name="model_profile_auto">自动</string>
+    <string name="model_profile_deepseek">DeepSeek</string>
+    <string name="model_profile_glm">GLM</string>
+    <string name="model_profile_hint_auto">按当前模型自动选择：模型名里含 glm 用 GLM，其余用 DeepSeek。</string>
+    <string name="model_profile_hint_deepseek">DeepSeek：启用工具与安全提示段（set_activity / remember / memorize / web_search 的用法）。</string>
+    <string name="model_profile_hint_glm">GLM：不注入工具提示段，提示词更短（lean）。</string>
     <string name="persona_editor_add_api_config">还没有 API 配置，去添加一个</string>
 
     <!-- PersonaEditorScreen: 放弃修改确认 -->
@@ -1166,6 +1173,28 @@
     <string name="settings_wipe_title">删除全部本地数据</string>
     <string name="settings_wipe_desc">人格、会话、记忆、预设、主动唤醒规则、API 配置与设置全部移除</string>
     <string name="settings_security_note">API Key 由 Android Keystore 加密保存，不写入日志或崩溃报告。默认只允许 HTTPS；对话记录仅保存在本机。</string>
+    <string name="settings_section_feedback">反馈</string>
+    <string name="settings_feedback_title">告诉我们</string>
+    <string name="settings_feedback_desc">遇到问题、想要什么功能，都可以说</string>
+    <string name="feedback_dialog_title">反馈</string>
+    <string name="feedback_kind_section">类型</string>
+    <string name="feedback_kind_problem">问题</string>
+    <string name="feedback_kind_suggestion">建议</string>
+    <string name="feedback_kind_other">其他</string>
+    <string name="feedback_content_label">内容</string>
+    <string name="feedback_content_hint">发生了什么？越具体越好（最多 1000 字）</string>
+    <string name="feedback_content_counter">%1$d / %2$d</string>
+    <string name="feedback_contact_label">联系方式（可选）</string>
+    <string name="feedback_contact_hint">想让我们回复你时留一个（邮箱或其他账号）</string>
+    <string name="feedback_submit">保存并去提交</string>
+    <string name="feedback_cancel">取消</string>
+    <string name="feedback_error_empty">先写点内容吧。</string>
+    <string name="feedback_error_too_long">内容超过 %1$d 字了，删一点再提交。</string>
+    <string name="feedback_error_contact_too_long">联系方式太长了（最多 %1$d 字）。</string>
+    <string name="feedback_saved">已保存，可在浏览器提交。</string>
+    <string name="feedback_saved_open_failed">已保存到本机，但没能打开浏览器。</string>
+    <string name="feedback_save_failed">没能保存这条反馈。</string>
+    <string name="feedback_saved_where">保存在 files/feedback/。</string>
     <string name="settings_about_entry">关于 Yap</string>
     <string name="settings_selected_cd">已选择</string>
 

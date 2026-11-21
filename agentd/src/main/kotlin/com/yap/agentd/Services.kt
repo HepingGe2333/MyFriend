@@ -125,6 +125,18 @@ class AgentdServices(
      */
     val perMessageMood: MoodService? = moodService
 
+    /**
+     * 0.15.2（危机两段式）：词表命中后再问一次模型「这是不是真的危险」。
+     *
+     * 没有接 LLM 时为 `null`：聊天退回纯词表判定（0.15.1 的行为）。
+     * 有 LLM 但客户端还没推送配置时判定器仍然在——那一刻它会把「无法判定」按安全优先处理。
+     *
+     * **必须声明在 [chatService] 之前**：Kotlin 的属性按声明顺序初始化，放到后面
+     * `chatService` 读到的会是 null（危机判定被静默跳过，最难查的那种 bug）。
+     */
+    val crisisClassifier: com.yap.agentd.safety.CrisisClassifier? =
+        if (llm != null) com.yap.agentd.safety.CrisisClassifier(llm) else null
+
     /** 聊天服务与 [store] 一起创建：幂等用的在途锁表必须跨请求共享，不能每个请求 new 一个。 */
     val chatService: ChatService? =
         store?.let {
@@ -134,7 +146,8 @@ class AgentdServices(
                 autoTriggers = autoTriggers,
                 experience = experienceService,
                 delivery = delivery,
-                moodJudge = perMessageMood
+                moodJudge = perMessageMood,
+                crisisClassifier = crisisClassifier
             )
         }
 

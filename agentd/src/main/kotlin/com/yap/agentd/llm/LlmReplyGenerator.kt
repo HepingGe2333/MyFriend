@@ -33,11 +33,13 @@ import java.time.Clock
  * - **超时停止**：整个回路共享 [deadlineMs]（默认 2 分钟），到点就带着已生成的文字收尾；
  * - **`stay_silent` 立即结束**：这一轮不落 assistant 消息（由 `ChatService` 处理），
  *   也不继续问模型（「不想说话」再问一次只会得到一句敷衍）；
- * - **危机优先于沉默**（0.15.1）：用户这句话命中 `SafetyGuard` 的危机词表时，`stay_silent` /
+ * - **危机优先于沉默**（0.15.1）：用户这句话被判定为危机时，`stay_silent` /
  *   `defer_reply` **不执行**——不记连续沉默、不写 defer 念头、不发工具卡片；同一响应里模型
  *   写过的正文照用，然后**立即结束这一轮**（和客户端 `CrisisPriority` 一致：危机里多等一轮
  *   没有意义）。仍然没有正文时由 `ChatService` 用安全提示兜底。安全底线不能交给
- *   「模型这次有没有听话」。
+ *   「模型这次有没有听话」。0.15.2 起「是不是危机」由 `ChatService` 用两段式判定
+ *   （`SafetyGuard` 词表 + 一次模型确认，见 `safety/CrisisClassifier`）算好放在
+ *   `ReplyRequest.crisis` 里传进来；生成器自己不再发判定请求。
  *
  * ### 与客户端断开的关系
  * [ChatService] 的 `SafeSink` 会吞掉写失败；这里照常执行工具、落库。工具副作用（心情、
@@ -69,8 +71,10 @@ class LlmReplyGenerator(
             ?: throw IllegalStateException("会话引用了不存在的人格：${request.personaId.take(64)}")
         // 0.15：工具轮数的唯一口径（默认 5 / 模型可指定 / 上限 15）。
         val maxRounds = ExperienceContract.clampToolRounds(request.requestedToolRounds ?: toolRounds)
-        // 0.15.1：危机优先于沉默。判定用与客户端同一份词表（`SafetyGuard`）。
-        val crisis = SafetyGuard.isCrisis(request.userMessage.content)
+        // 0.15.1：危机优先于沉默。0.15.2 起危机判定变成两段（`SafetyGuard` 词表 + 一次模型确认），
+        // 由 `ChatService` 在生成之前算好并通过 `request.crisis` 传进来——生成器不能自己再判一次，
+        // 否则同一轮会多打一次模型。直接调用生成器的测试/脚本没传（null）时退回词表，行为与 0.15.1 一致。
+        val crisis = request.crisis ?: SafetyGuard.isCrisis(request.userMessage.content)
         val now = clock.millis()
         val systemMessages = promptBuilder.chatMessages(
             persona = persona,

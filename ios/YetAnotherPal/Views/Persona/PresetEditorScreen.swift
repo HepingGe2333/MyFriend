@@ -17,6 +17,8 @@ struct PresetEditorScreen: View {
     @State private var name = ""
     @State private var summary = ""
     @State private var prompt = ""
+    /// 0.15（schema v20）：预设也带模型优化档位，应用到人格时一起拷过去。
+    @State private var modelProfile: ModelProfile = .auto
     @State private var worldEditor = WorldEditorState()
     @State private var speechTone = ""
     @State private var speechPhrases: [String] = []
@@ -90,6 +92,11 @@ struct PresetEditorScreen: View {
                 .frame(minHeight: 150)
                 .padding(8)
                 .background(fieldBackground)
+
+            MFRowDivider(leadingInset: 0)
+                .padding(.vertical, 12)
+
+            ModelProfilePicker(selection: $modelProfile, accent: accent)
         }
     }
 
@@ -259,6 +266,7 @@ struct PresetEditorScreen: View {
         name = preset.name
         summary = preset.description
         prompt = preset.prompt
+        modelProfile = preset.modelProfile
         worldEditor = WorldEditorState(preset: WorldPreset.decode(preset.worldJson))
         let style = SpeechStyle.decode(preset.speechStyleJson)
         speechTone = style?.tone ?? ""
@@ -292,7 +300,8 @@ struct PresetEditorScreen: View {
             createdAt: existing?.createdAt ?? now,
             updatedAt: now,
             worldJson: worldPreset.isEmpty ? nil : worldPreset.jsonString(),
-            speechStyleJson: style.isEmpty ? nil : style.jsonString()
+            speechStyleJson: style.isEmpty ? nil : style.jsonString(),
+            modelProfile: modelProfile
         )
     }
 

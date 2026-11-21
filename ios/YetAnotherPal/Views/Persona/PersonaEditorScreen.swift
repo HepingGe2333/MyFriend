@@ -30,6 +30,8 @@ struct PersonaEditorScreen: View {
     /// 默认中文（产品默认人格语言）；载入时按 `persona.languageTag` 解析，保存时写回
     /// `PromptLanguage.code`。它与 App 的界面语言完全无关——界面切英文，这个中文人格也不会改口。
     @State private var promptLanguage: PromptLanguage = PersonaLanguagePrompt.fallback
+    /// 0.15（schema v20）：模型优化档位（自动 / DeepSeek / GLM）。默认自动。
+    @State private var modelProfile: ModelProfile = .auto
     /// 头像：从相册选一张（压到 ≤512px 存沙盒），nil = 用名字首字。
     @State private var avatarUri: String?
     @State private var avatarSeed = 0
@@ -107,6 +109,7 @@ struct PersonaEditorScreen: View {
                 personaCardCard
                 behaviorCard
                 sleepCard
+                modelProfileCard
                 advancedCard
             }
             .padding(.horizontal, MFTheme.gutter)
@@ -1189,6 +1192,17 @@ struct PersonaEditorScreen: View {
 
     // MARK: - 高级（提示词全文 + 模型）
 
+    /// 0.15：模型优化开关（提示词里要不要注入「# 工具使用」）。
+    ///
+    /// 放在「睡眠」之后、「高级」之前：它属于「他怎么用模型」，不属于人设正文，
+    /// 但也不像提示词全文那样只有少数人会改。
+    private var modelProfileCard: some View {
+        MFCard {
+            ModelProfilePicker(selection: $modelProfile, accent: accent)
+            MFNote(text: L("换模型之后如果觉得他不太会用工具，可以先切到 DeepSeek；用 GLM 时选精简更稳。"))
+        }
+    }
+
     private var advancedCard: some View {
         MFCard {
             Button {
@@ -1405,6 +1419,7 @@ struct PersonaEditorScreen: View {
         summary = persona.description
         // 0.15：提示词语言是人格属性，读回来时按标签解析（空 / 认不出 = 中文）。
         promptLanguage = PersonaLanguagePrompt.language(for: persona)
+        modelProfile = persona.modelProfile
         avatarUri = persona.avatarUri
         originalAvatarUri = persona.avatarUri
         avatarSeed = persona.avatarSeed
@@ -1480,6 +1495,8 @@ struct PersonaEditorScreen: View {
         entity.description = resolvedDescription
         // 0.15：写规范语言码（`zh` / `en`），不写显示名；空人格默认中文也会显式写 `zh`。
         entity.languageTag = promptLanguage.code
+        // 0.15（v20）：模型优化档位跟人格一起保存（提示词拼装时按它决定要不要注入工具规则）。
+        entity.modelProfile = modelProfile
         entity.avatarUri = avatarUri
         entity.prompt = resolvedPrompt
         entity.modelOverride = modelOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

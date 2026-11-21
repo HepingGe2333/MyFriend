@@ -244,6 +244,27 @@ TOOL_SCHEMAS = (
             },
         },
     ),
+    ToolSchema(
+        "web_search",
+        "价格、多少钱、新闻、今天发生的事、版本号、你不确定的最新事实：必须先调用；纯聊天或你本来就知道的常识不要调用。第一个工具调用必须是 web_search，不要用 memorize/recall 代替。",
+        {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "搜索关键词，具体一点"},
+                "count": {"type": "integer", "minimum": 1, "maximum": 10, "description": "结果条数，默认 5"},
+            },
+            "required": ["query"],
+        },
+    ),
+    ToolSchema(
+        "web_fetch",
+        "已经拿到具体链接、需要读全文时调用；还没拿到链接先 web_search，不要凭空编 URL。",
+        {
+            "type": "object",
+            "properties": {"url": {"type": "string", "description": "完整的 http(s) 链接"}},
+            "required": ["url"],
+        },
+    ),
 )
 
 TOOL_NAMES: tuple[str, ...] = tuple(schema.name for schema in TOOL_SCHEMAS)

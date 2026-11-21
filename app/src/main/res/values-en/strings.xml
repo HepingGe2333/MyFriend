@@ -555,6 +555,13 @@
     <string name="persona_editor_model_override_label">Model override (optional)</string>
     <string name="persona_editor_model_override_placeholder">Leave empty to use the model from the API config</string>
     <string name="persona_editor_model_override_support">A persona can use its own model ID without changing the default model in the API config.</string>
+    <string name="model_profile_label">Model tuning</string>
+    <string name="model_profile_auto">Auto</string>
+    <string name="model_profile_deepseek">DeepSeek</string>
+    <string name="model_profile_glm">GLM</string>
+    <string name="model_profile_hint_auto">Pick by the current model: GLM when the model name contains glm, DeepSeek otherwise.</string>
+    <string name="model_profile_hint_deepseek">DeepSeek: adds the tool and safety rules block (how to use set_activity / remember / memorize / web_search).</string>
+    <string name="model_profile_hint_glm">GLM: leaves the tool rules block out for a leaner prompt.</string>
     <string name="persona_editor_add_api_config">No API config yet — add one</string>
 
     <!-- PersonaEditorScreen: discard changes -->
@@ -1186,6 +1193,28 @@
     <string name="settings_wipe_title">Delete all local data</string>
     <string name="settings_wipe_desc">Every persona, conversation, memory, preset, wake-up rule, API setup, and setting is removed</string>
     <string name="settings_security_note">Your API key is encrypted by Android Keystore and never written to logs or crash reports. Only HTTPS is allowed by default; conversations stay on this phone.</string>
+    <string name="settings_section_feedback">Feedback</string>
+    <string name="settings_feedback_title">Tell us</string>
+    <string name="settings_feedback_desc">Something broken, or something you want</string>
+    <string name="feedback_dialog_title">Feedback</string>
+    <string name="feedback_kind_section">Type</string>
+    <string name="feedback_kind_problem">Problem</string>
+    <string name="feedback_kind_suggestion">Suggestion</string>
+    <string name="feedback_kind_other">Other</string>
+    <string name="feedback_content_label">Details</string>
+    <string name="feedback_content_hint">What happened? The more specific the better (1000 characters max)</string>
+    <string name="feedback_content_counter">%1$d / %2$d</string>
+    <string name="feedback_contact_label">Contact (optional)</string>
+    <string name="feedback_contact_hint">Leave one if you would like a reply (email or another handle)</string>
+    <string name="feedback_submit">Save and open GitHub</string>
+    <string name="feedback_cancel">Cancel</string>
+    <string name="feedback_error_empty">Please write something first.</string>
+    <string name="feedback_error_too_long">That is over %1$d characters; please trim it.</string>
+    <string name="feedback_error_contact_too_long">Contact is too long (%1$d characters max).</string>
+    <string name="feedback_saved">Saved. You can submit it in the browser.</string>
+    <string name="feedback_saved_open_failed">Saved on this phone, but the browser could not be opened.</string>
+    <string name="feedback_save_failed">Could not save this feedback.</string>
+    <string name="feedback_saved_where">Stored under files/feedback/.</string>
     <string name="settings_about_entry">About Yap</string>
     <string name="settings_selected_cd">Selected</string>
 

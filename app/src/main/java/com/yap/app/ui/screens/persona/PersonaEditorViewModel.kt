@@ -68,6 +68,11 @@ data class PersonaForm(
     val category: String = "日常聊天",
     val defaultApiConfigId: String? = null,
     val modelOverride: String = "",
+    /**
+     * 0.15 模型优化开关（schema v20，[com.yap.app.domain.ModelProfile]）：
+     * `AUTO` / `DEEPSEEK` / `GLM`，落库是同一串枚举名。
+     */
+    val modelProfile: String = com.yap.app.domain.ModelProfile.DEFAULT_STORED,
     val traitsText: String = "",
     val likesText: String = "",
     val behaviorsText: String = "",
@@ -233,6 +238,7 @@ class PersonaEditorViewModel @Inject constructor(
                         category = persona.category,
                         defaultApiConfigId = persona.defaultApiConfigId,
                         modelOverride = persona.modelOverride.orEmpty(),
+                        modelProfile = com.yap.app.domain.ModelProfile.fromStored(persona.modelProfile).stored,
                         traitsText = PersonaForm.joinList(
                             PersonaProfile.decodeList(persona.traits),
                             context.getString(R.string.persona_editor_list_separator)
@@ -705,6 +711,8 @@ class PersonaEditorViewModel @Inject constructor(
                     category = form.category,
                     defaultApiConfigId = form.defaultApiConfigId,
                     modelOverride = form.modelOverride.ifBlank { null },
+                    // 0.15：模型优化档位跟着表单走（表单里永远是三个合法值之一）。
+                    modelProfile = form.modelProfile,
                     traits = form.traits,
                     likes = form.likes,
                     behaviors = form.behaviors,

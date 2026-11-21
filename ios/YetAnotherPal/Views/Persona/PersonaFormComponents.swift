@@ -190,3 +190,58 @@ struct FieldCaption: View {
         .padding(.bottom, 6)
     }
 }
+
+/// 「模型优化」三档选择器（人格编辑页与预设编辑页共用）。
+///
+/// 0.15（schema v20）给 `personas` / `persona_presets` 都加了 `modelProfile`：
+/// - 自动：按当前模型名推断（名字里带 GLM → 精简；其余 → DeepSeek 档）；
+/// - DeepSeek：注入 `# 工具使用`（set_activity / memorize / web_search 的调用规则）；
+/// - GLM：精简提示词，不注入那一段。
+///
+/// 为什么是分段控件而不是菜单：只有三档、名词都很短，分段控件一眼能看出「现在选的是哪个」，
+/// 也不需要点开再点一次。品牌名（DeepSeek / GLM）不翻译，只有「自动」走本地化。
+struct ModelProfilePicker: View {
+    @Binding var selection: ModelProfile
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L("模型优化"))
+                .font(.system(.body, design: .serif))
+            Picker(selection: $selection) {
+                ForEach(ModelProfile.allCases, id: \.self) { profile in
+                    Text(label(profile)).tag(profile)
+                }
+            } label: {
+                Text(L("模型优化"))
+                    .font(.footnote)
+            }
+            .pickerStyle(.segmented)
+            .tint(accent)
+
+            Text(hint)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func label(_ profile: ModelProfile) -> String {
+        switch profile {
+        case .auto: return L("自动")
+        case .deepseek: return "DeepSeek"
+        case .glm: return "GLM"
+        }
+    }
+
+    private var hint: String {
+        switch selection {
+        case .auto:
+            return L("按当前模型自动选：名字里带 GLM 就用精简提示词，其余按 DeepSeek 给工具使用规则。")
+        case .deepseek:
+            return L("会多给一段「工具使用」规则：什么时候调用 set_activity / memorize / web_search。")
+        case .glm:
+            return L("精简提示词：不注入工具使用规则，留给模型自己判断。")
+        }
+    }
+}

@@ -93,6 +93,7 @@ import com.yap.app.R
 import com.yap.app.data.local.ApiConfigEntity
 import com.yap.app.domain.PersonaActivity
 import com.yap.app.domain.PersonaCard
+import com.yap.app.domain.ModelProfile
 import com.yap.app.domain.PromptLanguage
 import com.yap.app.domain.PersonaEvolution
 import com.yap.app.domain.PersonaTrait
@@ -105,7 +106,9 @@ import com.yap.app.ui.components.ConfirmDialog
 import com.yap.app.ui.components.PersonaAvatar
 import com.yap.app.ui.components.PrimaryButton
 import com.yap.app.ui.components.SecondaryButton
+import com.yap.app.ui.components.ModelProfilePicker
 import com.yap.app.ui.components.SectionLabel
+import com.yap.app.ui.components.modelProfileHint
 import com.yap.app.ui.components.SpeechStyleCard
 import com.yap.app.ui.components.StyledOutlinedField
 import com.yap.app.ui.components.WorldPresetCard
@@ -414,6 +417,30 @@ fun PersonaEditorScreen(
                                     placeholder = state.boundConfig?.model
                                         ?: stringResource(R.string.persona_editor_model_override_placeholder),
                                     supportingText = stringResource(R.string.persona_editor_model_override_support)
+                                )
+                            }
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height(1.dp)
+                                    .background(MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                            )
+                            // 0.15 模型优化（schema v20）：只改提示词里的工具规则段，不改人设与请求参数。
+                            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                                Text(
+                                    stringResource(R.string.model_profile_label),
+                                    style = MaterialTheme.typography.bodyMedium
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    modelProfileHint(ModelProfile.fromStored(state.form.modelProfile)),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(Modifier.height(8.dp))
+                                ModelProfilePicker(
+                                    selected = state.form.modelProfile,
+                                    onSelect = { value -> viewModel.update { it.copy(modelProfile = value) } }
                                 )
                             }
                         }

@@ -312,6 +312,12 @@ public struct PersonaEntity: Equatable, Sendable {
     /// 突然改口。空 = 沿用默认（中文），读取时用 `PromptLanguage.resolve` 解析。
     public var languageTag: String?
 
+    /// 「模型优化」档位（0.15，schema v20）：`AUTO` / `DEEPSEEK` / `GLM`。
+    ///
+    /// 决定提示词里要不要注入 `# 工具使用`（`ModelProfilePrompt`）。存的是枚举名（TEXT），
+    /// 数据库默认 `AUTO`；老库升级时那一列自动是 `AUTO`，不需要回填。
+    public var modelProfile: ModelProfile
+
     public init(
         id: String,
         name: String,
@@ -356,7 +362,8 @@ public struct PersonaEntity: Equatable, Sendable {
         blockedUntil: Int64? = nil,
         blockReason: String? = nil,
         blockProposalJson: String? = nil,
-        languageTag: String? = nil
+        languageTag: String? = nil,
+        modelProfile: ModelProfile = .auto
     ) {
         self.id = id
         self.name = name
@@ -409,6 +416,7 @@ public struct PersonaEntity: Equatable, Sendable {
         self.blockProposalJson = PromptGuidanceJSON.clean(blockProposalJson)
         // 语言标签只 trim：认不出来的标签留给 `PromptLanguage.resolve` 回落，不在写入时丢信息。
         self.languageTag = languageTag?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.modelProfile = modelProfile
     }
 
     /// 长文本字段的清洗：去首尾空白；**不截断**（0.12）。
@@ -884,6 +892,11 @@ public struct PersonaPresetEntity: Equatable, Sendable {
     /// v13：预设自带的世界预设与话风（应用预设时**复制**到人格，之后预设变化不自动覆盖人格）。
     public var worldJson: String?
     public var speechStyleJson: String?
+    /// 0.15（v20）：预设也带「模型优化」档位（应用/复制时一起拷到人格）。
+    ///
+    /// 为什么预设也要有：预设是「一整套可复用设定」，换模型是换设备/换服务商时最常见的
+    /// 一次性动作；让用户应用预设之后还得逐个人格再改一遍开关，等于这个开关不存在。
+    public var modelProfile: ModelProfile
 
     public init(
         id: String,
@@ -896,7 +909,8 @@ public struct PersonaPresetEntity: Equatable, Sendable {
         createdAt: Int64 = 0,
         updatedAt: Int64 = 0,
         worldJson: String? = nil,
-        speechStyleJson: String? = nil
+        speechStyleJson: String? = nil,
+        modelProfile: ModelProfile = .auto
     ) {
         self.id = id
         self.name = name
@@ -909,6 +923,7 @@ public struct PersonaPresetEntity: Equatable, Sendable {
         self.updatedAt = updatedAt
         self.worldJson = PromptGuidanceJSON.clean(worldJson)
         self.speechStyleJson = PromptGuidanceJSON.clean(speechStyleJson)
+        self.modelProfile = modelProfile
     }
 }
 

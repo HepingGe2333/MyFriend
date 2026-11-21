@@ -245,7 +245,10 @@ final class BackupMetadataTests: XCTestCase {
         XCTAssertEqual(preview.formatVersion, BackupCodec.formatVersion)
         XCTAssertEqual(preview.schemaVersion, Int(Schema.version))
         XCTAssertEqual(preview.createdAt, TestData.now)
-        XCTAssertEqual(preview.originText(), "备份格式 v7 · 数据库 v19")
+        XCTAssertEqual(
+            preview.originText(),
+            "备份格式 v\(BackupCodec.formatVersion) · 数据库 v\(Schema.version)"
+        )
 
         let checksum = try XCTUnwrap(preview.checksum)
         XCTAssertTrue(preview.checksumVerified)

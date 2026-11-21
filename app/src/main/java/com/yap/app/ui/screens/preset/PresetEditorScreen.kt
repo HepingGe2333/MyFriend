@@ -47,10 +47,13 @@ import com.yap.app.ui.components.AppHeader
 import com.yap.app.ui.components.BackNavigation
 import com.yap.app.ui.components.SpeechStyleCard
 import com.yap.app.ui.components.WorldPresetCard
+import com.yap.app.domain.ModelProfile
 import com.yap.app.domain.WorldEditorState
 import com.yap.app.ui.components.PersonaAvatar
 import com.yap.app.ui.components.PrimaryButton
+import com.yap.app.ui.components.ModelProfilePicker
 import com.yap.app.ui.components.SectionLabel
+import com.yap.app.ui.components.modelProfileHint
 import com.yap.app.ui.components.StyledOutlinedField
 import com.yap.app.ui.components.TextPill
 import com.yap.app.ui.theme.avatarPalette
@@ -170,6 +173,20 @@ fun PresetEditorScreen(
                     )
                 }
             }
+            Spacer(Modifier.height(18.dp))
+            // 0.15 模型优化（schema v20）：预设上选的档位会跟着「用预设创建人格」带过去。
+            SectionLabel(stringResource(R.string.model_profile_label))
+            Spacer(Modifier.height(4.dp))
+            Text(
+                modelProfileHint(ModelProfile.fromStored(state.form.modelProfile)),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+            ModelProfilePicker(
+                selected = state.form.modelProfile,
+                onSelect = { value -> viewModel.update { it.copy(modelProfile = value) } }
+            )
             Spacer(Modifier.height(18.dp))
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 SectionLabel(

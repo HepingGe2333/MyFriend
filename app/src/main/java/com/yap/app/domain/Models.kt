@@ -42,7 +42,14 @@ data class PersonaDraft(
      *
      * 与界面语言无关：用户换成英文界面，中文人格仍然说中文。
      */
-    val languageTag: String? = null
+    val languageTag: String? = null,
+    /**
+     * 0.15：模型优化开关（schema v20，[com.yap.app.domain.ModelProfile.stored]）。
+     *
+     * null 表示「这次保存不动它」：换头像 / 回滚版本 / 预设转人格这些不走编辑表单的路径
+     * 不会把用户选的档位悄悄改回 AUTO；新建人格时 null 落到列默认值 `AUTO`。
+     */
+    val modelProfile: String? = null
 )
 
 data class ApiConfigDraft(

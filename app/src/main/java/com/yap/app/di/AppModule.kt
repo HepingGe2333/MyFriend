@@ -33,6 +33,7 @@ import com.yap.app.data.local.ProactiveRuleDao
 import com.yap.app.BuildConfig
 import com.yap.app.core.AgentCoreClient
 import com.yap.app.core.AgentCoreClients
+import com.yap.app.data.ai.DefaultCrisisModel
 import com.yap.app.data.ai.DefaultJsonLlmClient
 import com.yap.app.data.ai.JsonLlmClient
 import com.yap.app.data.repo.DefaultPersonaTranslationGateway
@@ -86,6 +87,7 @@ import com.yap.app.data.secure.SecretCipher
 import com.yap.app.data.secure.StringCipher
 import com.yap.app.util.ServerModeNotifier
 import com.yap.app.domain.AppMemoryBudget
+import com.yap.app.domain.CrisisClassifier
 import com.yap.app.domain.DataEraser
 import com.yap.app.domain.ErasureFiles
 import com.yap.app.domain.ErasureStore
@@ -132,7 +134,8 @@ object AppModule {
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
                 YapDatabase.MIGRATION_17_18,
-                YapDatabase.MIGRATION_18_19
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             // 这里刻意不写 fallbackToDestructiveMigration()。
             // 对他来说，记忆就是「记得」本身：迁移写错时宁可当场崩溃让我们看见，
@@ -339,6 +342,16 @@ object AppModule {
     @Provides
     @Singleton
     fun provideJsonLlmClient(impl: DefaultJsonLlmClient): JsonLlmClient = impl
+
+    /**
+     * 危机两段式判定的第二段（0.15）。
+     *
+     * 判定器本身是纯逻辑（词表 → 一次注入的模型请求 → 安全优先的结论），
+     * 网络出口由 [DefaultCrisisModel] 提供；单测直接 new 一个假的 `CrisisModel` 就能跑。
+     */
+    @Provides
+    @Singleton
+    fun provideCrisisClassifier(impl: DefaultCrisisModel): CrisisClassifier = CrisisClassifier(impl)
 
     /**
      * 「按需翻译人设」的依赖面（`spec/persona-translation/README.md` §2）。

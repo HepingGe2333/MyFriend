@@ -172,17 +172,58 @@ final class SchemaParityTests: XCTestCase {
                 "personas.\(column.name) 两端都可空（null = 还没判定过）"
             )
         }
-        // 列序也要一致：v17 的三维心情与 v18 的拉黑三列都是 ADD COLUMN 追加在表尾，
-        // 所以表尾六列的**相对顺序**两端必须一样，否则两份库 diff 起来会错位。
-        // Android 19.json 的字段顺序：三维心情 → 拉黑两列 → languageTag → blockProposalJson。
+        // 列序也要一致：v17 的三维心情、v18 的拉黑三列、v19 的 languageTag 与 v20 的 modelProfile
+        // 都是 ADD COLUMN 追加在表尾，所以表尾这些列的**相对顺序**两端必须一样，
+        // 否则两份库 diff 起来会错位。
+        // Android 20.json 的字段顺序预期是：三维心情 → 拉黑两列 → languageTag →
+        // blockProposalJson → modelProfile（v20 只有这一列）。
         let expectedTail = Schema.personaMoodDimensionColumns.map(\.name)
             + Schema.personaBlockColumns.map(\.name).filter { $0 != "blockProposalJson" }
-            + [Schema.personaLanguageColumn.name, "blockProposalJson"]
+            + [Schema.personaLanguageColumn.name, "blockProposalJson",
+               Schema.personaModelProfileColumn.name]
         let androidNames = fields.compactMap { $0["columnName"] as? String }
         XCTAssertEqual(Array(androidNames.suffix(expectedTail.count)), expectedTail,
                        "Android 18.json 里心情三维 + 拉黑三列应在表尾（且顺序一致）")
         XCTAssertEqual(Array(iosColumns.suffix(expectedTail.count)), expectedTail,
                        "iOS 建表语句里心情三维 + 拉黑三列也应在表尾")
+    }
+
+    /// v20 的模型优化档位：`personas.modelProfile` 与 `persona_presets.modelProfile`
+    /// 与 Android 的 `20.json` 一致（列名 / affinity / NOT NULL）。
+    ///
+    /// 默认值也与 Android 的 `20.json` 逐字一致：Room 对这个 TEXT 默认值导出为 `'AUTO'`
+    ///（带单引号），iOS 的建表语句写的也是 `DEFAULT 'AUTO'`，`PRAGMA table_info` 读出来同样是
+    /// `'AUTO'`。两端对得上，所以这里直接比字面值（而不是像更早的列那样只比「有没有默认值」）。
+    func testV20ModelProfileColumnsMatchAndroidRoomExport() throws {
+        let entities = try roomEntities()
+        for table in ["personas", "persona_presets"] {
+            let entity = try XCTUnwrap(
+                entities[table], "Android v\(Schema.version) 里没有这张表：\(table)"
+            )
+            let fields = try XCTUnwrap(entity["fields"] as? [[String: Any]])
+            let field = try XCTUnwrap(
+                fields.first { $0["columnName"] as? String == Schema.personaModelProfileColumn.name },
+                "Android v\(Schema.version) 的 \(table) 缺列 modelProfile"
+            )
+            XCTAssertEqual(field["affinity"] as? String, "TEXT", "\(table).modelProfile 两端都是 TEXT")
+            XCTAssertEqual(field["notNull"] as? Bool ?? false, true,
+                           "\(table).modelProfile 两端都是 NOT NULL（默认 AUTO）")
+            XCTAssertEqual(field["defaultValue"] as? String, "'AUTO'",
+                           "\(table).modelProfile 的默认值两端都是 AUTO")
+        }
+
+        // iOS 侧的实际默认值（PRAGMA 带引号）与建表语句一致。
+        for table in ["personas", "persona_presets"] {
+            let statement = try temp.stores.database.prepare("PRAGMA table_info(\(table))")
+            var defaultValue: String?
+            while try statement.step() {
+                let row = SQLiteRow(statement: statement)
+                if try row.text("name") == Schema.personaModelProfileColumn.name {
+                    defaultValue = try row.optionalText("dflt_value")
+                }
+            }
+            XCTAssertEqual(defaultValue, "'AUTO'", "\(table).modelProfile 的默认值要照建表语句写")
+        }
     }
 
     /// v15 的两张新表：`diary_notes`（`spec/diary/README.md`）与

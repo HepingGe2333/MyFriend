@@ -31,7 +31,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         MentalActivityEntity::class,
         SessionMemoryEntity::class
     ],
-    version = 19,
+    version = 20,
     // 把每一版表结构导出成 json，落到 app/schemas/ 下。
     // 这是以后写正经迁移测试、以及 review 时「这一版到底动了什么」的唯一凭据。
     exportSchema = true
@@ -66,6 +66,34 @@ abstract class YapDatabase : RoomDatabase() {
 
     companion object {
         const val NAME = "yap.db"
+
+        /**
+         * v20：0.15 模型优化开关（[com.yap.app.domain.ModelProfile]）。
+         *
+         * `personas.modelProfile` 与 `persona_presets.modelProfile` 各加一列 `TEXT NOT NULL
+         * DEFAULT 'AUTO'`：
+         * - 老库升级后都是 `'AUTO'`（按 model 名推断），行为与 v19 一致——
+         *   唯一的区别是 DeepSeek 系模型会多拿到一段 `# 工具使用` 规则，这正是这个开关的默认档；
+         * - 预设那张表按「表存在才加列」处理（非常老的库理论上可能没有它）。
+         *
+         * 幂等：列先查 `PRAGMA table_info`，可重复执行。
+         */
+        val MIGRATION_19_20 = object : Migration(19, 20) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                val personaColumns = columns(db, "personas")
+                if (personaColumns.isNotEmpty() && "modelProfile" !in personaColumns) {
+                    db.execSQL(
+                        "ALTER TABLE `personas` ADD COLUMN `modelProfile` TEXT NOT NULL DEFAULT 'AUTO'"
+                    )
+                }
+                val presetColumns = columns(db, "persona_presets")
+                if (presetColumns.isNotEmpty() && "modelProfile" !in presetColumns) {
+                    db.execSQL(
+                        "ALTER TABLE `persona_presets` ADD COLUMN `modelProfile` TEXT NOT NULL DEFAULT 'AUTO'"
+                    )
+                }
+            }
+        }
 
         /**
          * v19：0.15 上下文/记忆 v2 与人格语言（`docs/design/context-memory-v2.md`）。

@@ -43,7 +43,7 @@ final class MoodSchemaTests: XCTestCase {
     func testFreshDatabaseHasMoodDimensionColumns() throws {
         let stores = try DatabaseStores.open(path: databasePath)
         defer { stores.database.close() }
-        XCTAssertEqual(Schema.version, 19, "当前 schema 是 v19（v17 三维心情 + v18 拉黑 + v19 人格语言/主题总结）")
+        XCTAssertEqual(Schema.version, 20, "当前 schema 是 v20（v17 三维心情 + v18 拉黑 + v19 人格语言/主题总结 + v20 模型优化）")
         let columns = try columnNames(stores.database, table: "personas")
         for column in Schema.personaMoodDimensionColumns {
             XCTAssertTrue(columns.contains(column.name), "缺列：personas.\(column.name)")

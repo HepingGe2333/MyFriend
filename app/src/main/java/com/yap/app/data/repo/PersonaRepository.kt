@@ -20,6 +20,7 @@ import com.yap.app.domain.PersonaProfile
 import com.yap.app.domain.PersonaRevisionReason
 import com.yap.app.domain.ProactiveLevel
 import com.yap.app.domain.SleepPolicy
+import com.yap.app.domain.ModelProfile
 import com.yap.app.domain.PersonaDraft
 import com.yap.app.domain.PersonaDraftDefaults
 import com.yap.app.network.NetworkGuard
@@ -126,6 +127,7 @@ class PersonaRepository @Inject constructor(
             version = version,
             defaultApiConfigId = draft.defaultApiConfigId,
             modelOverride = draft.modelOverride?.trim()?.ifBlank { null },
+            modelProfile = ModelProfile.fromStored(draft.modelProfile).stored,
             isDefault = personaDao.count() == 0,
             createdAt = now,
             updatedAt = now
@@ -156,6 +158,9 @@ class PersonaRepository @Inject constructor(
             speechStyleJson = draft.speechStyleJson?.trim()?.takeIf { it.isNotBlank() },
             // 0.15：人格自己的提示词语言；认不出的标签按「没选过」处理（回落中文）。
             languageTag = com.yap.app.domain.PromptLanguage.parse(draft.languageTag)?.code,
+            // 0.15：模型优化开关。draft 为 null 时保留库里已有的值（换头像/回滚不该重置它），
+            // 认不出的值按 AUTO 处理（与读路径同一个口径）。
+            modelProfile = ModelProfile.fromStored(draft.modelProfile ?: existing?.modelProfile).stored,
             updatedAt = now
         )
         // M5：服务端模式下先让服务端接受这次保存，成功之后才允许写 Room 缓存。

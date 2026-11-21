@@ -104,6 +104,13 @@ sealed interface SettingsEvent {
      * 边读库边分批写盘（见 [SettingsViewModel.exportAllChatsTo]）。
      */
     data class ExportReady(val fileName: String) : SettingsEvent
+
+    /**
+     * 反馈已经保存好了：界面拿这个地址去打开浏览器（https 校验在 UI 层，见 `openFeedbackIssue`）。
+     *
+     * 事件里只带 URL，不带文件内容：本地文件已经写好，页面不需要再碰它。
+     */
+    data class FeedbackReady(val issueUrl: String) : SettingsEvent
 }
 
 /**
@@ -143,6 +150,8 @@ class SettingsViewModel @Inject constructor(
     private val llmConfigPusher: com.yap.app.data.remote.ServerLlmConfigPusher,
     /** 0.15：检查更新（与前台自动检查共用同一个协调器与状态）。 */
     private val updateCoordinator: UpdateCoordinator,
+    /** 0.15：反馈落盘（`files/feedback`）+ 生成 GitHub Issue 预填链接。 */
+    private val feedbackRepository: com.yap.app.data.repo.FeedbackRepository,
     @ApplicationContext private val context: Context
 ) : ViewModel() {
     private val busy = MutableStateFlow(false)
@@ -220,6 +229,32 @@ class SettingsViewModel @Inject constructor(
 
     fun dismissMessage() {
         message.value = null
+    }
+
+    /**
+     * 提交一条反馈（0.15）。
+     *
+     * 顺序固定：**先落盘，再打开浏览器**。落盘成功 → 提示「已保存」并发事件让界面打开预填页；
+     * 落盘失败 → 只提示失败（什么都不打开，避免用户以为已经保存）。
+     *
+     * 界面在调用前已经用 `Feedback.validate` 拦过一次；这里不重复校验（仓储层还有一道）。
+     */
+    fun submitFeedback(
+        kind: com.yap.app.domain.FeedbackKind,
+        content: String,
+        contact: String
+    ) {
+        viewModelScope.launch {
+            val result = feedbackRepository.submit(
+                com.yap.app.domain.FeedbackDraft(kind = kind, content = content, contact = contact)
+            )
+            result.onSuccess { receipt ->
+                message.value = context.getString(R.string.feedback_saved)
+                events.send(SettingsEvent.FeedbackReady(receipt.issueUrl))
+            }.onFailure { error ->
+                message.value = ErrorText.of(context, error, R.string.feedback_save_failed)
+            }
+        }
     }
 
     fun setThemeMode(mode: ThemeMode) = launchSetting { settingsRepository.setThemeMode(mode) }

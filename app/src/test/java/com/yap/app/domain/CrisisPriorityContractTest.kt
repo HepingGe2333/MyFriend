@@ -29,6 +29,7 @@ class CrisisPriorityContractTest {
     private val chatRepository by lazy { source("src/main/java/com/yap/app/data/repo/ChatRepository.kt") }
     private val crisisPriority by lazy { source("src/main/java/com/yap/app/domain/CrisisPriority.kt") }
     private val safetyGuard by lazy { source("src/main/java/com/yap/app/domain/SafetyGuard.kt") }
+    private val crisisClassifier by lazy { source("src/main/java/com/yap/app/domain/CrisisClassifier.kt") }
 
     /** 截取一段源码，长度上界自动收敛到文件末尾。 */
     private fun slice(from: Int, length: Int): String =
@@ -40,19 +41,30 @@ class CrisisPriorityContractTest {
     // ---------------------------------------------------------------- 判定在最前面
 
     @Test
-    fun `危机判定只看用户原话且发生在向模型要回复之前`() {
-        val judged = indexOf("val crisisTurn = CrisisPriority.isCrisisTurn(latestUserText)")
+    fun `危机判定分两段 第一段只看用户原话且发生在向模型要回复之前`() {
+        // 0.15：第一段是词表（同步、零网络），第二段是一次独立模型请求（在后台发起，不挡流式）。
+        val started = indexOf("val crisisJudgement: Deferred<CrisisVerdict> =")
         assertTrue(
-            "要看的是这一轮的用户原话",
-            judged > indexOf("val latestUserText = recentHistory.firstOrNull")
+            "要看的是这一轮的用户原话（最近一条 user 消息，带上它的 id 做缓存键）",
+            started > indexOf("val latestUserMessage = recentHistory.firstOrNull")
         )
         assertTrue(
-            "判定必须在开始生成之前（之后的所有分支都靠它）",
-            judged < indexOf("emit(GenerationEvent.Started)")
+            "判定必须在开始生成之前发起（之后的所有分支都靠它）",
+            started < indexOf("emit(GenerationEvent.Started)")
         )
+        val call = slice(started, 260)
         assertTrue(
-            "危机判定与 SafetyGuard 共用同一条规则，不在两处各写一份",
+            "两段式判定走 CrisisClassifier（词表 + 独立模型请求）",
+            call.contains("crisisClassifier.start(")
+        )
+        assertTrue("缓存键是消息 id", call.contains("latestUserMessage?.id.orEmpty()"))
+        assertTrue(
+            "危机判定与 SafetyGuard 共用同一条词表规则，不在两处各写一份",
             crisisPriority.contains("SafetyGuard.isCrisis") && !crisisPriority.contains("Regex(")
+        )
+        assertTrue(
+            "第二段的第一段也是 SafetyGuard（同一个词表真源）",
+            crisisClassifier.contains("SafetyGuard.isCrisis(userMessage)")
         )
         assertTrue("SafetyGuard 自己仍然是唯一的规则来源", safetyGuard.contains("fun isCrisis("))
     }
@@ -61,10 +73,10 @@ class CrisisPriorityContractTest {
 
     @Test
     fun `危机轮在工具执行之前拦下 stay_silent 与 defer_reply`() {
-        val blocks = indexOf("if (CrisisPriority.blocksTool(crisisTurn, call.name)) {")
+        val blocks = indexOf("if (CrisisPriority.blocksTool(crisisJudgement.await().isCrisis, call.name)) {")
         assertTrue(
-            "必须用 crisisTurn 判断，非危机轮才不会被误拦",
-            chatRepository.contains("blocksTool(crisisTurn, call.name)")
+            "必须用两段式的最终结论判断，非危机轮才不会被误拦",
+            chatRepository.contains("blocksTool(crisisJudgement.await().isCrisis, call.name)")
         )
         assertTrue(
             "拦截发生在任何工具执行之前（不写念头、不排窗口、不涨沉默计数、不留卡片）",
@@ -87,7 +99,7 @@ class CrisisPriorityContractTest {
     @Test
     fun `已经写出来的消息仍然会发给对方 拦的只是不回`() {
         // 同一批里 `send_message` 依旧执行：用户该看到的话一句都不能少。
-        val blocks = indexOf("if (CrisisPriority.blocksTool(crisisTurn, call.name)) {")
+        val blocks = indexOf("if (CrisisPriority.blocksTool(crisisJudgement.await().isCrisis, call.name)) {")
         val send = indexOf("if (call.name.trim().equals(ToolCatalog.SEND_MESSAGE, ignoreCase = true)) {")
         assertTrue("send_message 的处理在拦截之后（拦下沉默后仍会执行）", send > blocks)
         assertTrue(
@@ -125,6 +137,10 @@ class CrisisPriorityContractTest {
         val fallback = indexOf("if (crisisTurn && sentMessages.isEmpty()) {")
         val block = slice(fallback, 260)
         assertTrue("正文兜底走纯规则", block.contains("CrisisPriority.replyBody(crisisTurn, replyText, crisisNote)"))
+        assertTrue(
+            "crisisTurn 取的是两段式的最终结论（模型明确说 risk=false 时兜底不生效）",
+            indexOf("val crisisTurn = crisisJudgement.await().isCrisis") < fallback
+        )
         assertTrue(
             "兜底发生在拆条落库之前（否则提示会被丢掉）",
             fallback < indexOf("ExperienceRhythm.splitPlainReply")

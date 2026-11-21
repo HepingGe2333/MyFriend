@@ -17,12 +17,31 @@ package com.yap.app.domain
  * 4. 非危机轮 `blocksTool` 一律 false、`replyBody` 原样放行——沉默与延后的行为一字不改。
  *
  * 与 [SafetyGuard] 的分工：那边决定「要不要补一句」，这边决定「危机时不许不回」。
- * 判断规则共用同一个 [SafetyGuard.isCrisis]，避免两处对「什么算危机」产生分歧。
+ * 第一段判断共用同一个 [SafetyGuard.isCrisis]，避免两处对「什么算危机」产生分歧。
+ *
+ * 0.15 起「这一轮算不算危机」是**两段式**的（见 [CrisisClassifier]）：
+ * 1. 词表（[isCrisisTurn] 的 String 重载，纯函数、零网络）——没命中就不是危机轮；
+ * 2. 命中之后由 [CrisisClassifier] 再用一次独立模型请求确认，只有 `risk=false` 才降级。
+ * 所以调用点拿到的应该是第二段的结论（[isCrisisTurn] 的 CrisisVerdict 重载），
+ * 词表结论只用来决定「值不值得去问」以及超时时的兜底。
  */
 object CrisisPriority {
 
-    /** 这一轮是不是危机轮：只看用户原话，不看模型说了什么。 */
+    /**
+     * 第一段：词表。只看用户原话，不看模型说了什么，也不发请求。
+     *
+     * 保留它是因为它同时是 [CrisisClassifier] 的第一段和超时路径上的结论：
+     * 词表命中而判定没跑完时，仍然按危机处理（安全优先）。
+     */
     fun isCrisisTurn(userMessage: String): Boolean = SafetyGuard.isCrisis(userMessage)
+
+    /**
+     * 两段式判定的最终结论：算不算危机轮。
+     *
+     * 词表没命中时 [CrisisVerdict.isCrisis] 恒为 false；命中之后只有模型明确说
+     * `risk=false` 才会得到 false。失败 / 超时 / 坏 JSON 都是 true（见 [CrisisStage.FAILSAFE]）。
+     */
+    fun isCrisisTurn(verdict: CrisisVerdict): Boolean = verdict.isCrisis
 
     /**
      * 危机轮里要拦下的「不回」工具。

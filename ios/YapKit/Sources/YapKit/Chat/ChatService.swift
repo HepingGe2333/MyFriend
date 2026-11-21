@@ -274,6 +274,12 @@ public final class ChatService {
     /// 见 `Views/Persona/PersonaTranslationTrigger.swift`），这样聊天生成不会被翻译拖慢，
     /// 单测里也不会因为翻译多发一次网络请求。
     private let translationLanguage: () -> String
+    /// 危机两段式判定（0.15）：词表第一段 + 一次低温度模型复核 + 按消息 id 缓存。
+    ///
+    /// 放在 ChatService 上的原因只有缓存：它是**有状态**的（同一条消息重试不再问第二次），
+    /// 每轮新建一个就等于每轮重问。判定逻辑本身在 `CrisisClassifier`（纯决策 + 可注入 provider），
+    /// 这里只负责在正确的位置把当前 API 配置接成 `CrisisJudgeProvider`。
+    private let crisis: CrisisClassifier
 
     private let lock = NSLock()
     private var runningGenerations: [String: RunningGeneration] = [:]
@@ -303,6 +309,7 @@ public final class ChatService {
         mediaParts: (any MediaPartsBuilding)? = nil,
         agentCore: any AgentCoreClient = AgentCoreClientFactory.makeNative(),
         translationLanguage: (() -> String)? = nil,
+        crisis: CrisisClassifier = CrisisClassifier(),
         now: @escaping () -> Int64 = { Int64(Date().timeIntervalSince1970 * 1000) }
     ) {
         self.stores = stores
@@ -328,6 +335,7 @@ public final class ChatService {
         self.mediaParts = mediaParts ?? LocalMediaPartsBuilder(store: audioVideo)
         self.agentCore = agentCore
         self.translationLanguage = translationLanguage ?? { PersonaTranslationLanguage.current() }
+        self.crisis = crisis
         self.now = now
     }
 
@@ -710,7 +718,29 @@ public final class ChatService {
             ///
             /// 只判一次：这一轮后面所有分支用的是同一句话（模型看到的就是它），
             /// 不在中途重算，免得出现「前半轮算危机、后半轮不算」的漂移。
-            let userInCrisis = SafetyGuard.isCrisis(currentUserText)
+            ///
+            /// 0.15 两段式（体验审计跟进）：第一段仍是 `SafetyGuard.isCrisis` 的词表漏斗
+            /// （不命中 = 零请求），命中之后才用**当前 API 配置**发一次低温度 completion
+            /// 复核「这是不是真实的危机」（`CrisisClassifier`，超时 5s、结论按消息 id 缓存）。
+            /// 结论同时决定两件事：`stay_silent` / `defer_reply` 要不要让路，以及回复末尾
+            /// 要不要补安全提示 —— 两处必须用同一个布尔值，否则「模型判了 false、追加那句仍然生效」。
+            ///
+            /// 为什么是 `Task` 而不是当场 `await`（与 Android `CrisisClassifier.start` 同一种做法）：
+            /// 词表不命中时它已经完成（零请求、零延迟），命中时最多 5 秒；如果挡在这里，
+            /// 用户会先盯着「正在输入」等一次判定请求。放到后台跑，第一句回复不必等它，
+            /// 真正需要结论的地方（沉默工具 / 收尾补提示）再 `await`。
+            let crisisVerdict = Task { [crisis] in
+                await crisis.isCrisis(
+                    userText: currentUserText,
+                    messageId: currentUserMessage?.id,
+                    judge: crisisJudge(
+                        config: config,
+                        apiKey: resolved.apiKey,
+                        model: model,
+                        usageContext: UsageContext(personaId: persona.id, sessionId: sessionId)
+                    )
+                )
+            }
             var currentMediaParts: [String: MediaWireParts] = [:]
             if let currentUserMessage {
                 let playable = AttachmentsCodec.decode(currentUserMessage.attachmentsJson)
@@ -813,6 +843,16 @@ public final class ChatService {
                     toolsCapability: PersonaLanguagePrompt.capabilitiesSection(
                         webEnabled: config.webToolsEnabled, language: personaLanguage
                     ),
+                    // 0.15 模型优化开关（schema v20）：DeepSeek 档注入 `# 工具使用`，
+                    // GLM 走 lean（不注入），AUTO 按**当前实际模型名**推断。
+                    // 与 App 上显示的那个档位同源：模型名取 session.model（可覆盖配置）；
+                    // 没联网时那一段不提 web_search（与 Android `ModelProfilePrompt` 逐字一致）。
+                    toolUsageBlock: ModelProfilePrompt.toolsSection(
+                        profile: speakingPersona.modelProfile,
+                        modelName: model,
+                        webEnabled: config.webToolsEnabled,
+                        language: personaLanguage
+                    ),
                     // 「用对方的语言回答」= 人格语言（不是页面语言）。
                     languageDirective: PersonaLanguagePrompt.languageSection(language: personaLanguage)
                 )).map { ($0.section, $0.text) }
@@ -913,7 +953,7 @@ public final class ChatService {
                     // - 已经用 `send_message` 发满 4 条时并进最后一条，不造第 5 个气泡。
                     // 留痕规则也一起改：不显示 `stay_silent` 工具卡（它根本没执行）、
                     // 不记「连续沉默」（他其实说过了话），计数清零。
-                    if userInCrisis {
+                    if await crisisVerdict.value {
                         let reply = try deliverCrisisSafetyReply(
                             body: body,
                             userText: currentUserText,
@@ -1017,7 +1057,7 @@ public final class ChatService {
                     // 等于把求助晾在一边。这一轮照常落一条看得见的回复，并且：
                     // - **不留念头、不排窗口**（不调 `decide("defer-plan")`、不写 `agent_intents`）；
                     // - 连续沉默清零（他其实说过了话）。
-                    if userInCrisis {
+                    if await crisisVerdict.value {
                         let reply = try deliverCrisisSafetyReply(
                             body: body,
                             userText: currentUserText,
@@ -1211,7 +1251,8 @@ public final class ChatService {
                 let anchored = SafetyGuard.appendingSafetyNetIfNeeded(
                     reply: finalMessage.content,
                     userMessage: currentUserText,
-                    language: personaLanguage
+                    language: personaLanguage,
+                    crisis: await crisisVerdict.value
                 )
                 if anchored != finalMessage.content {
                     finalMessage.content = anchored
@@ -1255,7 +1296,8 @@ public final class ChatService {
                 finalText = SafetyGuard.appendingSafetyNetIfNeeded(
                     reply: finalText,
                     userMessage: currentUserText,
-                    language: personaLanguage
+                    language: personaLanguage,
+                    crisis: await crisisVerdict.value
                 )
             }
             // 最终正文可能和流里那一份不一样（去掉代码块、trim）：补一次，界面才对得上库里的内容。
@@ -1425,6 +1467,43 @@ public final class ChatService {
         }
     }
 
+    // MARK: - 危机第二段判定（0.15）
+
+    /// 把**当前这一轮**解析出来的 API 配置接成第二段判定用的 provider。
+    ///
+    /// 为什么不是构造时注入一个固定 provider：配置可以在两个会话之间完全不同
+    ///（model / baseUrl / Key 都是会话级的），固定的 provider 会拿另一份配置去问。
+    /// 这里每次生成拼一个闭包，成本是一次捕获，没有网络开销。
+    ///
+    /// 参数与聊天请求同源（`config` / `apiKey` / `model`），但采样刻意不同：
+    /// 温度 0、输出上限 200 —— 判定要的是稳定的一个 JSON，不是创作。
+    /// `kind` 用 `UNKNOWN`（与 Android `DefaultCrisisModel` 一致）：它是安全判定，
+    /// 不该被算进「聊天」，也不该出现在「判断值不值得记」那一栏里。
+    private func crisisJudge(
+        config: ApiConfigEntity,
+        apiKey: String?,
+        model: String,
+        usageContext: UsageContext
+    ) -> CrisisJudgeProvider {
+        { request in
+            try await self.client.complete(
+                config: config,
+                apiKey: apiKey,
+                model: model,
+                messages: [
+                    WireMessage(role: "system", content: request.system),
+                    WireMessage(role: "user", content: request.userText)
+                ],
+                params: InferenceParams(
+                    temperature: CrisisJudgement.temperature,
+                    maxOutputTokens: CrisisJudgement.maxOutputTokens
+                ),
+                kind: UsageKind.unknown,
+                usageContext: usageContext
+            )
+        }
+    }
+
     // MARK: - 解决配置 / Key
 
     private struct ResolvedSession {
@@ -1548,7 +1627,7 @@ public final class ChatService {
         let content = trimmedBody.isEmpty
             ? note
             : SafetyGuard.appendingSafetyNetIfNeeded(
-                reply: trimmedBody, userMessage: userText, language: language
+                reply: trimmedBody, userMessage: userText, language: language, crisis: true
             )
         // 这一轮没有正文、但话已经用 `send_message` 说过了：那句里已经有安全锚点时，
         // 再补一条纯提示气泡就是重复（「不重复」同样适用于工具发出去的话）。

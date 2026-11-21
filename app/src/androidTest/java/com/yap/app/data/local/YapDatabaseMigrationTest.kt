@@ -231,7 +231,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()
@@ -365,7 +367,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()
@@ -655,7 +659,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()
@@ -834,7 +840,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()
@@ -907,7 +915,9 @@ class YapDatabaseMigrationTest {
             YapDatabase.MIGRATION_14_15,
             YapDatabase.MIGRATION_15_16,
             YapDatabase.MIGRATION_16_17,
-            YapDatabase.MIGRATION_17_18
+            YapDatabase.MIGRATION_17_18,
+            YapDatabase.MIGRATION_18_19,
+            YapDatabase.MIGRATION_19_20
         )
         val steps = registered.map { it.startVersion to it.endVersion }.toSet()
         val currentVersion = currentDatabaseVersion()
@@ -1082,7 +1092,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()
@@ -1179,7 +1191,9 @@ class YapDatabaseMigrationTest {
                 YapDatabase.MIGRATION_14_15,
                 YapDatabase.MIGRATION_15_16,
                 YapDatabase.MIGRATION_16_17,
-                YapDatabase.MIGRATION_17_18
+                YapDatabase.MIGRATION_17_18,
+                YapDatabase.MIGRATION_18_19,
+                YapDatabase.MIGRATION_19_20
             )
             .allowMainThreadQueries()
             .build()

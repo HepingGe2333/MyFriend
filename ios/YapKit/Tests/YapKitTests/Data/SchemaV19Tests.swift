@@ -40,8 +40,8 @@ final class SchemaV19Tests: XCTestCase {
     func testFreshDatabaseHasLanguageTagAndTopicColumns() throws {
         let stores = try DatabaseStores.open(path: databasePath)
         defer { stores.database.close() }
-        XCTAssertEqual(try stores.database.userVersion(), 19)
-        XCTAssertEqual(Schema.version, 19)
+        XCTAssertEqual(try stores.database.userVersion(), Schema.version)
+        XCTAssertEqual(Schema.version, 20, "v19 的列仍然在（v20 只多 modelProfile，不删列）")
         XCTAssertTrue(try columnNames(stores.database, table: "personas").contains("languageTag"))
         let memoryColumns = try columnNames(stores.database, table: Schema.sessionMemoryTable)
         for column in ["topicsJson", "topicUserCount", "topicUpdatedAt"] {
@@ -114,10 +114,10 @@ final class SchemaV19Tests: XCTestCase {
             try database.setUserVersion(18)
             database.close()
         }
-        // 3. 重新打开：迁移补列、版本到 19，旧数据还在（新列读成默认值）。
+        // 3. 重新打开：迁移补列、版本到当前 schema，旧数据还在（新列读成默认值）。
         let reopened = try DatabaseStores.open(path: databasePath)
         defer { reopened.database.close() }
-        XCTAssertEqual(try reopened.database.userVersion(), 19)
+        XCTAssertEqual(try reopened.database.userVersion(), Schema.version)
         XCTAssertTrue(try columnNames(reopened.database, table: "personas").contains("languageTag"))
         let persona = try XCTUnwrap(try reopened.personas.byId("p1"))
         XCTAssertEqual(persona.name, "林深")

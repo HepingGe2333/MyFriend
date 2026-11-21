@@ -28,7 +28,14 @@ data class PresetDraft(
     /** 世界预设 JSON（v13）；null 表示这个预设不带世界。 */
     val worldJson: String? = null,
     /** 话风 JSON（v13）。 */
-    val speechStyleJson: String? = null
+    val speechStyleJson: String? = null,
+    /**
+     * 0.15 模型优化开关（schema v20）。
+     *
+     * null = 这次保存不动它（与 [com.yap.app.domain.PersonaDraft.modelProfile] 同一约定）；
+     * 用这个预设创建人格时会带过去（[createPersonaFromPreset]）。
+     */
+    val modelProfile: String? = null
 )
 
 @Serializable
@@ -108,7 +115,10 @@ class PresetRepository @Inject constructor(
             createdAt = existing?.createdAt ?: now,
             updatedAt = now,
             worldJson = draft.worldJson?.takeIf { it.isNotBlank() },
-            speechStyleJson = draft.speechStyleJson?.takeIf { it.isNotBlank() }
+            speechStyleJson = draft.speechStyleJson?.takeIf { it.isNotBlank() },
+            // 认不出的值按 AUTO 处理；draft 为 null 时保留库里已有的档位。
+            modelProfile = com.yap.app.domain.ModelProfile
+                .fromStored(draft.modelProfile ?: existing?.modelProfile).stored
         )
         // M5：服务端成功之后才写 Room；保存失败让编辑页明确提示，不回退本地。
         val creating = existing == null
@@ -199,7 +209,8 @@ class PresetRepository @Inject constructor(
                 avatarUri = persona.avatarUri,
                 avatarSeed = persona.avatarSeed,
                 worldJson = persona.worldJson,
-                speechStyleJson = persona.speechStyleJson
+                speechStyleJson = persona.speechStyleJson,
+                modelProfile = persona.modelProfile
             )
         ).getOrThrow()
     }
@@ -226,7 +237,9 @@ class PresetRepository @Inject constructor(
                 defaultApiConfigId = defaultApiConfigId,
                 modelOverride = null,
                 worldJson = preset.worldJson,
-                speechStyleJson = preset.speechStyleJson
+                speechStyleJson = preset.speechStyleJson,
+                // 0.15：预设上的模型优化档位跟着人格走（之后各改各的，互不覆盖）。
+                modelProfile = preset.modelProfile
             )
         ).getOrThrow()
     }

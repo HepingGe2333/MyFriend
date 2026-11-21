@@ -50,6 +50,7 @@ import com.yap.app.domain.MessageAttachment
 import com.yap.app.domain.StickerPromptBlock
 import com.yap.app.domain.MoodBehavior
 import com.yap.app.domain.MoodLexicon
+import com.yap.app.domain.ModelProfile
 import com.yap.app.domain.MoodPrompt
 import com.yap.app.domain.OpenSessionTracker
 import com.yap.app.domain.PersonaActivityCodec
@@ -74,7 +75,9 @@ import com.yap.app.domain.UserErrorTokens
 import com.yap.app.domain.SleepDecision
 import com.yap.app.domain.SleepInput
 import com.yap.app.domain.SleepPolicy
+import com.yap.app.domain.CrisisClassifier
 import com.yap.app.domain.CrisisPriority
+import com.yap.app.domain.CrisisVerdict
 import com.yap.app.domain.SafetyGuard
 import com.yap.app.domain.SilentReason
 import com.yap.app.domain.SpeechStyleCodec
@@ -97,6 +100,7 @@ import com.yap.app.util.ChatNotifier
 import com.yap.app.util.MediaStorage
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -263,6 +267,13 @@ class ChatRepository @Inject constructor(
      * 异步、不 await：判定再慢也晚不了一毫秒回话，失败按时间衰减、用户看不到。
      */
     private val moodJudgement: MoodJudgementCoordinator,
+    /**
+     * 0.15 危机两段式判定：词表命中后再问一次独立模型。
+     *
+     * 用 `start()` 先在后台发起、真的需要结论时再 await：多问一次模型不会挡在第一句回复前面；
+     * 超时/失败按危机处理（[CrisisClassifier] 内部兜底）。
+     */
+    private val crisisClassifier: CrisisClassifier,
     private val sessionGeneration: SessionGenerationRegistry,
     private val dataEraser: DataEraser,
     /** 删图片文件之前的引用守卫（0.12）：共享文件还有别的消息/头像引用时不删。 */
@@ -809,10 +820,15 @@ class ChatRepository @Inject constructor(
         }
         // 这一轮「对方说了什么」：安全兜底与高置信自动记忆都要看用户原话（最近一条 user 消息）。
         // recentBySession 按 createdAt 倒序返回，所以最近一条 user 消息就是 firstOrNull。
-        val latestUserText = recentHistory.firstOrNull { it.role == MessageRole.USER }?.content.orEmpty()
-        // 0.15 危机优先：这一轮用户原话里有没有明确的危机语句。只看用户说了什么，
-        // 和模型接下来怎么回无关；非危机时下面所有分支保持原样（见 CrisisPriority）。
-        val crisisTurn = CrisisPriority.isCrisisTurn(latestUserText)
+        val latestUserMessage = recentHistory.firstOrNull { it.role == MessageRole.USER }
+        val latestUserText = latestUserMessage?.content.orEmpty()
+        // 0.15 危机两段式判定（见 CrisisClassifier）：
+        // 第一段是词表（纯函数、零网络）；命中之后才在后台问一次独立模型（低温度、5s 预算）。
+        // 这里只**发起**请求、不等待：拼提示词与首轮流式的时间足够它跑完，真正需要结论的地方
+        // （拦「不回」的工具、决定要不要补安全提示）在下面对 `await()`。词表没命中时
+        // `start()` 当场返回「不是危机」，一次请求都不会发，正常对话一个字节都不变。
+        val crisisJudgement: Deferred<CrisisVerdict> =
+            crisisClassifier.start(latestUserMessage?.id.orEmpty(), latestUserText)
         val now0 = System.currentTimeMillis()
         // 睡眠 / 免打扰 / 唤醒阈值（规格 §六）。判定是纯函数，这里只负责拿数据、落痕迹。
         val sleepDecision = evaluateSleep(persona, sessionId, now0)
@@ -968,7 +984,7 @@ class ChatRepository @Inject constructor(
                     // `stay_silent` 的连续计数与「已读不回」卡片都不该出现。拦在这里（执行之前），
                     // 而不是执行完再覆盖语义；同批里别的工具（比如 `send_message`）照常执行，
                     // 已经写出来的话仍然会发给对方。
-                    if (CrisisPriority.blocksTool(crisisTurn, call.name)) {
+                    if (CrisisPriority.blocksTool(crisisJudgement.await().isCrisis, call.name)) {
                         crisisForcedReply = true
                         results += ToolResult(
                             invocation = call,
@@ -1158,13 +1174,22 @@ class ChatRepository @Inject constructor(
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
             // 按界面语言取的危机提示句：既用于「缺锚点时补一句」，也用于危机轮完全没正文时的兜底。
             val crisisNote = appContext.getString(R.string.safety_crisis_note)
+            // 危机两段式的最终结论：词表命中 + 模型说「确实是危机」/ 判定不可用（安全优先）。
+            // 模型明确说 risk=false 时，下面的危机兜底（补提示、不许沉默）完全不生效。
+            // 大多数情况下这一行不花时间：判定在拼提示词之前就已经发出去，首轮流式早就跑完了。
+            val crisisTurn = crisisJudgement.await().isCrisis
             // 危机安全兜底（0.15）：用户说了危机语句、而他这一轮的话里没有任何安全锚点时，
             // 只在末尾补一句很短的提示——不覆盖他原本的话，也不改人设语气。
-            val safetyNote = SafetyGuard.noteIfNeeded(
-                userMessage = latestUserText,
-                reply = (sentMessages.map { it.content } + finalText).joinToString("\n"),
-                note = crisisNote
-            )
+            // 第二段明确判成「不是危机」时整段跳过（词表只负责让它值得看一眼）。
+            val safetyNote = if (!crisisTurn) {
+                null
+            } else {
+                SafetyGuard.noteIfNeeded(
+                    userMessage = latestUserText,
+                    reply = (sentMessages.map { it.content } + finalText).joinToString("\n"),
+                    note = crisisNote
+                )
+            }
             var replyText = finalText
             if (safetyNote != null) {
                 if (replyText.isNotBlank()) {
@@ -2304,6 +2329,11 @@ class ChatRepository @Inject constructor(
                 webEnabled = config.webToolsEnabled,
                 language = personaLanguage
             ),
+            // 0.15 模型优化开关（schema v20）：DeepSeek 才追加「# 工具使用」规则段，
+            // GLM 是 lean；AUTO 按这一轮真正要发的 model 名推断（含 glm → GLM）。
+            modelProfile = ModelProfile.fromStored(persona.modelProfile),
+            modelName = session.model.ifBlank { config.model },
+            webToolsEnabled = config.webToolsEnabled,
             languageSection = PromptBuilder.languageSectionFor(persona.languageTag),
             language = personaLanguage
         )
