@@ -11,6 +11,9 @@ import XCTest
 ///    这一轮只沉默——不落 assistant 正文、不留工具卡片、只标已读。
 /// 3. **危机安全兜底**：用户说了「不想活」而回复里没有安全锚点时，落库的正文末尾追加
 ///    1–2 句安全提示；回复里已经有锚点时一个字都不改。
+/// 4. **危机优先于沉默**（0.15）：用户这一轮说的是危机表达时，`stay_silent` / `defer_reply`
+///    不再允许「已读不回」——必须落一条看得见的助手消息（有正文用正文、没正文用安全提示），
+///    并进最后一条而不是造第 5 条；非危机轮行为不变。
 final class ChatReliabilityTests: XCTestCase {
 
     private var db: TempDatabase!
@@ -363,6 +366,170 @@ final class ChatReliabilityTests: XCTestCase {
         XCTAssertTrue(only.content.contains("120") || only.content.contains("110"),
                       "工具发出去的回复同样要补安全锚点")
         XCTAssertEqual(["think", "send_message"], tools.names, "第二轮的工具块不该被执行")
+    }
+
+    // MARK: - 4. 危机优先于沉默（0.15）
+
+    /// 危机 + `stay_silent` + 模型同一轮写了正文：正文照常落库，缺锚点补安全提示。
+    func testCrisisStaySilentWithBodyLandsVisibleReply() async throws {
+        StubURLProtocol.enqueue(.sse(textDeltas: ["嗯。那你早点睡。", silentBlock("不想说")]))
+        let events = try await collect(service.send(sessionId: sessionId, text: "我真的不想活了"))
+
+        let kinds = eventKinds(events)
+        XCTAssertFalse(kinds.contains("noReply"), "危机轮不许「已读不回」")
+        XCTAssertFalse(kinds.contains("toolStarted"), "stay_silent 不执行、不该留下工具卡片")
+        XCTAssertFalse(kinds.contains("toolFinished"))
+        XCTAssertTrue(kinds.contains("done"), "这是一轮正常回复")
+
+        let stored = try messages()
+        XCTAssertEqual([.user, .assistant], stored.map(\.role))
+        let assistant = try XCTUnwrap(stored.last)
+        XCTAssertTrue(assistant.content.hasPrefix("嗯。那你早点睡。"),
+                      "模型写了正文就用它，绝不改成另一句话")
+        XCTAssertTrue(assistant.content.contains("120") || assistant.content.contains("110"),
+                      "缺安全锚点时补安全提示")
+        XCTAssertTrue(assistant.content.contains("别一个人") || assistant.content.contains("身边有人"))
+        XCTAssertNotNil(stored.first?.readAt, "照常标已读")
+        XCTAssertTrue(try db.stores.agentIntents.byPersona(personaId).isEmpty,
+                      "stay_silent 留不下念头")
+        XCTAssertTrue(ledger.canStaySilent(personaId: personaId, now: now),
+                      "危机轮不算「连续沉默」，计数要清零")
+
+        // 界面收到的最后一份正文与库里逐字一致。
+        let deltas: [String] = events.compactMap { event in
+            if case .delta(let text) = event { return text } else { return nil }
+        }
+        XCTAssertEqual(assistant.content, deltas.last)
+        let done = events.compactMap { event -> MessageEntity? in
+            if case .done(let completion) = event { return completion.message } else { return nil }
+        }.first
+        XCTAssertEqual(assistant.content, done?.content)
+    }
+
+    /// 危机 + `stay_silent` + 模型只调工具（没有正文）：本地化安全提示就是唯一正文。
+    func testCrisisStaySilentWithoutBodyLandsSafetyNote() async throws {
+        StubURLProtocol.enqueue(.sse(textDeltas: [silentBlock("累了")]))
+        let events = try await collect(service.send(sessionId: sessionId, text: "我不想活了"))
+
+        let kinds = eventKinds(events)
+        XCTAssertFalse(kinds.contains("noReply"))
+        XCTAssertFalse(kinds.contains("toolStarted"), "stay_silent 不该留下工具卡片")
+        XCTAssertTrue(kinds.contains("done"))
+
+        let stored = try messages()
+        XCTAssertEqual([.user, .assistant], stored.map(\.role))
+        let assistant = try XCTUnwrap(stored.last)
+        XCTAssertEqual(
+            SafetyGuard.safetyNetText(language: .zh), assistant.content,
+            "没有正文时，安全提示是这一轮唯一的正文"
+        )
+        XCTAssertNotNil(stored.first?.readAt)
+        XCTAssertTrue(ledger.canStaySilent(personaId: personaId, now: now))
+    }
+
+    /// 危机 + `defer_reply`：不排窗口、不留念头，照常回一句。
+    func testCrisisDeferReplyLandsVisibleReplyWithoutIntent() async throws {
+        StubURLProtocol.enqueue(.sse(textDeltas: [
+            "```yap-tool\n{\"name\":\"defer_reply\",\"arguments\":{\"minutes\":30}}\n```"
+        ]))
+        let events = try await collect(service.send(sessionId: sessionId, text: "我想不开"))
+
+        let kinds = eventKinds(events)
+        XCTAssertFalse(kinds.contains("noReply"), "危机轮不许「过一会儿再说」")
+        XCTAssertTrue(kinds.contains("done"))
+
+        let stored = try messages()
+        XCTAssertEqual([.user, .assistant], stored.map(\.role))
+        let assistant = try XCTUnwrap(stored.last)
+        XCTAssertEqual(SafetyGuard.safetyNetText(language: .zh), assistant.content)
+        XCTAssertNotNil(stored.first?.readAt)
+        XCTAssertTrue(try db.stores.agentIntents.byPersona(personaId).isEmpty,
+                      "危机轮不写「到点开口」的念头")
+        XCTAssertTrue(ledger.canStaySilent(personaId: personaId, now: now),
+                      "危机轮不算沉默")
+    }
+
+    /// 正文里已经有安全锚点：一个字都不加（也不重复补）。
+    func testCrisisStaySilentWithAnchorDoesNotDuplicate() async throws {
+        let reply = "我在，别一个人待着。要不要先给家人打个电话？"
+        StubURLProtocol.enqueue(.sse(textDeltas: [reply, silentBlock()]))
+        _ = try await collect(service.send(sessionId: sessionId, text: "我不想活了"))
+
+        let assistant = try XCTUnwrap(try messages().last { $0.role == .assistant })
+        XCTAssertEqual(reply, assistant.content, "已有锚点就不再补第二遍")
+    }
+
+    /// 危机 + 这一轮已经用 `send_message` 说过一句**带锚点**的话，然后想沉默：
+    /// 不再补一条纯提示气泡（不重复），这一轮就用那条收尾。
+    func testCrisisStaySilentAfterAnchoredSendDoesNotAddDuplicateBubble() async throws {
+        var sent = ToolResult(
+            invocation: ToolInvocation(id: "call-1", name: "send_message", argumentsJson: "{}"),
+            ok: true, summary: "发了条消息", contentForModel: "发出去了"
+        )
+        sent.outboundText = "我在，别一个人待着。"
+        tools.results = [sent]
+        StubURLProtocol.enqueue(.sse(textDeltas: [
+            "```yap-tool\n"
+                + #"{"name":"send_message","arguments":{"text":"我在，别一个人待着。"}}"#
+                + "\n```"
+        ]))
+        StubURLProtocol.enqueue(.sse(textDeltas: [silentBlock()]))
+
+        let events = try await collect(service.send(sessionId: sessionId, text: "我不想活了"))
+        XCTAssertFalse(eventKinds(events).contains("noReply"), "危机轮不许沉默")
+        let assistants = try messages().filter { $0.role == .assistant }
+        XCTAssertEqual(["我在，别一个人待着。"], assistants.map(\.content),
+                       "已经说过的锚点不再补第二遍")
+        XCTAssertNotNil(try messages().first { $0.role == .user }?.readAt)
+    }
+
+    /// 非危机 + `stay_silent`：行为一个字都不变（只标已读、不落消息）。
+    func testNonCrisisStaySilentIsUnchanged() async throws {
+        StubURLProtocol.enqueue(.sse(textDeltas: ["我在呢。", silentBlock("累了")]))
+        let events = try await collect(service.send(sessionId: sessionId, text: "在吗"))
+
+        let kinds = eventKinds(events)
+        XCTAssertTrue(kinds.contains("noReply"))
+        XCTAssertFalse(kinds.contains("done"))
+        XCTAssertFalse(kinds.contains("toolStarted"))
+        XCTAssertEqual([.user], try messages().map(\.role), "非危机轮照旧不落 assistant 正文")
+        XCTAssertNotNil(try messages().first?.readAt, "只标已读")
+    }
+
+    /// 危机 + `stay_silent` 且这一轮 4 条 `send_message` 已经发满：
+    /// 安全提示并进**最后一条**，不造第 5 个气泡。
+    func testCrisisStaySilentAfterFullQuotaMergesSafetyNetIntoLastMessage() async throws {
+        tools.results = ["一", "二", "三", "四"].map { text in
+            var sent = ToolResult(
+                invocation: ToolInvocation(id: "call-\(text)", name: "send_message", argumentsJson: "{}"),
+                ok: true, summary: "发了条消息", contentForModel: "发出去了"
+            )
+            sent.outboundText = text
+            return sent
+        }
+        let blocks = ["一", "二", "三", "四"].map { text in
+            "```yap-tool\n"
+                + #"{"name":"send_message","arguments":{"text":"\#(text)"}}"#
+                + "\n```"
+        }.joined(separator: "\n")
+        StubURLProtocol.enqueue(.sse(textDeltas: [blocks]))
+        // 第二轮想沉默：危机轮不认，安全提示并进第 4 条。
+        StubURLProtocol.enqueue(.sse(textDeltas: [silentBlock("不想说")]))
+
+        let events = try await collect(service.send(sessionId: sessionId, text: "我不想活了"))
+
+        let kinds = eventKinds(events)
+        XCTAssertFalse(kinds.contains("noReply"), "危机轮不许沉默")
+        XCTAssertTrue(kinds.contains("appended"), "并进最后一条后界面要立刻看到那句提示")
+        XCTAssertEqual(4, tools.callCount, "stay_silent 不执行（没有第 5 次工具调用）")
+
+        let assistants = try messages().filter { $0.role == .assistant }
+        XCTAssertEqual(4, assistants.count, "4 条是硬上限，不能为了安全提示造第 5 条")
+        let last = try XCTUnwrap(assistants.last)
+        XCTAssertTrue(last.content.hasPrefix("四"), "提示并进最后一条，不改写它原本的话")
+        XCTAssertTrue(last.content.contains("120") || last.content.contains("110"))
+        XCTAssertTrue(last.content.contains("别一个人") || last.content.contains("身边有人"))
+        XCTAssertNotNil(try messages().first { $0.role == .user }?.readAt)
     }
 }
 

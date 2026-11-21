@@ -705,6 +705,12 @@ public final class ChatService {
             /// 这一轮用户说的那句原文：高置信自动记忆与危机兜底都只看它（不改写、不猜）。
             let currentUserText = currentUserMessage?.content
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            /// 0.15 危机优先于沉默：用户这一轮说了「不想活 / 自杀 / 安眠药 / 割腕……」时，
+            /// 下面的 `stay_silent` / `defer_reply` 都不再允许「这一轮什么都不回」。
+            ///
+            /// 只判一次：这一轮后面所有分支用的是同一句话（模型看到的就是它），
+            /// 不在中途重算，免得出现「前半轮算危机、后半轮不算」的漂移。
+            let userInCrisis = SafetyGuard.isCrisis(currentUserText)
             var currentMediaParts: [String: MediaWireParts] = [:]
             if let currentUserMessage {
                 let playable = AttachmentsCodec.decode(currentUserMessage.attachmentsJson)
@@ -897,6 +903,42 @@ public final class ChatService {
                     $0.name.trimmingCharacters(in: .whitespacesAndNewlines) == ToolCatalog.staySilent
                 }) {
                     let silentAt = now()
+                    // 0.15 危机优先于沉默（体验审计 P0）：用户这一轮说的是「不想活 / 自杀 /
+                    // 安眠药……」时，`stay_silent` 的「这一轮可以不回」不再成立 ——
+                    // 求助被已读不回，比任何语气问题都严重。
+                    //
+                    // 这一轮**必须**留下一条看得见的助手消息：
+                    // - 模型写了正文就用正文（缺安全锚点才补 1–2 句，已有锚点一字不改）；
+                    // - 只有工具 / 什么都没写，就用本地化安全提示当唯一正文；
+                    // - 已经用 `send_message` 发满 4 条时并进最后一条，不造第 5 个气泡。
+                    // 留痕规则也一起改：不显示 `stay_silent` 工具卡（它根本没执行）、
+                    // 不记「连续沉默」（他其实说过了话），计数清零。
+                    if userInCrisis {
+                        let reply = try deliverCrisisSafetyReply(
+                            body: body,
+                            userText: currentUserText,
+                            language: personaLanguage,
+                            sentCount: sentCount,
+                            producedMessage: producedMessage,
+                            sessionId: sessionId,
+                            personaId: persona.id,
+                            model: model,
+                            traces: traces,
+                            continuation: continuation
+                        )
+                        producedMessage = reply
+                        completed = true
+                        log?("[chat] 危机优先于沉默：stay_silent 不生效，这一轮照常回一句")
+                        rhythm?.handleReplied(personaId: persona.id, at: silentAt)
+                        continuation.yield(.done(ChatCompletion(
+                            message: reply,
+                            toolTraces: traces,
+                            pendingMemory: false,
+                            proactiveProposalJson: nil
+                        )))
+                        continuation.finish()
+                        return
+                    }
                     // 0.15 与 Android `StaySilent.canHonor` 对齐：这一轮**已经发出去过消息**时，
                     // 不再认这次沉默 —— 话都说了，再「装没回」只会让对方以为那条消息发错了。
                     let spokeThisTurn = producedMessage != nil
@@ -971,6 +1013,36 @@ public final class ChatService {
                     // 同一个 now 同时用于「计划」与「落库」：两次取时钟可能差几毫秒，
                     // 会让 earliestAt 与 agent_intents.createdAt 对不上。
                     let deferAt = now()
+                    // 0.15 危机优先于沉默：用户这一轮在说「不想活」时，「过一会儿再说」
+                    // 等于把求助晾在一边。这一轮照常落一条看得见的回复，并且：
+                    // - **不留念头、不排窗口**（不调 `decide("defer-plan")`、不写 `agent_intents`）；
+                    // - 连续沉默清零（他其实说过了话）。
+                    if userInCrisis {
+                        let reply = try deliverCrisisSafetyReply(
+                            body: body,
+                            userText: currentUserText,
+                            language: personaLanguage,
+                            sentCount: sentCount,
+                            producedMessage: producedMessage,
+                            sessionId: sessionId,
+                            personaId: persona.id,
+                            model: model,
+                            traces: traces,
+                            continuation: continuation
+                        )
+                        producedMessage = reply
+                        completed = true
+                        log?("[chat] 危机优先于沉默：defer_reply 不生效，这一轮照常回一句（不留念头）")
+                        rhythm?.handleReplied(personaId: persona.id, at: deferAt)
+                        continuation.yield(.done(ChatCompletion(
+                            message: reply,
+                            toolTraces: traces,
+                            pendingMemory: false,
+                            proactiveProposalJson: nil
+                        )))
+                        continuation.finish()
+                        return
+                    }
                     let deferMinutes = deferred.intArgument("minutes", default: DeferReply.defaultMinutes)
                     let deferReason = deferred.argument("reason")
                     // 0.11.0：夹取 / trim / 窗口计算走 agent 决策层（`/v1/core/defer-plan`）。
@@ -1436,6 +1508,78 @@ public final class ChatService {
             traces: []
         ) else { return nil }
         continuation.yield(.appended(saved))
+        return saved
+    }
+
+    // MARK: - 危机优先于沉默（0.15）
+
+    /// 危机这一轮本该沉默（`stay_silent` / `defer_reply`）时的兜底：**必须**留下一条看得见的消息。
+    ///
+    /// 为什么在这里而不是改 `SafetyGuard`：`SafetyGuard` 只回答「要不要补安全提示」，
+    /// 「这一轮到底落不落消息」是聊天链路的决定（与工具拦截、4 条上限、落库顺序绑在一起）。
+    ///
+    /// 正文怎么定（只做加法，不改写模型的话）：
+    /// 1. 模型这一轮写了正文 → 用它；只在**缺安全锚点**时补 1–2 句（已有锚点一字不改，也不重复补）；
+    /// 2. 只有工具 / 什么都没写 → 本地化的安全提示（`SafetyGuard.safetyNetText`）就是唯一正文。
+    ///
+    /// 落到哪一条：
+    /// - 这一轮已经发过话、且那条话里**已有安全锚点** → 直接用它收尾，不再补第二遍；
+    /// - 这一轮已经用 `send_message` 发满 4 条 → 并进**最后一条**（「每轮最多 4 条」是硬上限，
+    ///   不能为了这句提示造第 5 个气泡）；
+    /// - 一条都没发（或还有额度）→ 正常落一条助手消息。
+    ///
+    /// 合并写库失败时宁可多一个气泡也不丢安全提示：安全信息比条数上限重要。
+    private func deliverCrisisSafetyReply(
+        body: String,
+        userText: String,
+        language: PromptLanguage,
+        sentCount: Int,
+        producedMessage: MessageEntity?,
+        sessionId: String,
+        personaId: String,
+        model: String,
+        traces: [ToolTraceItem],
+        continuation: AsyncThrowingStream<ChatEvent, Error>.Continuation
+    ) throws -> MessageEntity {
+        // 主动唤醒的 `yap-wake` 代码块同样不能露给用户（与正常回复同一条规则）。
+        let trimmedBody = ProactiveProtocol.extract(body).body
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = SafetyGuard.safetyNetText(language: language)
+        let content = trimmedBody.isEmpty
+            ? note
+            : SafetyGuard.appendingSafetyNetIfNeeded(
+                reply: trimmedBody, userMessage: userText, language: language
+            )
+        // 这一轮没有正文、但话已经用 `send_message` 说过了：那句里已经有安全锚点时，
+        // 再补一条纯提示气泡就是重复（「不重复」同样适用于工具发出去的话）。
+        if trimmedBody.isEmpty, let last = producedMessage,
+           SafetyGuard.hasSafetyAnchor(last.content) {
+            return last
+        }
+        if sentCount >= MessageRhythm.maxMessagesPerRound, let last = producedMessage {
+            var merged = last
+            let head = last.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            merged.content = (head.isEmpty ? content : head + "\n\n" + content)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if (try? stores.messages.upsert(merged)) != nil {
+                continuation.yield(.appended(merged))
+                return merged
+            }
+            log?("[chat] 危机安全提示并进最后一条失败，改为单独落一条")
+        }
+        guard let saved = try saveAssistant(
+            sessionId: sessionId,
+            personaId: personaId,
+            content: content,
+            status: .complete,
+            errorMessage: nil,
+            model: model,
+            traces: traces
+        ) else {
+            throw ApiException(statusCode: nil, message: String(localized: "回复没有保存成功，请重试"))
+        }
+        // 让界面此刻就显示这一条（与正常回复「先推正文、再 done」的顺序一致）。
+        continuation.yield(.delta(saved.content))
         return saved
     }
 

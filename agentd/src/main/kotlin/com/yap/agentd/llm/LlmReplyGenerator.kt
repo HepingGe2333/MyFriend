@@ -6,6 +6,7 @@ import com.yap.agentd.ReplyRequest
 import com.yap.agentd.SseEvent
 import com.yap.agentd.Usage
 import com.yap.agentd.proactive.ActivityState
+import com.yap.agentd.safety.SafetyGuard
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.tools.ServerToolCatalog
 import com.yap.agentd.tools.ToolExecutor
@@ -31,7 +32,12 @@ import java.time.Clock
  *   但最后一轮不再给 tools，逼它用现有信息说话；
  * - **超时停止**：整个回路共享 [deadlineMs]（默认 2 分钟），到点就带着已生成的文字收尾；
  * - **`stay_silent` 立即结束**：这一轮不落 assistant 消息（由 `ChatService` 处理），
- *   也不继续问模型（「不想说话」再问一次只会得到一句敷衍）。
+ *   也不继续问模型（「不想说话」再问一次只会得到一句敷衍）；
+ * - **危机优先于沉默**（0.15.1）：用户这句话命中 `SafetyGuard` 的危机词表时，`stay_silent` /
+ *   `defer_reply` **不执行**——不记连续沉默、不写 defer 念头、不发工具卡片；同一响应里模型
+ *   写过的正文照用，然后**立即结束这一轮**（和客户端 `CrisisPriority` 一致：危机里多等一轮
+ *   没有意义）。仍然没有正文时由 `ChatService` 用安全提示兜底。安全底线不能交给
+ *   「模型这次有没有听话」。
  *
  * ### 与客户端断开的关系
  * [ChatService] 的 `SafeSink` 会吞掉写失败；这里照常执行工具、落库。工具副作用（心情、
@@ -63,6 +69,8 @@ class LlmReplyGenerator(
             ?: throw IllegalStateException("会话引用了不存在的人格：${request.personaId.take(64)}")
         // 0.15：工具轮数的唯一口径（默认 5 / 模型可指定 / 上限 15）。
         val maxRounds = ExperienceContract.clampToolRounds(request.requestedToolRounds ?: toolRounds)
+        // 0.15.1：危机优先于沉默。判定用与客户端同一份词表（`SafetyGuard`）。
+        val crisis = SafetyGuard.isCrisis(request.userMessage.content)
         val now = clock.millis()
         val systemMessages = promptBuilder.chatMessages(
             persona = persona,
@@ -81,6 +89,11 @@ class LlmReplyGenerator(
         val traces = ArrayList<ToolExecutor.ToolTrace>()
         val attachments = LinkedHashSet<String>()
         var suppressed = false
+        // 这一轮模型「想沉默」：普通轮里是 `stay_silent` 真的执行了；危机轮里是被拦截的
+        // `stay_silent` / `defer_reply`。聊天层据此把 SSE 形状切成「有正文、非 silent」。
+        var silenceRequested = false
+        // 危机轮里拦下过「不回」的工具：同一响应正文照用，然后立刻收尾（不再问模型）。
+        var crisisForcedReply = false
         var textSoFar = StringBuilder()
         // 0.14 连发：`send_message` 每调一次收集一条；`OutgoingMessages` 负责「每轮最多 4 条」。
         val outgoing = ToolExecutor.OutgoingMessages()
@@ -126,6 +139,17 @@ class LlmReplyGenerator(
             val roundParts = ArrayList<LlmContentPart>()
             val roundTexts = ArrayList<String>()
             for (call in turn.toolCalls) {
+                if (crisis && isSilencingTool(call.name)) {
+                    // 0.15.1 危机优先于沉默：不执行 `stay_silent` / `defer_reply`。
+                    // 三件事都不能发生：不记「连续沉默」、不写 defer 念头、不发工具卡片。
+                    // 每个 tool_call 仍然补一条结果（协议完整、日志里能看出为什么没沉默），
+                    // 但这一轮**不会**再问模型：同一响应里写过的正文照用，没有正文由
+                    // `ChatService` 用安全提示兜底（不依赖模型这次是否配合）。
+                    crisisForcedReply = true
+                    silenceRequested = true
+                    messages += LlmMessage.tool(CRISIS_SILENCE_REFUSAL, call.id)
+                    continue
+                }
                 emit(SseEvent.Tool(call.name, "running", null))
                 val outcome = tools.execute(
                     name = call.name,
@@ -146,11 +170,18 @@ class LlmReplyGenerator(
                 }
                 attachments += outcome.attachments
                 outcome.sentMessage?.let { sentMessages += it }
-                if (outcome.staySilent) silentThisRound = true
+                if (outcome.staySilent) {
+                    silentThisRound = true
+                    silenceRequested = true
+                }
             }
             if (roundParts.isNotEmpty()) {
                 messages += LlmMessage.userWithParts(roundTexts.joinToString("\n"), roundParts)
                 sentMultimodal = true
+            }
+            if (crisisForcedReply) {
+                // 危机轮到此为止：不落 `suppressed`（正文要留），也不向模型要下一轮。
+                break
             }
             if (silentThisRound) {
                 // 0.15 严格语义：**只要这一轮调用了 `stay_silent`，就不落任何 assistant 正文**。
@@ -175,8 +206,15 @@ class LlmReplyGenerator(
             elapsedMs = clock.millis() - startedAt,
             textLength = textSoFar.length,
             // 用了 `send_message` 就以逐条消息为准（已流出的文字只当「正在输入」的进度）。
-            messages = if (suppressed) emptyList() else sentMessages.toList()
+            messages = if (suppressed) emptyList() else sentMessages.toList(),
+            silenceRequested = silenceRequested
         )
+    }
+
+    /** 想「这一轮不说话」的工具：危机轮里一律不执行（见类注释）。 */
+    private fun isSilencingTool(name: String): Boolean {
+        val tool = name.trim()
+        return tool == ServerToolCatalog.STAY_SILENT || tool == ServerToolCatalog.DEFER_REPLY
     }
 
     /**
@@ -210,6 +248,18 @@ class LlmReplyGenerator(
             } else {
                 ChatPromptBuilder(zone, capabilities = NO_TOOLS_CAPABILITIES)
             }
+
+        /**
+         * 危机轮里被拦下的「不回」工具的回执（0.15.1）。
+         *
+         * 这一轮不会再问模型（危机里多等一轮没有意义，和客户端 `CrisisPriority` 一致），
+         * 所以模型其实看不到这句话；保留它是为了让工具结果协议完整：每个 `tool_call` 都有
+         * 同一 id 的回执，日志/追踪里也能看出「这一轮为什么没沉默、由什么兜底」。
+         */
+        const val CRISIS_SILENCE_REFUSAL: String =
+            "现在不能沉默，也不能等一会儿再说：对方刚才的话里有自伤/轻生的风险。" +
+                "这一轮必须直接用一句短话回应他，并把话往安全锚点上带" +
+                "（我在 / 别一个人 / 身边有人 / 120 / 医院 / 家人朋友）。"
 
         /**
          * 工具回路的默认轮数（0.15 起 5 轮，唯一口径在 `:agentcore`）。

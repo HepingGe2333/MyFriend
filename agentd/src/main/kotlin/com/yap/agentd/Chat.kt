@@ -1,5 +1,6 @@
 package com.yap.agentd
 
+import com.yap.agentd.safety.SafetyGuard
 import com.yap.agentd.store.FileStore
 import com.yap.agentd.store.Message
 import com.yap.agentd.store.MessageRole
@@ -54,7 +55,15 @@ data class ReplyOutcome(
      *
      * 空列表 = 生成器没有用连发，由 `ChatService` 把已生成的文字按空行拆成 1–3 条。
      */
-    val messages: List<String> = emptyList()
+    val messages: List<String> = emptyList(),
+    /**
+     * 0.15.1：这一轮模型**想**沉默（调用了 `stay_silent`；危机轮里 `defer_reply` 也算）。
+     *
+     * 危机轮里 `LlmReplyGenerator` 会把这两个工具拦下来不执行，所以 [suppressed] 可能仍然是
+     * `false`；但聊天层需要知道「这本来是一轮沉默」，才能补 `message.created`、保证 `done`
+     * 带真实消息 id（而不是回到「只已读」的旧形状）。
+     */
+    val silenceRequested: Boolean = false
 )
 
 /**
@@ -145,6 +154,13 @@ data class SendMessageRequest(
  * [SafeSink] 会把 `emit` 的任何异常吞掉并记一次日志，生成循环和落库**不会**因为写 socket 失败而中断。
  * 这就是契约里「客户端断开 SSE 时服务端继续生成并落库」的实现方式；HTTP 层的 `HttpSseSink`
  * 也只是「写失败就标记 broken」，不往外抛。
+ *
+ * ### 危机优先于沉默（0.15.1）
+ * `stay_silent` 的「只已读不回」对危机轮**不成立**：用户这句话命中 `SafetyGuard` 的危机词表时，
+ * 本轮必须落一条可见的 assistant 消息，SSE 用 `message.created` + 带真实 id 的 `done` 收尾。
+ * 有正文用正文；没有正文就把安全提示作为唯一正文。`llm/LlmReplyGenerator` 还会在工具回路里
+ * 直接拦掉 `stay_silent` / `defer_reply`（不执行、不发卡片、不写 defer 念头），这里再兜一次底，
+ * 所以换掉生成器（测试/降级）也不会把这条安全底线漏掉。
  */
 class ChatService(
     private val store: FileStore,
@@ -292,6 +308,9 @@ class ChatService(
             sink.emit(SseEvent.Error("generation_failed", "生成回复失败，已保存已经生成的部分"))
         }
         val usage = outcome.usage
+        // 0.15.1 危机优先于沉默：用户这句话命中危机词表时，本轮**必须**留下可见的 assistant 消息。
+        // 放在这里而不是只靠生成器拦截：生成器可替换（测试/降级），而这是安全底线。
+        val crisis = SafetyGuard.isCrisis(userMessage.content)
         var replyTexts = when {
             outcome.suppressed -> emptyList()
             outcome.messages.isNotEmpty() -> outcome.messages
@@ -301,9 +320,20 @@ class ChatService(
                 .take(com.yap.agentd.tools.ToolExecutor.MAX_MESSAGES_PER_TURN)
             else -> splitIntoMessages(builder.toString())
         }
+        // 危机轮里「不落 assistant 正文」的语义被覆盖：已经流出的正文照用，没有正文就用安全提示。
+        // 这条 override 同时决定 SSE 形状——必须有 `message.created`，且 done 带真实消息 id。
+        // 注意 [ReplyOutcome.silenceRequested]：生成器在危机轮会拦掉沉默工具，此时 `suppressed`
+        // 是 false，但这一轮仍然是「本来想沉默」，SSE 形状必须和危机 override 一致。
+        var crisisOverride = false
+        if (crisis && (outcome.suppressed || outcome.silenceRequested)) {
+            if (outcome.suppressed) {
+                replyTexts = crisisSilenceTexts(builder.toString(), userMessage.content)
+            }
+            crisisOverride = true
+        }
         // 0.15：`remember` / `diary` / `defer_reply` 说明「接下来的安排变了」→ 短期缓存立刻更新。
         val planChanged = outcome.toolsUsed.any { it in PLAN_CHANGING_TOOLS }
-        if (outcome.suppressed) {
+        if (outcome.suppressed && !crisis) {
             // `stay_silent`（spec/mood §4）：这一轮**没有 assistant 消息**，只把会话标已读；
             // 客户端 UI 不显示任何占位气泡，只看到「已读」。用量照记（模型确实被调用了）。
             if (usage.promptTokens > 0 || usage.completionTokens > 0) {
@@ -320,20 +350,34 @@ class ChatService(
             return
         }
         if (replyTexts.isEmpty() && outcome.attachments.isEmpty()) {
-            // 工具回路把 3 轮都用完了、模型一个字都没说（只调工具）：同样不落空消息，
-            // 用一条 `silent` 的 done 收尾（客户端只会看到「已读」，和 stay_silent 同一形状）。
-            store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
-            store.markSessionRead(sessionId)
-            sink.emit(SseEvent.Done("", usage, silent = true))
-            afterChat(session.personaId, sessionId, planChanged)
-            return
+            if (crisis) {
+                // 危机轮：工具回路把轮数都用完、模型一个字都没说，也必须让用户看到一句安全提示。
+                // 这条提示是**唯一**的 assistant 消息（不是追加），所以直接写进 replyTexts 走落库流程。
+                replyTexts = listOf(SafetyGuard.crisisNote(userMessage.content))
+                crisisOverride = true
+            } else {
+                // 工具回路把 3 轮都用完了、模型一个字都没说（只调工具）：同样不落空消息，
+                // 用一条 `silent` 的 done 收尾（客户端只会看到「已读」，和 stay_silent 同一形状）。
+                store.addUsage(session.personaId, usage.promptTokens, usage.completionTokens)
+                store.markSessionRead(sessionId)
+                sink.emit(SseEvent.Done("", usage, silent = true))
+                afterChat(session.personaId, sessionId, planChanged)
+                return
+            }
+        }
+        if (replyTexts.isEmpty() && crisis && outcome.attachments.isNotEmpty()) {
+            // 只有贴纸/附件、没有正文：危机轮不能让「一张表情」成为唯一的回答。
+            // 把安全提示作为正文挂在这条消息上（附件仍然带在最后一条，不另造气泡）。
+            replyTexts = listOf(SafetyGuard.crisisNote(userMessage.content))
+            crisisOverride = true
         }
         // 0.15 危机安全兜底：用户说了「不想活/自杀/安眠药/割腕/消失比较好」而回复里没有
         // 安全锚点（我在/别一个人/身边有人/120/110/医院/急诊/求助/家人/朋友）时，
         // 在**最后一条**回复末尾追加 1–2 句，并补一个 delta 让在线客户端也立刻看到。
         // 纯函数、无 IO（`SafetyGuard`），这里只负责把结果接进落库流程。
+        // 连发已满 4 条时提示并进最后一条（规范 §4 的硬上限），不会多造第 5 个气泡。
         if (replyTexts.isNotEmpty()) {
-            val guarded = com.yap.agentd.safety.SafetyGuard.guard(userMessage.content, replyTexts)
+            val guarded = SafetyGuard.guard(userMessage.content, replyTexts)
             guarded.appended?.let { appended ->
                 replyTexts = guarded.messages
                 sink.emit(SseEvent.Delta(appended))
@@ -341,7 +385,8 @@ class ChatService(
         }
         // 有附件但没有文字（sticker.send）：仍然落一条带附件的空正文消息（与 0.13 一致）。
         val textsToPersist = if (replyTexts.isEmpty()) listOf("") else replyTexts
-        val multiMessage = outcome.messages.isNotEmpty() || textsToPersist.size > 1
+        // 危机 override 的那一条必须发 `message.created`（客户端按它上屏；done 只是收尾）。
+        val multiMessage = outcome.messages.isNotEmpty() || textsToPersist.size > 1 || crisisOverride
         // 0.14.1（§8）：延迟由服务端在**入队时**决定。离线/未启用/失败时是 `null` = 立即上屏。
         // 失败时不延迟：已经流出去的半句话要立刻落库并发事件，不能排进队列等 4 秒。
         val visibleAts = if (failed) null else delivery?.visibleAts(session.personaId, textsToPersist)
@@ -360,7 +405,9 @@ class ChatService(
                 // 用量记在最后一条：`done` 与幂等重放都读它。
                 promptTokens = if (isLast) usage.promptTokens else null,
                 completionTokens = if (isLast) usage.completionTokens else null,
-                toolTraceJson = if (isLast) outcome.toolTraceJson else null,
+                // `stay_silent` / `defer_reply` 被危机 override 时不能留下工具卡片：
+                // `suppressed` 的那一轮整轮工具痕迹都不落（生成器拦截时本身也不会有这两条 trace）。
+                toolTraceJson = if (isLast && !outcome.suppressed) outcome.toolTraceJson else null,
                 visibleAt = visibleAts?.getOrNull(index),
                 // 延迟投递的消息先不写 `message.created` 事件（到点由 MessageDelivery 补发）；
                 // 立即路径保持现状（落库即发事件）。
@@ -419,6 +466,19 @@ class ChatService(
                 "[agentd] 兜底记忆写入失败：${failure::class.simpleName}: ${failure.message}"
             )
         }.getOrNull() != null
+    }
+
+    /**
+     * 危机轮里被 `stay_silent` 压掉正文时的兜底文本（0.15.1）。
+     *
+     * 规则只有两条，刻意不复杂：
+     * - 模型已经流出了正文（哪怕只是半句）→ 用它，「有正文用正文」；缺安全锚点时后面的
+     *   [SafetyGuard.guard] 会照常补上；
+     * - 一个字都没有 → 安全提示就是**唯一**的 assistant 消息（不落空消息，也不追加在不存在的话后面）。
+     */
+    private fun crisisSilenceTexts(streamed: String, userMessage: String): List<String> {
+        val body = streamed.trim()
+        return if (body.isEmpty()) listOf(SafetyGuard.crisisNote(userMessage)) else listOf(body)
     }
 
     /**

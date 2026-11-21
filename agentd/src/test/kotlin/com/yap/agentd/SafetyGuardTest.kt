@@ -16,11 +16,13 @@ import java.nio.file.Path
 /**
  * 0.15 危机安全兜底（`SafetyGuard`）。
  *
- * 钉住四件事：
- * 1. 用户说「不想活/自杀/安眠药/割腕/消失比较好」才算危机（否定句不算）；
+ * 钉住五件事：
+ * 1. 用户说「不想活/自杀/安眠药/割腕/消失比较好」以及客户端同词表的「想死/轻生/跳楼/遗书…」
+ *    才算危机（否定句、夸张说法不算）；
  * 2. 回复里已有安全锚点（我在/别一个人/身边有人/120/110/医院/急诊/求助/家人/朋友）就不再补；
  * 3. 回复缺少锚点时，在**最后一条**回复末尾追加 1–2 句，并补一个 SSE delta；
- * 4. 普通聊天一个字都不改。
+ * 4. 一个字都没有时用 `crisisNote` 兜底（医疗类优先叫急救/急诊）；
+ * 5. 普通聊天一个字都不改。
  */
 class SafetyGuardTest {
 
@@ -71,6 +73,52 @@ class SafetyGuardTest {
         assertFalse(SafetyGuard.isCrisis("今天工作好累，想早点睡"))
         assertFalse("否定句不该误报", SafetyGuard.isCrisis("我没有自杀的念头"))
         assertFalse("劝阻别人也不算用户危机", SafetyGuard.isCrisis("你别自杀，先冷静一下"))
+    }
+
+    @Test
+    fun `the server uses the same crisis vocabulary as the app`() {
+        // 客户端 `app/…/domain/SafetyGuard.kt` 的词表：服务端权威模式必须识别同一批说法，
+        // 否则客户端不再自己生成回复时，「想死」这类话就没有任何兜底。
+        listOf(
+            "我想死",
+            "我不想死",
+            "我活不下去了",
+            "我想一了百了",
+            "我想不开",
+            "我想跳楼",
+            "我写了遗书",
+            "我觉得没有我你们会更好",
+            "I want to kill myself",
+            "I'm going to end my life",
+            "I cut myself"
+        ).forEach { text ->
+            assertTrue("「$text」应当判为危机", SafetyGuard.isCrisis(text))
+        }
+    }
+
+    @Test
+    fun `the broader vocabulary does not turn exaggeration into a crisis`() {
+        listOf(
+            "想死你了",
+            "想死我了",
+            "今天累得要死",
+            "笑死我了",
+            "这部电影好看死了",
+            "他消失在人群里了",
+            "我朋友说他昨天很好"
+        ).forEach { text ->
+            assertFalse("「$text」不该判为危机", SafetyGuard.isCrisis(text))
+        }
+        // 否定句仍然不算：新增词表不能把「没有想死」也吃掉。
+        assertFalse(SafetyGuard.isCrisis("我没有想死"))
+    }
+
+    @Test
+    fun `crisis note picks the medical wording for drugs and self cutting`() {
+        assertEquals(SafetyGuard.MEDICAL_NOTE, SafetyGuard.crisisNote("我吃了很多安眠药"))
+        assertEquals(SafetyGuard.MEDICAL_NOTE, SafetyGuard.crisisNote("手腕上是我割腕留下的"))
+        assertEquals(SafetyGuard.EMOTIONAL_NOTE, SafetyGuard.crisisNote("我不想活了"))
+        assertEquals(SafetyGuard.EMOTIONAL_NOTE, SafetyGuard.crisisNote("今天工作好累"))
     }
 
     @Test

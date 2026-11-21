@@ -74,6 +74,7 @@ import com.yap.app.domain.UserErrorTokens
 import com.yap.app.domain.SleepDecision
 import com.yap.app.domain.SleepInput
 import com.yap.app.domain.SleepPolicy
+import com.yap.app.domain.CrisisPriority
 import com.yap.app.domain.SafetyGuard
 import com.yap.app.domain.SilentReason
 import com.yap.app.domain.SpeechStyleCodec
@@ -809,6 +810,9 @@ class ChatRepository @Inject constructor(
         // 这一轮「对方说了什么」：安全兜底与高置信自动记忆都要看用户原话（最近一条 user 消息）。
         // recentBySession 按 createdAt 倒序返回，所以最近一条 user 消息就是 firstOrNull。
         val latestUserText = recentHistory.firstOrNull { it.role == MessageRole.USER }?.content.orEmpty()
+        // 0.15 危机优先：这一轮用户原话里有没有明确的危机语句。只看用户说了什么，
+        // 和模型接下来怎么回无关；非危机时下面所有分支保持原样（见 CrisisPriority）。
+        val crisisTurn = CrisisPriority.isCrisisTurn(latestUserText)
         val now0 = System.currentTimeMillis()
         // 睡眠 / 免打扰 / 唤醒阈值（规格 §六）。判定是纯函数，这里只负责拿数据、落痕迹。
         val sleepDecision = evaluateSleep(persona, sessionId, now0)
@@ -886,6 +890,9 @@ class ChatRepository @Inject constructor(
             var deferred = false
             // `stay_silent`：这一轮只标已读、不落任何 assistant 消息（与 defer 的区别是「什么都不留」）。
             var silenced = false
+            // 0.15 危机优先：危机轮里模型调了 `stay_silent` / `defer_reply`——两个工具都被拦下
+            // （不执行、不写念头、不排窗口、不涨沉默计数），这一轮必须以一条可见消息结束。
+            var crisisForcedReply = false
             // 0.15：这一轮模型有没有自己调用 `remember`（调用过就不再自动补记忆）。
             var rememberCalled = false
             while (true) {
@@ -954,6 +961,20 @@ class ChatRepository @Inject constructor(
                             ok = true,
                             summary = "这一轮已经决定不回",
                             contentForModel = "这一轮已经决定不回，别再执行别的工具，也别再输出任何文字。"
+                        )
+                        continue
+                    }
+                    // 0.15 危机优先：危机轮里「不回」的工具不执行——`defer_reply` 的念头/延后窗口、
+                    // `stay_silent` 的连续计数与「已读不回」卡片都不该出现。拦在这里（执行之前），
+                    // 而不是执行完再覆盖语义；同批里别的工具（比如 `send_message`）照常执行，
+                    // 已经写出来的话仍然会发给对方。
+                    if (CrisisPriority.blocksTool(crisisTurn, call.name)) {
+                        crisisForcedReply = true
+                        results += ToolResult(
+                            invocation = call,
+                            ok = true,
+                            summary = "这一轮不能只已读",
+                            contentForModel = CrisisPriority.blockedModelText()
                         )
                         continue
                     }
@@ -1065,6 +1086,13 @@ class ChatRepository @Inject constructor(
                         results += execution.result
                     }
                 }
+                if (crisisForcedReply) {
+                    // 危机优先（0.15）：这一轮不能停在「已读 / 晚点说」。模型在同一个响应里写的
+                    // 正文照用；一个字都没写（只调了工具）时 finalBody 为空，下面会用安全提示
+                    // 作为唯一正文。不再向模型要下一轮——危机里多等一轮没有意义。
+                    finalBody = body.trim()
+                    break
+                }
                 if (deferred) {
                     // 模型已经明确选择不回：没必要再问一轮，也不该让它再说一句话。
                     finalBody = ""
@@ -1128,12 +1156,14 @@ class ChatRepository @Inject constructor(
             }
             val rawFinalText = finalBody.trim()
             val (finalText, proposal) = ProactiveProtocol.extract(rawFinalText)
+            // 按界面语言取的危机提示句：既用于「缺锚点时补一句」，也用于危机轮完全没正文时的兜底。
+            val crisisNote = appContext.getString(R.string.safety_crisis_note)
             // 危机安全兜底（0.15）：用户说了危机语句、而他这一轮的话里没有任何安全锚点时，
             // 只在末尾补一句很短的提示——不覆盖他原本的话，也不改人设语气。
             val safetyNote = SafetyGuard.noteIfNeeded(
                 userMessage = latestUserText,
                 reply = (sentMessages.map { it.content } + finalText).joinToString("\n"),
-                note = appContext.getString(R.string.safety_crisis_note)
+                note = crisisNote
             )
             var replyText = finalText
             if (safetyNote != null) {
@@ -1154,6 +1184,13 @@ class ChatRepository @Inject constructor(
                         refreshPreview(session)
                     }
                 }
+            }
+            // 危机优先（0.15）：模型这一轮一个字都没写（只调了 `stay_silent` / `defer_reply`
+            // 或纯工具），也还没发出任何消息——安全提示就是这一轮唯一的正文，不能只留「已读」。
+            // 已经用 `send_message` 发过时走上面那条「并进最后一条」，这里不再补，避免第 5 个气泡。
+            // 非危机轮 `CrisisPriority.replyBody` 原样返回，空流仍然是空流。
+            if (crisisTurn && sentMessages.isEmpty()) {
+                replyText = CrisisPriority.replyBody(crisisTurn, replyText, crisisNote)
             }
             // 0.14：不带工具的回复按空行拆成 1–3 条，逐条落库（规范 §4）。
             // 已经用 send_message 发过时，正文最多再补 1 条；4 条是这一轮的硬上限。
