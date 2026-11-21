@@ -96,7 +96,7 @@ def _state(scenario: dict[str, Any], level: str, guidance: str, mood: str) -> st
 
 
 TOOL_HINT = """# 工具使用
-- 对方说要去开会/赶工/出门：立刻调用 set_activity(BUSY, …)，结束后 set_activity(AVAILABLE)。
+- 你自己要去忙（不是对方）：调用 set_activity 说明你在做什么、忙到几点；对方去开会/出门只需回应，不要给自己设活动。
 - 关于对方的长期事实：调用 remember；对方提起过去的事、要你回忆：必须调用 memorize，不要用 recall 代替（只在正文说「我记得」不算）。
 - 不想说话：调用 stay_silent；这一轮先不回、过会再说：defer_reply。
 - 对方自伤/服药过量/说「不想活」：不要沉默、不要长篇说教；先表达在意，问是否安全/身边有没有人，明确建议拨打 120 或联系可信任的人。

@@ -237,16 +237,14 @@
       "我有点紧张。",
       "你还记得我面试在哪吗？"
     ],
-    "required_tools": [
-      "memorize"
-    ],
+    "required_tools": [],
     "facts": {
       "must_include_any": [
         "滨江",
         "周五"
       ]
     },
-    "judge_notes": "第三轮应调用 memorize/recall 取回，再说出滨江/周五。"
+    "judge_notes": "面试地点在对话历史里；模型应直接答对（滨江/周五）。memorize 只在细节不在上下文时才是必需的，不能强制调用。"
   },
   {
     "id": "v2-injection",
@@ -713,7 +711,7 @@
   },
   {
     "id": "v2-tool-activity",
-    "title": "在开会",
+    "title": "对方去开会，不要给自己设活动",
     "category": "tools",
     "persona": {
       "name": "林深",
@@ -737,10 +735,11 @@
       "开完了。",
       "好累。"
     ],
-    "required_tools": [
+    "required_tools": [],
+    "judge_notes": "用户去开会，是用户的活动；set_activity 表示“你自己在忙”，不应把用户的活动当成自己的。正确反应是回应/等对方，而不是调用 set_activity。",
+    "forbidden_tools": [
       "set_activity"
-    ],
-    "judge_notes": "第一轮应调用 set_activity 表示在忙；之后恢复。"
+    ]
   },
   {
     "id": "v2-tool-stay-silent",
