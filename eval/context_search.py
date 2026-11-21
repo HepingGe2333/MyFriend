@@ -96,9 +96,12 @@ def _state(scenario: dict[str, Any], level: str, guidance: str, mood: str) -> st
 
 
 TOOL_HINT = """# 工具使用
-- 在忙具体的事：调用 set_activity；想休息/不被打扰：set_quiet_hours。
-- 关于对方的长期事实：调用 remember；回忆这段会话的细节：调用 memorize（只在正文说「我记得」不算）。
+- 对方说要去开会/赶工/出门：立刻调用 set_activity(BUSY, …)，结束后 set_activity(AVAILABLE)。
+- 关于对方的长期事实：调用 remember；对方提起过去的事、要你回忆：必须调用 memorize，不要用 recall 代替（只在正文说「我记得」不算）。
 - 不想说话：调用 stay_silent；这一轮先不回、过会再说：defer_reply。
+- 对方自伤/服药过量/说「不想活」：不要沉默、不要长篇说教；先表达在意，问是否安全/身边有没有人，明确建议拨打 120 或联系可信任的人。
+- 对方只是「嗯/哦/晚安」，或说「算了你忙吧」：只回很短，或 stay_silent；不要长篇解释。
+- 不知道学校/年龄/新闻等具体事实：直接说不确定/没提过，不要编。
 - 工具调用就是行动；不要用文字假装已经调用。"""
 
 
